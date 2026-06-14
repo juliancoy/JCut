@@ -544,6 +544,9 @@ QJsonObject continuityStreamFromSectionAssignment(const QJsonObject& assignment)
     const qreal y = qBound<qreal>(0.0, assignment.value(QStringLiteral("y")).toDouble(0.5), 1.0);
     const qreal box = qBound<qreal>(0.01, assignment.value(QStringLiteral("box")).toDouble(0.2), 1.0);
     QJsonObject keyframe{
+        {QStringLiteral("title"),
+         assignment.value(QStringLiteral("title"))
+             .toString(QStringLiteral("Section assignment anchor T%1").arg(trackId))},
         {QStringLiteral("frame"), static_cast<qint64>(qMax<int64_t>(0, sourceFrame))},
         {QStringLiteral("x"), x},
         {QStringLiteral("y"), y},
@@ -561,6 +564,59 @@ QJsonObject continuityStreamFromSectionAssignment(const QJsonObject& assignment)
         {QStringLiteral("keyframes"), keyframes},
         {QStringLiteral("source"), QStringLiteral("section_assignment_anchor")}
     };
+}
+
+QJsonArray sectionTrackEntriesFromAssignment(const QJsonObject& assignment)
+{
+    QJsonArray entries = assignment.value(QStringLiteral("tracks")).toArray();
+    if (!entries.isEmpty()) {
+        return entries;
+    }
+    const int trackId = assignment.value(QStringLiteral("track_id")).toInt(-1);
+    if (trackId < 0) {
+        return {};
+    }
+    QJsonObject entry{
+        {QStringLiteral("track_id"), trackId},
+        {QStringLiteral("stream_id"),
+         assignment.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId))},
+        {QStringLiteral("source_frame"),
+         assignment.value(QStringLiteral("source_frame")).toInteger(0)},
+        {QStringLiteral("x"), assignment.value(QStringLiteral("x")).toDouble(0.5)},
+        {QStringLiteral("y"), assignment.value(QStringLiteral("y")).toDouble(0.5)},
+        {QStringLiteral("box"), assignment.value(QStringLiteral("box")).toDouble(0.2)}
+    };
+    return QJsonArray{entry};
+}
+
+QStringList sectionTrackIdStringsFromAssignment(const QJsonObject& assignment)
+{
+    QStringList ids;
+    for (const QJsonValue& value : sectionTrackEntriesFromAssignment(assignment)) {
+        const int trackId = value.toObject().value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            ids.push_back(QString::number(trackId));
+        }
+    }
+    ids.removeDuplicates();
+    return ids;
+}
+
+QJsonObject sectionTrackEntryAssignment(const QJsonObject& sectionAssignment,
+                                        const QJsonObject& entry)
+{
+    QJsonObject assignment = sectionAssignment;
+    for (const QString& key : {QStringLiteral("track_id"),
+                              QStringLiteral("stream_id"),
+                              QStringLiteral("source_frame"),
+                              QStringLiteral("x"),
+                              QStringLiteral("y"),
+                              QStringLiteral("box")}) {
+        if (entry.contains(key)) {
+            assignment[key] = entry.value(key);
+        }
+    }
+    return assignment;
 }
 
 QPair<int64_t, int64_t> sourceFrameRangeForStream(const TimelineClip& clip,
@@ -1381,23 +1437,28 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         auto* indexItem = new QTableWidgetItem(QString::number(row + 1));
         auto* speakerItem = new QTableWidgetItem(section.displayLabel);
         auto* rangeItem = new QTableWidgetItem(rangeText);
-        const int avatarTrackId = clip
-            ? contiguousSectionAssignedTrackId(clip->id,
-                                               section.speakerId,
-                                               section.startTimelineFrame,
-                                               section.endTimelineFrame)
-            : -1;
         const QJsonObject sectionAssignment = clip
             ? contiguousSectionAssignmentForSection(clip->id,
                                                     section.speakerId,
                                                     section.startTimelineFrame,
                                                     section.endTimelineFrame)
             : QJsonObject{};
-        QStringList trackIdStrings;
+        const QJsonArray assignedTrackEntries = sectionTrackEntriesFromAssignment(sectionAssignment);
+        const QStringList trackIdStrings = sectionTrackIdStringsFromAssignment(sectionAssignment);
         QStringList trackLabels;
-        if (avatarTrackId >= 0) {
-            trackIdStrings.push_back(QString::number(avatarTrackId));
-            trackLabels.push_back(QStringLiteral("T%1").arg(avatarTrackId));
+        int avatarTrackId = -1;
+        QJsonObject avatarAssignment = sectionAssignment;
+        for (const QJsonValue& entryValue : assignedTrackEntries) {
+            const QJsonObject entry = entryValue.toObject();
+            const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId < 0) {
+                continue;
+            }
+            trackLabels.push_back(QStringLiteral("T%1").arg(trackId));
+            if (avatarTrackId < 0) {
+                avatarTrackId = trackId;
+                avatarAssignment = sectionTrackEntryAssignment(sectionAssignment, entry);
+            }
         }
         auto* avatarItem = new QTableWidgetItem();
         avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
@@ -1406,7 +1467,7 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         QJsonObject avatarStream =
             avatarTrackId >= 0 ? streamByTrackId.value(avatarTrackId) : QJsonObject{};
         if (avatarStream.isEmpty()) {
-            avatarStream = continuityStreamFromSectionAssignment(sectionAssignment);
+            avatarStream = continuityStreamFromSectionAssignment(avatarAssignment);
         }
         if (clip && avatarTrackId >= 0 && !avatarStream.isEmpty()) {
             const QPixmap avatar = continuityTrackAvatar(*clip,
@@ -1458,7 +1519,7 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         trackItem->setToolTip(
             trackLabels.isEmpty()
                 ? QStringLiteral("No continuity track is mapped to this contiguous section row.")
-                : QStringLiteral("Continuity track mapped one-to-one to this contiguous section row: %1")
+                : QStringLiteral("Continuity tracks mapped to this contiguous section row: %1")
                       .arg(trackLabels.join(QStringLiteral(", "))));
         wordsItem->setFlags(wordsItem->flags() & ~Qt::ItemIsEditable);
         snippetItem->setFlags(snippetItem->flags() & ~Qt::ItemIsEditable);
@@ -1526,29 +1587,38 @@ void SpeakersTab::refreshVisibleSpeakerSectionAssignments(const QString& speaker
         }
         const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
         const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
-        const int avatarTrackId = contiguousSectionAssignedTrackId(
-            clip->id, trimmedSpeakerId, startFrame, endFrame);
         const QJsonObject sectionAssignment = contiguousSectionAssignmentForSection(
             clip->id, trimmedSpeakerId, startFrame, endFrame);
-        QStringList trackIdStrings;
+        const QJsonArray assignedTrackEntries = sectionTrackEntriesFromAssignment(sectionAssignment);
+        const QStringList trackIdStrings = sectionTrackIdStringsFromAssignment(sectionAssignment);
         QStringList trackLabels;
-        if (avatarTrackId >= 0) {
-            trackIdStrings.push_back(QString::number(avatarTrackId));
-            trackLabels.push_back(QStringLiteral("T%1").arg(avatarTrackId));
+        int avatarTrackId = -1;
+        QJsonObject avatarAssignment = sectionAssignment;
+        for (const QJsonValue& entryValue : assignedTrackEntries) {
+            const QJsonObject entry = entryValue.toObject();
+            const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId < 0) {
+                continue;
+            }
+            trackLabels.push_back(QStringLiteral("T%1").arg(trackId));
+            if (avatarTrackId < 0) {
+                avatarTrackId = trackId;
+                avatarAssignment = sectionTrackEntryAssignment(sectionAssignment, entry);
+            }
         }
         const QString tracksText =
             trackLabels.isEmpty() ? QStringLiteral("-") : trackLabels.join(QStringLiteral(", "));
         const QString tracksTooltip =
             trackLabels.isEmpty()
                 ? QStringLiteral("No continuity track is mapped to this contiguous section row.")
-                : QStringLiteral("Continuity track mapped one-to-one to this contiguous section row: %1")
+                : QStringLiteral("Continuity tracks mapped to this contiguous section row: %1")
                       .arg(trackLabels.join(QStringLiteral(", ")));
         QIcon avatarIcon;
         QString avatarTooltip;
         QJsonObject avatarStream =
             avatarTrackId >= 0 ? streamByTrackId.value(avatarTrackId) : QJsonObject{};
         if (avatarStream.isEmpty()) {
-            avatarStream = continuityStreamFromSectionAssignment(sectionAssignment);
+            avatarStream = continuityStreamFromSectionAssignment(avatarAssignment);
         }
         if (avatarTrackId >= 0 && !avatarStream.isEmpty()) {
             const QPixmap avatar = continuityTrackAvatar(*clip,

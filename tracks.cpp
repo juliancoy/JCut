@@ -59,6 +59,107 @@ QString contiguousSectionKey(const QString& speakerId, int64_t startFrame, int64
         .arg(endFrame);
 }
 
+QJsonObject sectionTrackEntryFromFields(int trackId,
+                                        const QString& streamId,
+                                        int64_t sourceFrame,
+                                        qreal xNorm,
+                                        qreal yNorm,
+                                        qreal boxSizeNorm)
+{
+    QJsonObject entry;
+    entry[QStringLiteral("track_id")] = trackId;
+    entry[QStringLiteral("stream_id")] =
+        streamId.trimmed().isEmpty() ? QStringLiteral("T%1").arg(trackId) : streamId.trimmed();
+    entry[QStringLiteral("title")] =
+        QStringLiteral("Contiguous section assignment anchor T%1").arg(trackId);
+    entry[QStringLiteral("source_frame")] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+    entry[QStringLiteral("x")] = qBound<qreal>(0.0, xNorm, 1.0);
+    entry[QStringLiteral("y")] = qBound<qreal>(0.0, yNorm, 1.0);
+    entry[QStringLiteral("box")] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
+    return entry;
+}
+
+QJsonArray sectionTrackEntries(const QJsonObject& row)
+{
+    QJsonArray entries = row.value(QStringLiteral("tracks")).toArray();
+    if (!entries.isEmpty()) {
+        return entries;
+    }
+    const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+    if (trackId < 0) {
+        return {};
+    }
+    return QJsonArray{sectionTrackEntryFromFields(
+        trackId,
+        row.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId)),
+        row.value(QStringLiteral("source_frame")).toInteger(0),
+        row.value(QStringLiteral("x")).toDouble(0.5),
+        row.value(QStringLiteral("y")).toDouble(0.5),
+        row.value(QStringLiteral("box")).toDouble(0.2))};
+}
+
+QJsonArray sectionTrackEntriesWithTrack(QJsonObject row,
+                                        int trackId,
+                                        const QString& streamId,
+                                        int64_t sourceFrame,
+                                        qreal xNorm,
+                                        qreal yNorm,
+                                        qreal boxSizeNorm)
+{
+    QJsonArray merged;
+    bool replaced = false;
+    const QJsonObject newEntry =
+        sectionTrackEntryFromFields(trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
+    for (const QJsonValue& value : sectionTrackEntries(row)) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
+            merged.push_back(newEntry);
+            replaced = true;
+        } else {
+            merged.push_back(entry);
+        }
+    }
+    if (!replaced) {
+        merged.push_back(newEntry);
+    }
+    return merged;
+}
+
+QJsonObject sectionRowWithTrackEntries(QJsonObject row, const QJsonArray& entries)
+{
+    row[QStringLiteral("tracks")] = entries;
+    if (!entries.isEmpty()) {
+        const QJsonObject primary = entries.first().toObject();
+        row[QStringLiteral("track_id")] = primary.value(QStringLiteral("track_id")).toInt(-1);
+        row[QStringLiteral("stream_id")] = primary.value(QStringLiteral("stream_id")).toString();
+        row[QStringLiteral("source_frame")] = primary.value(QStringLiteral("source_frame")).toInteger(0);
+        row[QStringLiteral("x")] = primary.value(QStringLiteral("x")).toDouble(0.5);
+        row[QStringLiteral("y")] = primary.value(QStringLiteral("y")).toDouble(0.5);
+        row[QStringLiteral("box")] = primary.value(QStringLiteral("box")).toDouble(0.2);
+    } else {
+        row.remove(QStringLiteral("track_id"));
+        row.remove(QStringLiteral("stream_id"));
+        row.remove(QStringLiteral("source_frame"));
+        row.remove(QStringLiteral("x"));
+        row.remove(QStringLiteral("y"));
+        row.remove(QStringLiteral("box"));
+    }
+    return row;
+}
+
+QStringList sectionTrackIdStrings(const QJsonObject& row)
+{
+    QStringList ids;
+    for (const QJsonValue& value : sectionTrackEntries(row)) {
+        const int trackId = value.toObject().value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            ids.push_back(QString::number(trackId));
+        }
+    }
+    ids.removeDuplicates();
+    return ids;
+}
+
 QJsonArray contiguousSectionTrackMapForClip(const QJsonObject& transcriptRoot,
                                             const QString& clipId)
 {
@@ -1740,30 +1841,39 @@ bool SpeakersTab::assignTrackToContiguousSection(const QString& clipId,
     resolvedPayload[QStringLiteral("updated_at_utc")] = timestamp;
 
     QJsonArray nextMap;
+    QJsonObject existingSectionRow;
     for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
         const QJsonObject row = value.toObject();
         const bool sameSection = row.value(QStringLiteral("section_key")).toString() == sectionKey;
-        const bool sameTrack = row.value(QStringLiteral("track_id")).toInt(-1) == trackId;
-        if (!sameSection && !sameTrack) {
+        bool sameTrack = row.value(QStringLiteral("track_id")).toInt(-1) == trackId;
+        for (const QJsonValue& entryValue : sectionTrackEntries(row)) {
+            if (entryValue.toObject().value(QStringLiteral("track_id")).toInt(-1) == trackId) {
+                sameTrack = true;
+                break;
+            }
+        }
+        if (sameSection) {
+            existingSectionRow = row;
+            continue;
+        }
+        if (!sameTrack) {
             nextMap.push_back(row);
         }
     }
 
-    QJsonObject sectionRow;
+    QJsonObject sectionRow = existingSectionRow;
     sectionRow[QStringLiteral("section_key")] = sectionKey;
     sectionRow[QStringLiteral("speaker_id")] = trimmedSpeakerId;
     sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
     sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
-    sectionRow[QStringLiteral("track_id")] = trackId;
-    sectionRow[QStringLiteral("stream_id")] = streamId.trimmed();
-    sectionRow[QStringLiteral("source_frame")] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
-    sectionRow[QStringLiteral("x")] = qBound<qreal>(0.0, xNorm, 1.0);
-    sectionRow[QStringLiteral("y")] = qBound<qreal>(0.0, yNorm, 1.0);
-    sectionRow[QStringLiteral("box")] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
     sectionRow[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
         ? QStringLiteral("contiguous_section_click")
         : resolutionSource.trimmed();
     sectionRow[QStringLiteral("updated_at_utc")] = timestamp;
+    sectionRow = sectionRowWithTrackEntries(
+        sectionRow,
+        sectionTrackEntriesWithTrack(
+            sectionRow, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
     nextMap.push_back(sectionRow);
 
     resolvedPayload[QStringLiteral("section_track_map")] = nextMap;
@@ -1827,11 +1937,27 @@ bool SpeakersTab::deassignTrackFromContiguousSection(const QString& clipId,
         const QJsonObject sectionRow = value.toObject();
         const bool rowMatches = !sectionKey.isEmpty() &&
             sectionRow.value(QStringLiteral("section_key")).toString() == sectionKey;
-        const bool trackMatches = sectionRow.value(QStringLiteral("track_id")).toInt(-1) == trackId;
+        bool trackMatches = sectionRow.value(QStringLiteral("track_id")).toInt(-1) == trackId;
+        for (const QJsonValue& entryValue : sectionTrackEntries(sectionRow)) {
+            if (entryValue.toObject().value(QStringLiteral("track_id")).toInt(-1) == trackId) {
+                trackMatches = true;
+                break;
+            }
+        }
         if (rowMatches || (sectionKey.isEmpty() && trackMatches)) {
             removed = true;
             if (speakerId.isEmpty()) {
                 speakerId = sectionRow.value(QStringLiteral("speaker_id")).toString().trimmed();
+            }
+            QJsonArray keptEntries;
+            for (const QJsonValue& entryValue : sectionTrackEntries(sectionRow)) {
+                const QJsonObject entry = entryValue.toObject();
+                if (entry.value(QStringLiteral("track_id")).toInt(-1) != trackId) {
+                    keptEntries.push_back(entry);
+                }
+            }
+            if (!keptEntries.isEmpty() && rowMatches) {
+                nextMap.push_back(sectionRowWithTrackEntries(sectionRow, keptEntries));
             }
             continue;
         }
@@ -2393,6 +2519,7 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString&
     const bool changed = m_speakerDeps.updateClipById(trimmedClipId, [&](TimelineClip& editableClip) {
         TimelineClip::TransformKeyframe target;
         target.frame = localFrame;
+        target.title = QStringLiteral("Speaker framing target from assigned face track T%1").arg(trackId);
         target.translationX = targetX;
         target.translationY = targetY;
         target.rotation = 0.0;
@@ -2412,23 +2539,17 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString&
                 break;
             }
         }
-        if (!replacedTarget) {
-            editableClip.speakerFramingTargetKeyframes.push_back(target);
-        }
 
-        bool replacedEnabled = false;
+        bool touchedEnabled = false;
         for (TimelineClip::BoolKeyframe& keyframe : editableClip.speakerFramingEnabledKeyframes) {
             if (keyframe.frame == localFrame) {
                 keyframe.enabled = true;
-                replacedEnabled = true;
+                touchedEnabled = true;
                 break;
             }
         }
-        if (!replacedEnabled) {
-            editableClip.speakerFramingEnabledKeyframes.push_back(
-                TimelineClip::BoolKeyframe{localFrame, true});
-        }
-        editableClip.speakerFramingEnabled = true;
+        editableClip.speakerFramingEnabled =
+            editableClip.speakerFramingEnabled || replacedTarget || touchedEnabled;
         editableClip.speakerFramingBakedTargetXNorm = targetX;
         editableClip.speakerFramingBakedTargetYNorm = targetY;
         editableClip.speakerFramingBakedTargetBoxNorm = targetBox;

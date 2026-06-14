@@ -92,6 +92,9 @@ QJsonObject clipToJson(const TimelineClip &clip)
         {
             QJsonObject keyframeObj;
             keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            if (!keyframe.title.trimmed().isEmpty()) {
+                keyframeObj[QStringLiteral("title")] = keyframe.title.trimmed();
+            }
             keyframeObj[QStringLiteral("translationX")] = keyframe.translationX;
             keyframeObj[QStringLiteral("translationY")] = keyframe.translationY;
             keyframeObj[QStringLiteral("rotation")] = keyframe.rotation;
@@ -115,6 +118,9 @@ QJsonObject clipToJson(const TimelineClip &clip)
         {
             QJsonObject keyframeObj;
             keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            if (!keyframe.title.trimmed().isEmpty()) {
+                keyframeObj[QStringLiteral("title")] = keyframe.title.trimmed();
+            }
             keyframeObj[QStringLiteral("translationX")] = keyframe.translationX;
             keyframeObj[QStringLiteral("translationY")] = keyframe.translationY;
             keyframeObj[QStringLiteral("rotation")] = keyframe.rotation;
@@ -129,6 +135,9 @@ QJsonObject clipToJson(const TimelineClip &clip)
         {
             QJsonObject keyframeObj;
             keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            if (!keyframe.title.trimmed().isEmpty()) {
+                keyframeObj[QStringLiteral("title")] = keyframe.title.trimmed();
+            }
             keyframeObj[QStringLiteral("translationX")] = keyframe.translationX;
             keyframeObj[QStringLiteral("translationY")] = keyframe.translationY;
             keyframeObj[QStringLiteral("rotation")] = keyframe.rotation;
@@ -446,6 +455,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             const QJsonObject keyframeObj = value.toObject();
             TimelineClip::TransformKeyframe keyframe;
             keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.title = keyframeObj.value(QStringLiteral("title")).toString().trimmed();
             keyframe.translationX = keyframeObj.value(QStringLiteral("translationX")).toDouble(0.0);
             keyframe.translationY = keyframeObj.value(QStringLiteral("translationY")).toDouble(0.0);
             keyframe.rotation = keyframeObj.value(QStringLiteral("rotation")).toDouble(0.0);
@@ -485,6 +495,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             const QJsonObject keyframeObj = value.toObject();
             TimelineClip::TransformKeyframe keyframe;
             keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.title = keyframeObj.value(QStringLiteral("title")).toString().trimmed();
             keyframe.translationX = keyframeObj.value(QStringLiteral("translationX")).toDouble(0.0);
             keyframe.translationY = keyframeObj.value(QStringLiteral("translationY")).toDouble(0.0);
             keyframe.rotation = keyframeObj.value(QStringLiteral("rotation")).toDouble(0.0);
@@ -505,6 +516,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             const QJsonObject keyframeObj = value.toObject();
             TimelineClip::TransformKeyframe keyframe;
             keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.title = keyframeObj.value(QStringLiteral("title")).toString().trimmed();
             keyframe.translationX = keyframeObj.value(QStringLiteral("translationX")).toDouble(0.5);
             keyframe.translationY = keyframeObj.value(QStringLiteral("translationY")).toDouble(0.35);
             keyframe.rotation = 0.0;

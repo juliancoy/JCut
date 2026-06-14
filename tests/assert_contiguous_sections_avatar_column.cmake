@@ -52,7 +52,8 @@ foreach(required IN ITEMS
         "continuityStreamFromSectionAssignment"
         "contiguousSectionAssignmentForSection"
         "streamByTrackId"
-        "contiguousSectionAssignedTrackId"
+        "sectionTrackEntriesFromAssignment"
+        "sectionTrackIdStringsFromAssignment"
         "applySpeakerSectionRowTint"
         "QIcon\\(avatar\\)"
         "setItem\\(row, SpeakerSectionAvatarColumn, avatarItem\\)"
@@ -66,7 +67,7 @@ foreach(required IN ITEMS
         "source_absolute"
         "source_frame"
         "box_size"
-        "avatarStream = continuityStreamFromSectionAssignment\\(sectionAssignment\\)")
+        "avatarStream = continuityStreamFromSectionAssignment\\(avatarAssignment\\)")
     if(NOT speakers_source MATCHES "${required}")
         message(FATAL_ERROR "Contiguous transcript section avatars must fall back to row assignment anchors when stream objects are missing: missing ${required}")
     endif()
@@ -113,8 +114,10 @@ endforeach()
 
 if(NOT tracks_source MATCHES "sameSection" OR
    NOT tracks_source MATCHES "sameTrack" OR
+   NOT tracks_source MATCHES "sectionTrackEntriesWithTrack" OR
+   NOT tracks_source MATCHES "row\\[QStringLiteral\\(\"tracks\"\\)\\] = entries" OR
    NOT tracks_source MATCHES "resolvedPayload\\[QStringLiteral\\(\"section_track_map\"\\)\\] = nextMap")
-    message(FATAL_ERROR "Contiguous transcript section mapping must enforce one-to-one section/track rows")
+    message(FATAL_ERROR "Contiguous transcript section mapping must maintain row-scoped multi-track section assignments")
 endif()
 
 if(NOT tracks_source MATCHES "PlayheadTrackAssignedSpeakerIdRole" OR

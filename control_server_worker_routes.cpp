@@ -159,6 +159,32 @@ QJsonObject decorateTrackMapRowForRoute(QJsonObject row, const QJsonObject& tran
         row[QStringLiteral("section_key_resolved")] =
             QStringLiteral("%1|%2|%3").arg(speakerId).arg(startFrame).arg(endFrame);
     }
+    QJsonArray tracks = row.value(QStringLiteral("tracks")).toArray();
+    if (tracks.isEmpty()) {
+        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+        if (trackId >= 0 || !streamId.isEmpty()) {
+            tracks.push_back(QJsonObject{
+                {QStringLiteral("track_id"), trackId},
+                {QStringLiteral("stream_id"), streamId},
+                {QStringLiteral("source_frame"), row.value(QStringLiteral("source_frame")).toInteger(0)},
+                {QStringLiteral("x"), row.value(QStringLiteral("x")).toDouble(0.5)},
+                {QStringLiteral("y"), row.value(QStringLiteral("y")).toDouble(0.5)},
+                {QStringLiteral("box"), row.value(QStringLiteral("box")).toDouble(0.2)}
+            });
+        }
+    }
+    QJsonArray trackIds;
+    for (const QJsonValue& value : tracks) {
+        const int trackId = value.toObject().value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            trackIds.push_back(trackId);
+        }
+    }
+    if (!tracks.isEmpty()) {
+        row[QStringLiteral("tracks")] = tracks;
+        row[QStringLiteral("track_ids")] = trackIds;
+    }
     return row;
 }
 

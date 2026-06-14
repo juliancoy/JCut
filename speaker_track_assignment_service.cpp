@@ -144,6 +144,8 @@ QJsonObject makeTrackAnchor(int trackId,
     QJsonObject anchor;
     anchor[QStringLiteral("track_id")] = trackId;
     anchor[QStringLiteral("stream_id")] = streamId.trimmed();
+    anchor[QStringLiteral("title")] =
+        QStringLiteral("Speaker track assignment anchor T%1").arg(trackId);
     anchor[QStringLiteral("source_frame")] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
     anchor[QStringLiteral("x")] = qBound<qreal>(0.0, xNorm, 1.0);
     anchor[QStringLiteral("y")] = qBound<qreal>(0.0, yNorm, 1.0);

@@ -28,6 +28,8 @@ private slots:
   void exportSpeakerLabelUsesFractionalMasterClockPosition();
   void speakerFramingUsesRenderSyncMarkersInPreviewAndExport();
   void speakerFramingAndExportUseFractionalFitGeometry();
+  void contiguousTranscriptSectionsCanHoldMultipleTracks();
+  void trackAssignmentDoesNotCreateFaceBoxKeyframes();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
 
@@ -1229,6 +1231,96 @@ void TestDirectVulkanHandoffPipelineContract::
                "const QRect fitted = fitRect(sourceSize, request.outputSize);")),
            "export video layer placement must not round fitted bounds before "
            "applying speaker-framing translation");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    contiguousTranscriptSectionsCanHoldMultipleTracks() {
+  const QString tracks = readSourceFile(QStringLiteral("tracks.cpp"));
+  QVERIFY2(!tracks.isEmpty(), "tracks.cpp must be readable");
+  QVERIFY2(tracks.contains(QStringLiteral("sectionTrackEntriesWithTrack")),
+           "contiguous section assignment must merge clicked tracks into a "
+           "section-level track list");
+  QVERIFY2(tracks.contains(QStringLiteral("sectionRowWithTrackEntries")),
+           "contiguous section rows must persist a tracks array while keeping "
+           "legacy primary track fields");
+  QVERIFY2(tracks.contains(QStringLiteral("row[QStringLiteral(\"tracks\")] = entries")),
+           "contiguous section rows must write the full tracks array");
+  QVERIFY2(tracks.contains(QStringLiteral("sameSection")) &&
+               tracks.contains(QStringLiteral("existingSectionRow")),
+           "assigning another track to the same contiguous transcript section "
+           "must preserve and extend the existing row");
+
+  const QString speakers = readSourceFile(QStringLiteral("speakers_tab.cpp"));
+  QVERIFY2(!speakers.isEmpty(), "speakers_tab.cpp must be readable");
+  QVERIFY2(speakers.contains(QStringLiteral("sectionTrackEntriesFromAssignment")),
+           "contiguous transcript table must read section assignments as a "
+           "track list");
+  QVERIFY2(speakers.contains(QStringLiteral("sectionTrackIdStringsFromAssignment")),
+           "contiguous transcript table row roles must expose every assigned "
+           "track, not only the primary track");
+
+  const QString keyframes =
+      readSourceFile(QStringLiteral("editor_shared_keyframes.cpp"));
+  QVERIFY2(!keyframes.isEmpty(), "editor_shared_keyframes.cpp must be readable");
+  QVERIFY2(keyframes.contains(QStringLiteral("sectionTrackEntriesForRuntime")),
+           "runtime speaker framing must expand a section assignment into all "
+           "assigned tracks");
+  QVERIFY2(keyframes.contains(QStringLiteral("trackIds->insert(trackId)")) &&
+               keyframes.contains(QStringLiteral("streamIds->insert(streamId)")),
+           "runtime speaker framing must collect every assigned track/stream "
+           "for the active contiguous section");
+
+  const QString routes =
+      readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+  QVERIFY2(!routes.isEmpty(),
+           "control_server_worker_routes.cpp must be readable");
+  QVERIFY2(routes.contains(QStringLiteral("row[QStringLiteral(\"tracks\")] = tracks")) &&
+               routes.contains(QStringLiteral("row[QStringLiteral(\"track_ids\")] = trackIds")),
+           "REST track-map diagnostics must expose the full contiguous-section "
+           "track list");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    trackAssignmentDoesNotCreateFaceBoxKeyframes() {
+  const QString tracks = readSourceFile(QStringLiteral("tracks.cpp"));
+  QVERIFY2(!tracks.isEmpty(), "tracks.cpp must be readable");
+  const qsizetype functionIndex = tracks.indexOf(
+      QStringLiteral("bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection"));
+  QVERIFY2(functionIndex >= 0,
+           "face-box assignment framing selection helper must exist");
+  const qsizetype functionEnd =
+      tracks.indexOf(QStringLiteral("bool SpeakersTab::deassignTrackFromSpeaker"), functionIndex);
+  QVERIFY2(functionEnd > functionIndex,
+           "face-box assignment framing selection helper body must be bounded");
+  const QString body = tracks.mid(functionIndex, functionEnd - functionIndex);
+  QVERIFY2(!body.contains(QStringLiteral("speakerFramingTargetKeyframes.push_back")),
+           "assigning a face track must not create a new speaker-framing "
+           "target/face-box keyframe");
+  QVERIFY2(!body.contains(QStringLiteral("speakerFramingEnabledKeyframes.push_back")),
+           "assigning a face track must not create a new speaker-framing "
+           "enabled keyframe");
+  QVERIFY2(body.contains(QStringLiteral("target.title")) &&
+               body.contains(QStringLiteral("Speaker framing target from assigned face track")),
+           "existing speaker-framing target keyframes updated by assignment "
+           "must receive an identifying title");
+
+  const QString clipSerialization =
+      readSourceFile(QStringLiteral("clip_serialization.cpp"));
+  QVERIFY2(!clipSerialization.isEmpty(),
+           "clip_serialization.cpp must be readable");
+  QVERIFY2(clipSerialization.contains(QStringLiteral("keyframeObj[QStringLiteral(\"title\")]")) &&
+               clipSerialization.contains(QStringLiteral("keyframe.title = keyframeObj.value(QStringLiteral(\"title\"))")),
+           "transform-style keyframe titles must round-trip through project "
+           "serialization");
+
+  const QString assignmentService =
+      readSourceFile(QStringLiteral("speaker_track_assignment_service.cpp"));
+  QVERIFY2(assignmentService.contains(QStringLiteral("Speaker track assignment anchor T%1")),
+           "speaker assignment anchors must be titled for future diagnostics");
+
+  QVERIFY2(tracks.contains(QStringLiteral("Contiguous section assignment anchor T%1")),
+           "contiguous section assignment anchors must be titled for future "
+           "diagnostics");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

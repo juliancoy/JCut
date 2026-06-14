@@ -217,14 +217,54 @@ QJsonArray sectionTrackMapForClip(const QJsonObject& transcriptRoot, const QStri
 
 QString sectionAssignmentCacheToken(const QJsonObject& row)
 {
+    auto trackToken = [&row]() {
+        QStringList ids;
+        const QJsonArray entries = row.value(QStringLiteral("tracks")).toArray();
+        if (!entries.isEmpty()) {
+            for (const QJsonValue& value : entries) {
+                const QJsonObject entry = value.toObject();
+                const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
+                const QString streamId = entry.value(QStringLiteral("stream_id")).toString().trimmed();
+                if (trackId >= 0 || !streamId.isEmpty()) {
+                    ids.push_back(QStringLiteral("%1:%2").arg(trackId).arg(streamId));
+                }
+            }
+        } else {
+            const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+            const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+            if (trackId >= 0 || !streamId.isEmpty()) {
+                ids.push_back(QStringLiteral("%1:%2").arg(trackId).arg(streamId));
+            }
+        }
+        ids.sort();
+        return ids.join(QLatin1Char(','));
+    };
     const QString sectionKey = row.value(QStringLiteral("section_key")).toString().trimmed();
     if (!sectionKey.isEmpty()) {
-        return QStringLiteral("section:%1").arg(sectionKey);
+        return QStringLiteral("section:%1:%2").arg(sectionKey, trackToken());
     }
-    return QStringLiteral("section:%1:%2:%3")
+    return QStringLiteral("section:%1:%2:%3:%4")
         .arg(row.value(QStringLiteral("speaker_id")).toString().trimmed())
         .arg(row.value(QStringLiteral("start_frame")).toInteger(-1))
-        .arg(row.value(QStringLiteral("end_frame")).toInteger(-1));
+        .arg(row.value(QStringLiteral("end_frame")).toInteger(-1))
+        .arg(trackToken());
+}
+
+QJsonArray sectionTrackEntriesForRuntime(const QJsonObject& row)
+{
+    QJsonArray entries = row.value(QStringLiteral("tracks")).toArray();
+    if (!entries.isEmpty()) {
+        return entries;
+    }
+    const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+    if (trackId < 0 && row.value(QStringLiteral("stream_id")).toString().trimmed().isEmpty()) {
+        return {};
+    }
+    QJsonObject entry{
+        {QStringLiteral("track_id"), trackId},
+        {QStringLiteral("stream_id"), row.value(QStringLiteral("stream_id")).toString().trimmed()}
+    };
+    return QJsonArray{entry};
 }
 
 int64_t transcriptFrameForMediaSourcePosition(const TimelineClip& clip, qreal mediaSourceFramePosition)
@@ -263,16 +303,22 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
             (transcriptFrame < startFrame || transcriptFrame > endFrame)) {
             continue;
         }
-        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
-        const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
-        if (trackId < 0 && streamId.isEmpty()) {
+        bool anyTrack = false;
+        for (const QJsonValue& entryValue : sectionTrackEntriesForRuntime(row)) {
+            const QJsonObject entry = entryValue.toObject();
+            const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
+            const QString streamId = entry.value(QStringLiteral("stream_id")).toString().trimmed();
+            if (trackId >= 0) {
+                trackIds->insert(trackId);
+                anyTrack = true;
+            }
+            if (!streamId.isEmpty()) {
+                streamIds->insert(streamId);
+                anyTrack = true;
+            }
+        }
+        if (!anyTrack) {
             continue;
-        }
-        if (trackId >= 0) {
-            trackIds->insert(trackId);
-        }
-        if (!streamId.isEmpty()) {
-            streamIds->insert(streamId);
         }
         if (cacheTokenOut) {
             *cacheTokenOut = sectionAssignmentCacheToken(row);

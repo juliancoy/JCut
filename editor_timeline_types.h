@@ -42,6 +42,7 @@ struct TimelineClip {
 
     struct TransformKeyframe {
         int64_t frame = 0;
+        QString title;
         qreal translationX = 0.0;
         qreal translationY = 0.0;
         qreal rotation = 0.0;
