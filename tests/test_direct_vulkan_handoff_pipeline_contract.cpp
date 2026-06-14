@@ -1148,10 +1148,10 @@ void TestDirectVulkanHandoffPipelineContract::
                source.contains(QStringLiteral("? clip.sourceFrameSize")),
            "export video placement must prefer clip.sourceFrameSize before "
            "decoded payload size, matching direct preview transform geometry");
-  QVERIFY2(source.contains(QStringLiteral("sampledFrameNeedsYFlip = layer.preferHardwareDirect")) &&
-               source.contains(QStringLiteral("vulkanMvpForOutputRectMaybeFlippedY")),
-           "hardware-direct export video layers must apply the same sampled "
-           "frame Y presentation flip as preview without flipping text layers");
+  QVERIFY2(source.contains(QStringLiteral("exportTextureNeedsYFlip = !layer.preferHardwareDirect")) &&
+               source.contains(QStringLiteral("exportVideoLayerTranslationForSampledFace")),
+           "export video layers must choose texture orientation by source type "
+           "and compensate speaker-framing placement when a Y flip is required");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

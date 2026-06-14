@@ -1,5 +1,6 @@
 #include "../vulkan_pipeline.h"
 #include "../render_vulkan_shared.h"
+#include "../preview_view_transform.h"
 
 #include <QtTest/QtTest>
 #include <QFile>
@@ -78,6 +79,82 @@ private slots:
         QCOMPARE(offsetof(VulkanPipeline::Push, shadows), size_t(80));
         QCOMPARE(offsetof(VulkanPipeline::Push, midtones), size_t(96));
         QCOMPARE(offsetof(VulkanPipeline::Push, highlights), size_t(112));
+    }
+
+    void exportHardwareFrameSpeakerTargetDoesNotInvertY()
+    {
+        const QSize outputSize(1080, 1920);
+        const QRectF fitted(0.0, 656.25, 1080.0, 607.5);
+        const QPointF translation(3365.8771668733616, 196.669655606035);
+        const QPointF scale(7.166943719443477, 7.166943719443477);
+        const QPointF sampledFaceNorm(0.06514895968345152, 0.4019114220245886);
+        const QPointF expectedTarget(540.0, 729.6);
+
+        PreviewClipGeometry previewGeometry =
+            PreviewViewTransform::clipGeometry(
+                fitted,
+                QPointF(1.0, 1.0),
+                translation,
+                0.0,
+                scale);
+        previewGeometry.clipToScreen.scale(1.0, -1.0);
+        float previewMvp[16] = {};
+        render_detail::vulkanMvpForPreviewTransform(previewGeometry.clipToScreen,
+                                                    previewGeometry.localRect,
+                                                    outputSize,
+                                                    previewMvp);
+
+        auto mappedOutputPoint = [&outputSize](const float mvp[16], const QPointF& norm) {
+            const float shaderX = static_cast<float>((norm.x() * 2.0) - 1.0);
+            const float shaderY = static_cast<float>((norm.y() * 2.0) - 1.0);
+            const float ndcX = (mvp[0] * shaderX) + (mvp[4] * shaderY) + mvp[12];
+            const float ndcY = (mvp[1] * shaderX) + (mvp[5] * shaderY) + mvp[13];
+            return QPointF(((static_cast<qreal>(ndcX) + 1.0) * outputSize.width()) / 2.0,
+                           ((static_cast<qreal>(ndcY) + 1.0) * outputSize.height()) / 2.0);
+        };
+
+        const QPointF previewPoint =
+            mappedOutputPoint(previewMvp, QPointF(sampledFaceNorm.x(), 1.0 - sampledFaceNorm.y()));
+
+        QVERIFY2(std::abs(previewPoint.x() - expectedTarget.x()) < 0.5,
+                 qPrintable(QStringLiteral("preview face X target mismatch: got %1 expected %2")
+                                .arg(previewPoint.x(), 0, 'f', 3)
+                                .arg(expectedTarget.x(), 0, 'f', 3)));
+        QVERIFY2(std::abs(previewPoint.y() - expectedTarget.y()) < 0.5,
+                 qPrintable(QStringLiteral("preview face Y target mismatch: got %1 expected %2")
+                                .arg(previewPoint.y(), 0, 'f', 3)
+                                .arg(expectedTarget.y(), 0, 'f', 3)));
+
+        auto verifyExport = [&](bool exportTextureNeedsYFlip, const char* label) {
+            const QPointF exportTranslation =
+                render_detail::exportVideoLayerTranslationForSampledFace(fitted,
+                                                                         translation,
+                                                                         0.0,
+                                                                         scale,
+                                                                         exportTextureNeedsYFlip,
+                                                                         sampledFaceNorm);
+            float exportMvp[16] = {};
+            render_detail::vulkanMvpForExportVideoLayer(fitted,
+                                                        exportTranslation,
+                                                        outputSize,
+                                                        0.0,
+                                                        scale,
+                                                        exportTextureNeedsYFlip,
+                                                        exportMvp);
+            const QPointF exportPoint = mappedOutputPoint(exportMvp, sampledFaceNorm);
+            QVERIFY2(std::abs(exportPoint.x() - expectedTarget.x()) < 0.5,
+                     qPrintable(QStringLiteral("%1 export face X target mismatch: got %2 expected %3")
+                                    .arg(QString::fromUtf8(label))
+                                    .arg(exportPoint.x(), 0, 'f', 3)
+                                    .arg(expectedTarget.x(), 0, 'f', 3)));
+            QVERIFY2(std::abs(exportPoint.y() - expectedTarget.y()) < 0.5,
+                     qPrintable(QStringLiteral("%1 export face Y target mismatch: got %2 expected %3")
+                                    .arg(QString::fromUtf8(label))
+                                    .arg(exportPoint.y(), 0, 'f', 3)
+                                    .arg(expectedTarget.y(), 0, 'f', 3)));
+        };
+        verifyExport(false, "hardware-direct video");
+        verifyExport(true, "uploaded texture");
     }
 
     void directVulkanShaderRunsOpenGlGradeOrder()

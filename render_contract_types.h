@@ -50,6 +50,12 @@ struct RenderProgressCore {
     bool usingGpu = false;
     bool usingHardwareEncode = false;
     std::string encoderLabel;
+    std::string exportPipeline;
+    std::string gpuTransferLabel;
+    std::string encoderPixelFormat;
+    std::string encoderSoftwarePixelFormat;
+    bool cudaExternalTransfer = false;
+    bool encoderHardwareFrames = false;
     std::int64_t elapsedMs = 0;
     std::int64_t estimatedRemainingMs = -1;
     std::int64_t renderStageMs = 0;
@@ -80,6 +86,12 @@ struct RenderResultCore {
     bool usedGpu = false;
     bool usedHardwareEncode = false;
     std::string encoderLabel;
+    std::string exportPipeline;
+    std::string gpuTransferLabel;
+    std::string encoderPixelFormat;
+    std::string encoderSoftwarePixelFormat;
+    bool cudaExternalTransfer = false;
+    bool encoderHardwareFrames = false;
     std::string namedOutputDir;
     std::int64_t framesRendered = 0;
     std::int64_t elapsedMs = 0;

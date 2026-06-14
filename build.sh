@@ -85,18 +85,24 @@ ensure_nvcodec_installed() {
     mkdir -p "${FFMPEG_INSTALL_DIR}"
 
     local installed_version=""
+    local installed_prefix=""
     local current_version=""
     current_version="$(git -C "${NVCODEC_SRC_DIR}" rev-parse HEAD)"
     if [[ -f "${NVCODEC_VERSION_FILE}" ]]; then
         installed_version="$(<"${NVCODEC_VERSION_FILE}")"
     fi
+    if [[ -f "${NVCODEC_PKGCONFIG_FILE}" ]]; then
+        installed_prefix="$(sed -n 's/^prefix=//p' "${NVCODEC_PKGCONFIG_FILE}" | head -n1)"
+    fi
 
-    if [[ -f "${NVCODEC_PKGCONFIG_FILE}" && "${installed_version}" == "${current_version}" ]]; then
+    if [[ -f "${NVCODEC_PKGCONFIG_FILE}" && "${installed_version}" == "${current_version}" && "${installed_prefix}" == "${FFMPEG_INSTALL_DIR}" ]]; then
         return 0
     fi
 
     if [[ -n "${installed_version}" && "${installed_version}" != "${current_version}" ]]; then
         echo "nv-codec-headers revision mismatch: installed='${installed_version}', requested='${current_version}'"
+    elif [[ -n "${installed_prefix}" && "${installed_prefix}" != "${FFMPEG_INSTALL_DIR}" ]]; then
+        echo "nv-codec-headers install prefix mismatch: installed='${installed_prefix}', requested='${FFMPEG_INSTALL_DIR}'"
     else
         echo "Bootstrapping nv-codec-headers into ${FFMPEG_INSTALL_DIR}..."
     fi
@@ -140,7 +146,8 @@ verify_nvidia_ffmpeg_config() {
     for required in \
         "CONFIG_CUDA 1" \
         "CONFIG_FFNVCODEC 1" \
-        "CONFIG_NVDEC 1"; do
+        "CONFIG_NVDEC 1" \
+        "CONFIG_NVENC 1"; do
         if ! grep -Eq "^#define ${required}$" "${config_h}"; then
             echo "FFmpeg NVIDIA profile validation failed: ${required} is not enabled in ${config_h}." >&2
             failed="1"
@@ -148,6 +155,10 @@ verify_nvidia_ffmpeg_config() {
     done
     if ! grep -Eq '^#define CONFIG_(H264|HEVC)_CUVID_DECODER 1$' "${components_h}"; then
         echo "FFmpeg NVIDIA profile validation failed: no H.264/HEVC CUVID decoder is enabled in ${components_h}." >&2
+        failed="1"
+    fi
+    if ! grep -Eq '^#define CONFIG_(H264|HEVC|AV1)_NVENC_ENCODER 1$' "${components_h}"; then
+        echo "FFmpeg NVIDIA profile validation failed: no NVENC encoder is enabled in ${components_h}." >&2
         failed="1"
     fi
     if [[ "${failed}" != "0" ]]; then
@@ -159,6 +170,14 @@ NVIDIA profile after fixing nv-codec-headers/driver prerequisites:
 EOF
         exit 1
     fi
+}
+
+sanitize_ffmpeg_config_mak() {
+    local config_mak="${FFMPEG_BUILD_DIR}/ffbuild/config.mak"
+    if [[ ! -f "${config_mak}" ]]; then
+        return 0
+    fi
+    sed -i -E 's/^!([A-Za-z0-9_]+)=yes$/# !\1=yes/' "${config_mak}"
 }
 
 ensure_ffmpeg_installed() {
@@ -261,13 +280,6 @@ ensure_ffmpeg_installed() {
                 --disable-x86asm
             )
         fi
-    elif [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
-        # The Vulkan preview needs NVIDIA decode/CUDA hwframes, not NVENC.
-        # Keeping NVENC disabled avoids nv-codec-headers/FFmpeg encoder API
-        # drift from blocking the decode-only pipeline.
-        ffmpeg_configure+=(
-            --disable-nvenc
-        )
     fi
 
     local ffmpeg_configure_pkg_config_path="${FFMPEG_PKGCONFIG_DIR}"
@@ -279,6 +291,7 @@ ensure_ffmpeg_installed() {
         echo "FFmpeg configure failed for profile '${FFMPEG_PROFILE}'." >&2
         exit 1
     fi
+    sanitize_ffmpeg_config_mak
 
     if ! env PKG_CONFIG_PATH="${ffmpeg_configure_pkg_config_path}" make -j"$(build_jobs)"; then
         if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then

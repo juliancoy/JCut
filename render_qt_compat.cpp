@@ -110,6 +110,12 @@ RenderProgressCore toCoreRenderProgress(const ::RenderProgress& progress)
     core.usingGpu = progress.usingGpu;
     core.usingHardwareEncode = progress.usingHardwareEncode;
     core.encoderLabel = progress.encoderLabel.toStdString();
+    core.exportPipeline = progress.exportPipeline.toStdString();
+    core.gpuTransferLabel = progress.gpuTransferLabel.toStdString();
+    core.encoderPixelFormat = progress.encoderPixelFormat.toStdString();
+    core.encoderSoftwarePixelFormat = progress.encoderSoftwarePixelFormat.toStdString();
+    core.cudaExternalTransfer = progress.cudaExternalTransfer;
+    core.encoderHardwareFrames = progress.encoderHardwareFrames;
     core.elapsedMs = progress.elapsedMs;
     core.estimatedRemainingMs = progress.estimatedRemainingMs;
     core.renderStageMs = progress.renderStageMs;
@@ -143,6 +149,12 @@ RenderResultCore toCoreRenderResult(const ::RenderResult& result)
     core.usedGpu = result.usedGpu;
     core.usedHardwareEncode = result.usedHardwareEncode;
     core.encoderLabel = result.encoderLabel.toStdString();
+    core.exportPipeline = result.exportPipeline.toStdString();
+    core.gpuTransferLabel = result.gpuTransferLabel.toStdString();
+    core.encoderPixelFormat = result.encoderPixelFormat.toStdString();
+    core.encoderSoftwarePixelFormat = result.encoderSoftwarePixelFormat.toStdString();
+    core.cudaExternalTransfer = result.cudaExternalTransfer;
+    core.encoderHardwareFrames = result.encoderHardwareFrames;
     core.namedOutputDir = result.namedOutputDir.toStdString();
     core.framesRendered = result.framesRendered;
     core.elapsedMs = result.elapsedMs;

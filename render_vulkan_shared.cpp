@@ -6,6 +6,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <cmath>
 
 namespace render_detail {
 
@@ -79,6 +80,70 @@ void vulkanMvpForOutputRectMaybeFlippedY(const QRectF& rect,
     const QMatrix4x4 mvp = projection * model * shaderQuadToOpenGlQuad;
     const float* data = mvp.constData();
     std::copy(data, data + 16, outMvp);
+}
+
+void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,
+                                  const QPointF& translation,
+                                  const QSize& outputSize,
+                                  qreal rotationDegrees,
+                                  const QPointF& scale,
+                                  bool sampledFrameNeedsYFlip,
+                                  float outMvp[16])
+{
+    const float fullW = static_cast<float>(std::max(1, outputSize.width()));
+    const float fullH = static_cast<float>(std::max(1, outputSize.height()));
+    const float halfW = static_cast<float>(std::max<qreal>(1.0, fittedRect.width())) * 0.5f;
+    const float halfH = static_cast<float>(std::max<qreal>(1.0, fittedRect.height())) * 0.5f;
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    const float radians = static_cast<float>(rotationDegrees * kPi / 180.0);
+    const float cosTheta = std::cos(radians);
+    const float sinTheta = std::sin(radians);
+    const float scaleX = static_cast<float>(scale.x());
+    const float scaleY =
+        static_cast<float>(scale.y() * (sampledFrameNeedsYFlip ? -1.0 : 1.0));
+    const float m11 = cosTheta * scaleX;
+    const float m12 = sinTheta * scaleX;
+    const float m21 = -sinTheta * scaleY;
+    const float m22 = cosTheta * scaleY;
+    const float dx = static_cast<float>(fittedRect.center().x() + translation.x());
+    const float dy = static_cast<float>(fittedRect.center().y() + translation.y());
+    const float m[16] = {
+        (2.0f * m11 * halfW) / fullW, (2.0f * m12 * halfW) / fullH, 0.f, 0.f,
+        (2.0f * m21 * halfH) / fullW, (2.0f * m22 * halfH) / fullH, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f,
+        (2.0f * dx / fullW) - 1.0f,
+        (2.0f * dy / fullH) - 1.0f,
+        0.f,
+        1.f
+    };
+    std::copy(std::begin(m), std::end(m), outMvp);
+}
+
+QPointF exportVideoLayerTranslationForSampledFace(const QRectF& fittedRect,
+                                                  const QPointF& translation,
+                                                  qreal rotationDegrees,
+                                                  const QPointF& scale,
+                                                  bool sampledFrameNeedsYFlip,
+                                                  const QPointF& sampledFaceNorm)
+{
+    if (!sampledFrameNeedsYFlip) {
+        return translation;
+    }
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    const qreal radians = rotationDegrees * kPi / 180.0;
+    const qreal cosTheta = std::cos(radians);
+    const qreal sinTheta = std::sin(radians);
+    const qreal localX =
+        (std::clamp(sampledFaceNorm.x(), 0.0, 1.0) - 0.5) * fittedRect.width();
+    const qreal localY =
+        (std::clamp(sampledFaceNorm.y(), 0.0, 1.0) - 0.5) * fittedRect.height();
+    const qreal scaledX = scale.x() * localX;
+    const qreal scaledY = scale.y() * localY;
+    const QPointF unflipped((cosTheta * scaledX) - (sinTheta * scaledY),
+                            (sinTheta * scaledX) + (cosTheta * scaledY));
+    const QPointF flipped((cosTheta * scaledX) - (sinTheta * -scaledY),
+                          (sinTheta * scaledX) + (cosTheta * -scaledY));
+    return translation + (unflipped - flipped);
 }
 
 void vulkanMvpForPreviewTransform(const QTransform& clipToSwapchain,

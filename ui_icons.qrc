@@ -9,4 +9,8 @@
     <file>assets/icons/transport/volume.svg</file>
     <file>assets/icons/transport/volume_muted.svg</file>
   </qresource>
+  <qresource prefix="/fonts">
+    <file alias="Karla-Regular.ttf">external/imgui/misc/fonts/Karla-Regular.ttf</file>
+    <file alias="Roboto-Medium.ttf">external/imgui/misc/fonts/Roboto-Medium.ttf</file>
+  </qresource>
 </RCC>

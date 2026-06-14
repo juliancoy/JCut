@@ -82,6 +82,19 @@ bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
     return true;
 }
 
+QImage imageFromBgraFrame(const AVFrame* frame)
+{
+    if (!frame || frame->format != AV_PIX_FMT_BGRA || !frame->data[0] ||
+        frame->width <= 0 || frame->height <= 0 || frame->linesize[0] <= 0) {
+        return QImage();
+    }
+    return QImage(frame->data[0],
+                  frame->width,
+                  frame->height,
+                  frame->linesize[0],
+                  QImage::Format_ARGB32).copy();
+}
+
 bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
                                  AVPixelFormat swFormat,
                                  QString* errorMessage)
@@ -357,6 +370,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QString codecLabel;
     const AVCodec* codec = nullptr;
     AVCodecContext* codecCtx = nullptr;
+    AVPixelFormat selectedEncoderSwFormat = AV_PIX_FMT_NONE;
+    bool selectedEncoderCudaHardwareFrames = false;
     QStringList attemptedEncoders;
     const QVector<VideoEncoderChoice> encoderChoices = videoEncoderChoicesForRequest(request.outputFormat);
     for (const VideoEncoderChoice &choice : encoderChoices) {
@@ -398,6 +413,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     codec = candidate;
                     codecCtx = candidateCtx;
                     codecLabel = choice.label;
+                    selectedEncoderSwFormat = candidateSwFormat;
+                    selectedEncoderCudaHardwareFrames = true;
                     break;
                 }
                 const QString openError = avErrToString(cudaOpenResult);
@@ -431,6 +448,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             codec = candidate;
             codecCtx = candidateCtx;
             codecLabel = choice.label;
+            selectedEncoderSwFormat = candidateSwFormat;
+            selectedEncoderCudaHardwareFrames = false;
             break;
         }
 
@@ -465,6 +484,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                    request,
                                    pixelFormatForCodec(codec, request.outputFormat),
                                    formatCtx);
+        selectedEncoderSwFormat = pixelFormatForCodec(codec, request.outputFormat);
+        selectedEncoderCudaHardwareFrames = false;
 
         configureCodecOptions(codecCtx, request.outputFormat, codecLabel);
 
@@ -529,9 +550,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
 
     const bool cudaHardwareFrames =
-        codecCtx->pix_fmt == AV_PIX_FMT_CUDA && codecCtx->hw_frames_ctx != nullptr;
+        selectedEncoderCudaHardwareFrames &&
+        codecCtx->pix_fmt == AV_PIX_FMT_CUDA &&
+        codecCtx->hw_frames_ctx != nullptr;
     const AVPixelFormat encoderInputPixFmt =
-        cudaHardwareFrames ? AV_PIX_FMT_NV12 : codecCtx->pix_fmt;
+        selectedEncoderSwFormat == AV_PIX_FMT_NONE
+            ? (cudaHardwareFrames ? AV_PIX_FMT_NV12 : codecCtx->pix_fmt)
+            : selectedEncoderSwFormat;
     const bool directNv12Conversion = encoderInputPixFmt == AV_PIX_FMT_NV12;
     const bool vulkanGpuRenderer =
         useGpuRenderer && activeRenderer && activeRenderer->backendId() == QStringLiteral("vulkan");
@@ -545,6 +570,21 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         activeRenderer &&
         activeRenderer->supportsCudaExternalMemoryInterop() &&
         qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER", QStringLiteral("1")) != QStringLiteral("0");
+    const QString encoderPixelFormatName =
+        QString::fromLatin1(av_get_pix_fmt_name(codecCtx->pix_fmt));
+    const QString encoderSoftwarePixelFormatName =
+        QString::fromLatin1(av_get_pix_fmt_name(encoderInputPixFmt));
+    qInfo().noquote()
+        << QStringLiteral("[render-export-path] encoder=%1 pix_fmt=%2 sw_pix_fmt=%3 hw_frames=%4 vulkan_nv12=%5 cuda_external=%6 interop=%7")
+               .arg(codecLabel,
+                    encoderPixelFormatName,
+                    encoderSoftwarePixelFormatName,
+                    cudaHardwareFrames ? QStringLiteral("yes") : QStringLiteral("no"),
+                    vulkanGpuNv12Conversion ? QStringLiteral("yes") : QStringLiteral("no"),
+                    vulkanCudaExternalTransfer ? QStringLiteral("yes") : QStringLiteral("no"),
+                    (activeRenderer && activeRenderer->supportsCudaExternalMemoryInterop())
+                        ? QStringLiteral("yes")
+                        : QStringLiteral("no"));
     if (vulkanCudaExternalTransfer) {
         qInfo().noquote() << QStringLiteral(
             "Vulkan export path: direct external-memory NV12 transfer into CUDA encoder frames enabled.");
@@ -628,8 +668,21 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.message = QStringLiteral("Failed to allocate render frame buffers.");
         return result;
     }
-    constexpr int kAsyncGpuFrameCount = 3;
-    constexpr int kAsyncGpuMaxPendingReadbacks = 2;
+
+    AVFrame* exportPreviewFrame = nullptr;
+    if (progressCallback && useGpuRenderer && !request.createVideoFromImageSequence) {
+        exportPreviewFrame = av_frame_alloc();
+        if (exportPreviewFrame) {
+            exportPreviewFrame->format = AV_PIX_FMT_BGRA;
+            exportPreviewFrame->width = codecCtx->width;
+            exportPreviewFrame->height = codecCtx->height;
+            if (av_frame_get_buffer(exportPreviewFrame, 32) < 0) {
+                av_frame_free(&exportPreviewFrame);
+            }
+        }
+    }
+    constexpr int kAsyncGpuFrameCount = 5;
+    constexpr int kAsyncGpuMaxPendingReadbacks = 4;
     QVector<AVFrame*> asyncGpuFrames;
     QString asyncFrameAllocationError;
     if (vulkanGpuNv12Conversion || vulkanGpuYuv420pConversion) {
@@ -658,6 +711,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             for (AVFrame* frame : asyncGpuFrames) {
                 av_frame_free(&frame);
             }
+            av_frame_free(&exportPreviewFrame);
             av_frame_free(&sourceFrame);
             av_frame_free(&encodedFrame);
             sws_freeContext(swsCtx);
@@ -713,6 +767,19 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QJsonArray lastSkippedClips;
     QJsonObject skippedReasonCounts;
     QJsonObject lastExportFaceTransformDiagnostics;
+    QImage lastExportPreviewFrame;
+    const QString exportPipeline = vulkanCudaExternalTransfer
+        ? QStringLiteral("vulkan_cuda_external_memory_nv12_nvenc")
+        : (vulkanGpuNv12Conversion
+               ? QStringLiteral("vulkan_gpu_nv12_cpu_frame_encode")
+               : (vulkanGpuYuv420pConversion
+                      ? QStringLiteral("vulkan_gpu_yuv420p_cpu_frame_encode")
+                      : (useGpuRenderer
+                             ? QStringLiteral("gpu_render_cpu_transfer_encode")
+                             : QStringLiteral("cpu_render_encode"))));
+    const QString gpuTransferLabel = vulkanCudaExternalTransfer
+        ? QStringLiteral("Vulkan->CUDA device transfer")
+        : (useGpuRenderer ? QStringLiteral("GPU readback") : QStringLiteral("CPU path"));
     struct PendingAsyncGpuFrame {
         AVFrame* frame = nullptr;
         int64_t timelineFrame = 0;
@@ -844,6 +911,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.usingGpu = useGpuRenderer;
                 progress.usingHardwareEncode = usingHardwareEncode;
                 progress.encoderLabel = codecLabel;
+                progress.exportPipeline = exportPipeline;
+                progress.gpuTransferLabel = gpuTransferLabel;
+                progress.encoderPixelFormat = encoderPixelFormatName;
+                progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+                progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
+                progress.encoderHardwareFrames = cudaHardwareFrames;
                 progress.elapsedMs = totalTimer.elapsed();
                 progress.estimatedRemainingMs =
                     progress.framesCompleted > 0
@@ -871,6 +944,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
                 progress.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
+                progress.previewFrame = lastExportPreviewFrame;
                 if (!progressCallback(progress)) {
                     result.cancelled = true;
                     errorMessage = QStringLiteral("Render cancelled.");
@@ -968,6 +1042,21 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             }
 
             if (progressCallback) {
+                if (!rendered.isNull()) {
+                    lastExportPreviewFrame = rendered;
+                } else if (directGpuFrameReadback &&
+                           exportPreviewFrame &&
+                           activeRenderer &&
+                           (framesCompleted == 0 || (framesCompleted % 30) == 0) &&
+                           av_frame_make_writable(exportPreviewFrame) >= 0) {
+                    qint64 previewReadbackMs = 0;
+                    if (activeRenderer->copyLastFrameToBgra(exportPreviewFrame, &previewReadbackMs)) {
+                        lastExportPreviewFrame = imageFromBgraFrame(exportPreviewFrame);
+                    }
+                }
+            }
+
+            if (progressCallback) {
                 RenderProgress progress;
                 progress.framesCompleted = framesCompleted;
                 progress.totalFrames = totalFramesToRender;
@@ -979,6 +1068,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.usingGpu = useGpuRenderer;
                 progress.usingHardwareEncode = usingHardwareEncode;
                 progress.encoderLabel = codecLabel;
+                progress.exportPipeline = exportPipeline;
+                progress.gpuTransferLabel = gpuTransferLabel;
+                progress.encoderPixelFormat = encoderPixelFormatName;
+                progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+                progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
+                progress.encoderHardwareFrames = cudaHardwareFrames;
                 progress.elapsedMs = totalTimer.elapsed();
                 progress.estimatedRemainingMs =
                     progress.framesCompleted > 0
@@ -1006,7 +1101,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
                 progress.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
-                if (!directNv12Conversion) {
+                if (!lastExportPreviewFrame.isNull()) {
+                    progress.previewFrame = lastExportPreviewFrame;
+                } else if (!directNv12Conversion) {
                     progress.previewFrame = rendered;
                 }
                 if (!progressCallback(progress)) {
@@ -1272,6 +1369,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     for (AVFrame* frame : asyncGpuFrames) {
         av_frame_free(&frame);
     }
+    av_frame_free(&exportPreviewFrame);
     av_frame_free(&sourceFrame);
     av_frame_free(&encodedFrame);
     sws_freeContext(swsCtx);
@@ -1288,6 +1386,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 
     if (!errorMessage.isEmpty()) {
         result.message = errorMessage;
+        result.exportPipeline = exportPipeline;
+        result.gpuTransferLabel = gpuTransferLabel;
+        result.encoderPixelFormat = encoderPixelFormatName;
+        result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+        result.cudaExternalTransfer = vulkanCudaExternalTransfer;
+        result.encoderHardwareFrames = cudaHardwareFrames;
         result.framesRendered = framesCompleted;
         result.elapsedMs = totalTimer.elapsed();
         result.renderStageMs = totalRenderStageMs;
@@ -1315,6 +1419,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
 
     result.success = true;
+    result.exportPipeline = exportPipeline;
+    result.gpuTransferLabel = gpuTransferLabel;
+    result.encoderPixelFormat = encoderPixelFormatName;
+    result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+    result.cudaExternalTransfer = vulkanCudaExternalTransfer;
+    result.encoderHardwareFrames = cudaHardwareFrames;
     result.framesRendered = framesCompleted;
     result.elapsedMs = totalTimer.elapsed();
     result.renderStageMs = totalRenderStageMs;

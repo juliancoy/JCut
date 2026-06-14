@@ -483,9 +483,11 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_windowContainer->setToolTip(QStringLiteral("Direct Vulkan preview presenter (%1).")
                                       .arg(jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()));
 
-    m_overlayWidget = new DirectVulkanPreviewOverlayWidget(m_state, m_placeholder.get());
-    m_overlayWidget->setGeometry(m_placeholder->rect());
-    m_overlayWidget->show();
+    if (kAllowQtPainterOverlayInDirectVulkanPreview) {
+        m_overlayWidget = new DirectVulkanPreviewOverlayWidget(m_state, m_placeholder.get());
+        m_overlayWidget->setGeometry(m_placeholder->rect());
+        m_overlayWidget->show();
+    }
 
     m_statusLabel = new QLabel(m_placeholder.get());
     m_statusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -687,7 +689,7 @@ void DirectVulkanPreviewPresenter::requestUpdate()
         }
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
     }
-    if (m_overlayWidget) {
+    if (m_overlayWidget && kAllowQtPainterOverlayInDirectVulkanPreview) {
         m_overlayWidget->setGeometry(m_placeholder->rect());
         m_overlayWidget->raise();
         m_overlayWidget->update();

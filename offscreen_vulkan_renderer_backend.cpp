@@ -3390,10 +3390,27 @@ QImage OffscreenVulkanRenderer::renderFrame(
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
+    const bool exportTextureNeedsYFlip = !layer.preferHardwareDirect;
+    QPointF exportVideoTranslation(transform.translationX, transform.translationY);
+    if (exportTextureNeedsYFlip) {
+      const QJsonObject sampledFace =
+          transformDiagnostics.value(QStringLiteral("sampled_face_box_norm")).toObject();
+      if (sampledFace.contains(QStringLiteral("x")) &&
+          sampledFace.contains(QStringLiteral("y"))) {
+        exportVideoTranslation = exportVideoLayerTranslationForSampledFace(
+            fitted,
+            exportVideoTranslation,
+            transform.rotation,
+            QPointF(transform.scaleX, transform.scaleY),
+            exportTextureNeedsYFlip,
+            QPointF(sampledFace.value(QStringLiteral("x")).toDouble(0.5),
+                    sampledFace.value(QStringLiteral("y")).toDouble(0.5)));
+      }
+    }
     PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
         fitted,
         QPointF(1.0, 1.0),
-        QPointF(transform.translationX, transform.translationY),
+        exportVideoTranslation,
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY));
     if (exportFaceTransformDiagnostics && clip.speakerFramingEnabled) {
@@ -3407,6 +3424,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
       transformDiagnostics.insert(QStringLiteral("mapped_source_frame_position"), frameMapping.sourceFramePosition);
       transformDiagnostics.insert(QStringLiteral("mapped_transcript_frame"), static_cast<qint64>(frameMapping.transcriptFrame));
       transformDiagnostics.insert(QStringLiteral("sampled_frame_needs_y_flip"), layer.sampledFrameNeedsYFlip);
+      transformDiagnostics.insert(QStringLiteral("export_texture_needs_y_flip"), exportTextureNeedsYFlip);
+      transformDiagnostics.insert(QStringLiteral("export_video_translation"), QJsonObject{
+          {QStringLiteral("x"), exportVideoTranslation.x()},
+          {QStringLiteral("y"), exportVideoTranslation.y()}
+      });
       transformDiagnostics.insert(QStringLiteral("output_path"), request.outputPath);
       const QRectF layerRect = layerGeometry.bounds;
       transformDiagnostics.insert(QStringLiteral("layer_center"), QJsonObject{
@@ -3425,11 +3447,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
                                           transformDiagnostics)));
       *exportFaceTransformDiagnostics = transformDiagnostics;
     }
-    vulkanMvpForOutputRectMaybeFlippedY(
-        layerGeometry.bounds,
+    vulkanMvpForExportVideoLayer(
+        fitted,
+        exportVideoTranslation,
         request.outputSize,
         transform.rotation,
-        layer.sampledFrameNeedsYFlip,
+        QPointF(transform.scaleX, transform.scaleY),
+        exportTextureNeedsYFlip,
         layer.mvp);
     if (!backgroundFilled &&
         shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
@@ -3460,7 +3484,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         vulkanMvpForOutputRectMaybeFlippedY(QRectF(covered),
                                            request.outputSize,
                                            0.0,
-                                           backgroundLayer.sampledFrameNeedsYFlip,
+                                           !backgroundLayer.preferHardwareDirect,
                                            backgroundLayer.mvp);
       }
       if (!backgroundLayer.image.isNull() ||

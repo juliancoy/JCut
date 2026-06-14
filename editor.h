@@ -70,6 +70,8 @@
 #include <memory>
 #include <mutex>
 
+class ExportVulkanPreviewWidget;
+
 namespace editor {
 
 enum class ProfileAccessBadge {
@@ -244,6 +246,7 @@ private:
         QDialog* dialog = nullptr;
         QLabel* statusLabel = nullptr;
         QLabel* previewLabel = nullptr;
+        ExportVulkanPreviewWidget* previewWidget = nullptr;
         QCheckBox* previewCheckBox = nullptr;
         QPlainTextEdit* sourcesList = nullptr;
         QProgressBar* progressBar = nullptr;

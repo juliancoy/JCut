@@ -2374,12 +2374,26 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                  {QStringLiteral("has_image"), !previewImage.isNull()}
              });
 
+    const qint64 presentedFrameCount =
+        static_cast<qint64>(presenterSnapshot.value(QStringLiteral("presented_frames")).toDouble());
+    const bool swapchainPresent =
+        presenterSnapshot.value(QStringLiteral("swapchain_present")).toBool(false);
+    const bool nativeWindowVisible =
+        presenterSnapshot.value(QStringLiteral("native_window_visible")).toBool(false);
+    const bool presenterFrameReady = swapchainPresent && nativeWindowVisible && presentedFrameCount > 0;
     addStage(QStringLiteral("14 Presented Surface"),
-             QStringLiteral("swapchain presenter | final visible frame"),
+             QStringLiteral("swapchain presenter | final visible frame | presented %1")
+                 .arg(presentedFrameCount),
              previewImage,
              QStringLiteral("surface"),
              true,
-             !previewImage.isNull());
+             presenterFrameReady,
+             presenterFrameReady ? QStringLiteral("ready") : QStringLiteral("waiting"),
+             QJsonObject{
+                 {QStringLiteral("swapchain_present"), swapchainPresent},
+                 {QStringLiteral("native_window_visible"), nativeWindowVisible},
+                 {QStringLiteral("presented_frames"), presentedFrameCount}
+             });
 
     return snapshots;
 }

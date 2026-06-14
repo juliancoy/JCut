@@ -24,6 +24,12 @@ struct RenderProgress {
     bool usingGpu = false;
     bool usingHardwareEncode = false;
     QString encoderLabel;
+    QString exportPipeline;
+    QString gpuTransferLabel;
+    QString encoderPixelFormat;
+    QString encoderSoftwarePixelFormat;
+    bool cudaExternalTransfer = false;
+    bool encoderHardwareFrames = false;
     qint64 elapsedMs = 0;
     qint64 estimatedRemainingMs = -1;
     qint64 renderStageMs = 0;
@@ -93,6 +99,12 @@ struct RenderResult {
     bool usedGpu = false;
     bool usedHardwareEncode = false;
     QString encoderLabel;
+    QString exportPipeline;
+    QString gpuTransferLabel;
+    QString encoderPixelFormat;
+    QString encoderSoftwarePixelFormat;
+    bool cudaExternalTransfer = false;
+    bool encoderHardwareFrames = false;
     QString namedOutputDir;  // Optional directory for image-sequence intermediate frames.
     int64_t framesRendered = 0;
     qint64 elapsedMs = 0;

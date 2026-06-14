@@ -1590,9 +1590,55 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     {QStringLiteral("ok"), true},
                     {QStringLiteral("detail"), QStringLiteral("update+repaint+processEvents")}
                 });
+
+                auto savePixmap = [](const QPixmap& pixmap, QByteArray* output) {
+                    if (!output || pixmap.isNull()) {
+                        return false;
+                    }
+                    QBuffer pixmapBuffer(output);
+                    pixmapBuffer.open(QIODevice::WriteOnly);
+                    return pixmap.save(&pixmapBuffer, "PNG");
+                };
+
+                // QWidget::grab() does not reliably include embedded native windows
+                // such as the direct QVulkanWindow preview. Capture the composited
+                // screen rectangle first so diagnostics reflect what the user sees.
+                QScreen* screen = sourceWidget->screen();
+                if (!screen && sourceWidget->windowHandle()) {
+                    screen = sourceWidget->windowHandle()->screen();
+                }
+                if (!screen) {
+                    screen = QGuiApplication::primaryScreen();
+                }
+                if (screen) {
+                    const QPoint topLeft = sourceWidget->mapToGlobal(QPoint(0, 0));
+                    QByteArray screenBytes;
+                    const bool screenSaved = savePixmap(
+                        screen->grabWindow(0,
+                                           topLeft.x(),
+                                           topLeft.y(),
+                                           sourceWidget->width(),
+                                           sourceWidget->height()),
+                        &screenBytes);
+                    steps.push_back(QJsonObject{
+                        {QStringLiteral("name"), QStringLiteral("capture_screen_rect")},
+                        {QStringLiteral("ok"), screenSaved},
+                        {QStringLiteral("bytes"), static_cast<qint64>(screenBytes.size())}
+                    });
+                    if (!screenBytes.isEmpty()) {
+                        bytes = screenBytes;
+                    }
+                } else {
+                    steps.push_back(QJsonObject{
+                        {QStringLiteral("name"), QStringLiteral("capture_screen_rect")},
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("detail"), QStringLiteral("no screen available")}
+                    });
+                }
+
                 QBuffer buffer(&bytes);
                 buffer.open(QIODevice::WriteOnly);
-                const bool sourceSaved = sourceWidget->grab().save(&buffer, "PNG");
+                const bool sourceSaved = bytes.isEmpty() && sourceWidget->grab().save(&buffer, "PNG");
                 steps.push_back(QJsonObject{
                     {QStringLiteral("name"), QStringLiteral("capture_source")},
                     {QStringLiteral("ok"), sourceSaved},
@@ -1600,16 +1646,10 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 });
 
                 if (bytes.isEmpty() && sourceWidget->winId() != 0) {
-                    QScreen* screen = sourceWidget->screen();
-                    if (!screen) {
-                        screen = QGuiApplication::primaryScreen();
-                    }
                     if (screen) {
                         const QPixmap nativePixmap = screen->grabWindow(sourceWidget->winId());
                         QByteArray nativeBytes;
-                        QBuffer nativeBuffer(&nativeBytes);
-                        nativeBuffer.open(QIODevice::WriteOnly);
-                        const bool nativeSaved = !nativePixmap.isNull() && nativePixmap.save(&nativeBuffer, "PNG");
+                        const bool nativeSaved = savePixmap(nativePixmap, &nativeBytes);
                         steps.push_back(QJsonObject{
                             {QStringLiteral("name"), QStringLiteral("capture_native_winid")},
                             {QStringLiteral("ok"), nativeSaved},

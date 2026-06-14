@@ -7,7 +7,12 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
+#include <QFont>
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QFontMetrics>
 #include <QLockFile>
+#include <QToolTip>
 
 #include <limits>
 #include <memory>
@@ -17,6 +22,70 @@ namespace {
 
 bool zeroCopyPreferredEnvironmentDetected() {
     return zeroCopyInteropEnvironmentDetected();
+}
+
+bool fontSupportsUiText(const QFont& font)
+{
+    const QFontMetrics metrics(font);
+    const QString probe = QStringLiteral("JCut Export 0123456789");
+    for (const QChar ch : probe) {
+        if (!metrics.inFontUcs4(ch.unicode())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString firstLoadedFontFamily(const QString& resourcePath)
+{
+    const int fontId = QFontDatabase::addApplicationFont(resourcePath);
+    if (fontId < 0) {
+        return {};
+    }
+    const QStringList families = QFontDatabase::applicationFontFamilies(fontId);
+    return families.isEmpty() ? QString() : families.first();
+}
+
+QString bundledUiFontFamily()
+{
+    const QStringList bundledFonts = {
+        QStringLiteral(":/fonts/Karla-Regular.ttf"),
+        QStringLiteral(":/fonts/Roboto-Medium.ttf"),
+    };
+    for (const QString& path : bundledFonts) {
+        const QString family = firstLoadedFontFamily(path);
+        if (!family.isEmpty()) {
+            return family;
+        }
+    }
+    return {};
+}
+
+void ensureReadableApplicationFont()
+{
+    const QFont currentFont = QApplication::font();
+    if (fontSupportsUiText(currentFont)) {
+        return;
+    }
+
+    const QString family = bundledUiFontFamily();
+    if (family.isEmpty()) {
+        qWarning().noquote()
+            << QStringLiteral("[STARTUP][WARN] Qt could not resolve a usable UI font, and bundled fonts failed to load.");
+        return;
+    }
+
+    QFont readableFont(family);
+    int pointSize = currentFont.pointSize();
+    if (pointSize <= 0) {
+        pointSize = QFontInfo(currentFont).pointSize();
+    }
+    readableFont.setPointSize(pointSize > 0 ? pointSize : 10);
+    QApplication::setFont(readableFont);
+    QToolTip::setFont(readableFont);
+    qWarning().noquote()
+        << QStringLiteral("[STARTUP][WARN] Qt default UI font had no basic Latin glyphs; using bundled font '%1'.")
+               .arg(family);
 }
 
 }
@@ -38,7 +107,9 @@ int main(int argc, char **argv)
     }
 
     QApplication app(argc, argv);
+    Q_INIT_RESOURCE(ui_icons);
     QApplication::setApplicationName(QStringLiteral("PanelTalkEditor"));
+    ensureReadableApplicationFont();
     qRegisterMetaType<editor::FrameHandle>();
 
     std::unique_ptr<QLockFile> lockFile;

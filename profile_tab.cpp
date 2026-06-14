@@ -312,9 +312,20 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
                    .arg(exportStats.value(QStringLiteral("total_frames")).toVariant().toLongLong()));
         addRow(QStringLiteral("Export Throughput"),
                QStringLiteral("%1 fps").arg(exportStats.value(QStringLiteral("fps")).toDouble(), 0, 'f', 1));
+        addRow(QStringLiteral("Export Pipeline"),
+               exportStats.value(QStringLiteral("export_pipeline")).toString(QStringLiteral("unknown")));
+        addRow(QStringLiteral("Export Encoder Format"),
+               QStringLiteral("%1 / sw:%2 / hw_frames:%3")
+                   .arg(exportStats.value(QStringLiteral("encoder_pixel_format")).toString(QStringLiteral("unknown")),
+                        exportStats.value(QStringLiteral("encoder_software_pixel_format")).toString(QStringLiteral("unknown")),
+                        exportStats.value(QStringLiteral("encoder_hardware_frames")).toBool(false)
+                            ? QStringLiteral("yes")
+                            : QStringLiteral("no")));
         addRow(QStringLiteral("Export Render Stage"),
                formatStage(exportStats, QStringLiteral("render_stage_ms"), QStringLiteral("render_stage_per_frame_ms")));
-        addRow(QStringLiteral("Export GPU Readback"),
+        const QString gpuTransferLabel =
+            exportStats.value(QStringLiteral("gpu_transfer_label")).toString(QStringLiteral("GPU Transfer"));
+        addRow(QStringLiteral("Export %1").arg(gpuTransferLabel),
                formatStage(exportStats, QStringLiteral("gpu_readback_ms"), QStringLiteral("gpu_readback_per_frame_ms")));
         addRow(QStringLiteral("Export Encode Stage"),
                formatStage(exportStats, QStringLiteral("encode_stage_ms"), QStringLiteral("encode_stage_per_frame_ms")));

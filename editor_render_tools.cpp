@@ -1,5 +1,6 @@
 #include "editor.h"
 
+#include "export_vulkan_preview_widget.h"
 #include "speaker_export_harness.h"
 
 #include <QAbstractItemView>
@@ -744,12 +745,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         progressLayout->setContentsMargins(16, 16, 16, 16);
         progressLayout->setSpacing(10);
 
-        auto *renderPreviewLabel = new QLabel(progressDialog);
-        renderPreviewLabel->setAlignment(Qt::AlignCenter);
-        renderPreviewLabel->setMinimumSize(360, 202);
-        renderPreviewLabel->setStyleSheet(QStringLiteral(
-            "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
-        renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
+        auto *renderPreviewWidget = new ExportVulkanPreviewWidget(progressDialog);
 
         auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), progressDialog);
         renderStatusLabel->setWordWrap(true);
@@ -779,7 +775,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
 
             auto *rightColumn = new QVBoxLayout;
             rightColumn->setSpacing(10);
-            rightColumn->addWidget(renderPreviewLabel, 1);
+            rightColumn->addWidget(renderPreviewWidget, 1);
 
             contentRow->addLayout(leftColumn, 3);
             contentRow->addLayout(rightColumn, 2);
@@ -787,7 +783,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         } else {
             progressLayout->addWidget(renderStatusLabel);
             progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
-            progressLayout->addWidget(renderPreviewLabel);
+            progressLayout->addWidget(renderPreviewWidget);
             progressLayout->addWidget(renderSourcesLabel);
             progressLayout->addWidget(renderSourcesList);
         }
@@ -805,13 +801,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             localRenderCancelled = true;
             cancelRenderButton->setEnabled(false);
         });
-        QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, progressDialog, [renderPreviewLabel](bool checked) {
-            renderPreviewLabel->setVisible(checked);
+        QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, progressDialog, [renderPreviewWidget](bool checked) {
+            renderPreviewWidget->setVisible(checked);
         });
 
         localControls.dialog = progressDialog;
         localControls.statusLabel = renderStatusLabel;
-        localControls.previewLabel = renderPreviewLabel;
+        localControls.previewWidget = renderPreviewWidget;
         localControls.previewCheckBox = showRenderPreviewCheckBox;
         localControls.sourcesList = renderSourcesList;
         localControls.progressBar = renderProgressBar;
@@ -823,6 +819,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     QDialog* progressDialog = progressControls->dialog;
     QLabel* renderStatusLabel = progressControls->statusLabel;
     QLabel* renderPreviewLabel = progressControls->previewLabel;
+    ExportVulkanPreviewWidget* renderPreviewWidget = progressControls->previewWidget;
     QCheckBox* showRenderPreviewCheckBox = progressControls->previewCheckBox;
     QPlainTextEdit* renderSourcesList = progressControls->sourcesList;
     QProgressBar* renderProgressBar = progressControls->progressBar;
@@ -840,6 +837,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     if (renderPreviewLabel) {
         renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
         renderPreviewLabel->setPixmap(QPixmap());
+    }
+    if (renderPreviewWidget) {
+        renderPreviewWidget->clearPreview();
     }
     if (progressDialog) {
         progressDialog->show();
@@ -895,6 +895,12 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("using_gpu"), progress.usingGpu},
             {QStringLiteral("using_hardware_encode"), progress.usingHardwareEncode},
             {QStringLiteral("encoder_label"), progress.encoderLabel},
+            {QStringLiteral("export_pipeline"), progress.exportPipeline},
+            {QStringLiteral("gpu_transfer_label"), progress.gpuTransferLabel},
+            {QStringLiteral("encoder_pixel_format"), progress.encoderPixelFormat},
+            {QStringLiteral("encoder_software_pixel_format"), progress.encoderSoftwarePixelFormat},
+            {QStringLiteral("cuda_external_transfer"), progress.cudaExternalTransfer},
+            {QStringLiteral("encoder_hardware_frames"), progress.encoderHardwareFrames},
             {QStringLiteral("elapsed_ms"), progress.elapsedMs},
             {QStringLiteral("estimated_remaining_ms"), progress.estimatedRemainingMs},
             {QStringLiteral("eta_text"), formatEta(progress.estimatedRemainingMs)},
@@ -950,6 +956,12 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("using_gpu"), result.usedGpu},
             {QStringLiteral("using_hardware_encode"), result.usedHardwareEncode},
             {QStringLiteral("encoder_label"), result.encoderLabel},
+            {QStringLiteral("export_pipeline"), result.exportPipeline},
+            {QStringLiteral("gpu_transfer_label"), result.gpuTransferLabel},
+            {QStringLiteral("encoder_pixel_format"), result.encoderPixelFormat},
+            {QStringLiteral("encoder_software_pixel_format"), result.encoderSoftwarePixelFormat},
+            {QStringLiteral("cuda_external_transfer"), result.cudaExternalTransfer},
+            {QStringLiteral("encoder_hardware_frames"), result.encoderHardwareFrames},
             {QStringLiteral("elapsed_ms"), result.elapsedMs},
             {QStringLiteral("estimated_remaining_ms"), static_cast<qint64>(0)},
             {QStringLiteral("eta_text"), formatEta(0)},
@@ -1025,7 +1037,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
 
     const RenderResult result = renderTimelineToFile(
         effectiveRequest,
-        [this, renderStatusLabel, renderProgressBar, renderPreviewLabel,
+        [this, renderStatusLabel, renderProgressBar, renderPreviewLabel, renderPreviewWidget,
          renderSourcesList, showRenderPreviewCheckBox, renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
          activeRenderSourcesText](const RenderProgress &progress)
@@ -1041,6 +1053,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             const QString encoderLabel = progress.encoderLabel.isEmpty()
                                              ? QStringLiteral("unknown")
                                              : progress.encoderLabel;
+            const QString gpuTransferMetricLabel = progress.gpuTransferLabel.isEmpty()
+                                                       ? QStringLiteral("GPU Transfer")
+                                                       : progress.gpuTransferLabel;
             m_liveRenderProfile = renderProfileFromProgress(progress);
             m_liveRenderProfile[QStringLiteral("output_path")] = QDir::toNativeSeparators(outputPath);
             refreshProfileInspector();
@@ -1054,12 +1069,12 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                 "<tr>"
                 "<td align='right'><b>Composite</b></td><td>%4</td>"
                 "<td align='right'><b>GPU NV12</b></td><td>%5</td>"
-                "<td align='right'><b>Readback</b></td><td>%6</td>"
+                "<td align='right'><b>%6</b></td><td>%7</td>"
                 "</tr>"
                 "<tr>"
-                "<td align='right'><b>Convert</b></td><td>%7</td>"
-                "<td align='right'><b>Encode</b></td><td>%8</td>"
-                "<td align='right'><b>Audio setup</b></td><td>%9 ms</td>"
+                "<td align='right'><b>Convert</b></td><td>%8</td>"
+                "<td align='right'><b>Encode</b></td><td>%9</td>"
+                "<td align='right'><b>Audio setup</b></td><td>%10 ms</td>"
                 "</tr>"
                 "</table>")
                 .arg(stageSummary(progress.renderStageMs, progress.framesCompleted))
@@ -1067,6 +1082,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                 .arg(stageSummary(progress.renderTextureStageMs, progress.framesCompleted))
                 .arg(stageSummary(progress.renderCompositeStageMs, progress.framesCompleted))
                 .arg(stageSummary(progress.renderNv12StageMs, progress.framesCompleted))
+                .arg(gpuTransferMetricLabel)
                 .arg(stageSummary(progress.gpuReadbackMs, progress.framesCompleted))
                 .arg(stageSummary(progress.convertStageMs, progress.framesCompleted))
                 .arg(stageSummary(progress.encodeStageMs, progress.framesCompleted))
@@ -1090,14 +1106,17 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                         .arg(metricsTable));
             }
             if (showRenderPreviewCheckBox && showRenderPreviewCheckBox->isChecked() &&
-                renderPreviewLabel && !progress.previewFrame.isNull())
-            {
-                const QPixmap pixmap = QPixmap::fromImage(progress.previewFrame).scaled(
-                    renderPreviewLabel->size(),
-                    Qt::KeepAspectRatio,
-                    Qt::SmoothTransformation);
-                renderPreviewLabel->setPixmap(pixmap);
-                renderPreviewLabel->setText(QString());
+                !progress.previewFrame.isNull()) {
+                if (renderPreviewWidget) {
+                    renderPreviewWidget->setPreviewFrame(progress.previewFrame);
+                } else if (renderPreviewLabel) {
+                    const QPixmap pixmap = QPixmap::fromImage(progress.previewFrame).scaled(
+                        renderPreviewLabel->size(),
+                        Qt::KeepAspectRatio,
+                        Qt::SmoothTransformation);
+                    renderPreviewLabel->setPixmap(pixmap);
+                    renderPreviewLabel->setText(QString());
+                }
             }
             if (renderSourcesList) {
                 renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
@@ -1544,12 +1563,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     bulkLayout->setContentsMargins(16, 16, 16, 16);
     bulkLayout->setSpacing(10);
 
-    auto* renderPreviewLabel = new QLabel(&bulkDialog);
-    renderPreviewLabel->setAlignment(Qt::AlignCenter);
-    renderPreviewLabel->setMinimumSize(360, 202);
-    renderPreviewLabel->setStyleSheet(QStringLiteral(
-        "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
-    renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
+    auto* renderPreviewWidget = new ExportVulkanPreviewWidget(&bulkDialog);
 
     auto* renderStatusLabel = new QLabel(QStringLiteral("Preparing bulk export..."), &bulkDialog);
     renderStatusLabel->setWordWrap(true);
@@ -1557,8 +1571,8 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
 
     auto* showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &bulkDialog);
     showRenderPreviewCheckBox->setChecked(true);
-    QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, &bulkDialog, [renderPreviewLabel](bool checked) {
-        renderPreviewLabel->setVisible(checked);
+    QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, &bulkDialog, [renderPreviewWidget](bool checked) {
+        renderPreviewWidget->setVisible(checked);
     });
 
     auto* renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &bulkDialog);
@@ -1620,7 +1634,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     leftColumn->addWidget(renderSourcesList, 1);
     auto* rightColumn = new QVBoxLayout;
     rightColumn->setSpacing(10);
-    rightColumn->addWidget(renderPreviewLabel, 1);
+    rightColumn->addWidget(renderPreviewWidget, 1);
     contentRow->addLayout(leftColumn, 3);
     contentRow->addLayout(rightColumn, 2);
     bulkLayout->addLayout(contentRow);
@@ -1645,7 +1659,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     RenderProgressDialogControls bulkControls;
     bulkControls.dialog = &bulkDialog;
     bulkControls.statusLabel = renderStatusLabel;
-    bulkControls.previewLabel = renderPreviewLabel;
+    bulkControls.previewWidget = renderPreviewWidget;
     bulkControls.previewCheckBox = showRenderPreviewCheckBox;
     bulkControls.sourcesList = renderSourcesList;
     bulkControls.progressBar = renderProgressBar;
