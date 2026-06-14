@@ -314,6 +314,8 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
                QStringLiteral("%1 fps").arg(exportStats.value(QStringLiteral("fps")).toDouble(), 0, 'f', 1));
         addRow(QStringLiteral("Export Pipeline"),
                exportStats.value(QStringLiteral("export_pipeline")).toString(QStringLiteral("unknown")));
+        addRow(QStringLiteral("Export Path Reason"),
+               exportStats.value(QStringLiteral("export_path_fallback_reason")).toString(QStringLiteral("unknown")));
         addRow(QStringLiteral("Export Encoder Format"),
                QStringLiteral("%1 / sw:%2 / hw_frames:%3")
                    .arg(exportStats.value(QStringLiteral("encoder_pixel_format")).toString(QStringLiteral("unknown")),

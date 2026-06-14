@@ -688,6 +688,12 @@ set_target_properties(jcut_imgui PROPERTIES
     AUTOUIC OFF
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+add_custom_command(TARGET jcut_imgui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:jcut_imgui>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/misc/fonts/Roboto-Medium.ttf"
+        "$<TARGET_FILE_DIR:jcut_imgui>/assets/fonts/Roboto-Medium.ttf"
+)
 jcut_force_bundled_ffmpeg_runtime(jcut_imgui)
 
 add_executable(project_roundtrip_cli

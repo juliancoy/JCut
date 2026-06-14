@@ -95,6 +95,78 @@ QImage imageFromBgraFrame(const AVFrame* frame)
                   QImage::Format_ARGB32).copy();
 }
 
+struct ExportPathDecision {
+    bool gpuNv12Conversion = false;
+    bool gpuYuv420pConversion = false;
+    bool cudaExternalTransfer = false;
+    bool cudaExternalMemorySupported = false;
+    QString pipeline;
+    QString gpuTransferLabel;
+    QString fallbackReason;
+};
+
+ExportPathDecision chooseExportPath(bool useGpuRenderer,
+                                    const render_detail::OffscreenRenderer* renderer,
+                                    AVPixelFormat encoderInputPixFmt,
+                                    bool cudaHardwareFrames,
+                                    bool imageSequenceExport,
+                                    bool externalTransferEnabled)
+{
+    ExportPathDecision decision;
+    decision.cudaExternalMemorySupported =
+        renderer && renderer->supportsCudaExternalMemoryInterop();
+    decision.gpuNv12Conversion =
+        useGpuRenderer && renderer && encoderInputPixFmt == AV_PIX_FMT_NV12 &&
+        !imageSequenceExport;
+    decision.gpuYuv420pConversion =
+        useGpuRenderer && renderer && encoderInputPixFmt == AV_PIX_FMT_YUV420P &&
+        !imageSequenceExport;
+
+    if (decision.gpuNv12Conversion && cudaHardwareFrames &&
+        externalTransferEnabled && renderer->supportsNv12CudaTransfer()) {
+        decision.cudaExternalTransfer = true;
+        decision.pipeline = QStringLiteral("vulkan_cuda_external_memory_nv12_nvenc");
+        decision.gpuTransferLabel = QStringLiteral("Vulkan->CUDA device transfer");
+        decision.fallbackReason = QStringLiteral("optimal path active");
+        return decision;
+    }
+
+    if (decision.gpuNv12Conversion) {
+        decision.pipeline = QStringLiteral("vulkan_gpu_nv12_cpu_frame_encode");
+    } else if (decision.gpuYuv420pConversion) {
+        decision.pipeline = QStringLiteral("vulkan_gpu_yuv420p_cpu_frame_encode");
+    } else if (useGpuRenderer) {
+        decision.pipeline = QStringLiteral("gpu_render_cpu_transfer_encode");
+    } else {
+        decision.pipeline = QStringLiteral("cpu_render_encode");
+    }
+    decision.gpuTransferLabel =
+        useGpuRenderer ? QStringLiteral("GPU readback") : QStringLiteral("CPU path");
+
+    if (!useGpuRenderer || !renderer) {
+        decision.fallbackReason = QStringLiteral("GPU renderer unavailable");
+    } else if (imageSequenceExport) {
+        decision.fallbackReason = QStringLiteral("image sequence export requires CPU image output");
+    } else if (encoderInputPixFmt != AV_PIX_FMT_NV12) {
+        decision.fallbackReason =
+            QStringLiteral("encoder software pixel format is %1, not nv12")
+                .arg(QString::fromLatin1(av_get_pix_fmt_name(encoderInputPixFmt)));
+    } else if (!cudaHardwareFrames) {
+        decision.fallbackReason = QStringLiteral("encoder is not using CUDA hardware frames");
+    } else if (!externalTransferEnabled) {
+        decision.fallbackReason =
+            QStringLiteral("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER disabled");
+    } else if (!renderer->supportsNv12CudaTransfer()) {
+        decision.fallbackReason =
+            QStringLiteral("renderer cannot transfer NV12 frames to CUDA: %1")
+                .arg(renderer->cudaExternalMemoryStatus());
+    } else {
+        decision.fallbackReason = QStringLiteral("direct transfer path not selected");
+    }
+
+    return decision;
+}
+
 bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
                                  AVPixelFormat swFormat,
                                  QString* errorMessage)
@@ -558,19 +630,17 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             ? (cudaHardwareFrames ? AV_PIX_FMT_NV12 : codecCtx->pix_fmt)
             : selectedEncoderSwFormat;
     const bool directNv12Conversion = encoderInputPixFmt == AV_PIX_FMT_NV12;
-    const bool vulkanGpuRenderer = useGpuRenderer && activeRenderer;
-    const bool vulkanGpuNv12Conversion =
-        vulkanGpuRenderer &&
-        encoderInputPixFmt == AV_PIX_FMT_NV12 &&
-        !request.createVideoFromImageSequence;
-    const bool vulkanCudaExternalTransfer =
-        vulkanGpuNv12Conversion &&
-        cudaHardwareFrames &&
-        activeRenderer &&
-        activeRenderer->supportsCudaExternalMemoryInterop() &&
-        qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER", QStringLiteral("1")) != QStringLiteral("0");
-    const bool cudaExternalMemorySupported =
-        activeRenderer && activeRenderer->supportsCudaExternalMemoryInterop();
+    const ExportPathDecision exportPath =
+        chooseExportPath(useGpuRenderer,
+                         activeRenderer.get(),
+                         encoderInputPixFmt,
+                         cudaHardwareFrames,
+                         request.createVideoFromImageSequence,
+                         qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER",
+                                              QStringLiteral("1")) != QStringLiteral("0"));
+    const bool vulkanGpuNv12Conversion = exportPath.gpuNv12Conversion;
+    const bool vulkanCudaExternalTransfer = exportPath.cudaExternalTransfer;
+    const bool cudaExternalMemorySupported = exportPath.cudaExternalMemorySupported;
     const QString cudaExternalMemoryStatus =
         activeRenderer ? activeRenderer->cudaExternalMemoryStatus()
                        : QStringLiteral("renderer unavailable");
@@ -587,15 +657,30 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     vulkanGpuNv12Conversion ? QStringLiteral("yes") : QStringLiteral("no"),
                     vulkanCudaExternalTransfer ? QStringLiteral("yes") : QStringLiteral("no"),
                     cudaExternalMemorySupported ? QStringLiteral("yes") : QStringLiteral("no"))
-               << QStringLiteral("status=\"%1\"").arg(cudaExternalMemoryStatus);
+               << QStringLiteral("status=\"%1\" reason=\"%2\"")
+                      .arg(cudaExternalMemoryStatus, exportPath.fallbackReason);
     if (vulkanCudaExternalTransfer) {
         qInfo().noquote() << QStringLiteral(
             "Vulkan export path: direct external-memory NV12 transfer into CUDA encoder frames enabled.");
     }
     const bool vulkanGpuYuv420pConversion =
-        vulkanGpuRenderer &&
-        encoderInputPixFmt == AV_PIX_FMT_YUV420P &&
-        !request.createVideoFromImageSequence;
+        exportPath.gpuYuv420pConversion;
+    if (requestedBackend == RenderBackend::Vulkan &&
+        qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_MEMORY_REQUIRED", QStringLiteral("0")) != QStringLiteral("0") &&
+        !vulkanCudaExternalTransfer) {
+        result.message = QStringLiteral("Required Vulkan/CUDA direct export path is unavailable: %1")
+                             .arg(exportPath.fallbackReason);
+        if (audioState.codecCtx) {
+            avcodec_free_context(&audioState.codecCtx);
+        }
+        av_write_trailer(formatCtx);
+        if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) {
+            avio_closep(&formatCtx->pb);
+        }
+        avcodec_free_context(&codecCtx);
+        avformat_free_context(formatCtx);
+        return result;
+    }
     const bool needsSoftwareColorConverter =
         !directNv12Conversion && !vulkanGpuYuv420pConversion;
     SwsContext* swsCtx = nullptr;
@@ -771,18 +856,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QJsonObject skippedReasonCounts;
     QJsonObject lastExportFaceTransformDiagnostics;
     QImage lastExportPreviewFrame;
-    const QString exportPipeline = vulkanCudaExternalTransfer
-        ? QStringLiteral("vulkan_cuda_external_memory_nv12_nvenc")
-        : (vulkanGpuNv12Conversion
-               ? QStringLiteral("vulkan_gpu_nv12_cpu_frame_encode")
-               : (vulkanGpuYuv420pConversion
-                      ? QStringLiteral("vulkan_gpu_yuv420p_cpu_frame_encode")
-                      : (useGpuRenderer
-                             ? QStringLiteral("gpu_render_cpu_transfer_encode")
-                             : QStringLiteral("cpu_render_encode"))));
-    const QString gpuTransferLabel = vulkanCudaExternalTransfer
-        ? QStringLiteral("Vulkan->CUDA device transfer")
-        : (useGpuRenderer ? QStringLiteral("GPU readback") : QStringLiteral("CPU path"));
+    const QString exportPipeline = exportPath.pipeline;
+    const QString gpuTransferLabel = exportPath.gpuTransferLabel;
+    const QString exportPathFallbackReason = exportPath.fallbackReason;
     struct PendingAsyncGpuFrame {
         AVFrame* frame = nullptr;
         int64_t timelineFrame = 0;
@@ -919,6 +995,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.encoderPixelFormat = encoderPixelFormatName;
                 progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
                 progress.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
+                progress.exportPathFallbackReason = exportPathFallbackReason;
                 progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
                 progress.cudaExternalMemorySupported = cudaExternalMemorySupported;
                 progress.encoderHardwareFrames = cudaHardwareFrames;
@@ -1078,6 +1155,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.encoderPixelFormat = encoderPixelFormatName;
                 progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
                 progress.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
+                progress.exportPathFallbackReason = exportPathFallbackReason;
                 progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
                 progress.cudaExternalMemorySupported = cudaExternalMemorySupported;
                 progress.encoderHardwareFrames = cudaHardwareFrames;
@@ -1398,6 +1476,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.encoderPixelFormat = encoderPixelFormatName;
         result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
         result.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
+        result.exportPathFallbackReason = exportPathFallbackReason;
         result.cudaExternalTransfer = vulkanCudaExternalTransfer;
         result.cudaExternalMemorySupported = cudaExternalMemorySupported;
         result.encoderHardwareFrames = cudaHardwareFrames;
@@ -1433,6 +1512,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.encoderPixelFormat = encoderPixelFormatName;
     result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
     result.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
+    result.exportPathFallbackReason = exportPathFallbackReason;
     result.cudaExternalTransfer = vulkanCudaExternalTransfer;
     result.cudaExternalMemorySupported = cudaExternalMemorySupported;
     result.encoderHardwareFrames = cudaHardwareFrames;

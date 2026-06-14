@@ -280,6 +280,9 @@ void OutputTab::renderFromInspector()
     if (request.outputFormat.empty()) {
         request.outputFormat = "mp4";
     }
+    request.backgroundFillEffect = (m_widgets.backgroundFillEffectCombo
+        ? m_widgets.backgroundFillEffectCombo->currentData().toString()
+        : QStringLiteral("edge_stretch")).toStdString();
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
     const QString defaultFileName = QStringLiteral("render.%1").arg(outputFormat);

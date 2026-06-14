@@ -579,6 +579,12 @@ void VulkanPreviewSurface::setBackgroundColor(const QColor& color)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect effect)
+{
+    m_interaction.backgroundFillEffect = effect;
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setPreviewZoom(qreal zoom)
 {
     const qreal oldZoom = m_interaction.previewZoom;

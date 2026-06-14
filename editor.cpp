@@ -1015,6 +1015,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
+    const BackgroundFillEffect backgroundFillEffect =
+        backgroundFillEffectFromString(root.value(QStringLiteral("backgroundFillEffect"))
+                                           .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect)));
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
@@ -1481,6 +1484,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
     }
+    if (m_backgroundFillEffectCombo) {
+        QSignalBlocker block(m_backgroundFillEffectCombo);
+        const int effectIndex = m_backgroundFillEffectCombo->findData(
+            backgroundFillEffectToString(backgroundFillEffect));
+        m_backgroundFillEffectCombo->setCurrentIndex(qMax(0, effectIndex));
+    }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
     }
@@ -1795,6 +1804,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
+        m_preview->setBackgroundFillEffect(backgroundFillEffect);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);

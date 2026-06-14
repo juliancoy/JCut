@@ -1,5 +1,6 @@
 #include "inspector_pane.h"
 
+#include "background_fill_effect.h"
 #include "debug_controls.h"
 #include "editor_shared.h"
 #include "preview_surface.h"
@@ -172,6 +173,15 @@ QWidget *InspectorPane::buildOutputTab()
         QStringLiteral("QPushButton { background: #000000; color: #ffffff; "
                         "border: 1px solid #2e3b4a; border-radius: 4px; padding: 4px 8px; }"));
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
+
+    m_backgroundFillEffectCombo = new QComboBox(page);
+    m_backgroundFillEffectCombo->addItem(QStringLiteral("Edge Stretch"),
+                                         backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
+    m_backgroundFillEffectCombo->addItem(QStringLiteral("Blur Cover"),
+                                         backgroundFillEffectToString(BackgroundFillEffect::BlurCover));
+    m_backgroundFillEffectCombo->setCurrentIndex(0);
+    m_backgroundFillEffectCombo->setToolTip(QStringLiteral("Background fill effect for preview and render"));
+    form->addRow(QStringLiteral("Fill Effect"), m_backgroundFillEffectCombo);
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 

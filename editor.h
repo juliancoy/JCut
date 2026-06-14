@@ -563,6 +563,7 @@ private:
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;
     QComboBox *m_renderBackendCombo = nullptr;
+    QComboBox *m_backgroundFillEffectCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;

@@ -538,6 +538,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         : static_cast<double>(kTimelineFps);
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
+    request.backgroundFillEffect =
+        backgroundFillEffectFromString(m_backgroundFillEffectCombo
+                                           ? m_backgroundFillEffectCombo->currentData().toString()
+                                           : QString());
     request.showCurrentSpeakerName = m_speakerShowCurrentSpeakerNameCheckBox &&
                                      m_speakerShowCurrentSpeakerNameCheckBox->isChecked();
     request.showCurrentSpeakerOrganization =
@@ -900,6 +904,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("encoder_pixel_format"), progress.encoderPixelFormat},
             {QStringLiteral("encoder_software_pixel_format"), progress.encoderSoftwarePixelFormat},
             {QStringLiteral("cuda_external_memory_status"), progress.cudaExternalMemoryStatus},
+            {QStringLiteral("export_path_fallback_reason"), progress.exportPathFallbackReason},
             {QStringLiteral("cuda_external_transfer"), progress.cudaExternalTransfer},
             {QStringLiteral("cuda_external_memory_supported"), progress.cudaExternalMemorySupported},
             {QStringLiteral("encoder_hardware_frames"), progress.encoderHardwareFrames},
@@ -963,6 +968,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("encoder_pixel_format"), result.encoderPixelFormat},
             {QStringLiteral("encoder_software_pixel_format"), result.encoderSoftwarePixelFormat},
             {QStringLiteral("cuda_external_memory_status"), result.cudaExternalMemoryStatus},
+            {QStringLiteral("export_path_fallback_reason"), result.exportPathFallbackReason},
             {QStringLiteral("cuda_external_transfer"), result.cudaExternalTransfer},
             {QStringLiteral("cuda_external_memory_supported"), result.cudaExternalMemorySupported},
             {QStringLiteral("encoder_hardware_frames"), result.encoderHardwareFrames},
@@ -1039,13 +1045,37 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         return lines.join(QLatin1Char('\n'));
     };
 
+    QElapsedTimer progressUiTimer;
+    progressUiTimer.start();
+    qint64 lastProgressUiUpdateMs = -1000;
+    qint64 lastEventPumpMs = -1000;
     const RenderResult result = renderTimelineToFile(
         effectiveRequest,
         [this, renderStatusLabel, renderProgressBar, renderPreviewLabel, renderPreviewWidget,
          renderSourcesList, showRenderPreviewCheckBox, renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
-         activeRenderSourcesText](const RenderProgress &progress)
+         activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs,
+         &lastEventPumpMs](const RenderProgress &progress)
         {
+            const qint64 nowMs = progressUiTimer.elapsed();
+            const bool cancelled = renderCancelled && *renderCancelled;
+            const bool finalProgress =
+                progress.totalFrames > 0 && progress.framesCompleted >= progress.totalFrames;
+            const bool updateUi =
+                cancelled || finalProgress || lastProgressUiUpdateMs < 0 ||
+                nowMs - lastProgressUiUpdateMs >= 250;
+            const bool pumpEvents =
+                cancelled || lastEventPumpMs < 0 || nowMs - lastEventPumpMs >= 50;
+
+            if (!updateUi) {
+                if (pumpEvents) {
+                    lastEventPumpMs = nowMs;
+                    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                }
+                return !cancelled;
+            }
+
+            lastProgressUiUpdateMs = nowMs;
             if (renderProgressBar) {
                 renderProgressBar->setMaximum(qMax(1, static_cast<int>(qMin<int64_t>(progress.totalFrames, std::numeric_limits<int>::max()))));
                 renderProgressBar->setValue(static_cast<int>(qMin<int64_t>(progress.framesCompleted, std::numeric_limits<int>::max())));
@@ -1125,8 +1155,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             if (renderSourcesList) {
                 renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
             }
-            QCoreApplication::processEvents();
-            return !renderCancelled || !*renderCancelled;
+            lastEventPumpMs = nowMs;
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            return !cancelled;
         });
     if (renderProgressBar) {
         renderProgressBar->setValue(renderProgressBar->maximum());

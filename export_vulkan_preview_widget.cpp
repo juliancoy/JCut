@@ -24,6 +24,7 @@ public:
         : m_window(window) {}
 
     void initResources() override;
+    void releaseResources() override;
     void startNextFrame() override;
     void logicalDeviceLost() override {}
     void physicalDeviceLost() override {}
@@ -134,6 +135,14 @@ void ExportVulkanPreviewRenderer::initResources()
     }
 }
 
+void ExportVulkanPreviewRenderer::releaseResources()
+{
+    m_pipeline.reset();
+    m_resources.reset();
+    m_funcs = nullptr;
+    m_qwindow = nullptr;
+}
+
 void ExportVulkanPreviewRenderer::startNextFrame()
 {
     if (!m_qwindow || !m_funcs) {
@@ -215,7 +224,13 @@ ExportVulkanPreviewWidget::ExportVulkanPreviewWidget(QWidget* parent)
     layout->addWidget(m_container);
 }
 
-ExportVulkanPreviewWidget::~ExportVulkanPreviewWidget() = default;
+ExportVulkanPreviewWidget::~ExportVulkanPreviewWidget()
+{
+    delete m_container;
+    m_container = nullptr;
+    m_window = nullptr;
+    m_instance.reset();
+}
 
 bool ExportVulkanPreviewWidget::isReady() const
 {

@@ -3730,6 +3730,10 @@ bool OffscreenVulkanRenderer::supportsCudaExternalMemoryInterop() const {
   return d && d->supportsCudaExternalMemoryInterop();
 }
 
+bool OffscreenVulkanRenderer::supportsNv12CudaTransfer() const {
+  return supportsCudaExternalMemoryInterop();
+}
+
 QString OffscreenVulkanRenderer::cudaExternalMemoryStatus() const {
   return d ? d->cudaExternalMemoryStatus() : QStringLiteral("renderer unavailable");
 }

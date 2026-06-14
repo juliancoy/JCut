@@ -56,6 +56,7 @@ struct RenderProgressCore {
     std::string encoderPixelFormat;
     std::string encoderSoftwarePixelFormat;
     std::string cudaExternalMemoryStatus;
+    std::string exportPathFallbackReason;
     bool cudaExternalTransfer = false;
     bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
@@ -94,6 +95,7 @@ struct RenderResultCore {
     std::string encoderPixelFormat;
     std::string encoderSoftwarePixelFormat;
     std::string cudaExternalMemoryStatus;
+    std::string exportPathFallbackReason;
     bool cudaExternalTransfer = false;
     bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;

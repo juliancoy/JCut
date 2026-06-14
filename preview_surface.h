@@ -1,5 +1,6 @@
 #pragma once
 
+#include "background_fill_effect.h"
 #include "loiacono/spectrum_settings_dialog.h"
 
 #include <QColor>
@@ -100,6 +101,7 @@ public:
     virtual void setShowCorrectionOverlays(bool show) = 0;
     virtual void setSelectedCorrectionPolygon(int polygonIndex) = 0;
     virtual void setBackgroundColor(const QColor& color) = 0;
+    virtual void setBackgroundFillEffect(BackgroundFillEffect effect) = 0;
     virtual void setPreviewZoom(qreal zoom) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;

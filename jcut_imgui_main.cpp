@@ -14,6 +14,7 @@
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -21,14 +22,21 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <mutex>
 #include <limits>
+#include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
+
+namespace fs = std::filesystem;
 
 enum class TimelineDragMode {
     None,
@@ -50,6 +58,9 @@ constexpr float kStatusBarHeight = 28.0f;
 constexpr float kMediaPanelWidth = 320.0f;
 constexpr float kInspectorPanelWidth = 340.0f;
 constexpr float kTimelinePanelHeight = 280.0f;
+constexpr float kDefaultUiFontSize = 16.0f;
+constexpr float kMinUiFontSize = 11.0f;
+constexpr float kMaxUiFontSize = 28.0f;
 
 struct ShellState {
     jcut::EditorRuntime runtime;
@@ -66,6 +77,12 @@ struct ShellState {
     bool usesQtProjectStorage = false;
     bool saveShortcutPressed = false;
     bool reloadShortcutPressed = false;
+    bool fontSizeIncreaseShortcutPressed = false;
+    bool fontSizeDecreaseShortcutPressed = false;
+    float uiFontSize = kDefaultUiFontSize;
+    float loadedUiFontSize = kDefaultUiFontSize;
+    std::string preferencesPath;
+    std::string uiFontPath;
     std::array<char, 512> importMediaPath{};
     std::array<char, 128> importMediaLabel{};
     std::array<char, 64> importMediaKind{};
@@ -118,6 +135,171 @@ struct ShellLayout {
     PanelLayout inspector;
     PanelLayout timeline;
 };
+
+std::string pathString(const fs::path& path)
+{
+    return path.lexically_normal().string();
+}
+
+std::string readTextFile(const fs::path& path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+bool writeTextFileAtomically(const fs::path& path, const std::string& content)
+{
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    const fs::path tempPath = path.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::out | std::ios::trunc | std::ios::binary);
+        if (!output.is_open()) {
+            return false;
+        }
+        output << content;
+        if (!output.good()) {
+            return false;
+        }
+    }
+    fs::rename(tempPath, path, ec);
+    if (ec) {
+        fs::remove(path, ec);
+        ec.clear();
+        fs::rename(tempPath, path, ec);
+    }
+    return !ec;
+}
+
+fs::path executableDirPath()
+{
+    std::error_code ec;
+#if defined(__linux__)
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec && !exe.empty()) {
+        return exe.parent_path();
+    }
+#endif
+    return fs::current_path();
+}
+
+std::vector<fs::path> uiFontCandidates()
+{
+    const fs::path exeDir = executableDirPath();
+    std::vector<fs::path> candidates{
+#if defined(__APPLE__)
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/HelveticaNeue.ttc",
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+#endif
+        exeDir / "assets" / "fonts" / "Roboto-Medium.ttf",
+        exeDir / "external" / "imgui" / "misc" / "fonts" / "Roboto-Medium.ttf",
+        fs::current_path() / "assets" / "fonts" / "Roboto-Medium.ttf",
+        fs::current_path() / "external" / "imgui" / "misc" / "fonts" / "Roboto-Medium.ttf",
+    };
+
+    fs::path walker = exeDir;
+    for (int i = 0; i < 4 && walker.has_parent_path(); ++i) {
+        candidates.push_back(walker / "external" / "imgui" / "misc" / "fonts" / "Roboto-Medium.ttf");
+        walker = walker.parent_path();
+    }
+    return candidates;
+}
+
+std::optional<fs::path> firstExistingPath(const std::vector<fs::path>& candidates)
+{
+    std::error_code ec;
+    for (const fs::path& candidate : candidates) {
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec)) {
+            return candidate;
+        }
+        ec.clear();
+    }
+    return std::nullopt;
+}
+
+void loadUiPreferences(ShellState* shellState)
+{
+    if (shellState->preferencesPath.empty()) {
+        return;
+    }
+    const std::string bytes = readTextFile(shellState->preferencesPath);
+    if (bytes.empty()) {
+        return;
+    }
+    try {
+        const nlohmann::json root = nlohmann::json::parse(bytes);
+        shellState->uiFontSize = std::clamp(
+            root.value("uiFontSize", kDefaultUiFontSize),
+            kMinUiFontSize,
+            kMaxUiFontSize);
+    } catch (...) {
+        shellState->uiFontSize = kDefaultUiFontSize;
+    }
+}
+
+void saveUiPreferences(const ShellState& shellState)
+{
+    if (shellState.preferencesPath.empty()) {
+        return;
+    }
+    const nlohmann::json root{
+        {"uiFontSize", shellState.uiFontSize}
+    };
+    writeTextFileAtomically(shellState.preferencesPath, root.dump(2) + "\n");
+}
+
+void applyUiFontScale(const ShellState& shellState)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    io.FontGlobalScale = shellState.loadedUiFontSize > 0.0f
+        ? std::clamp(shellState.uiFontSize / shellState.loadedUiFontSize, 0.5f, 3.0f)
+        : 1.0f;
+}
+
+void loadUiFont(ShellState* shellState)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    const std::optional<fs::path> fontPath = firstExistingPath(uiFontCandidates());
+    if (fontPath.has_value()) {
+        ImFontConfig config;
+        config.OversampleH = 2;
+        config.OversampleV = 2;
+        ImFont* font = io.Fonts->AddFontFromFileTTF(
+            pathString(*fontPath).c_str(),
+            shellState->uiFontSize,
+            &config);
+        if (font) {
+            io.FontDefault = font;
+            shellState->loadedUiFontSize = shellState->uiFontSize;
+            shellState->uiFontPath = pathString(*fontPath);
+            applyUiFontScale(*shellState);
+            return;
+        }
+    }
+
+    io.Fonts->AddFontDefault();
+    shellState->loadedUiFontSize = kDefaultUiFontSize;
+    applyUiFontScale(*shellState);
+}
+
+void changeUiFontSize(ShellState* shellState, float delta)
+{
+    const float nextSize = std::clamp(shellState->uiFontSize + delta, kMinUiFontSize, kMaxUiFontSize);
+    if (std::abs(nextSize - shellState->uiFontSize) < 0.001f) {
+        return;
+    }
+    shellState->uiFontSize = nextSize;
+    applyUiFontScale(*shellState);
+    saveUiPreferences(*shellState);
+    shellState->statusMessage = "UI font size " + std::to_string(static_cast<int>(std::lround(nextSize))) + "px";
+}
 
 void requestPreviewRender(ShellState* shellState)
 {
@@ -1338,6 +1520,9 @@ int main(int argc, char** argv)
             shellState.runtime = jcut::EditorRuntime::fromDocument(*loadedDocument);
         }
         shellState.documentPath = argv[1];
+        shellState.preferencesPath = pathString(fs::path(shellState.documentPath).parent_path() /
+                                                (fs::path(shellState.documentPath).filename().string() +
+                                                 ".imgui_prefs.json"));
         shellState.lastSavedSnapshotJson = snapshotJson(*loadedDocument);
         shellState.statusMessage = "document loaded";
         std::snprintf(shellState.exportOutputPath.data(),
@@ -1360,6 +1545,8 @@ int main(int argc, char** argv)
         shellState.statePath = session->statePath;
         shellState.historyPath = session->historyPath;
         shellState.projectRootPath = session->rootDirPath;
+        shellState.preferencesPath = pathString(fs::path(shellState.statePath).parent_path() /
+                                                "imgui_prefs.json");
         shellState.legacyStateRoot = session->legacyStateRoot;
         shellState.usesQtProjectStorage = true;
         shellState.lastSavedSnapshotJson = snapshotJson(session->document);
@@ -1369,6 +1556,7 @@ int main(int argc, char** argv)
                       "%s",
                       session->document.exportRequest.outputPath.c_str());
     }
+    loadUiPreferences(&shellState);
 
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {
@@ -1390,6 +1578,7 @@ int main(int argc, char** argv)
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
+    loadUiFont(&shellState);
     applyShellStyle();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glslVersion);
@@ -1435,14 +1624,28 @@ int main(int argc, char** argv)
             glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         const bool savePressed = ctrlPressed && glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
         const bool reloadPressed = ctrlPressed && glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+        const bool fontSizeIncreasePressed = ctrlPressed &&
+            (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS);
+        const bool fontSizeDecreasePressed = ctrlPressed &&
+            (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS);
         if (savePressed && !shellState.saveShortcutPressed) {
             saveCurrentDocument(&shellState);
         }
         if (reloadPressed && !shellState.reloadShortcutPressed) {
             reloadCurrentDocument(&shellState);
         }
+        if (fontSizeIncreasePressed && !shellState.fontSizeIncreaseShortcutPressed) {
+            changeUiFontSize(&shellState, 1.0f);
+        }
+        if (fontSizeDecreasePressed && !shellState.fontSizeDecreaseShortcutPressed) {
+            changeUiFontSize(&shellState, -1.0f);
+        }
         shellState.saveShortcutPressed = savePressed;
         shellState.reloadShortcutPressed = reloadPressed;
+        shellState.fontSizeIncreaseShortcutPressed = fontSizeIncreasePressed;
+        shellState.fontSizeDecreaseShortcutPressed = fontSizeDecreasePressed;
 
         {
             std::lock_guard<std::mutex> lock(shellState.exportMutex);

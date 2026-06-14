@@ -79,6 +79,7 @@ void NullPreviewSurface::setCorrectionsEnabled(bool enabled) { m_correctionsEnab
 void NullPreviewSurface::setShowCorrectionOverlays(bool show) { m_showCorrectionOverlays = show; requestRepaint(); }
 void NullPreviewSurface::setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; requestRepaint(); }
 void NullPreviewSurface::setBackgroundColor(const QColor& color) { m_backgroundColor = color; requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect) { requestRepaint(); }
 void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal>(0.1, zoom); requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }

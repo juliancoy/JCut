@@ -116,6 +116,7 @@ RenderProgressCore toCoreRenderProgress(const ::RenderProgress& progress)
     core.encoderPixelFormat = progress.encoderPixelFormat.toStdString();
     core.encoderSoftwarePixelFormat = progress.encoderSoftwarePixelFormat.toStdString();
     core.cudaExternalMemoryStatus = progress.cudaExternalMemoryStatus.toStdString();
+    core.exportPathFallbackReason = progress.exportPathFallbackReason.toStdString();
     core.cudaExternalTransfer = progress.cudaExternalTransfer;
     core.cudaExternalMemorySupported = progress.cudaExternalMemorySupported;
     core.encoderHardwareFrames = progress.encoderHardwareFrames;
@@ -157,6 +158,7 @@ RenderResultCore toCoreRenderResult(const ::RenderResult& result)
     core.encoderPixelFormat = result.encoderPixelFormat.toStdString();
     core.encoderSoftwarePixelFormat = result.encoderSoftwarePixelFormat.toStdString();
     core.cudaExternalMemoryStatus = result.cudaExternalMemoryStatus.toStdString();
+    core.exportPathFallbackReason = result.exportPathFallbackReason.toStdString();
     core.cudaExternalTransfer = result.cudaExternalTransfer;
     core.cudaExternalMemorySupported = result.cudaExternalMemorySupported;
     core.encoderHardwareFrames = result.encoderHardwareFrames;

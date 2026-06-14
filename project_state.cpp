@@ -423,6 +423,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("lastRenderOutputPath")] = m_lastRenderOutputPath;
     root[QStringLiteral("renderUseProxies")] =
         m_renderUseProxiesCheckBox ? m_renderUseProxiesCheckBox->isChecked() : false;
+    root[QStringLiteral("backgroundFillEffect")] =
+        m_backgroundFillEffectCombo
+            ? m_backgroundFillEffectCombo->currentData().toString()
+            : backgroundFillEffectToString(kDefaultBackgroundFillEffect);
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =

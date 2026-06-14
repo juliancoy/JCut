@@ -208,6 +208,7 @@ void EditorWindow::bindInspectorWidgets()
     m_exportEndSpin = m_inspectorPane->exportEndSpin();
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
+    m_backgroundFillEffectCombo = m_inspectorPane->backgroundFillEffectCombo();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
@@ -1075,6 +1076,22 @@ void EditorWindow::setupPreviewControls()
         }
         scheduleSaveState();
     });
+
+    if (m_backgroundFillEffectCombo) {
+        connect(m_backgroundFillEffectCombo, &QComboBox::currentIndexChanged, this, [this]() {
+            const BackgroundFillEffect effect =
+                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
+            if (m_preview) {
+                m_preview->setBackgroundFillEffect(effect);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillEffect(
+                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()));
+        }
+    }
 
     if (m_inspectorPane->restartDecodersButton()) {
         connect(m_inspectorPane->restartDecodersButton(), &QPushButton::clicked,

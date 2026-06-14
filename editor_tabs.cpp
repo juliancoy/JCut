@@ -271,7 +271,7 @@ void EditorWindow::createOutputTab()
         OutputTab::Widgets{
             m_outputWidthSpin, m_outputHeightSpin, m_outputFpsSpin,
             m_exportStartSpin, m_exportEndSpin,
-            m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
+            m_outputFormatCombo, m_backgroundFillEffectCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
             m_outputPlaybackCacheFallbackCheckBox, m_outputLeadPrefetchEnabledCheckBox,
             m_outputLeadPrefetchCountSpin, m_outputPlaybackWindowAheadSpin, m_outputVisibleQueueReserveSpin,
             m_outputPrefetchMaxQueueDepthSpin, m_outputPrefetchMaxInflightSpin,

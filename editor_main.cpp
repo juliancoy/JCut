@@ -12,6 +12,7 @@
 #include <QFontInfo>
 #include <QFontMetrics>
 #include <QLockFile>
+#include <QSettings>
 #include <QToolTip>
 
 #include <limits>
@@ -61,31 +62,42 @@ QString bundledUiFontFamily()
     return {};
 }
 
-void ensureReadableApplicationFont()
+constexpr int kDefaultApplicationFontPointSize = 10;
+constexpr int kMinApplicationFontPointSize = 8;
+constexpr int kMaxApplicationFontPointSize = 96;
+
+int configuredApplicationFontPointSize(const QFont& fallbackFont)
+{
+    QSettings settings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"));
+    const int fallbackPointSize = fallbackFont.pointSize() > 0
+        ? fallbackFont.pointSize()
+        : QFontInfo(fallbackFont).pointSize();
+    const int pointSize = settings.value(
+        QStringLiteral("ui/fontPointSize"),
+        fallbackPointSize > 0 ? fallbackPointSize : kDefaultApplicationFontPointSize).toInt();
+    return qBound(kMinApplicationFontPointSize, pointSize, kMaxApplicationFontPointSize);
+}
+
+void applyPreferredApplicationFont()
 {
     const QFont currentFont = QApplication::font();
-    if (fontSupportsUiText(currentFont)) {
-        return;
-    }
-
     const QString family = bundledUiFontFamily();
-    if (family.isEmpty()) {
+    const bool useBundledFont = !family.isEmpty();
+    if (!useBundledFont && !fontSupportsUiText(currentFont)) {
         qWarning().noquote()
             << QStringLiteral("[STARTUP][WARN] Qt could not resolve a usable UI font, and bundled fonts failed to load.");
         return;
     }
 
-    QFont readableFont(family);
-    int pointSize = currentFont.pointSize();
-    if (pointSize <= 0) {
-        pointSize = QFontInfo(currentFont).pointSize();
-    }
-    readableFont.setPointSize(pointSize > 0 ? pointSize : 10);
+    QFont readableFont = useBundledFont ? QFont(family) : currentFont;
+    readableFont.setPointSize(configuredApplicationFontPointSize(currentFont));
     QApplication::setFont(readableFont);
     QToolTip::setFont(readableFont);
-    qWarning().noquote()
-        << QStringLiteral("[STARTUP][WARN] Qt default UI font had no basic Latin glyphs; using bundled font '%1'.")
-               .arg(family);
+
+    if (useBundledFont) {
+        qInfo().noquote()
+            << QStringLiteral("[STARTUP] Using bundled UI font '%1'.").arg(family);
+    }
 }
 
 }
@@ -109,7 +121,7 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     Q_INIT_RESOURCE(ui_icons);
     QApplication::setApplicationName(QStringLiteral("PanelTalkEditor"));
-    ensureReadableApplicationFont();
+    applyPreferredApplicationFont();
     qRegisterMetaType<editor::FrameHandle>();
 
     std::unique_ptr<QLockFile> lockFile;

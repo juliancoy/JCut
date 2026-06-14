@@ -9,6 +9,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QScreen>
+#include <QSettings>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -19,6 +20,9 @@
 using namespace editor;
 
 namespace {
+constexpr int kMinApplicationFontPointSize = 8;
+constexpr int kMaxApplicationFontPointSize = 96;
+
 bool restVulkanDiagnosticsModeEnabled()
 {
     const QString value = qEnvironmentVariable("JCUT_REST_VULKAN_DIAGNOSTICS").trimmed().toLower();
@@ -209,7 +213,9 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
 void EditorWindow::setupPlaybackTimers()
 {
-    connect(&m_playbackTimer, &QTimer::timeout, this, &EditorWindow::advanceFrame);
+    connect(&m_playbackTimer, &QTimer::timeout, this, [this]() {
+        advanceFrame();
+    });
     m_playbackTimer.setTimerType(Qt::PreciseTimer);
     updatePlaybackTimerInterval();
 }
@@ -329,8 +335,12 @@ void EditorWindow::adjustGlobalFontSize(int deltaPoints)
     if (pointSize <= 0) {
         pointSize = 10;
     }
-    pointSize = qBound(8, pointSize + deltaPoints, 96);
+    pointSize = qBound(kMinApplicationFontPointSize,
+                       pointSize + deltaPoints,
+                       kMaxApplicationFontPointSize);
     appFont.setPointSize(pointSize);
+    QSettings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"))
+        .setValue(QStringLiteral("ui/fontPointSize"), pointSize);
     QApplication::setFont(appFont);
     QToolTip::setFont(appFont);
     for (QWidget* widget : QApplication::allWidgets()) {

@@ -30,6 +30,7 @@ struct RenderProgress {
     QString encoderPixelFormat;
     QString encoderSoftwarePixelFormat;
     QString cudaExternalMemoryStatus;
+    QString exportPathFallbackReason;
     bool cudaExternalTransfer = false;
     bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
@@ -108,6 +109,7 @@ struct RenderResult {
     QString encoderPixelFormat;
     QString encoderSoftwarePixelFormat;
     QString cudaExternalMemoryStatus;
+    QString exportPathFallbackReason;
     bool cudaExternalTransfer = false;
     bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;

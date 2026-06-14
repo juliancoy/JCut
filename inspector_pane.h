@@ -365,6 +365,7 @@ public:
     QSpinBox *autosaveMaxBackupsSpin() const { return m_autosaveMaxBackupsSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
+    QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
     QCheckBox *speechFilterEnabledCheckBox() const { return m_speechFilterEnabledCheckBox; }
@@ -753,6 +754,7 @@ private:
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
+    QComboBox *m_backgroundFillEffectCombo = nullptr;
 
     QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_transcriptPrependMsSpin = nullptr;

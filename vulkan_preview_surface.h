@@ -62,6 +62,7 @@ public:
     void setShowCorrectionOverlays(bool show) override;
     void setSelectedCorrectionPolygon(int polygonIndex) override;
     void setBackgroundColor(const QColor& color) override;
+    void setBackgroundFillEffect(BackgroundFillEffect effect) override;
     void setPreviewZoom(qreal zoom) override;
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;

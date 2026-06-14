@@ -29,6 +29,7 @@ public:
         QSpinBox* exportStartSpin = nullptr;
         QSpinBox* exportEndSpin = nullptr;
         QComboBox* outputFormatCombo = nullptr;
+        QComboBox* backgroundFillEffectCombo = nullptr;
         QLabel* outputRangeSummaryLabel = nullptr;
         QCheckBox* renderUseProxiesCheckBox = nullptr;
         QCheckBox* outputPlaybackCacheFallbackCheckBox = nullptr;
