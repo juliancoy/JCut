@@ -58,14 +58,28 @@ private slots:
         QCOMPARE(static_cast<unsigned char>(lut[lut.size() - 1]), static_cast<unsigned char>(255));
     }
 
-    void blurredFillBackgroundUsesShaderBlurSignal()
+    void backgroundFillEffectsUseSelectableShaderSignals()
     {
-        const render_detail::VulkanDrawEffectState state =
+        const QRectF sourceRect(0.25, 0.0, 0.5, 1.0);
+        const render_detail::VulkanDrawEffectState edgeState =
+            render_detail::vulkanBackgroundFillEffectState(
+                BackgroundFillEffect::EdgeStretch, 0.8f, sourceRect);
+        QCOMPARE(edgeState.opacity, 0.8f);
+        QCOMPARE(edgeState.shadows[0], 0.25f);
+        QCOMPARE(edgeState.shadows[1], 0.0f);
+        QCOMPARE(edgeState.shadows[2], 0.75f);
+        QCOMPARE(edgeState.shadows[3], 1.0f);
+        QVERIFY2(edgeState.highlights[3] < -1.5f,
+                 "Edge-stretch background fill must signal row-wise edge sampling.");
+
+        const render_detail::VulkanDrawEffectState blurState =
             render_detail::vulkanBlurredBackgroundEffectState(0.8f);
 
-        QCOMPARE(state.opacity, 0.8f);
-        QVERIFY2(state.midtones[3] < 0.0f,
-                 "Blurred fill background must signal color blur without using the positive alpha-feather path.");
+        QCOMPARE(blurState.opacity, 0.8f);
+        QVERIFY2(blurState.highlights[3] < -0.5f && blurState.highlights[3] > -1.5f,
+                 "Blurred fill background must signal blur cover mode.");
+        QVERIFY2(blurState.midtones[3] < 0.0f,
+                 "Blurred fill background must carry a negative shader blur radius.");
     }
 
     void pushConstantLayoutKeepsParityFlagsInPadding()
@@ -125,36 +139,22 @@ private slots:
                                 .arg(previewPoint.y(), 0, 'f', 3)
                                 .arg(expectedTarget.y(), 0, 'f', 3)));
 
-        auto verifyExport = [&](bool exportTextureNeedsYFlip, const char* label) {
-            const QPointF exportTranslation =
-                render_detail::exportVideoLayerTranslationForSampledFace(fitted,
-                                                                         translation,
-                                                                         0.0,
-                                                                         scale,
-                                                                         exportTextureNeedsYFlip,
-                                                                         sampledFaceNorm);
-            float exportMvp[16] = {};
-            render_detail::vulkanMvpForExportVideoLayer(fitted,
-                                                        exportTranslation,
-                                                        outputSize,
-                                                        0.0,
-                                                        scale,
-                                                        exportTextureNeedsYFlip,
-                                                        exportMvp);
-            const QPointF exportPoint = mappedOutputPoint(exportMvp, sampledFaceNorm);
-            QVERIFY2(std::abs(exportPoint.x() - expectedTarget.x()) < 0.5,
-                     qPrintable(QStringLiteral("%1 export face X target mismatch: got %2 expected %3")
-                                    .arg(QString::fromUtf8(label))
-                                    .arg(exportPoint.x(), 0, 'f', 3)
-                                    .arg(expectedTarget.x(), 0, 'f', 3)));
-            QVERIFY2(std::abs(exportPoint.y() - expectedTarget.y()) < 0.5,
-                     qPrintable(QStringLiteral("%1 export face Y target mismatch: got %2 expected %3")
-                                    .arg(QString::fromUtf8(label))
-                                    .arg(exportPoint.y(), 0, 'f', 3)
-                                    .arg(expectedTarget.y(), 0, 'f', 3)));
-        };
-        verifyExport(false, "hardware-direct video");
-        verifyExport(true, "uploaded texture");
+        float exportMvp[16] = {};
+        render_detail::vulkanMvpForExportVideoLayer(fitted,
+                                                    translation,
+                                                    outputSize,
+                                                    0.0,
+                                                    scale,
+                                                    exportMvp);
+        const QPointF exportPoint = mappedOutputPoint(exportMvp, sampledFaceNorm);
+        QVERIFY2(std::abs(exportPoint.x() - expectedTarget.x()) < 0.5,
+                 qPrintable(QStringLiteral("canonical export face X target mismatch: got %1 expected %2")
+                                .arg(exportPoint.x(), 0, 'f', 3)
+                                .arg(expectedTarget.x(), 0, 'f', 3)));
+        QVERIFY2(std::abs(exportPoint.y() - expectedTarget.y()) < 0.5,
+                 qPrintable(QStringLiteral("canonical export face Y target mismatch: got %1 expected %2")
+                                .arg(exportPoint.y(), 0, 'f', 3)
+                                .arg(expectedTarget.y(), 0, 'f', 3)));
     }
 
     void directVulkanShaderRunsOpenGlGradeOrder()
@@ -169,8 +169,10 @@ private slots:
                  "Direct Vulkan presenter must use the push-constant curve-enabled flag.");
         QVERIFY2(source.contains(QStringLiteral("pc.u_midtones.a > 0.0")),
                  "Direct Vulkan presenter must use the push-constant mask-feather radius.");
-        QVERIFY2(source.contains(QStringLiteral("pc.u_midtones.a < 0.0")),
-                 "Direct Vulkan presenter must use the push-constant blurred-fill background signal.");
+        QVERIFY2(source.contains(QStringLiteral("pc.u_highlights.a < -1.5")),
+                 "Direct Vulkan presenter must use the push-constant edge-stretch background signal.");
+        QVERIFY2(source.contains(QStringLiteral("edgeStretchFillSample")),
+                 "Direct Vulkan presenter must drag edge pixels across missing background rows.");
         QVERIFY2(source.contains(QStringLiteral("blurredFillSample")),
                  "Direct Vulkan presenter must blur the cover-fill background in shader.");
 
@@ -189,6 +191,20 @@ private slots:
         QVERIFY2(contrastPos > curvePos, "Direct Vulkan shader must apply brightness/contrast after curves.");
         QVERIFY2(lumaRefreshPos > contrastPos, "Direct Vulkan shader must recompute luma after brightness/contrast.");
         QVERIFY2(saturationPos > lumaRefreshPos, "Direct Vulkan shader must apply saturation with refreshed luma.");
+    }
+
+    void directVulkanPresenterPassesBackgroundFillState()
+    {
+        QFile renderer(QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
+        QVERIFY2(renderer.open(QIODevice::ReadOnly), "Unable to open direct Vulkan preview renderer.");
+        const QString source = QString::fromUtf8(renderer.readAll());
+
+        QVERIFY2(source.contains(QStringLiteral("const BackgroundFillEffect fillEffect = state->backgroundFillEffect")),
+                 "Direct Vulkan presenter must use the selectable background fill effect.");
+        QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::EdgeStretch")),
+                 "Direct Vulkan presenter must default through the edge-stretch background path.");
+        QVERIFY2(source.contains(QStringLiteral("backgroundPush.highlights[3] = backgroundEffects.highlights[3]")),
+                 "Direct Vulkan presenter must pass the background fill mode signal into the draw.");
     }
 };
 

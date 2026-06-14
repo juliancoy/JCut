@@ -1,5 +1,6 @@
 #pragma once
 
+#include "background_fill_effect.h"
 #include "editor_shared.h"
 
 #include <QByteArray>
@@ -28,14 +29,7 @@ void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,
                                   const QSize& outputSize,
                                   qreal rotationDegrees,
                                   const QPointF& scale,
-                                  bool sampledFrameNeedsYFlip,
                                   float outMvp[16]);
-QPointF exportVideoLayerTranslationForSampledFace(const QRectF& fittedRect,
-                                                  const QPointF& translation,
-                                                  qreal rotationDegrees,
-                                                  const QPointF& scale,
-                                                  bool sampledFrameNeedsYFlip,
-                                                  const QPointF& sampledFaceNorm);
 void vulkanMvpForPreviewTransform(const QTransform& clipToSwapchain,
                                   const QRectF& localRect,
                                   const QSize& swapSize,
@@ -53,5 +47,8 @@ struct VulkanDrawEffectState {
 
 VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);
+VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
+                                                      float opacity,
+                                                      const QRectF& sourceRectNorm = QRectF());
 
 } // namespace render_detail

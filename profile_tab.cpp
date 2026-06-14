@@ -321,6 +321,12 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
                         exportStats.value(QStringLiteral("encoder_hardware_frames")).toBool(false)
                             ? QStringLiteral("yes")
                             : QStringLiteral("no")));
+        addRow(QStringLiteral("Export CUDA Interop"),
+               QStringLiteral("%1 / %2")
+                   .arg(exportStats.value(QStringLiteral("cuda_external_memory_supported")).toBool(false)
+                            ? QStringLiteral("ready")
+                            : QStringLiteral("unavailable"),
+                        exportStats.value(QStringLiteral("cuda_external_memory_status")).toString(QStringLiteral("unknown"))));
         addRow(QStringLiteral("Export Render Stage"),
                formatStage(exportStats, QStringLiteral("render_stage_ms"), QStringLiteral("render_stage_per_frame_ms")));
         const QString gpuTransferLabel =

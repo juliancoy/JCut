@@ -28,6 +28,7 @@ struct RenderRequestCore {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
+    std::string backgroundFillEffect = "edge_stretch";
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
     std::int64_t exportStartFrame = 0;
@@ -54,7 +55,9 @@ struct RenderProgressCore {
     std::string gpuTransferLabel;
     std::string encoderPixelFormat;
     std::string encoderSoftwarePixelFormat;
+    std::string cudaExternalMemoryStatus;
     bool cudaExternalTransfer = false;
+    bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
     std::int64_t elapsedMs = 0;
     std::int64_t estimatedRemainingMs = -1;
@@ -90,7 +93,9 @@ struct RenderResultCore {
     std::string gpuTransferLabel;
     std::string encoderPixelFormat;
     std::string encoderSoftwarePixelFormat;
+    std::string cudaExternalMemoryStatus;
     bool cudaExternalTransfer = false;
+    bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
     std::string namedOutputDir;
     std::int64_t framesRendered = 0;

@@ -87,7 +87,6 @@ void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,
                                   const QSize& outputSize,
                                   qreal rotationDegrees,
                                   const QPointF& scale,
-                                  bool sampledFrameNeedsYFlip,
                                   float outMvp[16])
 {
     const float fullW = static_cast<float>(std::max(1, outputSize.width()));
@@ -99,8 +98,7 @@ void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,
     const float cosTheta = std::cos(radians);
     const float sinTheta = std::sin(radians);
     const float scaleX = static_cast<float>(scale.x());
-    const float scaleY =
-        static_cast<float>(scale.y() * (sampledFrameNeedsYFlip ? -1.0 : 1.0));
+    const float scaleY = static_cast<float>(scale.y());
     const float m11 = cosTheta * scaleX;
     const float m12 = sinTheta * scaleX;
     const float m21 = -sinTheta * scaleY;
@@ -117,33 +115,6 @@ void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,
         1.f
     };
     std::copy(std::begin(m), std::end(m), outMvp);
-}
-
-QPointF exportVideoLayerTranslationForSampledFace(const QRectF& fittedRect,
-                                                  const QPointF& translation,
-                                                  qreal rotationDegrees,
-                                                  const QPointF& scale,
-                                                  bool sampledFrameNeedsYFlip,
-                                                  const QPointF& sampledFaceNorm)
-{
-    if (!sampledFrameNeedsYFlip) {
-        return translation;
-    }
-    constexpr double kPi = 3.141592653589793238462643383279502884;
-    const qreal radians = rotationDegrees * kPi / 180.0;
-    const qreal cosTheta = std::cos(radians);
-    const qreal sinTheta = std::sin(radians);
-    const qreal localX =
-        (std::clamp(sampledFaceNorm.x(), 0.0, 1.0) - 0.5) * fittedRect.width();
-    const qreal localY =
-        (std::clamp(sampledFaceNorm.y(), 0.0, 1.0) - 0.5) * fittedRect.height();
-    const qreal scaledX = scale.x() * localX;
-    const qreal scaledY = scale.y() * localY;
-    const QPointF unflipped((cosTheta * scaledX) - (sinTheta * scaledY),
-                            (sinTheta * scaledX) + (cosTheta * scaledY));
-    const QPointF flipped((cosTheta * scaledX) - (sinTheta * -scaledY),
-                          (sinTheta * scaledX) + (cosTheta * -scaledY));
-    return translation + (unflipped - flipped);
 }
 
 void vulkanMvpForPreviewTransform(const QTransform& clipToSwapchain,
@@ -196,14 +167,28 @@ VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingK
 
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity)
 {
+    return vulkanBackgroundFillEffectState(BackgroundFillEffect::BlurCover, opacity);
+}
+
+VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
+                                                      float opacity,
+                                                      const QRectF& sourceRectNorm)
+{
     VulkanDrawEffectState state;
     state.opacity = std::clamp(opacity, 0.0f, 1.0f);
-    state.brightness = -0.12f;
+    state.brightness = -0.16f;
     state.contrast = 1.0f;
-    state.saturation = 0.75f;
-    state.shadows[3] = 1.0f;
-    state.midtones[3] = -14.0f;
-    state.highlights[3] = 1.0f;
+    state.saturation = 0.68f;
+    if (effect == BackgroundFillEffect::EdgeStretch) {
+        state.shadows[0] = static_cast<float>(sourceRectNorm.left());
+        state.shadows[1] = static_cast<float>(sourceRectNorm.top());
+        state.shadows[2] = static_cast<float>(sourceRectNorm.right());
+        state.shadows[3] = static_cast<float>(sourceRectNorm.bottom());
+        state.highlights[3] = -2.0f;
+        return state;
+    }
+    state.highlights[3] = -1.0f;
+    state.midtones[3] = -34.0f;
     return state;
 }
 

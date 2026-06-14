@@ -558,8 +558,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             ? (cudaHardwareFrames ? AV_PIX_FMT_NV12 : codecCtx->pix_fmt)
             : selectedEncoderSwFormat;
     const bool directNv12Conversion = encoderInputPixFmt == AV_PIX_FMT_NV12;
-    const bool vulkanGpuRenderer =
-        useGpuRenderer && activeRenderer && activeRenderer->backendId() == QStringLiteral("vulkan");
+    const bool vulkanGpuRenderer = useGpuRenderer && activeRenderer;
     const bool vulkanGpuNv12Conversion =
         vulkanGpuRenderer &&
         encoderInputPixFmt == AV_PIX_FMT_NV12 &&
@@ -570,6 +569,11 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         activeRenderer &&
         activeRenderer->supportsCudaExternalMemoryInterop() &&
         qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER", QStringLiteral("1")) != QStringLiteral("0");
+    const bool cudaExternalMemorySupported =
+        activeRenderer && activeRenderer->supportsCudaExternalMemoryInterop();
+    const QString cudaExternalMemoryStatus =
+        activeRenderer ? activeRenderer->cudaExternalMemoryStatus()
+                       : QStringLiteral("renderer unavailable");
     const QString encoderPixelFormatName =
         QString::fromLatin1(av_get_pix_fmt_name(codecCtx->pix_fmt));
     const QString encoderSoftwarePixelFormatName =
@@ -582,9 +586,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     cudaHardwareFrames ? QStringLiteral("yes") : QStringLiteral("no"),
                     vulkanGpuNv12Conversion ? QStringLiteral("yes") : QStringLiteral("no"),
                     vulkanCudaExternalTransfer ? QStringLiteral("yes") : QStringLiteral("no"),
-                    (activeRenderer && activeRenderer->supportsCudaExternalMemoryInterop())
-                        ? QStringLiteral("yes")
-                        : QStringLiteral("no"));
+                    cudaExternalMemorySupported ? QStringLiteral("yes") : QStringLiteral("no"))
+               << QStringLiteral("status=\"%1\"").arg(cudaExternalMemoryStatus);
     if (vulkanCudaExternalTransfer) {
         qInfo().noquote() << QStringLiteral(
             "Vulkan export path: direct external-memory NV12 transfer into CUDA encoder frames enabled.");
@@ -915,7 +918,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.gpuTransferLabel = gpuTransferLabel;
                 progress.encoderPixelFormat = encoderPixelFormatName;
                 progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+                progress.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
                 progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
+                progress.cudaExternalMemorySupported = cudaExternalMemorySupported;
                 progress.encoderHardwareFrames = cudaHardwareFrames;
                 progress.elapsedMs = totalTimer.elapsed();
                 progress.estimatedRemainingMs =
@@ -1072,7 +1077,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.gpuTransferLabel = gpuTransferLabel;
                 progress.encoderPixelFormat = encoderPixelFormatName;
                 progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+                progress.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
                 progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
+                progress.cudaExternalMemorySupported = cudaExternalMemorySupported;
                 progress.encoderHardwareFrames = cudaHardwareFrames;
                 progress.elapsedMs = totalTimer.elapsed();
                 progress.estimatedRemainingMs =
@@ -1390,7 +1397,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.gpuTransferLabel = gpuTransferLabel;
         result.encoderPixelFormat = encoderPixelFormatName;
         result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+        result.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
         result.cudaExternalTransfer = vulkanCudaExternalTransfer;
+        result.cudaExternalMemorySupported = cudaExternalMemorySupported;
         result.encoderHardwareFrames = cudaHardwareFrames;
         result.framesRendered = framesCompleted;
         result.elapsedMs = totalTimer.elapsed();
@@ -1423,7 +1432,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.gpuTransferLabel = gpuTransferLabel;
     result.encoderPixelFormat = encoderPixelFormatName;
     result.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+    result.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
     result.cudaExternalTransfer = vulkanCudaExternalTransfer;
+    result.cudaExternalMemorySupported = cudaExternalMemorySupported;
     result.encoderHardwareFrames = cudaHardwareFrames;
     result.framesRendered = framesCompleted;
     result.elapsedMs = totalTimer.elapsed();

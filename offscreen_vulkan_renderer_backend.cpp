@@ -106,6 +106,7 @@ public:
 
     m_outputSize =
         QSize(qMax(16, outputSize.width()), qMax(16, outputSize.height()));
+    m_cudaExternalMemoryStatus = QStringLiteral("initializing");
 
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -712,8 +713,16 @@ public:
         }
         return false;
       }
-      if (m_externalMemoryFdSupported && m_externalSemaphoreFdSupported &&
-          m_vkGetMemoryFdKHR) {
+      if (m_externalMemoryFdSupported && m_vkGetMemoryFdKHR) {
+        const VkDeviceSize yPlaneBytes =
+            static_cast<VkDeviceSize>(m_outputSize.width()) *
+            static_cast<VkDeviceSize>(m_outputSize.height());
+        const VkDeviceSize uvPlaneOffset =
+            (yPlaneBytes + 255u) & ~VkDeviceSize(255u);
+        const VkDeviceSize uvPlaneBytes =
+            static_cast<VkDeviceSize>(qMax(1, m_outputSize.width() / 2)) *
+            static_cast<VkDeviceSize>(qMax(1, m_outputSize.height() / 2)) * 2;
+        const VkDeviceSize nv12ExportBufferSize = uvPlaneOffset + uvPlaneBytes;
         VkExternalMemoryBufferCreateInfo externalBufferInfo{};
         externalBufferInfo.sType =
             VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
@@ -721,9 +730,12 @@ public:
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
         VkBufferCreateInfo exportBufferInfo = stagingBufInfo;
         exportBufferInfo.pNext = &externalBufferInfo;
+        exportBufferInfo.size = nv12ExportBufferSize;
         exportBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (vkCreateBuffer(m_device, &exportBufferInfo, nullptr,
-                           &slot.cudaExportBuffer) == VK_SUCCESS) {
+        const VkResult createExportBufferResult =
+            vkCreateBuffer(m_device, &exportBufferInfo, nullptr,
+                           &slot.cudaExportBuffer);
+        if (createExportBufferResult == VK_SUCCESS) {
           VkMemoryRequirements exportReq{};
           vkGetBufferMemoryRequirements(m_device, slot.cudaExportBuffer,
                                         &exportReq);
@@ -739,14 +751,35 @@ public:
           exportAlloc.pNext = &exportAllocInfo;
           exportAlloc.allocationSize = exportReq.size;
           exportAlloc.memoryTypeIndex = exportType;
+          VkResult exportAllocResult = VK_ERROR_FEATURE_NOT_PRESENT;
+          VkResult exportBindResult = VK_ERROR_FEATURE_NOT_PRESENT;
+          if (exportType != UINT32_MAX) {
+            exportAllocResult =
+                vkAllocateMemory(m_device, &exportAlloc, nullptr,
+                                 &slot.cudaExportMemory);
+            if (exportAllocResult == VK_SUCCESS) {
+              exportBindResult =
+                  vkBindBufferMemory(m_device, slot.cudaExportBuffer,
+                                     slot.cudaExportMemory, 0);
+            }
+          }
           if (exportType != UINT32_MAX &&
-              vkAllocateMemory(m_device, &exportAlloc, nullptr,
-                               &slot.cudaExportMemory) == VK_SUCCESS &&
-              vkBindBufferMemory(m_device, slot.cudaExportBuffer,
-                                 slot.cudaExportMemory, 0) == VK_SUCCESS) {
+              exportAllocResult == VK_SUCCESS &&
+              exportBindResult == VK_SUCCESS) {
             slot.cudaExportAllocationSize = exportReq.size;
             m_cudaExportBuffersReady = true;
+            m_cudaExternalMemoryStatus =
+                QStringLiteral("ready size=%1 memory_type=%2")
+                    .arg(static_cast<qulonglong>(exportReq.size))
+                    .arg(exportType);
           } else {
+            m_cudaExternalMemoryStatus =
+                QStringLiteral("export buffer memory failed: type=%1 alloc=%2 bind=%3 size=%4 bits=0x%5")
+                    .arg(exportType == UINT32_MAX ? QStringLiteral("none") : QString::number(exportType),
+                         QString::number(static_cast<int>(exportAllocResult)),
+                         QString::number(static_cast<int>(exportBindResult)))
+                    .arg(static_cast<qulonglong>(exportReq.size))
+                    .arg(exportReq.memoryTypeBits, 0, 16);
             if (slot.cudaExportMemory != VK_NULL_HANDLE) {
               vkFreeMemory(m_device, slot.cudaExportMemory, nullptr);
               slot.cudaExportMemory = VK_NULL_HANDLE;
@@ -754,7 +787,16 @@ public:
             vkDestroyBuffer(m_device, slot.cudaExportBuffer, nullptr);
             slot.cudaExportBuffer = VK_NULL_HANDLE;
           }
+        } else {
+          m_cudaExternalMemoryStatus =
+              QStringLiteral("export buffer create failed: result=%1 size=%2")
+                  .arg(static_cast<int>(createExportBufferResult))
+                  .arg(static_cast<qulonglong>(nv12ExportBufferSize));
         }
+      } else if (!m_externalMemoryFdSupported) {
+        m_cudaExternalMemoryStatus = QStringLiteral("VK_KHR_external_memory_fd unsupported");
+      } else if (!m_vkGetMemoryFdKHR) {
+        m_cudaExternalMemoryStatus = QStringLiteral("vkGetMemoryFdKHR unavailable");
       }
       if (vkCreateFence(m_device, &fenceInfo, nullptr, &slot.fence) !=
           VK_SUCCESS) {
@@ -765,11 +807,15 @@ public:
         return false;
       }
     }
-    if (supportsCudaExternalMemoryInterop() && !m_cudaExportBuffersReady) {
+    if (m_externalMemoryFdSupported && m_vkGetMemoryFdKHR && !m_cudaExportBuffersReady) {
       qWarning().noquote() << QStringLiteral(
           "Vulkan/CUDA interop capability present but exportable Vulkan "
-          "buffers "
-          "could not be allocated.");
+          "buffers could not be allocated: %1")
+          .arg(m_cudaExternalMemoryStatus);
+    }
+    if (m_cudaExportBuffersReady) {
+      qInfo().noquote() << QStringLiteral("Vulkan/CUDA export buffer ready: %1")
+                               .arg(m_cudaExternalMemoryStatus);
     }
     useSlot(0);
 
@@ -1636,16 +1682,15 @@ public:
     editor::FrameHandle frameHandle;
     QSize sourceSize;
     bool preferHardwareDirect = false;
-    bool sampledFrameNeedsYFlip = false;
     QString cacheKey;
     QByteArray curveLutRgba = identityCurveLutBytes();
     float brightness = 0.0f;
     float contrast = 1.0f;
     float saturation = 1.0f;
     float opacity = 1.0f;
-    float shadows[3] = {0.0f, 0.0f, 0.0f};
-    float midtones[3] = {0.0f, 0.0f, 0.0f};
-    float highlights[3] = {0.0f, 0.0f, 0.0f};
+    float shadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float midtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
   };
@@ -1663,8 +1708,8 @@ public:
     SpeakerLabelOverlaySpec speakerLabel;
   };
 
-  bool writeOverlayImageToStagingFlippedY(const OverlayImage &overlay,
-                                          VkDeviceSize stagingOffset) {
+  bool writeOverlayImageToStagingTopLeft(const OverlayImage &overlay,
+                                         VkDeviceSize stagingOffset) {
     if (overlay.isNull() || !m_stagingMapped) {
       return false;
     }
@@ -1677,14 +1722,14 @@ public:
     const auto *src = reinterpret_cast<const uint8_t *>(overlay.rgbaPremultiplied.constData());
     for (int y = 0; y < overlay.height; ++y) {
       std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
-                  src + (static_cast<size_t>(overlay.height - 1 - y) * rowBytes),
+                  src + (static_cast<size_t>(y) * rowBytes),
                   static_cast<size_t>(rowBytes));
     }
     return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
   }
 
-  bool writeRgbaImageToStagingFlippedY(const QImage &rgba,
-                                       VkDeviceSize stagingOffset) {
+  bool writeRgbaImageToStagingTopLeft(const QImage &rgba,
+                                      VkDeviceSize stagingOffset) {
     if (rgba.isNull() || !m_stagingMapped ||
         rgba.format() != QImage::Format_RGBA8888) {
       return false;
@@ -1694,7 +1739,7 @@ public:
     auto *dst = reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset;
     for (int y = 0; y < rgba.height(); ++y) {
       std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
-                  rgba.constScanLine(rgba.height() - 1 - y),
+                  rgba.constScanLine(y),
                   static_cast<size_t>(rowBytes));
     }
     return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
@@ -1962,7 +2007,7 @@ public:
           if (layer.overlayImage.width == m_outputSize.width() &&
               layer.overlayImage.height == m_outputSize.height() &&
               m_stagingMapped) {
-            if (!writeOverlayImageToStagingFlippedY(layer.overlayImage, stagingOffset)) {
+            if (!writeOverlayImageToStagingTopLeft(layer.overlayImage, stagingOffset)) {
               return false;
             }
             transitionImageLayout(m_commandBuffer, slot.image,
@@ -2000,7 +2045,7 @@ public:
           const OverlayImage scaledOverlay =
               scaledOverlayImage(layer.overlayImage, m_outputSize);
           if (!scaledOverlay.isNull() && m_stagingMapped) {
-            if (!writeOverlayImageToStagingFlippedY(scaledOverlay, stagingOffset)) {
+            if (!writeOverlayImageToStagingTopLeft(scaledOverlay, stagingOffset)) {
               return false;
             }
             transitionImageLayout(m_commandBuffer, slot.image,
@@ -2054,7 +2099,7 @@ public:
       if (rgba.isNull() || !m_stagingMapped) {
         return false;
       }
-      if (!writeRgbaImageToStagingFlippedY(rgba, stagingOffset)) {
+      if (!writeRgbaImageToStagingTopLeft(rgba, stagingOffset)) {
         return false;
       }
       transitionImageLayout(m_commandBuffer, slot.image,
@@ -2195,15 +2240,15 @@ public:
         push.shadows[0] = layer.shadows[0];
         push.shadows[1] = layer.shadows[1];
         push.shadows[2] = layer.shadows[2];
-        push.shadows[3] = 1.0f;
+        push.shadows[3] = layer.shadows[3];
         push.midtones[0] = layer.midtones[0];
         push.midtones[1] = layer.midtones[1];
         push.midtones[2] = layer.midtones[2];
-        push.midtones[3] = 0.0f;
+        push.midtones[3] = layer.midtones[3];
         push.highlights[0] = layer.highlights[0];
         push.highlights[1] = layer.highlights[1];
         push.highlights[2] = layer.highlights[2];
-        push.highlights[3] = 1.0f;
+        push.highlights[3] = layer.highlights[3];
         vkCmdPushConstants(m_commandBuffer, m_effectsPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT |
                                VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2950,8 +2995,12 @@ public:
   }
 
   bool supportsCudaExternalMemoryInterop() const {
-    return m_externalMemoryFdSupported && m_externalSemaphoreFdSupported &&
+    return m_externalMemoryFdSupported &&
            m_vkGetMemoryFdKHR != nullptr && m_cudaExportBuffersReady;
+  }
+
+  QString cudaExternalMemoryStatus() const {
+    return m_cudaExternalMemoryStatus;
   }
 
   QVector<TranscriptTextInput> buildTranscriptTextInputs(
@@ -3106,6 +3155,7 @@ private:
   bool m_graphicsQueueSupportsCompute = false;
   PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
   PFN_vkGetSemaphoreFdKHR m_vkGetSemaphoreFdKHR = nullptr;
+  QString m_cudaExternalMemoryStatus;
 
   VkCommandPool m_commandPool = VK_NULL_HANDLE;
   VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
@@ -3345,7 +3395,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.frameHandle = frame;
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
-    layer.sampledFrameNeedsYFlip = layer.preferHardwareDirect;
     if (!layer.preferHardwareDirect) {
       if (gpuOutputOnly) {
         ++decodeConvertFailCount;
@@ -3371,12 +3420,15 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.shadows[0] = layerEffects.shadows[0];
     layer.shadows[1] = layerEffects.shadows[1];
     layer.shadows[2] = layerEffects.shadows[2];
+    layer.shadows[3] = layerEffects.shadows[3];
     layer.midtones[0] = layerEffects.midtones[0];
     layer.midtones[1] = layerEffects.midtones[1];
     layer.midtones[2] = layerEffects.midtones[2];
+    layer.midtones[3] = layerEffects.midtones[3];
     layer.highlights[0] = layerEffects.highlights[0];
     layer.highlights[1] = layerEffects.highlights[1];
     layer.highlights[2] = layerEffects.highlights[2];
+    layer.highlights[3] = layerEffects.highlights[3];
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     QJsonObject transformDiagnostics;
     const TimelineClip::TransformKeyframe transform =
@@ -3390,23 +3442,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
-    const bool exportTextureNeedsYFlip = !layer.preferHardwareDirect;
     QPointF exportVideoTranslation(transform.translationX, transform.translationY);
-    if (exportTextureNeedsYFlip) {
-      const QJsonObject sampledFace =
-          transformDiagnostics.value(QStringLiteral("sampled_face_box_norm")).toObject();
-      if (sampledFace.contains(QStringLiteral("x")) &&
-          sampledFace.contains(QStringLiteral("y"))) {
-        exportVideoTranslation = exportVideoLayerTranslationForSampledFace(
-            fitted,
-            exportVideoTranslation,
-            transform.rotation,
-            QPointF(transform.scaleX, transform.scaleY),
-            exportTextureNeedsYFlip,
-            QPointF(sampledFace.value(QStringLiteral("x")).toDouble(0.5),
-                    sampledFace.value(QStringLiteral("y")).toDouble(0.5)));
-      }
-    }
     PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
         fitted,
         QPointF(1.0, 1.0),
@@ -3423,8 +3459,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
       transformDiagnostics.insert(QStringLiteral("mapped_source_sample"), static_cast<qint64>(frameMapping.sourceSample));
       transformDiagnostics.insert(QStringLiteral("mapped_source_frame_position"), frameMapping.sourceFramePosition);
       transformDiagnostics.insert(QStringLiteral("mapped_transcript_frame"), static_cast<qint64>(frameMapping.transcriptFrame));
-      transformDiagnostics.insert(QStringLiteral("sampled_frame_needs_y_flip"), layer.sampledFrameNeedsYFlip);
-      transformDiagnostics.insert(QStringLiteral("export_texture_needs_y_flip"), exportTextureNeedsYFlip);
+      transformDiagnostics.insert(QStringLiteral("renderer_texture_origin"), QStringLiteral("top_left"));
+      transformDiagnostics.insert(QStringLiteral("renderer_texture_normalized"), true);
       transformDiagnostics.insert(QStringLiteral("export_video_translation"), QJsonObject{
           {QStringLiteral("x"), exportVideoTranslation.x()},
           {QStringLiteral("y"), exportVideoTranslation.y()}
@@ -3453,40 +3489,59 @@ QImage OffscreenVulkanRenderer::renderFrame(
         request.outputSize,
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY),
-        exportTextureNeedsYFlip,
         layer.mvp);
     if (!backgroundFilled &&
         shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
+      const BackgroundFillEffect fillEffect = request.backgroundFillEffect;
+      const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
+      const QRectF sourceRectNorm(
+          (layerGeometry.bounds.left() - outputRect.left()) / qMax<qreal>(1.0, outputRect.width()),
+          (layerGeometry.bounds.top() - outputRect.top()) / qMax<qreal>(1.0, outputRect.height()),
+          layerGeometry.bounds.width() / qMax<qreal>(1.0, outputRect.width()),
+          layerGeometry.bounds.height() / qMax<qreal>(1.0, outputRect.height()));
       const VulkanDrawEffectState backgroundEffects =
-          vulkanBlurredBackgroundEffectState(layer.opacity);
+          vulkanBackgroundFillEffectState(fillEffect, layer.opacity, sourceRectNorm);
       backgroundLayer.opacity = backgroundEffects.opacity;
       backgroundLayer.brightness = backgroundEffects.brightness;
       backgroundLayer.contrast = backgroundEffects.contrast;
       backgroundLayer.saturation = backgroundEffects.saturation;
-      if (!gpuOutputOnly && !layer.image.isNull()) {
-        backgroundLayer.image =
-            buildBlurredFillBackground(layer.image, request.outputSize);
-        backgroundLayer.sourceSize = backgroundLayer.image.size();
-      }
-      vulkanMvpForOutputRect(QRectF(QPointF(0.0, 0.0), QSizeF(request.outputSize)),
-                             request.outputSize,
-                             0.0,
-                             backgroundLayer.mvp);
-      if (backgroundLayer.image.isNull()) {
-        backgroundLayer.frameHandle = frame;
-        backgroundLayer.sourceSize = sourceSize;
-        backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
-        backgroundLayer.sampledFrameNeedsYFlip = backgroundLayer.preferHardwareDirect;
+      backgroundLayer.shadows[0] = backgroundEffects.shadows[0];
+      backgroundLayer.shadows[1] = backgroundEffects.shadows[1];
+      backgroundLayer.shadows[2] = backgroundEffects.shadows[2];
+      backgroundLayer.shadows[3] = backgroundEffects.shadows[3];
+      backgroundLayer.midtones[0] = backgroundEffects.midtones[0];
+      backgroundLayer.midtones[1] = backgroundEffects.midtones[1];
+      backgroundLayer.midtones[2] = backgroundEffects.midtones[2];
+      backgroundLayer.midtones[3] = backgroundEffects.midtones[3];
+      backgroundLayer.highlights[0] = backgroundEffects.highlights[0];
+      backgroundLayer.highlights[1] = backgroundEffects.highlights[1];
+      backgroundLayer.highlights[2] = backgroundEffects.highlights[2];
+      backgroundLayer.highlights[3] = backgroundEffects.highlights[3];
+      backgroundLayer.frameHandle = frame;
+      backgroundLayer.sourceSize = sourceSize;
+      backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
 
-        const QRect covered = coverRect(sourceSize, request.outputSize);
-        vulkanMvpForOutputRectMaybeFlippedY(QRectF(covered),
-                                           request.outputSize,
-                                           0.0,
-                                           !backgroundLayer.preferHardwareDirect,
-                                           backgroundLayer.mvp);
+      PreviewClipGeometry backgroundGeometry =
+          fillEffect == BackgroundFillEffect::EdgeStretch
+              ? PreviewViewTransform::clipGeometry(outputRect,
+                                                   QPointF(1.0, 1.0),
+                                                   QPointF(),
+                                                   0.0,
+                                                   QPointF(1.0, 1.0))
+              : layerGeometry;
+      if (fillEffect == BackgroundFillEffect::BlurCover) {
+        const qreal coverScale = std::max<qreal>(
+            1.0,
+            std::max(outputRect.width() / qMax<qreal>(1.0, layerGeometry.bounds.width()),
+                     outputRect.height() / qMax<qreal>(1.0, layerGeometry.bounds.height())));
+        backgroundGeometry.clipToScreen.scale(coverScale * 1.08, coverScale * 1.08);
       }
+      vulkanMvpForPreviewTransform(backgroundGeometry.clipToScreen,
+                                   backgroundGeometry.localRect,
+                                   request.outputSize,
+                                   backgroundLayer.mvp);
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {
         layers.push_back(backgroundLayer);
@@ -3673,6 +3728,10 @@ bool OffscreenVulkanRenderer::lastRenderedVulkanFrame(
 
 bool OffscreenVulkanRenderer::supportsCudaExternalMemoryInterop() const {
   return d && d->supportsCudaExternalMemoryInterop();
+}
+
+QString OffscreenVulkanRenderer::cudaExternalMemoryStatus() const {
+  return d ? d->cudaExternalMemoryStatus() : QStringLiteral("renderer unavailable");
 }
 
 QString OffscreenVulkanRenderer::backendId() const {

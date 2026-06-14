@@ -1,5 +1,6 @@
 #pragma once
 
+#include "background_fill_effect.h"
 #include "frame_handle.h"
 #include "preview_surface.h"
 #include "editor_shared.h"
@@ -133,6 +134,7 @@ struct PreviewInteractionState {
     qreal currentFramePosition = 0.0;
     QSize outputSize = QSize(1080, 1920);
     QColor backgroundColor = QColor(Qt::black);
+    BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
     int clipCount = 0;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;

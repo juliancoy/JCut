@@ -58,6 +58,8 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.correctionsEnabled = request.correctionsEnabled;
     qtRequest.createVideoFromImageSequence = request.createVideoFromImageSequence;
     qtRequest.disableParallelImageWrite = request.disableParallelImageWrite;
+    qtRequest.backgroundFillEffect =
+        backgroundFillEffectFromString(QString::fromStdString(request.backgroundFillEffect));
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;
     qtRequest.transcriptPostpendMs = request.transcriptPostpendMs;
     qtRequest.exportStartFrame = request.exportStartFrame;

@@ -2292,30 +2292,59 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     render_detail::shouldDrawBlurredFillBackground(
                         frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                         state->outputSize)) {
-                    const QSize backgroundSourceSize =
-                        frameSize.isValid() ? frameSize : clip.sourceFrameSize;
-                    const QRectF backgroundFitted =
-                        viewTransform.outputRectToScreen(
-                            QRectF(render_detail::coverRect(backgroundSourceSize, state->outputSize)));
-                    const PreviewClipGeometry backgroundGeometry =
-                        PreviewViewTransform::clipGeometry(
-                            backgroundFitted,
-                            QPointF(1.0, 1.0),
-                            QPointF(),
-                            0.0,
-                            QPointF(1.0, 1.0));
+                    const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
+                    const QRectF sourceRectNorm(
+                        (effectiveClipGeometry.bounds.left() - compositeRect.left()) /
+                            qMax<qreal>(1.0, compositeRect.width()),
+                        (effectiveClipGeometry.bounds.top() - compositeRect.top()) /
+                            qMax<qreal>(1.0, compositeRect.height()),
+                        effectiveClipGeometry.bounds.width() / qMax<qreal>(1.0, compositeRect.width()),
+                        effectiveClipGeometry.bounds.height() / qMax<qreal>(1.0, compositeRect.height()));
+                    PreviewClipGeometry backgroundGeometry =
+                        fillEffect == BackgroundFillEffect::EdgeStretch
+                            ? PreviewViewTransform::clipGeometry(
+                                  compositeRect,
+                                  QPointF(1.0, 1.0),
+                                  QPointF(),
+                                  0.0,
+                                  QPointF(1.0, 1.0))
+                            : effectiveClipGeometry;
+                    if (fillEffect == BackgroundFillEffect::BlurCover) {
+                        const qreal coverScale = std::max<qreal>(
+                            1.0,
+                            std::max(
+                                compositeRect.width() / qMax<qreal>(1.0, effectiveClipGeometry.bounds.width()),
+                                compositeRect.height() / qMax<qreal>(1.0, effectiveClipGeometry.bounds.height())));
+                        backgroundGeometry.clipToScreen.scale(coverScale * 1.08, coverScale * 1.08);
+                        backgroundGeometry.bounds =
+                            backgroundGeometry.clipToScreen.mapRect(backgroundGeometry.localRect);
+                    }
                     VulkanPipeline::Push backgroundPush{};
                     mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
                                               backgroundGeometry.localRect,
                                               swapSize,
                                               backgroundPush.mvp);
                     const render_detail::VulkanDrawEffectState backgroundEffects =
-                        render_detail::vulkanBlurredBackgroundEffectState(
-                            static_cast<float>(status->grading.opacity));
+                        render_detail::vulkanBackgroundFillEffectState(
+                            fillEffect,
+                            static_cast<float>(status->grading.opacity),
+                            sourceRectNorm);
                     backgroundPush.opacity = backgroundEffects.opacity;
                     backgroundPush.brightness = backgroundEffects.brightness;
                     backgroundPush.contrast = backgroundEffects.contrast;
                     backgroundPush.saturation = backgroundEffects.saturation;
+                    backgroundPush.shadows[0] = backgroundEffects.shadows[0];
+                    backgroundPush.shadows[1] = backgroundEffects.shadows[1];
+                    backgroundPush.shadows[2] = backgroundEffects.shadows[2];
+                    backgroundPush.shadows[3] = backgroundEffects.shadows[3];
+                    backgroundPush.midtones[0] = backgroundEffects.midtones[0];
+                    backgroundPush.midtones[1] = backgroundEffects.midtones[1];
+                    backgroundPush.midtones[2] = backgroundEffects.midtones[2];
+                    backgroundPush.midtones[3] = backgroundEffects.midtones[3];
+                    backgroundPush.highlights[0] = backgroundEffects.highlights[0];
+                    backgroundPush.highlights[1] = backgroundEffects.highlights[1];
+                    backgroundPush.highlights[2] = backgroundEffects.highlights[2];
+                    backgroundPush.highlights[3] = backgroundEffects.highlights[3];
                     VkRect2D backgroundScissor{};
                     if (state->hideOutsideOutputWindow) {
                         backgroundScissor = scissorFromQRect(compositeRect, swapSize);

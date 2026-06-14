@@ -1,5 +1,6 @@
 #pragma once
 
+#include "background_fill_effect.h"
 #include "editor_shared.h"
 #include "timeline_fps.h"
 
@@ -28,7 +29,9 @@ struct RenderProgress {
     QString gpuTransferLabel;
     QString encoderPixelFormat;
     QString encoderSoftwarePixelFormat;
+    QString cudaExternalMemoryStatus;
     bool cudaExternalTransfer = false;
+    bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
     qint64 elapsedMs = 0;
     qint64 estimatedRemainingMs = -1;
@@ -68,6 +71,7 @@ struct RenderRequest {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
+    BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
     bool suppressCompletionDialog = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;
@@ -103,7 +107,9 @@ struct RenderResult {
     QString gpuTransferLabel;
     QString encoderPixelFormat;
     QString encoderSoftwarePixelFormat;
+    QString cudaExternalMemoryStatus;
     bool cudaExternalTransfer = false;
+    bool cudaExternalMemorySupported = false;
     bool encoderHardwareFrames = false;
     QString namedOutputDir;  // Optional directory for image-sequence intermediate frames.
     int64_t framesRendered = 0;

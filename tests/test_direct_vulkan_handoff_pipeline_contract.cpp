@@ -1148,10 +1148,15 @@ void TestDirectVulkanHandoffPipelineContract::
                source.contains(QStringLiteral("? clip.sourceFrameSize")),
            "export video placement must prefer clip.sourceFrameSize before "
            "decoded payload size, matching direct preview transform geometry");
-  QVERIFY2(source.contains(QStringLiteral("exportTextureNeedsYFlip = !layer.preferHardwareDirect")) &&
-               source.contains(QStringLiteral("exportVideoLayerTranslationForSampledFace")),
-           "export video layers must choose texture orientation by source type "
-           "and compensate speaker-framing placement when a Y flip is required");
+  QVERIFY2(source.contains(QStringLiteral("renderer_texture_origin")) &&
+               source.contains(QStringLiteral("renderer_texture_normalized")),
+           "export diagnostics must state the renderer texture contract instead "
+           "of deriving placement from texture-origin branches");
+  QVERIFY2(!source.contains(QStringLiteral("TextureOrigin textureOrigin")) &&
+               !source.contains(QStringLiteral("textureOriginRequiresExportYFlip(layer.textureOrigin")) &&
+               !source.contains(QStringLiteral("exportVideoLayerTranslationForSampledFace")),
+           "export video placement must consume canonical top-left renderer "
+           "textures without texture-origin-specific transform compensation");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

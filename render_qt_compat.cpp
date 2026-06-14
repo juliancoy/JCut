@@ -85,6 +85,7 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.correctionsEnabled = request.correctionsEnabled;
     core.createVideoFromImageSequence = request.createVideoFromImageSequence;
     core.disableParallelImageWrite = request.disableParallelImageWrite;
+    core.backgroundFillEffect = backgroundFillEffectToString(request.backgroundFillEffect).toStdString();
     core.transcriptPrependMs = request.transcriptPrependMs;
     core.transcriptPostpendMs = request.transcriptPostpendMs;
     core.exportStartFrame = request.exportStartFrame;
@@ -114,7 +115,9 @@ RenderProgressCore toCoreRenderProgress(const ::RenderProgress& progress)
     core.gpuTransferLabel = progress.gpuTransferLabel.toStdString();
     core.encoderPixelFormat = progress.encoderPixelFormat.toStdString();
     core.encoderSoftwarePixelFormat = progress.encoderSoftwarePixelFormat.toStdString();
+    core.cudaExternalMemoryStatus = progress.cudaExternalMemoryStatus.toStdString();
     core.cudaExternalTransfer = progress.cudaExternalTransfer;
+    core.cudaExternalMemorySupported = progress.cudaExternalMemorySupported;
     core.encoderHardwareFrames = progress.encoderHardwareFrames;
     core.elapsedMs = progress.elapsedMs;
     core.estimatedRemainingMs = progress.estimatedRemainingMs;
@@ -153,7 +156,9 @@ RenderResultCore toCoreRenderResult(const ::RenderResult& result)
     core.gpuTransferLabel = result.gpuTransferLabel.toStdString();
     core.encoderPixelFormat = result.encoderPixelFormat.toStdString();
     core.encoderSoftwarePixelFormat = result.encoderSoftwarePixelFormat.toStdString();
+    core.cudaExternalMemoryStatus = result.cudaExternalMemoryStatus.toStdString();
     core.cudaExternalTransfer = result.cudaExternalTransfer;
+    core.cudaExternalMemorySupported = result.cudaExternalMemorySupported;
     core.encoderHardwareFrames = result.encoderHardwareFrames;
     core.namedOutputDir = result.namedOutputDir.toStdString();
     core.framesRendered = result.framesRendered;

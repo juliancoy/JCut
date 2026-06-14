@@ -372,6 +372,7 @@ public:
     virtual bool copyLastFrameToBgra(AVFrame* frame,
                                      qint64* readbackMs = nullptr) = 0;
     virtual bool supportsCudaExternalMemoryInterop() const { return false; }
+    virtual QString cudaExternalMemoryStatus() const { return QStringLiteral("unsupported"); }
     virtual QString backendId() const = 0;
 };
 
@@ -414,6 +415,7 @@ public:
     bool lastRenderedVulkanFrame(OffscreenVulkanFrame* frame,
                                  QString* errorMessage = nullptr) const;
     bool supportsCudaExternalMemoryInterop() const override;
+    QString cudaExternalMemoryStatus() const override;
     QString backendId() const override;
 
 private:
