@@ -1015,6 +1015,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
+    const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
+    const QString imageSequenceFormat =
+        root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
     const BackgroundFillEffect backgroundFillEffect =
         backgroundFillEffectFromString(root.value(QStringLiteral("backgroundFillEffect"))
                                            .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect)));
@@ -1483,6 +1486,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_renderUseProxiesCheckBox) {
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
+    }
+    if (m_createImageSequenceCheckBox) {
+        QSignalBlocker block(m_createImageSequenceCheckBox);
+        m_createImageSequenceCheckBox->setChecked(createImageSequence);
+    }
+    if (m_imageSequenceFormatCombo) {
+        QSignalBlocker block(m_imageSequenceFormatCombo);
+        const int formatIndex = m_imageSequenceFormatCombo->findData(imageSequenceFormat);
+        m_imageSequenceFormatCombo->setCurrentIndex(qMax(0, formatIndex));
+        m_imageSequenceFormatCombo->setEnabled(createImageSequence);
     }
     if (m_backgroundFillEffectCombo) {
         QSignalBlocker block(m_backgroundFillEffectCombo);

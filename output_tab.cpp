@@ -6,7 +6,18 @@
 #include <QMessageBox>
 #include <QSignalBlocker>
 
+#include <cmath>
+
 #include "timeline_fps.h"
+
+namespace {
+
+double normalizedExportSpeed(double speed)
+{
+    return std::isfinite(speed) && speed > 0.001 ? speed : 1.0;
+}
+
+} // namespace
 
 OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : QObject(parent)
@@ -137,6 +148,17 @@ void OutputTab::wire()
                 this, [this](bool checked) {
                     if (m_widgets.imageSequenceFormatCombo) {
                         m_widgets.imageSequenceFormatCombo->setEnabled(checked);
+                    }
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
+                    }
+                });
+    }
+    if (m_widgets.imageSequenceFormatCombo) {
+        connect(m_widgets.imageSequenceFormatCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
                     }
                 });
     }
@@ -346,6 +368,8 @@ void OutputTab::renderFromInspector()
     request.outputFps = m_widgets.outputFpsSpin
         ? m_widgets.outputFpsSpin->value()
         : static_cast<double>(kTimelineFps);
+    request.playbackSpeed = normalizedExportSpeed(
+        m_deps.playbackSpeed ? m_deps.playbackSpeed() : 1.0);
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
     

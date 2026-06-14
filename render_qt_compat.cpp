@@ -80,6 +80,7 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.imageSequenceFormat = request.imageSequenceFormat.toStdString();
     core.outputSize = {request.outputSize.width(), request.outputSize.height()};
     core.outputFps = request.outputFps;
+    core.playbackSpeed = request.playbackSpeed;
     core.useProxyMedia = request.useProxyMedia;
     core.bypassGrading = request.bypassGrading;
     core.correctionsEnabled = request.correctionsEnabled;

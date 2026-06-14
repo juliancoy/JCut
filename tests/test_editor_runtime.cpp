@@ -6,6 +6,8 @@
 #include "../imgui_project_io.h"
 #include "../editor_runtime_qt_bridge.h"
 #include "../editor_timeline_types.h"
+#include "../render.h"
+#include "../render_qt_compat.h"
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +29,7 @@ private slots:
     void testProjectAndClipEditCommandsUpdateDocument();
     void testSelectionCommandsSwitchSingleSelection();
     void testExportCommandsUpdateCoreRequest();
+    void testQtRenderRequestPreservesPlaybackSpeed();
     void testQtBridgeBuildsDocumentCore();
     void testDocumentBuildsTimelineRenderData();
     void testCoreDocumentJsonRoundTrips();
@@ -275,6 +278,21 @@ void TestEditorRuntime::testExportCommandsUpdateCoreRequest()
              QStringLiteral("png"));
 }
 
+void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
+{
+    RenderRequest request;
+    request.outputPath = QStringLiteral("/tmp/export.mp4");
+    request.outputFormat = QStringLiteral("mp4");
+    request.outputSize = QSize(1280, 720);
+    request.outputFps = 60.0;
+    request.playbackSpeed = 1.75;
+
+    const jcut::render::RenderRequestCore core = jcut::render::toCoreRenderRequest(request);
+
+    QCOMPARE(core.outputFps, 60.0);
+    QCOMPARE(core.playbackSpeed, 1.75);
+}
+
 void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
 {
     TimelineTrack trackA;
@@ -342,6 +360,7 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->mediaItems.size(), original.mediaItems.size());
     QCOMPARE(reparsed->exportRequest.outputSize.width, original.exportRequest.outputSize.width);
     QCOMPARE(reparsed->exportRequest.outputSize.height, original.exportRequest.outputSize.height);
+    QCOMPARE(reparsed->exportRequest.playbackSpeed, original.exportRequest.playbackSpeed);
     QCOMPARE(reparsed->transport.currentFrame, original.transport.currentFrame);
 }
 
@@ -410,6 +429,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
     QCOMPARE(parsed->mediaItems.size(), std::size_t(2));
     QCOMPARE(parsed->exportRequest.outputSize.width, 1280);
     QCOMPARE(parsed->exportRequest.outputSize.height, 720);
+    QCOMPARE(parsed->exportRequest.playbackSpeed, 1.5);
     QCOMPARE(parsed->exportRequest.useProxyMedia, true);
     QCOMPARE(parsed->exportRequest.correctionsEnabled, false);
     QCOMPARE(parsed->exportRequest.exportRangeCount, std::size_t(1));

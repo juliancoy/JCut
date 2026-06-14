@@ -59,6 +59,7 @@ public:
         std::function<int64_t()> totalFrames;
         std::function<int64_t()> exportStartFrame;
         std::function<int64_t()> exportEndFrame;
+        std::function<double()> playbackSpeed;
         std::function<QVector<ExportRangeSegment>()> effectivePlaybackRanges;
         std::function<void(int64_t, int64_t)> setExportRange;
         std::function<void(const QSize&)> setOutputSize;

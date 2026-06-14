@@ -139,6 +139,10 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             document->exportRequest.outputSize.height = valueOr(outputSize, "height", 1920);
         }
         document->exportRequest.outputFps = valueOr(exportRequest, "outputFps", 30.0);
+        document->exportRequest.playbackSpeed = valueOr(
+            exportRequest,
+            "playbackSpeed",
+            static_cast<double>(document->transport.playbackSpeed));
         document->exportRequest.useProxyMedia = valueOr(exportRequest, "useProxyMedia", false);
         document->exportRequest.bypassGrading = valueOr(exportRequest, "bypassGrading", false);
         document->exportRequest.correctionsEnabled =
@@ -194,6 +198,7 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     document->exportRequest.outputSize.width = valueOr(root, "outputWidth", 1080);
     document->exportRequest.outputSize.height = valueOr(root, "outputHeight", 1920);
     document->exportRequest.outputFps = valueOr(root, "outputFps", 30.0);
+    document->exportRequest.playbackSpeed = valueOr(root, "playbackSpeed", 1.0);
     document->exportRequest.useProxyMedia = valueOr(root, "renderUseProxies", false);
     document->exportRequest.bypassGrading = !valueOr(root, "gradingPreview", true);
     document->exportRequest.correctionsEnabled = valueOr(root, "correctionsEnabled", true);
@@ -402,6 +407,7 @@ nlohmann::json toJson(const EditorDocumentCore& document)
                 {"height", document.exportRequest.outputSize.height}
             }},
             {"outputFps", document.exportRequest.outputFps},
+            {"playbackSpeed", document.exportRequest.playbackSpeed},
             {"useProxyMedia", document.exportRequest.useProxyMedia},
             {"bypassGrading", document.exportRequest.bypassGrading},
             {"correctionsEnabled", document.exportRequest.correctionsEnabled},

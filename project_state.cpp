@@ -423,6 +423,11 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("lastRenderOutputPath")] = m_lastRenderOutputPath;
     root[QStringLiteral("renderUseProxies")] =
         m_renderUseProxiesCheckBox ? m_renderUseProxiesCheckBox->isChecked() : false;
+    root[QStringLiteral("createImageSequence")] =
+        m_createImageSequenceCheckBox ? m_createImageSequenceCheckBox->isChecked() : false;
+    root[QStringLiteral("imageSequenceFormat")] =
+        m_imageSequenceFormatCombo ? m_imageSequenceFormatCombo->currentData().toString()
+                                   : QStringLiteral("jpeg");
     root[QStringLiteral("backgroundFillEffect")] =
         m_backgroundFillEffectCombo
             ? m_backgroundFillEffectCombo->currentData().toString()

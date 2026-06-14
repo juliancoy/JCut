@@ -536,6 +536,9 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.outputFps = m_outputFpsSpin
         ? m_outputFpsSpin->value()
         : static_cast<double>(kTimelineFps);
+    request.playbackSpeed = std::isfinite(m_playbackSpeed) && m_playbackSpeed > 0.001
+        ? m_playbackSpeed
+        : 1.0;
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
     request.backgroundFillEffect =

@@ -98,8 +98,11 @@ std::int64_t totalFramesToRender(const jcut::EditorDocumentCore& document)
     const int endFrame = exportEndFrame(document);
     const double outputFps =
         document.exportRequest.outputFps > 0.0 ? document.exportRequest.outputFps : kTimelineFps;
+    const double playbackSpeed =
+        document.exportRequest.playbackSpeed > 0.001 ? document.exportRequest.playbackSpeed : 1.0;
     const double durationSeconds =
-        static_cast<double>(endFrame - startFrame + 1) / static_cast<double>(kTimelineFps);
+        (static_cast<double>(endFrame - startFrame + 1) / static_cast<double>(kTimelineFps)) /
+        playbackSpeed;
     return std::max<std::int64_t>(
         1,
         static_cast<std::int64_t>(std::ceil(durationSeconds * outputFps)));
@@ -559,7 +562,10 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     const int startFrame = exportStartFrame(request.document);
     const int endFrame = exportEndFrame(request.document);
     const std::int64_t totalFrames = totalFramesToRender(request.document);
-    const double timelineFramesPerOutputFrame = static_cast<double>(kTimelineFps) / outputFps;
+    const double playbackSpeed =
+        exportRequest.playbackSpeed > 0.001 ? exportRequest.playbackSpeed : 1.0;
+    const double timelineFramesPerOutputFrame =
+        (static_cast<double>(kTimelineFps) / outputFps) * playbackSpeed;
     const auto startTime = std::chrono::steady_clock::now();
 
     for (std::int64_t frameIndex = 0; frameIndex < totalFrames; ++frameIndex) {

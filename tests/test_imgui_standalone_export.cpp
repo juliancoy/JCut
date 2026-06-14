@@ -17,6 +17,7 @@ class TestImGuiStandaloneExport : public QObject {
 private slots:
     void exportsQtFreeVideoFile();
     void exportsQtFreeImageSequence();
+    void exportPlaybackSpeedChangesVideoFrameCount();
 };
 
 namespace {
@@ -39,6 +40,37 @@ std::string writePpmFixture(const std::string& path)
 }
 
 } // namespace
+
+int countVideoPackets(const std::string& path)
+{
+    AVFormatContext* formatContext = nullptr;
+    const int openResult = avformat_open_input(&formatContext, path.c_str(), nullptr, nullptr);
+    if (openResult < 0 || avformat_find_stream_info(formatContext, nullptr) < 0) {
+        if (formatContext) {
+            avformat_close_input(&formatContext);
+        }
+        return -1;
+    }
+
+    const int videoStreamIndex =
+        av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (videoStreamIndex < 0) {
+        avformat_close_input(&formatContext);
+        return -1;
+    }
+
+    int packetCount = 0;
+    AVPacket* packet = av_packet_alloc();
+    while (packet && av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStreamIndex) {
+            ++packetCount;
+        }
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+    avformat_close_input(&formatContext);
+    return packetCount;
+}
 
 void TestImGuiStandaloneExport::exportsQtFreeVideoFile()
 {
@@ -112,6 +144,35 @@ void TestImGuiStandaloneExport::exportsQtFreeImageSequence()
             QFileInfo(QString::fromStdString(outputPath)).completeBaseName());
     const QString framePath = sequenceDir + QStringLiteral("/frame_00000000.png");
     QVERIFY2(QFileInfo::exists(framePath), "image-sequence export must write frame files");
+}
+
+void TestImGuiStandaloneExport::exportPlaybackSpeedChangesVideoFrameCount()
+{
+    QTemporaryDir tempDir;
+    QVERIFY2(tempDir.isValid(), "temporary directory must be available");
+
+    const std::string sourcePath =
+        writePpmFixture((tempDir.path() + QStringLiteral("/fixture.ppm")).toStdString());
+    const std::string outputPath = (tempDir.path() + QStringLiteral("/export_2x.mp4")).toStdString();
+
+    jcut::EditorDocumentCore document;
+    document.projectName = "Standalone speed export";
+    document.tracks.push_back({1, "Video A", true});
+    document.clips.push_back({1, 1, "Still", 0, 30, true, sourcePath});
+    document.exportRequest.outputPath = outputPath;
+    document.exportRequest.outputFormat = "mp4";
+    document.exportRequest.outputSize = {320, 240};
+    document.exportRequest.outputFps = 30.0;
+    document.exportRequest.playbackSpeed = 2.0;
+    document.exportRequest.exportStartFrame = 0;
+    document.exportRequest.exportEndFrame = 29;
+
+    const jcut::render::RenderResultCore result =
+        jcut::standalone_render::exportTimelineToFile({document, {}});
+
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(result.framesRendered, static_cast<std::int64_t>(16));
+    QCOMPARE(countVideoPackets(outputPath), 16);
 }
 
 QTEST_MAIN(TestImGuiStandaloneExport)
