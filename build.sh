@@ -37,6 +37,7 @@ RUBBERBAND_VERSION_FILE="${RUBBERBAND_INSTALL_DIR}/.build-version"
 QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
 ASAN="OFF"
 FFMPEG_PROFILE="auto"
+FFMPEG_ONLY="no"
 RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
@@ -420,6 +421,9 @@ for arg in "$@"; do
         --ffmpeg-safe)
         FFMPEG_PROFILE="safe-noasm"
             ;;
+        --ffmpeg-only)
+            FFMPEG_ONLY="yes"
+            ;;
         --with-tests)
             ;;
         --ninja)
@@ -436,7 +440,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "Unknown argument: $arg" >&2
-            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia|--ffmpeg-safe] [--with-tests] [--ninja|--make] [--run] [--headless-face-bench]" >&2
+            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia|--ffmpeg-safe] [--ffmpeg-only] [--with-tests] [--ninja|--make] [--run] [--headless-face-bench]" >&2
             exit 1
             ;;
     esac
@@ -453,6 +457,10 @@ if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
 fi
 
 ensure_ffmpeg_installed
+if [[ "${FFMPEG_ONLY}" == "yes" ]]; then
+    echo "FFmpeg bootstrap complete (--ffmpeg-only). Skipping editor build."
+    exit 0
+fi
 ensure_rubberband_installed
 ensure_qt_private_headers
 

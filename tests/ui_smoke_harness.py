@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -583,73 +584,107 @@ def main() -> int:
             )
             ui_root = generated_ui["window"]
 
-            playhead_select = ui_request(
+            track_map_query = urllib.parse.urlencode({
+                "clipId": "clip_video_01",
+                "filePath": str(SPEAKER_FLOW_CLIP),
+                "transcriptPath": str(SPEAKER_FLOW_CLIP.with_name(f"{SPEAKER_FLOW_CLIP.stem}_editable.json")),
+            })
+            track_map_payload = request(
                 base_url,
-                {
-                    "op": "item_select",
-                    "id": "speakers.playhead_tracks",
-                    "row": int(playhead_item["row"]),
-                    "timeoutMs": 10000,
-                },
-                timeout=15.0,
+                f"/speaker-flow/track-map?{track_map_query}",
+                timeout=8.0,
             )
-            if not playhead_select.get("ok"):
-                raise HarnessFailure(f"failed to select playhead track: {playhead_select}")
+            if not track_map_payload.get("ok"):
+                raise HarnessFailure(f"speaker-flow track-map REST endpoint failed: {track_map_payload}")
+            for required_key in ("section_track_map", "track_identity_map", "contiguous_sections", "speaker_flow_clip"):
+                if required_key not in track_map_payload:
+                    raise HarnessFailure(f"speaker-flow track-map REST endpoint missing {required_key}")
 
-            assign_result = ui_request(
-                base_url,
-                {
-                    "op": "click",
-                    "id": "speakers.assign_facedetections",
-                    "timeoutMs": 20000,
-                },
-                timeout=25.0,
-            )
-            if not assign_result.get("ok"):
-                raise HarnessFailure(f"failed to assign selected playhead track: {assign_result}")
-
-            editable_transcript_path = SPEAKER_FLOW_CLIP.with_name(
-                f"{SPEAKER_FLOW_CLIP.stem}_editable.json"
-            )
-
-            def wait_for_assignment_persisted() -> dict[str, Any]:
-                transcript_root = json.loads(editable_transcript_path.read_text(encoding="utf-8"))
-                track_map = (
-                    transcript_root.get("speaker_flow", {})
-                    .get("clips", {})
-                    .get("clip_video_01", {})
-                    .get("resolved_current", {})
-                    .get("track_identity_map", [])
-                )
-                matching_rows = [
-                    row for row in track_map
-                    if row.get("identity_id") == selected_speaker_id
-                ]
-                if not matching_rows:
-                    return None
-                return {
-                    "track_map": track_map,
-                    "matching_rows": matching_rows,
+            if args.offscreen:
+                selected_speaker = require_widget(generated_ui["window"], "speakers.selected_speaker")
+                speaker_flow_status = {
+                    "ok": True,
+                    "skipped": False,
+                    "clip": str(SPEAKER_FLOW_CLIP),
+                    "selected_clip_id": profile_payload.get("profile", {}).get("preview", {}).get("selected_clip_id", ""),
+                    "generated_track_rows": row_count,
+                    "selected_speaker": selected_speaker.get("text", ""),
+                    "playhead_track_text": playhead_item.get("text", ""),
+                    "track_map_rest": {
+                        "section_track_map_count": len(track_map_payload.get("section_track_map", [])),
+                        "track_identity_map_count": len(track_map_payload.get("track_identity_map", [])),
+                        "contiguous_sections_count": len(track_map_payload.get("contiguous_sections", [])),
+                    },
                 }
 
-            assignment_state = wait_until(
-                wait_for_assignment_persisted,
-                timeout=30.0,
-                description="persisted speaker assignment",
-                interval=0.5,
-            )
-            assigned_items = assignment_state["matching_rows"]
-            selected_speaker = require_widget(generated_ui["window"], "speakers.selected_speaker")
-            speaker_flow_status = {
-                "ok": True,
-                "skipped": False,
-                "clip": str(SPEAKER_FLOW_CLIP),
-                "selected_clip_id": profile_payload.get("profile", {}).get("preview", {}).get("selected_clip_id", ""),
-                "generated_track_rows": row_count,
-                "assigned_track_count": len(assigned_items),
-                "selected_speaker": selected_speaker.get("text", ""),
-                "playhead_track_text": playhead_item.get("text", ""),
-            }
+            if not args.offscreen:
+                playhead_select = ui_request(
+                    base_url,
+                    {
+                        "op": "item_select",
+                        "id": "speakers.playhead_tracks",
+                        "row": int(playhead_item["row"]),
+                        "timeoutMs": 10000,
+                    },
+                    timeout=15.0,
+                )
+                if not playhead_select.get("ok"):
+                    raise HarnessFailure(f"failed to select playhead track: {playhead_select}")
+
+                assign_result = ui_request(
+                    base_url,
+                    {
+                        "op": "click",
+                        "id": "speakers.assign_facedetections",
+                        "timeoutMs": 20000,
+                    },
+                    timeout=25.0,
+                )
+                if not assign_result.get("ok"):
+                    raise HarnessFailure(f"failed to assign selected playhead track: {assign_result}")
+
+                editable_transcript_path = SPEAKER_FLOW_CLIP.with_name(
+                    f"{SPEAKER_FLOW_CLIP.stem}_editable.json"
+                )
+
+                def wait_for_assignment_persisted() -> dict[str, Any]:
+                    transcript_root = json.loads(editable_transcript_path.read_text(encoding="utf-8"))
+                    track_map = (
+                        transcript_root.get("speaker_flow", {})
+                        .get("clips", {})
+                        .get("clip_video_01", {})
+                        .get("resolved_current", {})
+                        .get("track_identity_map", [])
+                    )
+                    matching_rows = [
+                        row for row in track_map
+                        if row.get("identity_id") == selected_speaker_id
+                    ]
+                    if not matching_rows:
+                        return None
+                    return {
+                        "track_map": track_map,
+                        "matching_rows": matching_rows,
+                    }
+
+                assignment_state = wait_until(
+                    wait_for_assignment_persisted,
+                    timeout=30.0,
+                    description="persisted speaker assignment",
+                    interval=0.5,
+                )
+                assigned_items = assignment_state["matching_rows"]
+                selected_speaker = require_widget(generated_ui["window"], "speakers.selected_speaker")
+                speaker_flow_status = {
+                    "ok": True,
+                    "skipped": False,
+                    "clip": str(SPEAKER_FLOW_CLIP),
+                    "selected_clip_id": profile_payload.get("profile", {}).get("preview", {}).get("selected_clip_id", ""),
+                    "generated_track_rows": row_count,
+                    "assigned_track_count": len(assigned_items),
+                    "selected_speaker": selected_speaker.get("text", ""),
+                    "playhead_track_text": playhead_item.get("text", ""),
+                }
 
         context_menu: dict[str, Any] | None = None
         context_menu_status: dict[str, Any] = {"ok": False, "skipped": True}

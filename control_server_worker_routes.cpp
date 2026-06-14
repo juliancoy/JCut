@@ -8,6 +8,9 @@
 #include "editor_document_core_json.h"
 #include "editor.h"
 #include "editor_shared.h"
+#include "editor_shared_transcript.h"
+#include "speaker_track_assignment_service.h"
+#include "transcript_engine.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -16,6 +19,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
@@ -31,6 +35,7 @@
 #include <QUrlQuery>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace control_server {
@@ -62,6 +67,232 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
         }
     }
     return true;
+}
+
+QJsonObject selectedClipObjectFromState(const QJsonObject& state)
+{
+    QJsonObject selected = state.value(QStringLiteral("selectedClip")).toObject();
+    if (!selected.isEmpty()) {
+        return selected;
+    }
+    const QString selectedClipId = state.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    const QJsonArray timeline = state.value(QStringLiteral("timeline")).toArray();
+    for (const QJsonValue& value : timeline) {
+        const QJsonObject clip = value.toObject();
+        if (clip.value(QStringLiteral("id")).toString().trimmed() == selectedClipId) {
+            return clip;
+        }
+    }
+    return {};
+}
+
+QString absoluteClipFilePathFromState(const QJsonObject& state, const QJsonObject& clip)
+{
+    const QString filePath = clip.value(QStringLiteral("filePath")).toString().trimmed();
+    if (filePath.isEmpty()) {
+        return {};
+    }
+    const QFileInfo fileInfo(filePath);
+    if (fileInfo.isAbsolute()) {
+        return fileInfo.absoluteFilePath();
+    }
+    const QString mediaRoot = state.value(QStringLiteral("mediaRoot")).toString().trimmed();
+    if (!mediaRoot.isEmpty()) {
+        return QFileInfo(QDir(mediaRoot).filePath(filePath)).absoluteFilePath();
+    }
+    return fileInfo.absoluteFilePath();
+}
+
+QJsonObject speakerFlowClipPayloadForRoute(const QJsonObject& transcriptRoot, const QString& clipId)
+{
+    const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    return speakerFlow.value(QStringLiteral("clips")).toObject().value(clipId.trimmed()).toObject();
+}
+
+QJsonArray sectionTrackMapForRoute(const QJsonObject& transcriptRoot, const QString& clipId)
+{
+    const QJsonObject clipPayload = speakerFlowClipPayloadForRoute(transcriptRoot, clipId);
+    QJsonArray rows =
+        clipPayload.value(QStringLiteral("resolved_current"))
+            .toObject()
+            .value(QStringLiteral("section_track_map"))
+            .toArray();
+    if (rows.isEmpty()) {
+        rows = clipPayload.value(QStringLiteral("section_track_map")).toArray();
+    }
+    return rows;
+}
+
+QString speakerDisplayNameForRoute(const QJsonObject& transcriptRoot, const QString& speakerId)
+{
+    const QString trimmed = speakerId.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+    const QJsonObject profiles = transcriptRoot.value(QStringLiteral("speaker_profiles")).toObject();
+    const QJsonObject profile = profiles.value(trimmed).toObject();
+    for (const QString& key : {QStringLiteral("display_name"),
+                              QStringLiteral("name"),
+                              QStringLiteral("label"),
+                              QStringLiteral("speaker_name")}) {
+        const QString value = profile.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+    return trimmed;
+}
+
+QJsonObject decorateTrackMapRowForRoute(QJsonObject row, const QJsonObject& transcriptRoot)
+{
+    QString speakerId = row.value(QStringLiteral("speaker_id")).toString().trimmed();
+    if (speakerId.isEmpty()) {
+        speakerId = row.value(QStringLiteral("identity_id")).toString().trimmed();
+    }
+    if (!speakerId.isEmpty()) {
+        row[QStringLiteral("speaker_display_name")] =
+            speakerDisplayNameForRoute(transcriptRoot, speakerId);
+    }
+    const int64_t startFrame = row.value(QStringLiteral("start_frame")).toInteger(-1);
+    const int64_t endFrame = row.value(QStringLiteral("end_frame")).toInteger(-1);
+    if (startFrame >= 0 && endFrame >= startFrame) {
+        row[QStringLiteral("section_key_resolved")] =
+            QStringLiteral("%1|%2|%3").arg(speakerId).arg(startFrame).arg(endFrame);
+    }
+    return row;
+}
+
+QJsonArray decorateTrackMapRowsForRoute(const QJsonArray& rows, const QJsonObject& transcriptRoot)
+{
+    QJsonArray decorated;
+    for (const QJsonValue& value : rows) {
+        decorated.push_back(decorateTrackMapRowForRoute(value.toObject(), transcriptRoot));
+    }
+    return decorated;
+}
+
+QJsonObject sectionAssignmentForRoute(const QJsonArray& sectionMap,
+                                      const QString& sectionKey,
+                                      const QString& speakerId,
+                                      int64_t startFrame,
+                                      int64_t endFrame)
+{
+    for (const QJsonValue& value : sectionMap) {
+        const QJsonObject row = value.toObject();
+        const QString rowKey = row.value(QStringLiteral("section_key")).toString().trimmed();
+        if (!rowKey.isEmpty() && rowKey == sectionKey) {
+            return row;
+        }
+        if (row.value(QStringLiteral("speaker_id")).toString().trimmed() == speakerId &&
+            row.value(QStringLiteral("start_frame")).toInteger(-1) == startFrame &&
+            row.value(QStringLiteral("end_frame")).toInteger(-1) == endFrame) {
+            return row;
+        }
+    }
+    return {};
+}
+
+QJsonArray contiguousTranscriptSectionsForRoute(const QJsonObject& transcriptRoot,
+                                                const QJsonArray& sectionMap)
+{
+    QJsonArray sections;
+    QString activeSpeakerId;
+    int64_t activeStart = -1;
+    int64_t activeEnd = -1;
+    int wordCount = 0;
+
+    auto flush = [&]() {
+        if (activeSpeakerId.isEmpty() || activeStart < 0 || activeEnd < activeStart) {
+            activeSpeakerId.clear();
+            activeStart = -1;
+            activeEnd = -1;
+            wordCount = 0;
+            return;
+        }
+        const QString key =
+            QStringLiteral("%1|%2|%3").arg(activeSpeakerId).arg(activeStart).arg(activeEnd);
+        QJsonObject row{
+            {QStringLiteral("section_key"), key},
+            {QStringLiteral("speaker_id"), activeSpeakerId},
+            {QStringLiteral("speaker_display_name"),
+             speakerDisplayNameForRoute(transcriptRoot, activeSpeakerId)},
+            {QStringLiteral("start_frame"), static_cast<qint64>(activeStart)},
+            {QStringLiteral("end_frame"), static_cast<qint64>(activeEnd)},
+            {QStringLiteral("word_count"), wordCount}
+        };
+        const QJsonObject assignment =
+            sectionAssignmentForRoute(sectionMap, key, activeSpeakerId, activeStart, activeEnd);
+        row[QStringLiteral("assigned")] = !assignment.isEmpty();
+        if (!assignment.isEmpty()) {
+            row[QStringLiteral("assignment")] =
+                decorateTrackMapRowForRoute(assignment, transcriptRoot);
+        }
+        sections.push_back(row);
+        activeSpeakerId.clear();
+        activeStart = -1;
+        activeEnd = -1;
+        wordCount = 0;
+    };
+
+    const QJsonArray transcriptSections = transcriptRoot.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& sectionValue : transcriptSections) {
+        const QJsonObject section = sectionValue.toObject();
+        const QString sectionSpeaker = section.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = section.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject word = wordValue.toObject();
+            if (word.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            const QString speakerId =
+                word.value(QStringLiteral("speaker")).toString(sectionSpeaker).trimmed();
+            if (speakerId.isEmpty()) {
+                flush();
+                continue;
+            }
+            const int64_t startFrame = static_cast<int64_t>(
+                std::floor(word.value(QStringLiteral("start")).toDouble(0.0) *
+                           static_cast<double>(kTimelineFps)));
+            const int64_t endFrame = static_cast<int64_t>(
+                std::ceil(word.value(QStringLiteral("end")).toDouble(0.0) *
+                          static_cast<double>(kTimelineFps)));
+            if (activeSpeakerId != speakerId) {
+                flush();
+                activeSpeakerId = speakerId;
+                activeStart = startFrame;
+                activeEnd = qMax<int64_t>(startFrame, endFrame);
+                wordCount = 1;
+            } else {
+                activeEnd = qMax<int64_t>(activeEnd, endFrame);
+                ++wordCount;
+            }
+        }
+        if (!words.isEmpty()) {
+            continue;
+        }
+        if (sectionSpeaker.isEmpty()) {
+            flush();
+            continue;
+        }
+        const int64_t startFrame = static_cast<int64_t>(
+            std::floor(section.value(QStringLiteral("start")).toDouble(0.0) *
+                       static_cast<double>(kTimelineFps)));
+        const int64_t endFrame = static_cast<int64_t>(
+            std::ceil(section.value(QStringLiteral("end")).toDouble(0.0) *
+                      static_cast<double>(kTimelineFps)));
+        if (activeSpeakerId != sectionSpeaker) {
+            flush();
+            activeSpeakerId = sectionSpeaker;
+            activeStart = startFrame;
+            activeEnd = qMax<int64_t>(startFrame, endFrame);
+            wordCount = 1;
+        } else {
+            activeEnd = qMax<int64_t>(activeEnd, endFrame);
+            ++wordCount;
+        }
+    }
+    flush();
+    return sections;
 }
 
 QByteArray cachedControlServerRootHtml()
@@ -286,6 +517,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /decode/seeks</strong> - Seek benchmark for current project media</div>
         <div class="endpoint"><strong>GET /diag/perf</strong> - Performance diagnostics</div>
         <div class="endpoint"><strong>GET /diag/frame-trace</strong> - Recent frame/heartbeat trace and freeze events</div>
+        <div class="endpoint"><strong>GET /diag/stream-timing</strong> - Per-stream timing compared with the master transport and wall clock</div>
         <div class="endpoint"><strong>GET /timeline</strong> - Timeline information</div>
         <div class="endpoint"><strong>GET /project</strong> - Project information</div>
         <div class="endpoint"><strong>GET /history</strong> - History snapshot</div>
@@ -619,6 +851,111 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             {QStringLiteral("ok"), true},
             {QStringLiteral("count"), tracks.size()},
             {QStringLiteral("tracks"), tracks}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/speaker-flow/track-map")) {
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
+            writeError(socket, 503, error);
+            return true;
+        }
+
+        const QJsonObject state = m_lastStateSnapshot;
+        const QUrlQuery query(request.url);
+        auto decodedQueryItem = [&query](const QString& key) {
+            return QUrl::fromPercentEncoding(
+                       query.queryItemValue(key, QUrl::FullyEncoded).toUtf8())
+                .trimmed();
+        };
+        const QJsonObject clip = selectedClipObjectFromState(state);
+        QString clipId = decodedQueryItem(QStringLiteral("clipId"));
+        if (clipId.isEmpty()) {
+            clipId = decodedQueryItem(QStringLiteral("clip_id"));
+        }
+        if (clipId.isEmpty()) {
+            clipId = clip.value(QStringLiteral("id")).toString().trimmed();
+        }
+        QString clipFilePath = decodedQueryItem(QStringLiteral("filePath"));
+        if (clipFilePath.isEmpty()) {
+            clipFilePath = decodedQueryItem(QStringLiteral("file_path"));
+        }
+        if (clipFilePath.isEmpty()) {
+            clipFilePath = absoluteClipFilePathFromState(state, clip);
+        } else if (!QFileInfo(clipFilePath).isAbsolute()) {
+            clipFilePath =
+                QFileInfo(QDir(state.value(QStringLiteral("mediaRoot")).toString())
+                              .filePath(clipFilePath))
+                    .absoluteFilePath();
+        }
+        if (clipId.isEmpty() || clipFilePath.isEmpty()) {
+            writeError(socket, 404, QStringLiteral("selected clip unavailable"));
+            return true;
+        }
+
+        QString transcriptPath = decodedQueryItem(QStringLiteral("transcriptPath"));
+        if (transcriptPath.isEmpty()) {
+            transcriptPath = decodedQueryItem(QStringLiteral("transcript_path"));
+        }
+        if (transcriptPath.isEmpty()) {
+            transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+        }
+        editor::TranscriptEngine engine;
+        QJsonDocument transcriptDoc;
+        QString transcriptLoadError;
+        if (transcriptPath.trimmed().isEmpty() ||
+            !engine.loadTranscriptJson(transcriptPath, &transcriptDoc, &transcriptLoadError)) {
+            writeError(socket,
+                       404,
+                       QStringLiteral("transcript unavailable for selected clip %1 at %2: %3")
+                           .arg(clipId,
+                                transcriptPath.isEmpty() ? QStringLiteral("<empty>") : transcriptPath,
+                                transcriptLoadError.isEmpty()
+                                    ? QStringLiteral("unknown error")
+                                    : transcriptLoadError));
+            return true;
+        }
+
+        const QJsonObject transcriptRoot = transcriptDoc.object();
+        const QJsonObject speakerFlowClip =
+            speakerFlowClipPayloadForRoute(transcriptRoot, clipId);
+        const QJsonArray sectionMap = sectionTrackMapForRoute(transcriptRoot, clipId);
+        const QJsonArray identityMap =
+            jcut::speakertrack::assignmentMapForClip(transcriptRoot, clipId);
+        const QJsonArray contiguousSections =
+            contiguousTranscriptSectionsForRoute(transcriptRoot, sectionMap);
+        const qint64 currentFrame = state.value(QStringLiteral("currentFrame")).toInteger();
+        QJsonObject activeSection;
+        QJsonObject activeAssignment;
+        for (const QJsonValue& value : contiguousSections) {
+            const QJsonObject section = value.toObject();
+            const qint64 startFrame = section.value(QStringLiteral("start_frame")).toInteger(-1);
+            const qint64 endFrame = section.value(QStringLiteral("end_frame")).toInteger(-1);
+            if (startFrame >= 0 && endFrame >= startFrame &&
+                currentFrame >= startFrame && currentFrame <= endFrame) {
+                activeSection = section;
+                activeAssignment = section.value(QStringLiteral("assignment")).toObject();
+                break;
+            }
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("selected_clip_id"), clipId},
+            {QStringLiteral("selected_clip_file_path"), clipFilePath},
+            {QStringLiteral("transcript_path"), transcriptPath},
+            {QStringLiteral("contiguous_mode"),
+             state.value(QStringLiteral("speakerShowContiguousTranscriptSections")).toBool(false)},
+            {QStringLiteral("current_frame"), currentFrame},
+            {QStringLiteral("active_section"), activeSection},
+            {QStringLiteral("active_assignment"), activeAssignment},
+            {QStringLiteral("speaker_flow_clip"), speakerFlowClip},
+            {QStringLiteral("section_track_map"),
+             decorateTrackMapRowsForRoute(sectionMap, transcriptRoot)},
+            {QStringLiteral("track_identity_map"),
+             decorateTrackMapRowsForRoute(identityMap, transcriptRoot)},
+            {QStringLiteral("contiguous_sections"), contiguousSections}
         });
         return true;
     }
@@ -1143,6 +1480,23 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
     if (request.method == QStringLiteral("GET") &&
         request.url.path() == QStringLiteral("/diag/frame-trace")) {
         writeJson(socket, 200, frameTraceSnapshot(QUrlQuery(request.url)));
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/diag/stream-timing")) {
+        QJsonObject timing;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &timing, [this]() {
+                return m_streamTimingCallback ? m_streamTimingCallback() : QJsonObject{};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for ui-thread stream timing snapshot"));
+            return true;
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), !timing.isEmpty()},
+            {QStringLiteral("stream_timing"), timing},
+            {QStringLiteral("fast_snapshot"), fastSnapshot()}
+        });
         return true;
     }
 

@@ -27,10 +27,10 @@ struct PlaybackDriftRetimeInput {
     bool enabled = false;
     int64_t driftSamples = 0;
     qreal previousMultiplier = 1.0;
-    qreal deadbandSamples = 2400.0;
-    qreal fullCorrectionSamples = 24000.0;
-    qreal maxCorrection = 0.02;
-    qreal smoothing = 0.08;
+    qreal deadbandSamples = 3840.0;
+    qreal fullCorrectionSamples = 60000.0;
+    qreal maxCorrection = 0.01;
+    qreal smoothing = 0.035;
 };
 
 int64_t audioFeedbackSampleToTimelineSample(int64_t audioFeedbackSample);

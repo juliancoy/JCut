@@ -18,6 +18,25 @@
 
 using namespace editor;
 
+namespace {
+
+void setColorButtonSwatch(QPushButton* button, const QColor& color)
+{
+    if (!button || !color.isValid()) {
+        return;
+    }
+    const QColor opaque(color.red(), color.green(), color.blue());
+    button->setText(opaque.name());
+    button->setStyleSheet(
+        QStringLiteral("QPushButton { background: %1; color: %2; "
+                       "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
+            .arg(opaque.name(),
+                 opaque.lightness() > 128 ? QStringLiteral("#000000")
+                                          : QStringLiteral("#ffffff")));
+}
+
+} // namespace
+
 void EditorWindow::bindInspectorWidgets()
 {
     m_transcriptTable = m_inspectorPane->transcriptTable();
@@ -54,6 +73,27 @@ void EditorWindow::bindInspectorWidgets()
         m_inspectorPane->speakerCurrentSpeakerNameYPositionSpin();
     m_speakerCurrentSpeakerOrganizationYPositionSpin =
         m_inspectorPane->speakerCurrentSpeakerOrganizationYPositionSpin();
+    m_speakerCurrentSpeakerNameColorButton = m_inspectorPane->speakerCurrentSpeakerNameColorButton();
+    m_speakerCurrentSpeakerOrganizationColorButton =
+        m_inspectorPane->speakerCurrentSpeakerOrganizationColorButton();
+    m_speakerCurrentSpeakerBackgroundColorButton =
+        m_inspectorPane->speakerCurrentSpeakerBackgroundColorButton();
+    m_speakerCurrentSpeakerBackgroundOpacitySpin =
+        m_inspectorPane->speakerCurrentSpeakerBackgroundOpacitySpin();
+    m_speakerCurrentSpeakerBorderColorButton =
+        m_inspectorPane->speakerCurrentSpeakerBorderColorButton();
+    m_speakerCurrentSpeakerBorderOpacitySpin =
+        m_inspectorPane->speakerCurrentSpeakerBorderOpacitySpin();
+    m_speakerCurrentSpeakerBackgroundRadiusSpin =
+        m_inspectorPane->speakerCurrentSpeakerBackgroundRadiusSpin();
+    m_speakerCurrentSpeakerBorderWidthSpin =
+        m_inspectorPane->speakerCurrentSpeakerBorderWidthSpin();
+    m_speakerCurrentSpeakerShadowCheckBox =
+        m_inspectorPane->speakerCurrentSpeakerShadowCheckBox();
+    m_speakerCurrentSpeakerShadowColorButton =
+        m_inspectorPane->speakerCurrentSpeakerShadowColorButton();
+    m_speakerCurrentSpeakerShadowOpacitySpin =
+        m_inspectorPane->speakerCurrentSpeakerShadowOpacitySpin();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -649,6 +689,96 @@ void EditorWindow::setupPreviewControls()
                     scheduleSaveState();
                     pushHistorySnapshot();
                 });
+    }
+    auto applySpeakerLabelStyle = [this]() {
+        QColor background = m_speakerCurrentSpeakerBackgroundColor;
+        background.setAlphaF((m_speakerCurrentSpeakerBackgroundOpacitySpin
+                                  ? m_speakerCurrentSpeakerBackgroundOpacitySpin->value()
+                                  : 75) /
+                             100.0);
+        QColor border = m_speakerCurrentSpeakerBorderColor;
+        border.setAlphaF((m_speakerCurrentSpeakerBorderOpacitySpin
+                              ? m_speakerCurrentSpeakerBorderOpacitySpin->value()
+                              : 47) /
+                         100.0);
+        QColor shadow = m_speakerCurrentSpeakerShadowColor;
+        shadow.setAlphaF((m_speakerCurrentSpeakerShadowOpacitySpin
+                              ? m_speakerCurrentSpeakerShadowOpacitySpin->value()
+                              : 75) /
+                         100.0);
+        m_speakerCurrentSpeakerBackgroundColor = background;
+        m_speakerCurrentSpeakerBorderColor = border;
+        m_speakerCurrentSpeakerShadowColor = shadow;
+        if (m_preview) {
+            m_preview->setCurrentSpeakerNameColor(m_speakerCurrentSpeakerNameColor);
+            m_preview->setCurrentSpeakerOrganizationColor(m_speakerCurrentSpeakerOrganizationColor);
+            m_preview->setCurrentSpeakerBackgroundColor(m_speakerCurrentSpeakerBackgroundColor);
+            m_preview->setCurrentSpeakerBorderColor(m_speakerCurrentSpeakerBorderColor);
+            m_preview->setCurrentSpeakerBackgroundCornerRadius(
+                m_speakerCurrentSpeakerBackgroundRadiusSpin
+                    ? m_speakerCurrentSpeakerBackgroundRadiusSpin->value()
+                    : 14.0);
+            m_preview->setCurrentSpeakerBorderWidth(
+                m_speakerCurrentSpeakerBorderWidthSpin
+                    ? m_speakerCurrentSpeakerBorderWidthSpin->value()
+                    : 1.0);
+            m_preview->setCurrentSpeakerShadowEnabled(
+                m_speakerCurrentSpeakerShadowCheckBox
+                    ? m_speakerCurrentSpeakerShadowCheckBox->isChecked()
+                    : true);
+            m_preview->setCurrentSpeakerShadowColor(m_speakerCurrentSpeakerShadowColor);
+        }
+        scheduleSaveState();
+        pushHistorySnapshot();
+    };
+    auto connectSpeakerColorButton = [this, applySpeakerLabelStyle](QPushButton* button,
+                                                                    QColor* target,
+                                                                    const QString& title) {
+        if (!button || !target) {
+            return;
+        }
+        setColorButtonSwatch(button, *target);
+        connect(button, &QPushButton::clicked, this, [this, button, target, title, applySpeakerLabelStyle]() {
+            const QColor chosen = QColorDialog::getColor(*target, this, title);
+            if (!chosen.isValid()) {
+                return;
+            }
+            target->setRgb(chosen.red(), chosen.green(), chosen.blue(), target->alpha());
+            setColorButtonSwatch(button, *target);
+            applySpeakerLabelStyle();
+        });
+    };
+    connectSpeakerColorButton(m_speakerCurrentSpeakerNameColorButton,
+                              &m_speakerCurrentSpeakerNameColor,
+                              QStringLiteral("Speaker Name Color"));
+    connectSpeakerColorButton(m_speakerCurrentSpeakerOrganizationColorButton,
+                              &m_speakerCurrentSpeakerOrganizationColor,
+                              QStringLiteral("Speaker Organization Color"));
+    connectSpeakerColorButton(m_speakerCurrentSpeakerBackgroundColorButton,
+                              &m_speakerCurrentSpeakerBackgroundColor,
+                              QStringLiteral("Speaker Label Background Color"));
+    connectSpeakerColorButton(m_speakerCurrentSpeakerBorderColorButton,
+                              &m_speakerCurrentSpeakerBorderColor,
+                              QStringLiteral("Speaker Label Border Color"));
+    connectSpeakerColorButton(m_speakerCurrentSpeakerShadowColorButton,
+                              &m_speakerCurrentSpeakerShadowColor,
+                              QStringLiteral("Speaker Label Shadow Color"));
+    for (QSpinBox* spin : {m_speakerCurrentSpeakerBackgroundOpacitySpin,
+                           m_speakerCurrentSpeakerBorderOpacitySpin,
+                           m_speakerCurrentSpeakerBackgroundRadiusSpin,
+                           m_speakerCurrentSpeakerBorderWidthSpin,
+                           m_speakerCurrentSpeakerShadowOpacitySpin}) {
+        if (spin) {
+            connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, [applySpeakerLabelStyle]() {
+                applySpeakerLabelStyle();
+            });
+        }
+    }
+    if (m_speakerCurrentSpeakerShadowCheckBox) {
+        connect(m_speakerCurrentSpeakerShadowCheckBox,
+                &QCheckBox::toggled,
+                this,
+                [applySpeakerLabelStyle]() { applySpeakerLabelStyle(); });
     }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,

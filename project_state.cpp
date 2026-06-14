@@ -453,6 +453,46 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerCurrentSpeakerOrganizationYPositionSpin
             ? m_speakerCurrentSpeakerOrganizationYPositionSpin->value()
             : 93;
+    root[QStringLiteral("previewCurrentSpeakerNameColor")] =
+        m_speakerCurrentSpeakerNameColor.name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerOrganizationColor")] =
+        m_speakerCurrentSpeakerOrganizationColor.name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerBackgroundColor")] =
+        QColor(m_speakerCurrentSpeakerBackgroundColor.red(),
+               m_speakerCurrentSpeakerBackgroundColor.green(),
+               m_speakerCurrentSpeakerBackgroundColor.blue()).name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerBackgroundOpacityPercent")] =
+        m_speakerCurrentSpeakerBackgroundOpacitySpin
+            ? m_speakerCurrentSpeakerBackgroundOpacitySpin->value()
+            : qRound(m_speakerCurrentSpeakerBackgroundColor.alphaF() * 100.0);
+    root[QStringLiteral("previewCurrentSpeakerBorderColor")] =
+        QColor(m_speakerCurrentSpeakerBorderColor.red(),
+               m_speakerCurrentSpeakerBorderColor.green(),
+               m_speakerCurrentSpeakerBorderColor.blue()).name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerBorderOpacityPercent")] =
+        m_speakerCurrentSpeakerBorderOpacitySpin
+            ? m_speakerCurrentSpeakerBorderOpacitySpin->value()
+            : qRound(m_speakerCurrentSpeakerBorderColor.alphaF() * 100.0);
+    root[QStringLiteral("previewCurrentSpeakerBackgroundRadiusPx")] =
+        m_speakerCurrentSpeakerBackgroundRadiusSpin
+            ? m_speakerCurrentSpeakerBackgroundRadiusSpin->value()
+            : 14;
+    root[QStringLiteral("previewCurrentSpeakerBorderWidthPx")] =
+        m_speakerCurrentSpeakerBorderWidthSpin
+            ? m_speakerCurrentSpeakerBorderWidthSpin->value()
+            : 1;
+    root[QStringLiteral("previewCurrentSpeakerShadowEnabled")] =
+        m_speakerCurrentSpeakerShadowCheckBox
+            ? m_speakerCurrentSpeakerShadowCheckBox->isChecked()
+            : true;
+    root[QStringLiteral("previewCurrentSpeakerShadowColor")] =
+        QColor(m_speakerCurrentSpeakerShadowColor.red(),
+               m_speakerCurrentSpeakerShadowColor.green(),
+               m_speakerCurrentSpeakerShadowColor.blue()).name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerShadowOpacityPercent")] =
+        m_speakerCurrentSpeakerShadowOpacitySpin
+            ? m_speakerCurrentSpeakerShadowOpacitySpin->value()
+            : qRound(m_speakerCurrentSpeakerShadowColor.alphaF() * 100.0);
     root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();

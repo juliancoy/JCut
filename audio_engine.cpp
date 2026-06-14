@@ -147,7 +147,7 @@ void AudioEngine::setPlaybackRate(qreal rate) {
 }
 
 void AudioEngine::setPlaybackDriftRetimeRate(qreal rate) {
-  m_playbackDriftRetimeRate.store(qBound<qreal>(0.98, rate, 1.02),
+  m_playbackDriftRetimeRate.store(qBound<qreal>(0.99, rate, 1.01),
                                   std::memory_order_release);
 }
 
@@ -610,9 +610,9 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   const qreal playbackRate =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   const qreal driftRetimeRate =
-      qBound<qreal>(0.98,
+      qBound<qreal>(0.99,
                     m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-                    1.02);
+                    1.01);
   snapshot[QStringLiteral("initialized")] = m_initialized;
   snapshot[QStringLiteral("running")] =
       m_running.load(std::memory_order_acquire);
@@ -1276,9 +1276,9 @@ int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
     const qreal playbackRate = qBound<qreal>(
         0.1, engine->m_playbackRate.load(std::memory_order_acquire), 3.0);
     const qreal driftRetimeRate = qBound<qreal>(
-        0.98,
+        0.99,
         engine->m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-        1.02);
+        1.01);
     const int64_t timelineAdvance =
         qMax<int64_t>(1, static_cast<int64_t>(std::llround(
                              static_cast<long double>(readFrames) *
@@ -1757,12 +1757,19 @@ AudioEngine::decodeClipAudio(const QString &path, int64_t maxOutputFrames,
     return cache;
   }
 
+  // Validate sample_rate: on some platforms (macOS/VideoToolbox),
+  // avcodec_parameters_to_context may leave sample_rate at 0 even
+  // when stream->codecpar->sample_rate is valid. Fall back to the
+  // stream parameter if the codec context has 0.
+  const int inSampleRate = codecCtx->sample_rate > 0
+      ? codecCtx->sample_rate
+      : (stream->codecpar->sample_rate > 0 ? stream->codecpar->sample_rate : 48000);
   SwrContext *swr = swr_alloc();
   ffmpeg_compat::ChannelLayoutHandle outLayout{};
   ffmpeg_compat::defaultChannelLayout(&outLayout, m_channelCount);
   ffmpeg_compat::setSwrInputLayout(swr, codecCtx);
   ffmpeg_compat::setSwrOutputLayout(swr, &outLayout);
-  av_opt_set_int(swr, "in_sample_rate", codecCtx->sample_rate, 0);
+  av_opt_set_int(swr, "in_sample_rate", inSampleRate, 0);
   av_opt_set_int(swr, "out_sample_rate", m_sampleRate, 0);
   av_opt_set_sample_fmt(swr, "in_sample_fmt", codecCtx->sample_fmt, 0);
   av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
@@ -2286,9 +2293,11 @@ QVector<ExportRangeSegment> AudioEngine::transcriptNormalizeRangesCopy() const {
 }
 
 bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
-                           int64_t chunkStartSample, qreal playbackRate) {
+                           int64_t chunkStartSample, qreal playbackRate,
+                           qreal timelineRate) {
   std::fill(output, output + frames * m_channelCount, 0.0f);
   const qreal clampedRate = qBound<qreal>(0.1, playbackRate, 3.0);
+  const qreal clampedTimelineRate = qBound<qreal>(0.05, timelineRate, 3.05);
   struct PreparedClipAudio {
     struct TranscriptNormalizeSegment {
       int64_t startSample = 0;
@@ -2347,7 +2356,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
                                     std::memory_order_release);
     m_lastMixChunkEndSample.store(
         chunkStartSample +
-            static_cast<int64_t>(std::ceil(frames * clampedRate)),
+            static_cast<int64_t>(std::ceil(frames * clampedTimelineRate)),
         std::memory_order_release);
     m_lastMixFramesWithActiveClip.store(0, std::memory_order_release);
     m_lastMixFramesInputOutOfRange.store(0, std::memory_order_release);
@@ -2385,7 +2394,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         clipStartSampleForLookup, chunkStartSample, clipEndSampleForLookup - 1);
     const int64_t chunkTimelineStep =
         qMax<int64_t>(1, static_cast<int64_t>(std::llround(
-                             clampedRate * static_cast<qreal>(frames))));
+                             clampedTimelineRate * static_cast<qreal>(frames))));
     const int64_t lookupEndTimelineSample = qBound<int64_t>(
         lookupTimelineSample + 1, lookupTimelineSample + chunkTimelineStep,
         clipEndSampleForLookup);
@@ -2725,7 +2734,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
 
   for (int outFrame = 0; outFrame < frames; ++outFrame) {
     const int64_t timelineOffset = static_cast<int64_t>(
-        std::floor(static_cast<qreal>(outFrame) * clampedRate));
+        std::floor(static_cast<qreal>(outFrame) * clampedTimelineRate));
     const int64_t timelineSamplePos = chunkStartSample + timelineOffset;
     const int outIndex = outFrame * m_channelCount;
     bool frameHadActiveClip = false;
@@ -3141,7 +3150,8 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
   m_lastMixNonzeroSampleCount.store(nonzeroSamples, std::memory_order_release);
   m_lastMixChunkStartSample.store(chunkStartSample, std::memory_order_release);
   m_lastMixChunkEndSample.store(
-      chunkStartSample + static_cast<int64_t>(std::ceil(frames * clampedRate)),
+      chunkStartSample +
+          static_cast<int64_t>(std::ceil(frames * clampedTimelineRate)),
       std::memory_order_release);
   m_lastMixFramesWithActiveClip.store(framesWithActiveClip,
                                       std::memory_order_release);
@@ -3298,8 +3308,8 @@ void AudioEngine::mixLoop() {
       playbackRate = qBound<qreal>(
           0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
       driftRetimeRate = qBound<qreal>(
-          0.98, m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-          1.02);
+          0.99, m_playbackDriftRetimeRate.load(std::memory_order_acquire),
+          1.01);
       const qreal chunkTimelineDuration =
           playbackRate * driftRetimeRate * static_cast<qreal>(m_periodFrames);
       const int64_t timelineStep = qMax<int64_t>(
@@ -3311,8 +3321,9 @@ void AudioEngine::mixLoop() {
       context.volume = m_volume;
     }
 
+    const qreal timelineRate = playbackRate * driftRetimeRate;
     if (!mixChunk(context, mixBuffer.data(), m_periodFrames, chunkStartSample,
-                  playbackRate)) {
+                  playbackRate, timelineRate)) {
       std::lock_guard<std::mutex> lock(m_stateMutex);
       m_timelineSampleCursor = chunkStartSample;
       m_ringBufferEndSample.store(chunkStartSample, std::memory_order_release);
@@ -3326,7 +3337,7 @@ void AudioEngine::mixLoop() {
     m_ringBuffer.write(pcmBuffer.constData(),
                        static_cast<size_t>(pcmBuffer.size()));
     const qreal chunkTimelineDuration =
-        playbackRate * driftRetimeRate * static_cast<qreal>(m_periodFrames);
+        timelineRate * static_cast<qreal>(m_periodFrames);
     const int64_t timelineStep = qMax<int64_t>(
         1, static_cast<int64_t>(std::llround(chunkTimelineDuration)));
     m_ringBufferEndSample.store(chunkStartSample + timelineStep,

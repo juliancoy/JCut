@@ -1,9 +1,11 @@
 #include "preview_surface_factory.h"
 
+#include "null_preview_surface.h"
 #include "preview_surface.h"
 #include "render_backend.h"
 #include "vulkan_preview_surface.h"
 
+#include <QGuiApplication>
 #include <QDebug>
 #include <QtGlobal>
 
@@ -22,6 +24,22 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     const RenderBackend configured = desiredPreviewBackendFromEnvironment();
     PreviewBackendDecision decision;
     decision.requested = renderBackendName(configured);
+    const bool offscreenUiAutomation =
+        qEnvironmentVariableIntValue("JCUT_UI_AUTOMATION") > 0 &&
+        QGuiApplication::platformName().compare(QStringLiteral("offscreen"),
+                                                Qt::CaseInsensitive) == 0;
+    if (offscreenUiAutomation) {
+        auto* surface = new NullPreviewSurface(parent);
+        surface->setRenderBackendPreference(QStringLiteral("offscreen-placeholder"));
+        decision.effective = QStringLiteral("offscreen-placeholder");
+        decision.reason =
+            QStringLiteral("Using null preview surface for offscreen UI automation.");
+        logDecision(decision);
+        if (decisionOut) {
+            *decisionOut = decision;
+        }
+        return surface;
+    }
 
     auto* surface = new VulkanPreviewSurface(parent);
     if (surface->asWidget() && surface->isNativePresentationActive()) {

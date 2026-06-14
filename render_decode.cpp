@@ -212,7 +212,12 @@ QString avErrToString(int errnum) {
 }
 
 QRect fitRect(const QSize& source, const QSize& bounds) {
-    return previewFitRectToBounds(source, QRect(QPoint(0, 0), bounds));
+    const QRectF rect = fitRectF(source, bounds);
+    return QRect(qRound(rect.x()), qRound(rect.y()), qRound(rect.width()), qRound(rect.height()));
+}
+
+QRectF fitRectF(const QSize& source, const QSize& bounds) {
+    return previewFitRectToBoundsF(source, QRectF(QPointF(0.0, 0.0), QSizeF(bounds)));
 }
 
 QRect coverRect(const QSize& source, const QSize& bounds)

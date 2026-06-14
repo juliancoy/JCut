@@ -124,6 +124,7 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache);
 QString avErrToString(int errnum);
 QRect fitRect(const QSize& source, const QSize& bounds);
+QRectF fitRectF(const QSize& source, const QSize& bounds);
 QRect coverRect(const QSize& source, const QSize& bounds);
 bool shouldDrawBlurredFillBackground(const QSize& source, const QSize& output);
 QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize);

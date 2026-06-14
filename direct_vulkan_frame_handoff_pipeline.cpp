@@ -75,13 +75,11 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         }
         return result;
     }
-    if (!status.externalVulkanFrame &&
-        !status.frame.hasHardwareFrame() &&
-        !status.frame.hasCpuImage()) {
+    if (!status.externalVulkanFrame && !status.frame.hasHardwareFrame()) {
         if (stats) {
             stats->lastHandoffMode = QStringLiteral("vulkan_handoff_required");
             stats->lastHandoffError = QStringLiteral(
-                "Direct Vulkan preview requires a hardware, external, or CPU-uploadable frame.");
+                "Direct Vulkan preview requires a hardware or external Vulkan frame; CPU upload fallback is disabled.");
         }
         return result;
     }
@@ -119,7 +117,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         offscreenFrame.valid = status.hasFrame;
         ok = m_handoff->importOffscreenFrame(offscreenFrame, &error);
     } else {
-        ok = m_handoff->uploadFrame(status.frame, true, &uploadMs, &error);
+        ok = m_handoff->uploadFrame(status.frame, false, &uploadMs, &error);
     }
 
     if (!ok) {
@@ -155,9 +153,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
                 ? QStringLiteral("hardware_direct")
                 : (m_handoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::ExternalMemoryImport
                        ? QStringLiteral("external_memory_import")
-                       : (m_handoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::CpuUpload
-                              ? QStringLiteral("cpu_upload")
-                              : QStringLiteral("invalid")));
+                       : QStringLiteral("invalid"));
         const auto& probe = m_handoff->lastProbe();
         stats->lastProbePath = probe.path;
         stats->lastProbeReason = probe.reason;

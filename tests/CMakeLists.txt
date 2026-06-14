@@ -1,3 +1,8 @@
+# Phase 4 — Tier labels:
+#   logic     — no GPU, no real decode; runs on ubuntu AND macos runners
+#   decode    — FFmpeg software decode; ubuntu runner
+#   gpu-soft  — Vulkan via lavapipe offscreen; ubuntu runner
+#   gpu-hw    — needs real hardware (NVDEC/CUDA interop, live probes); NOT CI
 set(EDITOR_TEST_TARGETS
     test_frame_handle
     test_memory_budget
@@ -37,6 +42,25 @@ set(EDITOR_TEST_TARGETS
     test_editor_runtime_vulkan_export_backend
 )
 
+# Tier classification helper: sets _test_labels for each target.
+# logic: all targets get this by default.
+# decode: targets that exercise FFmpeg software decode.
+# gpu-soft: targets that require Vulkan (runs via lavapipe offscreen).
+# gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
+function(_jcut_assign_tier_labels target_name)
+    set(_labels "logic")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+        list(APPEND _labels "decode")
+    endif()
+    if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+        list(APPEND _labels "gpu-soft")
+    endif()
+    if(target_name MATCHES "^(test_no_proxy_hardware_playback_contract)$")
+        list(APPEND _labels "gpu-hw")
+    endif()
+    set(_labels "${_labels}" PARENT_SCOPE)
+endfunction()
+
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
     add_executable(${test_target} ${CMAKE_CURRENT_SOURCE_DIR}/${test_target}.cpp)
     target_link_libraries(${test_target}
@@ -52,8 +76,10 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
             EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
     )
     jcut_force_bundled_ffmpeg_runtime(${test_target})
+    _jcut_assign_tier_labels(${test_target})
     add_test(NAME ${test_target} COMMAND ${test_target})
     set_tests_properties(${test_target} PROPERTIES
+        LABELS "${_labels}"
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
@@ -96,6 +122,8 @@ if(TARGET jcut_vulkan_shaders)
     add_dependencies(test_vulkan_text_generation jcut_vulkan_shaders)
 endif()
 
+# Temporal regression tests — these assert timing/sync behavior and are
+# sensitive to wall-clock conditions. Run as a separate ctest label.
 set_tests_properties(
     test_playback_policy
     test_temporal_sync_contract
@@ -109,7 +137,7 @@ set_tests_properties(
     test_transform_skip_aware_timing
     test_direct_vulkan_handoff_pipeline_contract
     test_no_proxy_hardware_playback_contract
-    PROPERTIES LABELS "temporal"
+    PROPERTIES LABELS "temporal;logic;decode"
 )
 
 add_executable(test_vulkan_subtitle_render
@@ -147,6 +175,7 @@ endif()
 jcut_force_bundled_ffmpeg_runtime(test_vulkan_subtitle_render)
 add_test(NAME test_vulkan_subtitle_render COMMAND test_vulkan_subtitle_render)
 set_tests_properties(test_vulkan_subtitle_render PROPERTIES
+    LABELS "decode;gpu-soft"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -156,11 +185,17 @@ add_test(NAME test_editor_core_excludes_vulkan_export_stub
         -DAR=${CMAKE_AR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_archive_excludes_vulkan_export_stub.cmake
 )
+set_tests_properties(test_editor_core_excludes_vulkan_export_stub PROPERTIES
+    LABELS "logic"
+)
 
 add_test(NAME test_contiguous_transcript_sections_state_persistence
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_contiguous_transcript_sections_state_persistence.cmake
+)
+set_tests_properties(test_contiguous_transcript_sections_state_persistence PROPERTIES
+    LABELS "logic"
 )
 
 add_test(NAME test_contiguous_sections_avatar_column
@@ -168,11 +203,17 @@ add_test(NAME test_contiguous_sections_avatar_column
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_contiguous_sections_avatar_column.cmake
 )
+set_tests_properties(test_contiguous_sections_avatar_column PROPERTIES
+    LABELS "logic"
+)
 
 add_test(NAME test_render_status_reports_live_progress
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_render_status_reports_live_progress.cmake
+)
+set_tests_properties(test_render_status_reports_live_progress PROPERTIES
+    LABELS "logic"
 )
 
 add_test(NAME test_export_audio_uses_rubberband
@@ -180,11 +221,17 @@ add_test(NAME test_export_audio_uses_rubberband
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_export_audio_uses_rubberband.cmake
 )
+set_tests_properties(test_export_audio_uses_rubberband PROPERTIES
+    LABELS "logic"
+)
 
 add_test(NAME test_export_speaker_labels_in_vulkan_path
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_export_speaker_labels_in_vulkan_path.cmake
+)
+set_tests_properties(test_export_speaker_labels_in_vulkan_path PROPERTIES
+    LABELS "logic"
 )
 
 add_executable(test_facedetections_processed_artifact
@@ -204,6 +251,7 @@ target_compile_definitions(test_facedetections_processed_artifact
 jcut_force_bundled_ffmpeg_runtime(test_facedetections_processed_artifact)
 add_test(NAME test_facedetections_processed_artifact COMMAND test_facedetections_processed_artifact)
 set_tests_properties(test_facedetections_processed_artifact PROPERTIES
+    LABELS "logic;decode"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -225,7 +273,7 @@ add_test(
             --allow-not-playing
 )
 set_tests_properties(test_live_playback_lag_probe PROPERTIES
-    LABELS "temporal;live"
+    LABELS "temporal;live;gpu-hw"
     SKIP_RETURN_CODE 77
 )
 
@@ -236,7 +284,7 @@ add_test(
             ${CMAKE_CURRENT_BINARY_DIR}/../jcut_imgui
 )
 set_tests_properties(test_imgui_binary_no_qt PROPERTIES
-    LABELS "imgui;linkage"
+    LABELS "imgui;linkage;logic"
     SKIP_RETURN_CODE 77
 )
 
@@ -257,7 +305,7 @@ target_compile_definitions(test_imgui_standalone_render
 jcut_force_bundled_ffmpeg_runtime(test_imgui_standalone_render)
 add_test(NAME test_imgui_standalone_render COMMAND test_imgui_standalone_render)
 set_tests_properties(test_imgui_standalone_render PROPERTIES
-    LABELS "imgui;render"
+    LABELS "imgui;render;decode;gpu-soft"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -278,7 +326,7 @@ target_compile_definitions(test_imgui_standalone_export
 jcut_force_bundled_ffmpeg_runtime(test_imgui_standalone_export)
 add_test(NAME test_imgui_standalone_export COMMAND test_imgui_standalone_export)
 set_tests_properties(test_imgui_standalone_export PROPERTIES
-    LABELS "imgui;render;export"
+    LABELS "imgui;render;export;decode;gpu-soft"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -287,10 +335,12 @@ add_test(
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/ui_smoke_harness.py
             --offscreen
+            --software-rendering
             --skip-build
 )
 set_tests_properties(test_ui_smoke_harness_offscreen PROPERTIES
     TIMEOUT 60
+    LABELS "logic;decode"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     RESOURCE_LOCK jcut_offscreen_control_server
 )
@@ -300,11 +350,13 @@ add_test(
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/ui_smoke_harness.py
             --offscreen
+            --software-rendering
             --skip-build
             --exercise-generated-track-assignment
 )
 set_tests_properties(test_speaker_flow_e2e_offscreen PROPERTIES
     TIMEOUT 300
+    LABELS "logic;decode"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     RESOURCE_LOCK jcut_offscreen_control_server
 )
@@ -314,6 +366,7 @@ add_test(
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/rest_smoke_test.py
             --offscreen
+            --software-rendering
             --skip-build
             --skip-restart
             --startup-timeout 30
@@ -324,6 +377,7 @@ add_test(
 )
 set_tests_properties(test_rest_smoke_offscreen PROPERTIES
     TIMEOUT 90
+    LABELS "logic;decode"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     RESOURCE_LOCK jcut_offscreen_control_server
 )
@@ -333,6 +387,7 @@ add_test(
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/rest_smoke_test.py
             --offscreen
+            --software-rendering
             --skip-build
             --skip-restart
             --startup-timeout 30
@@ -349,6 +404,7 @@ add_test(
 )
 set_tests_properties(test_ui_responsiveness_budget_offscreen PROPERTIES
     TIMEOUT 120
+    LABELS "logic;decode"
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     RESOURCE_LOCK jcut_offscreen_control_server
 )

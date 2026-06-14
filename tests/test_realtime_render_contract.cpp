@@ -135,6 +135,19 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
              "Vulkan export must not run a post-render CPU transcript overlay pass");
     QVERIFY2(!source.contains(QStringLiteral("!hasTranscriptOverlay")),
              "Transcript overlays must not disable direct Vulkan handoff or GPU color conversion");
+
+    QFile vulkanFile(QStringLiteral(JCUT_SOURCE_DIR) + QStringLiteral("/offscreen_vulkan_renderer_backend.cpp"));
+    QVERIFY2(vulkanFile.open(QIODevice::ReadOnly),
+             "offscreen_vulkan_renderer_backend.cpp must be readable");
+    const QString vulkanSource = QString::fromUtf8(vulkanFile.readAll());
+    QVERIFY2(vulkanSource.contains(QStringLiteral("const bool gpuOutputOnly = (readbackMs == nullptr)")),
+             "Vulkan export must make GPU-output mode explicit");
+    QVERIFY2(vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
+                 vulkanSource.contains(QStringLiteral("gpuOutputOnly")),
+             "GPU-output render path must skip CPU-raster title layers");
+    QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frameHandle, false")) &&
+                 vulkanSource.contains(QStringLiteral("return false;\n        }\n      }\n      QImage rgba")),
+             "GPU-output render path must not fall back to CPU image uploads when hardware handoff fails");
 }
 
 QTEST_MAIN(TestRealtimeRenderContract)

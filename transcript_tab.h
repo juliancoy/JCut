@@ -90,8 +90,8 @@ public:
     void applyTableEdit(QTableWidgetItem* item);
     void deleteSelectedRows();
     void setSelectedRowsSkipped(bool skipped);
-    int transcriptPrependMs() const { return m_transcriptPrependMs; }
-    int transcriptPostpendMs() const { return m_transcriptPostpendMs; }
+    int transcriptPrependMs() const { return m_widgets.transcriptPrependMsSpin ? qMax(0, m_widgets.transcriptPrependMsSpin->value()) : 150; }
+    int transcriptPostpendMs() const { return m_widgets.transcriptPostpendMsSpin ? qMax(0, m_widgets.transcriptPostpendMsSpin->value()) : 70; }
     int speechFilterFadeSamples() const { return m_speechFilterFadeSamples; }
     bool speechFilterEnabled() const { return m_speechFilterEnabled; }
     void setManualSelectionHoldMs(int valueMs);
@@ -254,6 +254,8 @@ private:
     void startTranscriptRowsBuildRequest(const QString& originalPath);
     void applyTranscriptRowsBuildResult(const TranscriptRowsBuildResult& result);
     void rebuildFollowRanges(const QVector<TranscriptRow>& rows);
+    void configureTranscriptTableView();
+    void onTranscriptRowClicked(int row);
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -269,8 +271,6 @@ private:
     QVector<int> m_renderOrderedWordIds;
     QHash<int, WordEditNeighborInfo> m_wordEditIndex;
     int m_nextTranscriptWordId = 1;
-    int m_transcriptPrependMs = 150;
-    int m_transcriptPostpendMs = 70;
     int m_speechFilterFadeSamples = 300;
     bool m_speechFilterEnabled = false;
     QTimer m_deferredSeekTimer;

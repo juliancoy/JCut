@@ -496,8 +496,19 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
             return;
         }
 
-        fillRoundedRectSoftware(&overlay, cardRect, qMax<qreal>(8.0, base * 0.012), spec.backgroundColor);
-        strokeRectSoftware(&overlay, cardRect.adjusted(0.5, 0.5, -0.5, -0.5), 1.0, spec.borderColor);
+        const qreal radius = qBound<qreal>(0.0, spec.backgroundCornerRadius, 128.0);
+        fillRoundedRectSoftware(&overlay, cardRect, radius, spec.backgroundColor);
+        const qreal borderWidth = qBound<qreal>(0.0, spec.borderWidth, 16.0);
+        if (borderWidth > 0.0) {
+            strokeRectSoftware(
+                &overlay,
+                cardRect.adjusted(borderWidth * 0.5,
+                                  borderWidth * 0.5,
+                                  -borderWidth * 0.5,
+                                  -borderWidth * 0.5),
+                borderWidth,
+                spec.borderColor);
+        }
 
         qreal y = cardRect.top() + paddingY;
         for (int i = 0; i < blockLines.size(); ++i) {
@@ -507,7 +518,9 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
             const qreal width = measureTextWidth(face, line.text);
             const qreal x = cardRect.left() + qMax<qreal>(paddingX, (cardRect.width() - width) * 0.5);
             const qreal baseline = y + metrics.ascender;
-            drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, QColor(0, 0, 0, 180));
+            if (spec.showShadow) {
+                drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, spec.shadowColor);
+            }
             drawGlyphRun(&overlay,
                          face,
                          x,
@@ -649,7 +662,12 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         const QRectF bounds = transcriptOverlayRectInOutputSpace(
             clip, request.outputSize, transcriptPath, sections, sourceFrame);
         if (clip.transcriptOverlay.showBackground) {
-            fillRoundedRectSoftware(&canvas, bounds, 14.0, QColor(0, 0, 0, 120));
+            QColor backgroundColor(0, 0, 0);
+            backgroundColor.setAlphaF(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0));
+            fillRoundedRectSoftware(&canvas,
+                                    bounds,
+                                    qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0),
+                                    backgroundColor);
         }
 
         FT_Face bodyFace = nullptr;

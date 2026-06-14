@@ -92,7 +92,7 @@ void TestAudioMixPolicy::testStarvedClipDoesNotBlockReadyClip() {
   }
 
   QVector<float> output(1024 * 2, 0.0f);
-  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0));
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
 
   QCOMPARE(engine.m_lastMixStarvedClipCount.load(), 1);
   QVERIFY(engine.m_mixDegradedChunkCount.load() >= 1);
@@ -125,7 +125,7 @@ void TestAudioMixPolicy::testOnlyStarvedClipBlocksChunk() {
   }
 
   QVector<float> output(1024 * 2, 0.0f);
-  QVERIFY(!engine.mixChunk(context, output.data(), 1024, 0, 1.0));
+  QVERIFY(!engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
   QVERIFY(engine.m_audioPlaybackBlocked.load());
   QCOMPARE(engine.m_lastMixStarvedClipCount.load(), 0);
 }
@@ -158,7 +158,7 @@ void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {
   const int frames = 1024;
   const int64_t chunkStart = 24000 - frames;
   QVector<float> output(frames * 2, 0.0f);
-  QVERIFY(engine.mixChunk(context, output.data(), frames, chunkStart, 1.0));
+  QVERIFY(engine.mixChunk(context, output.data(), frames, chunkStart, 1.0, 1.0));
   QCOMPARE(engine.m_lastMixStarvedClipCount.load(), 0);
 
   const float lastFrameValue = std::abs(output[(frames - 1) * 2]);

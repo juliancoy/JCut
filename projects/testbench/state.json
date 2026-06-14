@@ -32,7 +32,6 @@
     "autosaveMaxBackups": 20,
     "correctionsEnabled": true,
     "currentFrame": 0,
-    "debugDecodeMode": "hardware",
     "debugDecoderLaneCount": 2,
     "debugDeterministicPipeline": false,
     "debugH26xSoftwareThreadingMode": "auto",
@@ -83,7 +82,7 @@
     "outputWidth": 1080,
     "playbackAudioWarpMode": "disabled",
     "playbackAudioWarpModeExplicit": true,
-    "playbackClockSource": "timeline",
+    "playbackClockSource": "auto",
     "playbackClockSourceExplicit": true,
     "playbackLoopEnabled": false,
     "playbackSpeed": 1,
@@ -116,7 +115,7 @@
     "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1781296986536,
+        "audioSourceLastVerifiedMs": 1781401705306,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",
@@ -398,6 +397,8 @@
         "trackIndex": 0,
         "transcriptOverlay": {
             "autoScroll": false,
+            "backgroundCornerRadius": 14,
+            "backgroundOpacity": 0.47058823529411764,
             "bold": true,
             "boxHeight": 220,
             "boxWidth": 900,
@@ -446,6 +447,7 @@
     "selectedInspectorTab": 8,
     "selectedInspectorTabLabel": "Speakers",
     "selectedTrackIndex": 0,
+    "speakerShowContiguousTranscriptSections": false,
     "speakersColumnHidden": [
         false,
         false,
@@ -460,7 +462,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781296986521,
+            "audioSourceLastVerifiedMs": 1781401705290,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/life_c.png",
             "audioSourcePath": "testbench_assets/images/life_c.png",
@@ -846,6 +848,8 @@
             "trackIndex": 2,
             "transcriptOverlay": {
                 "autoScroll": false,
+                "backgroundCornerRadius": 14,
+                "backgroundOpacity": 0.47058823529411764,
                 "bold": true,
                 "boxHeight": 220,
                 "boxWidth": 900,
@@ -898,7 +902,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1781296986662,
+            "audioSourceLastVerifiedMs": 1781401705306,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1339,6 +1343,8 @@
             "trackIndex": 2,
             "transcriptOverlay": {
                 "autoScroll": false,
+                "backgroundCornerRadius": 14,
+                "backgroundOpacity": 0.47058823529411764,
                 "bold": true,
                 "boxHeight": 220,
                 "boxWidth": 900,
@@ -1391,7 +1397,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781296986521,
+            "audioSourceLastVerifiedMs": 1781401705290,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/gradient_a.png",
             "audioSourcePath": "testbench_assets/images/gradient_a.png",
@@ -1777,6 +1783,8 @@
             "trackIndex": 1,
             "transcriptOverlay": {
                 "autoScroll": false,
+                "backgroundCornerRadius": 14,
+                "backgroundOpacity": 0.47058823529411764,
                 "bold": true,
                 "boxHeight": 220,
                 "boxWidth": 900,
@@ -1829,7 +1837,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781296986521,
+            "audioSourceLastVerifiedMs": 1781401705290,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/fractal_b.png",
             "audioSourcePath": "testbench_assets/images/fractal_b.png",
@@ -2215,6 +2223,8 @@
             "trackIndex": 1,
             "transcriptOverlay": {
                 "autoScroll": false,
+                "backgroundCornerRadius": 14,
+                "backgroundOpacity": 0.47058823529411764,
                 "bold": true,
                 "boxHeight": 220,
                 "boxWidth": 900,
@@ -2267,7 +2277,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781296986536,
+            "audioSourceLastVerifiedMs": 1781401705306,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",
@@ -2549,6 +2559,8 @@
             "trackIndex": 0,
             "transcriptOverlay": {
                 "autoScroll": false,
+                "backgroundCornerRadius": 14,
+                "backgroundOpacity": 0.47058823529411764,
                 "bold": true,
                 "boxHeight": 220,
                 "boxWidth": 900,
@@ -2615,7 +2627,7 @@
             "visualMode": "enabled"
         }
     ],
-    "transcriptActiveCutPath": "",
+    "transcriptActiveCutPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source_editable.json",
     "transcriptColumnHidden": [
         false,
         false,
@@ -2627,6 +2639,6 @@
     "transcriptPostpendMs": 180,
     "transcriptPrependMs": 60,
     "transcriptShowExcludedLines": false,
-    "transcriptSpeakerFilterValue": "",
+    "transcriptSpeakerFilterValue": "__all__",
     "transcriptUnifiedEditColors": false
 }

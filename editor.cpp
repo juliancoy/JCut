@@ -51,6 +51,30 @@ using namespace editor;
 #include "playback_debug.h"
 
 namespace {
+QColor loadedColorValue(const QJsonObject& root, const QString& key, const QColor& fallback)
+{
+    const QColor color(root.value(key).toString(fallback.name(QColor::HexRgb)));
+    if (!color.isValid()) {
+        return fallback;
+    }
+    return QColor(color.red(), color.green(), color.blue(), fallback.alpha());
+}
+
+void setEditorColorButtonSwatch(QPushButton* button, const QColor& color)
+{
+    if (!button || !color.isValid()) {
+        return;
+    }
+    const QColor opaque(color.red(), color.green(), color.blue());
+    button->setText(opaque.name(QColor::HexRgb));
+    button->setStyleSheet(
+        QStringLiteral("QPushButton { background: %1; color: %2; "
+                       "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
+            .arg(opaque.name(QColor::HexRgb),
+                 opaque.lightness() > 128 ? QStringLiteral("#000000")
+                                          : QStringLiteral("#ffffff")));
+}
+
 bool restVulkanDiagnosticsModeEnabled()
 {
     const QString value = qEnvironmentVariable("JCUT_REST_VULKAN_DIAGNOSTICS").trimmed().toLower();
@@ -1020,6 +1044,51 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         0,
         root.value(QStringLiteral("previewCurrentSpeakerOrganizationYPositionPercent")).toInt(93),
         100);
+    QColor previewCurrentSpeakerNameColor = loadedColorValue(
+        root,
+        QStringLiteral("previewCurrentSpeakerNameColor"),
+        QColor(QStringLiteral("#f4f8fc")));
+    QColor previewCurrentSpeakerOrganizationColor = loadedColorValue(
+        root,
+        QStringLiteral("previewCurrentSpeakerOrganizationColor"),
+        QColor(QStringLiteral("#b9d0e5")));
+    QColor previewCurrentSpeakerBackgroundColor = loadedColorValue(
+        root,
+        QStringLiteral("previewCurrentSpeakerBackgroundColor"),
+        QColor(8, 13, 20, 190));
+    const int previewCurrentSpeakerBackgroundOpacityPercent = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerBackgroundOpacityPercent")).toInt(75),
+        100);
+    previewCurrentSpeakerBackgroundColor.setAlphaF(previewCurrentSpeakerBackgroundOpacityPercent / 100.0);
+    QColor previewCurrentSpeakerBorderColor = loadedColorValue(
+        root,
+        QStringLiteral("previewCurrentSpeakerBorderColor"),
+        QColor(225, 236, 247, 120));
+    const int previewCurrentSpeakerBorderOpacityPercent = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerBorderOpacityPercent")).toInt(47),
+        100);
+    previewCurrentSpeakerBorderColor.setAlphaF(previewCurrentSpeakerBorderOpacityPercent / 100.0);
+    const int previewCurrentSpeakerBackgroundRadiusPx = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerBackgroundRadiusPx")).toInt(14),
+        128);
+    const int previewCurrentSpeakerBorderWidthPx = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerBorderWidthPx")).toInt(1),
+        16);
+    const bool previewCurrentSpeakerShadowEnabled =
+        root.value(QStringLiteral("previewCurrentSpeakerShadowEnabled")).toBool(true);
+    QColor previewCurrentSpeakerShadowColor = loadedColorValue(
+        root,
+        QStringLiteral("previewCurrentSpeakerShadowColor"),
+        QColor(0, 0, 0, 190));
+    const int previewCurrentSpeakerShadowOpacityPercent = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerShadowOpacityPercent")).toInt(75),
+        100);
+    previewCurrentSpeakerShadowColor.setAlphaF(previewCurrentSpeakerShadowOpacityPercent / 100.0);
     const QString previewFacestreamOverlaySource = QStringLiteral("all");
     const int autosaveIntervalMinutes = qBound(
         1,
@@ -1477,6 +1546,40 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_speakerCurrentSpeakerOrganizationYPositionSpin->setValue(
             previewCurrentSpeakerOrganizationYPositionPercent);
     }
+    m_speakerCurrentSpeakerNameColor = previewCurrentSpeakerNameColor;
+    m_speakerCurrentSpeakerOrganizationColor = previewCurrentSpeakerOrganizationColor;
+    m_speakerCurrentSpeakerBackgroundColor = previewCurrentSpeakerBackgroundColor;
+    m_speakerCurrentSpeakerBorderColor = previewCurrentSpeakerBorderColor;
+    m_speakerCurrentSpeakerShadowColor = previewCurrentSpeakerShadowColor;
+    setEditorColorButtonSwatch(m_speakerCurrentSpeakerNameColorButton, m_speakerCurrentSpeakerNameColor);
+    setEditorColorButtonSwatch(m_speakerCurrentSpeakerOrganizationColorButton, m_speakerCurrentSpeakerOrganizationColor);
+    setEditorColorButtonSwatch(m_speakerCurrentSpeakerBackgroundColorButton, m_speakerCurrentSpeakerBackgroundColor);
+    setEditorColorButtonSwatch(m_speakerCurrentSpeakerBorderColorButton, m_speakerCurrentSpeakerBorderColor);
+    setEditorColorButtonSwatch(m_speakerCurrentSpeakerShadowColorButton, m_speakerCurrentSpeakerShadowColor);
+    if (m_speakerCurrentSpeakerBackgroundOpacitySpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerBackgroundOpacitySpin);
+        m_speakerCurrentSpeakerBackgroundOpacitySpin->setValue(previewCurrentSpeakerBackgroundOpacityPercent);
+    }
+    if (m_speakerCurrentSpeakerBorderOpacitySpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerBorderOpacitySpin);
+        m_speakerCurrentSpeakerBorderOpacitySpin->setValue(previewCurrentSpeakerBorderOpacityPercent);
+    }
+    if (m_speakerCurrentSpeakerBackgroundRadiusSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerBackgroundRadiusSpin);
+        m_speakerCurrentSpeakerBackgroundRadiusSpin->setValue(previewCurrentSpeakerBackgroundRadiusPx);
+    }
+    if (m_speakerCurrentSpeakerBorderWidthSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerBorderWidthSpin);
+        m_speakerCurrentSpeakerBorderWidthSpin->setValue(previewCurrentSpeakerBorderWidthPx);
+    }
+    if (m_speakerCurrentSpeakerShadowCheckBox) {
+        QSignalBlocker block(m_speakerCurrentSpeakerShadowCheckBox);
+        m_speakerCurrentSpeakerShadowCheckBox->setChecked(previewCurrentSpeakerShadowEnabled);
+    }
+    if (m_speakerCurrentSpeakerShadowOpacitySpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerShadowOpacitySpin);
+        m_speakerCurrentSpeakerShadowOpacitySpin->setValue(previewCurrentSpeakerShadowOpacityPercent);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -1696,6 +1799,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             previewCurrentSpeakerNameYPositionPercent / 100.0);
         m_preview->setCurrentSpeakerOrganizationVerticalPosition(
             previewCurrentSpeakerOrganizationYPositionPercent / 100.0);
+        m_preview->setCurrentSpeakerNameColor(m_speakerCurrentSpeakerNameColor);
+        m_preview->setCurrentSpeakerOrganizationColor(m_speakerCurrentSpeakerOrganizationColor);
+        m_preview->setCurrentSpeakerBackgroundColor(m_speakerCurrentSpeakerBackgroundColor);
+        m_preview->setCurrentSpeakerBorderColor(m_speakerCurrentSpeakerBorderColor);
+        m_preview->setCurrentSpeakerBackgroundCornerRadius(previewCurrentSpeakerBackgroundRadiusPx);
+        m_preview->setCurrentSpeakerBorderWidth(previewCurrentSpeakerBorderWidthPx);
+        m_preview->setCurrentSpeakerShadowEnabled(previewCurrentSpeakerShadowEnabled);
+        m_preview->setCurrentSpeakerShadowColor(m_speakerCurrentSpeakerShadowColor);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;

@@ -110,6 +110,14 @@ public:
     virtual void setCurrentSpeakerOrganizationTextScale(qreal scale) = 0;
     virtual void setCurrentSpeakerNameVerticalPosition(qreal position) = 0;
     virtual void setCurrentSpeakerOrganizationVerticalPosition(qreal position) = 0;
+    virtual void setCurrentSpeakerNameColor(const QColor& color) = 0;
+    virtual void setCurrentSpeakerOrganizationColor(const QColor& color) = 0;
+    virtual void setCurrentSpeakerBackgroundColor(const QColor& color) = 0;
+    virtual void setCurrentSpeakerBorderColor(const QColor& color) = 0;
+    virtual void setCurrentSpeakerBackgroundCornerRadius(qreal radius) = 0;
+    virtual void setCurrentSpeakerBorderWidth(qreal width) = 0;
+    virtual void setCurrentSpeakerShadowEnabled(bool enabled) = 0;
+    virtual void setCurrentSpeakerShadowColor(const QColor& color) = 0;
     virtual void setPlaybackStatusOverlayText(const QString& text) = 0;
     virtual void setPlaybackStatusOverlayProgress(qreal progress) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;

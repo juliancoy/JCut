@@ -38,6 +38,7 @@ const QLatin1String kTranscriptEditInsertedTag("inserted");
 const QLatin1String kTranscriptWordRenderOrderKey("render_order");
 const QLatin1String kTranscriptWordOriginalSegmentKey("original_segment_index");
 const QLatin1String kTranscriptWordOriginalWordKey("original_word_index");
+constexpr int kTranscriptTableRowHeight = 30;
 const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
 const QLatin1String kTranscriptSpeakerNameKey("name");
 const QLatin1String kAllSpeakersFilterValue("__all__");
@@ -644,6 +645,11 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
     m_widgets.transcriptTable->setUpdatesEnabled(false);
 
     m_widgets.transcriptTable->setRowCount(rows.size());
+    if (QHeaderView* vertical = m_widgets.transcriptTable->verticalHeader()) {
+        vertical->setSectionResizeMode(QHeaderView::Fixed);
+        vertical->setDefaultSectionSize(kTranscriptTableRowHeight);
+        vertical->setMinimumSectionSize(kTranscriptTableRowHeight);
+    }
     int restoreRow = -1;
     for (int row = 0; row < rows.size(); ++row) {
         const TranscriptRow& entry = rows.at(row);
@@ -696,6 +702,7 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->setItem(row, kTranscriptColSpeaker, speakerItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColText, textItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColEdits, editsItem);
+        m_widgets.transcriptTable->setRowHeight(row, kTranscriptTableRowHeight);
     }
 
     if (restoreRow >= 0 && m_widgets.transcriptTable->selectionModel()) {
@@ -716,8 +723,8 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
     const QHash<int, TranscriptWordAddress> addresses = m_transcriptWordAddressById;
     const QVector<int> renderOrder = m_renderOrderedWordIds;
     const QString activeTranscriptPath = m_transcriptSession.transcriptPath();
-    const int prependMs = m_transcriptPrependMs;
-    const int postpendMs = m_transcriptPostpendMs;
+    const int prependMs = transcriptPrependMs();
+    const int postpendMs = transcriptPostpendMs();
     const bool includeOutsideCut =
         showOutsideCutLinesEnabled() &&
         activeTranscriptPath != originalPath &&

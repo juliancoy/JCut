@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QMetaObject>
 #include <QPointer>
+#include <QSet>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
@@ -22,6 +23,8 @@
 namespace {
 constexpr qint64 kFacestreamOverlaySlowQueryWarnMs = 100;
 constexpr int64_t kFacestreamOverlayInteractiveWindowFrames = 240;
+constexpr int64_t kFacestreamOverlayPlaybackWarmAheadFrames =
+    kFacestreamOverlayInteractiveWindowFrames * 2;
 constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames =
     kFacestreamOverlayInteractiveWindowFrames * 2;
 
@@ -674,22 +677,25 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
             const FacestreamOverlayCacheEntry* overlayCacheEntry =
                 cachedEntryIt == m_facedetectionsOverlayCache.constEnd() ? nullptr : &cachedEntryIt.value();
-            bool reusedPlaybackCacheEntry = false;
-            if (!overlayCacheEntry) {
-                const QString signatureBucketPrefix =
-                    cacheIdentity.signature.section(QStringLiteral("|bucket:"), 0, 0) +
-                    QStringLiteral("|bucket:");
-                const QString signatureSyncSuffix =
-                    QStringLiteral("|sync:%1").arg(cacheIdentity.renderSyncSignature);
-                for (auto entryIt = m_facedetectionsOverlayCache.constBegin();
-                     entryIt != m_facedetectionsOverlayCache.constEnd();
-                     ++entryIt) {
-                    if (entryIt.value().signature.startsWith(signatureBucketPrefix) &&
-                        entryIt.value().signature.endsWith(signatureSyncSuffix)) {
-                        overlayCacheEntry = &entryIt.value();
-                        reusedPlaybackCacheEntry = true;
-                        break;
-                    }
+            for (int64_t warmOffset = kFacestreamOverlayInteractiveWindowFrames;
+                 warmOffset <= kFacestreamOverlayPlaybackWarmAheadFrames;
+                 warmOffset += kFacestreamOverlayInteractiveWindowFrames) {
+                const int64_t futureSample =
+                    m_interaction.currentSample + frameToSamples(warmOffset);
+                const qreal futureFramePosition = samplesToFramePosition(futureSample);
+                if (!visualClipActiveAtSample(clip,
+                                              m_interaction.tracks,
+                                              futureSample,
+                                              futureFramePosition,
+                                              m_bypassGrading)) {
+                    continue;
+                }
+                const int64_t futureLocalFrame = sourceFrameForSample(clip, futureSample);
+                const FacestreamOverlayCacheIdentity futureIdentity =
+                    facestreamOverlayCacheIdentity(
+                        clip, futureLocalFrame, sourceFilter, m_interaction.renderSyncMarkers);
+                if (!m_facedetectionsOverlayCache.contains(futureIdentity.cacheKey)) {
+                    queueFacestreamOverlayCacheWarmup(clip, futureLocalFrame, futureIdentity.cacheKey);
                 }
             }
             if (!overlayCacheEntry) {
@@ -747,7 +753,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                     {QStringLiteral("status"), QStringLiteral("playback_overlay_request_clip")},
                     {QStringLiteral("clip_id"), clip.id},
                     {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
-                    {QStringLiteral("reused_playback_cache_entry"), reusedPlaybackCacheEntry},
+                    {QStringLiteral("exact_playback_cache_entry"), true},
                     {QStringLiteral("local_source_frame"), static_cast<qint64>(requestClip.localSourceFrame)},
                     {QStringLiteral("local_timeline_frame"), static_cast<qint64>(requestClip.localTimelineFrame)},
                     {QStringLiteral("cached_track_count"), overlayCacheEntry->tracks.size()},
@@ -1006,6 +1012,84 @@ void VulkanPreviewSurface::queueFacestreamOverlayCacheWarmup(const TimelineClip&
             requestNativeUpdate();
         }
     }, Qt::QueuedConnection);
+}
+
+bool VulkanPreviewSurface::warmFacestreamOverlayLookahead(int futureFrames, int timeoutMs)
+{
+    const bool overlayRequested =
+        m_showSpeakerTrackBoxes || m_interaction.faceStreamAssignmentInteractionEnabled || m_showRawDetections;
+    if (!overlayRequested || m_interaction.clips.isEmpty()) {
+        return true;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facedetectionsOverlaySource);
+    const int64_t maxWarmOffset = qMax<int64_t>(
+        qMax<int>(0, futureFrames),
+        kFacestreamOverlayPlaybackWarmAheadFrames);
+    QVector<int64_t> frameOffsets;
+    frameOffsets.reserve(static_cast<int>(maxWarmOffset / kFacestreamOverlayInteractiveWindowFrames) + 2);
+    frameOffsets.push_back(0);
+    for (int64_t offset = kFacestreamOverlayInteractiveWindowFrames;
+         offset <= maxWarmOffset;
+         offset += kFacestreamOverlayInteractiveWindowFrames) {
+        frameOffsets.push_back(offset);
+    }
+    if (!frameOffsets.contains(qMax<int>(0, futureFrames))) {
+        frameOffsets.push_back(qMax<int>(0, futureFrames));
+    }
+    std::sort(frameOffsets.begin(), frameOffsets.end());
+
+    QSet<QString> visitedCacheKeys;
+    int warmedEntries = 0;
+    int cachedEntries = 0;
+    int timedOutBeforeLoad = 0;
+    for (int64_t frameOffset : frameOffsets) {
+        const int64_t sample = m_interaction.currentSample + frameToSamples(frameOffset);
+        const qreal framePosition = samplesToFramePosition(sample);
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
+                continue;
+            }
+            if (!visualClipActiveAtSample(clip,
+                                          m_interaction.tracks,
+                                          sample,
+                                          framePosition,
+                                          m_bypassGrading)) {
+                continue;
+            }
+            const int64_t localFrame = sourceFrameForSample(clip, sample);
+            const FacestreamOverlayCacheIdentity cacheIdentity =
+                facestreamOverlayCacheIdentity(
+                    clip, localFrame, sourceFilter, m_interaction.renderSyncMarkers);
+            if (visitedCacheKeys.contains(cacheIdentity.cacheKey)) {
+                continue;
+            }
+            visitedCacheKeys.insert(cacheIdentity.cacheKey);
+            if (m_facedetectionsOverlayCache.contains(cacheIdentity.cacheKey)) {
+                ++cachedEntries;
+                continue;
+            }
+            if (timeoutMs >= 0 && timer.elapsed() >= timeoutMs) {
+                ++timedOutBeforeLoad;
+                queueFacestreamOverlayCacheWarmup(clip, localFrame, cacheIdentity.cacheKey);
+                continue;
+            }
+            loadFacestreamTracksForClip(clip, localFrame);
+            ++warmedEntries;
+        }
+    }
+
+    m_lastFacedetectionsQueryDebug[QStringLiteral("playback_overlay_warmup_cache_keys")] =
+        visitedCacheKeys.size();
+    m_lastFacedetectionsQueryDebug[QStringLiteral("playback_overlay_warmup_loaded")] = warmedEntries;
+    m_lastFacedetectionsQueryDebug[QStringLiteral("playback_overlay_warmup_cached")] = cachedEntries;
+    m_lastFacedetectionsQueryDebug[QStringLiteral("playback_overlay_warmup_deferred")] =
+        timedOutBeforeLoad;
+    m_lastFacedetectionsQueryDebug[QStringLiteral("playback_overlay_warmup_elapsed_ms")] =
+        timer.elapsed();
+    return timedOutBeforeLoad == 0;
 }
 
 void VulkanPreviewSurface::requestFacestreamOverlaySnapshotAsync(

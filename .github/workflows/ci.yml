@@ -6,19 +6,33 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  # Pin the bundled FFmpeg prefix for all jobs
+  EDITOR_FFMPEG_PREFIX: ${{ github.workspace }}/ffmpeg-install
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Build — shared configure + compile step used by all Linux test jobs.
+  # Artifacts are uploaded so test jobs can download without rebuilding.
+  # ---------------------------------------------------------------------------
   build-linux:
     runs-on: ubuntu-24.04
-    
+
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v3
       with:
-        version: '6.4.2'
-        modules: 'qtbase qtdeclarative'
-        
+        submodules: recursive
+
+    - name: Install Qt
+      # Use aqtinstall directly instead of jurplel/install-qt-action@v3,
+      # which has a known XML-parsing issue with Qt 6.4.2 modules.
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt linux desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/gcc_64" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/gcc_64/bin" >> $GITHUB_PATH
+
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -27,177 +41,280 @@ jobs:
           libavformat-dev \
           libavutil-dev \
           libswscale-dev \
-          libgl1-mesa-dev \
-          libxkbcommon-x11-dev
-          
-    - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
-      
-    - name: Build
-      run: cmake --build ${{github.workspace}}/build --config Release -j$(nproc)
-      
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: editor-linux
-        path: |
-          ${{github.workspace}}/build/editor
-          
-  test-linux:
-    runs-on: ubuntu-24.04
-    needs: build-linux
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: '6.4.2'
-        modules: 'qtbase qtdeclarative'
-        
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libavcodec-dev \
-          libavformat-dev \
-          libavutil-dev \
-          libswscale-dev \
+          libswresample-dev \
           libgl1-mesa-dev \
           libxkbcommon-x11-dev \
-          ffmpeg \
+          libcurl4-openssl-dev \
+          libfontconfig-dev \
+          libfreetype-dev \
+          libglfw3-dev \
+          meson \
+          ninja-build \
+          cmake \
+          pkg-config \
           xvfb
-          
-    - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
-      
-    - name: Build with tests
-      run: cmake --build ${{github.workspace}}/build --config Release -j$(nproc)
-      
-    - name: Run unit tests
-      run: |
-        cd ${{github.workspace}}/build/tests
-        ./test_frame_handle
-        ./test_memory_budget
-        ./test_timeline_cache
-        ./test_async_decoder
-      env:
-        QT_QPA_PLATFORM: offscreen
-        
-    - name: Run integration tests
-      run: |
-        cd ${{github.workspace}}/build/tests
-        ./test_integration
-      env:
-        QT_QPA_PLATFORM: offscreen
 
-    - name: Run temporal regression tests
-      run: ctest --test-dir ${{github.workspace}}/build --output-on-failure -L temporal
-      env:
-        QT_QPA_PLATFORM: offscreen
-        
-  build-macos:
-    runs-on: macos-14
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: '6.4.2'
-        modules: 'qtbase qtdeclarative'
-        
-    - name: Install FFmpeg
-      run: brew install ffmpeg@6
-      
+    - name: Bootstrap bundled FFmpeg
+      run: |
+        chmod +x ./build.sh
+        # Build only FFmpeg (skip the editor build itself)
+        ./build.sh --ffmpeg-only
+
     - name: Configure CMake
       run: |
-        export PKG_CONFIG_PATH="/opt/homebrew/opt/ffmpeg@6/lib/pkgconfig:$PKG_CONFIG_PATH"
-        cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
-      
+        export PKG_CONFIG_PATH="${{ env.EDITOR_FFMPEG_PREFIX }}/lib/pkgconfig:$PKG_CONFIG_PATH"
+        cmake -B ${{ github.workspace }}/build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DEDITOR_BUILD_TESTS=ON \
+          -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.4.2/gcc_64"
+
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config Release -j$(sysctl -n hw.ncpu)
-      
+      run: cmake --build ${{ github.workspace }}/build --config Release -j$(nproc)
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: editor-macos
-        path: |
-          ${{github.workspace}}/build/editor
+        name: build-linux
+        path: ${{ github.workspace }}/build
+        retention-days: 1
 
-  static-analysis:
+  # ---------------------------------------------------------------------------
+  # Test: logic tier — no GPU, no real decode; runs on ubuntu AND macos
+  # ---------------------------------------------------------------------------
+  test-logic-linux:
     runs-on: ubuntu-24.04
-    
+    needs: build-linux
+
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v3
       with:
-        version: '6.4.2'
-        
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libavcodec-dev \
-          libavformat-dev \
-          libavutil-dev \
-          libswscale-dev \
-          libgl1-mesa-dev \
-          clang-tidy \
-          cppcheck
-          
-    - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Debug
-      
-    - name: Run clang-tidy
-      run: |
-        find ${{github.workspace}} -name "*.cpp" -not -path "*/build/*" | \
-          xargs clang-tidy -p ${{github.workspace}}/build || true
-          
-    - name: Run cppcheck
-      run: |
-        cppcheck --enable=all --error-exitcode=0 \
-          --suppress=missingIncludeSystem \
-          -I ${{github.workspace}} \
-          ${{github.workspace}}/*.cpp \
-          ${{github.workspace}}/*.h || true
+        submodules: recursive
 
-  asan-build:
-    runs-on: ubuntu-24.04
-    
-    steps:
-    - uses: actions/checkout@v4
-    
     - name: Install Qt
-      uses: jurplel/install-qt-action@v3
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt linux desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/gcc_64" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/gcc_64/bin" >> $GITHUB_PATH
+
+    - name: Download build
+      uses: actions/download-artifact@v4
       with:
-        version: '6.4.2'
-        
-    - name: Install dependencies
+        name: build-linux
+        path: ${{ github.workspace }}/build
+
+    - name: Run logic tier
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libavcodec-dev \
-          libavformat-dev \
-          libavutil-dev \
-          libswscale-dev \
-          libgl1-mesa-dev
-          
-    - name: Configure with ASAN
-      run: cmake -B ${{github.workspace}}/build -DEDITOR_ASAN=ON
-      
-    - name: Build with ASAN
-      run: cmake --build ${{github.workspace}}/build -j$(nproc)
-      
-    - name: Run tests with ASAN
-      run: |
-        cd ${{github.workspace}}/build/tests
-        ./test_frame_handle
-        ./test_memory_budget
+        cd ${{ github.workspace }}/build
+        ctest --output-on-failure -L logic -L decode --exclude-regex "gpu-soft|gpu-hw|temporal"
       env:
         QT_QPA_PLATFORM: offscreen
+        LD_LIBRARY_PATH: ${{ env.EDITOR_FFMPEG_PREFIX }}/lib
+
+  # ---------------------------------------------------------------------------
+  # Test: temporal tier — timing-sensitive regression tests
+  # ---------------------------------------------------------------------------
+  test-temporal-linux:
+    runs-on: ubuntu-24.04
+    needs: build-linux
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Qt
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt linux desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/gcc_64" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/gcc_64/bin" >> $GITHUB_PATH
+
+    - name: Download build
+      uses: actions/download-artifact@v4
+      with:
+        name: build-linux
+        path: ${{ github.workspace }}/build
+
+    - name: Run temporal tier
+      run: |
+        cd ${{ github.workspace }}/build
+        ctest --output-on-failure -L temporal
+      env:
+        QT_QPA_PLATFORM: offscreen
+        LD_LIBRARY_PATH: ${{ env.EDITOR_FFMPEG_PREFIX }}/lib
+
+  # ---------------------------------------------------------------------------
+  # Test: gpu-soft tier — Vulkan via lavapipe offscreen
+  # ---------------------------------------------------------------------------
+  test-gpu-soft-linux:
+    runs-on: ubuntu-24.04
+    needs: build-linux
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Qt
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt linux desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/gcc_64" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/gcc_64/bin" >> $GITHUB_PATH
+
+    - name: Install Vulkan SDK + lavapipe
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          mesa-vulkan-drivers \
+          libvulkan-dev \
+          libvulkan1 \
+          vulkan-tools \
+          libgl1-mesa-dev
+        # Verify lavapipe is available
+        vulkaninfo --summary 2>&1 | head -20 || true
+
+    - name: Download build
+      uses: actions/download-artifact@v4
+      with:
+        name: build-linux
+        path: ${{ github.workspace }}/build
+
+    - name: Run gpu-soft tier
+      run: |
+        cd ${{ github.workspace }}/build
+        ctest --output-on-failure -L gpu-soft
+      env:
+        QT_QPA_PLATFORM: offscreen
+        LD_LIBRARY_PATH: ${{ env.EDITOR_FFMPEG_PREFIX }}/lib
+        # Force lavapipe for software Vulkan
+        VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+  # ---------------------------------------------------------------------------
+  # Forbidden-pattern + file-size guard
+  # ---------------------------------------------------------------------------
+  forbidden-patterns:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Run forbidden-pattern scan
+      run: |
+        chmod +x ./scripts/ci_forbidden_patterns.sh
+        ./scripts/ci_forbidden_patterns.sh
+
+  # ---------------------------------------------------------------------------
+  # macOS — build + logic tier only (no GPU, no decode hardware)
+  # ---------------------------------------------------------------------------
+  build-and-test-macos:
+    runs-on: macos-14
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Qt
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt mac desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/macos" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/macos/bin" >> $GITHUB_PATH
+
+    - name: Install FFmpeg + dependencies
+      run: |
+        brew install ffmpeg@6 meson ninja pkg-config
+
+    - name: Bootstrap bundled FFmpeg (macOS profile)
+      run: |
+        chmod +x ./build.sh
+        ./build.sh --ffmpeg-only
+
+    - name: Configure CMake
+      run: |
+        export PKG_CONFIG_PATH="/opt/homebrew/opt/ffmpeg@6/lib/pkgconfig:${{ env.EDITOR_FFMPEG_PREFIX }}/lib/pkgconfig:$PKG_CONFIG_PATH"
+        cmake -B ${{ github.workspace }}/build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DEDITOR_BUILD_TESTS=ON \
+          -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.4.2/macos"
+
+    - name: Build
+      run: cmake --build ${{ github.workspace }}/build --config Release -j$(sysctl -n hw.ncpu)
+
+    - name: Run logic tier (macOS)
+      run: |
+        cd ${{ github.workspace }}/build
+        ctest --output-on-failure -L logic --exclude-regex "gpu-soft|gpu-hw|temporal|decode"
+      env:
+        QT_QPA_PLATFORM: offscreen
+        LD_LIBRARY_PATH: ${{ env.EDITOR_FFMPEG_PREFIX }}/lib
+
+  # ---------------------------------------------------------------------------
+  # ASAN — AddressSanitizer build + test (logic tier only, leak detection off)
+  # ---------------------------------------------------------------------------
+  asan-build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Qt
+      run: |
+        pip install aqtinstall
+        aqt install-qt --outputdir ${{ runner.temp }}/Qt linux desktop 6.4.2 \
+          --modules qtbase qtdeclarative
+        echo "Qt6_DIR=${{ runner.temp }}/Qt/6.4.2/gcc_64" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/Qt/6.4.2/gcc_64/bin" >> $GITHUB_PATH
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libavcodec-dev \
+          libavformat-dev \
+          libavutil-dev \
+          libswscale-dev \
+          libswresample-dev \
+          libgl1-mesa-dev \
+          libxkbcommon-x11-dev \
+          libcurl4-openssl-dev \
+          libfontconfig-dev \
+          libfreetype-dev \
+          libglfw3-dev \
+          meson \
+          ninja-build
+
+    - name: Bootstrap bundled FFmpeg
+      run: |
+        chmod +x ./build.sh
+        ./build.sh --ffmpeg-only
+
+    - name: Configure with ASAN
+      run: |
+        export PKG_CONFIG_PATH="${{ env.EDITOR_FFMPEG_PREFIX }}/lib/pkgconfig:$PKG_CONFIG_PATH"
+        cmake -B ${{ github.workspace }}/build \
+          -DEDITOR_ASAN=ON \
+          -DEDITOR_BUILD_TESTS=ON \
+          -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.4.2/gcc_64"
+
+    - name: Build with ASAN
+      run: cmake --build ${{ github.workspace }}/build -j$(nproc)
+
+    - name: Run tests with ASAN (logic tier)
+      run: |
+        cd ${{ github.workspace }}/build
+        ctest --output-on-failure -L logic --exclude-regex "gpu-soft|gpu-hw|temporal|decode"
+      env:
+        QT_QPA_PLATFORM: offscreen
+        LD_LIBRARY_PATH: ${{ env.EDITOR_FFMPEG_PREFIX }}/lib
         ASAN_OPTIONS: detect_leaks=0

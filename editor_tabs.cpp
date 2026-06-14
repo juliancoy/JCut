@@ -439,8 +439,8 @@ void EditorWindow::createTranscriptTab()
 
     connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
         m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
-        m_transcriptPrependMs = m_transcriptTab->transcriptPrependMs();
-        m_transcriptPostpendMs = m_transcriptTab->transcriptPostpendMs();
+        m_transcriptPrependMs = m_transcriptPrependMsSpin ? qMax(0, m_transcriptPrependMsSpin->value()) : 150;
+        m_transcriptPostpendMs = m_transcriptPostpendMsSpin ? qMax(0, m_transcriptPostpendMsSpin->value()) : 70;
         setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
         m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();
         m_transcriptEngine.invalidateCache();

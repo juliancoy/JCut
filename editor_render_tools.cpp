@@ -432,6 +432,23 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         m_speakerCurrentSpeakerOrganizationYPositionSpin
             ? qBound<qreal>(0.0, m_speakerCurrentSpeakerOrganizationYPositionSpin->value() / 100.0, 1.0)
             : 0.93;
+    request.currentSpeakerNameColor = m_speakerCurrentSpeakerNameColor;
+    request.currentSpeakerOrganizationColor = m_speakerCurrentSpeakerOrganizationColor;
+    request.currentSpeakerBackgroundColor = m_speakerCurrentSpeakerBackgroundColor;
+    request.currentSpeakerBorderColor = m_speakerCurrentSpeakerBorderColor;
+    request.currentSpeakerBackgroundCornerRadius =
+        m_speakerCurrentSpeakerBackgroundRadiusSpin
+            ? qBound<qreal>(0.0, m_speakerCurrentSpeakerBackgroundRadiusSpin->value(), 128.0)
+            : 14.0;
+    request.currentSpeakerBorderWidth =
+        m_speakerCurrentSpeakerBorderWidthSpin
+            ? qBound<qreal>(0.0, m_speakerCurrentSpeakerBorderWidthSpin->value(), 16.0)
+            : 1.0;
+    request.currentSpeakerShadowEnabled =
+        m_speakerCurrentSpeakerShadowCheckBox
+            ? m_speakerCurrentSpeakerShadowCheckBox->isChecked()
+            : true;
+    request.currentSpeakerShadowColor = m_speakerCurrentSpeakerShadowColor;
     request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&
                                            m_createImageSequenceCheckBox->isChecked();
     if (request.createVideoFromImageSequence && m_imageSequenceFormatCombo) {

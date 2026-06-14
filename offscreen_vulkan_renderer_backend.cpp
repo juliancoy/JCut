@@ -33,45 +33,6 @@ extern "C" {
 
 namespace render_detail {
 
-QString speakerAtTranscriptSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
-{
-  const auto firstPossibleSection = std::lower_bound(
-      sections.constBegin(),
-      sections.constEnd(),
-      sourceFrame,
-      [](const TranscriptSection& section, int64_t frame) {
-        return section.endFrame < frame;
-      });
-  for (auto it = firstPossibleSection; it != sections.constEnd(); ++it) {
-    const TranscriptSection& section = *it;
-    if (sourceFrame < section.startFrame) {
-      return QString();
-    }
-    if (sourceFrame > section.endFrame) {
-      continue;
-    }
-    int bestIndex = -1;
-    for (int i = 0; i < section.words.size(); ++i) {
-      const TranscriptWord& word = section.words.at(i);
-      if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
-        bestIndex = i;
-        break;
-      }
-      if (sourceFrame > word.endFrame) {
-        bestIndex = i;
-      }
-    }
-    if (bestIndex < 0 && !section.words.isEmpty()) {
-      bestIndex = 0;
-    }
-    if (bestIndex >= 0 && bestIndex < section.words.size()) {
-      return section.words.at(bestIndex).speaker.trimmed();
-    }
-    return QString();
-  }
-  return QString();
-}
-
 class OffscreenVulkanRendererPrivate {
 public:
   static constexpr int kMaxLayerTextures = 12;
@@ -1631,6 +1592,7 @@ public:
     editor::FrameHandle frameHandle;
     QSize sourceSize;
     bool preferHardwareDirect = false;
+    bool sampledFrameNeedsYFlip = false;
     QString cacheKey;
     QByteArray curveLutRgba = identityCurveLutBytes();
     float brightness = 0.0f;
@@ -1672,6 +1634,23 @@ public:
     for (int y = 0; y < overlay.height; ++y) {
       std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
                   src + (static_cast<size_t>(overlay.height - 1 - y) * rowBytes),
+                  static_cast<size_t>(rowBytes));
+    }
+    return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
+  }
+
+  bool writeRgbaImageToStagingFlippedY(const QImage &rgba,
+                                       VkDeviceSize stagingOffset) {
+    if (rgba.isNull() || !m_stagingMapped ||
+        rgba.format() != QImage::Format_RGBA8888) {
+      return false;
+    }
+    const int rowBytes = rgba.width() * 4;
+    const size_t bytes = static_cast<size_t>(rowBytes) * static_cast<size_t>(rgba.height());
+    auto *dst = reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset;
+    for (int y = 0; y < rgba.height(); ++y) {
+      std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
+                  rgba.constScanLine(rgba.height() - 1 - y),
                   static_cast<size_t>(rowBytes));
     }
     return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
@@ -1924,9 +1903,10 @@ public:
           }
           qWarning().noquote()
               << QStringLiteral(
-                     "[vulkan-compose] hardware frame handoff failed; "
-                     "falling back to CPU image path: %1")
+                     "[vulkan-compose] hardware frame handoff failed and CPU "
+                     "image fallback is disabled: %1")
                      .arg(QString::fromStdString(uploadError));
+          return false;
         }
       }
       QImage rgba;
@@ -2030,11 +2010,7 @@ public:
       if (rgba.isNull() || !m_stagingMapped) {
         return false;
       }
-      const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
-      std::memcpy(reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset,
-                  rgba.constBits(), bytes);
-      if (!flushActiveStagingWrite(stagingOffset,
-                                   static_cast<VkDeviceSize>(bytes))) {
+      if (!writeRgbaImageToStagingFlippedY(rgba, stagingOffset)) {
         return false;
       }
       transitionImageLayout(m_commandBuffer, slot.image,
@@ -2263,8 +2239,7 @@ public:
                           m_outputSize.width(), m_outputSize.height(),
                           m_outputSize.width() * 4, QImage::Format_ARGB32);
       out = readbackRgba.copy()
-                .convertToFormat(QImage::Format_ARGB32_Premultiplied)
-                .mirrored();
+                .convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
     m_colorImagePrimed = true;
     return out;
@@ -2970,7 +2945,7 @@ public:
 
   bool buildSpeakerLabelSpec(
       const RenderRequest &request,
-      int64_t timelineFrame,
+      qreal timelineFramePosition,
       const QVector<TimelineClip> &orderedClips,
       SpeakerLabelOverlaySpec *outSpec) {
     if (outSpec) {
@@ -2989,8 +2964,19 @@ public:
         qBound<qreal>(0.0, request.currentSpeakerNameVerticalPosition, 1.0);
     spec.organizationVerticalPosition =
         qBound<qreal>(0.0, request.currentSpeakerOrganizationVerticalPosition, 1.0);
+    spec.nameColor = request.currentSpeakerNameColor;
+    spec.organizationColor = request.currentSpeakerOrganizationColor;
+    spec.backgroundColor = request.currentSpeakerBackgroundColor;
+    spec.borderColor = request.currentSpeakerBorderColor;
+    spec.backgroundCornerRadius =
+        qBound<qreal>(0.0, request.currentSpeakerBackgroundCornerRadius, 128.0);
+    spec.borderWidth = qBound<qreal>(0.0, request.currentSpeakerBorderWidth, 16.0);
+    spec.showShadow = request.currentSpeakerShadowEnabled;
+    spec.shadowColor = request.currentSpeakerShadowColor;
 
     for (const TimelineClip &clip : orderedClips) {
+      const int64_t timelineFrame =
+          qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFramePosition)));
       if (clip.filePath.trimmed().isEmpty() ||
           timelineFrame < clip.startFrame ||
           timelineFrame >= clip.startFrame + clip.durationFrames ||
@@ -3001,14 +2987,17 @@ public:
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }
-      const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(
-          clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
+      const int64_t mediaSourceFrame = sourceFrameForClipAtTimelinePosition(
+          clip, timelineFramePosition, request.renderSyncMarkers);
+      const int64_t transcriptFrame =
+          transcriptFrameForClipSourceFrame(clip, mediaSourceFrame);
       QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
       if (sections.isEmpty()) {
         sections = loadTranscriptSections(transcriptPath);
         m_transcriptCache.insert(transcriptPath, sections);
       }
-      const QString speakerId = speakerAtTranscriptSourceFrame(sections, sourceFrame).trimmed();
+      const QString speakerId =
+          transcriptOverlaySpeakerAtSourceFrame(sections, transcriptFrame).trimmed();
       if (speakerId.isEmpty()) {
         continue;
       }
@@ -3188,6 +3177,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   if (readbackMs) {
     *readbackMs = 0;
   }
+  const bool gpuOutputOnly = (readbackMs == nullptr);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
   layers.reserve((orderedClips.size() * 2) + 1);
   bool hasTranscriptCandidate = false;
@@ -3232,6 +3222,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
       continue;
     }
     if (clip.mediaType == ClipMediaType::Title) {
+      if (gpuOutputOnly) {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "[vulkan-compose] skipped CPU-raster title layer in GPU-only render pipeline at frame=%1")
+                   .arg(timelineFrame);
+        continue;
+      }
       if (clip.titleKeyframes.isEmpty()) {
         continue;
       }
@@ -3277,7 +3274,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.frameHandle = frame;
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
+    layer.sampledFrameNeedsYFlip = layer.preferHardwareDirect;
     if (!layer.preferHardwareDirect) {
+      if (gpuOutputOnly) {
+        ++decodeConvertFailCount;
+        continue;
+      }
       const QImage layerImage =
           frame.hasCpuImage() ? frame.cpuImage() : frameHandleToCpuImage(frame);
       if (layerImage.isNull()) {
@@ -3307,21 +3309,26 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     const TimelineClip::TransformKeyframe transform =
         evaluateClipRenderTransformAtPosition(
-            clip, static_cast<qreal>(timelineFrame), request.outputSize);
-    const QSize sourceSize =
-        layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size();
-    const QRect fitted = fitRect(sourceSize, request.outputSize);
+            clip,
+            static_cast<qreal>(timelineFrame),
+            request.renderSyncMarkers,
+            request.outputSize);
+    const QSize sourceSize = clip.sourceFrameSize.isValid()
+        ? clip.sourceFrameSize
+        : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
+    const QRectF fitted = fitRectF(sourceSize, request.outputSize);
     const QPointF layerCenter(fitted.center().x() + transform.translationX,
                               fitted.center().y() + transform.translationY);
     const QSizeF layerSize(fitted.width() * transform.scaleX,
                            fitted.height() * transform.scaleY);
-    vulkanMvpForOutputRect(
+    vulkanMvpForOutputRectMaybeFlippedY(
         QRectF(layerCenter.x() - (layerSize.width() * 0.5),
                layerCenter.y() - (layerSize.height() * 0.5),
                layerSize.width(),
                layerSize.height()),
         request.outputSize,
         transform.rotation,
+        layer.sampledFrameNeedsYFlip,
         layer.mvp);
     if (!backgroundFilled &&
         shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
@@ -3333,7 +3340,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       backgroundLayer.brightness = backgroundEffects.brightness;
       backgroundLayer.contrast = backgroundEffects.contrast;
       backgroundLayer.saturation = backgroundEffects.saturation;
-      if (!layer.image.isNull()) {
+      if (!gpuOutputOnly && !layer.image.isNull()) {
         backgroundLayer.image =
             buildBlurredFillBackground(layer.image, request.outputSize);
         backgroundLayer.sourceSize = backgroundLayer.image.size();
@@ -3346,9 +3353,14 @@ QImage OffscreenVulkanRenderer::renderFrame(
         backgroundLayer.frameHandle = frame;
         backgroundLayer.sourceSize = sourceSize;
         backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
+        backgroundLayer.sampledFrameNeedsYFlip = backgroundLayer.preferHardwareDirect;
 
         const QRect covered = coverRect(sourceSize, request.outputSize);
-        vulkanMvpForOutputRect(QRectF(covered), request.outputSize, 0.0, backgroundLayer.mvp);
+        vulkanMvpForOutputRectMaybeFlippedY(QRectF(covered),
+                                           request.outputSize,
+                                           0.0,
+                                           backgroundLayer.sampledFrameNeedsYFlip,
+                                           backgroundLayer.mvp);
       }
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {
@@ -3370,7 +3382,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   }
   textInputs.hasSpeakerLabel = d->buildSpeakerLabelSpec(
       request,
-      qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
+      qMax<qreal>(0.0, timelineFrame),
       orderedClips,
       &textInputs.speakerLabel);
   if (visualClipCandidates > 0 && visualLayersResolved == 0) {
@@ -3386,6 +3398,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
     return QImage();
   }
   if (layers.isEmpty()) {
+    if (gpuOutputOnly) {
+      qWarning().noquote()
+          << QStringLiteral(
+                 "[vulkan-compose] GPU-only render pipeline has no drawable GPU layers at frame=%1")
+                 .arg(timelineFrame);
+      return QImage();
+    }
     OffscreenVulkanRendererPrivate::LayerInput black;
     black.image = QImage(request.outputSize, QImage::Format_RGBA8888);
     black.image.fill(Qt::black);

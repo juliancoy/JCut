@@ -27,6 +27,7 @@ struct DirectVulkanPreviewStats {
     int64_t checkerDraws = 0;
     int64_t clearFallbackDraws = 0;
     int64_t explicitFailureDraws = 0;
+    QString lastClearFallbackReason;
     int64_t activeClipDraws = 0;
     double lastUploadMs = 0.0;
     QString lastHandoffMode;

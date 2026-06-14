@@ -2328,18 +2328,23 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->explicitFailureDraws;
+                    ++stats->clearFallbackDraws;
                     if (handoffAttempted && !sampledFrameReady) {
                         stats->lastHandoffMode = QStringLiteral("attempted_not_sampled");
+                        stats->lastClearFallbackReason = QStringLiteral("handoff_attempted_not_sampled");
                     } else if (sampledFrameReady && !statusHasDrawableFrame) {
                         stats->lastHandoffMode = QStringLiteral("stale_sampled_resource_rejected");
+                        stats->lastClearFallbackReason = QStringLiteral("stale_sampled_resource_rejected");
                         stats->lastHandoffError = status && !status->missingReason.isEmpty()
                             ? status->missingReason
                             : QStringLiteral("Retained Vulkan sampled image ignored because the active frame has no drawable payload.");
                     } else if (!status) {
                         stats->lastHandoffMode = QStringLiteral("decode_status_missing");
+                        stats->lastClearFallbackReason = QStringLiteral("decode_status_missing");
                         stats->lastHandoffError = QStringLiteral("No Vulkan decode status exists for the active clip.");
                     } else if (!status->hasFrame) {
                         stats->lastHandoffMode = QStringLiteral("decoded_frame_unavailable");
+                        stats->lastClearFallbackReason = QStringLiteral("decoded_frame_unavailable");
                         stats->lastHandoffError = status->missingReason.isEmpty()
                             ? QStringLiteral("Active Vulkan clip has no usable decoded frame.")
                             : status->missingReason;
@@ -2347,10 +2352,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                !status->externalVulkanFrame &&
                                !status->frame.hasHardwareFrame()) {
                         stats->lastHandoffMode = QStringLiteral("vulkan_handoff_required");
+                        stats->lastClearFallbackReason = QStringLiteral("vulkan_handoff_required");
                         stats->lastHandoffError = QStringLiteral(
-                            "Direct Vulkan preview did not receive a drawable hardware, external, or CPU-uploaded frame.");
+                            "Direct Vulkan preview did not receive a drawable hardware or external Vulkan frame; CPU image upload is disabled.");
                     } else if (!canDrawTexture) {
                         stats->lastHandoffMode = QStringLiteral("texture_pipeline_unavailable");
+                        stats->lastClearFallbackReason = QStringLiteral("texture_pipeline_unavailable");
                         stats->lastHandoffError = QStringLiteral("Vulkan texture pipeline or descriptor set is unavailable.");
                     }
                 }

@@ -112,6 +112,12 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
         return cache;
     }
 
+    // Validate sample_rate: on some platforms (macOS/VideoToolbox),
+    // avcodec_parameters_to_context may leave sample_rate at 0 even
+    // when stream->codecpar->sample_rate is valid.
+    const int inSampleRate = codecCtx->sample_rate > 0
+        ? codecCtx->sample_rate
+        : (stream->codecpar->sample_rate > 0 ? stream->codecpar->sample_rate : 48000);
     SwrContext* swr = swr_alloc();
     if (!swr) {
         avcodec_free_context(&codecCtx);
@@ -122,7 +128,7 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
     ffmpeg_compat::defaultChannelLayout(&outLayout, kRenderAudioChannels);
     ffmpeg_compat::setSwrInputLayout(swr, codecCtx);
     ffmpeg_compat::setSwrOutputLayout(swr, &outLayout);
-    av_opt_set_int(swr, "in_sample_rate", codecCtx->sample_rate, 0);
+    av_opt_set_int(swr, "in_sample_rate", inSampleRate, 0);
     av_opt_set_int(swr, "out_sample_rate", kRenderAudioSampleRate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", codecCtx->sample_fmt, 0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
@@ -418,8 +424,13 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     av_opt_set_int(swr, "out_channel_layout",
                    static_cast<int64_t>(ffmpeg_compat::channelLayoutForCodecContext(state.codecCtx)), 0);
 #endif
+    // Validate sample_rate: the encoder context should have a valid rate
+    // set during initialization, but guard against 0 just in case.
+    const int outSampleRate = state.codecCtx->sample_rate > 0
+        ? state.codecCtx->sample_rate
+        : kRenderAudioSampleRate;
     av_opt_set_int(swr, "in_sample_rate", kRenderAudioSampleRate, 0);
-    av_opt_set_int(swr, "out_sample_rate", state.codecCtx->sample_rate, 0);
+    av_opt_set_int(swr, "out_sample_rate", outSampleRate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt", state.codecCtx->sample_fmt, 0);
     if (swr_init(swr) < 0) {

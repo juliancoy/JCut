@@ -81,6 +81,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject()> projectSnapshotCallback,
                                          std::function<QJsonObject()> historySnapshotCallback,
                                          std::function<QJsonObject()> profilingCallback,
+                                         std::function<QJsonObject()> streamTimingCallback,
                                          std::function<QJsonObject(bool)> pipelineSnapshotCallback,
                                          std::function<void()> resetProfilingCallback,
                                          std::function<void(int64_t)> setPlayheadCallback,
@@ -96,6 +97,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
     , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
     , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
+    , m_streamTimingCallback(std::move(streamTimingCallback))
     , m_pipelineSnapshotCallback(std::move(pipelineSnapshotCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
     , m_setPlayheadCallback(std::move(setPlayheadCallback))

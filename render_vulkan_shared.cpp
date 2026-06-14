@@ -52,6 +52,15 @@ void vulkanMvpForOutputRect(const QRectF& rect,
                             qreal rotationDegrees,
                             float outMvp[16])
 {
+    vulkanMvpForOutputRectMaybeFlippedY(rect, outputSize, rotationDegrees, false, outMvp);
+}
+
+void vulkanMvpForOutputRectMaybeFlippedY(const QRectF& rect,
+                                         const QSize& outputSize,
+                                         qreal rotationDegrees,
+                                         bool flipY,
+                                         float outMvp[16])
+{
     QMatrix4x4 projection;
     projection.ortho(0.0f,
                      static_cast<float>(std::max(1, outputSize.width())),
@@ -62,7 +71,9 @@ void vulkanMvpForOutputRect(const QRectF& rect,
     QMatrix4x4 model;
     model.translate(static_cast<float>(rect.center().x()), static_cast<float>(rect.center().y()), 0.0f);
     model.rotate(static_cast<float>(rotationDegrees), 0.0f, 0.0f, 1.0f);
-    model.scale(static_cast<float>(rect.width()), static_cast<float>(rect.height()), 1.0f);
+    model.scale(static_cast<float>(rect.width()),
+                static_cast<float>(rect.height()) * (flipY ? -1.0f : 1.0f),
+                1.0f);
     QMatrix4x4 shaderQuadToOpenGlQuad;
     shaderQuadToOpenGlQuad.scale(0.5f, 0.5f, 1.0f);
     const QMatrix4x4 mvp = projection * model * shaderQuadToOpenGlQuad;

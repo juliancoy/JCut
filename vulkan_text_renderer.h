@@ -137,6 +137,7 @@ private:
         QString key;
         render_detail::OverlayImage image;
         QHash<QString, Glyph> glyphs;
+        QRectF solidUv;
     };
     struct SpeakerLayoutCache {
         bool valid = false;
@@ -181,6 +182,12 @@ private:
                    const QRectF& rect,
                    const QRectF& uv,
                    const QColor& color);
+    void drawSolidRoundedRect(VkCommandBuffer commandBuffer,
+                              const QSize& swapSize,
+                              const QRectF& rect,
+                              qreal radius,
+                              const QRectF& uv,
+                              const QColor& color);
 
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;

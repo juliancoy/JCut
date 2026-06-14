@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QHeaderView>
 #include <QComboBox>
 #include <QPushButton>
 #include <QSpinBox>
@@ -164,6 +165,7 @@ private slots:
     void testFollowBridgesSmallGapsDuringFastPlayback();
     void testFollowBridgesSmallGapsDuringFastReversePlayback();
     void testOutsideCutRowsAreNotAutoSelected();
+    void testTranscriptTableUsesStableRowGeometryForMouseActivation();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
 };
 
@@ -689,6 +691,81 @@ void TestTranscriptTabFollow::testOutsideCutRowsAreNotAutoSelected() {
     QVERIFY2(outsideRow >= 0, "Expected an outside-cut transcript row but none was found");
     tab.syncTableToPlayhead(0, outsideSeconds);
     QCOMPARE(selectedRow(table), -1);
+}
+
+void TestTranscriptTabFollow::testTranscriptTableUsesStableRowGeometryForMouseActivation() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    QJsonArray words;
+    words.push_back(word(QStringLiteral("first"), 0.0, 0.10));
+    words.push_back(word(QStringLiteral("second row with deliberately long text that must not wrap and change row height"), 0.10, 0.20));
+    words.push_back(word(QStringLiteral("third"), 0.20, 0.30));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
+
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-table-geometry"), clipPath);
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    table.setColumnCount(kTranscriptTestColumnCount);
+    table.resize(640, 180);
+    QCheckBox follow;
+    follow.setChecked(false);
+    QSpinBox prependSpin;
+    prependSpin.setValue(0);
+    QSpinBox postpendSpin;
+    postpendSpin.setValue(0);
+    QCheckBox speechEnabled;
+    QSpinBox speechFade;
+
+    int64_t lastSeekFrame = -1;
+    TranscriptTab tab(
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            [&lastSeekFrame](int64_t frame) { lastSeekFrame = frame; },
+            []() { return false; }});
+    tab.wire();
+    tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
+
+    QVERIFY(!table.wordWrap());
+    QCOMPARE(table.textElideMode(), Qt::ElideRight);
+    QCOMPARE(table.selectionBehavior(), QAbstractItemView::SelectRows);
+    QCOMPARE(table.verticalScrollMode(), QAbstractItemView::ScrollPerPixel);
+    QVERIFY(table.verticalHeader() != nullptr);
+    QCOMPARE(table.verticalHeader()->sectionResizeMode(0), QHeaderView::Fixed);
+
+    const int expectedHeight = table.verticalHeader()->defaultSectionSize();
+    QVERIFY(expectedHeight >= 28);
+    for (int row = 0; row < table.rowCount(); ++row) {
+        QCOMPARE(table.rowHeight(row), expectedHeight);
+    }
+
+    table.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&table));
+    const int targetRow = qMin(1, table.rowCount() - 1);
+    const QModelIndex targetIndex = table.model()->index(targetRow, kTranscriptTestTextColumn);
+    QVERIFY(targetIndex.isValid());
+    const QPoint clickPos = table.visualRect(targetIndex).center();
+    QCOMPARE(table.rowAt(clickPos.y()), targetRow);
+
+    QTest::mouseClick(table.viewport(), Qt::LeftButton, Qt::NoModifier, clickPos);
+    QTRY_COMPARE(selectedRow(table), targetRow);
+    QTRY_VERIFY(lastSeekFrame >= 0);
+    const QTableWidgetItem* targetItem = table.item(targetRow, 0);
+    QVERIFY(targetItem != nullptr);
+    QCOMPARE(lastSeekFrame, targetItem->data(Qt::UserRole + 2).toLongLong());
 }
 
 void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersion() {

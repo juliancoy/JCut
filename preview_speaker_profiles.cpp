@@ -551,6 +551,15 @@ render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(co
     spec.nameVerticalPosition = qBound<qreal>(0.0, state->currentSpeakerNameVerticalPosition, 1.0);
     spec.organizationVerticalPosition =
         qBound<qreal>(0.0, state->currentSpeakerOrganizationVerticalPosition, 1.0);
+    spec.nameColor = state->currentSpeakerNameColor;
+    spec.organizationColor = state->currentSpeakerOrganizationColor;
+    spec.backgroundColor = state->currentSpeakerBackgroundColor;
+    spec.borderColor = state->currentSpeakerBorderColor;
+    spec.backgroundCornerRadius =
+        qBound<qreal>(0.0, state->currentSpeakerBackgroundCornerRadius, 128.0);
+    spec.borderWidth = qBound<qreal>(0.0, state->currentSpeakerBorderWidth, 16.0);
+    spec.showShadow = state->currentSpeakerShadowEnabled;
+    spec.shadowColor = state->currentSpeakerShadowColor;
     if (!spec.showName && !spec.showOrganization) {
         return spec;
     }

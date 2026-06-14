@@ -717,6 +717,7 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
             return transformWithTransientOverride(state, clipId, evaluateClipRenderTransformAtPosition(
                 clip,
                 state->currentFramePosition,
+                state->renderSyncMarkers,
                 state->outputSize));
         }
     }

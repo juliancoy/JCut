@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QColor>
 #include <QSize>
 #include <QString>
 #include <QVector>
@@ -65,6 +66,14 @@ struct RenderRequest {
     qreal currentSpeakerOrganizationTextScale = 1.0;
     qreal currentSpeakerNameVerticalPosition = 0.86;
     qreal currentSpeakerOrganizationVerticalPosition = 0.93;
+    QColor currentSpeakerNameColor = QColor(QStringLiteral("#f4f8fc"));
+    QColor currentSpeakerOrganizationColor = QColor(QStringLiteral("#b9d0e5"));
+    QColor currentSpeakerBackgroundColor = QColor(8, 13, 20, 190);
+    QColor currentSpeakerBorderColor = QColor(225, 236, 247, 120);
+    qreal currentSpeakerBackgroundCornerRadius = 14.0;
+    qreal currentSpeakerBorderWidth = 1.0;
+    bool currentSpeakerShadowEnabled = true;
+    QColor currentSpeakerShadowColor = QColor(0, 0, 0, 190);
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;

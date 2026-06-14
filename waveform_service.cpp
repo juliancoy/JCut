@@ -582,6 +582,12 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
         return false;
     }
 
+    // Validate sample_rate: on some platforms (macOS/VideoToolbox),
+    // avcodec_parameters_to_context may leave sample_rate at 0 even
+    // when stream->codecpar->sample_rate is valid.
+    const int inSampleRate = codecCtx->sample_rate > 0
+        ? codecCtx->sample_rate
+        : (stream->codecpar->sample_rate > 0 ? stream->codecpar->sample_rate : 48000);
     const AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_MONO;
     SwrContext* swr = nullptr;
     if (swr_alloc_set_opts2(&swr,
@@ -590,7 +596,7 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
                             kAudioSampleRate,
                             &codecCtx->ch_layout,
                             codecCtx->sample_fmt,
-                            codecCtx->sample_rate,
+                            inSampleRate,
                             0,
                             nullptr) < 0 ||
         !swr ||

@@ -72,6 +72,14 @@ public:
     void setCurrentSpeakerOrganizationTextScale(qreal scale) override;
     void setCurrentSpeakerNameVerticalPosition(qreal position) override;
     void setCurrentSpeakerOrganizationVerticalPosition(qreal position) override;
+    void setCurrentSpeakerNameColor(const QColor& color) override;
+    void setCurrentSpeakerOrganizationColor(const QColor& color) override;
+    void setCurrentSpeakerBackgroundColor(const QColor& color) override;
+    void setCurrentSpeakerBorderColor(const QColor& color) override;
+    void setCurrentSpeakerBackgroundCornerRadius(qreal radius) override;
+    void setCurrentSpeakerBorderWidth(qreal width) override;
+    void setCurrentSpeakerShadowEnabled(bool enabled) override;
+    void setCurrentSpeakerShadowColor(const QColor& color) override;
     void setPlaybackStatusOverlayText(const QString& text) override;
     void setPlaybackStatusOverlayProgress(qreal progress) override;
     void setFacestreamOverlaySource(const QString& source) override;
@@ -178,6 +186,7 @@ private:
     void queueFacestreamOverlayCacheWarmup(const TimelineClip& clip,
                                            int64_t sourceFrame,
                                            const QString& cacheKey);
+    bool warmFacestreamOverlayLookahead(int futureFrames, int timeoutMs);
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip,
                                                          int64_t sourceFrame);
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionsForClipFrame(const TimelineClip& clip,

@@ -344,4 +344,33 @@ public:
         painter->restore();
     }
 };
+
+class SpeakerSectionItemDelegate final : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        QStyleOptionViewItem tintedOption(option);
+        initStyleOption(&tintedOption, index);
+        const QBrush background = index.data(Qt::BackgroundRole).value<QBrush>();
+        if ((option.state & QStyle::State_Selected) && background.style() != Qt::NoBrush) {
+            QColor tint = background.color();
+            if (tint.isValid()) {
+                tint.setAlpha(150);
+                painter->save();
+                painter->fillRect(option.rect, tint);
+                painter->setPen(QPen(tint.lighter(170), 2));
+                painter->drawLine(option.rect.left(), option.rect.top(),
+                                  option.rect.left(), option.rect.bottom());
+                painter->restore();
+                tintedOption.state &= ~QStyle::State_Selected;
+            }
+        }
+        QStyledItemDelegate::paint(painter, tintedOption, index);
+    }
+};
 }

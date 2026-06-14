@@ -40,6 +40,10 @@ struct SpeakerLabelOverlaySpec {
     QColor organizationColor = QColor(QStringLiteral("#b9d0e5"));
     QColor backgroundColor = QColor(8, 13, 20, 190);
     QColor borderColor = QColor(225, 236, 247, 120);
+    qreal backgroundCornerRadius = 14.0;
+    qreal borderWidth = 1.0;
+    bool showShadow = true;
+    QColor shadowColor = QColor(0, 0, 0, 190);
 };
 
 class OverlayRenderBackend {

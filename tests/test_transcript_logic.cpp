@@ -99,6 +99,7 @@ private slots:
     void testTranscriptOverlayLayoutHelperMatchesSectionLayout();
     void testTranscriptOverlayRespectsWordPadding();
     void testTranscriptOverlaySpeakerLookupReturnsActiveRange();
+    void testTranscriptSpeakerTitleUsesOverlayWordPadding();
     void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
@@ -726,6 +727,39 @@ void TestTranscriptLogic::testTranscriptOverlaySpeakerLookupReturnsActiveRange()
     QVERIFY(transcriptOverlaySpeakerAtSourceFrame(sections, 14, &activeRange).isEmpty());
     QCOMPARE(activeRange.startFrame, int64_t(-1));
     QCOMPARE(activeRange.endFrame, int64_t(-1));
+}
+
+void TestTranscriptLogic::testTranscriptSpeakerTitleUsesOverlayWordPadding() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString transcriptPath = dir.filePath(QStringLiteral("clip.json"));
+
+    QJsonObject profile;
+    profile[QStringLiteral("name")] = QStringLiteral("Julian Jones");
+    profile[QStringLiteral("organization")] = QStringLiteral("Baltimore County Council");
+    QJsonObject profiles;
+    profiles[QStringLiteral("S2")] = profile;
+    QJsonObject root;
+    root[QStringLiteral("speaker_profiles")] = profiles;
+    QVERIFY(writeTranscriptDocument(transcriptPath, root));
+
+    TranscriptSection section;
+    section.startFrame = 20;
+    section.endFrame = 29;
+    section.text = QStringLiteral("beta");
+    TranscriptWord word;
+    word.startFrame = 20;
+    word.endFrame = 29;
+    word.text = QStringLiteral("beta");
+    word.speaker = QStringLiteral("S2");
+    section.words.push_back(word);
+
+    setTranscriptOverlayTimingPaddingMs(150, 70);
+    const QVector<TranscriptSection> sections{section};
+    QVERIFY(!transcriptOverlayLayoutAtSourceFrame(TimelineClip{}, sections, 16).lines.isEmpty());
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16), QStringLiteral("S2"));
+    QCOMPARE(transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, 16),
+             QStringLiteral("Julian Jones - Baltimore County Council"));
 }
 
 void TestTranscriptLogic::testTranscriptOverlayHtmlUsesQtRichTextRgbColors() {

@@ -17,6 +17,11 @@ void vulkanMvpForOutputRect(const QRectF& rect,
                             const QSize& outputSize,
                             qreal rotationDegrees,
                             float outMvp[16]);
+void vulkanMvpForOutputRectMaybeFlippedY(const QRectF& rect,
+                                         const QSize& outputSize,
+                                         qreal rotationDegrees,
+                                         bool flipY,
+                                         float outMvp[16]);
 void vulkanMvpForPreviewTransform(const QTransform& clipToSwapchain,
                                   const QRectF& localRect,
                                   const QSize& swapSize,

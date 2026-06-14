@@ -12,6 +12,10 @@
 #include "../editor_shared.h"
 #include "../render_internal.h"
 
+extern "C" {
+#include <libavutil/pixfmt.h>
+}
+
 namespace {
 
 bool writeTranscript(const QString& path)
@@ -87,6 +91,65 @@ TimelineClip makeTranscriptClip(const QString& clipPath, const QSize& outputSize
     return clip;
 }
 
+TimelineClip makeTitleClip(const QSize& outputSize)
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("vulkan-title-clip");
+    clip.label = QStringLiteral("Vulkan title clip");
+    clip.mediaType = ClipMediaType::Title;
+    clip.videoEnabled = true;
+    clip.audioEnabled = false;
+    clip.hasAudio = false;
+    clip.startFrame = 0;
+    clip.durationFrames = 60;
+    clip.sourceDurationFrames = 60;
+    clip.trackIndex = 0;
+
+    TimelineClip::TitleKeyframe keyframe;
+    keyframe.frame = 0;
+    keyframe.text = QStringLiteral("TITLE TEST");
+    keyframe.fontFamily = QStringLiteral("DejaVu Sans");
+    keyframe.fontSize = qBound<qreal>(36.0, qMin(outputSize.width(), outputSize.height()) * 0.11, 96.0);
+    keyframe.bold = true;
+    keyframe.color = QColor(QStringLiteral("#ffffff"));
+    keyframe.opacity = 1.0;
+    keyframe.windowEnabled = false;
+    keyframe.dropShadowEnabled = false;
+    clip.titleKeyframes.push_back(keyframe);
+    return clip;
+}
+
+TimelineClip makeImageClip(const QString& imagePath)
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("vulkan-image-clip");
+    clip.label = QStringLiteral("Vulkan image clip");
+    clip.filePath = imagePath;
+    clip.mediaType = ClipMediaType::Image;
+    clip.videoEnabled = true;
+    clip.audioEnabled = false;
+    clip.hasAudio = false;
+    clip.startFrame = 0;
+    clip.durationFrames = 60;
+    clip.sourceDurationFrames = 60;
+    clip.trackIndex = 0;
+    return clip;
+}
+
+bool writeOrientationImage(const QString& path)
+{
+    QImage image(320, 240, QImage::Format_RGBA8888);
+    image.fill(Qt::black);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            image.setPixelColor(x, y, y < image.height() / 2
+                                      ? QColor(235, 32, 32, 255)
+                                      : QColor(32, 80, 235, 255));
+        }
+    }
+    return image.save(path);
+}
+
 struct PixelCounts {
     int opaqueDark = 0;
     int brightText = 0;
@@ -131,6 +194,8 @@ private slots:
     void cleanup() { clearAllActiveTranscriptPaths(); }
     void testOffscreenVulkanSubtitleTextPixels_data();
     void testOffscreenVulkanSubtitleTextPixels();
+    void testOffscreenVulkanTitleTextPixels();
+    void testOffscreenVulkanImageTextureOrientation();
 };
 
 void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels_data()
@@ -212,6 +277,191 @@ void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels()
                             .arg(counts.opaqueDark)));
     QVERIFY2(counts.yellowHighlight > framePixels * 0.00018,
              qPrintable(QStringLiteral("Expected active-word highlight pixels, got %1").arg(counts.yellowHighlight)));
+
+    render_detail::OffscreenRenderFrame rawOutput;
+    QVERIFY2(renderer.renderFrameToOutput(request,
+                                          15,
+                                          decoders,
+                                          nullptr,
+                                          &asyncCache,
+                                          orderedClips,
+                                          &rawOutput,
+                                          false),
+             "Offscreen Vulkan renderer failed to render subtitle frame for raw export readback");
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+    QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
+             "Offscreen Vulkan renderer failed to copy raw subtitle BGRA frame");
+    QImage rawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                    outputSize.width(),
+                    outputSize.height(),
+                    outputSize.width() * 4,
+                    QImage::Format_ARGB32);
+    const QString rawArtifactPath =
+        QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(
+            QStringLiteral("vulkan_subtitle_raw_bgra_%1.png").arg(artifactSuffix));
+    QVERIFY2(rawImage.copy().save(rawArtifactPath),
+             qPrintable(QStringLiteral("Failed to save %1").arg(rawArtifactPath)));
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()
+{
+    const QSize outputSize(720, 720);
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    RenderRequest request;
+    request.outputPath = QStringLiteral("test://vulkan-title");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.correctionsEnabled = true;
+    request.clips = QVector<TimelineClip>{makeTitleClip(outputSize)};
+    request.exportStartFrame = 15;
+    request.exportEndFrame = 15;
+
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    const QImage frame = renderer.renderFrame(request,
+                                              15,
+                                              decoders,
+                                              nullptr,
+                                              &asyncCache,
+                                              orderedClips,
+                                              nullptr,
+                                              &decodeMs,
+                                              &textureMs,
+                                              &compositeMs,
+                                              &readbackMs,
+                                              nullptr,
+                                              nullptr);
+    QVERIFY2(!frame.isNull(), "Offscreen Vulkan renderer returned a null title frame");
+    QCOMPARE(frame.size(), outputSize);
+    const QString artifactPath =
+        QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(QStringLiteral("vulkan_title_render_720x720.png"));
+    QVERIFY2(frame.save(artifactPath), qPrintable(QStringLiteral("Failed to save %1").arg(artifactPath)));
+
+    const PixelCounts counts = countSubtitlePixels(frame);
+    const int framePixels = frame.width() * frame.height();
+    QVERIFY2(counts.brightText > framePixels * 0.00024,
+             qPrintable(QStringLiteral("Expected bright title glyph pixels, got %1").arg(counts.brightText)));
+
+    render_detail::OffscreenRenderFrame rawOutput;
+    QVERIFY2(renderer.renderFrameToOutput(request,
+                                          15,
+                                          decoders,
+                                          nullptr,
+                                          &asyncCache,
+                                          orderedClips,
+                                          &rawOutput,
+                                          false),
+             "Offscreen Vulkan renderer failed to render title frame for raw export readback");
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+    QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
+             "Offscreen Vulkan renderer failed to copy raw export-facing BGRA frame");
+    QImage rawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                    outputSize.width(),
+                    outputSize.height(),
+                    outputSize.width() * 4,
+                    QImage::Format_ARGB32);
+    const QString rawArtifactPath =
+        QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(QStringLiteral("vulkan_title_raw_bgra_720x720.png"));
+    QVERIFY2(rawImage.copy().save(rawArtifactPath),
+             qPrintable(QStringLiteral("Failed to save %1").arg(rawArtifactPath)));
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanImageTextureOrientation()
+{
+    const QSize outputSize(720, 720);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("orientation.png"));
+    QVERIFY2(writeOrientationImage(imagePath), "Failed to write Vulkan orientation image fixture");
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    RenderRequest request;
+    request.outputPath = QStringLiteral("test://vulkan-image-orientation");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.correctionsEnabled = true;
+    request.clips = QVector<TimelineClip>{makeImageClip(imagePath)};
+    request.exportStartFrame = 15;
+    request.exportEndFrame = 15;
+
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    render_detail::OffscreenRenderFrame output;
+    QVERIFY2(renderer.renderFrameToOutput(request,
+                                          15,
+                                          decoders,
+                                          nullptr,
+                                          &asyncCache,
+                                          orderedClips,
+                                          &output,
+                                          true,
+                                          nullptr,
+                                          &decodeMs,
+                                          &textureMs,
+                                          &compositeMs,
+                                          &readbackMs),
+             "Offscreen Vulkan renderer failed to render image orientation frame");
+
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+    QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
+             "Offscreen Vulkan renderer failed to copy raw image orientation BGRA frame");
+
+    QImage rawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                    outputSize.width(),
+                    outputSize.height(),
+                    outputSize.width() * 4,
+                    QImage::Format_ARGB32);
+    const QString rawArtifactPath =
+        QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(QStringLiteral("vulkan_image_raw_bgra_720x720.png"));
+    QVERIFY2(rawImage.copy().save(rawArtifactPath),
+             qPrintable(QStringLiteral("Failed to save %1").arg(rawArtifactPath)));
+
+    const QColor top = rawImage.pixelColor(outputSize.width() / 2, outputSize.height() / 4);
+    const QColor bottom = rawImage.pixelColor(outputSize.width() / 2, (outputSize.height() * 3) / 4);
+    QVERIFY2(top.red() > top.blue() + 80,
+             qPrintable(QStringLiteral("Expected red top half, got rgb=(%1,%2,%3)")
+                            .arg(top.red()).arg(top.green()).arg(top.blue())));
+    QVERIFY2(bottom.blue() > bottom.red() + 80,
+             qPrintable(QStringLiteral("Expected blue bottom half, got rgb=(%1,%2,%3)")
+                            .arg(bottom.red()).arg(bottom.green()).arg(bottom.blue())));
 }
 
 QTEST_MAIN(TestVulkanSubtitleRender)

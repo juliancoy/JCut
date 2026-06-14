@@ -182,6 +182,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         snapshot[QStringLiteral("audio")] = audio;
     }
 
+    snapshot[QStringLiteral("stream_timing")] = streamTimingSnapshot();
     snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
     snapshot[QStringLiteral("startup_readiness")] = startupReadinessSnapshot();
     snapshot[QStringLiteral("startup_optimization")] = startupOptimizationSnapshot();
@@ -222,6 +223,194 @@ QJsonObject EditorWindow::profilingSnapshot() const
         : QJsonObject{};
 
     return snapshot;
+}
+
+QJsonObject EditorWindow::streamTimingSnapshot() const
+{
+    const qint64 now = nowMs();
+    const bool playing = m_playbackTimer.isActive();
+    const int64_t masterSample = qMax<int64_t>(0, m_transportTimelineSample);
+    const qreal masterFramePosition = samplesToFramePosition(masterSample);
+    const int64_t masterFrame =
+        m_timeline
+            ? qBound<int64_t>(0,
+                              static_cast<int64_t>(std::floor(masterFramePosition)),
+                              m_timeline->totalFrames())
+            : qMax<int64_t>(0, static_cast<int64_t>(std::floor(masterFramePosition)));
+    const qreal speed = normalizedPlaybackSpeed(m_playbackSpeed);
+    const int64_t sessionStartSample = qMax<int64_t>(0, m_playbackSessionStartTimelineSample);
+    const qint64 sessionStartWallMs = m_playbackSessionStartWallMs;
+    const qint64 wallRuntimeMs =
+        (playing && sessionStartWallMs > 0) ? qMax<qint64>(0, now - sessionStartWallMs) : 0;
+    const int64_t masterRuntimeSamples =
+        playing ? qMax<int64_t>(0, masterSample - sessionStartSample) : 0;
+    const qreal expectedMasterRuntimeSamples =
+        playing
+            ? (static_cast<qreal>(wallRuntimeMs) / 1000.0) *
+                  static_cast<qreal>(kAudioSampleRate) * speed
+            : 0.0;
+    const qreal masterRuntimeMs =
+        (static_cast<qreal>(masterRuntimeSamples) * 1000.0) /
+        static_cast<qreal>(kAudioSampleRate);
+
+    QJsonArray streams;
+    int activeCount = 0;
+    if (m_timeline) {
+        const QVector<TimelineClip> clips = m_timeline->clips();
+        const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+        for (const TimelineClip& clip : clips) {
+            const int64_t clipStartSample = clipTimelineStartSamples(clip);
+            const int64_t clipDurationSamples = frameToSamples(qMax<int64_t>(0, clip.durationFrames));
+            const int64_t clipEndSample = clipStartSample + clipDurationSamples;
+            const bool active =
+                masterSample >= clipStartSample && masterSample < clipEndSample;
+            if (active) {
+                ++activeCount;
+            }
+
+            const int64_t clampedTimelineSample =
+                qBound<int64_t>(clipStartSample,
+                                masterSample,
+                                qMax<int64_t>(clipStartSample, clipEndSample - 1));
+            const int64_t localTimelineSample =
+                qMax<int64_t>(0, clampedTimelineSample - clipStartSample);
+            const qreal localTimelineRuntimeMs =
+                (static_cast<qreal>(localTimelineSample) * 1000.0) /
+                static_cast<qreal>(kAudioSampleRate);
+            const int64_t sourceStartSample = clipSourceInSamples(clip);
+            const int64_t sourceSample =
+                sourceSampleForClipAtTimelineSample(clip, clampedTimelineSample, markers);
+            const int64_t sourceRuntimeSamples =
+                qMax<int64_t>(0, sourceSample - sourceStartSample);
+            const qreal sourceRuntimeMs =
+                (static_cast<qreal>(sourceRuntimeSamples) * 1000.0) /
+                static_cast<qreal>(kAudioSampleRate);
+            const int64_t sourceFrame =
+                sourceFrameForClipAtTimelineSample(clip, clampedTimelineSample, markers);
+            const int64_t transcriptFrame =
+                transcriptFrameForClipSourceFrame(clip, sourceFrame);
+
+            qint64 projectedStreamStartWallMs = -1;
+            qreal projectedWallRuntimeMs = 0.0;
+            bool projectedWallValid = false;
+            if (playing && sessionStartWallMs > 0 && speed > 0.0) {
+                const int64_t streamStartOffsetSamples =
+                    qMax<int64_t>(0, clipStartSample - sessionStartSample);
+                const qreal streamStartOffsetMs =
+                    (static_cast<qreal>(streamStartOffsetSamples) * 1000.0) /
+                    (static_cast<qreal>(kAudioSampleRate) * speed);
+                projectedStreamStartWallMs =
+                    sessionStartWallMs + static_cast<qint64>(std::llround(streamStartOffsetMs));
+                if (masterSample >= clipStartSample) {
+                    projectedStreamStartWallMs = qMax<qint64>(sessionStartWallMs,
+                                                              projectedStreamStartWallMs);
+                    projectedWallRuntimeMs =
+                        qMax<qreal>(0.0,
+                                    static_cast<qreal>(now - projectedStreamStartWallMs) *
+                                        speed);
+                    projectedWallValid = true;
+                }
+            }
+
+            QJsonArray roles;
+            if (clipHasVisuals(clip)) {
+                roles.push_back(QStringLiteral("video"));
+            }
+            if (clipAudioPlaybackEnabled(clip)) {
+                roles.push_back(QStringLiteral("audio"));
+            }
+            if (clip.mediaType == ClipMediaType::Title) {
+                roles.push_back(QStringLiteral("title"));
+            }
+
+            streams.push_back(QJsonObject{
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("label"), clip.label},
+                {QStringLiteral("file_path"), clip.filePath},
+                {QStringLiteral("playback_media_path"), playbackMediaPathForClip(clip)},
+                {QStringLiteral("playback_audio_path"), playbackAudioPathForClip(clip)},
+                {QStringLiteral("track_index"), clip.trackIndex},
+                {QStringLiteral("roles"), roles},
+                {QStringLiteral("active"), active},
+                {QStringLiteral("timeline_start_sample"), static_cast<qint64>(clipStartSample)},
+                {QStringLiteral("timeline_end_sample_exclusive"), static_cast<qint64>(clipEndSample)},
+                {QStringLiteral("timeline_duration_samples"), static_cast<qint64>(clipDurationSamples)},
+                {QStringLiteral("timeline_start_frame"), static_cast<qint64>(clip.startFrame)},
+                {QStringLiteral("timeline_duration_frames"), static_cast<qint64>(clip.durationFrames)},
+                {QStringLiteral("timeline_local_sample"), static_cast<qint64>(localTimelineSample)},
+                {QStringLiteral("timeline_local_frame_position"),
+                 samplesToFramePosition(localTimelineSample)},
+                {QStringLiteral("timeline_runtime_ms"), localTimelineRuntimeMs},
+                {QStringLiteral("source_fps"), resolvedSourceFps(clip)},
+                {QStringLiteral("source_start_frame"), static_cast<qint64>(clip.sourceInFrame)},
+                {QStringLiteral("source_start_sample"), static_cast<qint64>(sourceStartSample)},
+                {QStringLiteral("source_sample"), static_cast<qint64>(sourceSample)},
+                {QStringLiteral("source_frame"), static_cast<qint64>(sourceFrame)},
+                {QStringLiteral("source_runtime_samples"), static_cast<qint64>(sourceRuntimeSamples)},
+                {QStringLiteral("source_runtime_ms"), sourceRuntimeMs},
+                {QStringLiteral("transcript_frame"), static_cast<qint64>(transcriptFrame)},
+                {QStringLiteral("playback_rate"), clip.playbackRate},
+                {QStringLiteral("projected_wall_valid"), projectedWallValid},
+                {QStringLiteral("projected_stream_start_wall_ms"),
+                 projectedWallValid
+                     ? QJsonValue(static_cast<qint64>(projectedStreamStartWallMs))
+                     : QJsonValue()},
+                {QStringLiteral("projected_stream_wall_runtime_ms"),
+                 projectedWallValid ? QJsonValue(projectedWallRuntimeMs) : QJsonValue()},
+                {QStringLiteral("timeline_vs_projected_wall_drift_ms"),
+                 projectedWallValid
+                     ? QJsonValue(localTimelineRuntimeMs - projectedWallRuntimeMs)
+                     : QJsonValue()},
+                {QStringLiteral("source_vs_projected_wall_drift_ms"),
+                 projectedWallValid
+                     ? QJsonValue(sourceRuntimeMs - projectedWallRuntimeMs)
+                     : QJsonValue()}
+            });
+        }
+    }
+
+    QJsonObject audio;
+    if (m_audioEngine) {
+        const int64_t audioSample =
+            timelineSampleForAudioFeedbackSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        audio = QJsonObject{
+            {QStringLiteral("available"), m_audioEngine->audioClockAvailable()},
+            {QStringLiteral("started"), m_audioEngine->playbackStarted()},
+            {QStringLiteral("timeline_sample"), static_cast<qint64>(audioSample)},
+            {QStringLiteral("timeline_frame"),
+             static_cast<qint64>(std::floor(samplesToFramePosition(audioSample)))},
+            {QStringLiteral("drift_from_master_samples"),
+             static_cast<qint64>(masterSample - audioSample)},
+            {QStringLiteral("drift_from_master_frames"),
+             static_cast<qint64>(std::floor(samplesToFramePosition(masterSample)) -
+                                 std::floor(samplesToFramePosition(audioSample)))}
+        };
+    }
+
+    return QJsonObject{
+        {QStringLiteral("snapshot_wall_ms"), now},
+        {QStringLiteral("playback_active"), playing},
+        {QStringLiteral("playback_speed"), speed},
+        {QStringLiteral("master_timeline_sample"), static_cast<qint64>(masterSample)},
+        {QStringLiteral("master_timeline_frame"), static_cast<qint64>(masterFrame)},
+        {QStringLiteral("master_timeline_frame_position"), masterFramePosition},
+        {QStringLiteral("session_start_wall_ms"), sessionStartWallMs},
+        {QStringLiteral("session_start_timeline_sample"), static_cast<qint64>(sessionStartSample)},
+        {QStringLiteral("session_wall_runtime_ms"), wallRuntimeMs},
+        {QStringLiteral("master_runtime_samples"), static_cast<qint64>(masterRuntimeSamples)},
+        {QStringLiteral("master_runtime_ms"), masterRuntimeMs},
+        {QStringLiteral("expected_master_runtime_samples_from_wall"),
+         playing ? QJsonValue(expectedMasterRuntimeSamples) : QJsonValue()},
+        {QStringLiteral("master_vs_wall_drift_samples"),
+         playing
+             ? QJsonValue(static_cast<qreal>(masterRuntimeSamples) -
+                          expectedMasterRuntimeSamples)
+             : QJsonValue()},
+        {QStringLiteral("active_stream_count"), activeCount},
+        {QStringLiteral("stream_count"), streams.size()},
+        {QStringLiteral("streams"), streams},
+        {QStringLiteral("audio_feedback"), audio}
+    };
 }
 
 QJsonObject EditorWindow::audioDebugSnapshot() const

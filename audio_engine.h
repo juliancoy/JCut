@@ -319,7 +319,8 @@ private:
   // --- Mix engine ---
 
   bool mixChunk(const MixContext &context, float *output, int frames,
-                int64_t chunkStartSample, qreal playbackRate);
+                int64_t chunkStartSample, qreal playbackRate,
+                qreal timelineRate);
 
   // --- Worker threads ---
 

@@ -102,6 +102,8 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerSectionsTable) {
         m_widgets.speakerSectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_widgets.speakerSectionsTable->setItemDelegate(
+            new SpeakerSectionItemDelegate(m_widgets.speakerSectionsTable));
         connect(m_widgets.speakerSectionsTable,
                 &QTableWidget::itemSelectionChanged,
                 this,

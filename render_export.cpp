@@ -217,16 +217,16 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         bool previousDeterministic = editor::debugDeterministicPipelineEnabled();
         explicit ScopedRenderDecodeSafety(bool preferHardwareDecode)
             : preferHardware(preferHardwareDecode) {
-            const bool enableExperimentalHardwareDecode =
+            const bool disableVulkanHardwareDecode =
                 preferHardware &&
-                qEnvironmentVariableIntValue("JCUT_VULKAN_HW_DECODE_EXPERIMENTAL") == 1;
-            if (enableExperimentalHardwareDecode) {
-                editor::setDebugDecodePreference(editor::DecodePreference::Hardware);
+                qEnvironmentVariableIntValue("JCUT_VULKAN_HW_DECODE_DISABLE") == 1;
+            if (preferHardware && !disableVulkanHardwareDecode) {
+                editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
                 editor::setDebugH26xSoftwareThreadingMode(
                     editor::H26xSoftwareThreadingMode::SingleThread);
                 editor::setDebugDeterministicPipelineEnabled(true);
             } else {
-                editor::setDebugDecodePreference(editor::DecodePreference::Software);
+                editor::setDebugDecodePreference(editor::DecodePreference::Hardware);
                 editor::setDebugH26xSoftwareThreadingMode(
                     editor::H26xSoftwareThreadingMode::SingleThread);
                 editor::setDebugDeterministicPipelineEnabled(true);

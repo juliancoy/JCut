@@ -1142,6 +1142,8 @@ void EditorWindow::setPlaybackActive(bool playing)
             static_cast<int64_t>(std::floor(samplesToFramePosition(playbackStartSample))),
             m_timeline->totalFrames());
         m_transportTimelineSample = playbackStartSample;
+        m_playbackSessionStartWallMs = m_lastTimelineAdvanceTickMs;
+        m_playbackSessionStartTimelineSample = playbackStartSample;
         m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(playbackStartSample);
         m_playbackAudioFeedbackAnchorTimelineSample = playbackStartSample;
         if (m_timeline->currentFrame() != playbackStartFrame) {

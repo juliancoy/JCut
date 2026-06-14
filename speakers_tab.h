@@ -220,7 +220,9 @@ private:
         SpeakerSectionSpeakerIdRole = Qt::UserRole,
         SpeakerSectionStartFrameRole,
         SpeakerSectionEndFrameRole,
-        SpeakerSectionTrackIdsRole
+        SpeakerSectionTrackIdsRole,
+        SpeakerSectionTrackIdRole,
+        SpeakerSectionStreamIdRole
     };
 
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
@@ -325,6 +327,30 @@ private:
     void refreshSpeakersTable(const QJsonObject& transcriptRoot,
                               const QString& preferredSpeakerId = QString());
     void refreshVisibleSpeakerSectionAssignments(const QString& speakerId);
+    bool contiguousTranscriptSectionModeActive() const;
+    QJsonObject contiguousSectionAssignmentForRow(int row) const;
+    QJsonObject contiguousSectionAssignmentForSection(const QString& clipId,
+                                                      const QString& speakerId,
+                                                      int64_t startFrame,
+                                                      int64_t endFrame) const;
+    int contiguousSectionAssignedTrackId(const QString& clipId,
+                                         const QString& speakerId,
+                                         int64_t startFrame,
+                                         int64_t endFrame) const;
+    bool assignTrackToContiguousSection(const QString& clipId,
+                                        const QString& speakerId,
+                                        int64_t startFrame,
+                                        int64_t endFrame,
+                                        int trackId,
+                                        const QString& streamId,
+                                        int64_t sourceFrame,
+                                        qreal xNorm,
+                                        qreal yNorm,
+                                        qreal boxSizeNorm,
+                                        const QString& resolutionSource);
+    bool deassignTrackFromContiguousSection(const QString& clipId,
+                                            int trackId,
+                                            int row = -1);
     void seekToSpeakerFirstWord(const QString& speakerId);
     bool seekToSpeakerSegmentRelative(const QString& speakerId, int direction);
     bool seekToSpeakerNextSection(const QString& speakerId);
@@ -393,6 +419,8 @@ private:
     bool applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString& clipId,
                                                         int trackId,
                                                         const QString& streamId,
+                                                        qreal xNorm,
+                                                        qreal yNorm,
                                                         qreal boxSizeNorm);
     void populateSpeakerFramingEnabledKeyframeTable(const TimelineClip& clip);
     void syncSpeakerFramingEnabledTableToPlayhead();

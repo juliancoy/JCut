@@ -1272,8 +1272,18 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_transcriptTable->setEditTriggers(QAbstractItemView::DoubleClicked |
                                        QAbstractItemView::EditKeyPressed);
+    m_transcriptTable->setWordWrap(false);
+    m_transcriptTable->setTextElideMode(Qt::ElideRight);
+    m_transcriptTable->setAlternatingRowColors(true);
+    m_transcriptTable->setShowGrid(false);
+    m_transcriptTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_transcriptTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_transcriptTable->verticalHeader()->setVisible(false);
-    m_transcriptTable->horizontalHeader()->setStretchLastSection(true);
+    m_transcriptTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_transcriptTable->verticalHeader()->setDefaultSectionSize(30);
+    m_transcriptTable->verticalHeader()->setMinimumSectionSize(30);
+    m_transcriptTable->horizontalHeader()->setHighlightSections(false);
+    m_transcriptTable->horizontalHeader()->setStretchLastSection(false);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -1439,6 +1449,67 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCurrentSpeakerOrganizationYPositionSpin->setValue(93);
     m_speakerCurrentSpeakerOrganizationYPositionSpin->setToolTip(
         QStringLiteral("Set the active speaker organization vertical position in the preview. 0% is top; 100% is bottom."));
+    auto makeSpeakerColorButton = [page](const QString& color, const QString& tooltip) {
+        auto* button = new QPushButton(color, page);
+        button->setMinimumHeight(24);
+        button->setToolTip(tooltip);
+        button->setStyleSheet(
+            QStringLiteral("QPushButton { background: %1; color: %2; "
+                           "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
+                .arg(color,
+                     QColor(color).lightness() > 128 ? QStringLiteral("#000000")
+                                                     : QStringLiteral("#ffffff")));
+        return button;
+    };
+    m_speakerCurrentSpeakerNameColorButton = makeSpeakerColorButton(
+        QStringLiteral("#f4f8fc"),
+        QStringLiteral("Set the active speaker name text color."));
+    m_speakerCurrentSpeakerOrganizationColorButton = makeSpeakerColorButton(
+        QStringLiteral("#b9d0e5"),
+        QStringLiteral("Set the active speaker organization text color."));
+    m_speakerCurrentSpeakerBackgroundColorButton = makeSpeakerColorButton(
+        QStringLiteral("#080d14"),
+        QStringLiteral("Set the active speaker label background color."));
+    m_speakerCurrentSpeakerBackgroundOpacitySpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerBackgroundOpacitySpin->setRange(0, 100);
+    m_speakerCurrentSpeakerBackgroundOpacitySpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerBackgroundOpacitySpin->setValue(75);
+    m_speakerCurrentSpeakerBackgroundOpacitySpin->setToolTip(
+        QStringLiteral("Set the active speaker label background opacity."));
+    m_speakerCurrentSpeakerBorderColorButton = makeSpeakerColorButton(
+        QStringLiteral("#e1ecf7"),
+        QStringLiteral("Set the active speaker label border color."));
+    m_speakerCurrentSpeakerBorderOpacitySpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerBorderOpacitySpin->setRange(0, 100);
+    m_speakerCurrentSpeakerBorderOpacitySpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerBorderOpacitySpin->setValue(47);
+    m_speakerCurrentSpeakerBorderOpacitySpin->setToolTip(
+        QStringLiteral("Set the active speaker label border opacity."));
+    m_speakerCurrentSpeakerBackgroundRadiusSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerBackgroundRadiusSpin->setRange(0, 128);
+    m_speakerCurrentSpeakerBackgroundRadiusSpin->setSuffix(QStringLiteral(" px"));
+    m_speakerCurrentSpeakerBackgroundRadiusSpin->setValue(14);
+    m_speakerCurrentSpeakerBackgroundRadiusSpin->setToolTip(
+        QStringLiteral("Set the active speaker label background corner radius."));
+    m_speakerCurrentSpeakerBorderWidthSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerBorderWidthSpin->setRange(0, 16);
+    m_speakerCurrentSpeakerBorderWidthSpin->setSuffix(QStringLiteral(" px"));
+    m_speakerCurrentSpeakerBorderWidthSpin->setValue(1);
+    m_speakerCurrentSpeakerBorderWidthSpin->setToolTip(
+        QStringLiteral("Set the active speaker label border width."));
+    m_speakerCurrentSpeakerShadowCheckBox = new QCheckBox(QStringLiteral("Speaker Label Shadow"), page);
+    m_speakerCurrentSpeakerShadowCheckBox->setChecked(true);
+    m_speakerCurrentSpeakerShadowCheckBox->setToolTip(
+        QStringLiteral("Draw the active speaker label text shadow."));
+    m_speakerCurrentSpeakerShadowColorButton = makeSpeakerColorButton(
+        QStringLiteral("#000000"),
+        QStringLiteral("Set the active speaker label shadow color."));
+    m_speakerCurrentSpeakerShadowOpacitySpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerShadowOpacitySpin->setRange(0, 100);
+    m_speakerCurrentSpeakerShadowOpacitySpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerShadowOpacitySpin->setValue(75);
+    m_speakerCurrentSpeakerShadowOpacitySpin->setToolTip(
+        QStringLiteral("Set the active speaker label shadow opacity."));
     m_speakerSectionsTable = new QTableWidget(page);
     m_speakerSectionsTable->setColumnCount(7);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
@@ -1840,6 +1911,17 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Size"), m_speakerCurrentSpeakerOrganizationTextSizeSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Y Position"), m_speakerCurrentSpeakerNameYPositionSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Y Position"), m_speakerCurrentSpeakerOrganizationYPositionSpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Color"), m_speakerCurrentSpeakerNameColorButton);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Color"), m_speakerCurrentSpeakerOrganizationColorButton);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Background Color"), m_speakerCurrentSpeakerBackgroundColorButton);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Background Opacity"), m_speakerCurrentSpeakerBackgroundOpacitySpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Color"), m_speakerCurrentSpeakerBorderColorButton);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Opacity"), m_speakerCurrentSpeakerBorderOpacitySpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Corner Radius"), m_speakerCurrentSpeakerBackgroundRadiusSpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Width"), m_speakerCurrentSpeakerBorderWidthSpin);
+    currentSpeakerTextSizeLayout->addRow(m_speakerCurrentSpeakerShadowCheckBox);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Color"), m_speakerCurrentSpeakerShadowColorButton);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Opacity"), m_speakerCurrentSpeakerShadowOpacitySpin);
     speakerListLayout->addLayout(currentSpeakerTextSizeLayout);
     speakerListLayout->addWidget(m_speakersTable, 1);
     speakerListLayout->addWidget(m_speakerSectionsTable, 1);

@@ -52,6 +52,7 @@ const QLatin1String kTranscriptWordRenderOrderKey("render_order");
 const QLatin1String kTranscriptWordOriginalSegmentKey("original_segment_index");
 const QLatin1String kTranscriptWordOriginalWordKey("original_word_index");
 const QLatin1String kAllSpeakersFilterValue("__all__");
+constexpr int kTranscriptTableRowHeight = 30;
 
 enum TranscriptTableColumn {
     kTranscriptColSourceStart = 0,
@@ -262,14 +263,15 @@ void TranscriptTab::wire()
     }
 
     if (m_widgets.transcriptTable) {
+        configureTranscriptTableView();
         m_widgets.transcriptTable->setDragEnabled(true);
         m_widgets.transcriptTable->setAcceptDrops(true);
         m_widgets.transcriptTable->viewport()->setAcceptDrops(true);
         m_widgets.transcriptTable->setDropIndicatorShown(true);
         m_widgets.transcriptTable->setDragDropMode(QAbstractItemView::InternalMove);
         m_widgets.transcriptTable->setDefaultDropAction(Qt::MoveAction);
-        connect(m_widgets.transcriptTable, &QTableWidget::itemClicked,
-                this, &TranscriptTab::onTranscriptItemClicked);
+        connect(m_widgets.transcriptTable, &QTableWidget::cellClicked,
+                this, [this](int row, int) { onTranscriptRowClicked(row); });
         connect(m_widgets.transcriptTable, &QTableWidget::itemDoubleClicked,
                 this, &TranscriptTab::onTranscriptItemDoubleClicked);
         connect(m_widgets.transcriptTable, &QTableWidget::itemChanged,
@@ -448,13 +450,7 @@ void TranscriptTab::refresh()
     m_allTranscriptRows.clear();
     m_wordEditIndex.clear();
     m_lastSyncRow = -1;
-    if (m_widgets.transcriptPrependMsSpin) {
-        m_transcriptPrependMs = qMax(0, m_widgets.transcriptPrependMsSpin->value());
-    }
-    if (m_widgets.transcriptPostpendMsSpin) {
-        m_transcriptPostpendMs = qMax(0, m_widgets.transcriptPostpendMsSpin->value());
-    }
-    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
@@ -977,9 +973,41 @@ void TranscriptTab::scheduleSeekToTranscriptRow(int row)
     m_deferredSeekTimer.start(QApplication::doubleClickInterval());
 }
 
-void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)
+void TranscriptTab::configureTranscriptTableView()
 {
-    if (m_updating || m_suppressSelectionSideEffects || !item ||
+    QTableWidget* table = m_widgets.transcriptTable;
+    if (!table) {
+        return;
+    }
+
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    table->setWordWrap(false);
+    table->setTextElideMode(Qt::ElideRight);
+    table->setShowGrid(false);
+    table->setAlternatingRowColors(true);
+    table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+
+    if (QHeaderView* vertical = table->verticalHeader()) {
+        vertical->setVisible(false);
+        vertical->setSectionResizeMode(QHeaderView::Fixed);
+        vertical->setDefaultSectionSize(kTranscriptTableRowHeight);
+        vertical->setMinimumSectionSize(kTranscriptTableRowHeight);
+    }
+    if (QHeaderView* horizontal = table->horizontalHeader()) {
+        horizontal->setHighlightSections(false);
+        horizontal->setStretchLastSection(false);
+        horizontal->setSectionsClickable(true);
+        horizontal->setMinimumSectionSize(56);
+    }
+}
+
+void TranscriptTab::onTranscriptRowClicked(int row)
+{
+    if (m_updating || m_suppressSelectionSideEffects ||
+        row < 0 || !m_widgets.transcriptTable ||
+        row >= m_widgets.transcriptTable->rowCount() ||
         !m_deps.getSelectedClip || !m_deps.seekToTimelineFrame) {
         return;
     }
@@ -998,8 +1026,9 @@ void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)
     if (m_widgets.transcriptSearchFilterLineEdit) {
         const QString searchText = m_widgets.transcriptSearchFilterLineEdit->text().trimmed();
         if (!searchText.isEmpty() && m_widgets.transcriptTable) {
-            const QTableWidgetItem* textItem = m_widgets.transcriptTable->item(item->row(), kTranscriptColText);
-            const QString rowText = textItem ? textItem->text() : item->text();
+            const QTableWidgetItem* textItem = m_widgets.transcriptTable->item(row, kTranscriptColText);
+            const QTableWidgetItem* sourceItem = m_widgets.transcriptTable->item(row, kTranscriptColSourceStart);
+            const QString rowText = textItem ? textItem->text() : (sourceItem ? sourceItem->text() : QString());
             if (rowText.contains(searchText, Qt::CaseInsensitive)) {
                 QSignalBlocker blocker(m_widgets.transcriptSearchFilterLineEdit);
                 m_widgets.transcriptSearchFilterLineEdit->clear();
@@ -1009,7 +1038,15 @@ void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)
         }
     }
 
-    scheduleSeekToTranscriptRow(item->row());
+    scheduleSeekToTranscriptRow(row);
+}
+
+void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)
+{
+    if (!item) {
+        return;
+    }
+    onTranscriptRowClicked(item->row());
 }
 
 void TranscriptTab::onTranscriptItemDoubleClicked(QTableWidgetItem* item)
@@ -1138,8 +1175,8 @@ void TranscriptTab::onCenterVerticalClicked()
 
 void TranscriptTab::onPrependMsChanged(int value)
 {
-    m_transcriptPrependMs = qMax(0, value);
-    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+    Q_UNUSED(value);
+    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
@@ -1148,8 +1185,8 @@ void TranscriptTab::onPrependMsChanged(int value)
 
 void TranscriptTab::onPostpendMsChanged(int value)
 {
-    m_transcriptPostpendMs = qMax(0, value);
-    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+    Q_UNUSED(value);
+    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
@@ -1264,12 +1301,14 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
         return;
     }
 
-    QTableWidgetItem* item = m_widgets.transcriptTable->itemAt(pos);
-    if (!item) return;
+    const QModelIndex index = m_widgets.transcriptTable->indexAt(pos);
+    if (!index.isValid()) return;
 
-    const int row = item->row();
-    const bool isGap = m_widgets.transcriptTable->item(row, 0)->data(Qt::UserRole + 4).toBool();
-    const bool isOutsideCut = m_widgets.transcriptTable->item(row, 0)->data(Qt::UserRole + 12).toBool();
+    const int row = index.row();
+    QTableWidgetItem* sourceItem = m_widgets.transcriptTable->item(row, kTranscriptColSourceStart);
+    if (!sourceItem) return;
+    const bool isGap = sourceItem->data(Qt::UserRole + 4).toBool();
+    const bool isOutsideCut = sourceItem->data(Qt::UserRole + 12).toBool();
     if (isGap || isOutsideCut) return;
 
     QMenu menu;
@@ -1278,7 +1317,7 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* expandAction = nullptr;
     QAction* skipAction = nullptr;
     QAction* deleteAction = nullptr;
-    const bool rowSkipped = item->data(Qt::UserRole + 7).toBool();
+    const bool rowSkipped = sourceItem->data(Qt::UserRole + 7).toBool();
     if (activeCutMutable()) {
         addAbove = menu.addAction(QStringLiteral("Add Word Above"));
         addBelow = menu.addAction(QStringLiteral("Add Word Below"));

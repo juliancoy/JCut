@@ -106,6 +106,17 @@ public:
     QSpinBox *speakerCurrentSpeakerOrganizationTextSizeSpin() const { return m_speakerCurrentSpeakerOrganizationTextSizeSpin; }
     QSpinBox *speakerCurrentSpeakerNameYPositionSpin() const { return m_speakerCurrentSpeakerNameYPositionSpin; }
     QSpinBox *speakerCurrentSpeakerOrganizationYPositionSpin() const { return m_speakerCurrentSpeakerOrganizationYPositionSpin; }
+    QPushButton *speakerCurrentSpeakerNameColorButton() const { return m_speakerCurrentSpeakerNameColorButton; }
+    QPushButton *speakerCurrentSpeakerOrganizationColorButton() const { return m_speakerCurrentSpeakerOrganizationColorButton; }
+    QPushButton *speakerCurrentSpeakerBackgroundColorButton() const { return m_speakerCurrentSpeakerBackgroundColorButton; }
+    QSpinBox *speakerCurrentSpeakerBackgroundOpacitySpin() const { return m_speakerCurrentSpeakerBackgroundOpacitySpin; }
+    QPushButton *speakerCurrentSpeakerBorderColorButton() const { return m_speakerCurrentSpeakerBorderColorButton; }
+    QSpinBox *speakerCurrentSpeakerBorderOpacitySpin() const { return m_speakerCurrentSpeakerBorderOpacitySpin; }
+    QSpinBox *speakerCurrentSpeakerBackgroundRadiusSpin() const { return m_speakerCurrentSpeakerBackgroundRadiusSpin; }
+    QSpinBox *speakerCurrentSpeakerBorderWidthSpin() const { return m_speakerCurrentSpeakerBorderWidthSpin; }
+    QCheckBox *speakerCurrentSpeakerShadowCheckBox() const { return m_speakerCurrentSpeakerShadowCheckBox; }
+    QPushButton *speakerCurrentSpeakerShadowColorButton() const { return m_speakerCurrentSpeakerShadowColorButton; }
+    QSpinBox *speakerCurrentSpeakerShadowOpacitySpin() const { return m_speakerCurrentSpeakerShadowOpacitySpin; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QLineEdit *selectedSpeakerNameEdit() const { return m_selectedSpeakerNameEdit; }
@@ -642,6 +653,17 @@ private:
     QSpinBox *m_speakerCurrentSpeakerOrganizationTextSizeSpin = nullptr;
     QSpinBox *m_speakerCurrentSpeakerNameYPositionSpin = nullptr;
     QSpinBox *m_speakerCurrentSpeakerOrganizationYPositionSpin = nullptr;
+    QPushButton *m_speakerCurrentSpeakerNameColorButton = nullptr;
+    QPushButton *m_speakerCurrentSpeakerOrganizationColorButton = nullptr;
+    QPushButton *m_speakerCurrentSpeakerBackgroundColorButton = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerBackgroundOpacitySpin = nullptr;
+    QPushButton *m_speakerCurrentSpeakerBorderColorButton = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerBorderOpacitySpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerBackgroundRadiusSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerBorderWidthSpin = nullptr;
+    QCheckBox *m_speakerCurrentSpeakerShadowCheckBox = nullptr;
+    QPushButton *m_speakerCurrentSpeakerShadowColorButton = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerShadowOpacitySpin = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QLineEdit *m_selectedSpeakerNameEdit = nullptr;

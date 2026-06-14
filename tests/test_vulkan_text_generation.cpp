@@ -7,6 +7,7 @@ class TestVulkanTextGeneration : public QObject {
 
 private slots:
     void speakerLabelGeneratesGlyphAtlasAndSeparateCards();
+    void speakerLabelStyleControlsAffectLayout();
     void transcriptOverlayGeneratesBackgroundHighlightAndGlyphs();
     void transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled();
     void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
@@ -90,6 +91,30 @@ void TestVulkanTextGeneration::speakerLabelGeneratesGlyphAtlasAndSeparateCards()
     QVERIFY(debug.glyphDrawCount > debug.glyphAtlasEntryCount);
     QVERIFY(rectsContainedIn(debug.cards, QRectF(QPointF(0, 0), QSizeF(outputSize))));
     QVERIFY(rectsContainedIn(debug.glyphRects, QRectF(QPointF(0, 0), QSizeF(outputSize))));
+}
+
+void TestVulkanTextGeneration::speakerLabelStyleControlsAffectLayout()
+{
+    VulkanTextRenderer renderer;
+    render_detail::SpeakerLabelOverlaySpec spec = speakerSpec();
+    spec.nameColor = QColor(QStringLiteral("#ff3366"));
+    spec.organizationColor = QColor(QStringLiteral("#44ccff"));
+    spec.shadowColor = QColor(1, 2, 3, 77);
+    spec.showShadow = true;
+    const VulkanTextLayoutDebug shadowed =
+        renderer.buildSpeakerLabelLayoutForTesting(QSize(1080, 1920), spec);
+
+    QVERIFY2(shadowed.valid, "styled speaker label layout should be generated");
+    QVERIFY(shadowed.glyphColors.contains(spec.nameColor));
+    QVERIFY(shadowed.glyphColors.contains(spec.organizationColor));
+    QVERIFY(shadowed.glyphColors.contains(spec.shadowColor));
+
+    spec.showShadow = false;
+    const VulkanTextLayoutDebug unshadowed =
+        renderer.buildSpeakerLabelLayoutForTesting(QSize(1080, 1920), spec);
+    QVERIFY2(unshadowed.valid, "speaker label layout should survive disabled shadows");
+    QVERIFY(!unshadowed.glyphColors.contains(spec.shadowColor));
+    QVERIFY(unshadowed.glyphDrawCount < shadowed.glyphDrawCount);
 }
 
 void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndGlyphs()

@@ -346,19 +346,32 @@ private:
                                  centerY - cardHeight / 2,
                                  cardWidth,
                                  cardHeight);
-            painter->setPen(QPen(QColor(225, 236, 247, 120), 1.0));
-            painter->setBrush(QColor(8, 13, 20, 190));
-            painter->drawRoundedRect(cardRect, 8, 8);
+            const qreal radius = qBound<qreal>(0.0, m_state->currentSpeakerBackgroundCornerRadius, 128.0);
+            const qreal borderWidth = qBound<qreal>(0.0, m_state->currentSpeakerBorderWidth, 16.0);
+            painter->setPen(borderWidth > 0.0
+                                ? QPen(m_state->currentSpeakerBorderColor, borderWidth)
+                                : Qt::NoPen);
+            painter->setBrush(m_state->currentSpeakerBackgroundColor);
+            painter->drawRoundedRect(cardRect, radius, radius);
 
             int y = cardRect.top() + paddingY;
             for (int i = 0; i < blockLines.size(); ++i) {
                 const SpeakerOverlayLine& line = blockLines.at(i);
                 painter->setFont(line.name ? nameFont : orgFont);
-                painter->setPen(line.name ? QColor(QStringLiteral("#f4f8fc")) : QColor(QStringLiteral("#b9d0e5")));
                 const QRect textRect(cardRect.left() + paddingX,
                                      y,
                                      cardRect.width() - (paddingX * 2),
                                      lineRects.at(i).height());
+                if (m_state->currentSpeakerShadowEnabled &&
+                    m_state->currentSpeakerShadowColor.alpha() > 0) {
+                    painter->setPen(m_state->currentSpeakerShadowColor);
+                    painter->drawText(textRect.translated(2, 2),
+                                      Qt::AlignCenter | Qt::TextWordWrap,
+                                      line.text);
+                }
+                painter->setPen(line.name
+                                    ? m_state->currentSpeakerNameColor
+                                    : m_state->currentSpeakerOrganizationColor);
                 painter->drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, line.text);
                 y += lineRects.at(i).height() + 4;
             }
@@ -1135,6 +1148,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
         {QStringLiteral("checker_draw_count"), static_cast<double>(m_stats.checkerDraws)},
         {QStringLiteral("clear_fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
+        {QStringLiteral("fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
+        {QStringLiteral("last_clear_fallback_reason"), m_stats.lastClearFallbackReason},
         {QStringLiteral("explicit_failure_draw_count"), static_cast<double>(m_stats.explicitFailureDraws)},
         {QStringLiteral("implicit_fallback_permitted"), false},
         {QStringLiteral("active_clip_draw_count"), static_cast<double>(m_stats.activeClipDraws)},
@@ -1244,7 +1259,9 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("active_clip_handoff_resource_count"), m_stats.activeClipHandoffResourceCount},
         {QStringLiteral("retired_clip_handoff_resource_count"), m_stats.retiredClipHandoffResourceCount},
         {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
+        {QStringLiteral("clear_fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
         {QStringLiteral("fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
+        {QStringLiteral("last_clear_fallback_reason"), m_stats.lastClearFallbackReason},
         {QStringLiteral("explicit_failure_draw_count"), static_cast<double>(m_stats.explicitFailureDraws)},
         {QStringLiteral("implicit_fallback_permitted"), false},
         {QStringLiteral("last_handoff_upload_ms"), m_stats.lastUploadMs},

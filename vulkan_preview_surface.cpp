@@ -665,6 +665,80 @@ void VulkanPreviewSurface::setCurrentSpeakerOrganizationVerticalPosition(qreal p
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setCurrentSpeakerNameColor(const QColor& color)
+{
+    if (!color.isValid() || m_interaction.currentSpeakerNameColor == color) {
+        return;
+    }
+    m_interaction.currentSpeakerNameColor = color;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerOrganizationColor(const QColor& color)
+{
+    if (!color.isValid() || m_interaction.currentSpeakerOrganizationColor == color) {
+        return;
+    }
+    m_interaction.currentSpeakerOrganizationColor = color;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerBackgroundColor(const QColor& color)
+{
+    if (!color.isValid() || m_interaction.currentSpeakerBackgroundColor == color) {
+        return;
+    }
+    m_interaction.currentSpeakerBackgroundColor = color;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerBorderColor(const QColor& color)
+{
+    if (!color.isValid() || m_interaction.currentSpeakerBorderColor == color) {
+        return;
+    }
+    m_interaction.currentSpeakerBorderColor = color;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerBackgroundCornerRadius(qreal radius)
+{
+    const qreal normalized = qBound<qreal>(0.0, radius, 128.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerBackgroundCornerRadius, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerBackgroundCornerRadius = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerBorderWidth(qreal width)
+{
+    const qreal normalized = qBound<qreal>(0.0, width, 16.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerBorderWidth, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerBorderWidth = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerShadowEnabled(bool enabled)
+{
+    if (m_interaction.currentSpeakerShadowEnabled == enabled) {
+        return;
+    }
+    m_interaction.currentSpeakerShadowEnabled = enabled;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerShadowColor(const QColor& color)
+{
+    if (!color.isValid() || m_interaction.currentSpeakerShadowColor == color) {
+        return;
+    }
+    m_interaction.currentSpeakerShadowColor = color;
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setPlaybackStatusOverlayText(const QString& text)
 {
     const QString normalized = text.trimmed();
@@ -1395,7 +1469,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.gradingBypassed = m_bypassGrading;
         status.correctionsEnabled = m_correctionsEnabled;
         status.transform = evaluateClipRenderTransformAtPosition(
-            clip, m_interaction.currentFramePosition, m_interaction.outputSize);
+            clip,
+            m_interaction.currentFramePosition,
+            m_interaction.renderSyncMarkers,
+            m_interaction.outputSize);
         status.speakerFramingEnabled =
             evaluateClipSpeakerFramingEnabledAtPosition(clip, m_interaction.currentFramePosition);
         status.speakerFramingDynamic = status.speakerFramingEnabled && clip.speakerFramingKeyframes.isEmpty();
@@ -1786,6 +1863,15 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
                 },
                 Qt::QueuedConnection);
         });
+    const int overlayWarmupTimeoutMs = qBound(25, timeoutMs / 3, 250);
+    const bool overlayLookaheadReady =
+        warmFacestreamOverlayLookahead(cappedFutureFrames, overlayWarmupTimeoutMs);
+    if (!overlayLookaheadReady) {
+        qInfo().noquote()
+            << QStringLiteral("[PREVIEW] speaker-track overlay warmup deferred some buckets: future_frames=%1 timeout_ms=%2")
+                   .arg(cappedFutureFrames)
+                   .arg(overlayWarmupTimeoutMs);
+    }
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < timeoutMs) {
@@ -2195,6 +2281,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("current_frame_failure"), status.currentFrameFailure},
                      {QStringLiteral("texture_draw_count"), textureDraws},
                      {QStringLiteral("active_clip_draw_count"), static_cast<qint64>(presenterSnapshot.value(QStringLiteral("active_clip_draw_count")).toDouble())},
+                     {QStringLiteral("clear_fallback_draw_count"), fallbackDraws},
                      {QStringLiteral("fallback_draw_count"), fallbackDraws},
                      {QStringLiteral("explicit_failure_draw_count"), explicitFailureDraws},
                      {QStringLiteral("active_clip_handoff_resource_count"),

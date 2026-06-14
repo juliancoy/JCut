@@ -17,6 +17,7 @@ private slots:
   void directPreviewDisablesCpuAndQtTextOverlayFallbacks();
   void visibleDecodePriorityUsesTimelineDomain();
   void schedulingDiagnosticsExposeRequiredFields();
+  void streamTimingDiagnosticsExposeClockDomains();
   void pipelineDiagnosticsDefaultToCompactSnapshot();
   void pitchPreservingAudioUsesExplicitSidecarGate();
   void noProxyHardwarePathIsPrimaryAndHoldsLateFrames();
@@ -24,6 +25,9 @@ private slots:
   void facestreamTrackBoxesAreNotBaselinePlaybackWork();
   void playbackFacestreamOverlaysDoNotColdLoadOnPresentationPath();
   void rendererConsumesLatchedPreviewSnapshot();
+  void exportSpeakerLabelUsesFractionalMasterClockPosition();
+  void speakerFramingUsesRenderSyncMarkersInPreviewAndExport();
+  void speakerFramingAndExportUseFractionalFitGeometry();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
 
@@ -122,9 +126,9 @@ void TestDirectVulkanHandoffPipelineContract::
       "direct preview external Vulkan handoff must use the owned import submit "
       "path rather than recording into Qt's caller-owned submit");
   QVERIFY2(
-      pipelineSource.contains(QStringLiteral("uploadFrame(status.frame, true")),
-      "direct preview must allow VulkanDetectorFrameHandoff's CPU upload "
-      "fallback when hardware direct handoff is unavailable");
+      pipelineSource.contains(QStringLiteral("uploadFrame(status.frame, false")),
+      "direct preview must disable VulkanDetectorFrameHandoff CPU upload "
+      "fallback; visible frames require hardware/external GPU payloads");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -217,9 +221,9 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!source.isEmpty(), "vulkan_preview_surface.cpp must be readable");
 
   QVERIFY2(source.contains(QStringLiteral(
-               "constexpr bool requireDirectVulkanPayload = false;")),
-           "direct Vulkan preview must accept CPU-uploadable visible frames "
-           "when hardware direct payloads fail");
+               "constexpr bool requireDirectVulkanPayload = true;")),
+           "direct Vulkan preview must require hardware/GPU payloads for "
+           "visible frames; CPU upload fallback is rejected");
   QVERIFY2(
       source.contains(QStringLiteral("requireDirectVulkanPayload);")),
       "visible frame payload policy must be passed into frame requests");
@@ -233,12 +237,12 @@ void TestDirectVulkanHandoffPipelineContract::
            "direct_vulkan_frame_handoff_pipeline.cpp must be readable");
 
   QVERIFY2(
-      source.contains(QStringLiteral("!status.frame.hasCpuImage()")),
-      "handoff pipeline must accept CPU-uploadable frames as a fallback");
-  QVERIFY2(source.contains(QStringLiteral("QStringLiteral(\"cpu_upload\")")),
-           "handoff pipeline must report CPU upload fallback explicitly");
-  QVERIFY2(source.contains(QStringLiteral("uploadFrame(status.frame, true")),
-           "handoff pipeline must enable CPU image upload fallback");
+      source.contains(QStringLiteral("!status.externalVulkanFrame && !status.frame.hasHardwareFrame()")),
+      "handoff pipeline must reject CPU-only frames before the handoff layer");
+  QVERIFY2(!source.contains(QStringLiteral("QStringLiteral(\"cpu_upload\")")),
+           "handoff pipeline must not report CPU upload as a render mode");
+  QVERIFY2(source.contains(QStringLiteral("uploadFrame(status.frame, false")),
+           "handoff pipeline must disable CPU image upload fallback");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -440,6 +444,9 @@ void TestDirectVulkanHandoffPipelineContract::
                    QStringLiteral("requestFramesForCurrentPosition()")),
            "startup warmup must schedule PlaybackFramePipeline directly "
            "because playback state is not active yet");
+  QVERIFY2(warmupBody.contains(QStringLiteral("warmFacestreamOverlayLookahead")),
+           "startup warmup must also hydrate speaker/FaceDetections overlay "
+           "buckets before playback begins");
   QVERIFY2(warmupBody.contains(
                QStringLiteral("m_playbackPipeline->setPlaybackActive(false)")),
            "failed startup warmup must unwind PlaybackFramePipeline active "
@@ -655,6 +662,13 @@ void TestDirectVulkanHandoffPipelineContract::
                decoderContext.contains(QStringLiteral("!m_allowHardwareFrameMaterialization")),
            "CPU materialization for thumbnail/avatar decode must be a local "
            "DecoderContext option, not a global decode preference mutation");
+
+  const QString renderExport = readSourceFile(QStringLiteral("render_export.cpp"));
+  QVERIFY2(renderExport.contains(QStringLiteral("DecodePreference::HardwareZeroCopy")) &&
+               renderExport.contains(QStringLiteral("JCUT_VULKAN_HW_DECODE_DISABLE")) &&
+               !renderExport.contains(QStringLiteral("JCUT_VULKAN_HW_DECODE_EXPERIMENTAL")),
+           "Vulkan export must prefer NVIDIA zero-copy decode by default and "
+           "only fall back through an explicit disable switch");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -791,6 +805,49 @@ void TestDirectVulkanHandoffPipelineContract::
                vulkanSurface.contains(QStringLiteral("diagnostic_disabled")),
            "pipeline stages must report diagnostic readback as opt-in, not as "
            "a hot-path render dependency");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    streamTimingDiagnosticsExposeClockDomains() {
+  const QString routes =
+      readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+  QVERIFY2(!routes.isEmpty(),
+           "control_server_worker_routes.cpp must be readable");
+  QVERIFY2(routes.contains(QStringLiteral("/diag/stream-timing")),
+           "REST API must expose per-stream timing through /diag/stream-timing");
+  QVERIFY2(routes.contains(QStringLiteral("m_streamTimingCallback")),
+           "/diag/stream-timing must use the dedicated stream timing callback");
+
+  const QString editorProfiling =
+      readSourceFile(QStringLiteral("editor_profiling.cpp"));
+  QVERIFY2(!editorProfiling.isEmpty(), "editor_profiling.cpp must be readable");
+  const QStringList requiredFields{
+      QStringLiteral("stream_timing"),
+      QStringLiteral("snapshot_wall_ms"),
+      QStringLiteral("master_timeline_sample"),
+      QStringLiteral("session_start_wall_ms"),
+      QStringLiteral("session_start_timeline_sample"),
+      QStringLiteral("master_vs_wall_drift_samples"),
+      QStringLiteral("projected_stream_start_wall_ms"),
+      QStringLiteral("timeline_vs_projected_wall_drift_ms"),
+      QStringLiteral("source_vs_projected_wall_drift_ms"),
+      QStringLiteral("audio_feedback")};
+  for (const QString& field : requiredFields) {
+    QVERIFY2(editorProfiling.contains(field),
+             qPrintable(QStringLiteral("stream timing diagnostics must expose %1")
+                            .arg(field)));
+  }
+  QVERIFY2(editorProfiling.contains(
+               QStringLiteral("sourceSampleForClipAtTimelineSample")),
+           "stream timing must use the render-sync-aware source sample mapper");
+  QVERIFY2(editorProfiling.contains(
+               QStringLiteral("sourceFrameForClipAtTimelineSample")),
+           "stream timing must use the same source frame mapper as preview");
+
+  const QString playback = readSourceFile(QStringLiteral("editor_playback.cpp"));
+  QVERIFY2(playback.contains(QStringLiteral("m_playbackSessionStartWallMs")) &&
+               playback.contains(QStringLiteral("m_playbackSessionStartTimelineSample")),
+           "playback start must latch a wall/sample anchor for stream timing");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -992,13 +1049,25 @@ void TestDirectVulkanHandoffPipelineContract::
            "active playback may schedule one cold facetrack cache warmup so "
            "face tracks can recover after an immediate playback start");
   QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "kFacestreamOverlayPlaybackWarmAheadFrames")),
+           "active playback must keep future facetrack cache buckets warm so "
+           "speaker tracks remain visible across bucket boundaries");
+  QVERIFY2(!playbackBranch.contains(QStringLiteral(
                "reusedPlaybackCacheEntry")),
-           "active playback should reuse compatible loaded facetrack cache "
-           "entries instead of blocking on a bucket-specific cold load");
+           "active playback must not apply arbitrary stale facetrack cache "
+           "buckets when the exact bucket is cold");
   QVERIFY2(playbackBranch.contains(QStringLiteral(
                "previousPlaybackOverlayIsCloseEnough")),
            "active playback must preserve nearby previous overlays rather "
            "than blocking for a current-frame facetrack lookup");
+  QVERIFY2(source.contains(QStringLiteral(
+               "bool VulkanPreviewSurface::warmFacestreamOverlayLookahead")) &&
+               source.contains(QStringLiteral(
+                   "playback_overlay_warmup_loaded")) &&
+               source.contains(QStringLiteral(
+                   "playback_overlay_warmup_deferred")),
+           "speaker/FaceDetections overlay warmup must be explicit and "
+           "diagnosed separately from frame decode warmup");
   QVERIFY2(source.contains(QStringLiteral(
                "kMaxPreservedPlaybackOverlayDriftFrames =\n"
                "    kFacestreamOverlayInteractiveWindowFrames * 2")),
@@ -1028,6 +1097,138 @@ void TestDirectVulkanHandoffPipelineContract::
                copyIndex > snapshotIndex && stateAliasIndex > copyIndex,
            "direct Vulkan command recording must consume a stack-latched "
            "PreviewInteractionState snapshot");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    exportSpeakerLabelUsesFractionalMasterClockPosition() {
+  const QString source =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!source.isEmpty(),
+           "offscreen_vulkan_renderer_backend.cpp must be readable");
+  QVERIFY2(source.contains(QStringLiteral("qreal timelineFramePosition")),
+           "export speaker label timing must accept the fractional master "
+           "clock position used for the rendered output frame");
+  const qsizetype labelIndex =
+      source.indexOf(QStringLiteral("buildSpeakerLabelSpec"));
+  QVERIFY2(labelIndex >= 0, "speaker label builder must exist");
+  const qsizetype sourceFrameIndex = source.indexOf(
+      QStringLiteral("sourceFrameForClipAtTimelinePosition"),
+      labelIndex);
+  QVERIFY2(sourceFrameIndex > labelIndex,
+           "speaker label builder must resolve the source frame from the "
+           "timeline position");
+  const qsizetype labelEndIndex =
+      source.indexOf(QStringLiteral("private:"), labelIndex);
+  QVERIFY2(labelEndIndex > labelIndex, "speaker label builder body must be bounded");
+  const QString labelBody = source.mid(labelIndex, labelEndIndex - labelIndex);
+  QVERIFY2(labelBody.contains(QStringLiteral("timelineFramePosition")),
+           "speaker label source-frame lookup must use the fractional "
+           "timelineFramePosition, not a floored timeline frame");
+  QVERIFY2(!labelBody.contains(QStringLiteral("static_cast<qreal>(timelineFrame)")),
+           "speaker label source-frame lookup must not cast the floored "
+           "timeline frame back to qreal");
+  QVERIFY2(labelBody.contains(QStringLiteral("transcriptOverlaySpeakerAtSourceFrame")),
+           "export speaker labels must use the same padded transcript speaker "
+           "resolver as preview overlays");
+  QVERIFY2(labelBody.contains(QStringLiteral("transcriptFrameForClipSourceFrame")),
+           "export speaker labels must convert decoded media source frames into "
+           "the transcript frame domain before resolving the current speaker");
+  QVERIFY2(!source.contains(QStringLiteral("speakerAtTranscriptSourceFrame")),
+           "export must not keep a separate unpadded speaker resolver");
+  QVERIFY2(source.contains(QStringLiteral("clip.sourceFrameSize.isValid()")) &&
+               source.contains(QStringLiteral("? clip.sourceFrameSize")),
+           "export video placement must prefer clip.sourceFrameSize before "
+           "decoded payload size, matching direct preview transform geometry");
+  QVERIFY2(source.contains(QStringLiteral("sampledFrameNeedsYFlip = layer.preferHardwareDirect")) &&
+               source.contains(QStringLiteral("vulkanMvpForOutputRectMaybeFlippedY")),
+           "hardware-direct export video layers must apply the same sampled "
+           "frame Y presentation flip as preview without flipping text layers");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speakerFramingUsesRenderSyncMarkersInPreviewAndExport() {
+  const QString keyframes =
+      readSourceFile(QStringLiteral("editor_shared_keyframes.cpp"));
+  QVERIFY2(!keyframes.isEmpty(), "editor_shared_keyframes.cpp must be readable");
+  QVERIFY2(keyframes.contains(QStringLiteral(
+               "evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,\n"
+               "                                                                     qreal timelineFramePosition,\n"
+               "                                                                     const QVector<RenderSyncMarker>& markers")),
+           "dynamic speaker framing must have a render-sync-aware position overload");
+  QVERIFY2(keyframes.contains(QStringLiteral(
+               "sourceFramePositionForClipAtTimelinePosition(clip, timelineFramePosition, markers)")),
+           "speaker framing face-box lookup must resolve media source frame with "
+           "the caller's render sync markers");
+  QVERIFY2(keyframes.contains(QStringLiteral(
+               "evaluateClipRenderTransformAtPosition(const TimelineClip& clip,\n"
+               "                                                                      qreal timelineFramePosition,\n"
+               "                                                                      const QVector<RenderSyncMarker>& markers")),
+           "render transform evaluation must expose a marker-aware position overload");
+  QVERIFY2(!keyframes.contains(QStringLiteral(
+               "sourceFramePositionForClipAtTimelinePosition(clip, timelineFramePosition, {})")),
+           "dynamic speaker framing must not use a marker-less source-frame path");
+
+  const QString exportRenderer =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!exportRenderer.isEmpty(),
+           "offscreen_vulkan_renderer_backend.cpp must be readable");
+  QVERIFY2(exportRenderer.contains(QStringLiteral(
+               "evaluateClipRenderTransformAtPosition(\n"
+               "            clip,\n"
+               "            static_cast<qreal>(timelineFrame),\n"
+               "            request.renderSyncMarkers,\n"
+               "            request.outputSize)")),
+           "export must pass request.renderSyncMarkers into render transform "
+           "evaluation so speaker framing targets the same face box as preview");
+
+  const QString preview =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(!preview.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+  QVERIFY2(preview.contains(QStringLiteral(
+               "evaluateClipRenderTransformAtPosition(\n"
+               "            clip,\n"
+               "            m_interaction.currentFramePosition,\n"
+               "            m_interaction.renderSyncMarkers,\n"
+               "            m_interaction.outputSize)")),
+           "preview must pass its interaction render sync markers into the same "
+           "render transform evaluation path");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speakerFramingAndExportUseFractionalFitGeometry() {
+  const QString keyframes =
+      readSourceFile(QStringLiteral("editor_shared_keyframes.cpp"));
+  QVERIFY2(!keyframes.isEmpty(), "editor_shared_keyframes.cpp must be readable");
+  QVERIFY2(keyframes.contains(QStringLiteral(
+               "QRectF fitRectForSourceInOutput")),
+           "speaker framing must solve against fractional fitted bounds, "
+           "matching direct preview geometry");
+  QVERIFY2(keyframes.contains(QStringLiteral("previewFitRectToBoundsF")),
+           "speaker framing must share the preview's floating-point fit helper");
+  QVERIFY2(!keyframes.contains(QStringLiteral(
+               "const QRect fittedRect = fitRectForSourceInOutput")),
+           "speaker framing must not quantize fitted bounds before computing "
+           "face-box translation");
+
+  const QString renderDecode = readSourceFile(QStringLiteral("render_decode.cpp"));
+  QVERIFY2(!renderDecode.isEmpty(), "render_decode.cpp must be readable");
+  QVERIFY2(renderDecode.contains(QStringLiteral("QRectF fitRectF")),
+           "render placement must expose a fractional fit helper");
+  QVERIFY2(renderDecode.contains(QStringLiteral("previewFitRectToBoundsF")),
+           "render placement must use the same floating-point fit helper as preview");
+
+  const QString exportRenderer =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!exportRenderer.isEmpty(),
+           "offscreen_vulkan_renderer_backend.cpp must be readable");
+  QVERIFY2(exportRenderer.contains(QStringLiteral(
+               "const QRectF fitted = fitRectF(sourceSize, request.outputSize);")),
+           "export video layer placement must keep the same fractional fitted "
+           "bounds as preview");
+  QVERIFY2(!exportRenderer.contains(QStringLiteral(
+               "const QRect fitted = fitRect(sourceSize, request.outputSize);")),
+           "export video layer placement must not round fitted bounds before "
+           "applying speaker-framing translation");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

@@ -14,8 +14,16 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
                                                                   int64_t timelineFrame,
                                                                   const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
+                                                                  int64_t timelineFrame,
+                                                                  const QVector<RenderSyncMarker>& markers,
+                                                                  const QSize& outputSize = QSize());
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
                                                                      qreal timelineFramePosition,
+                                                                     const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
+                                                                     qreal timelineFramePosition,
+                                                                     const QVector<RenderSyncMarker>& markers,
                                                                      const QSize& outputSize = QSize());
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     const TimelineClip& clip,
@@ -37,8 +45,16 @@ TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::Transf
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
                                                                    int64_t timelineFrame,
                                                                    const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
+                                                                   int64_t timelineFrame,
+                                                                   const QVector<RenderSyncMarker>& markers,
+                                                                   const QSize& outputSize = QSize());
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
                                                                       qreal timelineFramePosition,
+                                                                      const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
+                                                                      qreal timelineFramePosition,
+                                                                      const QVector<RenderSyncMarker>& markers,
                                                                       const QSize& outputSize = QSize());
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);

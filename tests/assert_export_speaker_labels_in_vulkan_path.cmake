@@ -28,11 +28,11 @@ foreach(required IN ITEMS
 endforeach()
 
 foreach(required IN ITEMS
-        "buildSpeakerLabelOverlayImage"
-        "renderSpeakerLabelOverlay"
+        "prepareSpeakerLabelAtlas"
+        "drawSpeakerLabel"
         "activeTranscriptPathForClipFile"
         "speakerProfileFromJson"
-        "speakerAtTranscriptSourceFrame")
+        "transcriptOverlaySpeakerAtSourceFrame")
     if(NOT vulkan_source MATCHES "${required}")
         message(FATAL_ERROR "Offscreen Vulkan export speaker label path is missing ${required}")
     endif()

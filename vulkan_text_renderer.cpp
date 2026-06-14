@@ -20,10 +20,8 @@
 
 namespace {
 
-using jcut::vulkan::clearBoxOutline;
 using jcut::vulkan::clearRect;
 using jcut::vulkan::clearRectFromQRect;
-using jcut::vulkan::clearRoundedRect;
 
 constexpr int kAtlasSize = 2048;
 constexpr int kGlyphPadding = 2;
@@ -166,7 +164,11 @@ QString speakerLabelLayoutKey(const QSize& outputSize, const render_detail::Spea
         QString::number(static_cast<quint32>(spec.nameColor.rgba())) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(spec.organizationColor.rgba())) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(spec.backgroundColor.rgba())) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(spec.borderColor.rgba()));
+        QString::number(static_cast<quint32>(spec.borderColor.rgba())) + QLatin1Char('|') +
+        QString::number(spec.backgroundCornerRadius, 'f', 2) + QLatin1Char('|') +
+        QString::number(spec.borderWidth, 'f', 2) + QLatin1Char('|') +
+        QString::number(spec.showShadow ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.shadowColor.rgba()));
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
@@ -670,6 +672,8 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
     atlas->image.width = kAtlasSize;
     atlas->image.height = kAtlasSize;
     atlas->image.rgbaPremultiplied = QByteArray(kAtlasSize * kAtlasSize * 4, char(0));
+    blendAtlasPixel(&atlas->image, 0, 0, 255);
+    atlas->solidUv = QRectF(0.0, 0.0, 1.0 / kAtlasSize, 1.0 / kAtlasSize);
     int penX = kGlyphPadding;
     int penY = kGlyphPadding;
     int rowHeight = 0;
@@ -788,7 +792,10 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
                                        glyph.size.width(),
                                        glyph.size.height());
                 if (!glyphRect.isEmpty()) {
-                    glyphs->push_back(LaidOutGlyph{glyphRect.translated(2.0, 2.0), glyph.uv, QColor(0, 0, 0, 190)});
+                    if (spec.showShadow) {
+                        glyphs->push_back(
+                            LaidOutGlyph{glyphRect.translated(2.0, 2.0), glyph.uv, spec.shadowColor});
+                    }
                     glyphs->push_back(LaidOutGlyph{glyphRect, glyph.uv, line.name ? spec.nameColor : spec.organizationColor});
                 }
                 cursor += glyph.advance;
@@ -807,7 +814,9 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         QString::number(orgPixelSize) + QLatin1Char('|') +
         name + QLatin1Char('|') + organization + QLatin1Char('|') +
         QString::number(spec.nameTextScale, 'f', 3) + QLatin1Char('|') +
-        QString::number(spec.organizationTextScale, 'f', 3);
+        QString::number(spec.organizationTextScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(spec.showShadow ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.shadowColor.rgba()));
     atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
     return !glyphs->isEmpty();
 }
@@ -842,6 +851,8 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
     atlas->image.width = kAtlasSize;
     atlas->image.height = kAtlasSize;
     atlas->image.rgbaPremultiplied = QByteArray(kAtlasSize * kAtlasSize * 4, char(0));
+    blendAtlasPixel(&atlas->image, 0, 0, 255);
+    atlas->solidUv = QRectF(0.0, 0.0, 1.0 / kAtlasSize, 1.0 / kAtlasSize);
     int penX = kGlyphPadding;
     int penY = kGlyphPadding;
     int rowHeight = 0;
@@ -1164,6 +1175,53 @@ void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
     m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
 }
 
+void VulkanTextRenderer::drawSolidRoundedRect(VkCommandBuffer commandBuffer,
+                                              const QSize& swapSize,
+                                              const QRectF& rect,
+                                              qreal radius,
+                                              const QRectF& uv,
+                                              const QColor& color)
+{
+    if (!isReady() || !color.isValid() || color.alpha() <= 0 || rect.isEmpty()) {
+        return;
+    }
+    const QRect bounded = rect.normalized().toAlignedRect().intersected(
+        QRect(0, 0, std::max(1, swapSize.width()), std::max(1, swapSize.height())));
+    if (bounded.isEmpty()) {
+        return;
+    }
+    const int r = std::max(0, std::min({
+        static_cast<int>(std::round(radius)),
+        bounded.width() / 2,
+        bounded.height() / 2
+    }));
+    auto drawSpan = [&](int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        drawGlyph(commandBuffer, swapSize, QRectF(x, y, w, h), uv, color);
+    };
+    const int x = bounded.x();
+    const int y = bounded.y();
+    const int w = bounded.width();
+    const int h = bounded.height();
+    if (r <= 0) {
+        drawSpan(x, y, w, h);
+        return;
+    }
+    drawSpan(x + r, y, w - (2 * r), h);
+    drawSpan(x, y + r, r, h - (2 * r));
+    drawSpan(x + w - r, y + r, r, h - (2 * r));
+    for (int dy = 0; dy < r; ++dy) {
+        const double yCenter = static_cast<double>(r) - static_cast<double>(dy) - 0.5;
+        const int dx = static_cast<int>(std::floor(
+            std::sqrt(std::max(0.0, static_cast<double>(r * r) - (yCenter * yCenter)))));
+        const int inset = std::max(0, r - dx);
+        drawSpan(x + inset, y + dy, w - (2 * inset), 1);
+        drawSpan(x + inset, y + h - dy - 1, w - (2 * inset), 1);
+    }
+}
+
 bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
                                           const QSize& swapSize,
                                           const QSize& outputSize,
@@ -1189,12 +1247,26 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
 
     for (const QRectF& card : layout->cards) {
         const QRectF mapped = mapRect(card);
-        clearRect(m_funcs, commandBuffer, clearValueForColor(spec.backgroundColor), clearRectFromQRect(mapped, swapSize));
-        clearBoxOutline(m_funcs,
-                        commandBuffer,
-                        clearValueForColor(spec.borderColor),
-                        clearRectFromQRect(mapped.adjusted(0.5, 0.5, -0.5, -0.5), swapSize),
-                        qMax(1, static_cast<int>(std::round(qMin(scaleX, scaleY)))));
+        const qreal scale = qMin(scaleX, scaleY);
+        const qreal borderWidth = qBound<qreal>(0.0, spec.borderWidth, 16.0) * scale;
+        const qreal radius = qBound<qreal>(0.0, spec.backgroundCornerRadius, 128.0) * scale;
+        if (borderWidth > 0.0 && spec.borderColor.alpha() > 0) {
+            drawSolidRoundedRect(commandBuffer,
+                                 swapSize,
+                                 mapped,
+                                 radius,
+                                 layout->atlas.solidUv,
+                                 spec.borderColor);
+        }
+        const QRectF backgroundRect = borderWidth > 0.0
+            ? mapped.adjusted(borderWidth, borderWidth, -borderWidth, -borderWidth)
+            : mapped;
+        drawSolidRoundedRect(commandBuffer,
+                             swapSize,
+                             backgroundRect,
+                             qMax<qreal>(0.0, radius - borderWidth),
+                             layout->atlas.solidUv,
+                             spec.backgroundColor);
     }
     for (const LaidOutGlyph& glyph : layout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
@@ -1242,12 +1314,12 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
     };
 
     for (const TranscriptBackground& background : cachedLayout->backgrounds) {
-        clearRoundedRect(m_funcs,
-                         commandBuffer,
-                         clearValueForColor(background.color),
-                         mapRect(background.rect),
-                         swapSize,
-                         static_cast<int>(std::round(background.radius * qMin(scaleX, scaleY))));
+        drawSolidRoundedRect(commandBuffer,
+                             swapSize,
+                             mapRect(background.rect),
+                             background.radius * qMin(scaleX, scaleY),
+                             cachedLayout->atlas.solidUv,
+                             background.color);
     }
     for (const QRectF& highlight : cachedLayout->highlights) {
         clearRect(m_funcs,

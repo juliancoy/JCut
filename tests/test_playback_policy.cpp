@@ -135,29 +135,29 @@ void TestPlaybackPolicy::testPlaybackDriftRetimeController() {
     editor::PlaybackDriftRetimeInput input;
     input.enabled = true;
     input.previousMultiplier = 1.0;
-    input.deadbandSamples = 2400.0;
-    input.fullCorrectionSamples = 24000.0;
-    input.maxCorrection = 0.02;
+    input.deadbandSamples = 3840.0;
+    input.fullCorrectionSamples = 60000.0;
+    input.maxCorrection = 0.01;
     input.smoothing = 1.0;
 
-    input.driftSamples = 1200;
+    input.driftSamples = 2400;
     QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.0);
 
-    input.driftSamples = 24000;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.02);
+    input.driftSamples = 60000;
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.01);
 
-    input.driftSamples = -24000;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 0.98);
+    input.driftSamples = -60000;
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 0.99);
 
     input.previousMultiplier = 1.0;
-    input.driftSamples = 24000;
+    input.driftSamples = 60000;
     input.smoothing = 0.25;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.005);
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.0025);
 
     input.enabled = false;
-    input.previousMultiplier = 1.02;
+    input.previousMultiplier = 1.01;
     input.smoothing = 0.5;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.01);
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.005);
 }
 
 void TestPlaybackPolicy::testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges() {
