@@ -36,6 +36,7 @@
 #include <QColorDialog>
 #include <QLockFile>
 #include <QComboBox>
+#include <QDialog>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFontComboBox>
@@ -52,6 +53,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPixmap>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QTextBrowser>
 #include <QTreeWidget>
@@ -209,6 +211,7 @@ private:
     int64_t timelineSampleForAudioFeedbackSample(int64_t audioFeedbackSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
+    QVector<ExportRangeSegment> applySpeechFilterToExportRanges(const QVector<ExportRangeSegment>& ranges) const;
     QString playbackRangeCacheSignature(bool discrete, int neighborWordRadius = 0) const;
     void invalidatePlaybackRangeCaches();
     void scheduleTranscriptNormalizeRangeRefresh(int delayMs = 0);
@@ -237,7 +240,19 @@ private:
     void renderFromOutputInspector();
     void renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request);
     RenderRequest buildRenderRequestFromOutputControls() const;
-    void renderTimelineFromOutputRequest(const RenderRequest &request);
+    struct RenderProgressDialogControls {
+        QDialog* dialog = nullptr;
+        QLabel* statusLabel = nullptr;
+        QLabel* previewLabel = nullptr;
+        QCheckBox* previewCheckBox = nullptr;
+        QPlainTextEdit* sourcesList = nullptr;
+        QProgressBar* progressBar = nullptr;
+        bool* cancelled = nullptr;
+        bool closeOnFinish = true;
+    };
+    bool renderTimelineFromOutputRequest(const RenderRequest &request,
+                                         bool showCompletionMessage = true,
+                                         RenderProgressDialogControls* progressControls = nullptr);
     void exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds);
     void exportVideoForSpeakerSectionOnSelectedClip(const QString& speakerId,
                                                     int64_t sourceStartFrame,

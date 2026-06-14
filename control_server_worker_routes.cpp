@@ -8,6 +8,7 @@
 #include "editor_document_core_json.h"
 #include "editor.h"
 #include "editor_shared.h"
+#include "editor_shared_render_sync.h"
 #include "editor_shared_transcript.h"
 #include "speaker_track_assignment_service.h"
 #include "transcript_engine.h"
@@ -103,6 +104,26 @@ QString absoluteClipFilePathFromState(const QJsonObject& state, const QJsonObjec
     return fileInfo.absoluteFilePath();
 }
 
+QVector<RenderSyncMarker> renderSyncMarkersFromState(const QJsonObject& state)
+{
+    QVector<RenderSyncMarker> markers;
+    const QJsonArray markerArray = state.value(QStringLiteral("renderSyncMarkers")).toArray();
+    markers.reserve(markerArray.size());
+    for (const QJsonValue& value : markerArray) {
+        const QJsonObject markerObject = value.toObject();
+        RenderSyncMarker marker;
+        marker.clipId = markerObject.value(QStringLiteral("clipId")).toString().trimmed();
+        marker.frame = markerObject.value(QStringLiteral("frame")).toInteger(0);
+        marker.action =
+            renderSyncActionFromString(markerObject.value(QStringLiteral("action")).toString());
+        marker.count = qMax(1, markerObject.value(QStringLiteral("count")).toInt(1));
+        if (!marker.clipId.isEmpty()) {
+            markers.push_back(marker);
+        }
+    }
+    return markers;
+}
+
 QJsonObject speakerFlowClipPayloadForRoute(const QJsonObject& transcriptRoot, const QString& clipId)
 {
     const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
@@ -159,6 +180,15 @@ QString speakerDisplayNameForRoute(const QJsonObject& transcriptRoot, const QStr
     return trimmed;
 }
 
+QString canonicalTrackStreamIdForRoute(int trackId, const QString& streamId)
+{
+    const QString trimmed = streamId.trimmed();
+    if (trackId >= 0 && (trimmed.isEmpty() || trimmed == QStringLiteral("raw_detection"))) {
+        return QStringLiteral("T%1").arg(trackId);
+    }
+    return trimmed;
+}
+
 QJsonObject decorateTrackMapRowForRoute(QJsonObject row, const QJsonObject& transcriptRoot)
 {
     QString speakerId = row.value(QStringLiteral("speaker_id")).toString().trimmed();
@@ -178,7 +208,8 @@ QJsonObject decorateTrackMapRowForRoute(QJsonObject row, const QJsonObject& tran
     QJsonArray tracks = row.value(QStringLiteral("tracks")).toArray();
     if (tracks.isEmpty()) {
         const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
-        const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+        const QString streamId =
+            canonicalTrackStreamIdForRoute(trackId, row.value(QStringLiteral("stream_id")).toString());
         if (trackId >= 0 || !streamId.isEmpty()) {
             tracks.push_back(QJsonObject{
                 {QStringLiteral("track_id"), trackId},
@@ -191,15 +222,24 @@ QJsonObject decorateTrackMapRowForRoute(QJsonObject row, const QJsonObject& tran
         }
     }
     QJsonArray trackIds;
+    QJsonArray normalizedTracks;
     for (const QJsonValue& value : tracks) {
-        const int trackId = value.toObject().value(QStringLiteral("track_id")).toInt(-1);
+        QJsonObject track = value.toObject();
+        const int trackId = track.value(QStringLiteral("track_id")).toInt(-1);
+        track[QStringLiteral("stream_id")] =
+            canonicalTrackStreamIdForRoute(trackId, track.value(QStringLiteral("stream_id")).toString());
         if (trackId >= 0) {
             trackIds.push_back(trackId);
         }
+        normalizedTracks.push_back(track);
     }
-    if (!tracks.isEmpty()) {
+    if (!normalizedTracks.isEmpty()) {
+        tracks = normalizedTracks;
         row[QStringLiteral("tracks")] = tracks;
         row[QStringLiteral("track_ids")] = trackIds;
+        const int rowTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        row[QStringLiteral("stream_id")] =
+            canonicalTrackStreamIdForRoute(rowTrackId, row.value(QStringLiteral("stream_id")).toString());
     }
     return row;
 }
@@ -995,6 +1035,16 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             ? jcut::speakertrack::assignmentMapForClip(transcriptRoot, clipId)
             : QJsonArray{};
         const qint64 currentFrame = state.value(QStringLiteral("currentFrame")).toInteger();
+        TimelineClip selectedTimelineClip = editor::clipFromJson(clip);
+        selectedTimelineClip.id = clipId;
+        selectedTimelineClip.filePath = clipFilePath;
+        const RenderFrameClock currentClock =
+            renderFrameClockForTimelinePosition(static_cast<qreal>(currentFrame));
+        const ClipFrameMapping currentClipMapping =
+            clipFrameMappingForClock(selectedTimelineClip,
+                                     currentClock,
+                                     renderSyncMarkersFromState(state));
+        const qint64 currentTranscriptFrame = currentClipMapping.transcriptFrame;
         QJsonObject activeSection;
         QJsonObject activeAssignment;
         for (const QJsonValue& value : contiguousSections) {
@@ -1002,7 +1052,7 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             const qint64 startFrame = section.value(QStringLiteral("start_frame")).toInteger(-1);
             const qint64 endFrame = section.value(QStringLiteral("end_frame")).toInteger(-1);
             if (startFrame >= 0 && endFrame >= startFrame &&
-                currentFrame >= startFrame && currentFrame <= endFrame) {
+                currentTranscriptFrame >= startFrame && currentTranscriptFrame <= endFrame) {
                 activeSection = section;
                 activeAssignment = section.value(QStringLiteral("assignment")).toObject();
                 break;
@@ -1016,6 +1066,16 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             {QStringLiteral("contiguous_mode"),
              state.value(QStringLiteral("speakerShowContiguousTranscriptSections")).toBool(false)},
             {QStringLiteral("current_frame"), currentFrame},
+            {QStringLiteral("current_timeline_frame"), currentFrame},
+            {QStringLiteral("current_timeline_sample"),
+             static_cast<qint64>(currentClock.timelineSample)},
+            {QStringLiteral("current_source_frame"),
+             static_cast<qint64>(currentClipMapping.sourceFrame)},
+            {QStringLiteral("current_source_frame_position"),
+             currentClipMapping.sourceFramePosition},
+            {QStringLiteral("current_source_sample"),
+             static_cast<qint64>(currentClipMapping.sourceSample)},
+            {QStringLiteral("current_transcript_frame"), currentTranscriptFrame},
             {QStringLiteral("active_section"), activeSection},
             {QStringLiteral("active_assignment"), activeAssignment},
             {QStringLiteral("speaker_flow_clip_summary"),

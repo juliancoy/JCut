@@ -167,6 +167,19 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         }
         snapshot.insert(QStringLiteral("cache"), cacheSnapshot);
     }
+    QJsonObject memoryOwnership;
+    if (m_cache) {
+        const QJsonObject cacheResidency = m_cache->cacheResidencySnapshot();
+        memoryOwnership.insert(QStringLiteral("timeline_cache"), QJsonObject{
+            {QStringLiteral("frames"), cacheResidency.value(QStringLiteral("total_cached_frames")).toInteger()},
+            {QStringLiteral("hardware_frames"), cacheResidency.value(QStringLiteral("hardware_frames")).toInteger()},
+            {QStringLiteral("gpu_texture_frames"), cacheResidency.value(QStringLiteral("gpu_texture_frames")).toInteger()},
+            {QStringLiteral("cpu_backed_frames"), cacheResidency.value(QStringLiteral("cpu_backed_frames")).toInteger()},
+            {QStringLiteral("cpu_bytes"), cacheResidency.value(QStringLiteral("cpu_bytes")).toInteger()},
+            {QStringLiteral("gpu_bytes"), cacheResidency.value(QStringLiteral("gpu_bytes")).toInteger()},
+            {QStringLiteral("by_clip"), cacheResidency.value(QStringLiteral("by_clip")).toObject()}
+        });
+    }
     if (m_playbackPipeline) {
         snapshot.insert(QStringLiteral("playback_pending_visible_requests"),
                         m_playbackPipeline->pendingVisibleRequestCount());
@@ -175,8 +188,18 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
                         m_playbackPipeline->droppedPresentationFrameCount());
         snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
+        const bool includeFrameTrace =
+            !m_interaction.playing || editor::debugTemporalDebugOverlayEnabled();
         snapshot.insert(QStringLiteral("playback_frame_trace"),
-                        m_playbackPipeline->frameTraceSnapshot(200));
+                        includeFrameTrace ? m_playbackPipeline->frameTraceSnapshot(200)
+                                          : QJsonArray{});
+        snapshot.insert(QStringLiteral("playback_frame_trace_suppressed"),
+                        !includeFrameTrace);
+        memoryOwnership.insert(QStringLiteral("playback_frame_pipeline"),
+                               m_playbackPipeline->bufferedFrameResidencySnapshot());
+    }
+    if (!memoryOwnership.isEmpty()) {
+        snapshot.insert(QStringLiteral("memory_ownership"), memoryOwnership);
     }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
     snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));
@@ -349,8 +372,13 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
         snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
                         m_playbackPipeline->droppedPresentationFrameCount());
         snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
+        const bool includeFrameTrace =
+            !m_interaction.playing || editor::debugTemporalDebugOverlayEnabled();
         snapshot.insert(QStringLiteral("playback_frame_trace"),
-                        m_playbackPipeline->frameTraceSnapshot(200));
+                        includeFrameTrace ? m_playbackPipeline->frameTraceSnapshot(200)
+                                          : QJsonArray{});
+        snapshot.insert(QStringLiteral("playback_frame_trace_suppressed"),
+                        !includeFrameTrace);
     }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
     snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));

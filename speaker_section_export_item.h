@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 #include <cstdint>
 
@@ -10,6 +11,7 @@ struct SpeakerSectionExportItem {
     qint64 sourceEndFrame = -1;
     QString snippet;
     QString speakerDisplayName;
+    QStringList trackIds;
     int sectionOrdinal = 0;
     int wordCount = 0;
 };

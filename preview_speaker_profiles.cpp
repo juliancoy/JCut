@@ -62,9 +62,14 @@ int64_t transcriptFrameForClipAtPreviewState(const TimelineClip& clip,
             presentedFrameStatusForClip(state, clip.id)) {
         return transcriptFrameForClipSourceFrame(clip, status->presentedSourceFrame);
     }
-    return state
-        ? transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers)
-        : 0;
+    if (!state) {
+        return 0;
+    }
+    return clipFrameMappingForClock(
+               clip,
+               renderFrameClockForTimelineSample(state->currentSample),
+               state->renderSyncMarkers)
+        .transcriptFrame;
 }
 
 int64_t mediaSourceFrameForClipAtPreviewState(const TimelineClip& clip,
@@ -74,9 +79,14 @@ int64_t mediaSourceFrameForClipAtPreviewState(const TimelineClip& clip,
             presentedFrameStatusForClip(state, clip.id)) {
         return status->presentedSourceFrame;
     }
-    return state
-        ? sourceFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers)
-        : 0;
+    if (!state) {
+        return 0;
+    }
+    return clipFrameMappingForClock(
+               clip,
+               renderFrameClockForTimelineSample(state->currentSample),
+               state->renderSyncMarkers)
+        .sourceFrame;
 }
 
 QMutex& currentSpeakerRangeCacheMutex()

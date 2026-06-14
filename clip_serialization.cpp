@@ -86,6 +86,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("speakerFramingCenterSmoothingStrength")] = clip.speakerFramingCenterSmoothingStrength;
         obj[QStringLiteral("speakerFramingZoomSmoothingStrength")] = clip.speakerFramingZoomSmoothingStrength;
         obj[QStringLiteral("speakerFramingGapHoldFrames")] = clip.speakerFramingGapHoldFrames;
+        obj[QStringLiteral("speakerSectionMinimumWords")] = clip.speakerSectionMinimumWords;
         obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         QJsonArray keyframes;
         for (const TimelineClip::TransformKeyframe &keyframe : clip.transformKeyframes)
@@ -444,6 +445,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                 TimelineClip::kSpeakerFramingSmoothingStrengthMax);
         clip.speakerFramingGapHoldFrames =
             obj.value(QStringLiteral("speakerFramingGapHoldFrames")).toInt(0);
+        clip.speakerSectionMinimumWords =
+            qBound(0, obj.value(QStringLiteral("speakerSectionMinimumWords")).toInt(10), 1000);
         clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         const QJsonArray keyframes = obj.value(QStringLiteral("transformKeyframes")).toArray();
         for (const QJsonValue &value : keyframes)

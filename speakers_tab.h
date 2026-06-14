@@ -49,6 +49,7 @@ public:
         QCheckBox* speakerHideUnidentifiedCheckBox = nullptr;
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
         QCheckBox* speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
+        QSpinBox* speakerSectionMinimumWordsSpin = nullptr;
         QPushButton* speakerExportLongSectionsButton = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
         QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
@@ -350,6 +351,14 @@ private:
     void refreshVisibleSpeakerSectionAssignments(const QString& speakerId,
                                                  int64_t onlyStartFrame = -1,
                                                  int64_t onlyEndFrame = -1);
+    int speakerSectionMinimumWords() const;
+    void syncSpeakerSectionMinimumWordsControl(const TimelineClip& clip);
+    QSet<int> previewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
+                                                           const QString& speakerId,
+                                                           int64_t sourceFrame) const;
+    void pushPreviewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
+                                                          const QString& speakerId,
+                                                          int64_t sourceFrame);
     bool contiguousTranscriptSectionModeActive() const;
     QJsonObject contiguousSectionAssignmentForRow(int row) const;
     QJsonObject contiguousSectionAssignmentForSection(const QString& clipId,

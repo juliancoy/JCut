@@ -100,6 +100,7 @@ public:
     QCheckBox *speakerHideUnidentifiedCheckBox() const { return m_speakerHideUnidentifiedCheckBox; }
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
     QCheckBox *speakerApplyTrackToAllMatchingSectionsCheckBox() const { return m_speakerApplyTrackToAllMatchingSectionsCheckBox; }
+    QSpinBox *speakerSectionMinimumWordsSpin() const { return m_speakerSectionMinimumWordsSpin; }
     QPushButton *speakerExportLongSectionsButton() const { return m_speakerExportLongSectionsButton; }
     QCheckBox *speakerShowCurrentSpeakerNameCheckBox() const { return m_speakerShowCurrentSpeakerNameCheckBox; }
     QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
@@ -649,6 +650,7 @@ private:
     QCheckBox *m_speakerHideUnidentifiedCheckBox = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
     QCheckBox *m_speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
+    QSpinBox *m_speakerSectionMinimumWordsSpin = nullptr;
     QPushButton *m_speakerExportLongSectionsButton = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;

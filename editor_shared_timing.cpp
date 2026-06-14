@@ -8,6 +8,17 @@ int64_t frameToSamples(int64_t frame) {
     return qMax<int64_t>(0, frame * kSamplesPerFrame);
 }
 
+int64_t framePositionToSamples(qreal framePosition) {
+    if (!std::isfinite(framePosition)) {
+        return 0;
+    }
+    return qMax<int64_t>(
+        0,
+        static_cast<int64_t>(
+            std::llround(qMax<qreal>(0.0, framePosition) *
+                         static_cast<qreal>(kSamplesPerFrame))));
+}
+
 qreal samplesToFramePosition(int64_t samples) {
     return static_cast<qreal>(samples) / static_cast<qreal>(kSamplesPerFrame);
 }

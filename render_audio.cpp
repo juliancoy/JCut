@@ -1,10 +1,13 @@
 #include "render_internal.h"
 
 #include "audio_time_stretch.h"
+#include "decoder_ffmpeg_utils.h"
 
 #include <QDebug>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
+#include <mutex>
 
 namespace render_detail {
 
@@ -51,8 +54,89 @@ AudioTimeStretchRubberBandSettings exportRubberBandSettings()
     return settings;
 }
 
-DecodedAudioClip decodeClipAudio(const QString& path) {
+namespace {
+
+inline constexpr int64_t kExportAudioDecodeMarginSamples = kRenderAudioSampleRate;
+
+struct ExportAudioDecodeRange {
+    int64_t startSample = 0;
+    int64_t endSampleExclusive = 0;
+    bool bounded = false;
+
+    int64_t frameCount() const {
+        return bounded ? qMax<int64_t>(1, endSampleExclusive - startSample) : -1;
+    }
+};
+
+QVector<ExportRangeSegment> normalizedAudioExportRanges(const RenderRequest& request)
+{
+    QVector<ExportRangeSegment> ranges = request.exportRanges;
+    if (ranges.isEmpty()) {
+        const int64_t start = qMax<int64_t>(0, request.exportStartFrame);
+        ranges.push_back(ExportRangeSegment{start, qMax<int64_t>(start, request.exportEndFrame)});
+    }
+    std::sort(ranges.begin(), ranges.end(), [](const ExportRangeSegment& a, const ExportRangeSegment& b) {
+        if (a.startFrame == b.startFrame) {
+            return a.endFrame < b.endFrame;
+        }
+        return a.startFrame < b.startFrame;
+    });
+    return ranges;
+}
+
+ExportAudioDecodeRange audioDecodeRangeForPath(const QString& path,
+                                               const QVector<TimelineClip>& clips,
+                                               const QVector<ExportRangeSegment>& exportRanges,
+                                               const QVector<RenderSyncMarker>& markers)
+{
+    ExportAudioDecodeRange result;
+    int64_t minSourceSample = std::numeric_limits<int64_t>::max();
+    int64_t maxSourceSample = 0;
+
+    for (const TimelineClip& clip : clips) {
+        if (playbackAudioPathForClip(clip) != path) {
+            continue;
+        }
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSampleExclusive =
+            clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+        for (const ExportRangeSegment& range : exportRanges) {
+            const int64_t rangeStartSample = frameToSamples(qMax<int64_t>(0, range.startFrame));
+            const int64_t rangeEndSampleExclusive =
+                frameToSamples(qMax<int64_t>(range.startFrame, range.endFrame) + 1);
+            const int64_t overlapStart = qMax<int64_t>(clipStartSample, rangeStartSample);
+            const int64_t overlapEndExclusive = qMin<int64_t>(clipEndSampleExclusive, rangeEndSampleExclusive);
+            if (overlapEndExclusive <= overlapStart) {
+                continue;
+            }
+
+            const int64_t sourceAtStart =
+                sourceSampleForClipAtTimelineSample(clip, overlapStart, markers);
+            const int64_t sourceAtEnd =
+                sourceSampleForClipAtTimelineSample(clip, qMax<int64_t>(overlapStart, overlapEndExclusive - 1), markers);
+            minSourceSample = qMin<int64_t>(minSourceSample, qMin(sourceAtStart, sourceAtEnd));
+            maxSourceSample = qMax<int64_t>(maxSourceSample, qMax(sourceAtStart, sourceAtEnd) + 1);
+        }
+    }
+
+    if (minSourceSample == std::numeric_limits<int64_t>::max() || maxSourceSample <= minSourceSample) {
+        return result;
+    }
+
+    result.startSample = qMax<int64_t>(0, minSourceSample - kExportAudioDecodeMarginSamples);
+    result.endSampleExclusive = qMax<int64_t>(result.startSample + 1,
+                                              maxSourceSample + kExportAudioDecodeMarginSamples);
+    result.bounded = true;
+    return result;
+}
+
+} // namespace
+
+DecodedAudioClip decodeClipAudio(const QString& path,
+                                 int64_t sourceStartSample,
+                                 int64_t maxOutputFrames) {
     DecodedAudioClip cache;
+    const int64_t requestedSourceStartSample = qMax<int64_t>(0, sourceStartSample);
 
     // Suppress ALSA/PulseAudio errors by setting environment variables
     // These errors occur when FFmpeg tries to access audio devices during decode
@@ -70,7 +154,12 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
         return cache;
     }
 
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
+    int streamInfoRet = 0;
+    {
+        std::unique_lock<std::mutex> decodeLock(editor::ffmpegDecodeMutex());
+        streamInfoRet = avformat_find_stream_info(formatCtx, nullptr);
+    }
+    if (streamInfoRet < 0) {
         avformat_close_input(&formatCtx);
         return cache;
     }
@@ -140,9 +229,25 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
         return cache;
     }
 
+    if (requestedSourceStartSample > 0) {
+        const AVRational outputSampleTimeBase{1, kRenderAudioSampleRate};
+        const int64_t seekTimestamp = av_rescale_q(
+            requestedSourceStartSample, outputSampleTimeBase, stream->time_base);
+        if (av_seek_frame(formatCtx, audioStreamIndex, seekTimestamp, AVSEEK_FLAG_BACKWARD) >= 0) {
+            avcodec_flush_buffers(codecCtx);
+        }
+    }
+
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     QByteArray converted;
+    const bool limitedDecode = maxOutputFrames > 0;
+    const int64_t maxOutputSamples =
+        limitedDecode ? qMax<int64_t>(1, maxOutputFrames * kRenderAudioChannels) : -1;
+    bool reachedEof = false;
+    bool hitOutputLimit = false;
+    int64_t firstOutputSourceSample = -1;
+    int64_t nextUnknownOutputSourceSample = requestedSourceStartSample;
 
     auto appendConverted = [&](AVFrame* decoded) {
         const int outSamples = swr_get_out_samples(swr, decoded->nb_samples);
@@ -158,13 +263,55 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
                                                  const_cast<const uint8_t**>(decoded->extended_data),
                                                  decoded->nb_samples);
         if (convertedSamples > 0) {
-            const int byteCount = convertedSamples * kRenderAudioChannels * static_cast<int>(sizeof(float));
-            converted.append(reinterpret_cast<const char*>(outData), byteCount);
+            int64_t frameStartSourceSample = nextUnknownOutputSourceSample;
+            const int64_t bestTimestamp = decoded->best_effort_timestamp;
+            if (bestTimestamp != AV_NOPTS_VALUE) {
+                frameStartSourceSample = av_rescale_q(bestTimestamp,
+                                                      stream->time_base,
+                                                      AVRational{1, kRenderAudioSampleRate});
+            }
+            int skipFrames = 0;
+            if (requestedSourceStartSample > 0) {
+                const int64_t frameEndSourceSample =
+                    frameStartSourceSample + static_cast<int64_t>(convertedSamples);
+                if (frameEndSourceSample <= requestedSourceStartSample) {
+                    nextUnknownOutputSourceSample = frameEndSourceSample;
+                    av_freep(&outData);
+                    return;
+                }
+                if (frameStartSourceSample < requestedSourceStartSample) {
+                    skipFrames = static_cast<int>(
+                        qMin<int64_t>(convertedSamples, requestedSourceStartSample - frameStartSourceSample));
+                }
+            }
+            const int retainedFrames = convertedSamples - skipFrames;
+            if (retainedFrames <= 0) {
+                nextUnknownOutputSourceSample =
+                    frameStartSourceSample + static_cast<int64_t>(convertedSamples);
+                av_freep(&outData);
+                return;
+            }
+            if (firstOutputSourceSample < 0) {
+                firstOutputSourceSample = frameStartSourceSample + skipFrames;
+            }
+            const int byteOffset = skipFrames * kRenderAudioChannels * static_cast<int>(sizeof(float));
+            const int byteCount = retainedFrames * kRenderAudioChannels * static_cast<int>(sizeof(float));
+            converted.append(reinterpret_cast<const char*>(outData) + byteOffset, byteCount);
+            nextUnknownOutputSourceSample =
+                frameStartSourceSample + static_cast<int64_t>(convertedSamples);
+            if (maxOutputSamples > 0) {
+                const int64_t currentSamples =
+                    static_cast<int64_t>(converted.size() / static_cast<int>(sizeof(float)));
+                if (currentSamples >= maxOutputSamples) {
+                    converted.truncate(static_cast<int>(maxOutputSamples * static_cast<int64_t>(sizeof(float))));
+                    hitOutputLimit = true;
+                }
+            }
         }
         av_freep(&outData);
     };
 
-    while (av_read_frame(formatCtx, packet) >= 0) {
+    while (!hitOutputLimit && av_read_frame(formatCtx, packet) >= 0) {
         if (packet->stream_index != audioStreamIndex) {
             av_packet_unref(packet);
             continue;
@@ -173,19 +320,25 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
             while (avcodec_receive_frame(codecCtx, frame) >= 0) {
                 appendConverted(frame);
                 av_frame_unref(frame);
+                if (hitOutputLimit) {
+                    break;
+                }
             }
         }
         av_packet_unref(packet);
     }
 
-    avcodec_send_packet(codecCtx, nullptr);
-    while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-        appendConverted(frame);
-        av_frame_unref(frame);
+    if (!hitOutputLimit) {
+        reachedEof = true;
+        avcodec_send_packet(codecCtx, nullptr);
+        while (avcodec_receive_frame(codecCtx, frame) >= 0) {
+            appendConverted(frame);
+            av_frame_unref(frame);
+        }
     }
 
-    const int outSamples = swr_get_out_samples(swr, 0);
-    if (outSamples > 0) {
+    const int outSamples = hitOutputLimit ? 0 : swr_get_out_samples(swr, 0);
+    if (outSamples > 0 && !hitOutputLimit) {
         uint8_t* outData = nullptr;
         int outLineSize = 0;
         if (av_samples_alloc(&outData, &outLineSize, kRenderAudioChannels, outSamples, AV_SAMPLE_FMT_FLT, 0) >= 0) {
@@ -202,6 +355,10 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
     cache.samples.resize(sampleCount);
     if (sampleCount > 0) {
         std::memcpy(cache.samples.data(), converted.constData(), converted.size());
+        cache.sourceStartSample = firstOutputSourceSample >= 0
+            ? firstOutputSourceSample
+            : requestedSourceStartSample;
+        cache.fullyDecoded = requestedSourceStartSample == 0 && (!limitedDecode || reachedEof);
         cache.valid = true;
     }
 
@@ -237,13 +394,12 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         const DecodedAudioClip& audio = audioIt.value();
 
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t sourceInSample = clipSourceInSamples(clip);
-        const int64_t clipAvailableSamples = (audio.samples.size() / kRenderAudioChannels) - sourceInSample;
-        if (clipAvailableSamples <= 0) {
+        const int64_t decodedFrameCount = audio.samples.size() / kRenderAudioChannels;
+        if (decodedFrameCount <= 0) {
             continue;
         }
         const int64_t clipEndSample =
-            clipStartSample + qMin<int64_t>(frameToSamples(clip.durationFrames), clipAvailableSamples);
+            clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
         const int64_t chunkEndSample =
             chunkStartSample + static_cast<int64_t>(std::ceil(static_cast<qreal>(frames) * sampleStep));
         if (chunkEndSample <= clipStartSample || chunkStartSample >= clipEndSample) {
@@ -258,11 +414,12 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
             }
             const int64_t inFrame =
                 sourceSampleForClipAtTimelineSample(clip, samplePos, renderSyncMarkers);
-            if (inFrame < 0 || inFrame >= (audio.samples.size() / kRenderAudioChannels)) {
+            const int64_t localInFrame = inFrame - audio.sourceStartSample;
+            if (localInFrame < 0 || localInFrame >= decodedFrameCount) {
                 continue;
             }
             const int outIndex = outFrame * kRenderAudioChannels;
-            const int inIndex = static_cast<int>(inFrame * kRenderAudioChannels);
+            const int inIndex = static_cast<int>(localInFrame * kRenderAudioChannels);
             output[outIndex] = qBound(-1.0f, output[outIndex] + audio.samples[inIndex], 1.0f);
             output[outIndex + 1] = qBound(-1.0f, output[outIndex + 1] + audio.samples[inIndex + 1], 1.0f);
         }
@@ -291,6 +448,7 @@ bool initializeExportAudio(const RenderRequest& request,
 
     qDebug() << "Audio export: Found" << audioClips.size() << "audio clip(s)";
 
+    const QVector<ExportRangeSegment> exportRanges = normalizedAudioExportRanges(request);
     QHash<QString, DecodedAudioClip> audioCache;
     int decodedCount = 0;
     int failedCount = 0;
@@ -299,12 +457,18 @@ bool initializeExportAudio(const RenderRequest& request,
         if (audioPath.isEmpty() || audioCache.contains(audioPath)) {
             continue;
         }
-        const DecodedAudioClip decoded = decodeClipAudio(audioPath);
+        const ExportAudioDecodeRange range =
+            audioDecodeRangeForPath(audioPath, audioClips, exportRanges, request.renderSyncMarkers);
+        const DecodedAudioClip decoded = range.bounded
+            ? decodeClipAudio(audioPath, range.startSample, range.frameCount())
+            : decodeClipAudio(audioPath);
         if (decoded.valid) {
             audioCache.insert(audioPath, decoded);
             decodedCount++;
             qDebug() << "Audio export: Successfully decoded audio clip:" << audioPath
-                     << "samples:" << decoded.samples.size();
+                     << "sourceStartSample:" << decoded.sourceStartSample
+                     << "frames:" << (decoded.samples.size() / kRenderAudioChannels)
+                     << "bounded:" << range.bounded;
         } else {
             // Log failure but continue - other audio clips might work
             failedCount++;

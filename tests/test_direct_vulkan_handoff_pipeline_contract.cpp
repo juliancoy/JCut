@@ -1117,34 +1117,31 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
   QVERIFY2(!source.isEmpty(),
            "offscreen_vulkan_renderer_backend.cpp must be readable");
-  QVERIFY2(source.contains(QStringLiteral("qreal timelineFramePosition")),
-           "export speaker label timing must accept the fractional master "
-           "clock position used for the rendered output frame");
+  QVERIFY2(source.contains(QStringLiteral("const RenderFrameClock &clock")),
+           "export speaker label timing must accept the shared render frame "
+           "clock used for the rendered output frame");
   const qsizetype labelIndex =
       source.indexOf(QStringLiteral("buildSpeakerLabelSpec"));
   QVERIFY2(labelIndex >= 0, "speaker label builder must exist");
-  const qsizetype sourceFrameIndex = source.indexOf(
-      QStringLiteral("sourceFrameForClipAtTimelinePosition"),
-      labelIndex);
-  QVERIFY2(sourceFrameIndex > labelIndex,
-           "speaker label builder must resolve the source frame from the "
-           "timeline position");
   const qsizetype labelEndIndex =
       source.indexOf(QStringLiteral("private:"), labelIndex);
   QVERIFY2(labelEndIndex > labelIndex, "speaker label builder body must be bounded");
   const QString labelBody = source.mid(labelIndex, labelEndIndex - labelIndex);
-  QVERIFY2(labelBody.contains(QStringLiteral("timelineFramePosition")),
-           "speaker label source-frame lookup must use the fractional "
-           "timelineFramePosition, not a floored timeline frame");
-  QVERIFY2(!labelBody.contains(QStringLiteral("static_cast<qreal>(timelineFrame)")),
-           "speaker label source-frame lookup must not cast the floored "
-           "timeline frame back to qreal");
+  QVERIFY2(labelBody.contains(QStringLiteral("clipFrameMappingForClock")),
+           "speaker label source-frame lookup must use the shared clip frame "
+           "mapping object, not a floored timeline frame");
+  QVERIFY2(labelBody.contains(QStringLiteral("clock.timelineSample")),
+           "speaker label clip inclusion must use the shared clock timeline "
+           "sample");
+  QVERIFY2(!labelBody.contains(QStringLiteral("sourceFrameForClipAtTimelinePosition")),
+           "speaker label source-frame lookup must not keep a parallel "
+           "frame-position conversion path");
   QVERIFY2(labelBody.contains(QStringLiteral("transcriptOverlaySpeakerAtSourceFrame")),
            "export speaker labels must use the same padded transcript speaker "
            "resolver as preview overlays");
-  QVERIFY2(labelBody.contains(QStringLiteral("transcriptFrameForClipSourceFrame")),
-           "export speaker labels must convert decoded media source frames into "
-           "the transcript frame domain before resolving the current speaker");
+  QVERIFY2(labelBody.contains(QStringLiteral("mapping.transcriptFrame")),
+           "export speaker labels must resolve transcript frames from the same "
+           "clip mapping as video decode");
   QVERIFY2(!source.contains(QStringLiteral("speakerAtTranscriptSourceFrame")),
            "export must not keep a separate unpadded speaker resolver");
   QVERIFY2(source.contains(QStringLiteral("clip.sourceFrameSize.isValid()")) &&
@@ -1189,9 +1186,14 @@ void TestDirectVulkanHandoffPipelineContract::
                "            clip,\n"
                "            static_cast<qreal>(timelineFrame),\n"
                "            request.renderSyncMarkers,\n"
-               "            request.outputSize)")),
+               "            request.outputSize,\n"
+               "            &transformDiagnostics)")),
            "export must pass request.renderSyncMarkers into render transform "
            "evaluation so speaker framing targets the same face box as preview");
+  QVERIFY2(exportRenderer.contains(QStringLiteral(
+               "exportFaceTransformDiagnostics")),
+           "export must expose face-box/transform diagnostics from the same "
+           "speaker-framing transform path");
 
   const QString preview =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
@@ -1293,6 +1295,27 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(speakers.contains(QStringLiteral("sectionTrackIdStringsFromAssignment")),
            "contiguous transcript table row roles must expose every assigned "
            "track, not only the primary track");
+  QVERIFY2(speakers.contains(QStringLiteral("previewAssignedFaceTrackIdsForSpeakerAtFrame")) &&
+               speakers.contains(QStringLiteral("contiguousTranscriptSectionModeActive()")) &&
+               speakers.contains(QStringLiteral("section_track_map")) &&
+               speakers.contains(QStringLiteral("resolvedCurrentTrackIdsForSpeaker")),
+           "preview track selection sync must use contiguous section-track "
+           "mapping in section mode and speaker-track identity mapping outside it");
+  QVERIFY2(speakers.contains(QStringLiteral("speakerSectionMinimumWords")) &&
+               speakers.contains(QStringLiteral("sectionAssignmentWordCount")) &&
+               speakers.contains(QStringLiteral("currentRow.wordCount >= minimumWords")),
+           "contiguous transcript section rows must be filtered by the shared "
+           "minimum word-count control");
+  QVERIFY2(speakers.contains(QStringLiteral("SpeakerSectionTrackIdsRole")) &&
+               speakers.contains(QStringLiteral("trackIdStrings")),
+           "section export rows must pass mapped track ids through to the "
+           "batch export path");
+  QVERIFY2(tracks.contains(QStringLiteral("pushPreviewAssignedFaceTrackIdsForSpeakerAtFrame")) &&
+               tracks.contains(QStringLiteral("transcriptFrameForClipSourceFrame")) &&
+               tracks.contains(QStringLiteral("\"word_count\"")),
+           "contiguous section assignment must push the clicked track to the "
+           "preview immediately in the transcript timing domain and persist "
+           "section word counts for runtime filtering");
 
   const QString keyframes =
       readSourceFile(QStringLiteral("editor_shared_keyframes.cpp"));
@@ -1310,6 +1333,47 @@ void TestDirectVulkanHandoffPipelineContract::
                keyframes.contains(QStringLiteral("if (sectionMap.isEmpty())")),
            "runtime speaker framing must use either contiguous section-track "
            "mapping or speaker-track identity mapping for a clip, not both");
+  QVERIFY2(keyframes.contains(QStringLiteral("sectionAssignmentWordCountForRuntime")) &&
+               keyframes.contains(QStringLiteral("clip.speakerSectionMinimumWords")),
+           "runtime speaker framing must skip contiguous transcript sections "
+           "below the clip's minimum word-count requirement");
+
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
+  QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
+  QVERIFY2(inspector.contains(QStringLiteral("m_speakerSectionMinimumWordsSpin")) &&
+               inspector.contains(QStringLiteral("Min words ")),
+           "Speakers section mode must expose a minimum-word-count control "
+           "above the section table");
+
+  const QString serialization = readSourceFile(QStringLiteral("clip_serialization.cpp"));
+  QVERIFY2(!serialization.isEmpty(), "clip_serialization.cpp must be readable");
+  QVERIFY2(serialization.contains(QStringLiteral("speakerSectionMinimumWords")),
+           "minimum section word count must persist with the clip so preview "
+           "and export render paths see the same filter");
+
+  const QString renderTools = readSourceFile(QStringLiteral("editor_render_tools.cpp"));
+  QVERIFY2(!renderTools.isEmpty(), "editor_render_tools.cpp must be readable");
+  const qsizetype batchExportIndex = renderTools.indexOf(
+      QStringLiteral("void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip"));
+  QVERIFY2(batchExportIndex >= 0,
+           "batch section export implementation must exist");
+  const QString batchExportBody = renderTools.mid(batchExportIndex);
+  QVERIFY2(batchExportBody.contains(QStringLiteral("coalescedAdjacentSpeakerSections")) &&
+               batchExportBody.contains(QStringLiteral("speakerTrackSectionTitle")) &&
+               renderTools.contains(QStringLiteral("normalizedSectionTrackIds")) &&
+               renderTools.contains(QStringLiteral("trackIds")),
+           "Export Sections must combine adjacent same-speaker rows and name "
+           "outputs from speaker name plus mapped track numbers");
+  QVERIFY2(batchExportBody.contains(QStringLiteral("deterministicExportPath")) &&
+               batchExportBody.contains(QStringLiteral("QFileInfo::exists(outputPath)")) &&
+               batchExportBody.contains(QStringLiteral("request.suppressCompletionDialog = true")) &&
+               batchExportBody.contains(QStringLiteral("renderTimelineFromOutputRequest(request, false, &bulkControls)")),
+           "Export Sections must run unattended after the initial setup and "
+           "skip deterministic output paths that already exist");
+  QVERIFY2(!batchExportBody.contains(QStringLiteral("runAiAction")) &&
+               !batchExportBody.contains(QStringLiteral("name_transcript_section")),
+           "Export Sections batch naming must be deterministic and must not "
+           "consult AI");
 
   const QString routes =
       readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));

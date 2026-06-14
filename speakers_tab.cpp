@@ -603,6 +603,74 @@ QStringList sectionTrackIdStringsFromAssignment(const QJsonObject& assignment)
     return ids;
 }
 
+int sectionWordCountFromTranscript(const QJsonObject& transcriptRoot,
+                                   const QString& speakerId,
+                                   int64_t startFrame,
+                                   int64_t endFrame)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty() || startFrame < 0 || endFrame < startFrame) {
+        return 0;
+    }
+    int wordCount = 0;
+    const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segmentObj = segValue.toObject();
+        const QString segmentSpeaker =
+            segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        if (!words.isEmpty()) {
+            for (const QJsonValue& wordValue : words) {
+                const QJsonObject wordObj = wordValue.toObject();
+                if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                    continue;
+                }
+                QString wordSpeaker =
+                    wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
+                if (wordSpeaker.isEmpty()) {
+                    wordSpeaker = segmentSpeaker;
+                }
+                if (wordSpeaker != trimmedSpeakerId) {
+                    continue;
+                }
+                const int64_t wordFrame =
+                    transcriptJsonFrameForSeconds(wordObj.value(QStringLiteral("start")).toDouble(-1.0), false);
+                if (wordFrame >= startFrame && wordFrame <= endFrame) {
+                    ++wordCount;
+                }
+            }
+            continue;
+        }
+        if (segmentSpeaker != trimmedSpeakerId || segmentObj.value(QStringLiteral("skipped")).toBool(false)) {
+            continue;
+        }
+        const int64_t segmentStart =
+            transcriptJsonFrameForSeconds(segmentObj.value(QStringLiteral("start")).toDouble(-1.0), false);
+        const int64_t segmentEnd =
+            transcriptJsonFrameForSeconds(segmentObj.value(QStringLiteral("end")).toDouble(-1.0), true);
+        if (segmentStart <= endFrame && segmentEnd >= startFrame) {
+            wordCount += segmentObj.value(QStringLiteral("text"))
+                             .toString()
+                             .split(QLatin1Char(' '), Qt::SkipEmptyParts)
+                             .size();
+        }
+    }
+    return wordCount;
+}
+
+int sectionAssignmentWordCount(const QJsonObject& transcriptRoot, const QJsonObject& row)
+{
+    const int stored = row.value(QStringLiteral("word_count")).toInt(-1);
+    if (stored >= 0) {
+        return stored;
+    }
+    return sectionWordCountFromTranscript(
+        transcriptRoot,
+        row.value(QStringLiteral("speaker_id")).toString().trimmed(),
+        row.value(QStringLiteral("start_frame")).toVariant().toLongLong(),
+        row.value(QStringLiteral("end_frame")).toVariant().toLongLong());
+}
+
 QJsonObject sectionTrackEntryAssignment(const QJsonObject& sectionAssignment,
                                         const QJsonObject& entry)
 {
@@ -975,6 +1043,7 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
                 .arg(sidecarPresent ? QStringLiteral("Present") : QStringLiteral("Missing"))
                 .arg(mutableCut ? QStringLiteral("Derived cut") : QStringLiteral("Original cut (read-only)")));
     }
+    syncSpeakerSectionMinimumWordsControl(clip);
     refreshTranscriptSpeakerViews(preferredSpeakerId, true);
     m_updating = false;
 }
@@ -1219,6 +1288,9 @@ void SpeakersTab::syncSpeakerListMode()
     if (m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox) {
         m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox->setVisible(showSections);
     }
+    if (m_widgets.speakerSectionMinimumWordsSpin) {
+        m_widgets.speakerSectionMinimumWordsSpin->setVisible(showSections);
+    }
     if (m_widgets.speakerExportLongSectionsButton) {
         m_widgets.speakerExportLongSectionsButton->setVisible(showSections);
         m_widgets.speakerExportLongSectionsButton->setEnabled(
@@ -1227,6 +1299,25 @@ void SpeakersTab::syncSpeakerListMode()
             m_widgets.speakerSectionsTable &&
             m_widgets.speakerSectionsTable->rowCount() > 0);
     }
+}
+
+int SpeakersTab::speakerSectionMinimumWords() const
+{
+    if (m_widgets.speakerSectionMinimumWordsSpin) {
+        return qBound(0, m_widgets.speakerSectionMinimumWordsSpin->value(), 1000);
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    return clip ? qBound(0, clip->speakerSectionMinimumWords, 1000) : 10;
+}
+
+void SpeakersTab::syncSpeakerSectionMinimumWordsControl(const TimelineClip& clip)
+{
+    if (!m_widgets.speakerSectionMinimumWordsSpin) {
+        return;
+    }
+    QSignalBlocker blocker(m_widgets.speakerSectionMinimumWordsSpin);
+    m_widgets.speakerSectionMinimumWordsSpin->setValue(
+        qBound(0, clip.speakerSectionMinimumWords, 1000));
 }
 
 void SpeakersTab::syncIdentityToPlayhead(int64_t absolutePlaybackSample,
@@ -1264,10 +1355,7 @@ void SpeakersTab::syncIdentityToPlayhead(int64_t absolutePlaybackSample,
     if (sameSpeaker && sourceFrame == m_lastPlayheadSyncedSourceFrame) {
         return;
     }
-    if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-        m_speakerDeps.setPreviewAssignedFaceTrackIds(
-            resolvedCurrentTrackIdsForSpeaker(m_transcriptSession.rootObject(), clip->id, activeSpeakerId));
-    }
+    pushPreviewAssignedFaceTrackIdsForSpeakerAtFrame(*clip, activeSpeakerId, sourceFrame);
     const bool sectionSelected = selectSpeakerSectionRowAtFrame(activeSpeakerId, sourceFrame);
     const bool speakerSelected = selectSpeakerRowById(activeSpeakerId);
     if (!speakerSelected && !sectionSelected) {
@@ -1407,6 +1495,73 @@ void SpeakersTab::focusSpeakerSectionTrackFromRow(int row)
                  speakerId.isEmpty() ? QStringLiteral("speaker") : speakerDisplayLabel(speakerId)));
 }
 
+QSet<int> SpeakersTab::previewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
+                                                                    const QString& speakerId,
+                                                                    int64_t sourceFrame) const
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    QSet<int> trackIds;
+    if (trimmedSpeakerId.isEmpty()) {
+        return trackIds;
+    }
+
+    if (contiguousTranscriptSectionModeActive()) {
+        const QJsonObject speakerFlow =
+            m_transcriptSession.rootObject().value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipRoot = clipsRoot.value(clip.id.trimmed()).toObject();
+        const QJsonObject resolvedPayload =
+            clipRoot.value(QStringLiteral("resolved_current")).toObject();
+        const QJsonArray sectionMap =
+            resolvedPayload.value(QStringLiteral("section_track_map")).toArray();
+        for (const QJsonValue& value : sectionMap) {
+            const QJsonObject row = value.toObject();
+            if (row.value(QStringLiteral("speaker_id")).toString().trimmed() != trimmedSpeakerId) {
+                continue;
+            }
+            const int64_t startFrame =
+                row.value(QStringLiteral("start_frame")).toVariant().toLongLong();
+            const int64_t endFrame =
+                row.value(QStringLiteral("end_frame")).toVariant().toLongLong();
+            if (startFrame < 0 || endFrame < startFrame ||
+                sourceFrame < startFrame || sourceFrame > endFrame) {
+                continue;
+            }
+            if (sectionAssignmentWordCount(m_transcriptSession.rootObject(), row) <
+                qBound(0, clip.speakerSectionMinimumWords, 1000)) {
+                continue;
+            }
+            for (const QJsonValue& entryValue : sectionTrackEntriesFromAssignment(row)) {
+                const int trackId = entryValue.toObject().value(QStringLiteral("track_id")).toInt(-1);
+                if (trackId >= 0) {
+                    trackIds.insert(trackId);
+                }
+            }
+        }
+        return trackIds;
+    }
+
+    const QSet<int> speakerTrackIds =
+        resolvedCurrentTrackIdsForSpeaker(m_transcriptSession.rootObject(), clip.id, trimmedSpeakerId);
+    for (int trackId : speakerTrackIds) {
+        if (trackId >= 0) {
+            trackIds.insert(trackId);
+        }
+    }
+    return trackIds;
+}
+
+void SpeakersTab::pushPreviewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
+                                                                   const QString& speakerId,
+                                                                   int64_t sourceFrame)
+{
+    if (!m_speakerDeps.setPreviewAssignedFaceTrackIds) {
+        return;
+    }
+    m_speakerDeps.setPreviewAssignedFaceTrackIds(
+        previewAssignedFaceTrackIdsForSpeakerAtFrame(clip, speakerId, sourceFrame));
+}
+
 void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
 {
     QElapsedTimer refreshTimer;
@@ -1432,13 +1587,15 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     const QFileInfo transcriptInfo(m_transcriptSession.transcriptPath());
     const qint64 artifactRevisionMs =
         facedetectionsArtifactRevisionMsForTranscript(m_transcriptSession.transcriptPath());
+    const int minimumWords = speakerSectionMinimumWords();
     const QString refreshSignature =
         (clip ? clip->id : QStringLiteral("no_clip")) + QLatin1Char('|') +
         m_transcriptSession.transcriptPath() + QLatin1Char('|') +
         QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0) +
         QLatin1Char('|') +
         QString::number(m_transcriptDocumentRevision) + QLatin1Char('|') +
-        QString::number(artifactRevisionMs);
+        QString::number(artifactRevisionMs) + QLatin1Char('|') +
+        QString::number(minimumWords);
 
     QString selectedSectionSpeakerId;
     int64_t selectedSectionStartTimelineFrame = -1;
@@ -1504,11 +1661,13 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
     QVector<SpeakerSectionRow> rows;
     SpeakerSectionRow currentRow;
-    auto flushCurrentRow = [&rows, &currentRow]() {
+    auto flushCurrentRow = [&rows, &currentRow, minimumWords]() {
         if (currentRow.speakerId.isEmpty()) {
             return;
         }
-        rows.push_back(currentRow);
+        if (currentRow.wordCount >= minimumWords) {
+            rows.push_back(currentRow);
+        }
         currentRow = SpeakerSectionRow{};
     };
 

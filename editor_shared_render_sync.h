@@ -18,6 +18,25 @@ bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
                                               qreal playbackSpeed,
                                               bool hasPlayableAudio);
 
+struct RenderFrameClock {
+    qreal timelineFramePosition = 0.0;
+    int64_t timelineSample = 0;
+    int64_t timelineFrame = 0;
+};
+
+struct ClipFrameMapping {
+    RenderFrameClock clock;
+    int64_t sourceSample = 0;
+    qreal sourceFramePosition = 0.0;
+    int64_t sourceFrame = 0;
+    int64_t transcriptFrame = 0;
+};
+
+RenderFrameClock renderFrameClockForTimelinePosition(qreal timelineFramePosition);
+RenderFrameClock renderFrameClockForTimelineSample(int64_t timelineSample);
+ClipFrameMapping clipFrameMappingForClock(const TimelineClip& clip,
+                                          const RenderFrameClock& clock,
+                                          const QVector<RenderSyncMarker>& markers);
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers);
@@ -27,6 +46,9 @@ int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
 qreal sourceFramePositionForClipAtTimelinePosition(const TimelineClip& clip,
                                                   qreal timelineFramePosition,
                                                   const QVector<RenderSyncMarker>& markers);
+qreal sourceFramePositionForClipAtTimelineSample(const TimelineClip& clip,
+                                                 int64_t timelineSample,
+                                                 const QVector<RenderSyncMarker>& markers);
 int64_t approximateTimelineFrameForClipSourceFrame(const TimelineClip& clip,
                                                    int64_t sourceFrame);
 int64_t sourceFrameForClipAtTimelineSample(const TimelineClip& clip,

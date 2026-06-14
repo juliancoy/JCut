@@ -193,6 +193,38 @@ int PlaybackFramePipeline::PlaybackBuffer::size() const {
     return m_frames.size();
 }
 
+QJsonObject PlaybackFramePipeline::PlaybackBuffer::residencySnapshot() const {
+    qint64 frameCount = 0;
+    qint64 hardwareFrames = 0;
+    qint64 gpuTextureFrames = 0;
+    qint64 cpuBackedFrames = 0;
+    qint64 cpuBytes = 0;
+    qint64 gpuBytes = 0;
+
+    QMutexLocker lock(&m_mutex);
+    for (auto it = m_frames.cbegin(); it != m_frames.cend(); ++it) {
+        const FrameHandle& frame = it.value().frame;
+        if (frame.isNull()) {
+            continue;
+        }
+        ++frameCount;
+        hardwareFrames += frame.hasHardwareFrame() ? 1 : 0;
+        gpuTextureFrames += frame.hasGpuTexture() ? 1 : 0;
+        cpuBackedFrames += frame.hasCpuImage() ? 1 : 0;
+        cpuBytes += static_cast<qint64>(frame.cpuMemoryUsage());
+        gpuBytes += static_cast<qint64>(frame.gpuMemoryUsage());
+    }
+
+    return QJsonObject{
+        {QStringLiteral("frames"), frameCount},
+        {QStringLiteral("hardware_frames"), hardwareFrames},
+        {QStringLiteral("gpu_texture_frames"), gpuTextureFrames},
+        {QStringLiteral("cpu_backed_frames"), cpuBackedFrames},
+        {QStringLiteral("cpu_bytes"), cpuBytes},
+        {QStringLiteral("gpu_bytes"), gpuBytes}
+    };
+}
+
 void PlaybackFramePipeline::PlaybackBuffer::trimLocked() {
     trimOldestBufferedFrames(&m_frames, kMaxFrames);
 }
@@ -260,8 +292,49 @@ void PlaybackFramePipeline::setPlayheadFrame(int64_t playheadFrame) {
     }
 }
 
+void PlaybackFramePipeline::setPlaybackSpeed(qreal speed) {
+    m_playbackSpeed.store(qBound<qreal>(0.1, std::abs(speed), 4.0));
+}
+
 void PlaybackFramePipeline::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
-    Q_UNUSED(playheadFrame);
+    QHash<QString, int64_t> activeLocalFrames;
+    QVector<RenderSyncMarker> markers;
+    {
+        QMutexLocker clipsLock(&m_clipsMutex);
+        QMutexLocker markersLock(&m_markersMutex);
+        markers = m_renderSyncMarkers;
+        for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+            const ClipInfo& info = it.value();
+            if (info.isSingleFrame || info.playbackPath.isEmpty()) {
+                continue;
+            }
+            if (playheadFrame < info.clip.startFrame ||
+                playheadFrame >= info.clip.startFrame + info.clip.durationFrames) {
+                continue;
+            }
+            const int64_t activeSourceFrame = normalizeFrameNumber(
+                info,
+                sourceFrameForClipAtTimelinePosition(info.clip,
+                                                     static_cast<qreal>(playheadFrame),
+                                                     markers));
+            activeLocalFrames.insert(it.key(), activeSourceFrame);
+        }
+    }
+    if (activeLocalFrames.isEmpty()) {
+        return;
+    }
+
+    const int64_t maxAheadFrame =
+        qMax<int64_t>(debugPlaybackWindowAhead(), debugMaxPresentationFutureFrameDelta());
+    QMutexLocker pendingLock(&m_pendingMutex);
+    pruneObsoletePendingFrameRequests(&m_pendingVisibleRequests,
+                                      activeLocalFrames,
+                                      maxAheadFrame,
+                                      &m_latestVisibleTargets);
+    pruneObsoletePendingFrameRequests(&m_pendingPrefetchRequests,
+                                      activeLocalFrames,
+                                      maxAheadFrame,
+                                      nullptr);
 }
 
 void PlaybackFramePipeline::requestFramesForSample(int64_t samplePosition,
@@ -390,6 +463,42 @@ QJsonObject PlaybackFramePipeline::decodeDiagnostics() const {
          m_decodeDiagnostics.lastCompletedAtMs > 0
              ? QDateTime::currentMSecsSinceEpoch() - m_decodeDiagnostics.lastCompletedAtMs
              : static_cast<qint64>(-1)}
+    };
+}
+
+QJsonObject PlaybackFramePipeline::bufferedFrameResidencySnapshot() const {
+    QJsonObject byClip;
+    qint64 totalFrames = 0;
+    qint64 totalHardwareFrames = 0;
+    qint64 totalGpuTextureFrames = 0;
+    qint64 totalCpuBackedFrames = 0;
+    qint64 totalCpuBytes = 0;
+    qint64 totalGpuBytes = 0;
+
+    QMutexLocker lock(&m_clipsMutex);
+    for (auto it = m_buffers.cbegin(); it != m_buffers.cend(); ++it) {
+        if (!it.value()) {
+            continue;
+        }
+        const QJsonObject clip = it.value()->residencySnapshot();
+        byClip.insert(it.key(), clip);
+        totalFrames += clip.value(QStringLiteral("frames")).toInteger();
+        totalHardwareFrames += clip.value(QStringLiteral("hardware_frames")).toInteger();
+        totalGpuTextureFrames += clip.value(QStringLiteral("gpu_texture_frames")).toInteger();
+        totalCpuBackedFrames += clip.value(QStringLiteral("cpu_backed_frames")).toInteger();
+        totalCpuBytes += clip.value(QStringLiteral("cpu_bytes")).toInteger();
+        totalGpuBytes += clip.value(QStringLiteral("gpu_bytes")).toInteger();
+    }
+
+    return QJsonObject{
+        {QStringLiteral("owner"), QStringLiteral("playback_frame_pipeline")},
+        {QStringLiteral("frames"), totalFrames},
+        {QStringLiteral("hardware_frames"), totalHardwareFrames},
+        {QStringLiteral("gpu_texture_frames"), totalGpuTextureFrames},
+        {QStringLiteral("cpu_backed_frames"), totalCpuBackedFrames},
+        {QStringLiteral("cpu_bytes"), totalCpuBytes},
+        {QStringLiteral("gpu_bytes"), totalGpuBytes},
+        {QStringLiteral("by_clip"), byClip}
     };
 }
 
@@ -570,9 +679,10 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
         pendingVisibleCount = m_pendingVisibleRequests.size();
     }
     int playbackWindowAhead = configuredPlaybackWindowAhead;
+    const qreal playbackSpeed = qBound<qreal>(0.1, m_playbackSpeed.load(), 4.0);
     const int latencyLeadFrames = configuredPlaybackWindowAhead > 0
         ? qBound(1,
-                 static_cast<int>(std::ceil(((recentVisibleWaitMs + 20) * sourceFps) / 1000.0)),
+                 static_cast<int>(std::ceil(((recentVisibleWaitMs + 20) * sourceFps * playbackSpeed) / 1000.0)),
                  configuredPlaybackWindowAhead)
         : 0;
     if (!isSequenceClip) {
@@ -583,6 +693,13 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
         } else if (recentVisibleWaitMs > 16) {
             playbackWindowAhead = qMin(playbackWindowAhead,
                                        qMax(2, latencyLeadFrames));
+        }
+        if (playbackSpeed > 1.5) {
+            const int speedCappedWindow =
+                qBound(1,
+                       static_cast<int>(std::ceil(playbackSpeed)) + 1,
+                       configuredPlaybackWindowAhead);
+            playbackWindowAhead = qMin(playbackWindowAhead, speedCappedWindow);
         }
     }
     const int64_t latencyRetentionFrames =

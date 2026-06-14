@@ -154,6 +154,8 @@ RenderResult renderTimelineToImageSequence(const RenderRequest& request,
 
 struct DecodedAudioClip {
     QVector<float> samples;
+    int64_t sourceStartSample = 0;
+    bool fullyDecoded = false;
     bool valid = false;
 };
 
@@ -166,7 +168,9 @@ struct AudioExportState {
     bool enabled = false;
 };
 
-DecodedAudioClip decodeClipAudio(const QString& path);
+DecodedAudioClip decodeClipAudio(const QString& path,
+                                 int64_t sourceStartSample = 0,
+                                 int64_t maxOutputFrames = -1);
 void mixAudioChunk(const QVector<TimelineClip>& clips,
                    const QVector<RenderSyncMarker>& renderSyncMarkers,
                    const QHash<QString, DecodedAudioClip>& audioCache,
@@ -234,6 +238,7 @@ struct OffscreenRenderContext {
     qint64* readbackMs = nullptr;
     QJsonArray* skippedClips = nullptr;
     QJsonObject* skippedReasonCounts = nullptr;
+    QJsonObject* exportFaceTransformDiagnostics = nullptr;
 };
 
 class OffscreenRenderer {
@@ -279,7 +284,8 @@ public:
                                                   compositeMs,
                                                   readbackMs,
                                                   skippedClips,
-                                                  skippedReasonCounts});
+                                                  skippedReasonCounts,
+                                                  nullptr});
     }
     bool renderFrameToOutput(const RenderRequest& request,
                              qreal timelineFrame,
@@ -295,7 +301,8 @@ public:
                              qint64* compositeMs = nullptr,
                              qint64* readbackMs = nullptr,
                              QJsonArray* skippedClips = nullptr,
-                             QJsonObject* skippedReasonCounts = nullptr)
+                             QJsonObject* skippedReasonCounts = nullptr,
+                             QJsonObject* exportFaceTransformDiagnostics = nullptr)
     {
         return renderFrameToOutput(OffscreenRenderContext{request,
                                                           timelineFrame,
@@ -309,7 +316,8 @@ public:
                                                           compositeMs,
                                                           readbackMs,
                                                           skippedClips,
-                                                          skippedReasonCounts},
+                                                          skippedReasonCounts,
+                                                          exportFaceTransformDiagnostics},
                                    output,
                                    readbackToCpuImage);
     }

@@ -3,6 +3,7 @@
 #include "editor_shared_core.h"
 
 int64_t frameToSamples(int64_t frame);
+int64_t framePositionToSamples(qreal framePosition);
 qreal samplesToFramePosition(int64_t samples);
 QRect previewCanvasBaseRectForWidget(const QRect& widgetRect,
                                      const QSize& outputSize,

@@ -97,6 +97,28 @@ const RenderSyncClipLookup* lookupForClip(const QVector<RenderSyncMarker>& marke
 }
 }
 
+RenderFrameClock renderFrameClockForTimelinePosition(qreal timelineFramePosition)
+{
+    RenderFrameClock clock;
+    clock.timelineFramePosition = std::isfinite(timelineFramePosition)
+        ? qMax<qreal>(0.0, timelineFramePosition)
+        : 0.0;
+    clock.timelineSample = framePositionToSamples(clock.timelineFramePosition);
+    clock.timelineFrame =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor(clock.timelineFramePosition)));
+    return clock;
+}
+
+RenderFrameClock renderFrameClockForTimelineSample(int64_t timelineSample)
+{
+    RenderFrameClock clock;
+    clock.timelineSample = qMax<int64_t>(0, timelineSample);
+    clock.timelineFramePosition = samplesToFramePosition(clock.timelineSample);
+    clock.timelineFrame =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor(clock.timelineFramePosition)));
+    return clock;
+}
+
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers) {
@@ -119,28 +141,10 @@ int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
 qreal sourceFramePositionForClipAtTimelinePosition(const TimelineClip& clip,
                                                   qreal timelineFramePosition,
                                                   const QVector<RenderSyncMarker>& markers) {
-    const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
-    const qreal localTimelineFramePosition =
-        qBound<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
-    const int64_t steppedLocalTimelineFrame =
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFramePosition)));
-    const qreal subframePosition =
-        qBound<qreal>(0.0,
-                      localTimelineFramePosition - static_cast<qreal>(steppedLocalTimelineFrame),
-                      1.0);
-    const int64_t adjustedLocalFrame =
-        adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
-
-    const qreal sourceFps = resolvedSourceFps(clip);
-    const qreal playbackRate = qMax<qreal>(0.001, clip.playbackRate);
-    const qreal adjustedLocalFramePosition =
-        static_cast<qreal>(adjustedLocalFrame) + subframePosition;
-    const qreal sourceFrameOffset =
-        adjustedLocalFramePosition * playbackRate * sourceFps / static_cast<qreal>(kTimelineFps);
-    const qreal maxSourceFrame = static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames - 1));
-    return qBound<qreal>(0.0,
-                         static_cast<qreal>(clip.sourceInFrame) + sourceFrameOffset,
-                         maxSourceFrame);
+    return sourceFramePositionForClipAtTimelineSample(
+        clip,
+        framePositionToSamples(timelineFramePosition),
+        markers);
 }
 
 int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
@@ -198,15 +202,44 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
     return qMax<int64_t>(0, qMin<int64_t>(sourceSample, maxSourceSample));
 }
 
+qreal sourceFramePositionForClipAtTimelineSample(const TimelineClip& clip,
+                                                 int64_t timelineSample,
+                                                 const QVector<RenderSyncMarker>& markers) {
+    const int64_t sourceSample =
+        sourceSampleForClipAtTimelineSample(clip, timelineSample, markers);
+    const qreal sourceSeconds =
+        static_cast<qreal>(sourceSample) / static_cast<qreal>(kAudioSampleRate);
+    const qreal maxSourceFrame =
+        static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames - 1));
+    return qBound<qreal>(0.0,
+                         sourceSeconds * resolvedSourceFps(clip),
+                         maxSourceFrame);
+}
+
+ClipFrameMapping clipFrameMappingForClock(const TimelineClip& clip,
+                                          const RenderFrameClock& clock,
+                                          const QVector<RenderSyncMarker>& markers)
+{
+    ClipFrameMapping mapping;
+    mapping.clock = clock;
+    mapping.sourceSample =
+        sourceSampleForClipAtTimelineSample(clip, clock.timelineSample, markers);
+    mapping.sourceFramePosition =
+        sourceFramePositionForClipAtTimelineSample(clip, clock.timelineSample, markers);
+    mapping.sourceFrame =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor(mapping.sourceFramePosition)));
+    mapping.transcriptFrame =
+        transcriptFrameForClipAtTimelineSample(clip, clock.timelineSample, markers);
+    return mapping;
+}
+
 int64_t sourceFrameForClipAtTimelineSample(const TimelineClip& clip,
                                            int64_t timelineSample,
                                            const QVector<RenderSyncMarker>& markers) {
-    const int64_t sourceSample = sourceSampleForClipAtTimelineSample(clip, timelineSample, markers);
-    const qreal sourceSeconds =
-        static_cast<qreal>(sourceSample) / static_cast<qreal>(kAudioSampleRate);
     return qMax<int64_t>(
         0,
-        static_cast<int64_t>(std::floor(sourceSeconds * resolvedSourceFps(clip))));
+        static_cast<int64_t>(std::floor(
+            sourceFramePositionForClipAtTimelineSample(clip, timelineSample, markers))));
 }
 
 int64_t transcriptFrameForClipSourceFrame(const TimelineClip& clip,

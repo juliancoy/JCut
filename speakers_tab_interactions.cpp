@@ -1674,6 +1674,7 @@ void SpeakersTab::onSpeakerExportLongSectionsClicked()
         return;
     }
 
+    const int minimumWords = speakerSectionMinimumWords();
     QVector<SpeakerSectionExportItem> sections;
     for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
         QTableWidgetItem* speakerItem =
@@ -1689,17 +1690,20 @@ void SpeakersTab::onSpeakerExportLongSectionsClicked()
         bool wordCountOk = false;
         const int wordCount = wordsItem->text().trimmed().toInt(&wordCountOk);
         if (speakerId.isEmpty() || startFrame < 0 || endFrame < startFrame ||
-            !wordCountOk || wordCount < 10) {
+            !wordCountOk || wordCount < minimumWords) {
             continue;
         }
         QTableWidgetItem* snippetItem =
             m_widgets.speakerSectionsTable->item(row, SpeakerSectionTranscriptColumn);
+        const QStringList trackIdStrings =
+            speakerItem->data(SpeakerSectionTrackIdsRole).toStringList();
         sections.push_back(SpeakerSectionExportItem{
             speakerId,
             startFrame,
             endFrame,
             snippetItem ? snippetItem->text().trimmed() : QString(),
             speakerItem->text().trimmed(),
+            trackIdStrings,
             row + 1,
             wordCount});
     }
@@ -1708,7 +1712,7 @@ void SpeakersTab::onSpeakerExportLongSectionsClicked()
         QMessageBox::information(
             nullptr,
             QStringLiteral("Export Sections"),
-            QStringLiteral("No contiguous transcript sections have 10 or more words."));
+            QStringLiteral("No contiguous transcript sections meet the minimum word count."));
         return;
     }
 

@@ -31,6 +31,7 @@
 #include <QApplication>
 #include <QExposeEvent>
 #include <QContextMenuEvent>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QMenu>
 #include <QKeyEvent>
@@ -130,6 +131,8 @@ private:
     QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources;
     QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources;
     QString m_playbackStatusOverlayTextureKey;
+    QString m_lastPreparedTextKey;
+    bool m_lastPreparedTextReady = false;
     bool m_playbackStatusOverlayTextureReady = false;
     std::vector<ReadbackSlot> m_readbackSlots;
     std::vector<ReadbackSlot> m_decoderReadbackSlots;
@@ -2017,22 +2020,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     render_detail::SpeakerLabelOverlaySpec preparedTemporalDebugSpec;
     bool preparedTemporalDebugLabel = false;
     QSet<QString> preparedTranscriptAtlasClipIds;
-    if (m_textRenderer && m_textRenderer->isReady()) {
-        for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
-            const PreparedTranscriptText& transcript = it.value();
-            if (!transcript.ready) {
-                continue;
-            }
-            if (m_textRenderer->prepareTranscriptOverlayAtlas(cb,
-                                                              state->outputSize,
-                                                              transcript.clip,
-                                                              transcript.layout,
-                                                              transcript.outputRect,
-                                                              transcript.speakerTitle)) {
-                preparedTranscriptAtlasClipIds.insert(it.key());
-            }
-        }
-    }
     if (m_speakerTextRenderer &&
         m_speakerTextRenderer->isReady() &&
         (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
@@ -2063,6 +2050,74 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         preparedTemporalDebugLabel =
             m_temporalDebugTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedTemporalDebugSpec);
     }
+    QString textPrepMaterial;
+    textPrepMaterial += QStringLiteral("out=%1x%2|").arg(state->outputSize.width()).arg(state->outputSize.height());
+    for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
+        const PreparedTranscriptText& transcript = it.value();
+        if (!transcript.ready) {
+            continue;
+        }
+        textPrepMaterial += QStringLiteral("t:%1:%2,%3,%4,%5:%6:")
+                                .arg(it.key())
+                                .arg(transcript.outputRect.x(), 0, 'f', 2)
+                                .arg(transcript.outputRect.y(), 0, 'f', 2)
+                                .arg(transcript.outputRect.width(), 0, 'f', 2)
+                                .arg(transcript.outputRect.height(), 0, 'f', 2)
+                                .arg(transcript.speakerTitle);
+        for (const TranscriptOverlayLine& line : transcript.layout.lines) {
+            textPrepMaterial += line.words.join(QLatin1Char(' '));
+            textPrepMaterial += QLatin1Char('#');
+            textPrepMaterial += QString::number(line.activeWord);
+            textPrepMaterial += QLatin1Char(';');
+        }
+        textPrepMaterial += QLatin1Char('|');
+    }
+    textPrepMaterial += QStringLiteral("s:%1:%2:%3:%4:%5|")
+                            .arg(preparedSpeakerSpec.name)
+                            .arg(preparedSpeakerSpec.organization)
+                            .arg(preparedSpeakerSpec.showName ? 1 : 0)
+                            .arg(preparedSpeakerSpec.showOrganization ? 1 : 0)
+                            .arg(preparedSpeakerSpec.fontFamily);
+    textPrepMaterial += QStringLiteral("d:%1|").arg(preparedTemporalDebugSpec.organization);
+    const QString textPrepKey = QString::fromLatin1(
+        QCryptographicHash::hash(textPrepMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
+    const bool textPrepCacheHit =
+        m_lastPreparedTextReady &&
+        !textPrepKey.isEmpty() &&
+        textPrepKey == m_lastPreparedTextKey;
+    if (textPrepCacheHit) {
+        for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
+            if (it.value().ready) {
+                preparedTranscriptAtlasClipIds.insert(it.key());
+            }
+        }
+        preparedSpeakerLabel =
+            (preparedSpeakerSpec.showName && !preparedSpeakerSpec.name.trimmed().isEmpty()) ||
+            (preparedSpeakerSpec.showOrganization && !preparedSpeakerSpec.organization.trimmed().isEmpty());
+        preparedTemporalDebugLabel = !preparedTemporalDebugSpec.organization.trimmed().isEmpty();
+    } else {
+        if (m_textRenderer && m_textRenderer->isReady()) {
+            for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
+                const PreparedTranscriptText& transcript = it.value();
+                if (!transcript.ready) {
+                    continue;
+                }
+                if (m_textRenderer->prepareTranscriptOverlayAtlas(cb,
+                                                                  state->outputSize,
+                                                                  transcript.clip,
+                                                                  transcript.layout,
+                                                                  transcript.outputRect,
+                                                                  transcript.speakerTitle)) {
+                    preparedTranscriptAtlasClipIds.insert(it.key());
+                }
+            }
+        }
+        m_lastPreparedTextKey = textPrepKey;
+        m_lastPreparedTextReady =
+            !preparedTranscriptOverlays.isEmpty() ||
+            preparedSpeakerLabel ||
+            preparedTemporalDebugLabel;
+    }
     if (m_owner->stats()) {
         const qint64 textAttemptCount =
             preparedTranscriptOverlays.size() +
@@ -2077,12 +2132,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                       textSuccessCount,
                                       qMax<qint64>(0, textAttemptCount - textSuccessCount),
                                       textAttemptCount > 0
-                                          ? QStringLiteral("text_prepared")
+                                          ? (textPrepCacheHit
+                                                 ? QStringLiteral("text_prepare_cache_hit")
+                                                 : QStringLiteral("text_prepared"))
                                           : QStringLiteral("text_not_requested"),
-                                      QStringLiteral("transcript=%1 speaker=%2 debug=%3")
+                                      QStringLiteral("transcript=%1 speaker=%2 debug=%3 cache_hit=%4")
                                           .arg(preparedTranscriptAtlasClipIds.size())
                                           .arg(preparedSpeakerLabel ? 1 : 0)
-                                          .arg(preparedTemporalDebugLabel ? 1 : 0));
+                                          .arg(preparedTemporalDebugLabel ? 1 : 0)
+                                          .arg(textPrepCacheHit ? 1 : 0));
     }
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
     auto drawPreparedOverlay = [&](const PreparedOverlayTexture& overlay) {

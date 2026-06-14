@@ -1416,6 +1416,14 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerApplyTrackToAllMatchingSectionsCheckBox->hide();
     m_speakerApplyTrackToAllMatchingSectionsCheckBox->setToolTip(
         QStringLiteral("When enabled, a face-track click updates every matching contiguous transcript section at the track time. Off by default; otherwise only the active playhead section is updated."));
+    m_speakerSectionMinimumWordsSpin = new QSpinBox(page);
+    m_speakerSectionMinimumWordsSpin->setRange(0, 1000);
+    m_speakerSectionMinimumWordsSpin->setValue(10);
+    m_speakerSectionMinimumWordsSpin->setPrefix(QStringLiteral("Min words "));
+    m_speakerSectionMinimumWordsSpin->setToolTip(
+        QStringLiteral("Hide contiguous transcript sections below this word count in the table and playback."));
+    m_speakerSectionMinimumWordsSpin->setMinimumWidth(128);
+    m_speakerSectionMinimumWordsSpin->hide();
     m_speakerExportLongSectionsButton = new QPushButton(QStringLiteral("Export Sections"), page);
     m_speakerExportLongSectionsButton->setObjectName(QStringLiteral("speakers.export_long_sections"));
     m_speakerExportLongSectionsButton->setMinimumHeight(30);
@@ -1980,6 +1988,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     assignmentControlsLayout->addWidget(sectionRowsButton);
     assignmentControlsLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
     assignmentControlsLayout->addWidget(m_speakerApplyTrackToAllMatchingSectionsCheckBox);
+    assignmentControlsLayout->addWidget(m_speakerSectionMinimumWordsSpin);
     assignmentControlsLayout->addStretch(1);
     assignmentControlsLayout->addWidget(m_speakerExportLongSectionsButton);
     speakerAssignmentsLayout->addWidget(assignmentControlsGroup);

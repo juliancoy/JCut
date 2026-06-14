@@ -27,6 +27,7 @@ public:
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     void setPlaybackActive(bool active);
     void setPlayheadFrame(int64_t playheadFrame);
+    void setPlaybackSpeed(qreal speed);
 
     void requestFramesForSample(int64_t samplePosition, const std::function<void()>& onFrameReady);
 
@@ -39,6 +40,7 @@ public:
     int bufferedFrameCount() const;
     int droppedPresentationFrameCount() const { return m_droppedPresentationFrames.load(); }
     QJsonObject decodeDiagnostics() const;
+    QJsonObject bufferedFrameResidencySnapshot() const;
     QJsonArray frameTraceSnapshot(int limit = 200) const;
 
 signals:
@@ -68,6 +70,7 @@ private:
         FrameHandle getPresentation(int64_t frameNumber) const;
         bool contains(int64_t frameNumber) const;
         int size() const;
+        QJsonObject residencySnapshot() const;
 
     private:
         void trimLocked();
@@ -157,6 +160,7 @@ private:
     std::atomic<bool> m_active{false};
     std::atomic<int64_t> m_playheadFrame{0};
     mutable std::atomic<int> m_droppedPresentationFrames{0};
+    std::atomic<double> m_playbackSpeed{1.0};
 };
 
 }  // namespace editor

@@ -178,6 +178,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         : 1.0;
     result.requestedRenderBackend = renderBackendName(requestedBackend);
     result.effectiveRenderBackend = QStringLiteral("none");
+    QElapsedTimer totalTimer;
+    totalTimer.start();
     if (request.outputPath.isEmpty()) {
         result.message = QStringLiteral("No output path selected.");
         return result;
@@ -196,17 +198,20 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         return result;
     }
 
-    // Create a directory with the same name as the output file (without extension)
-    // for intermediate files or related assets
-    const QString baseName = outputFileInfo.completeBaseName();
     QString namedDirPath;
-    if (!baseName.isEmpty()) {
-        namedDirPath = outputDir.filePath(baseName);
-        QDir namedDir(namedDirPath);
-        if (!namedDir.exists() && !namedDir.mkpath(".")) {
-            result.message = QStringLiteral("Failed to create named output directory: %1").arg(namedDirPath);
+    if (request.createVideoFromImageSequence && !request.imageSequenceFormat.isEmpty()) {
+        const QString baseName = outputFileInfo.completeBaseName();
+        if (baseName.isEmpty()) {
+            result.message = QStringLiteral("Image sequence export requires a named output file.");
             return result;
         }
+        namedDirPath = outputDir.filePath(baseName + QStringLiteral("_frames"));
+        QDir namedDir(namedDirPath);
+        if (!namedDir.exists() && !namedDir.mkpath(".")) {
+            result.message = QStringLiteral("Failed to create image sequence directory: %1").arg(namedDirPath);
+            return result;
+        }
+        result.namedOutputDir = namedDirPath;
     }
 
     struct ScopedRenderDecodeSafety {
@@ -488,11 +493,15 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     stream->time_base = codecCtx->time_base;
 
     AudioExportState audioState;
+    QElapsedTimer audioSetupTimer;
+    audioSetupTimer.start();
     if (!initializeExportAudio(request, formatCtx, &audioState, &result.message)) {
         avcodec_free_context(&codecCtx);
         avformat_free_context(formatCtx);
         return result;
     }
+    const qint64 audioSetupMs = audioSetupTimer.elapsed();
+    result.audioSetupMs = audioSetupMs;
 
     if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) {
         if (avio_open(&formatCtx->pb, outputPathBytes.constData(), AVIO_FLAG_WRITE) < 0) {
@@ -684,8 +693,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                          }
                      });
     QString errorMessage;
-    QElapsedTimer totalTimer;
-    totalTimer.start();
     qint64 totalRenderStageMs = 0;
     qint64 totalRenderDecodeStageMs = 0;
     qint64 totalRenderTextureStageMs = 0;
@@ -695,7 +702,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     qint64 totalOverlayStageMs = 0;
     qint64 totalConvertStageMs = 0;
     qint64 totalEncodeStageMs = 0;
-    qint64 totalAudioStageMs = 0;
+    qint64 totalAudioStageMs = audioSetupMs;
     qint64 maxFrameRenderStageMs = 0;
     qint64 maxFrameDecodeStageMs = 0;
     qint64 maxFrameTextureStageMs = 0;
@@ -705,6 +712,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QVector<RenderFrameStageStats> worstFrames;
     QJsonArray lastSkippedClips;
     QJsonObject skippedReasonCounts;
+    QJsonObject lastExportFaceTransformDiagnostics;
     struct PendingAsyncGpuFrame {
         AVFrame* frame = nullptr;
         int64_t timelineFrame = 0;
@@ -852,6 +860,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.convertStageMs = totalConvertStageMs;
                 progress.encodeStageMs = totalEncodeStageMs;
                 progress.audioStageMs = totalAudioStageMs;
+                progress.audioSetupMs = audioSetupMs;
                 progress.maxFrameRenderStageMs = maxFrameRenderStageMs;
                 progress.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
                 progress.maxFrameTextureStageMs = maxFrameTextureStageMs;
@@ -861,6 +870,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.skippedClipReasonCounts = skippedReasonCounts;
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
+                progress.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
                 if (!progressCallback(progress)) {
                     result.cancelled = true;
                     errorMessage = QStringLiteral("Render cancelled.");
@@ -881,6 +891,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             }
             QJsonArray frameSkippedClips;
             render_detail::OffscreenRenderFrame renderedFrame;
+            QJsonObject frameExportFaceTransformDiagnostics;
             const bool renderedOk =
                 activeRenderer->renderFrameToOutput(request,
                                                     timelineFramePosition,
@@ -896,9 +907,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                                     &frameCompositeMs,
                                                     frameReadbackMsPtr,
                                                     &frameSkippedClips,
-                                                    &skippedReasonCounts);
+                                                    &skippedReasonCounts,
+                                                    &frameExportFaceTransformDiagnostics);
             QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
+            if (!frameExportFaceTransformDiagnostics.isEmpty()) {
+                lastExportFaceTransformDiagnostics = frameExportFaceTransformDiagnostics;
+            }
             totalRenderStageMs += renderStageTimer.elapsed();
             totalRenderDecodeStageMs += frameDecodeMs;
             totalRenderTextureStageMs += frameTextureMs;
@@ -980,6 +995,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.convertStageMs = totalConvertStageMs;
                 progress.encodeStageMs = totalEncodeStageMs;
                 progress.audioStageMs = totalAudioStageMs;
+                progress.audioSetupMs = audioSetupMs;
                 progress.maxFrameRenderStageMs = maxFrameRenderStageMs;
                 progress.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
                 progress.maxFrameTextureStageMs = maxFrameTextureStageMs;
@@ -989,6 +1005,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.skippedClipReasonCounts = skippedReasonCounts;
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
+                progress.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
                 if (!directNv12Conversion) {
                     progress.previewFrame = rendered;
                 }
@@ -1283,6 +1300,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.convertStageMs = totalConvertStageMs;
         result.encodeStageMs = totalEncodeStageMs;
         result.audioStageMs = totalAudioStageMs;
+        result.audioSetupMs = audioSetupMs;
         result.maxFrameRenderStageMs = maxFrameRenderStageMs;
         result.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
         result.maxFrameTextureStageMs = maxFrameTextureStageMs;
@@ -1292,6 +1310,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.skippedClipReasonCounts = skippedReasonCounts;
         result.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
         result.worstFrameTable = buildWorstFrameTable(worstFrames);
+        result.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
         return result;
     }
 
@@ -1308,6 +1327,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.convertStageMs = totalConvertStageMs;
     result.encodeStageMs = totalEncodeStageMs;
     result.audioStageMs = totalAudioStageMs;
+    result.audioSetupMs = audioSetupMs;
     result.maxFrameRenderStageMs = maxFrameRenderStageMs;
     result.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
     result.maxFrameTextureStageMs = maxFrameTextureStageMs;
@@ -1317,6 +1337,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.skippedClipReasonCounts = skippedReasonCounts;
     result.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
     result.worstFrameTable = buildWorstFrameTable(worstFrames);
+    result.exportFaceTransformDiagnostics = lastExportFaceTransformDiagnostics;
     QString renderPathSuffix;
     if (useGpuRenderer && activeRenderer) {
         renderPathSuffix = QStringLiteral("\nRender path: %1").arg(activeRenderer->backendId());

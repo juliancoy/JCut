@@ -2,6 +2,8 @@
 
 #include "editor_shared_core.h"
 
+#include <QJsonObject>
+
 QString transformInterpolationLabel(bool linearInterpolation);
 qreal sanitizeScaleValue(qreal value);
 void normalizeClipTransformKeyframes(TimelineClip& clip);
@@ -24,14 +26,16 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
                                                                      qreal timelineFramePosition,
                                                                      const QVector<RenderSyncMarker>& markers,
-                                                                     const QSize& outputSize = QSize());
+                                                                     const QSize& outputSize = QSize(),
+                                                                     QJsonObject* diagnosticsOut = nullptr);
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     const TimelineClip& clip,
     qreal timelineFramePosition,
     const QPointF& locationNorm,
     qreal boxSizeNorm,
     qreal rotationDegrees = 0.0,
-    const QSize& outputSize = QSize());
+    const QSize& outputSize = QSize(),
+    QJsonObject* diagnosticsOut = nullptr);
 void warmClipSpeakerFramingContinuityRuntime(const TimelineClip& clip);
 void warmClipsSpeakerFramingContinuityRuntime(const QVector<TimelineClip>& clips);
 void prepareClipSpeakerFramingContinuityRuntimeBlocking(const TimelineClip& clip);
@@ -56,7 +60,8 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
                                                                       qreal timelineFramePosition,
                                                                       const QVector<RenderSyncMarker>& markers,
-                                                                      const QSize& outputSize = QSize());
+                                                                      const QSize& outputSize = QSize(),
+                                                                      QJsonObject* diagnosticsOut = nullptr);
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 qreal evaluateClipOpacityAtFrame(const TimelineClip& clip, int64_t timelineFrame);

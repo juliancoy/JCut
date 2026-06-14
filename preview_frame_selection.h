@@ -15,15 +15,17 @@ namespace editor {
 class PlaybackFramePipeline;
 class TimelineCache;
 
-inline constexpr int64_t kPreviewMaxHeldPresentationFrameDelta = 8;
+inline constexpr int64_t kPreviewMaxHeldPresentationFrameDelta = 12;
 inline constexpr qreal kPreviewMaxPlaybackStaleSeconds = 0.067;
 
-inline int64_t previewMaxPlaybackStaleFrameDelta(qreal sourceFps)
+inline int64_t previewMaxPlaybackStaleFrameDelta(qreal sourceFps, qreal playbackSpeed = 1.0)
 {
     const qreal fps = std::isfinite(sourceFps) && sourceFps > 0.001 ? sourceFps : 30.0;
+    const qreal speed = qBound<qreal>(1.0, std::abs(playbackSpeed), 4.0);
+    const qreal speedAllowance = speed <= 1.0 ? 1.0 : (1.0 + ((speed - 1.0) * 0.35));
     return qBound<int64_t>(
         static_cast<int64_t>(4),
-        static_cast<int64_t>(std::ceil(fps * kPreviewMaxPlaybackStaleSeconds)),
+        static_cast<int64_t>(std::ceil(fps * kPreviewMaxPlaybackStaleSeconds * speedAllowance)),
         kPreviewMaxHeldPresentationFrameDelta);
 }
 

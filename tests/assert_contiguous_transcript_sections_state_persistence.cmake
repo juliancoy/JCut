@@ -40,6 +40,7 @@ if(NOT header_source MATCHES "QCheckBox \\*${widget_name} = nullptr;")
     message(FATAL_ERROR "EditorWindow must own ${widget_name} for project-state persistence")
 endif()
 
-if(NOT speakers_source MATCHES "refreshSpeakerSectionsTable\\(m_transcriptSession\\.rootObject\\(\\)\\);[ \n\r\t]*syncSpeakerListMode\\(\\)")
-    message(FATAL_ERROR "Speakers startup refresh must apply the persisted contiguous-section list mode")
+if(NOT speakers_source MATCHES "syncSpeakerListMode\\(\\);[ \n\r\t]*const bool showSections" OR
+   NOT speakers_source MATCHES "if \\(showSections\\)[ \n\r\t]*\\{[ \n\r\t]*refreshSpeakerSectionsTable\\(m_transcriptSession\\.rootObject\\(\\)\\);")
+    message(FATAL_ERROR "Speakers startup refresh must apply the persisted contiguous-section list mode before choosing the visible table")
 endif()

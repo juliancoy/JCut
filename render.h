@@ -36,6 +36,7 @@ struct RenderProgress {
     qint64 convertStageMs = 0;
     qint64 encodeStageMs = 0;
     qint64 audioStageMs = 0;
+    qint64 audioSetupMs = 0;
     qint64 maxFrameRenderStageMs = 0;
     qint64 maxFrameDecodeStageMs = 0;
     qint64 maxFrameTextureStageMs = 0;
@@ -46,6 +47,7 @@ struct RenderProgress {
     QJsonObject skippedClipReasonCounts;
     QJsonObject renderStageTable;
     QJsonObject worstFrameTable;
+    QJsonObject exportFaceTransformDiagnostics;
 };
 
 struct RenderRequest {
@@ -60,6 +62,7 @@ struct RenderRequest {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
+    bool suppressCompletionDialog = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;
     qreal currentSpeakerNameTextScale = 1.0;
@@ -90,7 +93,7 @@ struct RenderResult {
     bool usedGpu = false;
     bool usedHardwareEncode = false;
     QString encoderLabel;
-    QString namedOutputDir;  // Directory with same name as output file (without extension)
+    QString namedOutputDir;  // Optional directory for image-sequence intermediate frames.
     int64_t framesRendered = 0;
     qint64 elapsedMs = 0;
     qint64 renderStageMs = 0;
@@ -103,6 +106,7 @@ struct RenderResult {
     qint64 convertStageMs = 0;
     qint64 encodeStageMs = 0;
     qint64 audioStageMs = 0;
+    qint64 audioSetupMs = 0;
     qint64 maxFrameRenderStageMs = 0;
     qint64 maxFrameDecodeStageMs = 0;
     qint64 maxFrameTextureStageMs = 0;
@@ -115,6 +119,7 @@ struct RenderResult {
     QJsonObject skippedClipReasonCounts;
     QJsonObject renderStageTable;
     QJsonObject worstFrameTable;
+    QJsonObject exportFaceTransformDiagnostics;
 };
 
 RenderResult renderTimelineToFile(const RenderRequest& request,

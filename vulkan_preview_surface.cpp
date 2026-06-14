@@ -321,6 +321,9 @@ void VulkanPreviewSurface::setPlaybackSpeed(qreal speed)
     if (m_cache) {
         m_cache->setPlaybackSpeed(m_playbackSpeed);
     }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setPlaybackSpeed(m_playbackSpeed);
+    }
 }
 
 void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
@@ -789,6 +792,8 @@ void VulkanPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int
         return;
     }
     m_interaction.selectedSpeakerAssignedFaceTrackIds = trackIds;
+    m_appliedFacestreamOverlaySnapshotKey.clear();
+    refreshFacestreamOverlays();
     requestNativeUpdate();
 }
 
@@ -1000,10 +1005,10 @@ bool VulkanPreviewSurface::isSampleWithinClip(const TimelineClip& clip, int64_t 
 
 int64_t VulkanPreviewSurface::sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const
 {
-    return sourceFrameForClipAtTimelineSample(
+    return clipFrameMappingForClock(
         clip,
-        samplePosition,
-        m_interaction.renderSyncMarkers);
+        renderFrameClockForTimelineSample(samplePosition),
+        m_interaction.renderSyncMarkers).sourceFrame;
 }
 
 void VulkanPreviewSurface::ensureFramePipeline()
@@ -1035,9 +1040,10 @@ void VulkanPreviewSurface::ensureFramePipeline()
     m_cache->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     m_cache->setExportRanges(m_interaction.exportRanges);
     m_playbackPipeline = std::make_unique<editor::PlaybackFramePipeline>(m_decoder.get(),
-                                                                          m_pipelineOwner.get());
+                                                                         m_pipelineOwner.get());
     m_playbackPipeline->setPlaybackActive(m_interaction.playing);
     m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    m_playbackPipeline->setPlaybackSpeed(m_playbackSpeed);
     m_playbackPipeline->setTimelineClips(
         directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
     m_playbackPipeline->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
@@ -1198,29 +1204,41 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             unavailableCount += (!exactBuffered && !displayableBuffered) ? 1 : 0;
         }
         if (visibleAttemptCount > 0) {
-            ++m_visibleRequestDispatched;
-            m_playbackPipeline->requestFramesForSample(
-                m_interaction.currentSample,
-                [this]() {
-                    if (!m_pipelineOwner) {
-                        return;
-                    }
-                    QMetaObject::invokeMethod(
-                        m_pipelineOwner.get(),
-                        [this]() {
-                            queueFrameStatusRefresh(false);
-                        },
-                        Qt::QueuedConnection);
-                });
+            const bool requestWindow =
+                unavailableCount > 0 ||
+                backlog < qMax(1, editor::debugMaxVisibleBacklog());
+            if (requestWindow) {
+                ++m_visibleRequestDispatched;
+                m_playbackPipeline->requestFramesForSample(
+                    m_interaction.currentSample,
+                    [this]() {
+                        if (!m_pipelineOwner) {
+                            return;
+                        }
+                        QMetaObject::invokeMethod(
+                            m_pipelineOwner.get(),
+                            [this]() {
+                                queueFrameStatusRefresh(false);
+                            },
+                            Qt::QueuedConnection);
+                    });
+            } else {
+                ++m_visibleRequestBlocked;
+                m_lastVisibleRequestDecision = QStringLiteral("playback_pipeline_displayable_backlog");
+                m_lastVisibleRequestBlockReason = QStringLiteral("displayable_frame_available_pending_window");
+            }
             editor::accumulatePlaybackStageMetric(&m_visibleRequestStageMetric,
                                                   visibleAttemptCount,
                                                   readyCount,
                                                   unavailableCount,
-                                                  unavailableCount == 0
-                                                      ? QStringLiteral("ready")
-                                                      : QStringLiteral("source_unavailable"),
-                                                  QStringLiteral("playback_pipeline pending=%1")
-                                                      .arg(backlog));
+                                                  requestWindow
+                                                      ? (unavailableCount == 0
+                                                             ? QStringLiteral("ready")
+                                                             : QStringLiteral("source_unavailable"))
+                                                      : QStringLiteral("displayable"),
+                                                  QStringLiteral("playback_pipeline pending=%1 request=%2")
+                                                      .arg(backlog)
+                                                      .arg(requestWindow ? 1 : 0));
         }
         refreshVulkanFrameStatuses();
         return;
@@ -1439,8 +1457,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-        const int64_t maxStaleFrameDelta =
+        const int64_t baseMaxStaleFrameDelta =
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
+        const int64_t maxStaleFrameDelta =
+            qMax<int64_t>(baseMaxStaleFrameDelta,
+                          editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip), m_playbackSpeed));
         const int64_t maxHeldFrameDelta = m_interaction.playing
             ? qMax<int64_t>(maxStaleFrameDelta,
                             static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 4.0)))

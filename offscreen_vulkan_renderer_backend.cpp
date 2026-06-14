@@ -2,6 +2,7 @@
 
 #include "cpu_overlay_render_backend.h"
 #include "offscreen_vulkan_renderer_helpers.h"
+#include "preview_view_transform.h"
 #include "render_internal.h"
 #include "render_vulkan_shared.h"
 #include "titles.h"
@@ -32,6 +33,49 @@ extern "C" {
 #endif
 
 namespace render_detail {
+namespace {
+
+QJsonObject rectDiagnosticObject(const QRectF &rect) {
+  return QJsonObject{{QStringLiteral("x"), rect.x()},
+                     {QStringLiteral("y"), rect.y()},
+                     {QStringLiteral("width"), rect.width()},
+                     {QStringLiteral("height"), rect.height()}};
+}
+
+QJsonArray rectDiagnosticArray(const QVector<QRectF> &rects) {
+  QJsonArray array;
+  for (const QRectF &rect : rects) {
+    array.push_back(rectDiagnosticObject(rect));
+  }
+  return array;
+}
+
+QRectF faceTargetRectFromTransformDiagnostics(const QJsonObject &diagnostics) {
+  const QJsonObject target =
+      diagnostics.value(QStringLiteral("target_box_norm")).toObject();
+  const QJsonObject output =
+      diagnostics.value(QStringLiteral("output_size")).toObject();
+  const qreal outputWidth = qMax<qreal>(
+      1.0, output.value(QStringLiteral("width")).toDouble(0.0));
+  const qreal outputHeight = qMax<qreal>(
+      1.0, output.value(QStringLiteral("height")).toDouble(0.0));
+  const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
+  const qreal targetSide =
+      qMax<qreal>(1.0, target.value(QStringLiteral("box")).toDouble(0.0) *
+                            outputMinSide);
+  const QPointF center(qBound<qreal>(
+                           0.0, target.value(QStringLiteral("x")).toDouble(0.0),
+                           1.0) *
+                           outputWidth,
+                       qBound<qreal>(
+                           0.0, target.value(QStringLiteral("y")).toDouble(0.0),
+                           1.0) *
+                           outputHeight);
+  return QRectF(center.x() - (targetSide * 0.5),
+                center.y() - (targetSide * 0.5), targetSide, targetSide);
+}
+
+} // namespace
 
 class OffscreenVulkanRendererPrivate {
 public:
@@ -2912,28 +2956,30 @@ public:
 
   QVector<TranscriptTextInput> buildTranscriptTextInputs(
       const QSize &imageSize, const RenderRequest &request,
-      int64_t timelineFrame, const QVector<TimelineClip> &orderedClips) {
+      const RenderFrameClock &clock,
+      const QVector<TimelineClip> &orderedClips) {
     QVector<TranscriptTextInput> inputs;
     for (const TimelineClip &clip : orderedClips) {
-      const TranscriptOverlayLayout layout =
-          transcriptOverlayLayoutForFrame(clip, timelineFrame,
-                                          request.renderSyncMarkers,
-                                          m_transcriptCache,
-                                          TranscriptOverlayTiming{request.transcriptPrependMs,
-                                                                  request.transcriptPostpendMs});
-      if (layout.lines.isEmpty()) {
-        continue;
-      }
       const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
       QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
       if (sections.isEmpty()) {
         sections = loadTranscriptSections(transcriptPath);
         m_transcriptCache.insert(transcriptPath, sections);
       }
-      const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
-          clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
+      const ClipFrameMapping mapping =
+          clipFrameMappingForClock(clip, clock, request.renderSyncMarkers);
+      const TranscriptOverlayLayout layout =
+          transcriptOverlayLayoutAtSourceFrame(
+              clip,
+              sections,
+              mapping.transcriptFrame,
+              TranscriptOverlayTiming{request.transcriptPrependMs,
+                                      request.transcriptPostpendMs});
+      if (layout.lines.isEmpty()) {
+        continue;
+      }
       const QRectF outputRect = transcriptOverlayRectInOutputSpace(
-          clip, imageSize, transcriptPath, sections, sourceFrame);
+          clip, imageSize, transcriptPath, sections, mapping.transcriptFrame);
       if (outputRect.isEmpty()) {
         continue;
       }
@@ -2941,7 +2987,7 @@ public:
           ? transcriptSpeakerTitleForSourceFrame(
                 transcriptPath,
                 sections,
-                sourceFrame,
+                mapping.transcriptFrame,
                 TranscriptOverlayTiming{request.transcriptPrependMs,
                                         request.transcriptPostpendMs}).trimmed()
           : QString();
@@ -2952,7 +2998,7 @@ public:
 
   bool buildSpeakerLabelSpec(
       const RenderRequest &request,
-      qreal timelineFramePosition,
+      const RenderFrameClock &clock,
       const QVector<TimelineClip> &orderedClips,
       SpeakerLabelOverlaySpec *outSpec) {
     if (outSpec) {
@@ -2982,11 +3028,12 @@ public:
     spec.shadowColor = request.currentSpeakerShadowColor;
 
     for (const TimelineClip &clip : orderedClips) {
-      const int64_t timelineFrame =
-          qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFramePosition)));
+      const int64_t clipStartSample = clipTimelineStartSamples(clip);
+      const int64_t clipEndSample =
+          clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
       if (clip.filePath.trimmed().isEmpty() ||
-          timelineFrame < clip.startFrame ||
-          timelineFrame >= clip.startFrame + clip.durationFrames ||
+          clock.timelineSample < clipStartSample ||
+          clock.timelineSample >= clipEndSample ||
           (!clip.hasAudio && clip.mediaType != ClipMediaType::Audio)) {
         continue;
       }
@@ -2994,10 +3041,8 @@ public:
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }
-      const int64_t mediaSourceFrame = sourceFrameForClipAtTimelinePosition(
-          clip, timelineFramePosition, request.renderSyncMarkers);
-      const int64_t transcriptFrame =
-          transcriptFrameForClipSourceFrame(clip, mediaSourceFrame);
+      const ClipFrameMapping mapping =
+          clipFrameMappingForClock(clip, clock, request.renderSyncMarkers);
       QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
       if (sections.isEmpty()) {
         sections = loadTranscriptSections(transcriptPath);
@@ -3006,7 +3051,7 @@ public:
       const QString speakerId =
           transcriptOverlaySpeakerAtSourceFrame(
               sections,
-              transcriptFrame,
+              mapping.transcriptFrame,
               nullptr,
               TranscriptOverlayTiming{request.transcriptPrependMs,
                                       request.transcriptPostpendMs}).trimmed();
@@ -3036,6 +3081,15 @@ public:
       return true;
     }
     return false;
+  }
+
+  VulkanTextLayoutDebug speakerLabelLayoutDebug(
+      const QSize &outputSize,
+      const SpeakerLabelOverlaySpec &spec) const {
+    if (!m_speakerTextRenderer || !m_speakerTextRenderer->isReady()) {
+      return {};
+    }
+    return m_speakerTextRenderer->buildSpeakerLabelLayoutForTesting(outputSize, spec);
   }
 
 private:
@@ -3172,6 +3226,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
   qint64 *readbackMs = context.readbackMs;
   QJsonArray *skippedClips = context.skippedClips;
   QJsonObject *skippedReasonCounts = context.skippedReasonCounts;
+  QJsonObject *exportFaceTransformDiagnostics =
+      context.exportFaceTransformDiagnostics;
   Q_UNUSED(asyncDecoder);
   Q_UNUSED(clipStageStats);
   Q_UNUSED(skippedClips);
@@ -3210,6 +3266,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int decodePathMissingCount = 0;
   int decodeNullCount = 0;
   int decodeConvertFailCount = 0;
+  const RenderFrameClock frameClock =
+      renderFrameClockForTimelinePosition(timelineFrame);
   QRectF transcriptLayerBounds;
   OffscreenVulkanRendererPrivate::VulkanTextInputs textInputs;
   for (const TimelineClip &clip : orderedClips) {
@@ -3270,8 +3328,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
       continue;
     }
     ++visualClipCandidates;
-    const int64_t localFrame = sourceFrameForClipAtTimelinePosition(
-        clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
+    const ClipFrameMapping frameMapping =
+        clipFrameMappingForClock(clip, frameClock, request.renderSyncMarkers);
+    const int64_t localFrame = frameMapping.sourceFrame;
     const qint64 decodeStart = QDateTime::currentMSecsSinceEpoch();
     const editor::FrameHandle frame = decodeRenderFrame(
         decodePath, localFrame, decoders, asyncDecoder, asyncFrameCache);
@@ -3319,25 +3378,55 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.highlights[1] = layerEffects.highlights[1];
     layer.highlights[2] = layerEffects.highlights[2];
     layer.curveLutRgba = curveLutBytesForGrade(grade);
+    QJsonObject transformDiagnostics;
     const TimelineClip::TransformKeyframe transform =
         evaluateClipRenderTransformAtPosition(
             clip,
             static_cast<qreal>(timelineFrame),
             request.renderSyncMarkers,
-            request.outputSize);
+            request.outputSize,
+            &transformDiagnostics);
     const QSize sourceSize = clip.sourceFrameSize.isValid()
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
-    const QPointF layerCenter(fitted.center().x() + transform.translationX,
-                              fitted.center().y() + transform.translationY);
-    const QSizeF layerSize(fitted.width() * transform.scaleX,
-                           fitted.height() * transform.scaleY);
+    PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
+        fitted,
+        QPointF(1.0, 1.0),
+        QPointF(transform.translationX, transform.translationY),
+        transform.rotation,
+        QPointF(transform.scaleX, transform.scaleY));
+    if (exportFaceTransformDiagnostics && clip.speakerFramingEnabled) {
+      transformDiagnostics.insert(QStringLiteral("clip_id"), clip.id);
+      transformDiagnostics.insert(QStringLiteral("clip_label"), clip.label);
+      transformDiagnostics.insert(QStringLiteral("timeline_frame_position"), timelineFrame);
+      transformDiagnostics.insert(QStringLiteral("timeline_sample"), static_cast<qint64>(frameClock.timelineSample));
+      transformDiagnostics.insert(QStringLiteral("sync_clock_domain"), QStringLiteral("timeline_sample"));
+      transformDiagnostics.insert(QStringLiteral("decode_source_frame"), static_cast<qint64>(localFrame));
+      transformDiagnostics.insert(QStringLiteral("mapped_source_sample"), static_cast<qint64>(frameMapping.sourceSample));
+      transformDiagnostics.insert(QStringLiteral("mapped_source_frame_position"), frameMapping.sourceFramePosition);
+      transformDiagnostics.insert(QStringLiteral("mapped_transcript_frame"), static_cast<qint64>(frameMapping.transcriptFrame));
+      transformDiagnostics.insert(QStringLiteral("sampled_frame_needs_y_flip"), layer.sampledFrameNeedsYFlip);
+      transformDiagnostics.insert(QStringLiteral("output_path"), request.outputPath);
+      const QRectF layerRect = layerGeometry.bounds;
+      transformDiagnostics.insert(QStringLiteral("layer_center"), QJsonObject{
+          {QStringLiteral("x"), layerRect.center().x()},
+          {QStringLiteral("y"), layerRect.center().y()}
+      });
+      transformDiagnostics.insert(QStringLiteral("layer_size"), QJsonObject{
+          {QStringLiteral("width"), layerRect.width()},
+          {QStringLiteral("height"), layerRect.height()}
+      });
+      transformDiagnostics.insert(QStringLiteral("layer_rect"),
+                                  rectDiagnosticObject(layerRect));
+      transformDiagnostics.insert(QStringLiteral("face_target_rect"),
+                                  rectDiagnosticObject(
+                                      faceTargetRectFromTransformDiagnostics(
+                                          transformDiagnostics)));
+      *exportFaceTransformDiagnostics = transformDiagnostics;
+    }
     vulkanMvpForOutputRectMaybeFlippedY(
-        QRectF(layerCenter.x() - (layerSize.width() * 0.5),
-               layerCenter.y() - (layerSize.height() * 0.5),
-               layerSize.width(),
-               layerSize.height()),
+        layerGeometry.bounds,
         request.outputSize,
         transform.rotation,
         layer.sampledFrameNeedsYFlip,
@@ -3386,7 +3475,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   if (hasTranscriptCandidate) {
     textInputs.transcripts = d->buildTranscriptTextInputs(
         request.outputSize, request,
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
+        frameClock,
         transcriptOverlayClips);
     for (const OffscreenVulkanRendererPrivate::TranscriptTextInput &text : textInputs.transcripts) {
       transcriptLayerBounds = transcriptLayerBounds.united(text.outputRect);
@@ -3394,9 +3483,29 @@ QImage OffscreenVulkanRenderer::renderFrame(
   }
   textInputs.hasSpeakerLabel = d->buildSpeakerLabelSpec(
       request,
-      qMax<qreal>(0.0, timelineFrame),
+      frameClock,
       orderedClips,
       &textInputs.speakerLabel);
+  if (exportFaceTransformDiagnostics &&
+      textInputs.hasSpeakerLabel &&
+      !exportFaceTransformDiagnostics->isEmpty()) {
+    const VulkanTextLayoutDebug speakerLabelDebug =
+        d->speakerLabelLayoutDebug(request.outputSize, textInputs.speakerLabel);
+    if (speakerLabelDebug.valid) {
+      exportFaceTransformDiagnostics->insert(
+          QStringLiteral("speaker_label_cards"),
+          rectDiagnosticArray(speakerLabelDebug.cards));
+      exportFaceTransformDiagnostics->insert(
+          QStringLiteral("speaker_label_card_count"),
+          speakerLabelDebug.cardCount);
+      exportFaceTransformDiagnostics->insert(
+          QStringLiteral("speaker_label_name"),
+          textInputs.speakerLabel.name);
+      exportFaceTransformDiagnostics->insert(
+          QStringLiteral("speaker_label_organization"),
+          textInputs.speakerLabel.organization);
+    }
+  }
   if (visualClipCandidates > 0 && visualLayersResolved == 0) {
     qWarning().noquote() << QStringLiteral(
                                 "[vulkan-compose] no visual layers resolved at "

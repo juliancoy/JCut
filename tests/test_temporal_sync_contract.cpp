@@ -55,6 +55,7 @@ class TestTemporalSyncContract : public QObject {
 
 private slots:
     void derivedDomainsStayLockedAtPlaybackSpeeds();
+    void clipFrameMappingCarriesAllClockDomains();
     void renderSyncMarkersFeedVideoAndTranscriptMapping();
     void systemClockDecisionIgnoresAudioReadiness();
 };
@@ -92,6 +93,25 @@ void TestTemporalSyncContract::derivedDomainsStayLockedAtPlaybackSpeeds()
                      "partial retimed cache segments must not be accepted");
         }
     }
+}
+
+void TestTemporalSyncContract::clipFrameMappingCarriesAllClockDomains()
+{
+    const TimelineClip clip = makeSixtyFpsClip();
+    const qreal timelineFramePosition = static_cast<qreal>(clip.startFrame + 120) + 0.5;
+    const RenderFrameClock clock = renderFrameClockForTimelinePosition(timelineFramePosition);
+    const ClipFrameMapping mapping = clipFrameMappingForClock(clip, clock, {});
+
+    QCOMPARE(clock.timelineFramePosition, timelineFramePosition);
+    QCOMPARE(clock.timelineSample, framePositionToSamples(timelineFramePosition));
+    QCOMPARE(clock.timelineFrame, clip.startFrame + 120);
+    QCOMPARE(mapping.clock.timelineSample, clock.timelineSample);
+    QCOMPARE(mapping.sourceSample,
+             sourceSampleForClipAtTimelineSample(clip, clock.timelineSample, {}));
+    QCOMPARE(mapping.sourceFrame,
+             sourceFrameForClipAtTimelineSample(clip, clock.timelineSample, {}));
+    QCOMPARE(mapping.transcriptFrame,
+             transcriptFrameForClipAtTimelineSample(clip, clock.timelineSample, {}));
 }
 
 void TestTemporalSyncContract::renderSyncMarkersFeedVideoAndTranscriptMapping()

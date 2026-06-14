@@ -2,11 +2,13 @@
 
 #include "speaker_export_harness.h"
 
+#include <QAbstractItemView>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -20,6 +22,8 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QSpinBox>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -129,6 +133,85 @@ QString speakerSectionFallbackTitle(const QString& speakerDisplayName,
         .arg(sourceEndFrame);
 }
 
+QStringList normalizedSectionTrackIds(const QStringList& trackIds)
+{
+    QStringList normalized;
+    QSet<QString> seen;
+    for (const QString& trackIdText : trackIds) {
+        bool ok = false;
+        const int trackId = trackIdText.trimmed().toInt(&ok);
+        if (!ok || trackId < 0) {
+            continue;
+        }
+        const QString normalizedTrackId = QString::number(trackId);
+        if (seen.contains(normalizedTrackId)) {
+            continue;
+        }
+        seen.insert(normalizedTrackId);
+        normalized.push_back(normalizedTrackId);
+    }
+    return normalized;
+}
+
+QString speakerTrackSectionTitle(const SpeakerSectionExportItem& section)
+{
+    QString speakerName = section.speakerDisplayName.simplified();
+    if (speakerName.isEmpty()) {
+        speakerName = section.speakerId.simplified();
+    }
+    if (speakerName.isEmpty()) {
+        speakerName = QStringLiteral("Speaker");
+    }
+
+    const QStringList tracks = normalizedSectionTrackIds(section.trackIds);
+    if (tracks.isEmpty()) {
+        return QStringLiteral("%1 no track").arg(speakerName);
+    }
+    if (tracks.size() == 1) {
+        return QStringLiteral("%1 track %2").arg(speakerName, tracks.constFirst());
+    }
+    return QStringLiteral("%1 tracks %2").arg(speakerName, tracks.join(QLatin1Char('-')));
+}
+
+QVector<SpeakerSectionExportItem> coalescedAdjacentSpeakerSections(
+    const QVector<SpeakerSectionExportItem>& sections)
+{
+    QVector<SpeakerSectionExportItem> coalesced;
+    coalesced.reserve(sections.size());
+    for (const SpeakerSectionExportItem& section : sections) {
+        if (!coalesced.isEmpty() &&
+            coalesced.last().speakerId.trimmed() == section.speakerId.trimmed()) {
+            SpeakerSectionExportItem& merged = coalesced.last();
+            merged.sourceEndFrame = qMax<qint64>(merged.sourceEndFrame, section.sourceEndFrame);
+            if (!section.snippet.trimmed().isEmpty()) {
+                if (!merged.snippet.trimmed().isEmpty()) {
+                    merged.snippet += QStringLiteral(" ");
+                }
+                merged.snippet += section.snippet.trimmed();
+            }
+            merged.wordCount += qMax(0, section.wordCount);
+            QStringList mergedTracks = normalizedSectionTrackIds(merged.trackIds);
+            QSet<QString> seenTracks;
+            for (const QString& trackId : std::as_const(mergedTracks)) {
+                seenTracks.insert(trackId);
+            }
+            for (const QString& trackId : normalizedSectionTrackIds(section.trackIds)) {
+                if (seenTracks.contains(trackId)) {
+                    continue;
+                }
+                seenTracks.insert(trackId);
+                mergedTracks.push_back(trackId);
+            }
+            merged.trackIds = mergedTracks;
+            continue;
+        }
+        SpeakerSectionExportItem copy = section;
+        copy.trackIds = normalizedSectionTrackIds(copy.trackIds);
+        coalesced.push_back(copy);
+    }
+    return coalesced;
+}
+
 QVector<ExportRangeSegment> timelineRangesForTranscriptSection(const TimelineClip& clip,
                                                                int64_t sourceStartFrame,
                                                                int64_t sourceEndFrame,
@@ -170,6 +253,47 @@ QString uniqueExportPath(const QString& directory,
         reservedPaths->insert(candidate);
     }
     return candidate;
+}
+
+QString deterministicExportPath(const QString& directory,
+                                const QString& baseName,
+                                const QString& outputFormat)
+{
+    const QString safeBase = baseName.trimmed().isEmpty() ? QStringLiteral("section") : baseName.trimmed();
+    const QString suffix = outputFormat.trimmed().isEmpty() ? QStringLiteral("mp4") : outputFormat.trimmed();
+    return QDir(directory).filePath(QStringLiteral("%1.%2").arg(safeBase, suffix));
+}
+
+void setBulkExportRowStatus(QTableWidget* table,
+                            int row,
+                            const QString& status,
+                            const QColor& background,
+                            const QColor& foreground = QColor(QStringLiteral("#111827")))
+{
+    if (!table || row < 0 || row >= table->rowCount()) {
+        return;
+    }
+    if (auto* statusItem = table->item(row, 1)) {
+        statusItem->setText(status);
+    }
+    for (int column = 0; column < table->columnCount(); ++column) {
+        QTableWidgetItem* item = table->item(row, column);
+        if (!item) {
+            item = new QTableWidgetItem;
+            table->setItem(row, column, item);
+        }
+        item->setBackground(background);
+        item->setForeground(foreground);
+    }
+}
+
+void scrollBulkExportRowIntoView(QTableWidget* table, int row)
+{
+    if (!table || row < 0 || row >= table->rowCount()) {
+        return;
+    }
+    table->scrollToItem(table->item(row, 0), QAbstractItemView::PositionAtCenter);
+    table->selectRow(row);
 }
 
 bool confirmContiguousSectionExportPreflight(QWidget* parent,
@@ -568,9 +692,13 @@ void EditorWindow::openAudioToolsDialog()
 }
 
 
-void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
+bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
+                                                   bool showCompletionMessage,
+                                                   RenderProgressDialogControls* progressControls)
 {
     RenderRequest effectiveRequest = request;
+    const bool notifyRenderCompletion =
+        showCompletionMessage && !effectiveRequest.suppressCompletionDialog;
     effectiveRequest.correctionsEnabled = m_correctionsEnabled;
     if (effectiveRequest.useProxyMedia)
     {
@@ -597,88 +725,125 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
     const bool verticalRenderOutput =
         effectiveRequest.outputSize.height() > effectiveRequest.outputSize.width();
 
-    QDialog progressDialog(this);
-    progressDialog.setWindowTitle(QStringLiteral("Render Export"));
-    progressDialog.setWindowModality(Qt::ApplicationModal);
-    progressDialog.setMinimumWidth(verticalRenderOutput ? 920 : 560);
-    progressDialog.setStyleSheet(QStringLiteral(
-        "QDialog { background: #f6f3ee; }"
-        "QLabel { color: #1f2430; font-size: 13px; }"
-        "QProgressBar { border: 1px solid #c9c2b8; border-radius: 6px; text-align: center; background: #ffffff; min-height: 20px; }"
-        "QProgressBar::chunk { background: #2f7d67; border-radius: 5px; }"
-        "QPushButton { min-width: 96px; padding: 6px 14px; }"));
-    auto *progressLayout = new QVBoxLayout(&progressDialog);
-    progressLayout->setContentsMargins(16, 16, 16, 16);
-    progressLayout->setSpacing(10);
+    bool localRenderCancelled = false;
+    std::unique_ptr<QDialog> ownedProgressDialog;
+    RenderProgressDialogControls localControls;
+    if (!progressControls) {
+        ownedProgressDialog = std::make_unique<QDialog>(this);
+        QDialog* progressDialog = ownedProgressDialog.get();
+        progressDialog->setWindowTitle(QStringLiteral("Render Export"));
+        progressDialog->setWindowModality(Qt::ApplicationModal);
+        progressDialog->setMinimumWidth(verticalRenderOutput ? 920 : 560);
+        progressDialog->setStyleSheet(QStringLiteral(
+            "QDialog { background: #f6f3ee; }"
+            "QLabel { color: #1f2430; font-size: 13px; }"
+            "QProgressBar { border: 1px solid #c9c2b8; border-radius: 6px; text-align: center; background: #ffffff; min-height: 20px; }"
+            "QProgressBar::chunk { background: #2f7d67; border-radius: 5px; }"
+            "QPushButton { min-width: 96px; padding: 6px 14px; }"));
+        auto *progressLayout = new QVBoxLayout(progressDialog);
+        progressLayout->setContentsMargins(16, 16, 16, 16);
+        progressLayout->setSpacing(10);
 
-    auto *renderPreviewLabel = new QLabel(&progressDialog);
-    renderPreviewLabel->setAlignment(Qt::AlignCenter);
-    renderPreviewLabel->setMinimumSize(360, 202);
-    renderPreviewLabel->setStyleSheet(QStringLiteral(
-        "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
-    renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
+        auto *renderPreviewLabel = new QLabel(progressDialog);
+        renderPreviewLabel->setAlignment(Qt::AlignCenter);
+        renderPreviewLabel->setMinimumSize(360, 202);
+        renderPreviewLabel->setStyleSheet(QStringLiteral(
+            "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
+        renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
 
-    auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), &progressDialog);
-    renderStatusLabel->setWordWrap(true);
-    renderStatusLabel->setAlignment(Qt::AlignCenter);
+        auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), progressDialog);
+        renderStatusLabel->setWordWrap(true);
+        renderStatusLabel->setAlignment(Qt::AlignCenter);
 
-    auto *showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &progressDialog);
-    showRenderPreviewCheckBox->setChecked(true);
+        auto *showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), progressDialog);
+        showRenderPreviewCheckBox->setChecked(true);
 
-    auto *renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &progressDialog);
-    renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        auto *renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), progressDialog);
+        renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-    auto *renderSourcesList = new QPlainTextEdit(&progressDialog);
-    renderSourcesList->setReadOnly(true);
-    renderSourcesList->setMinimumHeight(140);
-    renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
+        auto *renderSourcesList = new QPlainTextEdit(progressDialog);
+        renderSourcesList->setReadOnly(true);
+        renderSourcesList->setMinimumHeight(140);
+        renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
 
-    if (verticalRenderOutput) {
-        auto *contentRow = new QHBoxLayout;
-        contentRow->setSpacing(12);
+        if (verticalRenderOutput) {
+            auto *contentRow = new QHBoxLayout;
+            contentRow->setSpacing(12);
 
-        auto *leftColumn = new QVBoxLayout;
-        leftColumn->setSpacing(10);
-        leftColumn->addWidget(renderStatusLabel);
-        leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
-        leftColumn->addWidget(renderSourcesLabel);
-        leftColumn->addWidget(renderSourcesList, 1);
+            auto *leftColumn = new QVBoxLayout;
+            leftColumn->setSpacing(10);
+            leftColumn->addWidget(renderStatusLabel);
+            leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
+            leftColumn->addWidget(renderSourcesLabel);
+            leftColumn->addWidget(renderSourcesList, 1);
 
-        auto *rightColumn = new QVBoxLayout;
-        rightColumn->setSpacing(10);
-        rightColumn->addWidget(renderPreviewLabel, 1);
+            auto *rightColumn = new QVBoxLayout;
+            rightColumn->setSpacing(10);
+            rightColumn->addWidget(renderPreviewLabel, 1);
 
-        contentRow->addLayout(leftColumn, 3);
-        contentRow->addLayout(rightColumn, 2);
-        progressLayout->addLayout(contentRow);
-    } else {
-        progressLayout->addWidget(renderStatusLabel);
-        progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
-        progressLayout->addWidget(renderPreviewLabel);
-        progressLayout->addWidget(renderSourcesLabel);
-        progressLayout->addWidget(renderSourcesList);
+            contentRow->addLayout(leftColumn, 3);
+            contentRow->addLayout(rightColumn, 2);
+            progressLayout->addLayout(contentRow);
+        } else {
+            progressLayout->addWidget(renderStatusLabel);
+            progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
+            progressLayout->addWidget(renderPreviewLabel);
+            progressLayout->addWidget(renderSourcesLabel);
+            progressLayout->addWidget(renderSourcesList);
+        }
+
+        auto *renderProgressBar = new QProgressBar(progressDialog);
+        progressLayout->addWidget(renderProgressBar);
+
+        auto *buttonRow = new QHBoxLayout;
+        buttonRow->addStretch(1);
+        auto *cancelRenderButton = new QPushButton(QStringLiteral("Cancel"), progressDialog);
+        buttonRow->addWidget(cancelRenderButton);
+        progressLayout->addLayout(buttonRow);
+
+        QObject::connect(cancelRenderButton, &QPushButton::clicked, progressDialog, [&localRenderCancelled, cancelRenderButton]() {
+            localRenderCancelled = true;
+            cancelRenderButton->setEnabled(false);
+        });
+        QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, progressDialog, [renderPreviewLabel](bool checked) {
+            renderPreviewLabel->setVisible(checked);
+        });
+
+        localControls.dialog = progressDialog;
+        localControls.statusLabel = renderStatusLabel;
+        localControls.previewLabel = renderPreviewLabel;
+        localControls.previewCheckBox = showRenderPreviewCheckBox;
+        localControls.sourcesList = renderSourcesList;
+        localControls.progressBar = renderProgressBar;
+        localControls.cancelled = &localRenderCancelled;
+        progressControls = &localControls;
+        progressDialog->show();
     }
 
-    auto *renderProgressBar = new QProgressBar(&progressDialog);
-    renderProgressBar->setRange(0, static_cast<int>(qMin<int64_t>(totalFramesToRender, std::numeric_limits<int>::max())));
-    renderProgressBar->setValue(0);
-    progressLayout->addWidget(renderProgressBar);
-
-    auto *buttonRow = new QHBoxLayout;
-    buttonRow->addStretch(1);
-    auto *cancelRenderButton = new QPushButton(QStringLiteral("Cancel"), &progressDialog);
-    buttonRow->addWidget(cancelRenderButton);
-    progressLayout->addLayout(buttonRow);
-
-    bool renderCancelled = false;
-    QObject::connect(cancelRenderButton, &QPushButton::clicked, &progressDialog, [&renderCancelled, cancelRenderButton]() {
-        renderCancelled = true;
-        cancelRenderButton->setEnabled(false);
-    });
-    QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, &progressDialog, [renderPreviewLabel](bool checked) {
-        renderPreviewLabel->setVisible(checked);
-    });
-    progressDialog.show();
+    QDialog* progressDialog = progressControls->dialog;
+    QLabel* renderStatusLabel = progressControls->statusLabel;
+    QLabel* renderPreviewLabel = progressControls->previewLabel;
+    QCheckBox* showRenderPreviewCheckBox = progressControls->previewCheckBox;
+    QPlainTextEdit* renderSourcesList = progressControls->sourcesList;
+    QProgressBar* renderProgressBar = progressControls->progressBar;
+    bool* renderCancelled = progressControls->cancelled ? progressControls->cancelled : &localRenderCancelled;
+    if (renderProgressBar) {
+        renderProgressBar->setRange(0, static_cast<int>(qMin<int64_t>(totalFramesToRender, std::numeric_limits<int>::max())));
+        renderProgressBar->setValue(0);
+    }
+    if (renderStatusLabel) {
+        renderStatusLabel->setText(QStringLiteral("Preparing render..."));
+    }
+    if (renderSourcesList) {
+        renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
+    }
+    if (renderPreviewLabel) {
+        renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
+        renderPreviewLabel->setPixmap(QPixmap());
+    }
+    if (progressDialog) {
+        progressDialog->show();
+    }
 
     const QString outputPath = effectiveRequest.outputPath;
     const auto formatEta = [](qint64 remainingMs) -> QString
@@ -744,6 +909,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
             {QStringLiteral("convert_stage_ms"), progress.convertStageMs},
             {QStringLiteral("encode_stage_ms"), progress.encodeStageMs},
             {QStringLiteral("audio_stage_ms"), progress.audioStageMs},
+            {QStringLiteral("audio_setup_ms"), progress.audioSetupMs},
             {QStringLiteral("max_frame_render_stage_ms"), progress.maxFrameRenderStageMs},
             {QStringLiteral("max_frame_decode_stage_ms"), progress.maxFrameDecodeStageMs},
             {QStringLiteral("max_frame_texture_stage_ms"), progress.maxFrameTextureStageMs},
@@ -753,6 +919,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
             {QStringLiteral("skipped_clip_reason_counts"), progress.skippedClipReasonCounts},
             {QStringLiteral("render_stage_table"), progress.renderStageTable},
             {QStringLiteral("worst_frame_table"), progress.worstFrameTable},
+            {QStringLiteral("export_face_transform"), progress.exportFaceTransformDiagnostics},
             {QStringLiteral("render_stage_per_frame_ms"), static_cast<double>(progress.renderStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_decode_stage_per_frame_ms"), static_cast<double>(progress.renderDecodeStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_texture_stage_per_frame_ms"), static_cast<double>(progress.renderTextureStageMs) / static_cast<double>(completedFrames)},
@@ -797,6 +964,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
             {QStringLiteral("convert_stage_ms"), result.convertStageMs},
             {QStringLiteral("encode_stage_ms"), result.encodeStageMs},
             {QStringLiteral("audio_stage_ms"), result.audioStageMs},
+            {QStringLiteral("audio_setup_ms"), result.audioSetupMs},
             {QStringLiteral("max_frame_render_stage_ms"), result.maxFrameRenderStageMs},
             {QStringLiteral("max_frame_decode_stage_ms"), result.maxFrameDecodeStageMs},
             {QStringLiteral("max_frame_texture_stage_ms"), result.maxFrameTextureStageMs},
@@ -806,6 +974,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
             {QStringLiteral("skipped_clip_reason_counts"), result.skippedClipReasonCounts},
             {QStringLiteral("render_stage_table"), result.renderStageTable},
             {QStringLiteral("worst_frame_table"), result.worstFrameTable},
+            {QStringLiteral("export_face_transform"), result.exportFaceTransformDiagnostics},
             {QStringLiteral("render_stage_per_frame_ms"), static_cast<double>(result.renderStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_decode_stage_per_frame_ms"), static_cast<double>(result.renderDecodeStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_texture_stage_per_frame_ms"), static_cast<double>(result.renderTextureStageMs) / static_cast<double>(completedFrames)},
@@ -856,13 +1025,15 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
 
     const RenderResult result = renderTimelineToFile(
         effectiveRequest,
-        [this, &progressDialog, renderStatusLabel, renderProgressBar, renderPreviewLabel,
-         renderSourcesList, showRenderPreviewCheckBox, &renderCancelled,
+        [this, renderStatusLabel, renderProgressBar, renderPreviewLabel,
+         renderSourcesList, showRenderPreviewCheckBox, renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
          activeRenderSourcesText](const RenderProgress &progress)
         {
-            renderProgressBar->setMaximum(qMax(1, static_cast<int>(qMin<int64_t>(progress.totalFrames, std::numeric_limits<int>::max()))));
-            renderProgressBar->setValue(static_cast<int>(qMin<int64_t>(progress.framesCompleted, std::numeric_limits<int>::max())));
+            if (renderProgressBar) {
+                renderProgressBar->setMaximum(qMax(1, static_cast<int>(qMin<int64_t>(progress.totalFrames, std::numeric_limits<int>::max()))));
+                renderProgressBar->setValue(static_cast<int>(qMin<int64_t>(progress.framesCompleted, std::numeric_limits<int>::max())));
+            }
             const QString rendererMode = progress.usingGpu ? QStringLiteral("GPU render") : QStringLiteral("CPU render");
             const QString encoderMode = progress.usingHardwareEncode
                                             ? QStringLiteral("Hardware encode")
@@ -888,7 +1059,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
                 "<tr>"
                 "<td align='right'><b>Convert</b></td><td>%7</td>"
                 "<td align='right'><b>Encode</b></td><td>%8</td>"
-                "<td></td><td></td>"
+                "<td align='right'><b>Audio setup</b></td><td>%9 ms</td>"
                 "</tr>"
                 "</table>")
                 .arg(stageSummary(progress.renderStageMs, progress.framesCompleted))
@@ -898,24 +1069,28 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
                 .arg(stageSummary(progress.renderNv12StageMs, progress.framesCompleted))
                 .arg(stageSummary(progress.gpuReadbackMs, progress.framesCompleted))
                 .arg(stageSummary(progress.convertStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.encodeStageMs, progress.framesCompleted));
-            renderStatusLabel->setText(
-                QStringLiteral("<b>Rendering frame %1 of %2</b><br>"
-                               "Segment %3/%4: %5-%6<br>"
-                               "%7 | %8 (%9)<br>"
-                               "ETA: %10<br>%11")
-                    .arg(progress.framesCompleted + 1)
-                    .arg(qMax<int64_t>(1, progress.totalFrames))
-                    .arg(progress.segmentIndex)
-                    .arg(progress.segmentCount)
-                    .arg(progress.segmentStartFrame)
-                    .arg(progress.segmentEndFrame)
-                    .arg(rendererMode)
-                    .arg(encoderMode)
-                    .arg(encoderLabel)
-                    .arg(formatEta(progress.estimatedRemainingMs))
-                    .arg(metricsTable));
-            if (showRenderPreviewCheckBox->isChecked() && !progress.previewFrame.isNull())
+                .arg(stageSummary(progress.encodeStageMs, progress.framesCompleted))
+                .arg(progress.audioSetupMs);
+            if (renderStatusLabel) {
+                renderStatusLabel->setText(
+                    QStringLiteral("<b>Rendering frame %1 of %2</b><br>"
+                                   "Segment %3/%4: %5-%6<br>"
+                                   "%7 | %8 (%9)<br>"
+                                   "ETA: %10<br>%11")
+                        .arg(progress.framesCompleted + 1)
+                        .arg(qMax<int64_t>(1, progress.totalFrames))
+                        .arg(progress.segmentIndex)
+                        .arg(progress.segmentCount)
+                        .arg(progress.segmentStartFrame)
+                        .arg(progress.segmentEndFrame)
+                        .arg(rendererMode)
+                        .arg(encoderMode)
+                        .arg(encoderLabel)
+                        .arg(formatEta(progress.estimatedRemainingMs))
+                        .arg(metricsTable));
+            }
+            if (showRenderPreviewCheckBox && showRenderPreviewCheckBox->isChecked() &&
+                renderPreviewLabel && !progress.previewFrame.isNull())
             {
                 const QPixmap pixmap = QPixmap::fromImage(progress.previewFrame).scaled(
                     renderPreviewLabel->size(),
@@ -924,12 +1099,18 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
                 renderPreviewLabel->setPixmap(pixmap);
                 renderPreviewLabel->setText(QString());
             }
-            renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
+            if (renderSourcesList) {
+                renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
+            }
             QCoreApplication::processEvents();
-            return !renderCancelled;
+            return !renderCancelled || !*renderCancelled;
         });
-    renderProgressBar->setValue(renderProgressBar->maximum());
-    progressDialog.close();
+    if (renderProgressBar) {
+        renderProgressBar->setValue(renderProgressBar->maximum());
+    }
+    if (progressDialog && progressControls->closeOnFinish) {
+        progressDialog->close();
+    }
     m_renderInProgress = false;
     m_lastRenderProfile = renderProfileFromResult(result);
     m_liveRenderProfile = QJsonObject{};
@@ -937,16 +1118,22 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
 
     if (result.success)
     {
-        QMessageBox::information(this, QStringLiteral("Render Complete"), result.message);
-        return;
+        if (notifyRenderCompletion) {
+            QMessageBox::information(this, QStringLiteral("Render Complete"), result.message);
+        }
+        return true;
     }
 
+    if (!notifyRenderCompletion) {
+        return false;
+    }
     const QString message = result.message.isEmpty()
                                 ? QStringLiteral("Render failed.")
                                 : result.message;
     QMessageBox::warning(this,
                          result.cancelled ? QStringLiteral("Render Cancelled") : QStringLiteral("Render Failed"),
                          message);
+    return false;
 }
 
 void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds)
@@ -1075,6 +1262,14 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
             QStringLiteral("Could not map selected speaker words to timeline frames."));
         return;
     }
+    timelineRanges = applySpeechFilterToExportRanges(timelineRanges);
+    if (timelineRanges.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Video"),
+            QStringLiteral("Speech filter removed all frames from the selected speaker export."));
+        return;
+    }
 
     setPlaybackActive(false);
 
@@ -1136,6 +1331,14 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
             this,
             QStringLiteral("Export Section"),
             QStringLiteral("Could not map the selected section to timeline frames."));
+        return;
+    }
+    timelineRanges = applySpeechFilterToExportRanges(timelineRanges);
+    if (timelineRanges.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Section"),
+            QStringLiteral("Speech filter removed all frames from the selected section export."));
         return;
     }
 
@@ -1238,8 +1441,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     for (const SpeakerSectionExportItem& section : sections) {
         if (!section.speakerId.trimmed().isEmpty() &&
             section.sourceStartFrame >= 0 &&
-            section.sourceEndFrame >= section.sourceStartFrame &&
-            section.wordCount >= 10) {
+            section.sourceEndFrame >= section.sourceStartFrame) {
             validSections.push_back(section);
         }
     }
@@ -1247,12 +1449,14 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
         QMessageBox::information(
             this,
             QStringLiteral("Export Sections"),
-            QStringLiteral("No contiguous transcript sections have 10 or more words."));
+            QStringLiteral("No contiguous transcript sections meet the current export filter."));
         return;
     }
+    const QVector<SpeakerSectionExportItem> exportSections =
+        coalescedAdjacentSpeakerSections(validSections);
 
     RenderRequest baseRequest = buildRenderRequestFromOutputControls();
-    if (!confirmContiguousSectionExportPreflight(this, &baseRequest, validSections.size())) {
+    if (!confirmContiguousSectionExportPreflight(this, &baseRequest, exportSections.size())) {
         return;
     }
     const QString outputFormat = baseRequest.outputFormat.isEmpty()
@@ -1267,7 +1471,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     }
     const QString outputDir = QFileDialog::getExistingDirectory(
         this,
-        QStringLiteral("Export 10+ Word Sections"),
+        QStringLiteral("Export Sections"),
         defaultDir);
     if (outputDir.isEmpty()) {
         return;
@@ -1276,72 +1480,233 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     setPlaybackActive(false);
 
     const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-    refreshAiIntegrationState();
-    const bool canUseAi = m_aiIntegrationEnabled && !m_aiAuthToken.trimmed().isEmpty();
-    QString aiUnavailableReason;
-    if (!canUseAi) {
-        aiUnavailableReason = m_aiAuthToken.trimmed().isEmpty()
-            ? QStringLiteral("AI login required.")
-            : m_aiIntegrationStatus;
-    }
+    struct BulkSectionExportJob {
+        SpeakerSectionExportItem section;
+        QVector<ExportRangeSegment> timelineRanges;
+        QString title;
+        QString outputPath;
+        bool skip = false;
+        bool alreadyExported = false;
+        bool unmapped = false;
+        int row = -1;
+    };
 
+    QVector<BulkSectionExportJob> jobs;
+    jobs.reserve(exportSections.size());
     QSet<QString> reservedPaths;
-    int exportedCount = 0;
-    int skippedCount = 0;
-    for (const SpeakerSectionExportItem& section : std::as_const(validSections)) {
-        QVector<ExportRangeSegment> timelineRanges =
-            timelineRangesForTranscriptSection(
-                *clip,
-                section.sourceStartFrame,
-                section.sourceEndFrame,
-                markers);
-        if (timelineRanges.isEmpty()) {
-            ++skippedCount;
-            continue;
-        }
-
-        QString aiTitle;
-        if (canUseAi) {
-            QJsonObject payload;
-            payload[QStringLiteral("task")] = QStringLiteral("name_transcript_section");
-            payload[QStringLiteral("instruction")] =
-                QStringLiteral("Return only a short title for this video section, ideally two to four words. No punctuation.");
-            payload[QStringLiteral("speaker_id")] = section.speakerId.trimmed();
-            payload[QStringLiteral("speaker_name")] = section.speakerDisplayName.simplified();
-            payload[QStringLiteral("section_ordinal")] = section.sectionOrdinal;
-            payload[QStringLiteral("section_text")] = section.snippet.simplified();
-            payload[QStringLiteral("source_start_frame")] = QString::number(section.sourceStartFrame);
-            payload[QStringLiteral("source_end_frame")] = QString::number(section.sourceEndFrame);
-            bool aiOk = false;
-            QString aiError;
-            const QJsonObject response = runAiAction(
-                QStringLiteral("name_transcript_section"), payload, &aiOk, &aiError);
-            if (aiOk) {
-                aiTitle = titleFromAiResponse(response);
-            } else if (aiUnavailableReason.isEmpty()) {
-                aiUnavailableReason = aiError.trimmed();
-            }
-        }
-
+    for (const SpeakerSectionExportItem& section : std::as_const(exportSections)) {
+        const QString title = speakerTrackSectionTitle(section);
         const QString fallbackTitle = speakerSectionFallbackTitle(
             section.speakerDisplayName,
             section.speakerId,
             section.sectionOrdinal,
             section.sourceStartFrame,
             section.sourceEndFrame);
-        const QString title = coupleWordTitle(aiTitle, fallbackTitle);
         const QString suggestedBase = sanitizedExportBaseName(title, fallbackTitle);
+        const QString outputPath = deterministicExportPath(outputDir, suggestedBase, outputFormat);
+        QVector<ExportRangeSegment> timelineRanges =
+            timelineRangesForTranscriptSection(
+                *clip,
+                section.sourceStartFrame,
+                section.sourceEndFrame,
+                markers);
+
+        BulkSectionExportJob job;
+        job.section = section;
+        job.timelineRanges = applySpeechFilterToExportRanges(timelineRanges);
+        job.title = title;
+        job.outputPath = outputPath;
+        job.unmapped = job.timelineRanges.isEmpty();
+        if (reservedPaths.contains(outputPath) || QFileInfo::exists(outputPath)) {
+            job.alreadyExported = true;
+            job.skip = true;
+        } else if (job.unmapped) {
+            job.skip = true;
+        }
+        reservedPaths.insert(outputPath);
+        job.row = jobs.size();
+        jobs.push_back(job);
+    }
+
+    QDialog bulkDialog(this);
+    bulkDialog.setWindowTitle(QStringLiteral("Bulk Render Export"));
+    bulkDialog.setWindowModality(Qt::ApplicationModal);
+    bulkDialog.resize(1180, 760);
+    bulkDialog.setStyleSheet(QStringLiteral(
+        "QDialog { background: #f6f3ee; }"
+        "QLabel { color: #1f2430; font-size: 13px; }"
+        "QTableWidget { background: #ffffff; color: #111827; gridline-color: #c9c2b8; }"
+        "QHeaderView::section { background: #e9e1d6; color: #1f2430; padding: 5px; border: 1px solid #c9c2b8; }"
+        "QProgressBar { border: 1px solid #c9c2b8; border-radius: 6px; text-align: center; background: #ffffff; min-height: 20px; }"
+        "QProgressBar::chunk { background: #2f7d67; border-radius: 5px; }"
+        "QPushButton { min-width: 96px; padding: 6px 14px; }"));
+    auto* bulkLayout = new QVBoxLayout(&bulkDialog);
+    bulkLayout->setContentsMargins(16, 16, 16, 16);
+    bulkLayout->setSpacing(10);
+
+    auto* renderPreviewLabel = new QLabel(&bulkDialog);
+    renderPreviewLabel->setAlignment(Qt::AlignCenter);
+    renderPreviewLabel->setMinimumSize(360, 202);
+    renderPreviewLabel->setStyleSheet(QStringLiteral(
+        "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
+    renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
+
+    auto* renderStatusLabel = new QLabel(QStringLiteral("Preparing bulk export..."), &bulkDialog);
+    renderStatusLabel->setWordWrap(true);
+    renderStatusLabel->setAlignment(Qt::AlignCenter);
+
+    auto* showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &bulkDialog);
+    showRenderPreviewCheckBox->setChecked(true);
+    QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, &bulkDialog, [renderPreviewLabel](bool checked) {
+        renderPreviewLabel->setVisible(checked);
+    });
+
+    auto* renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &bulkDialog);
+    renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    auto* renderSourcesList = new QPlainTextEdit(&bulkDialog);
+    renderSourcesList->setReadOnly(true);
+    renderSourcesList->setMinimumHeight(120);
+    renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
+
+    auto* jobTable = new QTableWidget(jobs.size(), 4, &bulkDialog);
+    jobTable->setHorizontalHeaderLabels({
+        QStringLiteral("#"),
+        QStringLiteral("Status"),
+        QStringLiteral("Video"),
+        QStringLiteral("Output")
+    });
+    jobTable->verticalHeader()->setVisible(false);
+    jobTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    jobTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    jobTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    jobTable->setAlternatingRowColors(false);
+    jobTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    jobTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    jobTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    jobTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    jobTable->setMinimumHeight(220);
+    for (const BulkSectionExportJob& job : std::as_const(jobs)) {
+        const int row = job.row;
+        auto* numberItem = new QTableWidgetItem(QString::number(row + 1));
+        auto* statusItem = new QTableWidgetItem;
+        auto* titleItem = new QTableWidgetItem(job.title);
+        auto* outputItem = new QTableWidgetItem(QDir::toNativeSeparators(job.outputPath));
+        numberItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        statusItem->setTextAlignment(Qt::AlignCenter);
+        for (QTableWidgetItem* item : {numberItem, statusItem, titleItem, outputItem}) {
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+        }
+        jobTable->setItem(row, 0, numberItem);
+        jobTable->setItem(row, 1, statusItem);
+        jobTable->setItem(row, 2, titleItem);
+        jobTable->setItem(row, 3, outputItem);
+        if (job.alreadyExported) {
+            setBulkExportRowStatus(jobTable, row, QStringLiteral("Already exported"), QColor(QStringLiteral("#9be7b0")));
+        } else if (job.unmapped) {
+            setBulkExportRowStatus(jobTable, row, QStringLiteral("Unmapped"), QColor(QStringLiteral("#fca5a5")));
+        } else {
+            setBulkExportRowStatus(jobTable, row, QStringLiteral("Remaining"), QColor(QStringLiteral("#fecaca")));
+        }
+    }
+
+    auto* contentRow = new QHBoxLayout;
+    contentRow->setSpacing(12);
+    auto* leftColumn = new QVBoxLayout;
+    leftColumn->setSpacing(10);
+    leftColumn->addWidget(renderStatusLabel);
+    leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
+    leftColumn->addWidget(renderSourcesLabel);
+    leftColumn->addWidget(renderSourcesList, 1);
+    auto* rightColumn = new QVBoxLayout;
+    rightColumn->setSpacing(10);
+    rightColumn->addWidget(renderPreviewLabel, 1);
+    contentRow->addLayout(leftColumn, 3);
+    contentRow->addLayout(rightColumn, 2);
+    bulkLayout->addLayout(contentRow);
+    bulkLayout->addWidget(jobTable, 1);
+
+    auto* renderProgressBar = new QProgressBar(&bulkDialog);
+    renderProgressBar->setValue(0);
+    bulkLayout->addWidget(renderProgressBar);
+
+    auto* buttonRow = new QHBoxLayout;
+    buttonRow->addStretch(1);
+    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &bulkDialog);
+    buttonRow->addWidget(cancelButton);
+    bulkLayout->addLayout(buttonRow);
+
+    bool bulkCancelled = false;
+    QObject::connect(cancelButton, &QPushButton::clicked, &bulkDialog, [&bulkCancelled, cancelButton]() {
+        bulkCancelled = true;
+        cancelButton->setEnabled(false);
+    });
+
+    RenderProgressDialogControls bulkControls;
+    bulkControls.dialog = &bulkDialog;
+    bulkControls.statusLabel = renderStatusLabel;
+    bulkControls.previewLabel = renderPreviewLabel;
+    bulkControls.previewCheckBox = showRenderPreviewCheckBox;
+    bulkControls.sourcesList = renderSourcesList;
+    bulkControls.progressBar = renderProgressBar;
+    bulkControls.cancelled = &bulkCancelled;
+    bulkControls.closeOnFinish = false;
+    bulkDialog.show();
+    QCoreApplication::processEvents();
+
+    int exportedCount = 0;
+    int skippedCount = 0;
+    int existingSkippedCount = 0;
+    int failedCount = 0;
+    for (BulkSectionExportJob& job : jobs) {
+        if (bulkCancelled) {
+            break;
+        }
+        if (job.alreadyExported) {
+            ++existingSkippedCount;
+            continue;
+        }
+        if (job.unmapped) {
+            ++skippedCount;
+            continue;
+        }
+
+        setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Exporting"), QColor(QStringLiteral("#fde68a")));
+        scrollBulkExportRowIntoView(jobTable, job.row);
+        QCoreApplication::processEvents();
+
         RenderRequest request = baseRequest;
-        request.outputPath = uniqueExportPath(outputDir, suggestedBase, outputFormat, &reservedPaths);
+        request.suppressCompletionDialog = true;
+        request.outputPath = job.outputPath;
         request.clips = m_timeline->clips();
         request.tracks = m_timeline->tracks();
         request.renderSyncMarkers = markers;
-        request.exportRanges = timelineRanges;
-        request.exportStartFrame = timelineRanges.constFirst().startFrame;
-        request.exportEndFrame = timelineRanges.constLast().endFrame;
+        request.exportRanges = job.timelineRanges;
+        request.exportStartFrame = job.timelineRanges.constFirst().startFrame;
+        request.exportEndFrame = job.timelineRanges.constLast().endFrame;
         m_lastRenderOutputPath = request.outputPath;
-        renderTimelineFromOutputRequest(request);
-        ++exportedCount;
+        if (renderTimelineFromOutputRequest(request, false, &bulkControls)) {
+            ++exportedCount;
+            setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Exported"), QColor(QStringLiteral("#9be7b0")));
+        } else {
+            if (bulkCancelled) {
+                setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Cancelled"), QColor(QStringLiteral("#fca5a5")));
+                break;
+            }
+            ++failedCount;
+            setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Failed"), QColor(QStringLiteral("#fca5a5")));
+        }
+        scrollBulkExportRowIntoView(jobTable, job.row);
+        QCoreApplication::processEvents();
+    }
+    cancelButton->setText(QStringLiteral("Close"));
+    cancelButton->setEnabled(true);
+    QObject::disconnect(cancelButton, nullptr, &bulkDialog, nullptr);
+    QObject::connect(cancelButton, &QPushButton::clicked, &bulkDialog, &QDialog::accept);
+    if (bulkCancelled) {
+        renderStatusLabel->setText(QStringLiteral("Bulk export cancelled."));
+    } else {
+        renderStatusLabel->setText(QStringLiteral("Bulk export complete."));
     }
 
     scheduleSaveState();
@@ -1350,9 +1715,21 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
         summary += QStringLiteral("\nSkipped %1 section(s) that could not be mapped to timeline frames.")
                        .arg(skippedCount);
     }
-    if (!canUseAi && !aiUnavailableReason.trimmed().isEmpty()) {
-        summary += QStringLiteral("\n\nAI naming was unavailable, so speaker/section fallback filenames were used.\n%1")
-                       .arg(aiUnavailableReason);
+    if (existingSkippedCount > 0) {
+        summary += QStringLiteral("\nSkipped %1 section video(s) because the output file already exists.")
+                       .arg(existingSkippedCount);
+    }
+    if (failedCount > 0) {
+        summary += QStringLiteral("\n%1 section video(s) failed to export; see the render profile for details.")
+                       .arg(failedCount);
+    }
+    if (bulkCancelled) {
+        summary += QStringLiteral("\nBulk export was cancelled.");
+    }
+    const int mergedCount = validSections.size() - exportSections.size();
+    if (mergedCount > 0) {
+        summary += QStringLiteral("\nCombined %1 adjacent same-speaker section(s) after filtering.")
+                       .arg(mergedCount);
     }
     QMessageBox::information(this, QStringLiteral("Export Sections"), summary);
 }

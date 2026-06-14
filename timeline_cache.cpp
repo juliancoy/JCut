@@ -543,6 +543,7 @@ QJsonObject TimelineCache::cacheResidencySnapshot() const {
     size_t gpuTextureFrames = 0;
     size_t totalCpuBytes = 0;
     size_t totalGpuBytes = 0;
+    QJsonObject byClip;
 
     QMutexLocker lock(&m_clipsMutex);
     for (auto cacheIt = m_caches.cbegin(); cacheIt != m_caches.cend(); ++cacheIt) {
@@ -557,6 +558,14 @@ QJsonObject TimelineCache::cacheResidencySnapshot() const {
         gpuTextureFrames += stats.gpuTextureFrames;
         totalCpuBytes += stats.cpuBytes;
         totalGpuBytes += stats.gpuBytes;
+        byClip.insert(cacheIt.key(), QJsonObject{
+            {QStringLiteral("frames"), static_cast<qint64>(stats.totalFrames)},
+            {QStringLiteral("hardware_frames"), static_cast<qint64>(stats.hardwareFrames)},
+            {QStringLiteral("cpu_backed_frames"), static_cast<qint64>(stats.cpuBackedFrames)},
+            {QStringLiteral("gpu_texture_frames"), static_cast<qint64>(stats.gpuTextureFrames)},
+            {QStringLiteral("cpu_bytes"), static_cast<qint64>(stats.cpuBytes)},
+            {QStringLiteral("gpu_bytes"), static_cast<qint64>(stats.gpuBytes)}
+        });
     }
 
     return QJsonObject{
@@ -565,7 +574,8 @@ QJsonObject TimelineCache::cacheResidencySnapshot() const {
         {QStringLiteral("cpu_backed_frames"), static_cast<qint64>(cpuBackedFrames)},
         {QStringLiteral("gpu_texture_frames"), static_cast<qint64>(gpuTextureFrames)},
         {QStringLiteral("cpu_bytes"), static_cast<qint64>(totalCpuBytes)},
-        {QStringLiteral("gpu_bytes"), static_cast<qint64>(totalGpuBytes)}
+        {QStringLiteral("gpu_bytes"), static_cast<qint64>(totalGpuBytes)},
+        {QStringLiteral("by_clip"), byClip}
     };
 }
 

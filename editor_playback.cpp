@@ -221,6 +221,20 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
     return m_effectivePlaybackRangesCache;
 }
 
+QVector<ExportRangeSegment> EditorWindow::applySpeechFilterToExportRanges(
+    const QVector<ExportRangeSegment>& ranges) const
+{
+    if (!m_timeline || ranges.isEmpty() || !speechFilterPlaybackEnabled()) {
+        return ranges;
+    }
+
+    return m_transcriptEngine.transcriptWordExportRanges(ranges,
+                                                        m_timeline->clips(),
+                                                        m_timeline->renderSyncMarkers(),
+                                                        m_transcriptPrependMs,
+                                                        m_transcriptPostpendMs);
+}
+
 QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() const
 {
     if (!m_timeline) {

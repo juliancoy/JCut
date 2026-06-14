@@ -86,11 +86,38 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerExportLongSectionsButton) {
         m_widgets.speakerExportLongSectionsButton->setToolTip(
-            QStringLiteral("Export every contiguous transcript section with at least 10 words."));
+            QStringLiteral("Export contiguous transcript sections that meet the minimum word count."));
         connect(m_widgets.speakerExportLongSectionsButton,
                 &QPushButton::clicked,
                 this,
                 &SpeakersTab::onSpeakerExportLongSectionsClicked);
+    }
+    if (m_widgets.speakerSectionMinimumWordsSpin) {
+        connect(m_widgets.speakerSectionMinimumWordsSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                [this](int value) {
+                    const int minimumWords = qBound(0, value, 1000);
+                    const TimelineClip* selectedClip =
+                        m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+                    if (selectedClip && m_speakerDeps.updateClipById) {
+                        m_speakerDeps.updateClipById(selectedClip->id, [minimumWords](TimelineClip& clip) {
+                            clip.speakerSectionMinimumWords = minimumWords;
+                        });
+                    }
+                    m_speakerSectionsTableRefreshSignature.clear();
+                    if (m_transcriptSession.hasObjectDocument() &&
+                        m_widgets.speakerShowContiguousSectionsCheckBox &&
+                        m_widgets.speakerShowContiguousSectionsCheckBox->isChecked()) {
+                        refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
+                    }
+                    if (m_speakerDeps.refreshPreview) {
+                        m_speakerDeps.refreshPreview();
+                    }
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
+                    }
+                });
     }
     if (m_widgets.speakerHideUnidentifiedCheckBox) {
         connect(m_widgets.speakerHideUnidentifiedCheckBox, &QCheckBox::toggled, this, [this]() {

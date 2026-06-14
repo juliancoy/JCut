@@ -207,6 +207,7 @@ struct TimelineClip {
     qreal speakerFramingCenterSmoothingStrength = 1.0;
     qreal speakerFramingZoomSmoothingStrength = 1.0;
     int speakerFramingGapHoldFrames = 0;
+    int speakerSectionMinimumWords = 10;
     static constexpr qreal kSpeakerFramingSmoothingStrengthMax = 5.0;
     bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;

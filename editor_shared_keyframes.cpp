@@ -62,6 +62,41 @@ bool currentThreadIsGuiThread()
     return app && QThread::currentThread() == app->thread();
 }
 
+QJsonObject transformKeyframeDiagnosticObject(const TimelineClip::TransformKeyframe& transform)
+{
+    return QJsonObject{
+        {QStringLiteral("frame"), static_cast<qint64>(transform.frame)},
+        {QStringLiteral("translation_x"), transform.translationX},
+        {QStringLiteral("translation_y"), transform.translationY},
+        {QStringLiteral("rotation"), transform.rotation},
+        {QStringLiteral("scale_x"), transform.scaleX},
+        {QStringLiteral("scale_y"), transform.scaleY},
+        {QStringLiteral("linear_interpolation"), transform.linearInterpolation}
+    };
+}
+
+QJsonArray intSetDiagnosticArray(const QSet<int>& values)
+{
+    QList<int> sorted = values.values();
+    std::sort(sorted.begin(), sorted.end());
+    QJsonArray array;
+    for (const int value : sorted) {
+        array.push_back(value);
+    }
+    return array;
+}
+
+QJsonArray stringSetDiagnosticArray(const QSet<QString>& values)
+{
+    QStringList sorted = values.values();
+    sorted.sort();
+    QJsonArray array;
+    for (const QString& value : sorted) {
+        array.push_back(value);
+    }
+    return array;
+}
+
 bool& speakerFramingRuntimeBuildAllowed()
 {
     static thread_local bool allowed = false;
@@ -218,21 +253,31 @@ QJsonArray sectionTrackMapForClip(const QJsonObject& transcriptRoot, const QStri
 
 QString sectionAssignmentCacheToken(const QJsonObject& row)
 {
-    auto trackToken = [&row]() {
+    auto canonicalStreamId = [](int trackId, const QString& streamId) {
+        const QString trimmed = streamId.trimmed();
+        if (trackId >= 0 && (trimmed.isEmpty() || trimmed == QStringLiteral("raw_detection"))) {
+            return QStringLiteral("T%1").arg(trackId);
+        }
+        return trimmed;
+    };
+    auto trackToken = [&row, &canonicalStreamId]() {
         QStringList ids;
         const QJsonArray entries = row.value(QStringLiteral("tracks")).toArray();
         if (!entries.isEmpty()) {
             for (const QJsonValue& value : entries) {
                 const QJsonObject entry = value.toObject();
                 const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
-                const QString streamId = entry.value(QStringLiteral("stream_id")).toString().trimmed();
+                const QString streamId = canonicalStreamId(
+                    trackId,
+                    entry.value(QStringLiteral("stream_id")).toString());
                 if (trackId >= 0 || !streamId.isEmpty()) {
                     ids.push_back(QStringLiteral("%1:%2").arg(trackId).arg(streamId));
                 }
             }
         } else {
             const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
-            const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+            const QString streamId =
+                canonicalStreamId(trackId, row.value(QStringLiteral("stream_id")).toString());
             if (trackId >= 0 || !streamId.isEmpty()) {
                 ids.push_back(QStringLiteral("%1:%2").arg(trackId).arg(streamId));
             }
@@ -253,9 +298,24 @@ QString sectionAssignmentCacheToken(const QJsonObject& row)
 
 QJsonArray sectionTrackEntriesForRuntime(const QJsonObject& row)
 {
+    auto canonicalStreamId = [](int trackId, const QString& streamId) {
+        const QString trimmed = streamId.trimmed();
+        if (trackId >= 0 && (trimmed.isEmpty() || trimmed == QStringLiteral("raw_detection"))) {
+            return QStringLiteral("T%1").arg(trackId);
+        }
+        return trimmed;
+    };
     QJsonArray entries = row.value(QStringLiteral("tracks")).toArray();
     if (!entries.isEmpty()) {
-        return entries;
+        QJsonArray normalized;
+        for (const QJsonValue& value : entries) {
+            QJsonObject entry = value.toObject();
+            const int trackId = entry.value(QStringLiteral("track_id")).toInt(-1);
+            entry[QStringLiteral("stream_id")] =
+                canonicalStreamId(trackId, entry.value(QStringLiteral("stream_id")).toString());
+            normalized.push_back(entry);
+        }
+        return normalized;
     }
     const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
     if (trackId < 0 && row.value(QStringLiteral("stream_id")).toString().trimmed().isEmpty()) {
@@ -263,9 +323,92 @@ QJsonArray sectionTrackEntriesForRuntime(const QJsonObject& row)
     }
     QJsonObject entry{
         {QStringLiteral("track_id"), trackId},
-        {QStringLiteral("stream_id"), row.value(QStringLiteral("stream_id")).toString().trimmed()}
+        {QStringLiteral("stream_id"),
+         canonicalStreamId(trackId, row.value(QStringLiteral("stream_id")).toString())}
     };
     return QJsonArray{entry};
+}
+
+int64_t sectionTranscriptFrameForSecondsRuntime(double seconds, bool roundUp)
+{
+    if (seconds < 0.0) {
+        return -1;
+    }
+    const double frame = seconds * static_cast<double>(kTimelineFps);
+    return qMax<int64_t>(
+        0,
+        static_cast<int64_t>(roundUp ? std::ceil(frame) : std::floor(frame)));
+}
+
+int sectionWordCountForRuntime(const QJsonObject& transcriptRoot,
+                               const QString& speakerId,
+                               int64_t startFrame,
+                               int64_t endFrame)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty() || startFrame < 0 || endFrame < startFrame) {
+        return 0;
+    }
+    int wordCount = 0;
+    const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segmentObj = segValue.toObject();
+        const QString segmentSpeaker =
+            segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        if (!words.isEmpty()) {
+            for (const QJsonValue& wordValue : words) {
+                const QJsonObject wordObj = wordValue.toObject();
+                if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                    continue;
+                }
+                QString wordSpeaker = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+                if (wordSpeaker.isEmpty()) {
+                    wordSpeaker = segmentSpeaker;
+                }
+                if (wordSpeaker != trimmedSpeakerId) {
+                    continue;
+                }
+                const int64_t wordFrame =
+                    sectionTranscriptFrameForSecondsRuntime(
+                        wordObj.value(QStringLiteral("start")).toDouble(-1.0), false);
+                if (wordFrame >= startFrame && wordFrame <= endFrame) {
+                    ++wordCount;
+                }
+            }
+            continue;
+        }
+        if (segmentSpeaker != trimmedSpeakerId ||
+            segmentObj.value(QStringLiteral("skipped")).toBool(false)) {
+            continue;
+        }
+        const int64_t segmentStart =
+            sectionTranscriptFrameForSecondsRuntime(
+                segmentObj.value(QStringLiteral("start")).toDouble(-1.0), false);
+        const int64_t segmentEnd =
+            sectionTranscriptFrameForSecondsRuntime(
+                segmentObj.value(QStringLiteral("end")).toDouble(-1.0), true);
+        if (segmentStart <= endFrame && segmentEnd >= startFrame) {
+            wordCount += segmentObj.value(QStringLiteral("text"))
+                             .toString()
+                             .split(QLatin1Char(' '), Qt::SkipEmptyParts)
+                             .size();
+        }
+    }
+    return wordCount;
+}
+
+int sectionAssignmentWordCountForRuntime(const QJsonObject& transcriptRoot, const QJsonObject& row)
+{
+    const int stored = row.value(QStringLiteral("word_count")).toInt(-1);
+    if (stored >= 0) {
+        return stored;
+    }
+    return sectionWordCountForRuntime(
+        transcriptRoot,
+        row.value(QStringLiteral("speaker_id")).toString().trimmed(),
+        row.value(QStringLiteral("start_frame")).toInteger(-1),
+        row.value(QStringLiteral("end_frame")).toInteger(-1));
 }
 
 int64_t transcriptFrameForMediaSourcePosition(const TimelineClip& clip, qreal mediaSourceFramePosition)
@@ -303,6 +446,10 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
         const int64_t endFrame = row.value(QStringLiteral("end_frame")).toInteger(-1);
         if (startFrame >= 0 && endFrame >= startFrame &&
             (transcriptFrame < startFrame || transcriptFrame > endFrame)) {
+            continue;
+        }
+        if (sectionAssignmentWordCountForRuntime(transcriptRoot, row) <
+            qBound(0, clip.speakerSectionMinimumWords, 1000)) {
             continue;
         }
         bool anyTrack = false;
@@ -1429,6 +1576,7 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
             TimelineClip::kSpeakerFramingSmoothingStrengthMax);
     clip.speakerFramingGapHoldFrames =
         qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
+    clip.speakerSectionMinimumWords = qBound(0, clip.speakerSectionMinimumWords, 1000);
 }
 
 void normalizeClipGradingKeyframes(TimelineClip& clip) {
@@ -1773,7 +1921,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     const QPointF& locationNorm,
     qreal boxSizeNorm,
     qreal rotationDegrees,
-    const QSize& outputSize)
+    const QSize& outputSize,
+    QJsonObject* diagnosticsOut)
 {
     TimelineClip::TransformKeyframe state;
     const qreal boundedRotation = qBound<qreal>(-180.0, rotationDegrees, 180.0);
@@ -1827,6 +1976,34 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     state.scaleX = scale;
     state.scaleY = scale;
     state.linearInterpolation = true;
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("target_box_norm"), QJsonObject{
+            {QStringLiteral("x"), targetXNorm},
+            {QStringLiteral("y"), targetYNorm},
+            {QStringLiteral("box"), targetBoxNorm}
+        });
+        diagnosticsOut->insert(QStringLiteral("sampled_face_box_norm"), QJsonObject{
+            {QStringLiteral("x"), qBound<qreal>(0.0, locationNorm.x(), 1.0)},
+            {QStringLiteral("y"), qBound<qreal>(0.0, locationNorm.y(), 1.0)},
+            {QStringLiteral("box"), safeBoxSizeNorm}
+        });
+        diagnosticsOut->insert(QStringLiteral("output_size"), QJsonObject{
+            {QStringLiteral("width"), safeOutput.width()},
+            {QStringLiteral("height"), safeOutput.height()}
+        });
+        diagnosticsOut->insert(QStringLiteral("source_size"), QJsonObject{
+            {QStringLiteral("width"), sourceSize.width()},
+            {QStringLiteral("height"), sourceSize.height()}
+        });
+        diagnosticsOut->insert(QStringLiteral("fitted_rect"), QJsonObject{
+            {QStringLiteral("x"), fittedRect.x()},
+            {QStringLiteral("y"), fittedRect.y()},
+            {QStringLiteral("width"), fittedRect.width()},
+            {QStringLiteral("height"), fittedRect.height()}
+        });
+        diagnosticsOut->insert(QStringLiteral("speaker_framing_transform"),
+                               transformKeyframeDiagnosticObject(state));
+    }
     return state;
 }
 
@@ -2095,11 +2272,18 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
                                                                      qreal timelineFramePosition,
                                                                      const QVector<RenderSyncMarker>& markers,
-                                                                     const QSize& outputSize) {
+                                                                     const QSize& outputSize,
+                                                                     QJsonObject* diagnosticsOut) {
     TimelineClip::TransformKeyframe state;
     state.rotation = 0.0;
     state.scaleX = 1.0;
     state.scaleY = 1.0;
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("clip_id"), clip.id);
+        diagnosticsOut->insert(QStringLiteral("timeline_frame_position"), timelineFramePosition);
+        diagnosticsOut->insert(QStringLiteral("speaker_framing_enabled"),
+                               evaluateClipSpeakerFramingEnabledAtPosition(clip, timelineFramePosition));
+    }
     if (!evaluateClipSpeakerFramingEnabledAtPosition(clip, timelineFramePosition)) {
         return state;
     }
@@ -2127,6 +2311,11 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             static_cast<int64_t>(std::floor(
                 (mediaSourceFramePosition / qMax<qreal>(1.0, sourceFps)) *
                 static_cast<qreal>(kTimelineFps))));
+        if (diagnosticsOut) {
+            diagnosticsOut->insert(QStringLiteral("media_source_frame_position"), mediaSourceFramePosition);
+            diagnosticsOut->insert(QStringLiteral("media_source_frame"), static_cast<qint64>(mediaSourceFrame));
+            diagnosticsOut->insert(QStringLiteral("transcript_frame"), static_cast<qint64>(transcriptFrame));
+        }
         const int speakerGapHoldFrames =
             qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
         auto activeSpeakerAtFrame = [&](int64_t frame) {
@@ -2163,9 +2352,45 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         QPointF location;
         qreal boxSize = -1.0;
         qreal sectionRotationDegrees = 0.0;
+        QSet<int> diagnosticAssignedTrackIds;
+        QSet<QString> diagnosticAssignedStreamIds;
+        QString diagnosticAssignmentCacheToken;
+        qreal diagnosticSectionRotationDegrees = 0.0;
+        if (diagnosticsOut && !activeSpeaker.isEmpty()) {
+            const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+            QJsonDocument transcriptDoc;
+            if (!transcriptPath.trimmed().isEmpty() &&
+                loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {
+                const QJsonObject transcriptRoot = transcriptDoc.object();
+                const bool matchedAssignment =
+                    collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
+                                                             clip,
+                                                             activeSpeaker,
+                                                             mediaSourceFramePosition,
+                                                             &diagnosticAssignedTrackIds,
+                                                             &diagnosticAssignedStreamIds,
+                                                             &diagnosticAssignmentCacheToken,
+                                                             &diagnosticSectionRotationDegrees);
+                diagnosticsOut->insert(QStringLiteral("section_mapping_active"),
+                                       !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty());
+                diagnosticsOut->insert(QStringLiteral("matched_section_assignment"), matchedAssignment);
+                diagnosticsOut->insert(QStringLiteral("assigned_track_ids"),
+                                       intSetDiagnosticArray(diagnosticAssignedTrackIds));
+                diagnosticsOut->insert(QStringLiteral("assigned_stream_ids"),
+                                       stringSetDiagnosticArray(diagnosticAssignedStreamIds));
+                diagnosticsOut->insert(QStringLiteral("assignment_cache_token"),
+                                       diagnosticAssignmentCacheToken);
+                diagnosticsOut->insert(QStringLiteral("section_rotation_degrees"),
+                                       diagnosticSectionRotationDegrees);
+            }
+        }
+        if (diagnosticsOut) {
+            diagnosticsOut->insert(QStringLiteral("active_speaker"), activeSpeaker);
+        }
         bool hasSample =
             manualContinuityTrackSampleForClip(
                 clip, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
+        QString sampleSource = hasSample ? QStringLiteral("manual_continuity_track") : QString();
         if (!hasSample && !activeSpeaker.isEmpty()) {
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
@@ -2175,10 +2400,16 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 &location,
                 &boxSize,
                 &sectionRotationDegrees);
+            if (hasSample) {
+                sampleSource = QStringLiteral("assigned_continuity_track");
+            }
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
             sectionRotationDegrees = 0.0;
             hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
+            if (hasSample) {
+                sampleSource = QStringLiteral("speaker_profile_tracking");
+            }
         }
         if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
             QString profileSpeaker;
@@ -2189,6 +2420,17 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 &location,
                 &boxSize,
                 &profileSpeaker);
+            if (hasSample) {
+                sampleSource = QStringLiteral("active_speaker_profile_tracking");
+                if (diagnosticsOut) {
+                    diagnosticsOut->insert(QStringLiteral("profile_speaker"), profileSpeaker);
+                }
+            }
+        }
+        if (diagnosticsOut) {
+            diagnosticsOut->insert(QStringLiteral("has_face_sample"), hasSample);
+            diagnosticsOut->insert(QStringLiteral("sample_source"), sampleSource);
+            diagnosticsOut->insert(QStringLiteral("applied_rotation_degrees"), sectionRotationDegrees);
         }
         if (!hasSample || boxSize <= 0.0) {
             return state;
@@ -2199,7 +2441,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             location,
             boxSize,
             sectionRotationDegrees,
-            outputSize);
+            outputSize,
+            diagnosticsOut);
     }
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         state = clip.speakerFramingKeyframes.constFirst();
@@ -2218,7 +2461,14 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
 
     const TimelineClip::TransformKeyframe target =
         evaluateClipSpeakerFramingTargetAtPosition(clip, timelineFramePosition);
-    return retargetSpeakerFramingTransform(state, target, clip, outputSize);
+    TimelineClip::TransformKeyframe retargeted =
+        retargetSpeakerFramingTransform(state, target, clip, outputSize);
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("sample_source"), QStringLiteral("speaker_framing_keyframe"));
+        diagnosticsOut->insert(QStringLiteral("speaker_framing_transform"),
+                               transformKeyframeDiagnosticObject(retargeted));
+    }
+    return retargeted;
 }
 
 TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::TransformKeyframe& base,
@@ -2271,15 +2521,29 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
                                                                       qreal timelineFramePosition,
                                                                       const QVector<RenderSyncMarker>& markers,
-                                                                      const QSize& outputSize) {
+                                                                      const QSize& outputSize,
+                                                                      QJsonObject* diagnosticsOut) {
+    TimelineClip::TransformKeyframe finalTransform;
     if (evaluateClipSpeakerFramingEnabledAtPosition(clip, timelineFramePosition)) {
-        return composeClipTransforms(
+        finalTransform = composeClipTransforms(
             clipBaseTransformOnly(clip),
-            evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, markers, outputSize));
+            evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, markers, outputSize, diagnosticsOut));
+        if (diagnosticsOut) {
+            diagnosticsOut->insert(QStringLiteral("base_transform_source"), QStringLiteral("clip_base_only"));
+            diagnosticsOut->insert(QStringLiteral("final_render_transform"),
+                                   transformKeyframeDiagnosticObject(finalTransform));
+        }
+        return finalTransform;
     }
-    return composeClipTransforms(
+    finalTransform = composeClipTransforms(
         evaluateClipTransformAtPosition(clip, timelineFramePosition),
-        evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, markers, outputSize));
+        evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, markers, outputSize, diagnosticsOut));
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("base_transform_source"), QStringLiteral("clip_keyframed_transform"));
+        diagnosticsOut->insert(QStringLiteral("final_render_transform"),
+                               transformKeyframeDiagnosticObject(finalTransform));
+    }
+    return finalTransform;
 }
 
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {
