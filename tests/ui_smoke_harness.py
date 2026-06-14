@@ -588,6 +588,7 @@ def main() -> int:
                 "clipId": "clip_video_01",
                 "filePath": str(SPEAKER_FLOW_CLIP),
                 "transcriptPath": str(SPEAKER_FLOW_CLIP.with_name(f"{SPEAKER_FLOW_CLIP.stem}_editable.json")),
+                "full": "1",
             })
             track_map_payload = request(
                 base_url,

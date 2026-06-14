@@ -235,6 +235,55 @@ QJsonObject EditorWindow::profilingSnapshot() const
     return snapshot;
 }
 
+QJsonObject EditorWindow::speakerUiPerformanceSnapshot() const
+{
+    QJsonObject snapshot{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("playback_active"), m_playbackTimer.isActive()},
+        {QStringLiteral("last_inspector_refresh_duration_ms"), m_lastInspectorRefreshDurationMs.load()},
+        {QStringLiteral("max_inspector_refresh_duration_ms"), m_maxInspectorRefreshDurationMs.load()},
+        {QStringLiteral("slow_inspector_refresh_count"), m_inspectorRefreshSlowCount.load()}
+    };
+    if (!m_speakersTab) {
+        snapshot[QStringLiteral("ok")] = false;
+        snapshot[QStringLiteral("error")] = QStringLiteral("speakers tab not initialized");
+        return snapshot;
+    }
+    snapshot[QStringLiteral("last_speakers_table_refresh_duration_ms")] =
+        m_speakersTab->lastSpeakersTableRefreshDurationMs();
+    snapshot[QStringLiteral("max_speakers_table_refresh_duration_ms")] =
+        m_speakersTab->maxSpeakersTableRefreshDurationMs();
+    snapshot[QStringLiteral("last_speaker_sections_table_refresh_duration_ms")] =
+        m_speakersTab->lastSpeakerSectionsTableRefreshDurationMs();
+    snapshot[QStringLiteral("max_speaker_sections_table_refresh_duration_ms")] =
+        m_speakersTab->maxSpeakerSectionsTableRefreshDurationMs();
+    snapshot[QStringLiteral("last_speaker_sections_table_row_count")] =
+        m_speakersTab->lastSpeakerSectionsTableRowCount();
+    snapshot[QStringLiteral("last_speaker_sections_table_refresh_skipped_reason")] =
+        m_speakersTab->lastSpeakerSectionsTableRefreshSkippedReason();
+    snapshot[QStringLiteral("speaker_sections_table_refresh_cache_hit_count")] =
+        m_speakersTab->speakerSectionsTableRefreshCacheHitCount();
+    snapshot[QStringLiteral("last_playhead_track_candidates_refresh_duration_ms")] =
+        m_speakersTab->lastPlayheadTrackCandidatesRefreshDurationMs();
+    snapshot[QStringLiteral("max_playhead_track_candidates_refresh_duration_ms")] =
+        m_speakersTab->maxPlayheadTrackCandidatesRefreshDurationMs();
+    snapshot[QStringLiteral("last_playhead_track_candidate_count")] =
+        m_speakersTab->lastPlayheadTrackCandidateCount();
+    snapshot[QStringLiteral("last_facedetections_panel_refresh_duration_ms")] =
+        m_speakersTab->lastFaceDetectionsPanelRefreshDurationMs();
+    snapshot[QStringLiteral("max_facedetections_panel_refresh_duration_ms")] =
+        m_speakersTab->maxFaceDetectionsPanelRefreshDurationMs();
+    snapshot[QStringLiteral("last_raw_detections_panel_refresh_duration_ms")] =
+        m_speakersTab->lastRawDetectionsPanelRefreshDurationMs();
+    snapshot[QStringLiteral("max_raw_detections_panel_refresh_duration_ms")] =
+        m_speakersTab->maxRawDetectionsPanelRefreshDurationMs();
+    snapshot[QStringLiteral("track_assignment")] =
+        m_speakersTab->trackAssignmentTimingProfile();
+    snapshot[QStringLiteral("section_selection")] =
+        m_speakersTab->speakerSectionSelectionTimingProfile();
+    return snapshot;
+}
+
 QJsonObject EditorWindow::streamTimingSnapshot() const
 {
     const qint64 now = nowMs();

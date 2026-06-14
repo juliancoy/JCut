@@ -173,7 +173,11 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
 }
 
 void TimelineWidget::setCurrentFrame(int64_t frame) {
-    m_currentFrame = qMax<int64_t>(0, frame);
+    const int64_t boundedFrame = qMax<int64_t>(0, frame);
+    if (m_currentFrame == boundedFrame) {
+        return;
+    }
+    m_currentFrame = boundedFrame;
     normalizeExportRange();
     update();
 }

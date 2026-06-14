@@ -109,6 +109,22 @@ QJsonObject speakerFlowClipPayloadForRoute(const QJsonObject& transcriptRoot, co
     return speakerFlow.value(QStringLiteral("clips")).toObject().value(clipId.trimmed()).toObject();
 }
 
+QJsonObject speakerFlowClipSummaryForRoute(const QJsonObject& clipPayload)
+{
+    const QJsonObject resolved = clipPayload.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonObject trackMemory = clipPayload.value(QStringLiteral("track_memory")).toObject();
+    return QJsonObject{
+        {QStringLiteral("has_payload"), !clipPayload.isEmpty()},
+        {QStringLiteral("updated_at_utc"), clipPayload.value(QStringLiteral("updated_at_utc")).toString()},
+        {QStringLiteral("has_resolved_current"), !resolved.isEmpty()},
+        {QStringLiteral("section_track_map_count"),
+         resolved.value(QStringLiteral("section_track_map")).toArray().size()},
+        {QStringLiteral("track_memory_count"), trackMemory.size()},
+        {QStringLiteral("omitted_large_fields"),
+         QJsonArray{QStringLiteral("track_memory"), QStringLiteral("resolved_current")}}
+    };
+}
+
 QJsonArray sectionTrackMapForRoute(const QJsonObject& transcriptRoot, const QString& clipId)
 {
     const QJsonObject clipPayload = speakerFlowClipPayloadForRoute(transcriptRoot, clipId);
@@ -542,6 +558,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /decode/rates</strong> - Decode benchmark for current project media</div>
         <div class="endpoint"><strong>GET /decode/seeks</strong> - Seek benchmark for current project media</div>
         <div class="endpoint"><strong>GET /diag/perf</strong> - Performance diagnostics</div>
+        <div class="endpoint"><strong>GET /diag/speakers-refresh</strong> - Lightweight speaker UI refresh timings</div>
         <div class="endpoint"><strong>GET /diag/frame-trace</strong> - Recent frame/heartbeat trace and freeze events</div>
         <div class="endpoint"><strong>GET /diag/stream-timing</strong> - Per-stream timing compared with the master transport and wall clock</div>
         <div class="endpoint"><strong>GET /timeline</strong> - Timeline information</div>
@@ -896,6 +913,30 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
                        query.queryItemValue(key, QUrl::FullyEncoded).toUtf8())
                 .trimmed();
         };
+        auto queryEnabled = [&query](const QString& key) {
+            const QString value = query.queryItemValue(key).trimmed().toLower();
+            return value == QStringLiteral("1") ||
+                   value == QStringLiteral("true") ||
+                   value == QStringLiteral("yes") ||
+                   value == QStringLiteral("full");
+        };
+        const QString includeParam = decodedQueryItem(QStringLiteral("include")).toLower();
+        const QStringList includeTokens =
+            includeParam.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        auto includes = [&includeTokens](const QString& token) {
+            return includeTokens.contains(token.toLower()) ||
+                   includeTokens.contains(QStringLiteral("all")) ||
+                   includeTokens.contains(QStringLiteral("full"));
+        };
+        const bool fullResponse = queryEnabled(QStringLiteral("full")) ||
+                                  queryEnabled(QStringLiteral("verbose")) ||
+                                  includes(QStringLiteral("all"));
+        const bool includeClipPayload = fullResponse || includes(QStringLiteral("clip")) ||
+                                        includes(QStringLiteral("speaker_flow_clip"));
+        const bool includeSections = fullResponse || includes(QStringLiteral("sections")) ||
+                                     includes(QStringLiteral("contiguous_sections"));
+        const bool includeIdentityMap = fullResponse || includes(QStringLiteral("identity")) ||
+                                        includes(QStringLiteral("track_identity_map"));
         const QJsonObject clip = selectedClipObjectFromState(state);
         QString clipId = decodedQueryItem(QStringLiteral("clipId"));
         if (clipId.isEmpty()) {
@@ -948,10 +989,11 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
         const QJsonObject speakerFlowClip =
             speakerFlowClipPayloadForRoute(transcriptRoot, clipId);
         const QJsonArray sectionMap = sectionTrackMapForRoute(transcriptRoot, clipId);
-        const QJsonArray identityMap =
-            jcut::speakertrack::assignmentMapForClip(transcriptRoot, clipId);
         const QJsonArray contiguousSections =
             contiguousTranscriptSectionsForRoute(transcriptRoot, sectionMap);
+        const QJsonArray identityMap = includeIdentityMap
+            ? jcut::speakertrack::assignmentMapForClip(transcriptRoot, clipId)
+            : QJsonArray{};
         const qint64 currentFrame = state.value(QStringLiteral("currentFrame")).toInteger();
         QJsonObject activeSection;
         QJsonObject activeAssignment;
@@ -966,7 +1008,7 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
                 break;
             }
         }
-        writeJson(socket, 200, QJsonObject{
+        QJsonObject response{
             {QStringLiteral("ok"), true},
             {QStringLiteral("selected_clip_id"), clipId},
             {QStringLiteral("selected_clip_file_path"), clipFilePath},
@@ -976,13 +1018,33 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             {QStringLiteral("current_frame"), currentFrame},
             {QStringLiteral("active_section"), activeSection},
             {QStringLiteral("active_assignment"), activeAssignment},
-            {QStringLiteral("speaker_flow_clip"), speakerFlowClip},
+            {QStringLiteral("speaker_flow_clip_summary"),
+             speakerFlowClipSummaryForRoute(speakerFlowClip)},
             {QStringLiteral("section_track_map"),
              decorateTrackMapRowsForRoute(sectionMap, transcriptRoot)},
-            {QStringLiteral("track_identity_map"),
-             decorateTrackMapRowsForRoute(identityMap, transcriptRoot)},
-            {QStringLiteral("contiguous_sections"), contiguousSections}
-        });
+            {QStringLiteral("section_track_map_count"), sectionMap.size()},
+            {QStringLiteral("contiguous_section_count"), contiguousSections.size()},
+            {QStringLiteral("track_identity_map_count"),
+             speakerFlowClip.value(QStringLiteral("resolved_current"))
+                 .toObject()
+                 .value(QStringLiteral("track_identity_map"))
+                 .toArray()
+                 .size()},
+            {QStringLiteral("compact"), !fullResponse},
+            {QStringLiteral("full_query_hint"),
+             QStringLiteral("/speaker-flow/track-map?full=1 or ?include=sections,identity,clip")}
+        };
+        if (includeClipPayload) {
+            response[QStringLiteral("speaker_flow_clip")] = speakerFlowClip;
+        }
+        if (includeIdentityMap) {
+            response[QStringLiteral("track_identity_map")] =
+                decorateTrackMapRowsForRoute(identityMap, transcriptRoot);
+        }
+        if (includeSections) {
+            response[QStringLiteral("contiguous_sections")] = contiguousSections;
+        }
+        writeJson(socket, 200, response);
         return true;
     }
 
@@ -1499,6 +1561,28 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
                 {QStringLiteral("seeks"), decodeJobMeta(m_decodeSeeksJob, QStringLiteral("decode/seeks"))}
             }},
             {QStringLiteral("debug"), editor::debugControlsSnapshot()}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/diag/speakers-refresh")) {
+        QJsonObject speakers;
+        QString error;
+        const bool refreshed = invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &speakers, [this]() {
+            return m_speakerUiSnapshotCallback ? m_speakerUiSnapshotCallback() : QJsonObject{};
+        });
+        if (!refreshed) {
+            error = QStringLiteral("timed out waiting for speaker UI diagnostic snapshot");
+        } else if (speakers.isEmpty()) {
+            speakers = QJsonObject{{QStringLiteral("ok"), false},
+                                   {QStringLiteral("error"), QStringLiteral("speaker UI snapshot callback not configured")}};
+        }
+        writeJson(socket, refreshed ? 200 : 503, QJsonObject{
+            {QStringLiteral("ok"), refreshed && speakers.value(QStringLiteral("ok")).toBool(true)},
+            {QStringLiteral("speakers_refresh"), speakers},
+            {QStringLiteral("ui_error"), error},
+            {QStringLiteral("fast_snapshot"), fastSnapshot()}
         });
         return true;
     }

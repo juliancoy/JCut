@@ -325,7 +325,13 @@ void VulkanPreviewSurface::setPlaybackSpeed(qreal speed)
 
 void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
 {
-    m_interaction.currentFrame = std::max<int64_t>(0, frame);
+    const int64_t boundedFrame = std::max<int64_t>(0, frame);
+    if (m_interaction.currentFrame == boundedFrame &&
+        qFuzzyCompare(m_interaction.currentFramePosition + 1.0,
+                      static_cast<qreal>(boundedFrame) + 1.0)) {
+        return;
+    }
+    m_interaction.currentFrame = boundedFrame;
     m_interaction.currentFramePosition = static_cast<qreal>(m_interaction.currentFrame);
     if (m_cache) {
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
@@ -340,7 +346,11 @@ void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
 
 void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
 {
-    m_interaction.currentSample = std::max<int64_t>(0, samplePosition);
+    const int64_t boundedSample = std::max<int64_t>(0, samplePosition);
+    if (m_interaction.currentSample == boundedSample) {
+        return;
+    }
+    m_interaction.currentSample = boundedSample;
     m_interaction.currentFramePosition = samplesToFramePosition(m_interaction.currentSample);
     m_interaction.currentFrame = qMax<int64_t>(
         0, static_cast<int64_t>(std::floor(m_interaction.currentFramePosition)));

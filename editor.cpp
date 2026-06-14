@@ -1022,6 +1022,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
     const bool speakerShowContiguousTranscriptSections =
         root.value(QStringLiteral("speakerShowContiguousTranscriptSections")).toBool(false);
+    const bool speakerApplyTrackToAllMatchingSections =
+        root.value(QStringLiteral("speakerApplyTrackToAllMatchingSections")).toBool(false);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
     const bool previewShowCurrentSpeakerName =
@@ -1515,6 +1517,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speakerShowContiguousSectionsCheckBox) {
         QSignalBlocker block(m_speakerShowContiguousSectionsCheckBox);
         m_speakerShowContiguousSectionsCheckBox->setChecked(speakerShowContiguousTranscriptSections);
+    }
+    if (m_speakerApplyTrackToAllMatchingSectionsCheckBox) {
+        QSignalBlocker block(m_speakerApplyTrackToAllMatchingSectionsCheckBox);
+        m_speakerApplyTrackToAllMatchingSectionsCheckBox->setChecked(speakerApplyTrackToAllMatchingSections);
     }
     if (m_speakerShowRawDetectionsCheckBox) {
         QSignalBlocker block(m_speakerShowRawDetectionsCheckBox);

@@ -1410,6 +1410,12 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowContiguousSectionsCheckBox->hide();
     m_speakerShowContiguousSectionsCheckBox->setToolTip(
         QStringLiteral("Switch assignment rows from speakers to transcript-ordered contiguous sections."));
+    m_speakerApplyTrackToAllMatchingSectionsCheckBox =
+        new QCheckBox(QStringLiteral("Apply Track To All Matching Sections"), page);
+    m_speakerApplyTrackToAllMatchingSectionsCheckBox->setChecked(false);
+    m_speakerApplyTrackToAllMatchingSectionsCheckBox->hide();
+    m_speakerApplyTrackToAllMatchingSectionsCheckBox->setToolTip(
+        QStringLiteral("When enabled, a face-track click updates every matching contiguous transcript section at the track time. Off by default; otherwise only the active playhead section is updated."));
     m_speakerExportLongSectionsButton = new QPushButton(QStringLiteral("Export Sections"), page);
     m_speakerExportLongSectionsButton->setObjectName(QStringLiteral("speakers.export_long_sections"));
     m_speakerExportLongSectionsButton->setMinimumHeight(30);
@@ -1536,16 +1542,21 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerSectionsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_speakerSectionsTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_speakerSectionsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_speakerSectionsTable->setWordWrap(false);
+    m_speakerSectionsTable->setTextElideMode(Qt::ElideRight);
     m_speakerSectionsTable->verticalHeader()->setVisible(false);
-    m_speakerSectionsTable->horizontalHeader()->setStretchLastSection(false);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
+    QHeaderView* sectionsHeader = m_speakerSectionsTable->horizontalHeader();
+    sectionsHeader->setStretchLastSection(false);
+    sectionsHeader->setMinimumSectionSize(36);
+    sectionsHeader->setSectionResizeMode(QHeaderView::Interactive);
+    m_speakerSectionsTable->setColumnWidth(0, 76);
+    m_speakerSectionsTable->setColumnWidth(1, 48);
+    m_speakerSectionsTable->setColumnWidth(2, 150);
+    m_speakerSectionsTable->setColumnWidth(3, 150);
+    m_speakerSectionsTable->setColumnWidth(4, 140);
+    m_speakerSectionsTable->setColumnWidth(5, 96);
+    m_speakerSectionsTable->setColumnWidth(6, 68);
+    m_speakerSectionsTable->setColumnWidth(7, 420);
     m_speakerSectionsTable->hide();
 
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
@@ -1968,6 +1979,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     assignmentControlsLayout->addWidget(speakerRowsButton);
     assignmentControlsLayout->addWidget(sectionRowsButton);
     assignmentControlsLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
+    assignmentControlsLayout->addWidget(m_speakerApplyTrackToAllMatchingSectionsCheckBox);
     assignmentControlsLayout->addStretch(1);
     assignmentControlsLayout->addWidget(m_speakerExportLongSectionsButton);
     speakerAssignmentsLayout->addWidget(assignmentControlsGroup);

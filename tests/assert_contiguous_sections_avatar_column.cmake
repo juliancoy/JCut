@@ -51,11 +51,20 @@ endif()
 foreach(required IN ITEMS
         "QStringLiteral\\(\"Rotation\"\\)"
         "QAbstractItemView::DoubleClicked"
-        "QAbstractItemView::EditKeyPressed")
+        "QAbstractItemView::EditKeyPressed"
+        "setHorizontalScrollBarPolicy\\(Qt::ScrollBarAsNeeded\\)"
+        "setHorizontalScrollMode\\(QAbstractItemView::ScrollPerPixel\\)"
+        "setSectionResizeMode\\(QHeaderView::Interactive\\)"
+        "setColumnWidth\\(5, 96\\)")
     if(NOT inspector_source MATCHES "${required}")
         message(FATAL_ERROR "Contiguous transcript section table must expose editable per-row rotation: missing ${required}")
     endif()
 endforeach()
+
+if(inspector_source MATCHES "m_speakerSectionsTable->horizontalHeader\\(\\)->setSectionResizeMode\\(7, QHeaderView::Stretch\\)" OR
+   inspector_source MATCHES "sectionsHeader->setStretchLastSection\\(true\\)")
+    message(FATAL_ERROR "Contiguous transcript section table must keep horizontal scrolling available; transcript column must not stretch over rotation")
+endif()
 
 foreach(required IN ITEMS
         "continuityTrackAvatar"
@@ -110,11 +119,17 @@ endforeach()
 foreach(required IN ITEMS
         "saveSpeakerSectionRotation\\(int row, qreal rotation\\)"
         "sectionRow\\[QStringLiteral\\(\"rotation\"\\)\\] = rotation"
-        "entry\\[QStringLiteral\\(\"rotation\"\\)\\] = rotation")
+        "entry\\[QStringLiteral\\(\"rotation\"\\)\\] = rotation"
+        "contiguous_section_rotation"
+        "sectionRow\\[QStringLiteral\\(\"tracks\"\\)\\] = QJsonArray\\(\\)")
     if(NOT tracks_source MATCHES "${required}")
         message(FATAL_ERROR "Contiguous transcript section rotation must persist on section rows and track entries: missing ${required}")
     endif()
 endforeach()
+
+if(tracks_source MATCHES "row\\.remove\\(QStringLiteral\\(\"rotation\"\\)\\)")
+    message(FATAL_ERROR "Rotation-only contiguous section rows must preserve rotation even before tracks are assigned")
+endif()
 
 if(speakers_source MATCHES "speakerSectionsTable->item\\([^,]+, 1\\)" OR
    speakers_source MATCHES "speakerSectionsTable->setCurrentCell\\([^,]+, 1\\)" OR
@@ -133,15 +148,23 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
-if(NOT speakers_header MATCHES "refreshVisibleSpeakerSectionAssignments" OR
-   NOT speakers_source MATCHES "refreshVisibleSpeakerSectionAssignments" OR
+if(NOT speakers_header MATCHES "refreshVisibleSpeakerSectionAssignments\\(const QString& speakerId,[ \n\r\t]*int64_t onlyStartFrame = -1,[ \n\r\t]*int64_t onlyEndFrame = -1\\)" OR
+   NOT speakers_source MATCHES "onlyStartFrame" OR
+   NOT speakers_source MATCHES "onlyEndFrame" OR
    NOT tracks_source MATCHES "refreshVisibleSpeakerSectionAssignments\\(trimmedSpeakerId\\)")
     message(FATAL_ERROR "Track assignment persistence must update visible contiguous section rows without rebuilding the table")
+endif()
+
+if(NOT tracks_source MATCHES "refreshVisibleSpeakerSectionAssignments\\(trimmedSpeakerId, section\\.first, section\\.second\\)" OR
+   NOT tracks_source MATCHES "refreshVisibleSpeakerSectionAssignments\\(speakerId, startFrame, endFrame\\)")
+    message(FATAL_ERROR "Contiguous transcript assignment and rotation must refresh only the affected section row")
 endif()
 
 foreach(required IN ITEMS
         "section_track_map"
         "assignTrackToContiguousSection"
+        "assignTrackToContiguousSections"
+        "speakerSectionRowsAtFrame"
         "deassignTrackFromContiguousSection"
         "contiguousTranscriptSectionModeActive"
         "contiguous_section_mode_active")
@@ -150,21 +173,32 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
-if(NOT tracks_source MATCHES "sameSection" OR
-   NOT tracks_source MATCHES "sameTrack" OR
+if(NOT tracks_source MATCHES "targetSectionKeys" OR
    NOT tracks_source MATCHES "sectionTrackEntriesWithTrack" OR
    NOT tracks_source MATCHES "row\\[QStringLiteral\\(\"tracks\"\\)\\] = entries" OR
-   NOT tracks_source MATCHES "resolvedPayload\\[QStringLiteral\\(\"section_track_map\"\\)\\] = nextMap")
+   NOT tracks_source MATCHES "resolvedPayload\\[QStringLiteral\\(\"section_track_map\"\\)\\] = nextMap" OR
+   NOT tracks_source MATCHES "targetSections")
     message(FATAL_ERROR "Contiguous transcript section mapping must maintain row-scoped multi-track section assignments")
 endif()
 
+if(tracks_source MATCHES "if \\(!sameTrack\\)")
+    message(FATAL_ERROR "A continuity track may be assigned to multiple contiguous transcript sections; assignment must not evict same-track rows from other sections")
+endif()
+
 if(NOT tracks_source MATCHES "PlayheadTrackAssignedSpeakerIdRole" OR
-   NOT tracks_source MATCHES "contiguousTranscriptSectionModeActive\\(\\) \\? QString\\(\\) : assignedSpeakerId")
+   NOT tracks_source MATCHES "contiguousTranscriptSectionModeActive\\(\\) \\? QString\\(\\) : assignedSpeakerId" OR
+   NOT tracks_source MATCHES "emptyContiguousModeCache")
     message(FATAL_ERROR "Contiguous transcript playhead candidates must not expose speaker-level track identity assignments")
 endif()
 
 if(tracks_source MATCHES "refreshSpeakerSectionsTable\\(m_transcriptSession\\.rootObject\\(\\)\\)")
     message(FATAL_ERROR "Track assignment persistence must not rebuild all contiguous transcript sections")
+endif()
+
+if(NOT tracks_source MATCHES "last_mode\"\\)\\] = QStringLiteral\\(\"contiguous_section\"\\)" OR
+   NOT tracks_source MATCHES "last_save_queue_ms" OR
+   NOT tracks_source MATCHES "queueLoadedTranscriptDocumentSave\\(\\)")
+    message(FATAL_ERROR "Contiguous transcript section assignment must expose phase timing and queue transcript persistence off the UI path")
 endif()
 
 foreach(required IN ITEMS
@@ -198,9 +232,11 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
-if(NOT keyframes_source MATCHES "collectSectionTrackAssignmentsForSpeaker\\(transcriptRoot,[ \n\r\t]*clip,[ \n\r\t]*trimmedSpeakerId,[ \n\r\t]*mediaSourceFramePosition" OR
-   NOT keyframes_source MATCHES "jcut::speakertrack::assignmentMapForClip\\(transcriptRoot, clip\\.id\\)")
-    message(FATAL_ERROR "Runtime speaker framing must prefer section_track_map at the current frame and only then fall back to identity mapping")
+if(NOT keyframes_source MATCHES "sectionMappingActive" OR
+   NOT keyframes_source MATCHES "sectionMappingActive && !matchedSectionAssignment" OR
+   NOT keyframes_source MATCHES "!sectionMappingActive &&[ \n\r\t]*cachedAssignedContinuityStreamsPtr" OR
+   NOT keyframes_source MATCHES "if \\(sectionMap\\.isEmpty\\(\\)\\)")
+    message(FATAL_ERROR "Runtime speaker framing must use either section_track_map or track_identity_map, never both for the same clip")
 endif()
 
 foreach(required IN ITEMS
@@ -212,6 +248,11 @@ foreach(required IN ITEMS
         "active_assignment"
         "contiguousTranscriptSectionsForRoute"
         "speaker_flow_clip"
+        "speaker_flow_clip_summary"
+        "full_query_hint"
+        "includeClipPayload"
+        "includeSections"
+        "includeIdentityMap"
         "selected_clip_file_path"
         "transcriptPath"
         "clipId"

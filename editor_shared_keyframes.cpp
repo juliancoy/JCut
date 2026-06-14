@@ -700,41 +700,49 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         QString assignmentCacheToken;
         qreal sectionRotationDegrees = 0.0;
         if (!transcriptPath.trimmed().isEmpty() &&
-            loadTranscriptJsonCached(transcriptPath, &transcriptDoc) &&
-            collectSectionTrackAssignmentsForSpeaker(transcriptDoc.object(),
-                                                     clip,
-                                                     trimmedSpeakerId,
-                                                     mediaSourceFramePosition,
-                                                     &assignedTrackIds,
-                                                     &assignedStreamIds,
-                                                     &assignmentCacheToken,
-                                                     &sectionRotationDegrees) &&
-            !assignmentCacheToken.isEmpty()) {
-            if (rotationDegreesOut) {
-                *rotationDegreesOut = sectionRotationDegrees;
-            }
-            const QString sectionCacheKey =
-                assignedContinuityCacheKey(clip.filePath, clip.id, assignmentCacheToken);
-            if (cachedAssignedContinuityStreamsMemoryOnly(sectionCacheKey, &cachedStreams)) {
-                const auto& streams =
-                    cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
-                for (const jcut::facedetections::FacestreamTrack& stream : streams) {
-                    if (streamSampleAtFrame(clip,
-                                            stream,
-                                            timelineFramePosition,
-                                            mediaSourceFramePosition,
-                                            clip.speakerFramingCenterSmoothingFrames,
-                                            clip.speakerFramingZoomSmoothingFrames,
-                                            clip.speakerFramingSmoothingMode,
-                                            clip.speakerFramingCenterSmoothingStrength,
-                                            clip.speakerFramingZoomSmoothingStrength,
-                                            clip.speakerFramingGapHoldFrames,
-                                            locationOut,
-                                            boxSizeOut)) {
-                        return true;
-                    }
-                }
+            loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {
+            const QJsonObject transcriptRoot = transcriptDoc.object();
+            const bool sectionMappingActive =
+                !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty();
+            const bool matchedSectionAssignment =
+                collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
+                                                         clip,
+                                                         trimmedSpeakerId,
+                                                         mediaSourceFramePosition,
+                                                         &assignedTrackIds,
+                                                         &assignedStreamIds,
+                                                         &assignmentCacheToken,
+                                                         &sectionRotationDegrees);
+            if (sectionMappingActive && !matchedSectionAssignment) {
                 return false;
+            }
+            if (matchedSectionAssignment && !assignmentCacheToken.isEmpty()) {
+                if (rotationDegreesOut) {
+                    *rotationDegreesOut = sectionRotationDegrees;
+                }
+                const QString sectionCacheKey =
+                    assignedContinuityCacheKey(clip.filePath, clip.id, assignmentCacheToken);
+                if (cachedAssignedContinuityStreamsMemoryOnly(sectionCacheKey, &cachedStreams)) {
+                    const auto& streams =
+                        cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+                    for (const jcut::facedetections::FacestreamTrack& stream : streams) {
+                        if (streamSampleAtFrame(clip,
+                                                stream,
+                                                timelineFramePosition,
+                                                mediaSourceFramePosition,
+                                                clip.speakerFramingCenterSmoothingFrames,
+                                                clip.speakerFramingZoomSmoothingFrames,
+                                                clip.speakerFramingSmoothingMode,
+                                                clip.speakerFramingCenterSmoothingStrength,
+                                                clip.speakerFramingZoomSmoothingStrength,
+                                                clip.speakerFramingGapHoldFrames,
+                                                locationOut,
+                                                boxSizeOut)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
             }
         }
         if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
@@ -771,8 +779,36 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     appendReferencedArtifactPath(&referencedPaths, QJsonObject{{QStringLiteral("path"), rawArtifactPath}}, QStringLiteral("path"));
 
     AssignedContinuityStreamsPtr cachedStreams;
-    if (cachedAssignedContinuityStreamsPtr(
-            cacheKey, transcriptPath, processedPath, &cachedStreams)) {
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+        storeAssignedContinuityStreams(
+            cacheKey, transcriptPath, processedPath, referencedPaths, {});
+        return false;
+    }
+    const QJsonObject transcriptRoot = transcriptDoc.object();
+    QSet<int> assignedTrackIds;
+    QSet<QString> assignedStreamIds;
+    QString assignmentCacheToken;
+    qreal sectionRotationDegrees = 0.0;
+    const bool sectionMappingActive =
+        !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty();
+    const bool matchedSectionAssignment =
+        collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
+                                                 clip,
+                                                 trimmedSpeakerId,
+                                                 mediaSourceFramePosition,
+                                                 &assignedTrackIds,
+                                                 &assignedStreamIds,
+                                                 &assignmentCacheToken,
+                                                 &sectionRotationDegrees);
+    if (rotationDegreesOut) {
+        *rotationDegreesOut = matchedSectionAssignment ? sectionRotationDegrees : 0.0;
+    }
+    if (sectionMappingActive && !matchedSectionAssignment) {
+        return false;
+    }
+    if (!sectionMappingActive &&
+        cachedAssignedContinuityStreamsPtr(cacheKey, transcriptPath, processedPath, &cachedStreams)) {
         const auto& streams =
             cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
         for (const jcut::facedetections::FacestreamTrack& stream : streams) {
@@ -792,30 +828,6 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
             }
         }
         return false;
-    }
-
-    QJsonDocument transcriptDoc;
-    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
-        storeAssignedContinuityStreams(
-            cacheKey, transcriptPath, processedPath, referencedPaths, {});
-        return false;
-    }
-    const QJsonObject transcriptRoot = transcriptDoc.object();
-    QSet<int> assignedTrackIds;
-    QSet<QString> assignedStreamIds;
-    QString assignmentCacheToken;
-    qreal sectionRotationDegrees = 0.0;
-    const bool matchedSectionAssignment =
-        collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
-                                                 clip,
-                                                 trimmedSpeakerId,
-                                                 mediaSourceFramePosition,
-                                                 &assignedTrackIds,
-                                                 &assignedStreamIds,
-                                                 &assignmentCacheToken,
-                                                 &sectionRotationDegrees);
-    if (rotationDegreesOut) {
-        *rotationDegreesOut = matchedSectionAssignment ? sectionRotationDegrees : 0.0;
     }
     if (!matchedSectionAssignment) {
         const QJsonArray identityMap =
@@ -1864,16 +1876,19 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
         warmManualContinuityForClip(clip);
         return;
     }
-    const QJsonArray identityMap =
-        jcut::speakertrack::assignmentMapForClip(transcriptDoc.object(), clip.id);
-    for (const QJsonValue& value : identityMap) {
-        const QString speakerId =
-            value.toObject().value(QStringLiteral("identity_id")).toString().trimmed();
-        if (!speakerId.isEmpty()) {
-            speakerIds.insert(speakerId);
+    const QJsonObject transcriptRoot = transcriptDoc.object();
+    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    if (sectionMap.isEmpty()) {
+        const QJsonArray identityMap =
+            jcut::speakertrack::assignmentMapForClip(transcriptRoot, clip.id);
+        for (const QJsonValue& value : identityMap) {
+            const QString speakerId =
+                value.toObject().value(QStringLiteral("identity_id")).toString().trimmed();
+            if (!speakerId.isEmpty()) {
+                speakerIds.insert(speakerId);
+            }
         }
     }
-    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptDoc.object(), clip.id);
     for (const QJsonValue& value : sectionMap) {
         const QJsonObject row = value.toObject();
         const QString speakerId = row.value(QStringLiteral("speaker_id")).toString().trimmed();
@@ -1895,8 +1910,10 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
             &ignoredLocation,
             &ignoredBoxSize);
     }
-    for (const QString& speakerId : std::as_const(speakerIds)) {
-        warmAssignedContinuityForSpeaker(clip, speakerId);
+    if (sectionMap.isEmpty()) {
+        for (const QString& speakerId : std::as_const(speakerIds)) {
+            warmAssignedContinuityForSpeaker(clip, speakerId);
+        }
     }
     warmManualContinuityForClip(clip);
 }

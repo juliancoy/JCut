@@ -595,6 +595,18 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
     const qreal framePosition = samplesToFramePosition(boundedSample);
     const int64_t bounded = qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), m_timeline->totalFrames());
+    if (!duringPlayback &&
+        boundedSample == m_transportTimelineSample &&
+        m_timeline &&
+        bounded == m_timeline->currentFrame()) {
+        editor::accumulatePlaybackStageMetric(&m_playbackSampleApplyStageMetric,
+                                      1,
+                                      0,
+                                      0,
+                                      QStringLiteral("skipped"),
+                                      QStringLiteral("same_idle_sample"));
+        return;
+    }
     
     playbackTrace(QStringLiteral("EditorWindow::setCurrentFrame"),
                   QStringLiteral("requestedSample=%1 boundedSample=%2 frame=%3")

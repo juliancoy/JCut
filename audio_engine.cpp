@@ -1584,7 +1584,7 @@ void AudioEngine::prioritizeDecodesNearSampleLocked(int64_t focusSample) {
 }
 
 AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
-    int64_t samplePos, const QVector<ExportRangeSegment> &ranges,
+    int64_t samplePos, const QVector<SpeechSampleRange> &ranges,
     int fadeSamples, bool crossfadeEnabled) const {
   SpeechRangeBlend blend;
   if (ranges.isEmpty()) {
@@ -1594,17 +1594,15 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
   int currentRangeIndex = -1;
   int64_t currentStart = 0;
   int64_t currentEndExclusive = 0;
-  for (int i = 0; i < ranges.size(); ++i) {
-    const int64_t rangeStartSample =
-        timelineFrameToSamples(ranges.at(i).startFrame);
-    const int64_t rangeEndSampleExclusive =
-        timelineFrameToSamples(ranges.at(i).endFrame + 1);
-    if (samplePos >= rangeStartSample && samplePos < rangeEndSampleExclusive) {
-      currentRangeIndex = i;
-      currentStart = rangeStartSample;
-      currentEndExclusive = rangeEndSampleExclusive;
-      break;
-    }
+  const auto currentIt = std::upper_bound(
+      ranges.cbegin(), ranges.cend(), samplePos,
+      [](int64_t sample, const SpeechSampleRange &range) {
+        return sample < range.endSampleExclusive;
+      });
+  if (currentIt != ranges.cend() && samplePos >= currentIt->startSample) {
+    currentRangeIndex = static_cast<int>(std::distance(ranges.cbegin(), currentIt));
+    currentStart = currentIt->startSample;
+    currentEndExclusive = currentIt->endSampleExclusive;
   }
 
   if (currentRangeIndex < 0) {
@@ -1638,10 +1636,9 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
       qMax<int64_t>(1, currentEndExclusive - currentStart);
 
   if (currentRangeIndex > 0) {
-    const int64_t prevStart =
-        timelineFrameToSamples(ranges.at(currentRangeIndex - 1).startFrame);
+    const int64_t prevStart = ranges.at(currentRangeIndex - 1).startSample;
     const int64_t prevEndExclusive =
-        timelineFrameToSamples(ranges.at(currentRangeIndex - 1).endFrame + 1);
+        ranges.at(currentRangeIndex - 1).endSampleExclusive;
     const int64_t prevLength = qMax<int64_t>(1, prevEndExclusive - prevStart);
     const int64_t crossWindow = qMax<int64_t>(
         1,
@@ -1659,10 +1656,9 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
   }
 
   if (currentRangeIndex + 1 < ranges.size()) {
-    const int64_t nextStart =
-        timelineFrameToSamples(ranges.at(currentRangeIndex + 1).startFrame);
+    const int64_t nextStart = ranges.at(currentRangeIndex + 1).startSample;
     const int64_t nextEndExclusive =
-        timelineFrameToSamples(ranges.at(currentRangeIndex + 1).endFrame + 1);
+        ranges.at(currentRangeIndex + 1).endSampleExclusive;
     const int64_t nextLength = qMax<int64_t>(1, nextEndExclusive - nextStart);
     const int64_t crossWindow = qMax<int64_t>(
         1,
@@ -2800,9 +2796,9 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       float primarySpeechGain = 1.0f;
       float secondarySpeechGain = 0.0f;
       int64_t secondaryTimelineSample = -1;
-      if (!context.exportRanges.isEmpty()) {
+      if (!context.speechSampleRanges.isEmpty()) {
         const SpeechRangeBlend blend = calculateSpeechRangeBlend(
-            timelineSamplePos, context.exportRanges,
+            timelineSamplePos, context.speechSampleRanges,
             m_speechFilterFadeSamples.load(std::memory_order_acquire),
             m_speechFilterRangeCrossfadeEnabled.load(
                 std::memory_order_acquire));
@@ -3306,6 +3302,15 @@ void AudioEngine::mixLoop() {
       }
       context.clips = m_timelineClips;
       context.exportRanges = exportRangesCopy();
+      context.speechSampleRanges.reserve(context.exportRanges.size());
+      for (const ExportRangeSegment &range : std::as_const(context.exportRanges)) {
+        const int64_t startSample = timelineFrameToSamples(range.startFrame);
+        const int64_t endSampleExclusive = timelineFrameToSamples(range.endFrame + 1);
+        if (endSampleExclusive > startSample) {
+          context.speechSampleRanges.push_back(
+              SpeechSampleRange{startSample, endSampleExclusive});
+        }
+      }
       context.renderSyncMarkers = m_renderSyncMarkers;
       playbackRate = qBound<qreal>(
           0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);

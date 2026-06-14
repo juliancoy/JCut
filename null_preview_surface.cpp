@@ -30,14 +30,22 @@ void NullPreviewSurface::setPlaybackState(bool playing) { m_playing = playing; r
 void NullPreviewSurface::setPlaybackSpeed(qreal speed) { m_playbackSpeed = qBound<qreal>(0.1, speed, 4.0); }
 void NullPreviewSurface::setCurrentFrame(int64_t frame)
 {
-    m_currentFrame = qMax<int64_t>(0, frame);
+    const int64_t boundedFrame = qMax<int64_t>(0, frame);
+    if (m_currentFrame == boundedFrame) {
+        return;
+    }
+    m_currentFrame = boundedFrame;
     if (!m_playing) {
         requestRepaint();
     }
 }
 void NullPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
 {
-    m_currentSample = qMax<int64_t>(0, samplePosition);
+    const int64_t boundedSample = qMax<int64_t>(0, samplePosition);
+    if (m_currentSample == boundedSample) {
+        return;
+    }
+    m_currentSample = boundedSample;
     if (!m_playing) {
         requestRepaint();
     }

@@ -71,6 +71,7 @@ public:
                         std::function<QJsonObject()> projectSnapshotCallback,
                         std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
+                        std::function<QJsonObject()> speakerUiSnapshotCallback,
                         std::function<QJsonObject()> streamTimingCallback,
                         std::function<QJsonObject(bool)> pipelineSnapshotCallback,
                         std::function<void()> resetProfilingCallback,
@@ -168,6 +169,7 @@ private:
     std::function<QJsonObject()> m_projectSnapshotCallback;
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
+    std::function<QJsonObject()> m_speakerUiSnapshotCallback;
     std::function<QJsonObject()> m_streamTimingCallback;
     std::function<QJsonObject(bool)> m_pipelineSnapshotCallback;
     std::function<void()> m_resetProfilingCallback;
@@ -228,11 +230,11 @@ private:
     int m_uiInvokeTimeoutMs = 500;
     int m_uiBackgroundInvokeTimeoutMs = 200;
     qint64 m_uiHeartbeatStaleMs = 1000;
-    qint64 m_profileCacheFreshMs = 250;
+    qint64 m_profileCacheFreshMs = 1000;
     qint64 m_backgroundRefreshTickMs = 50;
-    qint64 m_profileRefreshIntervalMs = 100;
+    qint64 m_profileRefreshIntervalMs = 1000;
     qint64 m_profilePlaybackRefreshIntervalMs = 750;
-    qint64 m_profileDemandWindowMs = 3000;
+    qint64 m_profileDemandWindowMs = 1500;
     qint64 m_snapshotDemandWindowMs = 15000;
     qint64 m_stateRefreshIntervalMs = 100;
     qint64 m_projectRefreshIntervalMs = 750;

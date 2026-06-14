@@ -132,6 +132,10 @@ private:
     DirectVulkanPreviewWindow* m_window = nullptr;
     PreviewInteractionState* m_state = nullptr;
     QString m_failureReason;
+    QString m_lastDiagnosticChromeStyle;
+    QString m_lastDiagnosticChromeText;
+    QRect m_lastDiagnosticChromeGeometry;
+    bool m_lastDiagnosticChromeLabelVisible = false;
     bool m_active = false;
     int64_t m_presentedFrames = 0;
     int64_t m_lastPresentedSourceFrame = -1;

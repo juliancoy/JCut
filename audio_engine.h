@@ -137,6 +137,11 @@ private:
     bool fullyDecoded = false;
   };
 
+  struct SpeechSampleRange {
+    int64_t startSample = 0;
+    int64_t endSampleExclusive = 0;
+  };
+
   static qreal normalizedTimeStretchSpeed(qreal playbackRate);
 
   static int precomputedTimeStretchSpeedKey(qreal playbackRate);
@@ -199,6 +204,7 @@ private:
   struct MixContext {
     QVector<TimelineClip> clips;
     QVector<ExportRangeSegment> exportRanges;
+    QVector<SpeechSampleRange> speechSampleRanges;
     QVector<RenderSyncMarker> renderSyncMarkers;
     bool muted = false;
     qreal volume = 0.8;
@@ -262,7 +268,7 @@ private:
 
   SpeechRangeBlend
   calculateSpeechRangeBlend(int64_t samplePos,
-                            const QVector<ExportRangeSegment> &ranges,
+                            const QVector<SpeechSampleRange> &ranges,
                             int fadeSamples, bool crossfadeEnabled) const;
 
   float calculateClipCrossfadeGain(int64_t samplePos, const TimelineClip &clip,

@@ -737,9 +737,16 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         !m_state->vulkanFrameStatuses.isEmpty();
     const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty() || waitingForDecode;
     if (!jcut::direct_vulkan_preview::vulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
-        m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
+        const QString style = QStringLiteral("background:#05080d; border:0;");
+        if (m_lastDiagnosticChromeStyle != style) {
+            m_placeholder->setStyleSheet(style);
+            m_lastDiagnosticChromeStyle = style;
+        }
         if (m_statusLabel) {
-            m_statusLabel->hide();
+            if (m_lastDiagnosticChromeLabelVisible) {
+                m_statusLabel->hide();
+                m_lastDiagnosticChromeLabelVisible = false;
+            }
         }
         return;
     }
@@ -763,18 +770,33 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         state = QStringLiteral("waiting-decode");
     }
 
-    m_placeholder->setStyleSheet(QStringLiteral("background:#111821; border:3px solid %1;").arg(color));
+    const QString style =
+        QStringLiteral("background:#111821; border:3px solid %1;").arg(color);
+    if (m_lastDiagnosticChromeStyle != style) {
+        m_placeholder->setStyleSheet(style);
+        m_lastDiagnosticChromeStyle = style;
+    }
 
     if (!m_statusLabel) {
         return;
     }
     if (!showOverlayLabel) {
-        m_statusLabel->hide();
+        if (m_lastDiagnosticChromeLabelVisible) {
+            m_statusLabel->hide();
+            m_lastDiagnosticChromeLabelVisible = false;
+        }
         return;
     }
-    m_statusLabel->show();
+    if (!m_lastDiagnosticChromeLabelVisible) {
+        m_statusLabel->show();
+        m_lastDiagnosticChromeLabelVisible = true;
+    }
     const int labelWidth = std::max(240, m_placeholder->width() - 24);
-    m_statusLabel->setGeometry(12, 12, labelWidth, 28);
+    const QRect labelGeometry(12, 12, labelWidth, 28);
+    if (m_lastDiagnosticChromeGeometry != labelGeometry) {
+        m_statusLabel->setGeometry(labelGeometry);
+        m_lastDiagnosticChromeGeometry = labelGeometry;
+    }
     m_statusLabel->raise();
 
     int ready = 0;
@@ -804,13 +826,14 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
     }
 
     const QString error = m_stats.lastHandoffError.trimmed();
-    if (waitingForDecode) {
-        m_statusLabel->setText(QStringLiteral("⌛ Loading media..."));
-    } else {
-        m_statusLabel->setText(
-            error.isEmpty()
-                ? QStringLiteral("Vulkan preview failure: %1").arg(state)
-                : QStringLiteral("Vulkan preview failure: %1 | %2").arg(state, error));
+    const QString labelText = waitingForDecode
+        ? QStringLiteral("Loading media...")
+        : (error.isEmpty()
+               ? QStringLiteral("Vulkan preview failure: %1").arg(state)
+               : QStringLiteral("Vulkan preview failure: %1 | %2").arg(state, error));
+    if (m_lastDiagnosticChromeText != labelText) {
+        m_statusLabel->setText(labelText);
+        m_lastDiagnosticChromeText = labelText;
     }
 }
 

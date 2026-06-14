@@ -19,6 +19,7 @@ class QVulkanDeviceFunctions;
 struct VulkanTextLayoutDebug {
     bool valid = false;
     QString atlasKey;
+    QString layoutKey;
     QSize atlasSize;
     int glyphAtlasEntryCount = 0;
     int glyphDrawCount = 0;
@@ -149,6 +150,7 @@ private:
     struct TranscriptLayoutCache {
         bool valid = false;
         QString layoutKey;
+        QString atlasKey;
         Atlas atlas;
         QVector<LaidOutGlyph> glyphs;
         QVector<TranscriptBackground> backgrounds;
@@ -169,6 +171,19 @@ private:
                                        QVector<LaidOutGlyph>* glyphs,
                                        QVector<TranscriptBackground>* backgrounds,
                                        QVector<QRectF>* highlights) const;
+    bool buildTranscriptAtlas(const TimelineClip& clip,
+                              const TranscriptOverlayLayout& layout,
+                              const QString& speakerTitle,
+                              Atlas* atlas) const;
+    bool buildTranscriptLayout(const QSize& outputSize,
+                               const TimelineClip& clip,
+                               const TranscriptOverlayLayout& layout,
+                               const QRectF& outputRect,
+                               const QString& speakerTitle,
+                               const Atlas& atlas,
+                               QVector<LaidOutGlyph>* glyphs,
+                               QVector<TranscriptBackground>* backgrounds,
+                               QVector<QRectF>* highlights) const;
     const SpeakerLayoutCache* speakerLabelLayout(const QSize& outputSize,
                                                  const render_detail::SpeakerLabelOverlaySpec& spec) const;
     const TranscriptLayoutCache* transcriptOverlayLayout(const QSize& outputSize,

@@ -301,6 +301,7 @@ private:
     qint64 m_lastFacedetectionsOverlayApplyLatencyMs = 0;
     qint64 m_lastFacedetectionsOverlayAppliedAtMs = 0;
     qint64 m_lastFacedetectionsOverlayQueuedAtMs = 0;
+    qint64 m_lastFacestreamOverlayPlaybackWarmupMs = 0;
     int64_t m_facedetectionsOverlayWorkerStarted = 0;
     int64_t m_facedetectionsOverlayWorkerApplied = 0;
     int64_t m_facedetectionsOverlayWorkerDropped = 0;

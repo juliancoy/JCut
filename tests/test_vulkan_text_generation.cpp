@@ -12,7 +12,7 @@ private slots:
     void transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled();
     void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
     void transcriptOverlayLayoutsRemainReadableAcrossPreviewSizes();
-    void transcriptOverlayKeyTracksActiveWordAndText();
+    void transcriptOverlaySeparatesAtlasKeyFromActiveWordLayout();
     void emptyInputsDoNotGenerateText();
 };
 
@@ -273,7 +273,7 @@ void TestVulkanTextGeneration::transcriptOverlayLayoutsRemainReadableAcrossPrevi
     }
 }
 
-void TestVulkanTextGeneration::transcriptOverlayKeyTracksActiveWordAndText()
+void TestVulkanTextGeneration::transcriptOverlaySeparatesAtlasKeyFromActiveWordLayout()
 {
     VulkanTextRenderer renderer;
     const QSize outputSize(1080, 1920);
@@ -290,10 +290,12 @@ void TestVulkanTextGeneration::transcriptOverlayKeyTracksActiveWordAndText()
     QVERIFY(activeFirst.valid);
     QVERIFY(activeThird.valid);
     QVERIFY(changedText.valid);
-    QVERIFY2(activeFirst.atlasKey != activeThird.atlasKey,
-             "active word changes must invalidate transcript atlas/layout key");
+    QVERIFY2(activeFirst.layoutKey != activeThird.layoutKey,
+             "active word changes must still invalidate transcript layout geometry");
+    QVERIFY2(activeFirst.atlasKey == activeThird.atlasKey,
+             "active word changes must reuse the transcript glyph atlas");
     QVERIFY2(activeThird.atlasKey != changedText.atlasKey,
-             "word text changes must invalidate transcript atlas/layout key");
+             "word text changes must invalidate the transcript glyph atlas");
 }
 
 void TestVulkanTextGeneration::emptyInputsDoNotGenerateText()

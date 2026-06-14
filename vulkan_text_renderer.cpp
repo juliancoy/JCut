@@ -204,6 +204,29 @@ QString transcriptOverlayLayoutKey(const QSize& outputSize,
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
+QString transcriptOverlayAtlasKey(const TimelineClip& clip,
+                                  const TranscriptOverlayLayout& layout,
+                                  const QString& speakerTitle)
+{
+    QString glyphMaterial;
+    for (const TranscriptOverlayLine& line : layout.lines) {
+        glyphMaterial += line.words.join(QLatin1Char(' '));
+        glyphMaterial += QLatin1Char('|');
+    }
+    const auto& overlay = clip.transcriptOverlay;
+    const int bodyPixelSize = qMax(1, static_cast<int>(std::round(overlay.fontPointSize)));
+    const int titlePixelSize = qMax(1, static_cast<int>(std::round(overlay.fontPointSize * 0.62)));
+    const QString material =
+        QStringLiteral("transcript-atlas-v1|") +
+        overlay.fontFamily + QLatin1Char('|') +
+        QString::number(bodyPixelSize) + QLatin1Char('|') +
+        QString::number(titlePixelSize) + QLatin1Char('|') +
+        QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
+        speakerTitle.trimmed() + QLatin1Char('|') +
+        glyphMaterial;
+    return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
 QString glyphKey(uint codepoint, bool bold, int pixelSize)
 {
     return QString::number(codepoint) + QLatin1Char('|') +
@@ -574,6 +597,7 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildSpeakerLabelLayoutForTesting(
     VulkanTextLayoutDebug debug;
     debug.valid = buildAtlasAndLayout(outputSize, spec, &atlas, &glyphs, &cards);
     debug.atlasKey = atlas.key;
+    debug.layoutKey = speakerLabelLayoutKey(outputSize, spec);
     debug.atlasSize = QSize(atlas.image.width, atlas.image.height);
     debug.glyphAtlasEntryCount = atlas.glyphs.size();
     debug.glyphDrawCount = glyphs.size();
@@ -603,6 +627,7 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting
     debug.valid = buildTranscriptAtlasAndLayout(
         outputSize, clip, layout, outputRect, speakerTitle, &atlas, &glyphs, &backgrounds, &highlights);
     debug.atlasKey = atlas.key;
+    debug.layoutKey = transcriptOverlayLayoutKey(outputSize, clip, layout, outputRect, speakerTitle);
     debug.atlasSize = QSize(atlas.image.width, atlas.image.height);
     debug.glyphAtlasEntryCount = atlas.glyphs.size();
     debug.glyphDrawCount = glyphs.size();
@@ -831,8 +856,29 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
                                                        QVector<TranscriptBackground>* backgrounds,
                                                        QVector<QRectF>* highlights) const
 {
-    if (!atlas || !glyphs || !backgrounds || !highlights ||
-        !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty()) {
+    if (!atlas || !glyphs || !backgrounds || !highlights) {
+        return false;
+    }
+    if (!buildTranscriptAtlas(clip, layout, speakerTitle, atlas)) {
+        return false;
+    }
+    return buildTranscriptLayout(outputSize,
+                                 clip,
+                                 layout,
+                                 outputRect,
+                                 speakerTitle,
+                                 *atlas,
+                                 glyphs,
+                                 backgrounds,
+                                 highlights);
+}
+
+bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
+                                              const TranscriptOverlayLayout& layout,
+                                              const QString& speakerTitle,
+                                              Atlas* atlas) const
+{
+    if (!atlas || layout.lines.isEmpty()) {
         return false;
     }
     const int bodyPixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize)));
@@ -916,6 +962,37 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
         }
     }
 
+    atlas->key = transcriptOverlayAtlasKey(clip, layout, speakerTitle);
+    return !atlas->glyphs.isEmpty();
+}
+
+bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
+                                               const TimelineClip& clip,
+                                               const TranscriptOverlayLayout& layout,
+                                               const QRectF& outputRect,
+                                               const QString& speakerTitle,
+                                               const Atlas& atlas,
+                                               QVector<LaidOutGlyph>* glyphs,
+                                               QVector<TranscriptBackground>* backgrounds,
+                                               QVector<QRectF>* highlights) const
+{
+    if (!glyphs || !backgrounds || !highlights ||
+        !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty() || atlas.key.isEmpty()) {
+        return false;
+    }
+    const int bodyPixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize)));
+    const int titlePixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize * 0.62)));
+    FaceGuard bodyFace;
+    if (!loadFace(clip.transcriptOverlay.fontFamily,
+                  clip.transcriptOverlay.bold,
+                  bodyPixelSize,
+                  &bodyFace)) {
+        return false;
+    }
+    FaceGuard titleFace;
+    const bool hasTitle = !speakerTitle.trimmed().isEmpty() &&
+        loadFace(clip.transcriptOverlay.fontFamily, true, titlePixelSize, &titleFace);
+
     auto lineHeight = [](FT_Face face) {
         return static_cast<qreal>(face->size->metrics.height) / 64.0;
     };
@@ -976,7 +1053,11 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
                 FT_Get_Kerning(face, previous, glyphIndex, FT_KERNING_DEFAULT, &delta);
                 cursor += (static_cast<qreal>(delta.x) / 64.0) * docScale;
             }
-            const Glyph glyph = atlas->glyphs.value(glyphKey(codepoint, bold, pixelSize));
+            const QString key = glyphKey(codepoint, bold, pixelSize);
+            if (!atlas.glyphs.contains(key)) {
+                continue;
+            }
+            const Glyph glyph = atlas.glyphs.value(key);
             const QRectF glyphRect(cursor + (glyph.bearing.x() * docScale),
                                    baseline - (glyph.bearing.y() * docScale),
                                    glyph.size.width() * docScale,
@@ -993,7 +1074,6 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
         ? clip.transcriptOverlay.textColor
         : QColor(Qt::white);
     const QColor shadowColor(0, 0, 0, 200);
-    const QColor highlightFillColor(QStringLiteral("#fff2a8"));
     const QColor highlightTextColor(QStringLiteral("#181818"));
 
     if (hasTitle) {
@@ -1052,22 +1132,6 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
         cursorY += bodyLineHeight;
     }
 
-    QString layoutKey;
-    for (const TranscriptOverlayLine& line : layout.lines) {
-        layoutKey += line.words.join(QLatin1Char(' '));
-        layoutKey += QLatin1Char('#');
-        layoutKey += QString::number(line.activeWord);
-        layoutKey += QLatin1Char('|');
-    }
-    const QString keyMaterial =
-        QStringLiteral("transcript-vktext|") + clip.id + QLatin1Char('|') +
-        clip.transcriptOverlay.fontFamily + QLatin1Char('|') +
-        QString::number(bodyPixelSize) + QLatin1Char('|') +
-        QString::number(titlePixelSize) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(textColor.rgba())) + QLatin1Char('|') +
-        speakerTitle + QLatin1Char('|') +
-        layoutKey;
-    atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
     return !glyphs->isEmpty();
 }
 
@@ -1121,18 +1185,34 @@ const VulkanTextRenderer::TranscriptLayoutCache* VulkanTextRenderer::transcriptO
     if (m_transcriptLayoutCache.valid && m_transcriptLayoutCache.layoutKey == layoutKey) {
         return &m_transcriptLayoutCache;
     }
+    const QString atlasKey = transcriptOverlayAtlasKey(clip, layout, speakerTitle);
 
     TranscriptLayoutCache rebuilt;
     rebuilt.layoutKey = layoutKey;
-    rebuilt.valid = buildTranscriptAtlasAndLayout(outputSize,
-                                                  clip,
-                                                  layout,
-                                                  outputRect,
-                                                  speakerTitle,
-                                                  &rebuilt.atlas,
-                                                  &rebuilt.glyphs,
-                                                  &rebuilt.backgrounds,
-                                                  &rebuilt.highlights);
+    rebuilt.atlasKey = atlasKey;
+    if (m_transcriptLayoutCache.valid && m_transcriptLayoutCache.atlasKey == atlasKey) {
+        rebuilt.atlas = m_transcriptLayoutCache.atlas;
+        rebuilt.valid = buildTranscriptLayout(outputSize,
+                                              clip,
+                                              layout,
+                                              outputRect,
+                                              speakerTitle,
+                                              rebuilt.atlas,
+                                              &rebuilt.glyphs,
+                                              &rebuilt.backgrounds,
+                                              &rebuilt.highlights);
+    } else {
+        rebuilt.valid = buildTranscriptAtlasAndLayout(outputSize,
+                                                      clip,
+                                                      layout,
+                                                      outputRect,
+                                                      speakerTitle,
+                                                      &rebuilt.atlas,
+                                                      &rebuilt.glyphs,
+                                                      &rebuilt.backgrounds,
+                                                      &rebuilt.highlights);
+        rebuilt.atlasKey = rebuilt.atlas.key;
+    }
     if (!rebuilt.valid) {
         m_transcriptLayoutCache = TranscriptLayoutCache{};
         return nullptr;

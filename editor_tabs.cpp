@@ -539,6 +539,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakersTable(),
             m_inspectorPane->speakerHideUnidentifiedCheckBox(),
             m_inspectorPane->speakerShowContiguousSectionsCheckBox(),
+            m_inspectorPane->speakerApplyTrackToAllMatchingSectionsCheckBox(),
             m_inspectorPane->speakerExportLongSectionsButton(),
             m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox(),
             m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox(),

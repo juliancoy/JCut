@@ -982,9 +982,15 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
 void SpeakersTab::refreshTranscriptSpeakerViews(const QString& preferredSpeakerId,
                                                 bool refreshTrackPanels)
 {
-    refreshSpeakersTable(m_transcriptSession.rootObject(), preferredSpeakerId);
-    refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
     syncSpeakerListMode();
+    const bool showSections =
+        m_widgets.speakerShowContiguousSectionsCheckBox &&
+        m_widgets.speakerShowContiguousSectionsCheckBox->isChecked();
+    if (showSections) {
+        refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
+    } else {
+        refreshSpeakersTable(m_transcriptSession.rootObject(), preferredSpeakerId);
+    }
     if (refreshTrackPanels) {
         requestRefreshFaceDetectionsPathsPanel();
     }
@@ -1178,11 +1184,15 @@ void SpeakersTab::refreshForSubtab(const QString& subtabName)
         return;
     }
 
-    if (m_widgets.speakersTable && m_widgets.speakersTable->rowCount() == 0) {
+    const bool showSections =
+        m_widgets.speakerShowContiguousSectionsCheckBox &&
+        m_widgets.speakerShowContiguousSectionsCheckBox->isChecked();
+    if (!showSections &&
+        m_widgets.speakersTable &&
+        m_widgets.speakersTable->rowCount() == 0) {
         refreshSpeakersTable(m_transcriptSession.rootObject());
     }
-    if (m_widgets.speakerShowContiguousSectionsCheckBox &&
-        m_widgets.speakerShowContiguousSectionsCheckBox->isChecked() &&
+    if (showSections &&
         m_widgets.speakerSectionsTable &&
         m_widgets.speakerSectionsTable->rowCount() == 0) {
         refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
@@ -1205,6 +1215,9 @@ void SpeakersTab::syncSpeakerListMode()
     }
     if (m_widgets.speakerHideUnidentifiedCheckBox) {
         m_widgets.speakerHideUnidentifiedCheckBox->setEnabled(!showSections);
+    }
+    if (m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox) {
+        m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox->setVisible(showSections);
     }
     if (m_widgets.speakerExportLongSectionsButton) {
         m_widgets.speakerExportLongSectionsButton->setVisible(showSections);
@@ -1294,13 +1307,19 @@ bool SpeakersTab::selectSpeakerRowById(const QString& speakerId)
     return false;
 }
 
-bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame)
+int SpeakersTab::speakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame) const
+{
+    const QVector<int> rows = speakerSectionRowsAtFrame(speakerId, sourceFrame);
+    return rows.isEmpty() ? -1 : rows.constFirst();
+}
+
+QVector<int> SpeakersTab::speakerSectionRowsAtFrame(const QString& speakerId, int64_t sourceFrame) const
 {
     const QString trimmedSpeakerId = speakerId.trimmed();
+    QVector<int> rows;
     if (trimmedSpeakerId.isEmpty() || sourceFrame < 0 || !m_widgets.speakerSectionsTable) {
-        return false;
+        return rows;
     }
-    QSignalBlocker blocker(m_widgets.speakerSectionsTable);
     for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
         QTableWidgetItem* speakerItem =
             m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
@@ -1314,16 +1333,31 @@ bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64
             sourceFrame < startFrame || sourceFrame > endFrame) {
             continue;
         }
-        if (m_widgets.speakerSectionsTable->currentRow() != row) {
-            m_widgets.speakerSectionsTable->setCurrentCell(row, SpeakerSectionSpeakerColumn);
-            m_widgets.speakerSectionsTable->selectRow(row);
-            m_widgets.speakerSectionsTable->scrollToItem(
-                speakerItem, QAbstractItemView::PositionAtCenter);
-        }
-        focusSpeakerSectionTrackFromRow(row);
-        return true;
+        rows.push_back(row);
     }
-    return false;
+    return rows;
+}
+
+bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame)
+{
+    const int row = speakerSectionRowAtFrame(speakerId, sourceFrame);
+    if (row < 0 || !m_widgets.speakerSectionsTable) {
+        return false;
+    }
+    QSignalBlocker blocker(m_widgets.speakerSectionsTable);
+    QTableWidgetItem* speakerItem =
+        m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
+    if (!speakerItem) {
+        return false;
+    }
+    if (m_widgets.speakerSectionsTable->currentRow() != row) {
+        m_widgets.speakerSectionsTable->setCurrentCell(row, SpeakerSectionSpeakerColumn);
+        m_widgets.speakerSectionsTable->selectRow(row);
+        m_widgets.speakerSectionsTable->scrollToItem(
+            speakerItem, QAbstractItemView::PositionAtCenter);
+    }
+    focusSpeakerSectionTrackFromRow(row);
+    return true;
 }
 
 void SpeakersTab::focusSpeakerSectionTrackFromRow(int row)
@@ -1725,7 +1759,9 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     finalizeRefreshTiming();
 }
 
-void SpeakersTab::refreshVisibleSpeakerSectionAssignments(const QString& speakerId)
+void SpeakersTab::refreshVisibleSpeakerSectionAssignments(const QString& speakerId,
+                                                          int64_t onlyStartFrame,
+                                                          int64_t onlyEndFrame)
 {
     const QString trimmedSpeakerId = speakerId.trimmed();
     if (trimmedSpeakerId.isEmpty() ||
@@ -1758,10 +1794,14 @@ void SpeakersTab::refreshVisibleSpeakerSectionAssignments(const QString& speaker
             speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed() != trimmedSpeakerId) {
             continue;
         }
-        const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
-        const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
+        const int64_t rowStartFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+        const int64_t rowEndFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
+        if ((onlyStartFrame >= 0 && rowStartFrame != onlyStartFrame) ||
+            (onlyEndFrame >= 0 && rowEndFrame != onlyEndFrame)) {
+            continue;
+        }
         const QJsonObject sectionAssignment = contiguousSectionAssignmentForSection(
-            clip->id, trimmedSpeakerId, startFrame, endFrame);
+            clip->id, trimmedSpeakerId, rowStartFrame, rowEndFrame);
         const QJsonArray assignedTrackEntries = sectionTrackEntriesFromAssignment(sectionAssignment);
         const QStringList trackIdStrings = sectionTrackIdStringsFromAssignment(sectionAssignment);
         const qreal sectionRotation =
@@ -2373,7 +2413,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         m_maxSpeakersTableRefreshDurationMs =
             qMax(m_maxSpeakersTableRefreshDurationMs, m_lastSpeakersTableRefreshDurationMs);
     };
-    if (!m_widgets.speakersTable) {
+    if (!m_widgets.speakersTable || !m_widgets.speakersTable->isVisible()) {
         finalizeRefreshTiming();
         return;
     }

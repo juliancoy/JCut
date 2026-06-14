@@ -157,7 +157,6 @@ QJsonObject sectionRowWithTrackEntries(QJsonObject row, const QJsonArray& entrie
         row.remove(QStringLiteral("x"));
         row.remove(QStringLiteral("y"));
         row.remove(QStringLiteral("box"));
-        row.remove(QStringLiteral("rotation"));
     }
     return row;
 }
@@ -990,6 +989,10 @@ const SpeakersTab::TrackIdentityResolutionCache& SpeakersTab::trackIdentityResol
     const TimelineClip& clip,
     const QJsonArray& streams) const
 {
+    static const TrackIdentityResolutionCache emptyContiguousModeCache;
+    if (contiguousTranscriptSectionModeActive()) {
+        return emptyContiguousModeCache;
+    }
     const QJsonArray resolvedMap =
         jcut::speakertrack::assignmentMapForClip(m_transcriptSession.rootObject(), clip.id);
     const QString signature =
@@ -1835,16 +1838,88 @@ bool SpeakersTab::assignTrackToContiguousSection(const QString& clipId,
                                                  qreal boxSizeNorm,
                                                  const QString& resolutionSource)
 {
+    return assignTrackToContiguousSections(
+        clipId,
+        speakerId,
+        QVector<QPair<int64_t, int64_t>>{qMakePair(startFrame, endFrame)},
+        trackId,
+        streamId,
+        sourceFrame,
+        xNorm,
+        yNorm,
+        boxSizeNorm,
+        resolutionSource);
+}
+
+bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
+                                                  const QString& speakerId,
+                                                  const QVector<QPair<int64_t, int64_t>>& sections,
+                                                  int trackId,
+                                                  const QString& streamId,
+                                                  int64_t sourceFrame,
+                                                  qreal xNorm,
+                                                  qreal yNorm,
+                                                  qreal boxSizeNorm,
+                                                  const QString& resolutionSource)
+{
+    QElapsedTimer assignmentTimer;
+    assignmentTimer.start();
+    QElapsedTimer phaseTimer;
+    phaseTimer.start();
+    qint64 buildPayloadMs = 0;
+    qint64 mutateDocumentMs = 0;
+    qint64 queueSaveMs = 0;
+    qint64 postUpdateMs = 0;
+    auto updateSectionAssignmentProfile = [&](bool ok, const QString& failureReason = QString()) {
+        QJsonObject nextProfile = m_trackAssignmentTimingProfile;
+        const qint64 totalMs = assignmentTimer.isValid() ? assignmentTimer.elapsed() : 0;
+        nextProfile[QStringLiteral("last_mode")] = QStringLiteral("contiguous_section");
+        nextProfile[QStringLiteral("last_total_ms")] = totalMs;
+        nextProfile[QStringLiteral("max_total_ms")] =
+            qMax(nextProfile.value(QStringLiteral("max_total_ms")).toInteger(0), totalMs);
+        nextProfile[QStringLiteral("last_payload_build_ms")] = buildPayloadMs;
+        nextProfile[QStringLiteral("last_document_mutate_ms")] = mutateDocumentMs;
+        nextProfile[QStringLiteral("last_save_queue_ms")] = queueSaveMs;
+        nextProfile[QStringLiteral("last_post_update_ms")] = postUpdateMs;
+        nextProfile[QStringLiteral("last_ok")] = ok;
+        nextProfile[QStringLiteral("last_failure_reason")] = failureReason;
+        nextProfile[QStringLiteral("last_clip_id")] = clipId.trimmed();
+        nextProfile[QStringLiteral("last_speaker_id")] = speakerId.trimmed();
+        nextProfile[QStringLiteral("last_track_id")] = trackId;
+        nextProfile[QStringLiteral("last_anchor_count")] = sections.size();
+        nextProfile[QStringLiteral("last_resolution_source")] = resolutionSource;
+        nextProfile[QStringLiteral("last_sync_transcript_io")] = shouldUseSynchronousTranscriptIo();
+        m_trackAssignmentTimingProfile = nextProfile;
+    };
+
     const QString trimmedClipId = clipId.trimmed();
     const QString trimmedSpeakerId = speakerId.trimmed();
     if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument() ||
         trimmedClipId.isEmpty() || trimmedSpeakerId.isEmpty() ||
-        startFrame < 0 || endFrame < startFrame || trackId < 0) {
+        sections.isEmpty() || trackId < 0) {
+        updateSectionAssignmentProfile(false, QStringLiteral("invalid_input_or_no_loaded_document"));
+        return false;
+    }
+    QVector<QPair<int64_t, int64_t>> validSections;
+    validSections.reserve(sections.size());
+    QSet<QString> seenSectionKeys;
+    for (const QPair<int64_t, int64_t>& section : sections) {
+        if (section.first < 0 || section.second < section.first) {
+            continue;
+        }
+        const QString key = contiguousSectionKey(trimmedSpeakerId, section.first, section.second);
+        if (seenSectionKeys.contains(key)) {
+            continue;
+        }
+        seenSectionKeys.insert(key);
+        validSections.push_back(section);
+    }
+    if (validSections.isEmpty()) {
+        updateSectionAssignmentProfile(false, QStringLiteral("no_valid_contiguous_sections"));
         return false;
     }
 
     const QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    const QString sectionKey = contiguousSectionKey(trimmedSpeakerId, startFrame, endFrame);
     QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
@@ -1856,64 +1931,82 @@ bool SpeakersTab::assignTrackToContiguousSection(const QString& clipId,
     resolvedPayload[QStringLiteral("updated_at_utc")] = timestamp;
 
     QJsonArray nextMap;
-    QJsonObject existingSectionRow;
+    QHash<QString, QJsonObject> existingSectionRows;
+    QSet<QString> targetSectionKeys;
+    for (const QPair<int64_t, int64_t>& section : validSections) {
+        targetSectionKeys.insert(contiguousSectionKey(trimmedSpeakerId, section.first, section.second));
+    }
     for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
         const QJsonObject row = value.toObject();
-        const bool sameSection = row.value(QStringLiteral("section_key")).toString() == sectionKey;
-        bool sameTrack = row.value(QStringLiteral("track_id")).toInt(-1) == trackId;
-        for (const QJsonValue& entryValue : sectionTrackEntries(row)) {
-            if (entryValue.toObject().value(QStringLiteral("track_id")).toInt(-1) == trackId) {
-                sameTrack = true;
-                break;
-            }
-        }
-        if (sameSection) {
-            existingSectionRow = row;
+        const QString rowSectionKey = row.value(QStringLiteral("section_key")).toString();
+        if (targetSectionKeys.contains(rowSectionKey)) {
+            existingSectionRows.insert(rowSectionKey, row);
             continue;
         }
-        if (!sameTrack) {
-            nextMap.push_back(row);
-        }
+        nextMap.push_back(row);
     }
 
-    QJsonObject sectionRow = existingSectionRow;
-    sectionRow[QStringLiteral("section_key")] = sectionKey;
-    sectionRow[QStringLiteral("speaker_id")] = trimmedSpeakerId;
-    sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
-    sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
-    sectionRow[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
+    const QString effectiveResolutionSource = resolutionSource.trimmed().isEmpty()
         ? QStringLiteral("contiguous_section_click")
         : resolutionSource.trimmed();
-    sectionRow[QStringLiteral("updated_at_utc")] = timestamp;
-    sectionRow = sectionRowWithTrackEntries(
-        sectionRow,
-        sectionTrackEntriesWithTrack(
-            sectionRow, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
-    nextMap.push_back(sectionRow);
+    for (const QPair<int64_t, int64_t>& section : validSections) {
+        const QString sectionKey = contiguousSectionKey(trimmedSpeakerId, section.first, section.second);
+        QJsonObject sectionRow = existingSectionRows.value(sectionKey);
+        sectionRow[QStringLiteral("section_key")] = sectionKey;
+        sectionRow[QStringLiteral("speaker_id")] = trimmedSpeakerId;
+        sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(section.first);
+        sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(section.second);
+        sectionRow[QStringLiteral("resolution_source")] = effectiveResolutionSource;
+        sectionRow[QStringLiteral("updated_at_utc")] = timestamp;
+        sectionRow = sectionRowWithTrackEntries(
+            sectionRow,
+            sectionTrackEntriesWithTrack(
+                sectionRow, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
+        nextMap.push_back(sectionRow);
+    }
 
     resolvedPayload[QStringLiteral("section_track_map")] = nextMap;
     clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
     clipsRoot[trimmedClipId] = clipRoot;
     speakerFlow[QStringLiteral("clips")] = clipsRoot;
     transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+    buildPayloadMs = phaseTimer.elapsed();
+    phaseTimer.restart();
 
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
             return true;
-        }) || !saveLoadedTranscriptDocumentNow()) {
+        })) {
+        mutateDocumentMs = phaseTimer.elapsed();
+        updateSectionAssignmentProfile(false, QStringLiteral("document_mutate_failed"));
         refresh();
         return false;
     }
+    mutateDocumentMs = phaseTimer.elapsed();
+    phaseTimer.restart();
+    queueLoadedTranscriptDocumentSave();
+    queueSaveMs = phaseTimer.elapsed();
+    phaseTimer.restart();
 
     m_avatarHoverTooltipHtmlCache.clear();
     emit transcriptDocumentChanged();
-    refreshVisibleSpeakerSectionAssignments(trimmedSpeakerId);
+    for (const QPair<int64_t, int64_t>& section : validSections) {
+        refreshVisibleSpeakerSectionAssignments(trimmedSpeakerId, section.first, section.second);
+    }
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot && !m_assignmentHistorySnapshotQueued) {
+        m_assignmentHistorySnapshotQueued = true;
+        QTimer::singleShot(350, this, [this]() {
+            m_assignmentHistorySnapshotQueued = false;
+            if (m_deps.pushHistorySnapshot) {
+                m_deps.pushHistorySnapshot();
+            }
+        });
     }
+    postUpdateMs = phaseTimer.elapsed();
+    updateSectionAssignmentProfile(true);
     return true;
 }
 
@@ -1982,9 +2075,11 @@ bool SpeakersTab::saveSpeakerSectionRotation(int row, qreal rotation)
     QJsonObject clipRoot = clipsRoot.value(clip->id.trimmed()).toObject();
     QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
     QJsonArray nextMap;
+    bool foundSectionRow = false;
     for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
         QJsonObject sectionRow = value.toObject();
         if (sectionRow.value(QStringLiteral("section_key")).toString() == sectionKey) {
+            foundSectionRow = true;
             const qreal previous =
                 qBound<qreal>(-180.0, sectionRow.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
             if (!qFuzzyCompare(previous + 1.0, rotation + 1.0)) {
@@ -2000,6 +2095,18 @@ bool SpeakersTab::saveSpeakerSectionRotation(int row, qreal rotation)
             sectionRow = sectionRowWithTrackEntries(sectionRow, rotatedEntries);
         }
         nextMap.push_back(sectionRow);
+    }
+    if (!foundSectionRow && !qFuzzyCompare(rotation + 1.0, 1.0)) {
+        QJsonObject sectionRow;
+        sectionRow[QStringLiteral("section_key")] = sectionKey;
+        sectionRow[QStringLiteral("speaker_id")] = speakerId;
+        sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
+        sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
+        sectionRow[QStringLiteral("resolution_source")] = QStringLiteral("contiguous_section_rotation");
+        sectionRow[QStringLiteral("rotation")] = rotation;
+        sectionRow[QStringLiteral("tracks")] = QJsonArray();
+        nextMap.push_back(sectionRow);
+        changed = true;
     }
     if (!changed) {
         return false;
@@ -2017,17 +2124,24 @@ bool SpeakersTab::saveSpeakerSectionRotation(int row, qreal rotation)
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
             return true;
-        }) || !saveLoadedTranscriptDocumentNow()) {
+        })) {
         refresh();
         return false;
     }
+    queueLoadedTranscriptDocumentSave();
     emit transcriptDocumentChanged();
-    refreshVisibleSpeakerSectionAssignments(speakerId);
+    refreshVisibleSpeakerSectionAssignments(speakerId, startFrame, endFrame);
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot && !m_assignmentHistorySnapshotQueued) {
+        m_assignmentHistorySnapshotQueued = true;
+        QTimer::singleShot(350, this, [this]() {
+            m_assignmentHistorySnapshotQueued = false;
+            if (m_deps.pushHistorySnapshot) {
+                m_deps.pushHistorySnapshot();
+            }
+        });
     }
     return true;
 }
@@ -2106,10 +2220,11 @@ bool SpeakersTab::deassignTrackFromContiguousSection(const QString& clipId,
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
             return true;
-        }) || !saveLoadedTranscriptDocumentNow()) {
+        })) {
         refresh();
         return false;
     }
+    queueLoadedTranscriptDocumentSave();
     emit transcriptDocumentChanged();
     refreshVisibleSpeakerSectionAssignments(speakerId);
     if (m_deps.scheduleSaveState) {
@@ -3055,14 +3170,22 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         }
     }
     logTiming(QStringLiteral("validated"));
+    const int64_t currentTimelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip->startFrame;
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers
+            ? m_speakerDeps.getRenderSyncMarkers()
+            : QVector<RenderSyncMarker>{};
+    const int64_t playheadMediaSourceFrame =
+        sourceFrameForClipAtTimelinePosition(
+            *clip,
+            static_cast<qreal>(currentTimelineFrame),
+            renderSyncMarkers);
+    const int64_t playheadTranscriptFrame =
+        transcriptFrameForClipSourceFrame(*clip, playheadMediaSourceFrame);
     const int64_t mediaSourceFrame = sourceFrame >= 0
         ? sourceFrame
-        : sourceFrameForClipAtTimelinePosition(
-              *clip,
-              static_cast<qreal>(m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip->startFrame),
-              m_speakerDeps.getRenderSyncMarkers
-                  ? m_speakerDeps.getRenderSyncMarkers()
-                  : QVector<RenderSyncMarker>{});
+        : playheadMediaSourceFrame;
     const int64_t transcriptFrame = transcriptFrameForClipSourceFrame(*clip, mediaSourceFrame);
     const qreal sourceFps = resolvedSourceFps(*clip);
     logTiming(QStringLiteral("mapped_source_frame"));
@@ -3081,7 +3204,8 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                   ? QStringLiteral("selected_playhead_track")
                   : QStringLiteral("highlighted_preview_track"));
 
-    const QString selectedSpeaker = selectedSpeakerId().trimmed();
+    const bool contiguousMode = contiguousTranscriptSectionModeActive();
+    const QString selectedSpeaker = contiguousMode ? QString() : selectedSpeakerId().trimmed();
     QString speakerResolutionDetail =
         selectedSpeaker.isEmpty()
             ? QStringLiteral("media source frame %1 at %2 fps -> transcript frame %3")
@@ -3094,21 +3218,37 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                   .arg(transcriptFrame);
     QString speakerId = selectedSpeaker;
     int64_t speakerSourceFrame = transcriptFrame;
-    if (speakerId.isEmpty()) {
+    if (contiguousMode) {
+        speakerSourceFrame = playheadTranscriptFrame;
+        speakerId = activeSpeakerIdAtSourceFrame(playheadTranscriptFrame);
+        speakerResolutionDetail =
+            QStringLiteral("contiguous section at playhead frame %1: media source frame %2 at %3 fps -> transcript frame %4")
+                .arg(currentTimelineFrame)
+                .arg(playheadMediaSourceFrame)
+                .arg(sourceFps, 0, 'f', 3)
+                .arg(playheadTranscriptFrame);
+    } else if (speakerId.isEmpty()) {
         speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
     }
     if (speakerId.isEmpty()) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
-        int64_t resolvedGapFrame = transcriptFrame;
-        speakerId = activeSpeakerIdNearSourceFrame(transcriptFrame, gapHoldFrames, &resolvedGapFrame);
+        const int64_t frameForGapHold = contiguousMode ? playheadTranscriptFrame : transcriptFrame;
+        int64_t resolvedGapFrame = frameForGapHold;
+        speakerId = activeSpeakerIdNearSourceFrame(frameForGapHold, gapHoldFrames, &resolvedGapFrame);
         if (!speakerId.isEmpty()) {
             speakerSourceFrame = resolvedGapFrame;
-            speakerResolutionDetail =
-                QStringLiteral("transcript gap hold: media source frame %1 -> transcript frame %2 -> speaker frame %3 within %4 transcript frame(s)")
-                    .arg(mediaSourceFrame)
-                    .arg(transcriptFrame)
-                    .arg(speakerSourceFrame)
-                    .arg(gapHoldFrames);
+            speakerResolutionDetail = contiguousMode
+                ? QStringLiteral("contiguous section at playhead frame %1 via transcript gap hold: media source frame %2 -> transcript frame %3 -> speaker frame %4 within %5 transcript frame(s)")
+                      .arg(currentTimelineFrame)
+                      .arg(playheadMediaSourceFrame)
+                      .arg(playheadTranscriptFrame)
+                      .arg(speakerSourceFrame)
+                      .arg(gapHoldFrames)
+                : QStringLiteral("transcript gap hold: media source frame %1 -> transcript frame %2 -> speaker frame %3 within %4 transcript frame(s)")
+                      .arg(mediaSourceFrame)
+                      .arg(transcriptFrame)
+                      .arg(speakerSourceFrame)
+                      .arg(gapHoldFrames);
         }
     }
     logTiming(QStringLiteral("resolved_speaker"));
@@ -3154,25 +3294,68 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         return true;
     }
 
-    if (contiguousTranscriptSectionModeActive()) {
-        const int row = m_widgets.speakerSectionsTable ? m_widgets.speakerSectionsTable->currentRow() : -1;
-        QTableWidgetItem* speakerItem = row >= 0 && m_widgets.speakerSectionsTable
-            ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
-            : nullptr;
-        const QString sectionSpeakerId = speakerItem
-            ? speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed()
-            : QString();
-        const int64_t sectionStart = speakerItem
-            ? speakerItem->data(SpeakerSectionStartFrameRole).toLongLong()
-            : -1;
-        const int64_t sectionEnd = speakerItem
-            ? speakerItem->data(SpeakerSectionEndFrameRole).toLongLong()
-            : -1;
-        const bool assignedSection = assignTrackToContiguousSection(
+    if (contiguousMode) {
+        QString sectionSpeakerId = speakerId;
+        const bool applyToAllMatchingSections =
+            m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox &&
+            m_widgets.speakerApplyTrackToAllMatchingSectionsCheckBox->isChecked();
+        QVector<int> rows = applyToAllMatchingSections
+            ? speakerSectionRowsAtFrame(sectionSpeakerId, transcriptFrame)
+            : speakerSectionRowsAtFrame(sectionSpeakerId, speakerSourceFrame);
+        if (applyToAllMatchingSections && rows.isEmpty()) {
+            const QString trackTimeSpeakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
+            const QVector<int> trackTimeRows = speakerSectionRowsAtFrame(trackTimeSpeakerId, transcriptFrame);
+            if (!trackTimeSpeakerId.isEmpty() && !trackTimeRows.isEmpty()) {
+                sectionSpeakerId = trackTimeSpeakerId;
+                speakerId = trackTimeSpeakerId;
+                rows = trackTimeRows;
+            }
+        }
+        if (!applyToAllMatchingSections && !rows.isEmpty()) {
+            rows = QVector<int>{rows.constFirst()};
+        }
+        if (rows.isEmpty() || !m_widgets.speakerSectionsTable) {
+            report(QStringLiteral("Face box click failed: track %1 was not assigned because track transcript frame %2 did not resolve to a contiguous transcript section for %3 (%4).")
+                       .arg(trackId)
+                       .arg(transcriptFrame)
+                       .arg(speakerDisplayLabel(speakerId))
+                       .arg(speakerResolutionDetail));
+            logTiming(QStringLiteral("complete_section_no_track_time_rows"));
+            return false;
+        }
+        QVector<QPair<int64_t, int64_t>> targetSections;
+        targetSections.reserve(rows.size());
+        for (int row : rows) {
+            QTableWidgetItem* speakerItem = row >= 0
+                ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
+                : nullptr;
+            if (!speakerItem) {
+                continue;
+            }
+            const QString rowSpeakerId =
+                speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
+            if (rowSpeakerId != sectionSpeakerId) {
+                continue;
+            }
+            const int64_t sectionStart = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+            const int64_t sectionEnd = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
+            if (sectionStart >= 0 && sectionEnd >= sectionStart) {
+                targetSections.push_back(qMakePair(sectionStart, sectionEnd));
+            }
+        }
+        if (targetSections.isEmpty()) {
+            report(QStringLiteral("Face box click failed: track %1 found matching contiguous section rows, but none had valid frame ranges.")
+                       .arg(trackId));
+            logTiming(QStringLiteral("complete_section_invalid_track_time_rows"));
+            return false;
+        }
+        selectSpeakerSectionRowAtFrame(
+            sectionSpeakerId,
+            applyToAllMatchingSections ? transcriptFrame : speakerSourceFrame);
+        const bool assignedSection = assignTrackToContiguousSections(
             clipId,
             sectionSpeakerId,
-            sectionStart,
-            sectionEnd,
+            targetSections,
             trackId,
             streamId,
             mediaSourceFrame,
@@ -3185,13 +3368,17 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
             m_speakerDeps.refreshPreview();
         }
         report(assignedSection
-                   ? QStringLiteral("Face box click assigned: track %1 mapped one-to-one to contiguous section row %2 (%3-%4).")
+                   ? QStringLiteral("Face box click assigned: track %1 added to %2 contiguous section row(s) for %3 at %4 transcript frame %5.")
                          .arg(trackId)
-                         .arg(row + 1)
-                         .arg(sectionStart)
-                         .arg(sectionEnd)
-                   : QStringLiteral("Face box click failed: track %1 was not assigned to the selected contiguous section row.")
-                         .arg(trackId));
+                         .arg(targetSections.size())
+                         .arg(speakerDisplayLabel(sectionSpeakerId))
+                         .arg(applyToAllMatchingSections
+                                  ? QStringLiteral("matching")
+                                  : QStringLiteral("active"))
+                         .arg(applyToAllMatchingSections ? transcriptFrame : speakerSourceFrame)
+                   : QStringLiteral("Face box click failed: track %1 was not assigned to contiguous section row(s) containing track transcript frame %2.")
+                         .arg(trackId)
+                         .arg(transcriptFrame));
         logTiming(assignedSection ? QStringLiteral("complete_section_success")
                                   : QStringLiteral("complete_section_failed"));
         return assignedSection;

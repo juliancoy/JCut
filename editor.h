@@ -138,6 +138,7 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
+    QJsonObject speakerUiPerformanceSnapshot() const;
     QJsonObject pipelineSnapshot(bool verbose = false) const;
     QJsonObject playbackStageMetricsSnapshot() const;
     QJsonObject streamTimingSnapshot() const;
@@ -455,6 +456,7 @@ private:
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
+    QCheckBox *m_speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;

@@ -61,6 +61,8 @@ void EditorWindow::bindInspectorWidgets()
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
     m_speakerShowContiguousSectionsCheckBox =
         m_inspectorPane->speakerShowContiguousSectionsCheckBox();
+    m_speakerApplyTrackToAllMatchingSectionsCheckBox =
+        m_inspectorPane->speakerApplyTrackToAllMatchingSectionsCheckBox();
     m_speakerShowFaceDetectionsBoxesCheckBox = m_inspectorPane->speakerShowFaceDetectionsBoxesCheckBox();
     m_speakerShowRawDetectionsCheckBox = m_inspectorPane->speakerShowRawDetectionsCheckBox();
     m_speakerShowCurrentSpeakerNameCheckBox = m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox();
@@ -602,6 +604,12 @@ void EditorWindow::setupPreviewControls()
     }
     if (m_speakerShowContiguousSectionsCheckBox) {
         connect(m_speakerShowContiguousSectionsCheckBox, &QCheckBox::toggled, this, [this]() {
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
+    if (m_speakerApplyTrackToAllMatchingSectionsCheckBox) {
+        connect(m_speakerApplyTrackToAllMatchingSectionsCheckBox, &QCheckBox::toggled, this, [this]() {
             scheduleSaveState();
             pushHistorySnapshot();
         });

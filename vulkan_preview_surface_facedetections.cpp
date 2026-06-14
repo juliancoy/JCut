@@ -14,6 +14,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QSet>
+#include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
@@ -1002,17 +1003,28 @@ void VulkanPreviewSurface::queueFacestreamOverlayCacheWarmup(const TimelineClip&
     }
     m_pendingFacestreamOverlayCacheWarmups.insert(cacheKey);
     QPointer<QObject> receiver(m_pipelineOwner.get());
-    QMetaObject::invokeMethod(receiver, [receiver, this, clip, sourceFrame, cacheKey]() {
+    QTimer::singleShot(250, receiver, [receiver, this, clip, sourceFrame, cacheKey]() {
         if (!receiver) {
+            return;
+        }
+        if (m_interaction.playing) {
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            if (nowMs - m_lastFacestreamOverlayPlaybackWarmupMs < 1000) {
+                m_pendingFacestreamOverlayCacheWarmups.remove(cacheKey);
+                return;
+            }
+            m_lastFacestreamOverlayPlaybackWarmupMs = nowMs;
+            loadFacestreamTracksForClip(clip, sourceFrame);
+            m_pendingFacestreamOverlayCacheWarmups.remove(cacheKey);
+            refreshFacestreamOverlays();
+            requestNativeUpdate();
             return;
         }
         loadFacestreamTracksForClip(clip, sourceFrame);
         m_pendingFacestreamOverlayCacheWarmups.remove(cacheKey);
-        if (m_interaction.playing) {
-            refreshFacestreamOverlays();
-            requestNativeUpdate();
-        }
-    }, Qt::QueuedConnection);
+        refreshFacestreamOverlays();
+        requestNativeUpdate();
+    });
 }
 
 bool VulkanPreviewSurface::warmFacestreamOverlayLookahead(int futureFrames, int timeoutMs)
@@ -1072,7 +1084,7 @@ bool VulkanPreviewSurface::warmFacestreamOverlayLookahead(int futureFrames, int 
                 ++cachedEntries;
                 continue;
             }
-            if (timeoutMs >= 0 && timer.elapsed() >= timeoutMs) {
+            if (m_interaction.playing || (timeoutMs >= 0 && timer.elapsed() >= timeoutMs)) {
                 ++timedOutBeforeLoad;
                 queueFacestreamOverlayCacheWarmup(clip, localFrame, cacheIdentity.cacheKey);
                 continue;

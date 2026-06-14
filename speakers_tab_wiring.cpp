@@ -97,7 +97,13 @@ void SpeakersTab::wire()
             m_speakersTableRefreshSignature.clear();
             m_speakerSectionsTableRefreshSignature.clear();
             if (m_transcriptSession.hasObjectDocument()) {
-                refreshSpeakersTable(m_transcriptSession.rootObject(), selectedSpeakerId());
+                syncSpeakerListMode();
+                if (m_widgets.speakerShowContiguousSectionsCheckBox &&
+                    m_widgets.speakerShowContiguousSectionsCheckBox->isChecked()) {
+                    refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
+                } else {
+                    refreshSpeakersTable(m_transcriptSession.rootObject(), selectedSpeakerId());
+                }
             }
         });
     }

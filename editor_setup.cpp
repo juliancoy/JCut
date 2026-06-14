@@ -434,6 +434,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             };
         },
         [this]() { return profilingSnapshot(); },
+        [this]() { return speakerUiPerformanceSnapshot(); },
         [this]() { return streamTimingSnapshot(); },
         [this](bool verbose) { return pipelineSnapshot(verbose); },
         [this]() {

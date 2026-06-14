@@ -126,7 +126,7 @@
     "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1781413412963,
+        "audioSourceLastVerifiedMs": 1781417640062,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",
@@ -458,6 +458,7 @@
     "selectedInspectorTab": 8,
     "selectedInspectorTabLabel": "Speakers",
     "selectedTrackIndex": 0,
+    "speakerApplyTrackToAllMatchingSections": false,
     "speakerShowContiguousTranscriptSections": false,
     "speakersColumnHidden": [
         false,
@@ -473,7 +474,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781413412948,
+            "audioSourceLastVerifiedMs": 1781417640047,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/life_c.png",
             "audioSourcePath": "testbench_assets/images/life_c.png",
@@ -913,7 +914,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1781413412964,
+            "audioSourceLastVerifiedMs": 1781417640063,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1408,7 +1409,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781413412948,
+            "audioSourceLastVerifiedMs": 1781417640047,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/gradient_a.png",
             "audioSourcePath": "testbench_assets/images/gradient_a.png",
@@ -1848,7 +1849,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781413412948,
+            "audioSourceLastVerifiedMs": 1781417640047,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/fractal_b.png",
             "audioSourcePath": "testbench_assets/images/fractal_b.png",
@@ -2288,7 +2289,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781413412963,
+            "audioSourceLastVerifiedMs": 1781417640062,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",

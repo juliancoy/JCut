@@ -48,6 +48,7 @@ public:
         QTableWidget* speakersTable = nullptr;
         QCheckBox* speakerHideUnidentifiedCheckBox = nullptr;
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
+        QCheckBox* speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
         QPushButton* speakerExportLongSectionsButton = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
         QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
@@ -258,6 +259,8 @@ private:
     void refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot);
     void syncSpeakerListMode();
     bool selectSpeakerRowById(const QString& speakerId);
+    int speakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame) const;
+    QVector<int> speakerSectionRowsAtFrame(const QString& speakerId, int64_t sourceFrame) const;
     bool selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame);
     void focusSpeakerSectionTrackFromRow(int row);
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
@@ -344,7 +347,9 @@ private:
     int64_t currentSourceFrameForClip(const TimelineClip& clip) const;
     void refreshSpeakersTable(const QJsonObject& transcriptRoot,
                               const QString& preferredSpeakerId = QString());
-    void refreshVisibleSpeakerSectionAssignments(const QString& speakerId);
+    void refreshVisibleSpeakerSectionAssignments(const QString& speakerId,
+                                                 int64_t onlyStartFrame = -1,
+                                                 int64_t onlyEndFrame = -1);
     bool contiguousTranscriptSectionModeActive() const;
     QJsonObject contiguousSectionAssignmentForRow(int row) const;
     QJsonObject contiguousSectionAssignmentForSection(const QString& clipId,
@@ -366,6 +371,16 @@ private:
                                         qreal yNorm,
                                         qreal boxSizeNorm,
                                         const QString& resolutionSource);
+    bool assignTrackToContiguousSections(const QString& clipId,
+                                         const QString& speakerId,
+                                         const QVector<QPair<int64_t, int64_t>>& sections,
+                                         int trackId,
+                                         const QString& streamId,
+                                         int64_t sourceFrame,
+                                         qreal xNorm,
+                                         qreal yNorm,
+                                         qreal boxSizeNorm,
+                                         const QString& resolutionSource);
     bool deassignTrackFromContiguousSection(const QString& clipId,
                                             int trackId,
                                             int row = -1);

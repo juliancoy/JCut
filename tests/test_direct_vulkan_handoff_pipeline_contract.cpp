@@ -30,6 +30,7 @@ private slots:
   void speakerFramingAndExportUseFractionalFitGeometry();
   void contiguousTranscriptSectionsCanHoldMultipleTracks();
   void trackAssignmentDoesNotCreateFaceBoxKeyframes();
+  void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
 
@@ -1071,6 +1072,15 @@ void TestDirectVulkanHandoffPipelineContract::
            "speaker/FaceDetections overlay warmup must be explicit and "
            "diagnosed separately from frame decode warmup");
   QVERIFY2(source.contains(QStringLiteral(
+               "m_interaction.playing || (timeoutMs >= 0 && timer.elapsed() >= timeoutMs)")),
+           "bounded pre-playback facetrack warmup must load cache buckets until "
+           "the timeout is actually reached; otherwise face streams disappear "
+           "as soon as playback starts");
+  QVERIFY2(source.contains(QStringLiteral("m_lastFacestreamOverlayPlaybackWarmupMs")) &&
+               source.contains(QStringLiteral("nowMs - m_lastFacestreamOverlayPlaybackWarmupMs < 1000")),
+           "active playback facetrack cache recovery must be throttled instead "
+           "of disabled, so boxes can recover at bucket boundaries");
+  QVERIFY2(source.contains(QStringLiteral(
                "kMaxPreservedPlaybackOverlayDriftFrames =\n"
                "    kFacestreamOverlayInteractiveWindowFrames * 2")),
            "active playback overlay preservation must cover the prepared "
@@ -1240,15 +1250,40 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(tracks.contains(QStringLiteral("sectionTrackEntriesWithTrack")),
            "contiguous section assignment must merge clicked tracks into a "
            "section-level track list");
+  QVERIFY2(tracks.contains(QStringLiteral("assignTrackToContiguousSections")),
+           "contiguous section assignment must support applying one clicked "
+           "track to every matching contiguous transcript section row");
   QVERIFY2(tracks.contains(QStringLiteral("sectionRowWithTrackEntries")),
            "contiguous section rows must persist a tracks array while keeping "
            "legacy primary track fields");
   QVERIFY2(tracks.contains(QStringLiteral("row[QStringLiteral(\"tracks\")] = entries")),
            "contiguous section rows must write the full tracks array");
-  QVERIFY2(tracks.contains(QStringLiteral("sameSection")) &&
-               tracks.contains(QStringLiteral("existingSectionRow")),
-           "assigning another track to the same contiguous transcript section "
-           "must preserve and extend the existing row");
+  QVERIFY2(tracks.contains(QStringLiteral("targetSectionKeys")) &&
+               tracks.contains(QStringLiteral("existingSectionRows")),
+           "assigning another track to matching contiguous transcript sections "
+           "must preserve and extend existing rows");
+  QVERIFY2(!tracks.contains(QStringLiteral("if (!sameTrack)")),
+           "assigning a track to one contiguous transcript section must not "
+           "evict that same track from other contiguous sections");
+  const qsizetype sectionAssignIndex = tracks.indexOf(
+      QStringLiteral("if (contiguousMode) {"));
+  QVERIFY2(sectionAssignIndex >= 0,
+           "face-box left-click assignment must have an explicit contiguous "
+           "section path");
+  const qsizetype speakerAssignIndex = tracks.indexOf(
+      QStringLiteral("const bool assigned = assignTrackToSpeaker"), sectionAssignIndex);
+  QVERIFY2(speakerAssignIndex > sectionAssignIndex,
+           "contiguous section assignment body must be bounded before the "
+           "speaker-level assignment fallback");
+  const QString sectionAssignBody =
+      tracks.mid(sectionAssignIndex, speakerAssignIndex - sectionAssignIndex);
+  QVERIFY2(sectionAssignBody.contains(QStringLiteral("speakerSectionRowsAtFrame(sectionSpeakerId, transcriptFrame)")) &&
+               sectionAssignBody.contains(QStringLiteral("assignTrackToContiguousSections(")),
+           "left-clicking a face track in contiguous transcript mode must "
+           "resolve every target section from the clicked track transcript time");
+  QVERIFY2(!sectionAssignBody.contains(QStringLiteral("speakerSectionsTable->currentRow()")),
+           "contiguous section left-click assignment must not use the table's "
+           "currently selected row as the target section");
 
   const QString speakers = readSourceFile(QStringLiteral("speakers_tab.cpp"));
   QVERIFY2(!speakers.isEmpty(), "speakers_tab.cpp must be readable");
@@ -1269,6 +1304,12 @@ void TestDirectVulkanHandoffPipelineContract::
                keyframes.contains(QStringLiteral("streamIds->insert(streamId)")),
            "runtime speaker framing must collect every assigned track/stream "
            "for the active contiguous section");
+  QVERIFY2(keyframes.contains(QStringLiteral("sectionMappingActive")) &&
+               keyframes.contains(QStringLiteral("sectionMappingActive && !matchedSectionAssignment")) &&
+               keyframes.contains(QStringLiteral("!sectionMappingActive &&")) &&
+               keyframes.contains(QStringLiteral("if (sectionMap.isEmpty())")),
+           "runtime speaker framing must use either contiguous section-track "
+           "mapping or speaker-track identity mapping for a clip, not both");
 
   const QString routes =
       readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
@@ -1321,6 +1362,43 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(tracks.contains(QStringLiteral("Contiguous section assignment anchor T%1")),
            "contiguous section assignment anchors must be titled for future "
            "diagnostics");
+  QVERIFY2(tracks.contains(QStringLiteral("contiguous_section_rotation")) &&
+               tracks.contains(QStringLiteral("sectionRow[QStringLiteral(\"tracks\")] = QJsonArray()")),
+           "per-row section rotation must be persistable before any face track "
+           "is assigned to that contiguous transcript section");
+  QVERIFY2(!tracks.contains(QStringLiteral("row.remove(QStringLiteral(\"rotation\"))")),
+           "normalizing an empty-track contiguous section row must not discard "
+           "its independent rotation");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speechFilterBlendUsesPrecomputedSampleRanges() {
+  const QString header = readSourceFile(QStringLiteral("audio_engine.h"));
+  const QString source = readSourceFile(QStringLiteral("audio_engine.cpp"));
+  QVERIFY2(!header.isEmpty(), "audio_engine.h must be readable");
+  QVERIFY2(!source.isEmpty(), "audio_engine.cpp must be readable");
+
+  QVERIFY2(header.contains(QStringLiteral("struct SpeechSampleRange")),
+           "audio speech filtering must have a precomputed sample-domain range type");
+  QVERIFY2(header.contains(QStringLiteral("QVector<SpeechSampleRange> speechSampleRanges")),
+           "audio mix context must carry precomputed sample-domain speech ranges");
+  QVERIFY2(source.contains(QStringLiteral("context.speechSampleRanges.reserve")) &&
+               source.contains(QStringLiteral("SpeechSampleRange{startSample, endSampleExclusive}")),
+           "audio mix loop must precompute speech-filter sample ranges once per chunk");
+  QVERIFY2(source.contains(QStringLiteral("std::upper_bound(")) &&
+               source.contains(QStringLiteral("const SpeechSampleRange &range")),
+           "speech-filter blend lookup must use ordered sample ranges instead of scanning all export ranges");
+
+  const int fnStart = source.indexOf(QStringLiteral(
+      "AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend"));
+  const int nextFn = source.indexOf(QStringLiteral(
+      "float AudioEngine::calculateClipCrossfadeGain"), fnStart);
+  QVERIFY2(fnStart >= 0 && nextFn > fnStart,
+           "calculateSpeechRangeBlend body must be visible for inspection");
+  const QString blendBody = source.mid(fnStart, nextFn - fnStart);
+  QVERIFY2(!blendBody.contains(QStringLiteral("timelineFrameToSamples(")) &&
+               !blendBody.contains(QStringLiteral("frameToSamples(")),
+           "per-sample speech blend calculation must not convert transcript frames to samples");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

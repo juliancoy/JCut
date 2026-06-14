@@ -99,6 +99,7 @@ public:
     QTableWidget *speakersTable() const { return m_speakersTable; }
     QCheckBox *speakerHideUnidentifiedCheckBox() const { return m_speakerHideUnidentifiedCheckBox; }
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
+    QCheckBox *speakerApplyTrackToAllMatchingSectionsCheckBox() const { return m_speakerApplyTrackToAllMatchingSectionsCheckBox; }
     QPushButton *speakerExportLongSectionsButton() const { return m_speakerExportLongSectionsButton; }
     QCheckBox *speakerShowCurrentSpeakerNameCheckBox() const { return m_speakerShowCurrentSpeakerNameCheckBox; }
     QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
@@ -647,6 +648,7 @@ private:
     SpeakersTable *m_speakersTable = nullptr;
     QCheckBox *m_speakerHideUnidentifiedCheckBox = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
+    QCheckBox *m_speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
     QPushButton *m_speakerExportLongSectionsButton = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
