@@ -2,6 +2,7 @@
 #include "speakers_tab_internal.h"
 
 #include "decoder_context.h"
+#include "editor_shared_keyframes.h"
 #include "editor_shared_keyframes_cache.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_debug.h"
@@ -68,10 +69,14 @@ QJsonObject sectionTrackEntryFromFields(int trackId,
                                         qreal boxSizeNorm,
                                         qreal rotationDegrees = 0.0)
 {
+    const QString trimmedStreamId = streamId.trimmed();
+    const QString canonicalStreamId =
+        trackId >= 0 && (trimmedStreamId.isEmpty() || trimmedStreamId == QStringLiteral("raw_detection"))
+            ? QStringLiteral("T%1").arg(trackId)
+            : trimmedStreamId;
     QJsonObject entry;
     entry[QStringLiteral("track_id")] = trackId;
-    entry[QStringLiteral("stream_id")] =
-        streamId.trimmed().isEmpty() ? QStringLiteral("T%1").arg(trackId) : streamId.trimmed();
+    entry[QStringLiteral("stream_id")] = canonicalStreamId;
     entry[QStringLiteral("title")] =
         QStringLiteral("Contiguous section assignment anchor T%1").arg(trackId);
     entry[QStringLiteral("source_frame")] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
@@ -1932,6 +1937,11 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
                                                   qreal boxSizeNorm,
                                                   const QString& resolutionSource)
 {
+    const QString inputClipId = clipId;
+    const QString inputSpeakerId = speakerId;
+    const QVector<QPair<int64_t, int64_t>> inputSections = sections;
+    const QString inputStreamId = streamId;
+    const QString inputResolutionSource = resolutionSource;
     QElapsedTimer assignmentTimer;
     assignmentTimer.start();
     QElapsedTimer phaseTimer;
@@ -1953,27 +1963,27 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
         nextProfile[QStringLiteral("last_post_update_ms")] = postUpdateMs;
         nextProfile[QStringLiteral("last_ok")] = ok;
         nextProfile[QStringLiteral("last_failure_reason")] = failureReason;
-        nextProfile[QStringLiteral("last_clip_id")] = clipId.trimmed();
-        nextProfile[QStringLiteral("last_speaker_id")] = speakerId.trimmed();
+        nextProfile[QStringLiteral("last_clip_id")] = inputClipId.trimmed();
+        nextProfile[QStringLiteral("last_speaker_id")] = inputSpeakerId.trimmed();
         nextProfile[QStringLiteral("last_track_id")] = trackId;
-        nextProfile[QStringLiteral("last_anchor_count")] = sections.size();
-        nextProfile[QStringLiteral("last_resolution_source")] = resolutionSource;
+        nextProfile[QStringLiteral("last_anchor_count")] = inputSections.size();
+        nextProfile[QStringLiteral("last_resolution_source")] = inputResolutionSource;
         nextProfile[QStringLiteral("last_sync_transcript_io")] = shouldUseSynchronousTranscriptIo();
         m_trackAssignmentTimingProfile = nextProfile;
     };
 
-    const QString trimmedClipId = clipId.trimmed();
-    const QString trimmedSpeakerId = speakerId.trimmed();
+    const QString trimmedClipId = inputClipId.trimmed();
+    const QString trimmedSpeakerId = inputSpeakerId.trimmed();
     if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument() ||
         trimmedClipId.isEmpty() || trimmedSpeakerId.isEmpty() ||
-        sections.isEmpty() || trackId < 0) {
+        inputSections.isEmpty() || trackId < 0) {
         updateSectionAssignmentProfile(false, QStringLiteral("invalid_input_or_no_loaded_document"));
         return false;
     }
     QVector<QPair<int64_t, int64_t>> validSections;
-    validSections.reserve(sections.size());
+    validSections.reserve(inputSections.size());
     QSet<QString> seenSectionKeys;
-    for (const QPair<int64_t, int64_t>& section : sections) {
+    for (const QPair<int64_t, int64_t>& section : inputSections) {
         if (section.first < 0 || section.second < section.first) {
             continue;
         }
@@ -2016,9 +2026,9 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
         nextMap.push_back(row);
     }
 
-    const QString effectiveResolutionSource = resolutionSource.trimmed().isEmpty()
+    const QString effectiveResolutionSource = inputResolutionSource.trimmed().isEmpty()
         ? QStringLiteral("contiguous_section_click")
-        : resolutionSource.trimmed();
+        : inputResolutionSource.trimmed();
     for (const QPair<int64_t, int64_t>& section : validSections) {
         const QString sectionKey = contiguousSectionKey(trimmedSpeakerId, section.first, section.second);
         QJsonObject sectionRow = existingSectionRows.value(sectionKey);
@@ -2033,7 +2043,7 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
         sectionRow = sectionRowWithTrackEntries(
             sectionRow,
             sectionTrackEntriesWithTrack(
-                sectionRow, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
+                sectionRow, trackId, inputStreamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
         nextMap.push_back(sectionRow);
     }
 
@@ -2056,9 +2066,20 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
     }
     mutateDocumentMs = phaseTimer.elapsed();
     phaseTimer.restart();
-    queueLoadedTranscriptDocumentSave();
+    if (!flushLoadedTranscriptDocumentForRuntimeNow()) {
+        queueSaveMs = phaseTimer.elapsed();
+        updateSectionAssignmentProfile(false, QStringLiteral("runtime_transcript_flush_failed"));
+        refresh();
+        return false;
+    }
     queueSaveMs = phaseTimer.elapsed();
     phaseTimer.restart();
+
+    clearAssignedContinuityStreamsCache();
+    if (const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        selectedClip && selectedClip->id == trimmedClipId) {
+        prepareClipSpeakerFramingContinuityRuntimeBlocking(*selectedClip);
+    }
 
     m_avatarHoverTooltipHtmlCache.clear();
     emit transcriptDocumentChanged();
@@ -2228,9 +2249,17 @@ bool SpeakersTab::saveSpeakerSectionRotation(int row, qreal rotation)
         refresh();
         return false;
     }
-    queueLoadedTranscriptDocumentSave();
+    if (!flushLoadedTranscriptDocumentForRuntimeNow()) {
+        refresh();
+        return false;
+    }
+    clearAssignedContinuityStreamsCache();
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(*clip);
     emit transcriptDocumentChanged();
     refreshVisibleSpeakerSectionAssignments(speakerId, startFrame, endFrame);
+    if (m_speakerDeps.refreshPreview) {
+        m_speakerDeps.refreshPreview();
+    }
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }

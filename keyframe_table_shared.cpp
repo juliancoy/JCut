@@ -83,6 +83,33 @@ void restoreSelectionByFrameRole(QTableWidget* table, const QSet<int64_t>& frame
     }
 }
 
+bool findTableCellForItem(QTableWidget* table, const QTableWidgetItem* item, int* rowOut, int* columnOut) {
+    if (rowOut) {
+        *rowOut = -1;
+    }
+    if (columnOut) {
+        *columnOut = -1;
+    }
+    if (!table || !item) {
+        return false;
+    }
+    for (int row = 0; row < table->rowCount(); ++row) {
+        for (int column = 0; column < table->columnCount(); ++column) {
+            if (table->item(row, column) != item) {
+                continue;
+            }
+            if (rowOut) {
+                *rowOut = row;
+            }
+            if (columnOut) {
+                *columnOut = column;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 QTableWidgetItem* ensureContextRowSelected(QTableWidget* table, const QPoint& pos, int* rowOut) {
     if (rowOut) {
         *rowOut = -1;

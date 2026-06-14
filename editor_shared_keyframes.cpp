@@ -43,13 +43,20 @@ struct RobustScalarSample {
     qreal confidence = 1.0;
 };
 
+enum class ContinuityAssignmentMode {
+    SectionOrIdentity,
+    SectionOnly
+};
+
 bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                              const QString& speakerId,
                                              qreal timelineFramePosition,
                                              qreal mediaSourceFramePosition,
                                              QPointF* locationOut,
                                              qreal* boxSizeOut,
-                                             qreal* rotationDegreesOut = nullptr);
+                                             qreal* rotationDegreesOut = nullptr,
+                                             ContinuityAssignmentMode mode = ContinuityAssignmentMode::SectionOrIdentity,
+                                             bool* matchedSectionAssignmentOut = nullptr);
 bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
                                         qreal timelineFramePosition,
                                         qreal mediaSourceFramePosition,
@@ -828,10 +835,15 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                              qreal mediaSourceFramePosition,
                                              QPointF* locationOut,
                                              qreal* boxSizeOut,
-                                             qreal* rotationDegreesOut)
+                                             qreal* rotationDegreesOut,
+                                             ContinuityAssignmentMode mode,
+                                             bool* matchedSectionAssignmentOut)
 {
     if (rotationDegreesOut) {
         *rotationDegreesOut = 0.0;
+    }
+    if (matchedSectionAssignmentOut) {
+        *matchedSectionAssignmentOut = false;
     }
     if (clip.id.trimmed().isEmpty() || speakerId.trimmed().isEmpty()) {
         return false;
@@ -860,6 +872,9 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                                          &assignedStreamIds,
                                                          &assignmentCacheToken,
                                                          &sectionRotationDegrees);
+            if (matchedSectionAssignmentOut) {
+                *matchedSectionAssignmentOut = matchedSectionAssignment;
+            }
             if (sectionMappingActive && !matchedSectionAssignment) {
                 return false;
             }
@@ -891,6 +906,9 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                     return false;
                 }
             }
+        }
+        if (mode == ContinuityAssignmentMode::SectionOnly) {
+            return false;
         }
         if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
             const auto& streams =
@@ -948,6 +966,9 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                                  &assignedStreamIds,
                                                  &assignmentCacheToken,
                                                  &sectionRotationDegrees);
+    if (matchedSectionAssignmentOut) {
+        *matchedSectionAssignmentOut = matchedSectionAssignment;
+    }
     if (rotationDegreesOut) {
         *rotationDegreesOut = matchedSectionAssignment ? sectionRotationDegrees : 0.0;
     }
@@ -974,6 +995,9 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                 return true;
             }
         }
+        return false;
+    }
+    if (mode == ContinuityAssignmentMode::SectionOnly) {
         return false;
     }
     if (!matchedSectionAssignment) {
@@ -2205,9 +2229,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         QPointF location;
         qreal boxSize = -1.0;
         qreal sectionRotationDegrees = 0.0;
-        bool hasSample =
-            manualContinuityTrackSampleForClip(clip, timelineFrame, mediaSourceFrame, &location, &boxSize);
-        if (!hasSample && !activeSpeaker.isEmpty()) {
+        bool hasSample = false;
+        if (!activeSpeaker.isEmpty()) {
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2215,7 +2238,24 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 mediaSourceFrame,
                 &location,
                 &boxSize,
-                &sectionRotationDegrees);
+                &sectionRotationDegrees,
+                ContinuityAssignmentMode::SectionOnly);
+        }
+        if (!hasSample) {
+            hasSample =
+                manualContinuityTrackSampleForClip(clip, timelineFrame, mediaSourceFrame, &location, &boxSize);
+        }
+        if (!hasSample && !activeSpeaker.isEmpty()) {
+            sectionRotationDegrees = 0.0;
+            hasSample = assignedContinuityTrackSampleForSpeaker(
+                clip,
+                activeSpeaker,
+                timelineFrame,
+                mediaSourceFrame,
+                &location,
+                &boxSize,
+                &sectionRotationDegrees,
+                ContinuityAssignmentMode::SectionOrIdentity);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
             sectionRotationDegrees = 0.0;
@@ -2387,11 +2427,9 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         if (diagnosticsOut) {
             diagnosticsOut->insert(QStringLiteral("active_speaker"), activeSpeaker);
         }
-        bool hasSample =
-            manualContinuityTrackSampleForClip(
-                clip, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
-        QString sampleSource = hasSample ? QStringLiteral("manual_continuity_track") : QString();
-        if (!hasSample && !activeSpeaker.isEmpty()) {
+        bool hasSample = false;
+        QString sampleSource;
+        if (!activeSpeaker.isEmpty()) {
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2399,7 +2437,30 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 mediaSourceFramePosition,
                 &location,
                 &boxSize,
-                &sectionRotationDegrees);
+                &sectionRotationDegrees,
+                ContinuityAssignmentMode::SectionOnly);
+            if (hasSample) {
+                sampleSource = QStringLiteral("section_assigned_continuity_track");
+            }
+        }
+        if (!hasSample) {
+            hasSample = manualContinuityTrackSampleForClip(
+                clip, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
+            if (hasSample) {
+                sampleSource = QStringLiteral("manual_continuity_track");
+            }
+        }
+        if (!hasSample && !activeSpeaker.isEmpty()) {
+            sectionRotationDegrees = 0.0;
+            hasSample = assignedContinuityTrackSampleForSpeaker(
+                clip,
+                activeSpeaker,
+                timelineFramePosition,
+                mediaSourceFramePosition,
+                &location,
+                &boxSize,
+                &sectionRotationDegrees,
+                ContinuityAssignmentMode::SectionOrIdentity);
             if (hasSample) {
                 sampleSource = QStringLiteral("assigned_continuity_track");
             }

@@ -429,7 +429,8 @@ private slots:
                     {QStringLiteral("track_id"), 42},
                     {QStringLiteral("detections"), QJsonArray{
                          rawTrackDetection(9, 0.70, 0.40, 0.18, 0.88),
-                         rawTrackDetection(10, 0.71, 0.41, 0.18, 0.89)
+                         rawTrackDetection(10, 0.71, 0.41, 0.18, 0.89),
+                         rawTrackDetection(5000, 0.72, 0.42, 0.18, 0.90)
                     }}
                 }
             }));
@@ -447,13 +448,24 @@ private slots:
         QCOMPARE(summaries.at(0).toObject().value(QStringLiteral("track_id")).toInt(), 7);
         QCOMPARE(summaries.at(1).toObject().value(QStringLiteral("track_id")).toInt(), 42);
         QCOMPARE(summaries.at(1).toObject().value(QStringLiteral("min_frame")).toInt(), 9);
-        QCOMPARE(summaries.at(1).toObject().value(QStringLiteral("max_frame")).toInt(), 10);
+        QCOMPARE(summaries.at(1).toObject().value(QStringLiteral("max_frame")).toInt(), 5000);
 
         const QJsonArray nearFrame =
             jcut::facedetections::continuityStreamsNearFrame(continuityRoot, 9, 0, QJsonObject{});
         QCOMPARE(nearFrame.size(), 1);
         QCOMPARE(nearFrame.at(0).toObject().value(QStringLiteral("track_id")).toInt(), 42);
-        QCOMPARE(nearFrame.at(0).toObject().value(QStringLiteral("keyframes")).toArray().size(), 2);
+        QCOMPARE(nearFrame.at(0).toObject().value(QStringLiteral("keyframes")).toArray().size(), 3);
+
+        const QVector<jcut::facedetections::FacestreamTrack> nearModels =
+            jcut::facedetections::continuityTrackModelsNearFrameForRoot(
+                continuityRoot,
+                9,
+                0,
+                QJsonObject{});
+        QCOMPARE(nearModels.size(), 1);
+        QCOMPARE(nearModels.at(0).summary.trackId, 42);
+        QCOMPARE(nearModels.at(0).keyframes.size(), 2);
+        QCOMPARE(nearModels.at(0).keyframes.at(0).frame, 9);
     }
 
     void typedFrameDetectionReaderWorksForIndexedArtifacts()

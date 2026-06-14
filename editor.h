@@ -242,6 +242,7 @@ private:
     void renderFromOutputInspector();
     void renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request);
     RenderRequest buildRenderRequestFromOutputControls() const;
+    void persistExportRequestDefaults(const RenderRequest& request);
     struct RenderProgressDialogControls {
         QDialog* dialog = nullptr;
         QLabel* statusLabel = nullptr;
@@ -701,6 +702,7 @@ private:
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
+    qreal m_exportPlaybackSpeed = 1.0;
     QString m_lastPlaybackStopReason = QStringLiteral("none");
     bool m_playbackAudioWarmupPending = false;
     bool m_playbackVideoWarmupPending = false;

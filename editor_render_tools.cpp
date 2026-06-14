@@ -55,6 +55,33 @@ QString sanitizedExportBaseName(QString value, const QString& fallback)
     return value.left(80);
 }
 
+QString exportSpeedSuffix(qreal speed)
+{
+    const qreal normalizedSpeed = std::isfinite(speed) && speed > 0.001 ? speed : 1.0;
+    QString value = QString::number(normalizedSpeed, 'f', 3);
+    while (value.contains(QLatin1Char('.')) && value.endsWith(QLatin1Char('0'))) {
+        value.chop(1);
+    }
+    if (value.endsWith(QLatin1Char('.'))) {
+        value.chop(1);
+    }
+    return QStringLiteral("_%1x").arg(value);
+}
+
+QString stripExportSpeedSuffix(QString baseName)
+{
+    static const QRegularExpression speedSuffixPattern(
+        QStringLiteral("_[0-9]+(?:\\.[0-9]+)?x$"));
+    baseName.remove(speedSuffixPattern);
+    return baseName.trimmed();
+}
+
+QString baseNameWithExportSpeed(const QString& baseName, qreal speed)
+{
+    const QString stripped = stripExportSpeedSuffix(baseName);
+    return (stripped.isEmpty() ? QStringLiteral("render") : stripped) + exportSpeedSuffix(speed);
+}
+
 QString coupleWordTitle(QString value, const QString& fallback)
 {
     value = value.simplified();
@@ -536,8 +563,8 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.outputFps = m_outputFpsSpin
         ? m_outputFpsSpin->value()
         : static_cast<double>(kTimelineFps);
-    request.playbackSpeed = std::isfinite(m_playbackSpeed) && m_playbackSpeed > 0.001
-        ? m_playbackSpeed
+    request.playbackSpeed = std::isfinite(m_exportPlaybackSpeed) && m_exportPlaybackSpeed > 0.001
+        ? m_exportPlaybackSpeed
         : 1.0;
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
@@ -594,6 +621,53 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         }
     }
     return request;
+}
+
+void EditorWindow::persistExportRequestDefaults(const RenderRequest& request)
+{
+    bool changed = false;
+    const qreal nextSpeed =
+        qBound<qreal>(0.1,
+                      std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
+                          ? request.playbackSpeed
+                          : 1.0,
+                      8.0);
+    if (qAbs(m_exportPlaybackSpeed - nextSpeed) >= 0.0001) {
+        m_exportPlaybackSpeed = nextSpeed;
+        changed = true;
+    }
+
+    const double nextFps =
+        qBound(1.0,
+               std::isfinite(request.outputFps) && request.outputFps > 0.001
+                   ? request.outputFps
+                   : static_cast<double>(kTimelineFps),
+               240.0);
+    if (m_outputFpsSpin && qAbs(m_outputFpsSpin->value() - nextFps) >= 0.0001) {
+        QSignalBlocker blocker(m_outputFpsSpin);
+        m_outputFpsSpin->setValue(nextFps);
+        changed = true;
+    }
+
+    const QSize nextSize(qMax(16, request.outputSize.width()),
+                         qMax(16, request.outputSize.height()));
+    if (m_outputWidthSpin && m_outputWidthSpin->value() != nextSize.width()) {
+        QSignalBlocker blocker(m_outputWidthSpin);
+        m_outputWidthSpin->setValue(nextSize.width());
+        changed = true;
+    }
+    if (m_outputHeightSpin && m_outputHeightSpin->value() != nextSize.height()) {
+        QSignalBlocker blocker(m_outputHeightSpin);
+        m_outputHeightSpin->setValue(nextSize.height());
+        changed = true;
+    }
+    if (m_preview && nextSize.isValid() && m_preview->outputSize() != nextSize) {
+        m_preview->setOutputSize(nextSize);
+    }
+
+    if (changed) {
+        scheduleSaveState();
+    }
 }
 
 void EditorWindow::applyPreviewViewMode(const QString& modeText)
@@ -1337,7 +1411,9 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
     const QString selectedPath = QFileDialog::getSaveFileName(
         this,
         QStringLiteral("Export Video"),
-        QDir::current().filePath(QStringLiteral("%1.%2").arg(suggestedBase, request.outputFormat)),
+        QDir::current().filePath(
+            QStringLiteral("%1.%2").arg(baseNameWithExportSpeed(suggestedBase, request.playbackSpeed),
+                                        request.outputFormat)),
         QStringLiteral("Video Files (*.%1);;All Files (*)").arg(request.outputFormat));
     if (selectedPath.isEmpty()) {
         return;
@@ -1405,6 +1481,7 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     if (!confirmContiguousSectionExportPreflight(this, &request, 1)) {
         return;
     }
+    persistExportRequestDefaults(request);
     QString aiTitle;
     QString aiError;
     bool aiOk = false;
@@ -1461,7 +1538,9 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     const QString selectedPath = QFileDialog::getSaveFileName(
         this,
         QStringLiteral("Export Section"),
-        QDir(defaultDir).filePath(QStringLiteral("%1.%2").arg(suggestedBase, outputFormat)),
+        QDir(defaultDir).filePath(
+            QStringLiteral("%1.%2").arg(baseNameWithExportSpeed(suggestedBase, request.playbackSpeed),
+                                        outputFormat)),
         QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
     if (selectedPath.isEmpty()) {
         return;
@@ -1516,6 +1595,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     if (!confirmContiguousSectionExportPreflight(this, &baseRequest, exportSections.size())) {
         return;
     }
+    persistExportRequestDefaults(baseRequest);
     const QString outputFormat = baseRequest.outputFormat.isEmpty()
         ? QStringLiteral("mp4")
         : baseRequest.outputFormat;
@@ -1559,7 +1639,9 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
             section.sectionOrdinal,
             section.sourceStartFrame,
             section.sourceEndFrame);
-        const QString suggestedBase = sanitizedExportBaseName(title, fallbackTitle);
+        const QString suggestedBase =
+            baseNameWithExportSpeed(sanitizedExportBaseName(title, fallbackTitle),
+                                    baseRequest.playbackSpeed);
         const QString outputPath = deterministicExportPath(outputDir, suggestedBase, outputFormat);
         QVector<ExportRangeSegment> timelineRanges =
             timelineRangesForTranscriptSection(

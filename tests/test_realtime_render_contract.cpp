@@ -2,6 +2,7 @@
 
 #include "../editor_shared_keyframes.h"
 #include "../editor_shared_render_sync.h"
+#include "../export_timing.h"
 #include "../timeline_fps.h"
 
 #include <QFile>
@@ -12,21 +13,20 @@ namespace {
 
 QVector<qreal> outputTimelinePositions(int64_t startFrame, int64_t endFrame, qreal outputFps)
 {
-    const qreal safeOutputFps = qMax<qreal>(1.0, outputFps);
-    const qreal timelineFramesPerOutputFrame =
-        static_cast<qreal>(kTimelineFps) / safeOutputFps;
-    const qreal durationSeconds =
-        static_cast<qreal>(endFrame - startFrame + 1) / static_cast<qreal>(kTimelineFps);
     const int64_t outputFrameCount =
-        qMax<int64_t>(1, static_cast<int64_t>(std::ceil(durationSeconds * safeOutputFps)));
+        jcut::export_timing::outputFrameCountForTimelineRange(startFrame, endFrame, outputFps, 1.0);
 
     QVector<qreal> positions;
     positions.reserve(static_cast<int>(outputFrameCount));
     for (int64_t outputFrame = 0; outputFrame < outputFrameCount; ++outputFrame) {
-        positions.push_back(qMin<qreal>(
-            static_cast<qreal>(endFrame),
-            static_cast<qreal>(startFrame) +
-                (static_cast<qreal>(outputFrame) * timelineFramesPerOutputFrame)));
+        const jcut::export_timing::ExportFrameTiming timing =
+            jcut::export_timing::frameTimingForOutputFrame(
+                outputFrame,
+                startFrame,
+                endFrame,
+                outputFps,
+                1.0);
+        positions.push_back(static_cast<qreal>(timing.timelineFramePosition));
     }
     return positions;
 }
@@ -52,6 +52,7 @@ class TestRealtimeRenderContract : public QObject {
 
 private slots:
     void outputFpsSamplingProducesFractionalTimelinePositions();
+    void exportFrameTimingNamesOutputTimeAndTimelineDomains();
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
     void exportLoopPassesFractionalPositionToRenderer();
@@ -68,6 +69,28 @@ void TestRealtimeRenderContract::outputFpsSamplingProducesFractionalTimelinePosi
     QVERIFY2(std::abs(positions.at(2) - 1.0) < 0.000001,
              "output PTS mapping must advance by output-frame duration");
     QCOMPARE(positions.constLast(), 29.0);
+}
+
+void TestRealtimeRenderContract::exportFrameTimingNamesOutputTimeAndTimelineDomains()
+{
+    const std::int64_t outputFrameCount =
+        jcut::export_timing::outputFrameCountForTimelineRange(100, 129, 60.0, 0.5);
+    QCOMPARE(outputFrameCount, std::int64_t(120));
+
+    const jcut::export_timing::ExportFrameTiming timing =
+        jcut::export_timing::frameTimingForOutputFrame(3, 100, 129, 60.0, 0.5);
+
+    QCOMPARE(timing.outputFrame, std::int64_t(3));
+    QVERIFY2(std::abs(timing.outputTimeSeconds - 0.05) < 0.000001,
+             "export timing must start from explicit output PTS seconds");
+    QVERIFY2(std::abs(timing.timelineFramePosition - 100.75) < 0.000001,
+             "export output time must project through timeline fps and playback speed");
+    QCOMPARE(timing.timelineFrame, std::int64_t(100));
+
+    const jcut::export_timing::ExportFrameTiming clamped =
+        jcut::export_timing::frameTimingForOutputFrame(999, 100, 129, 60.0, 1.0);
+    QCOMPARE(clamped.timelineFramePosition, 129.0);
+    QCOMPARE(clamped.timelineFrame, std::int64_t(129));
 }
 
 void TestRealtimeRenderContract::fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames()
@@ -125,6 +148,10 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
 
     QVERIFY2(source.contains(QStringLiteral("const qreal timelineFramePosition")),
              "export must derive a fractional timeline position from output PTS");
+    QVERIFY2(source.contains(QStringLiteral("frameTimingForOutputFrame")),
+             "export must use the shared output-time timing helper");
+    QVERIFY2(source.contains(QStringLiteral("exportFrameTiming.timelineFramePosition")),
+             "export must pass the helper's explicit fractional timeline position through to rendering");
     static const QRegularExpression fractionalRenderCall(
         QStringLiteral("activeRenderer->renderFrameToOutput\\s*\\(\\s*request\\s*,\\s*timelineFramePosition"));
     QVERIFY2(fractionalRenderCall.match(source).hasMatch(),

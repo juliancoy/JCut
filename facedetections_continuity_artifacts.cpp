@@ -37,6 +37,7 @@ constexpr qint64 kMaxInteractiveContinuityObjectBytes = 128ll * 1024ll * 1024ll;
 constexpr quint32 kIndexedTrackArtifactMagic = 0x4A465449; // JFTI
 constexpr quint32 kIndexedFrameArtifactMagic = 0x4A464649; // JFFI
 constexpr quint32 kIndexedArtifactVersion = 1;
+constexpr qint64 kMaxNearFrameTrackClipEdgeHoldFrames = 12;
 
 struct TrackArtifactIndexEntry {
     int trackId = -1;
@@ -801,6 +802,66 @@ FacestreamTrack cachedTrackModelForEntry(const QString& path,
     return track;
 }
 
+QJsonObject trackRecordClippedToFrameWindow(QJsonObject record,
+                                            qint64 frame,
+                                            qint64 extraWindowFrames,
+                                            qint64 typicalFrameStep)
+{
+    const qint64 window = qMax<qint64>(0, extraWindowFrames);
+    const qint64 edgeHoldFrames =
+        qMin<qint64>(
+            kMaxNearFrameTrackClipEdgeHoldFrames,
+            qMax<qint64>(0, facedetectionsMaxEdgeHoldFrames(qMax<qint64>(1, typicalFrameStep))));
+    const qint64 lowerFrame = frame - window - edgeHoldFrames;
+    const qint64 upperFrame = frame + window + edgeHoldFrames;
+    const QJsonArray detections = record.value(QStringLiteral("detections")).toArray();
+    if (detections.isEmpty()) {
+        return record;
+    }
+
+    QJsonArray clippedDetections;
+    for (const QJsonValue& detectionValue : detections) {
+        const QJsonObject detection = detectionValue.toObject();
+        bool ok = false;
+        const qint64 detectionFrame =
+            detection.value(QStringLiteral("frame")).toVariant().toLongLong(&ok);
+        if (!ok) {
+            continue;
+        }
+        if (detectionFrame >= lowerFrame && detectionFrame <= upperFrame) {
+            clippedDetections.push_back(detection);
+        }
+    }
+    record[QStringLiteral("detections")] = clippedDetections;
+    return record;
+}
+
+FacestreamTrack cachedTrackModelForEntryNearFrame(const QString& path,
+                                                  const TrackArtifactIndexEntry& entry,
+                                                  const QString& frameDomain,
+                                                  const QString& detectorMode,
+                                                  bool onlyDialogue,
+                                                  const QJsonObject& transcriptRoot,
+                                                  qint64 frame,
+                                                  qint64 extraWindowFrames)
+{
+    QJsonObject record = cachedTrackRecordForEntry(path, entry);
+    if (record.isEmpty()) {
+        return {};
+    }
+    record.remove(QStringLiteral("type"));
+    record = trackRecordClippedToFrameWindow(
+        record,
+        frame,
+        extraWindowFrames,
+        entry.typicalFrameStep);
+    return trackModelFromRawRecordWithSummary(
+        record,
+        trackSummaryModelFromIndexEntry(entry, frameDomain, detectorMode),
+        onlyDialogue,
+        transcriptRoot);
+}
+
 bool streamMatchesAssignments(const QJsonObject& streamObj,
                               const QSet<int>& trackIds,
                               const QSet<QString>& streamIds)
@@ -1538,13 +1599,15 @@ QVector<FacestreamTrack> continuityTrackModelsNearFrameForRoot(
                                               extraWindowFrames)) {
                     continue;
                 }
-                FacestreamTrack track = cachedTrackModelForEntry(
+                FacestreamTrack track = cachedTrackModelForEntryNearFrame(
                     rawTracksPath,
                     entry,
                     frameDomain,
                     detectorMode,
                     onlyDialogue,
-                    transcriptRoot);
+                    transcriptRoot,
+                    frame,
+                    extraWindowFrames);
                 if (!track.keyframes.isEmpty()) {
                     tracks.push_back(track);
                 }

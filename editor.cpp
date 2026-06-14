@@ -1217,6 +1217,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString selectedInspectorTabLabel =
         root.value(QStringLiteral("selectedInspectorTabLabel")).toString().trimmed();
     const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 3.0);
+    const qreal exportPlaybackSpeed =
+        qBound<qreal>(0.1,
+                      root.value(QStringLiteral("exportPlaybackSpeed")).toDouble(playbackSpeed),
+                      8.0);
     const PlaybackClockSource playbackClockSource = playbackClockSourceFromString(
         root.value(QStringLiteral("playbackClockSource"))
             .toString(playbackClockSourceToString(PlaybackClockSource::Auto)));
@@ -1461,6 +1465,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         }
     }
     m_lastRenderOutputPath = lastRenderOutputPath;
+    m_exportPlaybackSpeed = exportPlaybackSpeed;
     m_aiSelectedModel = aiSelectedModel;
     m_aiProxyBaseUrl = aiProxyBaseUrl.trimmed();
     m_aiAuthToken = aiAuthToken.trimmed();

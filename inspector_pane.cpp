@@ -1119,7 +1119,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptSearchFilterLineEdit = new QLineEdit(settingsContainer);
     m_transcriptSearchFilterLineEdit->setPlaceholderText(QStringLiteral("Search transcript text..."));
     m_transcriptSearchFilterLineEdit->setToolTip(
-        QStringLiteral("Filter transcript rows by word text. Clicking a matching row clears this filter."));
+        QStringLiteral("Fuzzy-search transcript words. Press Enter to jump to the best match."));
     m_transcriptSpeakerFilterCombo = new QComboBox(settingsContainer);
     m_transcriptSpeakerFilterCombo->addItem(QStringLiteral("All Speakers"));
     m_transcriptSpeakerFilterCombo->setToolTip(

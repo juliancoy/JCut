@@ -1,6 +1,7 @@
 #include "speakers_tab.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
+#include "keyframe_table_shared.h"
 #include "speakers_tab_internal.h"
 #include "speakers_table.h"
 #include "transcript_engine.h"
@@ -186,34 +187,40 @@ void SpeakersTab::wire()
                 &QTableWidget::itemChanged,
                 this,
                 [this](QTableWidgetItem* item) {
-                    if (!item ||
-                        item->column() != SpeakerSectionRotationColumn ||
+                    int row = -1;
+                    int column = -1;
+                    if (!editor::findTableCellForItem(m_widgets.speakerSectionsTable, item, &row, &column) ||
+                        column != SpeakerSectionRotationColumn ||
                         m_updatingSpeakerFramingTargetControls) {
                         return;
                     }
+                    QTableWidgetItem* liveItem = m_widgets.speakerSectionsTable->item(row, column);
+                    if (!liveItem) {
+                        return;
+                    }
                     bool ok = false;
-                    const qreal rotation = item->text().trimmed().toDouble(&ok);
+                    const qreal rotation = liveItem->text().trimmed().toDouble(&ok);
                     if (!ok) {
                         QSignalBlocker blocker(m_widgets.speakerSectionsTable);
                         const qreal previous =
                             qBound<qreal>(-180.0,
-                                          item->data(SpeakerSectionRotationRole).toDouble(),
+                                          liveItem->data(SpeakerSectionRotationRole).toDouble(),
                                           180.0);
-                        item->setText(QString::number(previous, 'f', 1));
+                        liveItem->setText(QString::number(previous, 'f', 1));
                         return;
                     }
                     const qreal boundedRotation = qBound<qreal>(-180.0, rotation, 180.0);
-                    if (!saveSpeakerSectionRotation(item->row(), boundedRotation)) {
+                    if (!saveSpeakerSectionRotation(row, boundedRotation)) {
                         QSignalBlocker blocker(m_widgets.speakerSectionsTable);
                         const qreal previous =
                             qBound<qreal>(-180.0,
-                                          item->data(SpeakerSectionRotationRole).toDouble(),
+                                          liveItem->data(SpeakerSectionRotationRole).toDouble(),
                                           180.0);
-                        item->setText(QString::number(previous, 'f', 1));
+                        liveItem->setText(QString::number(previous, 'f', 1));
                         return;
                     }
                     if (m_widgets.speakerSectionRotationSpin &&
-                        m_widgets.speakerSectionsTable->currentRow() == item->row()) {
+                        m_widgets.speakerSectionsTable->currentRow() == row) {
                         QSignalBlocker blocker(m_widgets.speakerSectionRotationSpin);
                         m_widgets.speakerSectionRotationSpin->setValue(boundedRotation);
                     }

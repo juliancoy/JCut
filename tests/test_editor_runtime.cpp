@@ -373,6 +373,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
         {"selectedClipId", "clip-b"},
         {"selectedTrackIndex", 1},
         {"playbackSpeed", 1.5},
+        {"exportPlaybackSpeed", 2.25},
         {"timelineZoom", 3.0},
         {"outputWidth", 1280},
         {"outputHeight", 720},
@@ -429,7 +430,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
     QCOMPARE(parsed->mediaItems.size(), std::size_t(2));
     QCOMPARE(parsed->exportRequest.outputSize.width, 1280);
     QCOMPARE(parsed->exportRequest.outputSize.height, 720);
-    QCOMPARE(parsed->exportRequest.playbackSpeed, 1.5);
+    QCOMPARE(parsed->exportRequest.playbackSpeed, 2.25);
     QCOMPARE(parsed->exportRequest.useProxyMedia, true);
     QCOMPARE(parsed->exportRequest.correctionsEnabled, false);
     QCOMPARE(parsed->exportRequest.exportRangeCount, std::size_t(1));

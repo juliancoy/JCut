@@ -4,6 +4,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 
 #include <cmath>
@@ -15,6 +16,31 @@ namespace {
 double normalizedExportSpeed(double speed)
 {
     return std::isfinite(speed) && speed > 0.001 ? speed : 1.0;
+}
+
+QString exportSpeedSuffix(double speed)
+{
+    QString value = QString::number(normalizedExportSpeed(speed), 'f', 3);
+    while (value.contains(QLatin1Char('.')) && value.endsWith(QLatin1Char('0'))) {
+        value.chop(1);
+    }
+    if (value.endsWith(QLatin1Char('.'))) {
+        value.chop(1);
+    }
+    return QStringLiteral("_%1x").arg(value);
+}
+
+QString stripExportSpeedSuffix(QString baseName)
+{
+    static const QRegularExpression speedSuffixPattern(
+        QStringLiteral("_[0-9]+(?:\\.[0-9]+)?x$"));
+    baseName.remove(speedSuffixPattern);
+    return baseName.trimmed().isEmpty() ? QStringLiteral("render") : baseName;
+}
+
+QString baseNameWithExportSpeed(const QString& baseName, double speed)
+{
+    return stripExportSpeedSuffix(baseName) + exportSpeedSuffix(speed);
 }
 
 } // namespace
@@ -307,7 +333,10 @@ void OutputTab::renderFromInspector()
         : QStringLiteral("edge_stretch")).toStdString();
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
-    const QString defaultFileName = QStringLiteral("render.%1").arg(outputFormat);
+    const double outputSpeed = normalizedExportSpeed(
+        m_deps.playbackSpeed ? m_deps.playbackSpeed() : 1.0);
+    const QString defaultBaseName = baseNameWithExportSpeed(QStringLiteral("render"), outputSpeed);
+    const QString defaultFileName = QStringLiteral("%1.%2").arg(defaultBaseName, outputFormat);
     QString defaultPath = defaultFileName;
     QString rememberedPath;
     if (m_deps.lastRenderOutputPath) {
@@ -317,7 +346,8 @@ void OutputTab::renderFromInspector()
             const QString completeBaseName = previousInfo.completeBaseName().isEmpty()
                                                  ? QStringLiteral("render")
                                                  : previousInfo.completeBaseName();
-            defaultPath = previousInfo.dir().filePath(QStringLiteral("%1.%2").arg(completeBaseName, outputFormat));
+            defaultPath = previousInfo.dir().filePath(
+                QStringLiteral("%1.%2").arg(baseNameWithExportSpeed(completeBaseName, outputSpeed), outputFormat));
             rememberedPath = defaultPath;
         }
     }
@@ -368,8 +398,7 @@ void OutputTab::renderFromInspector()
     request.outputFps = m_widgets.outputFpsSpin
         ? m_widgets.outputFpsSpin->value()
         : static_cast<double>(kTimelineFps);
-    request.playbackSpeed = normalizedExportSpeed(
-        m_deps.playbackSpeed ? m_deps.playbackSpeed() : 1.0);
+    request.playbackSpeed = outputSpeed;
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
     

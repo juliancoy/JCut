@@ -120,6 +120,7 @@ private slots:
     void onTranscriptCutLabelEdited();
     void onTranscriptCreateVersion();
     void onTranscriptDeleteVersion();
+    void onTranscriptSearchReturnPressed();
 
 private:
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
@@ -236,6 +237,9 @@ private:
     QString activeSpeakerFilter() const;
     QString activeTranscriptSearchFilter() const;
     QVector<TranscriptRow> filteredRowsForSpeaker(const QVector<TranscriptRow>& rows) const;
+    int bestFuzzyTranscriptSearchWordId(const QString& query) const;
+    bool transcriptSearchMatchesText(const QString& query, const QString& text) const;
+    bool selectVisibleTranscriptWord(int wordId);
     QStringList editLabelsForFlags(int flags) const;
     bool unifiedEditColorsEnabled() const;
     void refreshScriptVersionSelector(const QString& clipFilePath, const QString& selectedPath);
@@ -280,6 +284,7 @@ private:
     QElapsedTimer m_manualSelectionTimer;
     int64_t m_lastSyncAbsolutePlaybackSample = -1;
     int64_t m_lastSyncSourceFrame = -1;
+    QString m_lastSyncClipId;
     int m_lastSyncRow = -1;
     QVector<FollowRange> m_followRanges;
     QVector<ExcludedRange> m_excludedRanges;

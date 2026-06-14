@@ -21,6 +21,8 @@
 #include <QCoreApplication>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <cmath>
+
 using namespace editor;
 
 namespace {
@@ -596,6 +598,10 @@ QJsonObject EditorWindow::buildStateJson() const
             : QString();
     const PlaybackRuntimeConfig playbackConfig = playbackRuntimeConfig();
     root[QStringLiteral("playbackSpeed")] = playbackConfig.speed;
+    root[QStringLiteral("exportPlaybackSpeed")] =
+        std::isfinite(m_exportPlaybackSpeed) && m_exportPlaybackSpeed > 0.001
+            ? m_exportPlaybackSpeed
+            : playbackConfig.speed;
     root[QStringLiteral("playbackClockSource")] =
         playbackClockSourceToString(playbackConfig.clockSource);
     root[QStringLiteral("playbackClockSourceExplicit")] = true;

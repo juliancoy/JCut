@@ -1306,6 +1306,15 @@ void TestDirectVulkanHandoffPipelineContract::
                speakers.contains(QStringLiteral("resolvedCurrentTrackIdsForSpeaker")),
            "preview track selection sync must use contiguous section-track "
            "mapping in section mode and speaker-track identity mapping outside it");
+  const QString interactions =
+      readSourceFile(QStringLiteral("speakers_tab_interactions.cpp"));
+  QVERIFY2(!interactions.isEmpty(), "speakers_tab_interactions.cpp must be readable");
+  QVERIFY2(interactions.contains(QStringLiteral("previewAssignedFaceTrackIdsForSpeakerAtFrame")) &&
+               interactions.contains(QStringLiteral("currentSourceFrameForClip(*clip)")) &&
+               interactions.contains(QStringLiteral("playheadAssignedTrackIdsForSpeaker")),
+           "selected-speaker panel refresh must not clear contiguous "
+           "section-track preview assignments when continuity streams are "
+           "stored in indexed artifacts");
   QVERIFY2(speakers.contains(QStringLiteral("speakerSectionMinimumWords")) &&
                speakers.contains(QStringLiteral("sectionAssignmentWordCount")) &&
                speakers.contains(QStringLiteral("currentRow.wordCount >= minimumWords")),
@@ -1342,6 +1351,17 @@ void TestDirectVulkanHandoffPipelineContract::
                keyframes.contains(QStringLiteral("clip.speakerSectionMinimumWords")),
            "runtime speaker framing must skip contiguous transcript sections "
            "below the clip's minimum word-count requirement");
+  QVERIFY2(keyframes.contains(QStringLiteral("ContinuityAssignmentMode::SectionOnly")),
+           "runtime speaker framing must be able to sample only the active "
+           "contiguous section assignment before considering clip-level manual "
+           "tracks");
+  const qsizetype sectionOnlyIndex =
+      keyframes.indexOf(QStringLiteral("ContinuityAssignmentMode::SectionOnly"));
+  const qsizetype manualSampleIndex =
+      keyframes.indexOf(QStringLiteral("manualContinuityTrackSampleForClip(clip, timelineFrame"));
+  QVERIFY2(sectionOnlyIndex >= 0 && manualSampleIndex > sectionOnlyIndex,
+           "dynamic speaker framing must prefer the active section assignment "
+           "and its rotation over the clip-level manual track sample");
 
   const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
   QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
@@ -1358,6 +1378,13 @@ void TestDirectVulkanHandoffPipelineContract::
 
   const QString renderTools = readSourceFile(QStringLiteral("editor_render_tools.cpp"));
   QVERIFY2(!renderTools.isEmpty(), "editor_render_tools.cpp must be readable");
+  QVERIFY2(renderTools.contains(QStringLiteral("persistExportRequestDefaults")) &&
+               renderTools.contains(QStringLiteral("m_exportPlaybackSpeed")) &&
+               renderTools.contains(QStringLiteral("request.playbackSpeed = std::isfinite(m_exportPlaybackSpeed")) &&
+               renderTools.contains(QStringLiteral("persistExportRequestDefaults(request)")) &&
+               renderTools.contains(QStringLiteral("persistExportRequestDefaults(baseRequest)")),
+           "section export pre-flight speed must persist as the next export "
+           "default instead of being discarded with the temporary request");
   const qsizetype batchExportIndex = renderTools.indexOf(
       QStringLiteral("void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip"));
   QVERIFY2(batchExportIndex >= 0,
@@ -1438,6 +1465,27 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!tracks.contains(QStringLiteral("row.remove(QStringLiteral(\"rotation\"))")),
            "normalizing an empty-track contiguous section row must not discard "
            "its independent rotation");
+  QVERIFY2(tracks.contains(QStringLiteral("trimmedStreamId == QStringLiteral(\"raw_detection\")")) &&
+               tracks.contains(QStringLiteral("QStringLiteral(\"T%1\").arg(trackId)")),
+           "section assignment clicks must canonicalize raw-detection track "
+           "anchors to their continuity stream id so rotation and track lookup "
+           "stay on the same source");
+  QVERIFY2(tracks.contains(QStringLiteral("clearAssignedContinuityStreamsCache()")) &&
+               tracks.contains(QStringLiteral("prepareClipSpeakerFramingContinuityRuntimeBlocking(*selectedClip)")),
+           "section assignment changes must invalidate and immediately warm "
+           "speaker-framing continuity caches for the selected clip");
+  const QString speakers = readSourceFile(QStringLiteral("speakers_tab.cpp"));
+  QVERIFY2(!speakers.isEmpty(), "speakers_tab.cpp must be readable");
+  QVERIFY2(tracks.contains(QStringLiteral("flushLoadedTranscriptDocumentForRuntimeNow()")) &&
+               speakers.contains(QStringLiteral("invalidateTranscriptJsonCache(transcriptPath)")) &&
+               speakers.contains(QStringLiteral("invalidateTranscriptSpeakerProfileCache(transcriptPath)")),
+           "contiguous section track and rotation edits must synchronously "
+           "publish transcript mutations to the runtime sidecar/cache boundary "
+           "before the GPU preview evaluates speaker-framing transforms");
+  QVERIFY2(tracks.contains(QStringLiteral("prepareClipSpeakerFramingContinuityRuntimeBlocking(*clip)")) &&
+               tracks.contains(QStringLiteral("m_speakerDeps.refreshPreview()")),
+           "contiguous section rotation changes must warm the selected clip and "
+           "refresh preview immediately so the GPU transform follows the row");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

@@ -286,7 +286,7 @@ void EditorWindow::createOutputTab()
             [this]() -> int64_t { return m_timeline ? m_timeline->totalFrames() : 0; },
             [this]() -> int64_t { return m_timeline ? m_timeline->exportStartFrame() : 0; },
             [this]() -> int64_t { return m_timeline ? m_timeline->exportEndFrame() : 0; },
-            [this]() -> double { return m_playbackSpeed; },
+            [this]() -> double { return m_exportPlaybackSpeed; },
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t startFrame, int64_t endFrame) { if (m_timeline) m_timeline->setExportRange(startFrame, endFrame); },
             [this](const QSize& size) { if (m_preview) m_preview->setOutputSize(size); },

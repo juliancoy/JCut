@@ -1,5 +1,6 @@
 #include "render_internal.h"
 #include "cpu_overlay_render_backend.h"
+#include "export_timing.h"
 #include "render_backend.h"
 
 #include <QCoreApplication>
@@ -341,20 +342,16 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         }
         return a.startFrame < b.startFrame;
     });
-    const double outputFps = std::isfinite(request.outputFps) && request.outputFps > 0.001
-        ? request.outputFps
-        : static_cast<double>(kTimelineFps);
-    const qreal timelineFramesPerOutputFrame =
-        (static_cast<qreal>(kTimelineFps) / static_cast<qreal>(outputFps)) * playbackSpeed;
+    const double outputFps = jcut::export_timing::normalizedOutputFps(request.outputFps);
     int64_t totalFramesToRender = 0;
     for (const ExportRangeSegment& range : exportRanges) {
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
-        const qreal durationSeconds =
-            (static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps)) / playbackSpeed;
-        totalFramesToRender += qMax<int64_t>(
-            1,
-            static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
+        totalFramesToRender += jcut::export_timing::outputFrameCountForTimelineRange(
+            exportStart,
+            exportEnd,
+            outputFps,
+            playbackSpeed);
     }
     const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
     const QVector<TimelineClip> transcriptOverlayClips =
@@ -949,11 +946,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         const ExportRangeSegment& range = exportRanges[segmentIndex];
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
-        const qreal durationSeconds =
-            (static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps)) / playbackSpeed;
-        const int64_t segmentOutputFrames = qMax<int64_t>(
-            1,
-            static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
+        const int64_t segmentOutputFrames =
+            jcut::export_timing::outputFrameCountForTimelineRange(
+                exportStart,
+                exportEnd,
+                outputFps,
+                playbackSpeed);
         prewarmRenderSequenceSegment(request,
                                      exportStart,
                                      exportEnd,
@@ -963,15 +961,16 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         for (int64_t segmentOutputFrame = 0;
              segmentOutputFrame < segmentOutputFrames;
              ++segmentOutputFrame) {
+            const jcut::export_timing::ExportFrameTiming exportFrameTiming =
+                jcut::export_timing::frameTimingForOutputFrame(
+                    segmentOutputFrame,
+                    exportStart,
+                    exportEnd,
+                    outputFps,
+                    playbackSpeed);
             const qreal timelineFramePosition =
-                qMin<qreal>(static_cast<qreal>(exportEnd),
-                             static_cast<qreal>(exportStart) +
-                                 (static_cast<qreal>(segmentOutputFrame) *
-                                  timelineFramesPerOutputFrame));
-            const int64_t timelineFrame = qBound<int64_t>(
-                exportStart,
-                static_cast<int64_t>(std::floor(timelineFramePosition)),
-                exportEnd);
+                static_cast<qreal>(exportFrameTiming.timelineFramePosition);
+            const int64_t timelineFrame = exportFrameTiming.timelineFrame;
             const int64_t outputFrameNumber = framesCompleted;
             enqueueRenderSequenceLookahead(request,
                                           timelineFrame,

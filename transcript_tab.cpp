@@ -26,6 +26,7 @@
 #include <QSignalBlocker>
 #include <QSet>
 #include <QtConcurrent/QtConcurrentRun>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -114,6 +115,92 @@ QString transcriptCutStateLabel(bool mutableCut)
 QString transcriptFollowStateLabel(bool enabled)
 {
     return enabled ? QStringLiteral("Follow Playback: On") : QStringLiteral("Follow Playback: Off");
+}
+
+QString normalizedTranscriptSearchText(const QString& value)
+{
+    QString normalized;
+    normalized.reserve(value.size());
+    for (const QChar ch : value) {
+        if (ch.isLetterOrNumber()) {
+            normalized.append(ch.toLower());
+        }
+    }
+    return normalized;
+}
+
+bool transcriptContainsFuzzySubsequence(const QString& query, const QString& candidate)
+{
+    if (query.isEmpty()) {
+        return true;
+    }
+    int queryIndex = 0;
+    for (const QChar ch : candidate) {
+        if (ch == query.at(queryIndex)) {
+            ++queryIndex;
+            if (queryIndex == query.size()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int transcriptEditDistance(const QString& a, const QString& b)
+{
+    if (a.isEmpty()) {
+        return b.size();
+    }
+    if (b.isEmpty()) {
+        return a.size();
+    }
+
+    QVector<int> previous(b.size() + 1);
+    QVector<int> current(b.size() + 1);
+    for (int j = 0; j <= b.size(); ++j) {
+        previous[j] = j;
+    }
+    for (int i = 1; i <= a.size(); ++i) {
+        current[0] = i;
+        for (int j = 1; j <= b.size(); ++j) {
+            const int substitutionCost = a.at(i - 1) == b.at(j - 1) ? 0 : 1;
+            current[j] = std::min({previous[j] + 1,
+                                   current[j - 1] + 1,
+                                   previous[j - 1] + substitutionCost});
+        }
+        previous.swap(current);
+    }
+    return previous[b.size()];
+}
+
+int transcriptFuzzySearchScore(const QString& rawQuery, const QString& rawCandidate)
+{
+    const QString query = normalizedTranscriptSearchText(rawQuery);
+    const QString candidate = normalizedTranscriptSearchText(rawCandidate);
+    if (query.isEmpty() || candidate.isEmpty()) {
+        return query.isEmpty() ? 0 : std::numeric_limits<int>::max();
+    }
+    if (candidate == query) {
+        return 0;
+    }
+    if (candidate.startsWith(query)) {
+        return 10 + (candidate.size() - query.size());
+    }
+    if (candidate.contains(query)) {
+        return 25 + (candidate.size() - query.size());
+    }
+
+    const int editDistance = transcriptEditDistance(query, candidate);
+    const int maxLength = qMax(query.size(), candidate.size());
+    const int maxAllowedDistance = qMax(1, maxLength / 3);
+    int bestScore = std::numeric_limits<int>::max();
+    if (editDistance <= maxAllowedDistance) {
+        bestScore = 50 + editDistance * 8 + qAbs(candidate.size() - query.size());
+    }
+    if (transcriptContainsFuzzySubsequence(query, candidate)) {
+        bestScore = qMin(bestScore, 80 + candidate.size() - query.size());
+    }
+    return bestScore;
 }
 }
 
@@ -403,6 +490,8 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptSearchFilterLineEdit) {
         connect(m_widgets.transcriptSearchFilterLineEdit, &QLineEdit::textChanged,
                 this, [this](const QString&) { requestRefresh(); });
+        connect(m_widgets.transcriptSearchFilterLineEdit, &QLineEdit::returnPressed,
+                this, &TranscriptTab::onTranscriptSearchReturnPressed);
     }
     if (m_widgets.transcriptSpeakerFilterCombo) {
         connect(m_widgets.transcriptSpeakerFilterCombo, &QComboBox::currentIndexChanged,
@@ -437,6 +526,9 @@ void TranscriptTab::wire()
 void TranscriptTab::refresh()
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (m_widgets.transcriptTable && m_widgets.transcriptTable->currentRow() >= 0) {
+        persistSelectionIdentityFromRow(m_widgets.transcriptTable->currentRow());
+    }
     m_updating = true;
     m_manualSelectionTimer.invalidate();
 
@@ -469,6 +561,7 @@ void TranscriptTab::refresh()
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
         m_persistedSelectedWordId = -1;
+        m_lastSyncClipId.clear();
         if (m_widgets.transcriptInspectorClipLabel) {
             m_widgets.transcriptInspectorClipLabel->setText(QString());
             m_widgets.transcriptInspectorClipLabel->setPlaceholderText(QStringLiteral("No transcript selected"));
@@ -607,8 +700,10 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
     if (!clip || !clipSupportsTranscript(*clip) || m_transcriptSession.transcriptPath().isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
         m_lastSyncRow = -1;
+        m_lastSyncClipId.clear();
         return;
     }
+    m_lastSyncClipId = clip->id;
 
     if (m_followRanges.isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
@@ -1023,22 +1118,91 @@ void TranscriptTab::onTranscriptRowClicked(int row)
         return;
     }
 
-    if (m_widgets.transcriptSearchFilterLineEdit) {
-        const QString searchText = m_widgets.transcriptSearchFilterLineEdit->text().trimmed();
-        if (!searchText.isEmpty() && m_widgets.transcriptTable) {
-            const QTableWidgetItem* textItem = m_widgets.transcriptTable->item(row, kTranscriptColText);
-            const QTableWidgetItem* sourceItem = m_widgets.transcriptTable->item(row, kTranscriptColSourceStart);
-            const QString rowText = textItem ? textItem->text() : (sourceItem ? sourceItem->text() : QString());
-            if (rowText.contains(searchText, Qt::CaseInsensitive)) {
-                QSignalBlocker blocker(m_widgets.transcriptSearchFilterLineEdit);
-                m_widgets.transcriptSearchFilterLineEdit->clear();
-                refresh();
-                return;
-            }
-        }
+    scheduleSeekToTranscriptRow(row);
+}
+
+bool TranscriptTab::transcriptSearchMatchesText(const QString& query, const QString& text) const
+{
+    return transcriptFuzzySearchScore(query, text) < std::numeric_limits<int>::max();
+}
+
+int TranscriptTab::bestFuzzyTranscriptSearchWordId(const QString& query) const
+{
+    const QString trimmedQuery = query.trimmed();
+    if (trimmedQuery.isEmpty()) {
+        return -1;
     }
 
-    scheduleSeekToTranscriptRow(row);
+    const QString speakerFilterValue = activeSpeakerFilter();
+    const bool hasSpeakerFilter =
+        !speakerFilterValue.isEmpty() && speakerFilterValue != QString(kAllSpeakersFilterValue);
+
+    int bestWordId = -1;
+    int bestScore = std::numeric_limits<int>::max();
+    int bestRenderOrder = std::numeric_limits<int>::max();
+    for (const TranscriptRow& row : m_allTranscriptRows) {
+        if (row.isGap || row.isOutsideActiveCut || row.isSkipped || row.wordId < 0) {
+            continue;
+        }
+        if (hasSpeakerFilter && row.speaker != speakerFilterValue) {
+            continue;
+        }
+        const int score = transcriptFuzzySearchScore(trimmedQuery, row.text);
+        if (score == std::numeric_limits<int>::max()) {
+            continue;
+        }
+        const int renderOrder = row.renderOrder >= 0 ? row.renderOrder : std::numeric_limits<int>::max();
+        if (score < bestScore || (score == bestScore && renderOrder < bestRenderOrder)) {
+            bestScore = score;
+            bestRenderOrder = renderOrder;
+            bestWordId = row.wordId;
+        }
+    }
+    return bestWordId;
+}
+
+bool TranscriptTab::selectVisibleTranscriptWord(int wordId)
+{
+    if (!m_widgets.transcriptTable || wordId < 0) {
+        return false;
+    }
+    for (int row = 0; row < m_widgets.transcriptTable->rowCount(); ++row) {
+        QTableWidgetItem* item = m_widgets.transcriptTable->item(row, kTranscriptColSourceStart);
+        if (!item || item->data(Qt::UserRole + 16).toInt() != wordId) {
+            continue;
+        }
+        m_suppressSelectionSideEffects = true;
+        m_widgets.transcriptTable->setCurrentCell(row, kTranscriptColSourceStart);
+        m_widgets.transcriptTable->selectRow(row);
+        m_suppressSelectionSideEffects = false;
+        persistSelectionIdentityFromRow(row);
+        m_manualSelectionTimer.restart();
+        if (QTableWidgetItem* scrollItem = m_widgets.transcriptTable->item(row, kTranscriptColText)) {
+            m_widgets.transcriptTable->scrollToItem(scrollItem, QAbstractItemView::PositionAtCenter);
+        }
+        scheduleSeekToTranscriptRow(row);
+        return true;
+    }
+    return false;
+}
+
+void TranscriptTab::onTranscriptSearchReturnPressed()
+{
+    if (m_updating || !m_widgets.transcriptSearchFilterLineEdit || !m_widgets.transcriptTable) {
+        return;
+    }
+
+    const int wordId = bestFuzzyTranscriptSearchWordId(m_widgets.transcriptSearchFilterLineEdit->text());
+    if (wordId < 0) {
+        return;
+    }
+
+    if (m_refreshQueued) {
+        m_refreshDebounceTimer.stop();
+        m_refreshQueued = false;
+    }
+    populateTable(filteredRowsForSpeaker(m_allTranscriptRows));
+    selectVisibleTranscriptWord(wordId);
 }
 
 void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)

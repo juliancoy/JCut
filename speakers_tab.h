@@ -239,6 +239,7 @@ private:
                                         bool clearDerivedCaches = true);
     bool saveLoadedTranscriptDocument();
     bool saveLoadedTranscriptDocumentNow();
+    bool flushLoadedTranscriptDocumentForRuntimeNow();
     void queueLoadedTranscriptDocumentSave();
     void startTranscriptLoadRequest(const QString& clipFilePath,
                                     const QString& transcriptPath,

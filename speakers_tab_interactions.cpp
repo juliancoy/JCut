@@ -270,11 +270,16 @@ void SpeakersTab::updateSelectedSpeakerPanel()
         const QVector<int> assignedTrackIds =
             resolvedAssignedTrackIdsForSpeaker(*clip, streams, speakerId);
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-            const QVector<int> activeAssignedTrackIds =
-                playheadAssignedTrackIdsForSpeaker(*clip, streams, speakerId);
             QSet<int> assignedTrackIdSet;
-            for (int trackId : activeAssignedTrackIds) {
-                assignedTrackIdSet.insert(trackId);
+            if (contiguousTranscriptSectionModeActive()) {
+                assignedTrackIdSet = previewAssignedFaceTrackIdsForSpeakerAtFrame(
+                    *clip, speakerId, currentSourceFrameForClip(*clip));
+            } else {
+                const QVector<int> activeAssignedTrackIds =
+                    playheadAssignedTrackIdsForSpeaker(*clip, streams, speakerId);
+                for (int trackId : activeAssignedTrackIds) {
+                    assignedTrackIdSet.insert(trackId);
+                }
             }
             m_speakerDeps.setPreviewAssignedFaceTrackIds(assignedTrackIdSet);
         }
@@ -836,14 +841,18 @@ void SpeakersTab::onSpeakerFramingEnabledTableSelectionChanged()
 
 void SpeakersTab::onSpeakerFramingEnabledTableItemChanged(QTableWidgetItem* item)
 {
-    if (m_updatingSpeakerFramingEnabledTable || !item || !m_speakerDeps.updateClipById) {
+    int row = -1;
+    int column = -1;
+    if (m_updatingSpeakerFramingEnabledTable ||
+        !editor::findTableCellForItem(m_widgets.speakerFramingEnabledKeyframeTable, item, &row, &column) ||
+        !m_speakerDeps.updateClipById) {
         return;
     }
+    Q_UNUSED(column);
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!selectedClip) {
         return;
     }
-    const int row = item->row();
     QTableWidgetItem* frameItem =
         m_widgets.speakerFramingEnabledKeyframeTable->item(row, kFramingKeyframeFrameColumn);
     if (!frameItem) {
@@ -1320,10 +1329,18 @@ bool SpeakersTab::setSpeakerSectionSkipped(const QString& speakerId,
 
 void SpeakersTab::onSpeakersTableItemChanged(QTableWidgetItem* item)
 {
-    if (m_updating || !item || !activeCutMutable()) {
+    int row = -1;
+    int column = -1;
+    if (m_updating ||
+        !editor::findTableCellForItem(m_widgets.speakersTable, item, &row, &column) ||
+        !activeCutMutable()) {
         return;
     }
-    if (!saveSpeakerProfileEdit(item->row(), item->column(), item->text())) {
+    QTableWidgetItem* liveItem = m_widgets.speakersTable->item(row, column);
+    if (!liveItem) {
+        return;
+    }
+    if (!saveSpeakerProfileEdit(row, column, liveItem->text())) {
         refresh();
         return;
     }

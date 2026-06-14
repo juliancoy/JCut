@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -651,6 +652,12 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         vertical->setMinimumSectionSize(kTranscriptTableRowHeight);
     }
     int restoreRow = -1;
+    int playheadRestoreRow = -1;
+    int64_t nearestPlayheadDistance = std::numeric_limits<int64_t>::max();
+    const bool canRestoreFromPlayhead =
+        !selectedClipId.isEmpty() &&
+        selectedClipId == m_lastSyncClipId &&
+        m_lastSyncSourceFrame >= 0;
     for (int row = 0; row < rows.size(); ++row) {
         const TranscriptRow& entry = rows.at(row);
         const double sourceStartTime = static_cast<double>(entry.startFrame) / kTimelineFps;
@@ -696,6 +703,23 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
               entry.wordIndex == m_persistedSelectedWordIndex))) {
             restoreRow = row;
         }
+        if (canRestoreFromPlayhead &&
+            !entry.isGap &&
+            !entry.isOutsideActiveCut &&
+            !entry.isSkipped &&
+            entry.wordId >= 0) {
+            const bool containsPlayhead =
+                entry.startFrame <= m_lastSyncSourceFrame &&
+                m_lastSyncSourceFrame <= entry.endFrame;
+            const int64_t distance = containsPlayhead
+                ? 0
+                : qMin(qAbs(m_lastSyncSourceFrame - entry.startFrame),
+                       qAbs(m_lastSyncSourceFrame - entry.endFrame));
+            if (distance < nearestPlayheadDistance) {
+                nearestPlayheadDistance = distance;
+                playheadRestoreRow = row;
+            }
+        }
 
         m_widgets.transcriptTable->setItem(row, kTranscriptColSourceStart, sourceStartItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColSourceEnd, sourceEndItem);
@@ -705,6 +729,9 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->setRowHeight(row, kTranscriptTableRowHeight);
     }
 
+    if (restoreRow < 0) {
+        restoreRow = playheadRestoreRow;
+    }
     if (restoreRow >= 0 && m_widgets.transcriptTable->selectionModel()) {
         m_suppressSelectionSideEffects = true;
         m_widgets.transcriptTable->setCurrentCell(restoreRow, 0);
@@ -1238,7 +1265,7 @@ QVector<TranscriptTab::TranscriptRow> TranscriptTab::filteredRowsForSpeaker(cons
         if (hasSpeakerFilter && !row.isGap && row.speaker != speakerFilterValue) {
             continue;
         }
-        if (hasSearchFilter && !row.text.contains(searchFilterValue, Qt::CaseInsensitive)) {
+        if (hasSearchFilter && !transcriptSearchMatchesText(searchFilterValue, row.text)) {
             continue;
         }
         filtered.push_back(row);

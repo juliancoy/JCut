@@ -969,6 +969,23 @@ bool SpeakersTab::saveLoadedTranscriptDocumentNow()
     return true;
 }
 
+bool SpeakersTab::flushLoadedTranscriptDocumentForRuntimeNow()
+{
+    const QString transcriptPath = m_transcriptSession.transcriptPath().trimmed();
+    if (transcriptPath.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+        return false;
+    }
+    m_transcriptSession.queueSave(
+        true,
+        [](const QString& path, const QJsonDocument& doc) {
+            editor::TranscriptEngine engine;
+            engine.saveTranscriptJson(path, doc);
+        });
+    invalidateTranscriptJsonCache(transcriptPath);
+    invalidateTranscriptSpeakerProfileCache(transcriptPath);
+    return true;
+}
+
 void SpeakersTab::queueLoadedTranscriptDocumentSave()
 {
     if (m_transcriptSession.transcriptPath().trimmed().isEmpty() || !m_transcriptSession.hasObjectDocument()) {
@@ -3227,21 +3244,18 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         const TimelineClip::TransformKeyframe framingTarget =
             evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, timelineFrame);
         const bool hasActiveTargetBox = framingTarget.scaleX > 0.0;
-        const int64_t localFrame = qBound<int64_t>(
-            0,
-            timelineFrame - selectedClip->startFrame,
-            qMax<int64_t>(0, selectedClip->durationFrames - 1));
-        const int64_t sourceFrame = qMax<int64_t>(0, selectedClip->sourceInFrame + localFrame);
-        QString activeTranscriptSpeaker;
-        QPointF sampleLocation;
-        qreal sampleBox = -1.0;
-        const bool hasRuntimeSample = transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(
-            selectedClip->filePath,
-            sourceFrame,
-            selectedClip->speakerFramingMinConfidence,
-            &sampleLocation,
-            &sampleBox,
-            &activeTranscriptSpeaker) && sampleBox > 0.0;
+        QJsonObject framingDiagnostics;
+        const QVector<RenderSyncMarker> markers =
+            m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+        (void)evaluateClipSpeakerFramingAtPosition(*selectedClip,
+                                                   static_cast<qreal>(timelineFrame),
+                                                   markers,
+                                                   QSize(),
+                                                   &framingDiagnostics);
+        const QString activeTranscriptSpeaker =
+            framingDiagnostics.value(QStringLiteral("active_speaker")).toString().trimmed();
+        const bool hasRuntimeSample =
+            framingDiagnostics.value(QStringLiteral("has_face_sample")).toBool(false);
         const bool hasTranscriptSpeaker = !activeTranscriptSpeaker.isEmpty();
         const bool framingCanRun =
             !selectedClip->speakerFramingKeyframes.isEmpty() ||

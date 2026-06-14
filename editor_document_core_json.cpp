@@ -198,7 +198,10 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     document->exportRequest.outputSize.width = valueOr(root, "outputWidth", 1080);
     document->exportRequest.outputSize.height = valueOr(root, "outputHeight", 1920);
     document->exportRequest.outputFps = valueOr(root, "outputFps", 30.0);
-    document->exportRequest.playbackSpeed = valueOr(root, "playbackSpeed", 1.0);
+    document->exportRequest.playbackSpeed = valueOr(
+        root,
+        "exportPlaybackSpeed",
+        valueOr(root, "playbackSpeed", 1.0));
     document->exportRequest.useProxyMedia = valueOr(root, "renderUseProxies", false);
     document->exportRequest.bypassGrading = !valueOr(root, "gradingPreview", true);
     document->exportRequest.correctionsEnabled = valueOr(root, "correctionsEnabled", true);
@@ -432,6 +435,7 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["currentFrame"] = document.transport.currentFrame;
     root["playing"] = document.transport.playbackActive;
     root["playbackSpeed"] = document.transport.playbackSpeed;
+    root["exportPlaybackSpeed"] = document.exportRequest.playbackSpeed;
     root["timelineZoom"] = document.transport.previewZoom;
     root["audioWaveformVisible"] = document.panels.showWaveform;
     root["outputWidth"] = document.exportRequest.outputSize.width;

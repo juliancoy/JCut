@@ -1,5 +1,6 @@
 #include "standalone_export_renderer.h"
 
+#include "export_timing.h"
 #include "standalone_timeline_renderer.h"
 #include "timeline_fps.h"
 
@@ -96,16 +97,11 @@ std::int64_t totalFramesToRender(const jcut::EditorDocumentCore& document)
 {
     const int startFrame = exportStartFrame(document);
     const int endFrame = exportEndFrame(document);
-    const double outputFps =
-        document.exportRequest.outputFps > 0.0 ? document.exportRequest.outputFps : kTimelineFps;
-    const double playbackSpeed =
-        document.exportRequest.playbackSpeed > 0.001 ? document.exportRequest.playbackSpeed : 1.0;
-    const double durationSeconds =
-        (static_cast<double>(endFrame - startFrame + 1) / static_cast<double>(kTimelineFps)) /
-        playbackSpeed;
-    return std::max<std::int64_t>(
-        1,
-        static_cast<std::int64_t>(std::ceil(durationSeconds * outputFps)));
+    return jcut::export_timing::outputFrameCountForTimelineRange(
+        startFrame,
+        endFrame,
+        document.exportRequest.outputFps,
+        document.exportRequest.playbackSpeed);
 }
 
 const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat)
@@ -440,7 +436,7 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     const bool writeEncodedVideo =
         exportRequest.outputMode != render::RenderOutputMode::ImageSequence;
 
-    const double outputFps = exportRequest.outputFps > 0.0 ? exportRequest.outputFps : kTimelineFps;
+    const double outputFps = jcut::export_timing::normalizedOutputFps(exportRequest.outputFps);
     const AVRational frameRate = av_d2q(outputFps, 1001000);
 
     std::unique_ptr<AVFormatContext, AvFormatOutputContextDeleter> formatContext;
@@ -563,16 +559,18 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     const int endFrame = exportEndFrame(request.document);
     const std::int64_t totalFrames = totalFramesToRender(request.document);
     const double playbackSpeed =
-        exportRequest.playbackSpeed > 0.001 ? exportRequest.playbackSpeed : 1.0;
-    const double timelineFramesPerOutputFrame =
-        (static_cast<double>(kTimelineFps) / outputFps) * playbackSpeed;
+        jcut::export_timing::normalizedPlaybackSpeed(exportRequest.playbackSpeed);
     const auto startTime = std::chrono::steady_clock::now();
 
     for (std::int64_t frameIndex = 0; frameIndex < totalFrames; ++frameIndex) {
-        const double timelineFramePosition =
-            static_cast<double>(startFrame) + static_cast<double>(frameIndex) * timelineFramesPerOutputFrame;
-        const double clampedFramePosition =
-            std::clamp(timelineFramePosition, static_cast<double>(startFrame), static_cast<double>(endFrame));
+        const jcut::export_timing::ExportFrameTiming exportFrameTiming =
+            jcut::export_timing::frameTimingForOutputFrame(
+                frameIndex,
+                startFrame,
+                endFrame,
+                outputFps,
+                playbackSpeed);
+        const double clampedFramePosition = exportFrameTiming.timelineFramePosition;
         const TimelineRenderResult frameResult = renderer.renderFrame({
             request.document,
             exportRequest.outputSize,
