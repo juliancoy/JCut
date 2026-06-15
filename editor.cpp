@@ -1185,9 +1185,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool rubberBandChannelsTogether =
         root.value(QStringLiteral("rubberBandChannelsTogether"))
             .toBool(editor::rubberBandChannelsTogether());
+    const bool debugDeterministicPipelineExplicit =
+        root.value(QStringLiteral("debugDeterministicPipelineExplicit")).toBool(false);
     const bool debugDeterministicPipeline =
-        root.value(QStringLiteral("debugDeterministicPipeline"))
-            .toBool(editor::debugDeterministicPipelineEnabled());
+        debugDeterministicPipelineExplicit
+            ? root.value(QStringLiteral("debugDeterministicPipeline"))
+                  .toBool(editor::debugDeterministicPipelineEnabled())
+            : false;
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(150);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(70);

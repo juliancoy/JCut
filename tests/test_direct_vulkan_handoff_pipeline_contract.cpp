@@ -672,6 +672,29 @@ void TestDirectVulkanHandoffPipelineContract::
                !renderExport.contains(QStringLiteral("JCUT_VULKAN_HW_DECODE_EXPERIMENTAL")),
            "Vulkan export must prefer NVIDIA zero-copy decode by default and "
            "only fall back through an explicit disable switch");
+  const qsizetype scopedExportSafetyIndex =
+      renderExport.indexOf(QStringLiteral("struct ScopedRenderDecodeSafety"));
+  const qsizetype scopedExportSafetyEnd =
+      renderExport.indexOf(QStringLiteral("scopedDecodeSafety"), scopedExportSafetyIndex);
+  QVERIFY2(scopedExportSafetyIndex >= 0 && scopedExportSafetyEnd > scopedExportSafetyIndex,
+           "Vulkan export decode safety scope must be present and bounded");
+  const QString scopedExportSafety =
+      renderExport.mid(scopedExportSafetyIndex,
+                       scopedExportSafetyEnd - scopedExportSafetyIndex);
+  QVERIFY2(!scopedExportSafety.contains(QStringLiteral("setDebugDeterministicPipelineEnabled(true)")),
+           "Vulkan export must not force the global deterministic debug "
+           "pipeline; deterministic output ordering should not serialize the "
+           "GPU throughput path by default");
+  const QString editorDeterministicSource = readSourceFile(QStringLiteral("editor.cpp"));
+  QVERIFY2(!editorDeterministicSource.isEmpty(), "editor.cpp must be readable");
+  const QString projectDeterministicState = readSourceFile(QStringLiteral("project_state.cpp"));
+  QVERIFY2(!projectDeterministicState.isEmpty(), "project_state.cpp must be readable");
+  QVERIFY2(editorDeterministicSource.contains(QStringLiteral("debugDeterministicPipelineExplicit")) &&
+               editorDeterministicSource.contains(QStringLiteral(": false")) &&
+               projectDeterministicState.contains(QStringLiteral("debugDeterministicPipelineExplicit")),
+           "preview/export throughput must migrate old accidental deterministic "
+           "state back to the fast path unless the project state has an "
+           "explicit deterministic-pipeline marker");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -1385,6 +1408,22 @@ void TestDirectVulkanHandoffPipelineContract::
                renderTools.contains(QStringLiteral("persistExportRequestDefaults(baseRequest)")),
            "section export pre-flight speed must persist as the next export "
            "default instead of being discarded with the temporary request");
+  const QString renderDecode = readSourceFile(QStringLiteral("render_decode.cpp"));
+  QVERIFY2(!renderDecode.isEmpty(), "render_decode.cpp must be readable");
+  QVERIFY2(renderDecode.contains(QStringLiteral("sharedHwDevicesForDecoderContexts")) &&
+               renderDecode.contains(QStringLiteral("new editor::DecoderContext(path, sharedHwDevices)")),
+           "blocking export decode fallback must borrow the export AsyncDecoder "
+           "hardware-device pool instead of creating private CUDA contexts for "
+           "each batch section");
+  const QString renderExportAsync = readSourceFile(QStringLiteral("render_export.cpp"));
+  QVERIFY2(!renderExportAsync.isEmpty(), "render_export.cpp must be readable");
+  QVERIFY2(renderExportAsync.contains(QStringLiteral("exportNeedsAsyncDecode")) &&
+               renderExportAsync.contains(QStringLiteral("isImageSequencePath(decodePath)")) &&
+               renderExportAsync.contains(QStringLiteral("if (exportNeedsAsyncDecode(orderedClips))")) &&
+               renderExportAsync.contains(QStringLiteral("asyncDecoder.get()")),
+           "normal video export must not initialize the preview-style async "
+           "decode worker pool; keep async export decode limited to image "
+           "sequences that require it");
   const qsizetype batchExportIndex = renderTools.indexOf(
       QStringLiteral("void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip"));
   QVERIFY2(batchExportIndex >= 0,

@@ -402,6 +402,7 @@ void EditorWindow::createTranscriptTab()
             m_inspectorPane->transcriptScriptVersionCombo(),
             m_inspectorPane->transcriptNewVersionButton(),
             m_inspectorPane->transcriptDeleteVersionButton(),
+            m_inspectorPane->transcriptExportTextButton(),
             m_inspectorPane->transcriptShowExcludedLinesCheckBox()},
         TranscriptTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },

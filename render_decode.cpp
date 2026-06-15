@@ -195,7 +195,9 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
 
     auto it = decoders.find(path);
     if (it == decoders.end()) {
-        editor::DecoderContext* ctx = new editor::DecoderContext(path);
+        const QHash<int, AVBufferRef*>* sharedHwDevices =
+            asyncDecoder ? asyncDecoder->sharedHwDevicesForDecoderContexts() : nullptr;
+        editor::DecoderContext* ctx = new editor::DecoderContext(path, sharedHwDevices);
         if (!ctx->initialize()) {
             delete ctx;
             return editor::FrameHandle();

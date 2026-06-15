@@ -11,12 +11,23 @@
 #include <QPainter>
 
 #include <cmath>
+#include <memory>
 using namespace render_detail;
 
 namespace {
 
 inline int clampByte(int value) {
     return value < 0 ? 0 : (value > 255 ? 255 : value);
+}
+
+bool exportNeedsAsyncDecode(const QVector<TimelineClip>& orderedClips) {
+    for (const TimelineClip& clip : orderedClips) {
+        const QString decodePath = playbackMediaPathForClip(clip);
+        if (!decodePath.isEmpty() && isImageSequencePath(decodePath)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
@@ -315,12 +326,10 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
                 editor::setDebugH26xSoftwareThreadingMode(
                     editor::H26xSoftwareThreadingMode::SingleThread);
-                editor::setDebugDeterministicPipelineEnabled(true);
             } else {
                 editor::setDebugDecodePreference(editor::DecodePreference::Hardware);
                 editor::setDebugH26xSoftwareThreadingMode(
                     editor::H26xSoftwareThreadingMode::SingleThread);
-                editor::setDebugDeterministicPipelineEnabled(true);
             }
         }
         ~ScopedRenderDecodeSafety() {
@@ -817,20 +826,25 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     int64_t outputPts = 0;
     int64_t framesCompleted = 0;
     QHash<QString, editor::DecoderContext*> decoders;
-    editor::AsyncDecoder asyncDecoder;
-    asyncDecoder.initialize();
+    std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
+    if (exportNeedsAsyncDecode(orderedClips)) {
+        asyncDecoder = std::make_unique<editor::AsyncDecoder>();
+        asyncDecoder->initialize();
+    }
     QHash<RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
-    QObject::connect(&asyncDecoder,
-                     &editor::AsyncDecoder::frameReady,
-                     [&](editor::FrameHandle frame) {
-                         if (frame.isNull() || frame.sourcePath().isEmpty()) {
-                             return;
-                         }
-                         asyncFrameCache.insert(RenderAsyncFrameKey{frame.sourcePath(), frame.frameNumber()}, frame);
-                         while (asyncFrameCache.size() > 256) {
-                             asyncFrameCache.erase(asyncFrameCache.begin());
-                         }
-                     });
+    if (asyncDecoder) {
+        QObject::connect(asyncDecoder.get(),
+                         &editor::AsyncDecoder::frameReady,
+                         [&](editor::FrameHandle frame) {
+                             if (frame.isNull() || frame.sourcePath().isEmpty()) {
+                                 return;
+                             }
+                             asyncFrameCache.insert(RenderAsyncFrameKey{frame.sourcePath(), frame.frameNumber()}, frame);
+                             while (asyncFrameCache.size() > 256) {
+                                 asyncFrameCache.erase(asyncFrameCache.begin());
+                             }
+                         });
+    }
     QString errorMessage;
     qint64 totalRenderStageMs = 0;
     qint64 totalRenderDecodeStageMs = 0;
@@ -956,7 +970,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                      exportStart,
                                      exportEnd,
                                      orderedClips,
-                                     &asyncDecoder,
+                                     asyncDecoder.get(),
                                      asyncFrameCache);
         for (int64_t segmentOutputFrame = 0;
              segmentOutputFrame < segmentOutputFrames;
@@ -975,7 +989,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             enqueueRenderSequenceLookahead(request,
                                           timelineFrame,
                                           orderedClips,
-                                          &asyncDecoder,
+                                          asyncDecoder.get(),
                                           asyncFrameCache);
             if (progressCallback) {
                 RenderProgress progress;
@@ -1051,7 +1065,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 activeRenderer->renderFrameToOutput(request,
                                                     timelineFramePosition,
                                                     decoders,
-                                                    &asyncDecoder,
+                                                    asyncDecoder.get(),
                                                     &asyncFrameCache,
                                                     orderedClips,
                                                     &renderedFrame,
@@ -1448,7 +1462,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
 
     av_write_trailer(formatCtx);
-    asyncDecoder.shutdown();
+    if (asyncDecoder) {
+        asyncDecoder->shutdown();
+    }
     qDeleteAll(decoders);
     for (AVFrame* frame : asyncGpuFrames) {
         av_frame_free(&frame);

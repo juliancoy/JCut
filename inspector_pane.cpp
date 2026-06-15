@@ -1077,8 +1077,14 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptDeleteVersionButton = new QPushButton(QStringLiteral("Delete"), settingsContainer);
     m_transcriptDeleteVersionButton->setStyleSheet(
         QStringLiteral("QPushButton { padding: 4px 12px; color: #d47a7a; }"));
+    m_transcriptExportTextButton = new QPushButton(QStringLiteral("Export TXT"), settingsContainer);
+    m_transcriptExportTextButton->setStyleSheet(
+        QStringLiteral("QPushButton { padding: 4px 12px; font-weight: 600; }"));
+    m_transcriptExportTextButton->setToolTip(
+        QStringLiteral("Export contiguous speaker transcript sections as a text file."));
     versionButtonsLayout->addWidget(m_transcriptNewVersionButton);
     versionButtonsLayout->addWidget(m_transcriptDeleteVersionButton);
+    versionButtonsLayout->addWidget(m_transcriptExportTextButton);
 
     // --- Separator ---
     auto *separator = new QFrame(settingsContainer);

@@ -11,6 +11,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QJsonArray>
@@ -23,6 +24,7 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSignalBlocker>
 #include <QSet>
 #include <QtConcurrent/QtConcurrentRun>
@@ -52,6 +54,8 @@ const QLatin1String kTranscriptEditInsertedTag("inserted");
 const QLatin1String kTranscriptWordRenderOrderKey("render_order");
 const QLatin1String kTranscriptWordOriginalSegmentKey("original_segment_index");
 const QLatin1String kTranscriptWordOriginalWordKey("original_word_index");
+const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
+const QLatin1String kTranscriptSpeakerNameKey("name");
 const QLatin1String kAllSpeakersFilterValue("__all__");
 constexpr int kTranscriptTableRowHeight = 30;
 
@@ -201,6 +205,104 @@ int transcriptFuzzySearchScore(const QString& rawQuery, const QString& rawCandid
         bestScore = qMin(bestScore, 80 + candidate.size() - query.size());
     }
     return bestScore;
+}
+
+QString transcriptExportSpeakerLabel(const QJsonObject& profiles, const QString& speakerId)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    const QJsonObject profile = profiles.value(trimmedSpeakerId).toObject();
+    const QString name = profile.value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+    const QString organization = profile.value(QStringLiteral("organization")).toString().trimmed();
+    QString label = name.isEmpty() ? trimmedSpeakerId : name;
+    if (!organization.isEmpty()) {
+        label += QStringLiteral(" - ") + organization;
+    }
+    return label.isEmpty() ? QStringLiteral("Unknown Speaker") : label;
+}
+
+QString defaultTranscriptExportPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    QString baseName = info.completeBaseName().trimmed();
+    if (baseName.isEmpty()) {
+        baseName = QStringLiteral("transcript");
+    }
+    const QString fileName = baseName + QStringLiteral("_export.txt");
+    return info.absoluteDir().exists()
+        ? info.absoluteDir().filePath(fileName)
+        : QDir::home().filePath(fileName);
+}
+
+QString buildContiguousTranscriptTextExport(const QJsonObject& transcriptRoot)
+{
+    struct ExportSection {
+        QString speakerId;
+        QStringList words;
+    };
+
+    const QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+    const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
+    QVector<ExportSection> sections;
+    ExportSection current;
+    auto flushCurrent = [&sections, &current]() {
+        if (!current.speakerId.trimmed().isEmpty() && !current.words.isEmpty()) {
+            sections.push_back(current);
+        }
+        current = ExportSection{};
+    };
+    auto appendText = [&current, &flushCurrent](const QString& speakerId, const QString& text) {
+        const QString trimmedSpeakerId = speakerId.trimmed();
+        const QString simplifiedText = text.simplified();
+        if (trimmedSpeakerId.isEmpty() || simplifiedText.isEmpty()) {
+            if (trimmedSpeakerId.isEmpty()) {
+                flushCurrent();
+            }
+            return;
+        }
+        if (current.speakerId != trimmedSpeakerId) {
+            flushCurrent();
+            current.speakerId = trimmedSpeakerId;
+        }
+        current.words.push_back(simplifiedText);
+    };
+
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segmentObj = segValue.toObject();
+        const QString segmentSpeaker =
+            segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        if (!words.isEmpty()) {
+            for (const QJsonValue& wordValue : words) {
+                const QJsonObject wordObj = wordValue.toObject();
+                if (wordObj.value(QString(kTranscriptWordSkippedKey)).toBool(false)) {
+                    continue;
+                }
+                QString speakerId = wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
+                if (speakerId.isEmpty()) {
+                    speakerId = segmentSpeaker;
+                }
+                const QString text =
+                    wordObj.value(QStringLiteral("word"))
+                        .toString(wordObj.value(QStringLiteral("text")).toString());
+                appendText(speakerId, text);
+            }
+            continue;
+        }
+
+        const QString text = segmentObj.value(QStringLiteral("text")).toString();
+        appendText(segmentSpeaker, text);
+    }
+    flushCurrent();
+
+    QStringList paragraphs;
+    paragraphs.reserve(sections.size());
+    for (const ExportSection& section : std::as_const(sections)) {
+        paragraphs.push_back(
+            QStringLiteral("%1: %2")
+                .arg(transcriptExportSpeakerLabel(profiles, section.speakerId),
+                     section.words.join(QLatin1Char(' ')).simplified()));
+    }
+    return paragraphs.join(QStringLiteral("\n\n"));
 }
 }
 
@@ -520,6 +622,63 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptDeleteVersionButton) {
         connect(m_widgets.transcriptDeleteVersionButton, &QPushButton::clicked,
                 this, &TranscriptTab::onTranscriptDeleteVersion);
+    }
+    if (m_widgets.transcriptExportTextButton) {
+        connect(m_widgets.transcriptExportTextButton, &QPushButton::clicked,
+                this, &TranscriptTab::onTranscriptExportText);
+    }
+}
+
+void TranscriptTab::onTranscriptExportText()
+{
+    if (!m_transcriptSession.hasObjectDocument()) {
+        QMessageBox::information(
+            m_widgets.transcriptTable,
+            QStringLiteral("Export Transcript"),
+            QStringLiteral("Load a transcript before exporting."));
+        return;
+    }
+
+    const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
+    const QString exportText = buildContiguousTranscriptTextExport(transcriptRoot);
+    if (exportText.trimmed().isEmpty()) {
+        QMessageBox::information(
+            m_widgets.transcriptTable,
+            QStringLiteral("Export Transcript"),
+            QStringLiteral("No transcript text is available to export."));
+        return;
+    }
+
+    const QString selectedPath = QFileDialog::getSaveFileName(
+        m_widgets.transcriptTable,
+        QStringLiteral("Export Transcript Text"),
+        defaultTranscriptExportPath(m_transcriptSession.transcriptPath()),
+        QStringLiteral("Text Files (*.txt);;All Files (*)"));
+    if (selectedPath.trimmed().isEmpty()) {
+        return;
+    }
+
+    QSaveFile outputFile(selectedPath);
+    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(
+            m_widgets.transcriptTable,
+            QStringLiteral("Export Transcript"),
+            QStringLiteral("Could not write transcript export:\n%1").arg(outputFile.errorString()));
+        return;
+    }
+
+    const QByteArray payload = (exportText + QLatin1Char('\n')).toUtf8();
+    if (outputFile.write(payload) != payload.size() || !outputFile.commit()) {
+        QMessageBox::warning(
+            m_widgets.transcriptTable,
+            QStringLiteral("Export Transcript"),
+            QStringLiteral("Could not save transcript export:\n%1").arg(outputFile.errorString()));
+        return;
+    }
+
+    if (m_widgets.transcriptInspectorDetailsLabel) {
+        m_widgets.transcriptInspectorDetailsLabel->setText(
+            QStringLiteral("Exported transcript text: %1").arg(QDir::toNativeSeparators(selectedPath)));
     }
 }
 

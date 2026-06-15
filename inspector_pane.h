@@ -93,6 +93,7 @@ public:
     QComboBox *transcriptScriptVersionCombo() const { return m_transcriptScriptVersionCombo; }
     QPushButton *transcriptNewVersionButton() const { return m_transcriptNewVersionButton; }
     QPushButton *transcriptDeleteVersionButton() const { return m_transcriptDeleteVersionButton; }
+    QPushButton *transcriptExportTextButton() const { return m_transcriptExportTextButton; }
     QCheckBox *transcriptShowExcludedLinesCheckBox() const { return m_transcriptShowExcludedLinesCheckBox; }
     QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
     QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
@@ -644,6 +645,7 @@ private:
     QComboBox *m_transcriptScriptVersionCombo = nullptr;
     QPushButton *m_transcriptNewVersionButton = nullptr;
     QPushButton *m_transcriptDeleteVersionButton = nullptr;
+    QPushButton *m_transcriptExportTextButton = nullptr;
     QCheckBox *m_transcriptShowExcludedLinesCheckBox = nullptr;
     QLabel *m_speakersInspectorClipLabel = nullptr;
     QLabel *m_speakersInspectorDetailsLabel = nullptr;

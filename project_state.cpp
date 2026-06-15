@@ -536,6 +536,7 @@ QJsonObject EditorWindow::buildStateJson() const
         editor::rubberBandChannelsTogether();
     root[QStringLiteral("debugDeterministicPipeline")] =
         editor::debugDeterministicPipelineEnabled();
+    root[QStringLiteral("debugDeterministicPipelineExplicit")] = true;
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
     root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;

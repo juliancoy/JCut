@@ -146,6 +146,12 @@ public:
     // av_buffer_unref()-ing their reference when done.
     AVBufferRef* acquireSharedHwDevice(AVHWDeviceType type) const;
 
+    // Stable for this AsyncDecoder's lifetime after initialize(); DecoderContext
+    // borrows refs from the map and never mutates it.
+    const QHash<int, AVBufferRef*>* sharedHwDevicesForDecoderContexts() const {
+        return &m_sharedHwDevices;
+    }
+
 signals:
     void frameReady(FrameHandle frame);
     void error(QString path, QString message);

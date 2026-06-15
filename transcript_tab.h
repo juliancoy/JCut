@@ -62,6 +62,7 @@ public:
         QComboBox* transcriptScriptVersionCombo = nullptr;
         QPushButton* transcriptNewVersionButton = nullptr;
         QPushButton* transcriptDeleteVersionButton = nullptr;
+        QPushButton* transcriptExportTextButton = nullptr;
         QCheckBox* transcriptShowExcludedLinesCheckBox = nullptr;
     };
 
@@ -120,6 +121,7 @@ private slots:
     void onTranscriptCutLabelEdited();
     void onTranscriptCreateVersion();
     void onTranscriptDeleteVersion();
+    void onTranscriptExportText();
     void onTranscriptSearchReturnPressed();
 
 private:
