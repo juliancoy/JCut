@@ -117,6 +117,18 @@ struct ExportPathDecision {
     QString fallbackReason;
 };
 
+struct ScopedAvBufferRef {
+    AVBufferRef* ref = nullptr;
+
+    explicit ScopedAvBufferRef(AVBufferRef* value = nullptr) : ref(value) {}
+    ~ScopedAvBufferRef() { av_buffer_unref(&ref); }
+
+    ScopedAvBufferRef(const ScopedAvBufferRef&) = delete;
+    ScopedAvBufferRef& operator=(const ScopedAvBufferRef&) = delete;
+
+    AVBufferRef* get() const { return ref; }
+};
+
 ExportPathDecision chooseExportPath(bool useGpuRenderer,
                                     const render_detail::OffscreenRenderer* renderer,
                                     AVPixelFormat encoderInputPixFmt,
@@ -181,18 +193,21 @@ ExportPathDecision chooseExportPath(bool useGpuRenderer,
 
 bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
                                  AVPixelFormat swFormat,
+                                 AVBufferRef* sharedDeviceRef,
                                  QString* errorMessage)
 {
     if (!codecCtx) {
         return false;
     }
-    AVBufferRef* deviceRef = nullptr;
-    int ret = av_hwdevice_ctx_create(&deviceRef, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
-    if (ret < 0) {
-        if (errorMessage) {
-            *errorMessage = render_detail::avErrToString(ret);
+    AVBufferRef* deviceRef = sharedDeviceRef ? av_buffer_ref(sharedDeviceRef) : nullptr;
+    if (!deviceRef) {
+        const int ret = av_hwdevice_ctx_create(&deviceRef, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+        if (ret < 0) {
+            if (errorMessage) {
+                *errorMessage = render_detail::avErrToString(ret);
+            }
+            return false;
         }
-        return false;
     }
 
     AVBufferRef* framesRef = av_hwframe_ctx_alloc(deviceRef);
@@ -211,7 +226,7 @@ bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
     frames->height = codecCtx->height;
     frames->initial_pool_size = 8;
 
-    ret = av_hwframe_ctx_init(framesRef);
+    const int ret = av_hwframe_ctx_init(framesRef);
     if (ret < 0) {
         if (errorMessage) {
             *errorMessage = render_detail::avErrToString(ret);
@@ -431,6 +446,18 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
     result.usedGpu = useGpuRenderer;
 
+    std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
+    if (useGpuRenderer || exportNeedsAsyncDecode(orderedClips)) {
+        asyncDecoder = std::make_unique<editor::AsyncDecoder>();
+        asyncDecoder->initialize();
+    }
+    ScopedAvBufferRef sharedCudaDeviceForEncoder(
+        asyncDecoder ? asyncDecoder->acquireSharedHwDevice(AV_HWDEVICE_TYPE_CUDA) : nullptr);
+    if (useGpuRenderer && !sharedCudaDeviceForEncoder.get()) {
+        qWarning().noquote()
+            << QStringLiteral("[render-export-path] shared CUDA decode device unavailable; disabling CUDA hardware frames for this export");
+    }
+
     AVFormatContext* formatCtx = nullptr;
     const QByteArray outputPathBytes = QFile::encodeName(request.outputPath);
     if (avformat_alloc_output_context2(&formatCtx, nullptr, nullptr, outputPathBytes.constData()) < 0 || !formatCtx) {
@@ -477,10 +504,14 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         configureCodecOptions(candidateCtx, request.outputFormat, choice.label);
         const bool tryCudaFrames =
             choice.label == QStringLiteral("h264_nvenc") &&
+            (!useGpuRenderer || sharedCudaDeviceForEncoder.get()) &&
             qEnvironmentVariable("JCUT_NVENC_CUDA_HWFRAMES", QStringLiteral("1")) != QStringLiteral("0");
         if (tryCudaFrames) {
             QString cudaError;
-            if (configureCudaHardwareFrames(candidateCtx, candidateSwFormat, &cudaError)) {
+            if (configureCudaHardwareFrames(candidateCtx,
+                                            candidateSwFormat,
+                                            sharedCudaDeviceForEncoder.get(),
+                                            &cudaError)) {
                 const int cudaOpenResult = avcodec_open2(candidateCtx, candidate, nullptr);
                 if (cudaOpenResult >= 0) {
                     qInfo().noquote()
@@ -826,11 +857,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     int64_t outputPts = 0;
     int64_t framesCompleted = 0;
     QHash<QString, editor::DecoderContext*> decoders;
-    std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
-    if (useGpuRenderer || exportNeedsAsyncDecode(orderedClips)) {
-        asyncDecoder = std::make_unique<editor::AsyncDecoder>();
-        asyncDecoder->initialize();
-    }
     QHash<RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
     if (asyncDecoder) {
         QObject::connect(asyncDecoder.get(),
@@ -1462,10 +1488,11 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
 
     av_write_trailer(formatCtx);
+    qDeleteAll(decoders);
+    decoders.clear();
     if (asyncDecoder) {
         asyncDecoder->shutdown();
     }
-    qDeleteAll(decoders);
     for (AVFrame* frame : asyncGpuFrames) {
         av_frame_free(&frame);
     }
