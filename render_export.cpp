@@ -827,7 +827,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     int64_t framesCompleted = 0;
     QHash<QString, editor::DecoderContext*> decoders;
     std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
-    if (exportNeedsAsyncDecode(orderedClips)) {
+    if (useGpuRenderer || exportNeedsAsyncDecode(orderedClips)) {
         asyncDecoder = std::make_unique<editor::AsyncDecoder>();
         asyncDecoder->initialize();
     }

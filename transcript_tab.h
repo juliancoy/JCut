@@ -77,6 +77,8 @@ public:
         std::function<QVector<ExportRangeSegment>()> effectivePlaybackRanges;
         std::function<void(int64_t)> seekToTimelineFrame;
         std::function<bool()> playbackActive;
+        std::function<QString()> outputFormat;
+        std::function<qreal()> exportPlaybackSpeed;
     };
 
     explicit TranscriptTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);

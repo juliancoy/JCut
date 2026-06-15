@@ -220,6 +220,14 @@ QString transcriptExportSpeakerLabel(const QJsonObject& profiles, const QString&
     return label.isEmpty() ? QStringLiteral("Unknown Speaker") : label;
 }
 
+QString transcriptExportSpeakerDisplayName(const QJsonObject& profiles, const QString& speakerId)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    const QString name =
+        profiles.value(trimmedSpeakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+    return name.isEmpty() ? trimmedSpeakerId : name;
+}
+
 QString defaultTranscriptExportPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
@@ -233,11 +241,158 @@ QString defaultTranscriptExportPath(const QString& transcriptPath)
         : QDir::home().filePath(fileName);
 }
 
-QString buildContiguousTranscriptTextExport(const QJsonObject& transcriptRoot)
+QString sanitizedTranscriptVideoBaseName(QString value, const QString& fallback)
+{
+    value = value.simplified();
+    value.remove(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")));
+    value.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._ -]+")), QStringLiteral(""));
+    value.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    value.replace(QRegularExpression(QStringLiteral("_+")), QStringLiteral("_"));
+    value = value.trimmed();
+    while (value.startsWith(QLatin1Char('.')) || value.startsWith(QLatin1Char('_')) ||
+           value.startsWith(QLatin1Char('-'))) {
+        value.remove(0, 1);
+    }
+    while (value.endsWith(QLatin1Char('.')) || value.endsWith(QLatin1Char('_')) ||
+           value.endsWith(QLatin1Char('-'))) {
+        value.chop(1);
+    }
+    if (value.isEmpty()) {
+        value = fallback.trimmed();
+    }
+    return value.left(80);
+}
+
+QString transcriptExportSpeedSuffix(qreal speed)
+{
+    const qreal normalizedSpeed = std::isfinite(speed) && speed > 0.001 ? speed : 1.0;
+    QString value = QString::number(normalizedSpeed, 'f', 3);
+    while (value.contains(QLatin1Char('.')) && value.endsWith(QLatin1Char('0'))) {
+        value.chop(1);
+    }
+    if (value.endsWith(QLatin1Char('.'))) {
+        value.chop(1);
+    }
+    return QStringLiteral("_%1x").arg(value);
+}
+
+QString transcriptBaseNameWithExportSpeed(const QString& baseName, qreal speed)
+{
+    static const QRegularExpression speedSuffixPattern(
+        QStringLiteral("_[0-9]+(?:\\.[0-9]+)?x$"));
+    QString stripped = baseName;
+    stripped.remove(speedSuffixPattern);
+    stripped = stripped.trimmed();
+    return (stripped.isEmpty() ? QStringLiteral("render") : stripped) + transcriptExportSpeedSuffix(speed);
+}
+
+QStringList transcriptSectionTrackIds(const QJsonObject& assignment)
+{
+    QJsonArray entries = assignment.value(QStringLiteral("tracks")).toArray();
+    if (entries.isEmpty()) {
+        const int trackId = assignment.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            entries.push_back(QJsonObject{{QStringLiteral("track_id"), trackId}});
+        }
+    }
+
+    QStringList ids;
+    QSet<QString> seen;
+    for (const QJsonValue& value : entries) {
+        const int trackId = value.toObject().value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId < 0) {
+            continue;
+        }
+        const QString id = QString::number(trackId);
+        if (seen.contains(id)) {
+            continue;
+        }
+        seen.insert(id);
+        ids.push_back(id);
+    }
+    return ids;
+}
+
+QString transcriptSectionKey(const QString& speakerId, int64_t startFrame, int64_t endFrame)
+{
+    return QStringLiteral("%1|%2|%3")
+        .arg(speakerId.trimmed())
+        .arg(startFrame)
+        .arg(endFrame);
+}
+
+QJsonObject transcriptSectionAssignment(const QJsonObject& transcriptRoot,
+                                        const QString& clipId,
+                                        const QString& speakerId,
+                                        int64_t startFrame,
+                                        int64_t endFrame)
+{
+    if (clipId.trimmed().isEmpty()) {
+        return {};
+    }
+    const QString key = transcriptSectionKey(speakerId, startFrame, endFrame);
+    const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipRoot = clipsRoot.value(clipId.trimmed()).toObject();
+    const QJsonObject resolvedCurrent = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonArray sectionMap = resolvedCurrent.value(QStringLiteral("section_track_map")).toArray();
+    for (const QJsonValue& value : sectionMap) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("section_key")).toString() == key) {
+            return row;
+        }
+    }
+    return {};
+}
+
+QString transcriptSectionVideoFileName(const QJsonObject& transcriptRoot,
+                                       const QString& clipId,
+                                       const QString& speakerId,
+                                       const QString& speakerDisplayName,
+                                       int sectionOrdinal,
+                                       int64_t startFrame,
+                                       int64_t endFrame,
+                                       qreal speed,
+                                       const QString& outputFormat)
+{
+    QString speakerName = speakerDisplayName.simplified();
+    if (speakerName.isEmpty()) {
+        speakerName = speakerId.simplified();
+    }
+    if (speakerName.isEmpty()) {
+        speakerName = QStringLiteral("Speaker");
+    }
+
+    const QStringList tracks = transcriptSectionTrackIds(
+        transcriptSectionAssignment(transcriptRoot, clipId, speakerId, startFrame, endFrame));
+    QString title;
+    if (tracks.isEmpty()) {
+        title = QStringLiteral("%1 no track").arg(speakerName);
+    } else if (tracks.size() == 1) {
+        title = QStringLiteral("%1 track %2").arg(speakerName, tracks.constFirst());
+    } else {
+        title = QStringLiteral("%1 tracks %2").arg(speakerName, tracks.join(QLatin1Char('-')));
+    }
+
+    const QString fallbackTitle = sectionOrdinal > 0
+        ? QStringLiteral("%1 %2").arg(speakerName).arg(sectionOrdinal)
+        : QStringLiteral("%1 section %2 %3").arg(speakerName).arg(startFrame).arg(endFrame);
+    const QString base = transcriptBaseNameWithExportSpeed(
+        sanitizedTranscriptVideoBaseName(title, fallbackTitle), speed);
+    const QString suffix = outputFormat.trimmed().isEmpty() ? QStringLiteral("mp4") : outputFormat.trimmed();
+    return QStringLiteral("%1.%2").arg(base, suffix);
+}
+
+QString buildContiguousTranscriptTextExport(const QJsonObject& transcriptRoot,
+                                            const QString& clipId,
+                                            qreal speed,
+                                            const QString& outputFormat)
 {
     struct ExportSection {
         QString speakerId;
         QStringList words;
+        int64_t startFrame = -1;
+        int64_t endFrame = -1;
     };
 
     const QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
@@ -284,23 +439,70 @@ QString buildContiguousTranscriptTextExport(const QJsonObject& transcriptRoot)
                 const QString text =
                     wordObj.value(QStringLiteral("word"))
                         .toString(wordObj.value(QStringLiteral("text")).toString());
+                const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+                const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(startSeconds);
                 appendText(speakerId, text);
+                if (!speakerId.trimmed().isEmpty() && !text.simplified().isEmpty()) {
+                    if (startSeconds >= 0.0) {
+                        const int64_t startFrame =
+                            qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+                        if (current.startFrame < 0) {
+                            current.startFrame = startFrame;
+                        }
+                    }
+                    if (endSeconds >= 0.0) {
+                        current.endFrame = qMax<int64_t>(
+                            current.endFrame,
+                            qMax<int64_t>(0, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps))));
+                    }
+                }
             }
             continue;
         }
 
         const QString text = segmentObj.value(QStringLiteral("text")).toString();
         appendText(segmentSpeaker, text);
+        if (!segmentSpeaker.trimmed().isEmpty() && !text.simplified().isEmpty()) {
+            const double startSeconds = segmentObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double endSeconds = segmentObj.value(QStringLiteral("end")).toDouble(startSeconds);
+            if (startSeconds >= 0.0) {
+                const int64_t startFrame =
+                    qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+                if (current.startFrame < 0) {
+                    current.startFrame = startFrame;
+                }
+            }
+            if (endSeconds >= 0.0) {
+                current.endFrame = qMax<int64_t>(
+                    current.endFrame,
+                    qMax<int64_t>(0, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps))));
+            }
+        }
     }
     flushCurrent();
 
     QStringList paragraphs;
     paragraphs.reserve(sections.size());
+    int sectionOrdinal = 1;
     for (const ExportSection& section : std::as_const(sections)) {
+        const QString speakerLabel = transcriptExportSpeakerLabel(profiles, section.speakerId);
+        const QString speakerDisplayName = transcriptExportSpeakerDisplayName(profiles, section.speakerId);
+        const QString videoFileName = transcriptSectionVideoFileName(
+            transcriptRoot,
+            clipId,
+            section.speakerId,
+            speakerDisplayName,
+            sectionOrdinal,
+            section.startFrame,
+            section.endFrame,
+            speed,
+            outputFormat);
         paragraphs.push_back(
-            QStringLiteral("%1: %2")
-                .arg(transcriptExportSpeakerLabel(profiles, section.speakerId),
+            QStringLiteral("Video: %1\n%2: %3")
+                .arg(videoFileName,
+                     speakerLabel,
                      section.words.join(QLatin1Char(' ')).simplified()));
+        ++sectionOrdinal;
     }
     return paragraphs.join(QStringLiteral("\n\n"));
 }
@@ -640,7 +842,12 @@ void TranscriptTab::onTranscriptExportText()
     }
 
     const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    const QString exportText = buildContiguousTranscriptTextExport(transcriptRoot);
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    const QString clipId = clip ? clip->id : QString();
+    const qreal speed = m_deps.exportPlaybackSpeed ? m_deps.exportPlaybackSpeed() : 1.0;
+    const QString outputFormat = m_deps.outputFormat ? m_deps.outputFormat() : QStringLiteral("mp4");
+    const QString exportText = buildContiguousTranscriptTextExport(
+        transcriptRoot, clipId, speed, outputFormat);
     if (exportText.trimmed().isEmpty()) {
         QMessageBox::information(
             m_widgets.transcriptTable,

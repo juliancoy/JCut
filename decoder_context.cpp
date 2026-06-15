@@ -75,13 +75,7 @@ void DecoderContext::shutdown() {
         avformat_close_input(&m_formatCtx);
     }
     if (m_hwDeviceCtx) {
-        // Only release the ref if we created it ourselves.
-        // Borrowed refs from the shared pool are managed by AsyncDecoder.
-        if (m_ownsHwDeviceCtx) {
-            av_buffer_unref(&m_hwDeviceCtx);
-        } else {
-            m_hwDeviceCtx = nullptr;
-        }
+        av_buffer_unref(&m_hwDeviceCtx);
     }
     if (m_swsCtx) {
         sws_freeContext(m_swsCtx);
@@ -519,11 +513,11 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         if (m_sharedHwDevices) {
             auto it = m_sharedHwDevices->find(static_cast<int>(type));
             if (it != m_sharedHwDevices->end() && it.value()) {
-                AVBufferRef* borrowed = av_buffer_ref(it.value());
-                if (borrowed) {
-                    m_codecCtx->hw_device_ctx = av_buffer_ref(borrowed);
-                    m_hwDeviceCtx = borrowed;
-                    m_ownsHwDeviceCtx = false;
+                AVBufferRef* decoderRef = av_buffer_ref(it.value());
+                AVBufferRef* codecRef = av_buffer_ref(it.value());
+                if (decoderRef && codecRef) {
+                    m_codecCtx->hw_device_ctx = codecRef;
+                    m_hwDeviceCtx = decoderRef;
                     m_hwPixFmt = selectedConfig->pix_fmt;
                     m_codecCtx->get_format = get_hw_format;
                     m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));
@@ -532,6 +526,8 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
                     }
                     return true;
                 }
+                av_buffer_unref(&decoderRef);
+                av_buffer_unref(&codecRef);
             }
 
             // Runtime decode workers share a pre-created hardware-device pool.
@@ -541,14 +537,18 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         }
 
         // --- Fallback: create a new device context ---
-        // This happens during getVideoInfo() probing (no shared pool available)
-        // or when the shared pool doesn't have this device type.
+        // This happens during getVideoInfo() probing when no shared pool is
+        // available.
         AVBufferRef* hwCtx = nullptr;
         const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);
         if (ret >= 0) {
-            m_codecCtx->hw_device_ctx = av_buffer_ref(hwCtx);
+            AVBufferRef* codecRef = av_buffer_ref(hwCtx);
+            if (!codecRef) {
+                av_buffer_unref(&hwCtx);
+                continue;
+            }
+            m_codecCtx->hw_device_ctx = codecRef;
             m_hwDeviceCtx = hwCtx;
-            m_ownsHwDeviceCtx = true;
             m_hwPixFmt = selectedConfig->pix_fmt;
             m_codecCtx->get_format = get_hw_format;
             m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));

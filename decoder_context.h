@@ -73,7 +73,6 @@ private:
     AVFormatContext* m_formatCtx = nullptr;
     AVCodecContext* m_codecCtx = nullptr;
     AVBufferRef* m_hwDeviceCtx = nullptr;
-    bool m_ownsHwDeviceCtx = true; // false when borrowed from AsyncDecoder's shared pool
     AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
     SwsContext* m_swsCtx = nullptr;
     AVFrame* m_convertFrame = nullptr;

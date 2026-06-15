@@ -415,7 +415,18 @@ void EditorWindow::createTranscriptTab()
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t frame) { setCurrentFrame(frame); },
-            [this]() { return playbackActive(); }});
+            [this]() { return playbackActive(); },
+            [this]() {
+                const QString format = m_outputFormatCombo
+                    ? m_outputFormatCombo->currentData().toString()
+                    : QStringLiteral("mp4");
+                return format.trimmed().isEmpty() ? QStringLiteral("mp4") : format.trimmed();
+            },
+            [this]() {
+                return std::isfinite(m_exportPlaybackSpeed) && m_exportPlaybackSpeed > 0.001
+                    ? m_exportPlaybackSpeed
+                    : 1.0;
+            }});
     m_transcriptTab->wire();
     m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
 
