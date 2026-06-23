@@ -22,6 +22,9 @@ public:
         std::function<bool(int)> trackAudioEnabled;
         std::function<bool(int, TrackVisualMode)> updateTrackVisualMode;
         std::function<bool(int, bool)> updateTrackAudioEnabled;
+        std::function<bool(int, qreal)> updateTrackAudioGain;
+        std::function<bool(int, bool)> updateTrackAudioMuted;
+        std::function<bool(int, bool)> updateTrackAudioSolo;
         std::function<void()> refreshInspector;
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;

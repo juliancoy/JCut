@@ -44,7 +44,7 @@ OverlayImage makeOverlayImage(const QSize& size)
 
 QString transcriptSectionsCacheKeyForClip(const TimelineClip& clip)
 {
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     const QFileInfo info(transcriptPath);
     const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
     return clip.filePath + QLatin1Char('|') + transcriptPath + QLatin1Char('|') +
@@ -652,12 +652,13 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                 timelineFrame,
                 request.renderSyncMarkers,
                 transcriptCache,
-                TranscriptOverlayTiming{request.transcriptPrependMs, request.transcriptPostpendMs});
+                TranscriptOverlayTiming{
+                    request.transcriptPrependMs, request.transcriptPostpendMs, request.transcriptOffsetMs});
         if (overlayLayout.lines.isEmpty()) {
             continue;
         }
 
-        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
         const auto sectionsIt = transcriptCache.constFind(transcriptSectionsCacheKeyForClip(clip));
         const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
             clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
@@ -715,7 +716,8 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                   transcriptPath,
                   sections,
                   sourceFrame,
-                  TranscriptOverlayTiming{request.transcriptPrependMs, request.transcriptPostpendMs}).trimmed()
+                  TranscriptOverlayTiming{
+                      request.transcriptPrependMs, request.transcriptPostpendMs, request.transcriptOffsetMs}).trimmed()
             : QString();
 
         QVector<TranscriptRenderLineMetrics> lineMetrics;

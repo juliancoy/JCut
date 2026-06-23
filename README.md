@@ -22,7 +22,7 @@ JCut is a Qt6/C++20 non-linear editor for turning long-form panel video into ver
   - Core
   - Gui
   - Widgets
-  - Network
+  - Network with SSL/OpenSSL TLS backend support
   - Concurrent
   - OpenGLWidgets
   - Test

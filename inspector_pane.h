@@ -9,6 +9,7 @@ class QTabWidget;
 class QHBoxLayout;
 class QDoubleSpinBox;
 class QSpinBox;
+class QSlider;
 class QComboBox;
 class QCheckBox;
 class QFontComboBox;
@@ -68,6 +69,7 @@ public:
     QCheckBox *keyframeSkipAwareTimingCheckBox() const { return m_keyframeSkipAwareTimingCheckBox; }
 
     QCheckBox *transcriptOverlayEnabledCheckBox() const { return m_transcriptOverlayEnabledCheckBox; }
+    QComboBox *transcriptPlacementModeCombo() const { return m_transcriptPlacementModeCombo; }
     QCheckBox *transcriptBackgroundVisibleCheckBox() const { return m_transcriptBackgroundVisibleCheckBox; }
     QSpinBox *transcriptBackgroundOpacitySpin() const { return m_transcriptBackgroundOpacitySpin; }
     QSpinBox *transcriptBackgroundCornerRadiusSpin() const { return m_transcriptBackgroundCornerRadiusSpin; }
@@ -172,6 +174,8 @@ public:
     QCheckBox *speakerTracksAvailableCheckBox() const { return m_speakerTracksAvailableCheckBox; }
     QTableWidget *speakerRawDetectionTable() const { return m_speakerRawDetectionTable; }
     QPlainTextEdit *speakerRawDetectionDetailsEdit() const { return m_speakerRawDetectionDetailsEdit; }
+    QLabel *processingJobsSummaryLabel() const { return m_processingJobsSummaryLabel; }
+    QTableWidget *processingJobsTable() const { return m_processingJobsTable; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -193,6 +197,25 @@ public:
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
     QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
+    QLabel *maskClipLabel() const { return m_maskClipLabel; }
+    QCheckBox *maskEnabledCheck() const { return m_maskEnabledCheck; }
+    QLineEdit *maskFramesDirEdit() const { return m_maskFramesDirEdit; }
+    QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
+    QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
+    QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
+    QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
+    QDoubleSpinBox *maskBlurSpin() const { return m_maskBlurSpin; }
+    QCheckBox *maskInvertCheck() const { return m_maskInvertCheck; }
+    QDoubleSpinBox *maskOpacitySpin() const { return m_maskOpacitySpin; }
+    QCheckBox *maskGradeEnabledCheck() const { return m_maskGradeEnabledCheck; }
+    QDoubleSpinBox *maskGradeBrightnessSpin() const { return m_maskGradeBrightnessSpin; }
+    QDoubleSpinBox *maskGradeContrastSpin() const { return m_maskGradeContrastSpin; }
+    QDoubleSpinBox *maskGradeSaturationSpin() const { return m_maskGradeSaturationSpin; }
+    QCheckBox *maskShadowEnabledCheck() const { return m_maskShadowEnabledCheck; }
+    QDoubleSpinBox *maskShadowRadiusSpin() const { return m_maskShadowRadiusSpin; }
+    QDoubleSpinBox *maskShadowOffsetXSpin() const { return m_maskShadowOffsetXSpin; }
+    QDoubleSpinBox *maskShadowOffsetYSpin() const { return m_maskShadowOffsetYSpin; }
+    QDoubleSpinBox *maskShadowOpacitySpin() const { return m_maskShadowOpacitySpin; }
     QLabel *correctionsClipLabel() const { return m_correctionsClipLabel; }
     QLabel *correctionsStatusLabel() const { return m_correctionsStatusLabel; }
     QCheckBox *correctionsEnabledCheck() const { return m_correctionsEnabledCheck; }
@@ -253,6 +276,8 @@ public:
 
     QLabel *audioInspectorClipLabel() const { return m_audioInspectorClipLabel; }
     QLabel *audioInspectorDetailsLabel() const { return m_audioInspectorDetailsLabel; }
+    QLabel *audioTrackTitleLabel() const { return m_audioTrackTitleLabel; }
+    QLabel *audioTrackDetailsLabel() const { return m_audioTrackDetailsLabel; }
     QLabel *audioCurrentSpeakerTitleLabel() const { return m_audioCurrentSpeakerTitleLabel; }
     QLabel *audioCurrentSpeakerDetailsLabel() const { return m_audioCurrentSpeakerDetailsLabel; }
     QWidget *pipelinePreviewHost() const { return m_pipelinePreviewHost; }
@@ -299,6 +324,7 @@ public:
     QPushButton *loiaconoSpectrumSettingsButton() const { return m_loiaconoSpectrumSettingsButton; }
     QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
+    QCheckBox *audioStereoToMonoCheckBox() const { return m_audioStereoToMonoCheckBox; }
     QCheckBox *audioSelectiveNormalizeEnabledCheckBox() const { return m_audioSelectiveNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioSelectiveNormalizeMinSecondsSpin() const { return m_audioSelectiveNormalizeMinSecondsSpin; }
     QDoubleSpinBox *audioSelectiveNormalizePeakDbSpin() const { return m_audioSelectiveNormalizePeakDbSpin; }
@@ -312,6 +338,7 @@ public:
     QCheckBox *audioCompressorEnabledCheckBox() const { return m_audioCompressorEnabledCheckBox; }
     QDoubleSpinBox *audioCompressorThresholdDbSpin() const { return m_audioCompressorThresholdDbSpin; }
     QDoubleSpinBox *audioCompressorRatioSpin() const { return m_audioCompressorRatioSpin; }
+    QCheckBox *audioSoftClipEnabledCheckBox() const { return m_audioSoftClipEnabledCheckBox; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QComboBox *profileH26xThreadingModeCombo() const { return m_profileH26xThreadingModeCombo; }
     QTableWidget *clipsTable() const { return m_clipsTable; }
@@ -367,11 +394,18 @@ public:
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
     QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
+    QDoubleSpinBox *backgroundFillOpacitySpin() const { return m_backgroundFillOpacitySpin; }
+    QDoubleSpinBox *backgroundFillBrightnessSpin() const { return m_backgroundFillBrightnessSpin; }
+    QDoubleSpinBox *backgroundFillSaturationSpin() const { return m_backgroundFillSaturationSpin; }
+    QSlider *backgroundFillEdgePixelsSlider() const { return m_backgroundFillEdgePixelsSlider; }
+    QCheckBox *backgroundFillEdgeProgressiveCheckBox() const { return m_backgroundFillEdgeProgressiveCheckBox; }
+    QDoubleSpinBox *backgroundFillEdgePowerSpin() const { return m_backgroundFillEdgePowerSpin; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
     QCheckBox *speechFilterEnabledCheckBox() const { return m_speechFilterEnabledCheckBox; }
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
     QSpinBox *transcriptPostpendMsSpin() const { return m_transcriptPostpendMsSpin; }
+    QSpinBox *transcriptOffsetMsSpin() const { return m_transcriptOffsetMsSpin; }
     QSpinBox *speechFilterFadeSamplesSpin() const { return m_speechFilterFadeSamplesSpin; }
     QCheckBox *speechFilterRangeCrossfadeCheckBox() const { return m_speechFilterRangeCrossfadeCheckBox; }
     QComboBox *playbackClockSourceCombo() const { return m_playbackClockSourceCombo; }
@@ -392,6 +426,7 @@ private:
     QWidget *buildHistoryTab();
     QWidget *buildOpacityTab();
     QWidget *buildEffectsTab();
+    QWidget *buildMasksTab();
     QWidget *buildCorrectionsTab();
     QWidget *buildTitlesTab();
     QWidget *buildSyncTab();
@@ -404,6 +439,7 @@ private:
     QWidget *buildOutputTab();
     QWidget *buildPreviewTab();
     QWidget *buildAudioTab();
+    QWidget *buildProcessingJobsTab();
     QWidget *buildPreferencesTab();
     QWidget *buildProfileTab();
     QWidget *buildPipelineTab();
@@ -462,6 +498,25 @@ private:
     QDoubleSpinBox *m_maskFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
+    QLabel *m_maskClipLabel = nullptr;
+    QCheckBox *m_maskEnabledCheck = nullptr;
+    QLineEdit *m_maskFramesDirEdit = nullptr;
+    QPushButton *m_maskBrowseButton = nullptr;
+    QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
+    QDoubleSpinBox *m_maskDilateSpin = nullptr;
+    QDoubleSpinBox *m_maskErodeSpin = nullptr;
+    QDoubleSpinBox *m_maskBlurSpin = nullptr;
+    QCheckBox *m_maskInvertCheck = nullptr;
+    QDoubleSpinBox *m_maskOpacitySpin = nullptr;
+    QCheckBox *m_maskGradeEnabledCheck = nullptr;
+    QDoubleSpinBox *m_maskGradeBrightnessSpin = nullptr;
+    QDoubleSpinBox *m_maskGradeContrastSpin = nullptr;
+    QDoubleSpinBox *m_maskGradeSaturationSpin = nullptr;
+    QCheckBox *m_maskShadowEnabledCheck = nullptr;
+    QDoubleSpinBox *m_maskShadowRadiusSpin = nullptr;
+    QDoubleSpinBox *m_maskShadowOffsetXSpin = nullptr;
+    QDoubleSpinBox *m_maskShadowOffsetYSpin = nullptr;
+    QDoubleSpinBox *m_maskShadowOpacitySpin = nullptr;
     QLabel *m_correctionsClipLabel = nullptr;
     QLabel *m_correctionsStatusLabel = nullptr;
     QCheckBox *m_correctionsEnabledCheck = nullptr;
@@ -572,6 +627,8 @@ private:
     QCheckBox *m_preferencesFeatureAudioDynamicsToolsCheckBox = nullptr;
     QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
+    QLabel *m_audioTrackTitleLabel = nullptr;
+    QLabel *m_audioTrackDetailsLabel = nullptr;
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
@@ -579,6 +636,7 @@ private:
     QPushButton *m_loiaconoSpectrumSettingsButton = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioStereoToMonoCheckBox = nullptr;
     QCheckBox *m_audioSelectiveNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
@@ -592,6 +650,7 @@ private:
     QCheckBox *m_audioCompressorEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioCompressorThresholdDbSpin = nullptr;
     QDoubleSpinBox *m_audioCompressorRatioSpin = nullptr;
+    QCheckBox *m_audioSoftClipEnabledCheckBox = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QComboBox *m_profileH26xThreadingModeCombo = nullptr;
     QTableWidget *m_clipsTable = nullptr;
@@ -620,6 +679,7 @@ private:
     QTableWidget *m_accessTable = nullptr;
     QPushButton *m_accessRefreshButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
+    QComboBox *m_transcriptPlacementModeCombo = nullptr;
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_transcriptBackgroundOpacitySpin = nullptr;
     QSpinBox *m_transcriptBackgroundCornerRadiusSpin = nullptr;
@@ -757,12 +817,21 @@ private:
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
+    QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
+    QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
+    QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
+    QSlider *m_backgroundFillEdgePixelsSlider = nullptr;
+    QCheckBox *m_backgroundFillEdgeProgressiveCheckBox = nullptr;
+    QDoubleSpinBox *m_backgroundFillEdgePowerSpin = nullptr;
 
     QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
+    QSpinBox *m_transcriptOffsetMsSpin = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
+    QLabel *m_processingJobsSummaryLabel = nullptr;
+    QTableWidget *m_processingJobsTable = nullptr;
 };

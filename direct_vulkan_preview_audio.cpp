@@ -552,7 +552,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
             &waveformMax);
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     if (!transcriptPath.isEmpty()) {
         const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
             loadTranscriptRuntimeDocument(transcriptPath);
@@ -701,7 +701,7 @@ void updateDirectVulkanAudioOverlay(const PreviewInteractionState* state,
         return;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
         loadTranscriptRuntimeDocument(transcriptPath);
     const QVector<TranscriptSection>& sections =

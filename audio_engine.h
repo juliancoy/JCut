@@ -53,6 +53,8 @@ public:
 
   void setTimelineClips(const QVector<TimelineClip> &clips);
 
+  void setTimelineTracks(const QVector<TimelineTrack> &tracks);
+
   void setExportRanges(const QVector<ExportRangeSegment> &ranges);
 
   void setRenderSyncMarkers(const QVector<RenderSyncMarker> &markers);
@@ -122,7 +124,7 @@ public:
 
 private:
   struct DecodeTask {
-    QString path;
+    QString key;
     bool fullDecode = false;
     bool precomputeTimeStretch = false;
     int64_t sourceStartSample = 0;
@@ -203,6 +205,7 @@ private:
 
   struct MixContext {
     QVector<TimelineClip> clips;
+    QVector<TimelineTrack> tracks;
     QVector<ExportRangeSegment> exportRanges;
     QVector<SpeechSampleRange> speechSampleRanges;
     QVector<RenderSyncMarker> renderSyncMarkers;
@@ -280,7 +283,8 @@ private:
 
   AudioClipCacheEntry decodeClipAudio(const QString &path,
                                       int64_t maxOutputFrames,
-                                      int64_t sourceStartSample = 0);
+                                      int64_t sourceStartSample = 0,
+                                      int audioStreamIndex = -1);
 
   AudioClipCacheEntry clipCacheForPathCopy(const QString &path) const;
 
@@ -345,6 +349,7 @@ private:
   std::condition_variable m_mixCondition;
 
   QVector<TimelineClip> m_timelineClips;
+  QVector<TimelineTrack> m_timelineTracks;
   QVector<RenderSyncMarker> m_renderSyncMarkers;
   QVector<ExportRangeSegment> m_exportRanges;
   QVector<ExportRangeSegment> m_transcriptNormalizeRanges;
@@ -484,6 +489,8 @@ private:
   std::atomic<bool> m_compressorEnabled{false};
   std::atomic<qreal> m_compressorThresholdDb{-18.0};
   std::atomic<qreal> m_compressorRatio{3.0};
+  std::atomic<bool> m_softClipEnabled{false};
+  std::atomic<bool> m_stereoToMonoEnabled{false};
   qint64 m_audioInitBackoffUntilMs = 0;
   qint64 m_lastAudioInitWarningMs = 0;
   qint64 m_lastKnownDeviceCount = 0;

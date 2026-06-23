@@ -138,6 +138,7 @@ void EditorWindow::connectTimelineSignals()
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
         m_preview->endBulkUpdate();
         if (m_audioEngine) {
+            m_audioEngine->setTimelineTracks(m_timeline->tracks());
             m_audioEngine->setTimelineClips(m_timeline->clips());
             m_audioEngine->setExportRanges(effectivePlaybackRanges());
             m_audioEngine->setTranscriptNormalizeRanges(
@@ -169,7 +170,7 @@ void EditorWindow::connectTimelineSignals()
         m_transcriptTab->refresh();
         refreshClipInspector();
         if (!m_loadingState && selectionChanged && selectedClip && !selectedClip->filePath.isEmpty()) {
-            const QString transcriptPath = transcriptWorkingPathForClipFile(selectedClip->filePath);
+            const QString transcriptPath = transcriptWorkingPathForClip(*selectedClip);
             if (QFileInfo::exists(transcriptPath) && m_inspectorTabs) {
                 for (int i = 0; i < m_inspectorTabs->count(); ++i) {
                     if (m_inspectorTabs->tabText(i) == QStringLiteral("Transcript")) {
@@ -276,6 +277,9 @@ void EditorWindow::connectTimelineSignals()
             m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
         }
     };
+    m_timeline->detectRequested = [this](const QString& clipId) {
+        openSamDetectorWindow(clipId);
+    };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
         const TimelineClip *clip = nullptr;
@@ -304,7 +308,7 @@ void EditorWindow::connectTimelineSignals()
         });
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
-        m_inspectorPane->refreshTab(QStringLiteral("Keyframes"));
+        m_inspectorPane->refreshTab(QStringLiteral("Transform"));
         scheduleSaveState();
         pushHistorySnapshot();
     };
@@ -504,6 +508,11 @@ void EditorWindow::syncSliderRange()
 void EditorWindow::focusGradingTab()
 {
     if (m_inspectorTabs) {
+        const int currentIndex = m_inspectorTabs->currentIndex();
+        if (currentIndex >= 0 &&
+            m_inspectorTabs->tabText(currentIndex).compare(QStringLiteral("Jobs"), Qt::CaseInsensitive) == 0) {
+            return;
+        }
         m_inspectorTabs->setCurrentIndex(0);
     }
 }

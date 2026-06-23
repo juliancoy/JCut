@@ -176,7 +176,7 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
     const int64_t localTimelineSample = qMax<int64_t>(0, timelineSample - clipStartSample);
     const int64_t maxLocalTimelineSample =
-        qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.durationFrames)) - 1);
+        qMax<int64_t>(0, clipTimelineDurationSamples(clip) - 1);
     const int64_t boundedLocalTimelineSample = qMin<int64_t>(localTimelineSample, maxLocalTimelineSample);
     
     // Use integer division for frame position to avoid floating-point errors

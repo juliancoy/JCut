@@ -171,6 +171,12 @@ struct TimelineClip {
     QString audioSourcePath;
     QString audioSourceOriginalPath;
     QString audioSourceStatus = QStringLiteral("unknown");
+    int audioStreamIndex = -1;
+    QString audioBusId;
+    qreal audioGain = 1.0;
+    qreal audioPan = 0.0;
+    bool audioSolo = false;
+    bool audioLinkedToVideo = true;
     qint64 audioSourceLastVerifiedMs = 0;
     qreal sourceFps = static_cast<qreal>(kTimelineFps);
     int64_t sourceDurationFrames = 0;
@@ -180,6 +186,7 @@ struct TimelineClip {
     int64_t startFrame = 0;
     int64_t startSubframeSamples = 0;
     int64_t durationFrames = 90;
+    int64_t durationSubframeSamples = 0;
     int trackIndex = 0;
     qreal playbackRate = 1.0;
     bool videoEnabled = true;
@@ -220,14 +227,35 @@ struct TimelineClip {
     TranscriptOverlaySettings transcriptOverlay;
     int fadeSamples = 250;
     bool locked = false;
+    bool maskEnabled = false;
+    QString maskFramesDir;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    qreal maskDilate = 0.0;
+    qreal maskErode = 0.0;
+    qreal maskBlur = 0.0;
+    bool maskInvert = false;
+    qreal maskOpacity = 1.0;
+    bool maskGradeEnabled = false;
+    qreal maskGradeBrightness = 0.0;
+    qreal maskGradeContrast = 1.0;
+    qreal maskGradeSaturation = 1.0;
+    bool maskDropShadowEnabled = false;
+    qreal maskDropShadowRadius = 12.0;
+    qreal maskDropShadowOffsetX = 0.0;
+    qreal maskDropShadowOffsetY = 4.0;
+    qreal maskDropShadowOpacity = 0.45;
     QVector<CorrectionPolygon> correctionPolygons;
 };
 
 struct TimelineTrack {
     QString name;
-    int height = 44;
+    int height = 72;
     TrackVisualMode visualMode = TrackVisualMode::Enabled;
     bool audioEnabled = true;
+    QString audioBusId;
+    qreal audioGain = 1.0;
+    bool audioMuted = false;
+    bool audioSolo = false;
+    bool audioWaveformVisible = true;
 };

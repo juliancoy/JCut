@@ -1,4 +1,5 @@
 #include "audio_time_stretch_cache.h"
+#include "audio_source_key.h"
 
 #include <QtTest/QtTest>
 #include <QFile>
@@ -66,6 +67,40 @@ private slots:
 
         QVERIFY(!readAudioTimeStretchSidecar(sourcePath, 1500, &loaded));
         QVERIFY(!loaded.valid);
+    }
+
+    void streamSourceKeysUseDistinctSidecars()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString sourcePath = dir.filePath(QStringLiteral("source.mov"));
+        QFile source(sourcePath);
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        QVERIFY(source.write("source-audio") > 0);
+        source.close();
+
+        AudioTimeStretchCacheEntry streamOne;
+        streamOne.samples = QVector<float>{0.1f, 0.2f};
+        streamOne.sampleRate = 48000;
+        streamOne.channelCount = 1;
+        streamOne.valid = true;
+        streamOne.fullyDecoded = true;
+
+        AudioTimeStretchCacheEntry streamTwo = streamOne;
+        streamTwo.samples = QVector<float>{0.7f, 0.8f};
+
+        const QString streamOneKey = editor::audio::makeSourceKey(sourcePath, 1);
+        const QString streamTwoKey = editor::audio::makeSourceKey(sourcePath, 2);
+        QVERIFY(writeAudioTimeStretchSidecar(streamOneKey, 1500, streamOne));
+        QVERIFY(writeAudioTimeStretchSidecar(streamTwoKey, 1500, streamTwo));
+        QVERIFY(audioTimeStretchSidecarPathForSource(streamOneKey, 1500) !=
+                audioTimeStretchSidecarPathForSource(streamTwoKey, 1500));
+
+        AudioTimeStretchCacheEntry loaded;
+        QVERIFY(readAudioTimeStretchSidecar(streamOneKey, 1500, &loaded));
+        QCOMPARE(loaded.samples, streamOne.samples);
+        QVERIFY(readAudioTimeStretchSidecar(streamTwoKey, 1500, &loaded));
+        QCOMPARE(loaded.samples, streamTwo.samples);
     }
 
     void segmentCoverageUsesRetimedDomain()

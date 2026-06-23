@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "debug_controls.h"
+#include "editor_shared_timing.h"
 #include "playback_debug.h"
 
 #include <QDateTime>
@@ -319,7 +320,7 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
         const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
         for (const TimelineClip& clip : clips) {
             const int64_t clipStartSample = clipTimelineStartSamples(clip);
-            const int64_t clipDurationSamples = frameToSamples(qMax<int64_t>(0, clip.durationFrames));
+            const int64_t clipDurationSamples = clipTimelineDurationSamples(clip);
             const int64_t clipEndSample = clipStartSample + clipDurationSamples;
             const bool active =
                 masterSample >= clipStartSample && masterSample < clipEndSample;

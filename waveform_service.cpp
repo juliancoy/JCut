@@ -408,6 +408,11 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         if (settings.peakReductionEnabled && out > peakLinear) {
             out = peakLinear + (out - peakLinear) * 0.35f;
         }
+        if (settings.softClipEnabled) {
+            constexpr float kSoftClipDrive = 1.75f;
+            constexpr float kSoftClipNorm = 1.0f / 0.94137555f; // tanh(1.75)
+            out = std::tanh(out * kSoftClipDrive) * kSoftClipNorm;
+        }
         if (settings.limiterEnabled) {
             out = std::min(out, limiterLinear);
         }

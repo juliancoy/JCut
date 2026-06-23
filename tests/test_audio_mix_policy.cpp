@@ -14,6 +14,7 @@ private slots:
   void testStarvedClipDoesNotBlockReadyClip();
   void testOnlyStarvedClipBlocksChunk();
   void testSpliceSecondaryTapStopsAtClipEnd();
+  void testTrackGainMuteAndSoloAffectMix();
 
 private:
   static TimelineClip makeAudioClip(const QString &id, const QString &path,
@@ -166,6 +167,45 @@ void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {
            qPrintable(QStringLiteral("expected near-silence at crossfade "
                                      "tail, got %1")
                           .arg(lastFrameValue)));
+}
+
+void TestAudioMixPolicy::testTrackGainMuteAndSoloAffectMix() {
+  AudioEngine engine;
+  const QString pathA = QStringLiteral("/tmp/jcut_mix_policy_track_a.wav");
+  const QString pathB = QStringLiteral("/tmp/jcut_mix_policy_track_b.wav");
+
+  AudioEngine::MixContext context;
+  TimelineClip clipA = makeAudioClip(QStringLiteral("a"), pathA, 0, 30);
+  clipA.trackIndex = 0;
+  TimelineClip clipB = makeAudioClip(QStringLiteral("b"), pathB, 0, 30);
+  clipB.trackIndex = 1;
+  context.clips.push_back(clipA);
+  context.clips.push_back(clipB);
+  context.tracks.resize(2);
+  context.tracks[0].audioGain = 0.5;
+  context.tracks[1].audioGain = 1.0;
+  context.volume = 1.0;
+
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    engine.m_audioCache.insert(pathA, makeCacheEntry(0, 48000, 0.4f));
+    engine.m_audioCache.insert(pathB, makeCacheEntry(0, 48000, 0.2f));
+  }
+
+  QVector<float> output(1024 * 2, 0.0f);
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
+  QVERIFY(std::abs(output[512 * 2] - 0.4f) < 0.01f);
+
+  context.tracks[1].audioMuted = true;
+  output.fill(0.0f);
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
+  QVERIFY(std::abs(output[512 * 2] - 0.2f) < 0.01f);
+
+  context.tracks[1].audioMuted = false;
+  context.tracks[1].audioSolo = true;
+  output.fill(0.0f);
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
+  QVERIFY(std::abs(output[512 * 2] - 0.2f) < 0.01f);
 }
 
 QTEST_MAIN(TestAudioMixPolicy)

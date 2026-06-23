@@ -828,6 +828,22 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
         auto* framesContext = reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
         const int swPixelFormat = framesContext ? framesContext->sw_format : AV_PIX_FMT_NONE;
         if (swPixelFormat == AV_PIX_FMT_NV12) {
+            AVStream* stream = (m_formatCtx && m_videoStreamIndex >= 0)
+                ? m_formatCtx->streams[m_videoStreamIndex]
+                : nullptr;
+            const AVCodecParameters* codecpar = stream ? stream->codecpar : nullptr;
+            if (avFrame->color_range == AVCOL_RANGE_UNSPECIFIED) {
+                avFrame->color_range = m_codecCtx->color_range;
+                if (avFrame->color_range == AVCOL_RANGE_UNSPECIFIED && codecpar) {
+                    avFrame->color_range = codecpar->color_range;
+                }
+            }
+            if (avFrame->colorspace == AVCOL_SPC_UNSPECIFIED) {
+                avFrame->colorspace = m_codecCtx->colorspace;
+                if (avFrame->colorspace == AVCOL_SPC_UNSPECIFIED && codecpar) {
+                    avFrame->colorspace = codecpar->color_space;
+                }
+            }
             FrameHandle hardwareHandle =
                 FrameHandle::createHardwareFrame(avFrame, frameNumber, m_path, swPixelFormat);
             if (!hardwareHandle.isNull()) {

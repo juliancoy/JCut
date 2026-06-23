@@ -264,7 +264,7 @@ int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config) {
         return 2;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(targetClip->filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(*targetClip);
     QFile transcriptFile(transcriptPath);
     if (!transcriptFile.open(QIODevice::ReadOnly)) {
         err << "Transcript not found for clip: " << transcriptPath << "\n";

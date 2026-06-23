@@ -25,6 +25,7 @@ public:
         std::function<bool(int, const std::function<void(TimelineTrack&)>&)> updateTrackByIndex;
         std::function<void()> pushHistorySnapshot;
         std::function<void()> scheduleSaveState;
+        std::function<void(const QString&)> detectClip;
     };
 
     explicit ClipsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);

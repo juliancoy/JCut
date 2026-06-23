@@ -18,6 +18,7 @@
 #include <QListView>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTextBrowser>
@@ -162,7 +163,6 @@ QWidget *InspectorPane::buildOutputTab()
     form->addRow(QStringLiteral("Output Width"), m_outputWidthSpin);
     form->addRow(QStringLiteral("Output Height"), m_outputHeightSpin);
     form->addRow(QStringLiteral("Timeline / Output FPS"), m_outputFpsSpin);
-    form->addRow(QStringLiteral("Export Range"), rangeBubblesRow);
     form->addRow(QStringLiteral("Output Format"), m_outputFormatCombo);
     form->addRow(QStringLiteral("Export Backend"), m_renderBackendCombo);
 
@@ -183,10 +183,71 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo->setToolTip(QStringLiteral("Background fill effect for preview and render"));
     form->addRow(QStringLiteral("Fill Effect"), m_backgroundFillEffectCombo);
 
+    m_backgroundFillOpacitySpin = new QDoubleSpinBox(page);
+    m_backgroundFillOpacitySpin->setRange(0.0, 100.0);
+    m_backgroundFillOpacitySpin->setDecimals(0);
+    m_backgroundFillOpacitySpin->setSingleStep(5.0);
+    m_backgroundFillOpacitySpin->setSuffix(QStringLiteral("%"));
+    m_backgroundFillOpacitySpin->setValue(100.0);
+    m_backgroundFillOpacitySpin->setToolTip(QStringLiteral("Opacity for the background fill effect"));
+    form->addRow(QStringLiteral("Fill Opacity"), m_backgroundFillOpacitySpin);
+
+    m_backgroundFillBrightnessSpin = new QDoubleSpinBox(page);
+    m_backgroundFillBrightnessSpin->setRange(-100.0, 100.0);
+    m_backgroundFillBrightnessSpin->setDecimals(0);
+    m_backgroundFillBrightnessSpin->setSingleStep(5.0);
+    m_backgroundFillBrightnessSpin->setSuffix(QStringLiteral("%"));
+    m_backgroundFillBrightnessSpin->setValue(0.0);
+    m_backgroundFillBrightnessSpin->setToolTip(QStringLiteral("Brightness adjustment for the background fill effect"));
+    form->addRow(QStringLiteral("Fill Brightness"), m_backgroundFillBrightnessSpin);
+
+    m_backgroundFillSaturationSpin = new QDoubleSpinBox(page);
+    m_backgroundFillSaturationSpin->setRange(0.0, 300.0);
+    m_backgroundFillSaturationSpin->setDecimals(0);
+    m_backgroundFillSaturationSpin->setSingleStep(5.0);
+    m_backgroundFillSaturationSpin->setSuffix(QStringLiteral("%"));
+    m_backgroundFillSaturationSpin->setValue(100.0);
+    m_backgroundFillSaturationSpin->setToolTip(QStringLiteral("Saturation multiplier for the background fill effect"));
+    form->addRow(QStringLiteral("Fill Saturation"), m_backgroundFillSaturationSpin);
+
+    auto *edgePixelsRow = new QHBoxLayout;
+    m_backgroundFillEdgePixelsSlider = new QSlider(Qt::Horizontal, page);
+    m_backgroundFillEdgePixelsSlider->setRange(1, 512);
+    m_backgroundFillEdgePixelsSlider->setValue(1);
+    m_backgroundFillEdgePixelsSlider->setToolTip(QStringLiteral("Number of source-edge pixels used by edge stretch fill"));
+    auto *edgePixelsValueLabel = new QLabel(QStringLiteral("1 px"), page);
+    edgePixelsValueLabel->setMinimumWidth(48);
+    edgePixelsValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    QObject::connect(m_backgroundFillEdgePixelsSlider, &QSlider::valueChanged, edgePixelsValueLabel,
+                     [edgePixelsValueLabel](int value) {
+        edgePixelsValueLabel->setText(QStringLiteral("%1 px").arg(value));
+    });
+    edgePixelsRow->addWidget(m_backgroundFillEdgePixelsSlider, 1);
+    edgePixelsRow->addWidget(edgePixelsValueLabel);
+    form->addRow(QStringLiteral("Edge Pixels"), edgePixelsRow);
+
+    m_backgroundFillEdgeProgressiveCheckBox = new QCheckBox(QStringLiteral("Progressive Stretch"), page);
+    m_backgroundFillEdgeProgressiveCheckBox->setToolTip(
+        QStringLiteral("Use a curved transition through the selected edge pixel band"));
+    form->addRow(QStringLiteral("Edge Mode"), m_backgroundFillEdgeProgressiveCheckBox);
+
+    m_backgroundFillEdgePowerSpin = new QDoubleSpinBox(page);
+    m_backgroundFillEdgePowerSpin->setRange(0.25, 8.0);
+    m_backgroundFillEdgePowerSpin->setDecimals(2);
+    m_backgroundFillEdgePowerSpin->setSingleStep(0.25);
+    m_backgroundFillEdgePowerSpin->setValue(2.0);
+    m_backgroundFillEdgePowerSpin->setToolTip(QStringLiteral("Power curve for progressive edge stretch"));
+    form->addRow(QStringLiteral("Edge Curve"), m_backgroundFillEdgePowerSpin);
+
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
-    auto rangeSection = createDisclosureSection(page, QStringLiteral("Export Range"), true);
+    auto rangeSection = createDisclosureSection(page, QStringLiteral("Export Range"), false);
     rangeSection.body->addWidget(m_outputRangeSummaryLabel);
+    auto* rangeForm = new QFormLayout;
+    rangeForm->setContentsMargins(0, 0, 0, 0);
+    rangeForm->setSpacing(6);
+    rangeForm->addRow(QStringLiteral("Range"), rangeBubblesRow);
+    rangeSection.body->addLayout(rangeForm);
 
     auto settingsSection = createDisclosureSection(page, QStringLiteral("Render Settings"), true);
     settingsSection.body->addLayout(form);
@@ -404,135 +465,6 @@ QWidget *InspectorPane::buildPreferencesTab()
     return page;
 }
 
-QWidget *InspectorPane::buildAudioTab()
-{
-    auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("Audio"), page));
-
-    auto *summary = new QLabel(
-        QStringLiteral("Audio dynamics are applied to preview playback and export rendering."), page);
-    summary->setWordWrap(true);
-    layout->addWidget(summary);
-
-    auto *speakerSectionLabel = new QLabel(QStringLiteral("Current Speaker"), page);
-    speakerSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
-    m_audioCurrentSpeakerTitleLabel = new QLabel(QStringLiteral("No current speaker"), page);
-    m_audioCurrentSpeakerDetailsLabel =
-        new QLabel(QStringLiteral("Select an audio-backed clip and move the playhead into spoken content."), page);
-    for (QLabel *label : {m_audioCurrentSpeakerTitleLabel, m_audioCurrentSpeakerDetailsLabel}) {
-        label->setWordWrap(true);
-        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    }
-    layout->addWidget(speakerSectionLabel);
-    layout->addWidget(m_audioCurrentSpeakerTitleLabel);
-    layout->addWidget(m_audioCurrentSpeakerDetailsLabel);
-
-    auto *form = new QFormLayout;
-    m_audioAmplifyEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioAmplifyDbSpin = new QDoubleSpinBox(page);
-    m_audioAmplifyDbSpin->setRange(-36.0, 36.0);
-    m_audioAmplifyDbSpin->setSingleStep(0.5);
-    m_audioAmplifyDbSpin->setDecimals(1);
-    m_audioAmplifyDbSpin->setSuffix(QStringLiteral(" dB"));
-    m_audioSpeakerHoverModalCheckBox =
-        new QCheckBox(QStringLiteral("Show Speaker Hover Modal"), page);
-    m_audioSpeakerHoverModalCheckBox->setChecked(true);
-    m_audioShowWaveformCheckBox =
-        new QCheckBox(QStringLiteral("Show Waveform"), page);
-    m_audioShowWaveformCheckBox->setChecked(true);
-    m_audioVisualizationModeCombo = new QComboBox(page);
-    m_audioVisualizationModeCombo->addItem(QStringLiteral("Waveform"),
-                                           static_cast<int>(PreviewSurface::AudioVisualizationMode::Waveform));
-    m_audioVisualizationModeCombo->addItem(QStringLiteral("Spectrum"),
-                                           static_cast<int>(PreviewSurface::AudioVisualizationMode::Spectrum));
-    m_loiaconoSpectrumSettingsButton = new QPushButton(QStringLiteral("Spectrum Settings..."), page);
-    m_audioWaveformPreviewProcessedCheckBox =
-        new QCheckBox(QStringLiteral("Preview"), page);
-    m_audioWaveformPreviewProcessedCheckBox->setChecked(true);
-    m_audioWaveformPreviewProcessedCheckBox->setToolTip(
-        QStringLiteral("When enabled, waveform reflects preview post-processing. "
-                       "When disabled, waveform reflects decoded on-disk audio."));
-    form->addRow(QStringLiteral("Amplify"), m_audioAmplifyEnabledCheckBox);
-    form->addRow(QStringLiteral("Amplify Gain"), m_audioAmplifyDbSpin);
-    form->addRow(QStringLiteral("Hover Info"), m_audioSpeakerHoverModalCheckBox);
-    form->addRow(QStringLiteral("Waveform"), m_audioShowWaveformCheckBox);
-    form->addRow(QStringLiteral("Visualization"), m_audioVisualizationModeCombo);
-    form->addRow(QStringLiteral("Spectrum"), m_loiaconoSpectrumSettingsButton);
-    form->addRow(QStringLiteral("Waveform Source"), m_audioWaveformPreviewProcessedCheckBox);
-
-    m_audioNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioNormalizeTargetDbSpin = new QDoubleSpinBox(page);
-    m_audioNormalizeTargetDbSpin->setRange(-24.0, 0.0);
-    m_audioNormalizeTargetDbSpin->setSingleStep(0.5);
-    m_audioNormalizeTargetDbSpin->setDecimals(1);
-    m_audioNormalizeTargetDbSpin->setSuffix(QStringLiteral(" dB"));
-    form->addRow(QStringLiteral("Normalize"), m_audioNormalizeEnabledCheckBox);
-    form->addRow(QStringLiteral("Normalize Target"), m_audioNormalizeTargetDbSpin);
-
-    m_audioSelectiveNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioSelectiveNormalizeMinSecondsSpin = new QDoubleSpinBox(page);
-    m_audioSelectiveNormalizeMinSecondsSpin->setRange(0.1, 30.0);
-    m_audioSelectiveNormalizeMinSecondsSpin->setSingleStep(0.1);
-    m_audioSelectiveNormalizeMinSecondsSpin->setDecimals(1);
-    m_audioSelectiveNormalizeMinSecondsSpin->setSuffix(QStringLiteral(" s"));
-    m_audioSelectiveNormalizePeakDbSpin = new QDoubleSpinBox(page);
-    m_audioSelectiveNormalizePeakDbSpin->setRange(-36.0, 0.0);
-    m_audioSelectiveNormalizePeakDbSpin->setSingleStep(0.5);
-    m_audioSelectiveNormalizePeakDbSpin->setDecimals(1);
-    m_audioSelectiveNormalizePeakDbSpin->setSuffix(QStringLiteral(" dBFS"));
-    m_audioSelectiveNormalizePeakDbSpin->setValue(-12.0);
-    m_audioSelectiveNormalizePassesSpin = new QSpinBox(page);
-    m_audioSelectiveNormalizePassesSpin->setRange(1, 8);
-    m_audioSelectiveNormalizePassesSpin->setValue(1);
-    m_audioSelectiveNormalizeOverlayVisibleCheckBox = new QCheckBox(QStringLiteral("Show"), page);
-    m_audioSelectiveNormalizeOverlayVisibleCheckBox->setChecked(true);
-    m_audioTranscriptNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    form->addRow(QStringLiteral("Selective Normalize"), m_audioSelectiveNormalizeEnabledCheckBox);
-    form->addRow(QStringLiteral("Selective Min Segment"), m_audioSelectiveNormalizeMinSecondsSpin);
-    form->addRow(QStringLiteral("Selective Peak Threshold"), m_audioSelectiveNormalizePeakDbSpin);
-    form->addRow(QStringLiteral("Selective Passes"), m_audioSelectiveNormalizePassesSpin);
-    form->addRow(QStringLiteral("Selective Overlay"), m_audioSelectiveNormalizeOverlayVisibleCheckBox);
-    form->addRow(QStringLiteral("Transcript Normalize"), m_audioTranscriptNormalizeEnabledCheckBox);
-
-    m_audioPeakReductionEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioPeakThresholdDbSpin = new QDoubleSpinBox(page);
-    m_audioPeakThresholdDbSpin->setRange(-24.0, 0.0);
-    m_audioPeakThresholdDbSpin->setSingleStep(0.5);
-    m_audioPeakThresholdDbSpin->setDecimals(1);
-    m_audioPeakThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
-    form->addRow(QStringLiteral("Peak Reduction"), m_audioPeakReductionEnabledCheckBox);
-    form->addRow(QStringLiteral("Peak Threshold"), m_audioPeakThresholdDbSpin);
-
-    m_audioLimiterEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioLimiterThresholdDbSpin = new QDoubleSpinBox(page);
-    m_audioLimiterThresholdDbSpin->setRange(-12.0, 0.0);
-    m_audioLimiterThresholdDbSpin->setSingleStep(0.1);
-    m_audioLimiterThresholdDbSpin->setDecimals(1);
-    m_audioLimiterThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
-    form->addRow(QStringLiteral("Limiter"), m_audioLimiterEnabledCheckBox);
-    form->addRow(QStringLiteral("Limiter Threshold"), m_audioLimiterThresholdDbSpin);
-
-    m_audioCompressorEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
-    m_audioCompressorThresholdDbSpin = new QDoubleSpinBox(page);
-    m_audioCompressorThresholdDbSpin->setRange(-30.0, -1.0);
-    m_audioCompressorThresholdDbSpin->setSingleStep(0.5);
-    m_audioCompressorThresholdDbSpin->setDecimals(1);
-    m_audioCompressorThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
-    m_audioCompressorRatioSpin = new QDoubleSpinBox(page);
-    m_audioCompressorRatioSpin->setRange(1.0, 20.0);
-    m_audioCompressorRatioSpin->setSingleStep(0.1);
-    m_audioCompressorRatioSpin->setDecimals(1);
-    m_audioCompressorRatioSpin->setSuffix(QStringLiteral(":1"));
-    form->addRow(QStringLiteral("Compressor"), m_audioCompressorEnabledCheckBox);
-    form->addRow(QStringLiteral("Compressor Threshold"), m_audioCompressorThresholdDbSpin);
-    form->addRow(QStringLiteral("Compressor Ratio"), m_audioCompressorRatioSpin);
-
-    layout->addLayout(form);
-    layout->addStretch(1);
-    return page;
-}
-
 QWidget *InspectorPane::buildClipTab()
 {
     auto *page = new QWidget;
@@ -560,7 +492,7 @@ QWidget *InspectorPane::buildClipTab()
     m_trackInspectorDetailsLabel = new QLabel(QStringLiteral("Select a track header to edit track-wide properties."), page);
     m_trackNameEdit = new QLineEdit(page);
     m_trackHeightSpin = new QSpinBox(page);
-    m_trackHeightSpin->setRange(28, 240);
+    m_trackHeightSpin->setRange(28, 480);
     m_trackVisualModeCombo = new QComboBox(page);
     m_trackVisualModeCombo->addItem(trackVisualModeLabel(TrackVisualMode::Enabled),
                                     static_cast<int>(TrackVisualMode::Enabled));
@@ -686,6 +618,47 @@ QWidget *InspectorPane::buildPipelineTab()
     m_pipelineStageList->setWordWrap(true);
     m_pipelineStageList->setSelectionMode(QAbstractItemView::NoSelection);
     layout->addWidget(m_pipelineStageList, 1);
+
+    return page;
+}
+
+QWidget *InspectorPane::buildProcessingJobsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Jobs"), page));
+
+    m_processingJobsSummaryLabel = new QLabel(QStringLiteral("No processing jobs found."), page);
+    m_processingJobsSummaryLabel->setObjectName(QStringLiteral("jobs.summary"));
+    m_processingJobsSummaryLabel->setWordWrap(true);
+    m_processingJobsSummaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_processingJobsSummaryLabel);
+
+    m_processingJobsTable = new QTableWidget(page);
+    m_processingJobsTable->setObjectName(QStringLiteral("jobs.table"));
+    m_processingJobsTable->setColumnCount(7);
+    m_processingJobsTable->setHorizontalHeaderLabels({
+        QStringLiteral("Operation"),
+        QStringLiteral("Status"),
+        QStringLiteral("Input"),
+        QStringLiteral("Updated"),
+        QStringLiteral("Process"),
+        QStringLiteral("Manifest"),
+        QStringLiteral("Actions"),
+    });
+    m_processingJobsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_processingJobsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_processingJobsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_processingJobsTable->setAlternatingRowColors(true);
+    m_processingJobsTable->verticalHeader()->setVisible(false);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_processingJobsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    layout->addWidget(m_processingJobsTable, 1);
 
     return page;
 }

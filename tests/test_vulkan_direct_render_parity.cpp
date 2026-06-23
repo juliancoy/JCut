@@ -61,10 +61,20 @@ private slots:
     void backgroundFillEffectsUseSelectableShaderSignals()
     {
         const QRectF sourceRect(0.25, 0.0, 0.5, 1.0);
+        render_detail::VulkanDrawEffectState baseState;
+        baseState.brightness = 0.12f;
+        baseState.contrast = 1.3f;
+        baseState.saturation = 0.7f;
         const render_detail::VulkanDrawEffectState edgeState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::EdgeStretch, 0.8f, sourceRect);
+                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f, sourceRect);
         QCOMPARE(edgeState.opacity, 0.8f);
+        QVERIFY(qAbs(edgeState.brightness - 0.1f) < 0.0001f);
+        QCOMPARE(edgeState.contrast, 1.3f);
+        QVERIFY(qAbs(edgeState.saturation - 1.05f) < 0.0001f);
+        QCOMPARE(edgeState.midtones[0], 24.0f);
+        QCOMPARE(edgeState.midtones[1], 1.0f);
+        QCOMPARE(edgeState.midtones[2], 2.5f);
         QCOMPARE(edgeState.shadows[0], 0.25f);
         QCOMPARE(edgeState.shadows[1], 0.0f);
         QCOMPARE(edgeState.shadows[2], 0.75f);
@@ -201,6 +211,20 @@ private slots:
 
         QVERIFY2(source.contains(QStringLiteral("const BackgroundFillEffect fillEffect = state->backgroundFillEffect")),
                  "Direct Vulkan presenter must use the selectable background fill effect.");
+        QVERIFY2(source.contains(QStringLiteral("vulkanDrawEffectStateForGrade(status->grading)")),
+                 "Direct Vulkan presenter must derive background fill from the main grading state.");
+        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillOpacity)")),
+                 "Direct Vulkan presenter must use the output background fill opacity.");
+        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillBrightness)")),
+                 "Direct Vulkan presenter must use the output background fill brightness.");
+        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillSaturation)")),
+                 "Direct Vulkan presenter must use the output background fill saturation.");
+        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgePixels")),
+                 "Direct Vulkan presenter must use the output background fill edge pixel band.");
+        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgeProgressive")),
+                 "Direct Vulkan presenter must use the output background fill progressive mode.");
+        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgePower")),
+                 "Direct Vulkan presenter must use the output background fill edge curve.");
         QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::EdgeStretch")),
                  "Direct Vulkan presenter must default through the edge-stretch background path.");
         QVERIFY2(source.contains(QStringLiteral("backgroundPush.highlights[3] = backgroundEffects.highlights[3]")),

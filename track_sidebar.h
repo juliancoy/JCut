@@ -13,7 +13,7 @@ struct TrackInfo {
     bool hasVisual = false;
     bool hasAudio = false;
     int top = 0; // Track top position relative to the TimelineWidget origin
-    int height = 44;  // Default track height, should match TimelineWidget::kDefaultTrackHeight
+    int height = 72;  // Default track height, should match TimelineWidget::kDefaultTrackHeight
 };
 
 class TrackSidebar final : public QWidget {
@@ -31,9 +31,9 @@ public:
     QRect trackRect(int index) const;
 
     static constexpr int kTrackColumnWidth = 110;
-    static constexpr int kDefaultTrackHeight = 44;
+    static constexpr int kDefaultTrackHeight = 72;
     static constexpr int kMinTrackHeight = 28;
-    static constexpr int kTrackSpacing = 10;  // Match TimelineWidget::kTimelineTrackSpacing
+    static constexpr int kTrackSpacing = 4;  // Match TimelineWidget::kTimelineTrackSpacing
 
 signals:
     void trackVisualModeChanged(int trackIndex, int mode);

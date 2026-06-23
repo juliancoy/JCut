@@ -1,5 +1,7 @@
 #include "preview_speaker_profiles.h"
 
+#include "editor_shared_timing.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
@@ -154,6 +156,38 @@ void rememberCurrentSpeakerIdRange(const QString& clipId,
     cache.endFrame = range.endFrame;
 }
 
+bool isSummaryTokenBoundary(QChar ch)
+{
+    if (ch.isSpace()) {
+        return true;
+    }
+    switch (ch.category()) {
+    case QChar::Punctuation_Connector:
+    case QChar::Punctuation_Dash:
+    case QChar::Punctuation_Open:
+    case QChar::Punctuation_Close:
+    case QChar::Punctuation_InitialQuote:
+    case QChar::Punctuation_FinalQuote:
+    case QChar::Punctuation_Other:
+        return true;
+    default:
+        return false;
+    }
+}
+
+QString trimSummaryTokenBoundaries(const QString& value)
+{
+    int begin = 0;
+    int end = value.size();
+    while (begin < end && isSummaryTokenBoundary(value.at(begin))) {
+        ++begin;
+    }
+    while (end > begin && isSummaryTokenBoundary(value.at(end - 1))) {
+        --end;
+    }
+    return value.mid(begin, end - begin);
+}
+
 QString clippedSummaryFromWords(const QStringList& words)
 {
     if (words.isEmpty()) {
@@ -162,8 +196,7 @@ QString clippedSummaryFromWords(const QStringList& words)
     QStringList clipped;
     clipped.reserve(qMin(34, words.size()));
     for (int i = 0; i < words.size() && i < 34; ++i) {
-        QString token = words.at(i).trimmed();
-        token.remove(QRegularExpression(QStringLiteral("^[\\s\\p{Punct}]+|[\\s\\p{Punct}]+$")));
+        const QString token = trimSummaryTokenBoundaries(words.at(i));
         if (token.isEmpty()) {
             continue;
         }
@@ -345,7 +378,7 @@ QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* stat
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
             active.push_back(clip);
         }
@@ -376,12 +409,12 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
 
     QList<TimelineClip> candidates;
     for (const TimelineClip& clip : state->clips) {
-        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
         if (transcriptPath.isEmpty()) {
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
             candidates.push_back(clip);
         }
@@ -399,7 +432,7 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
     });
 
     for (const TimelineClip& clip : candidates) {
-        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
         const int64_t sourceFrame = transcriptFrameForClipAtPreviewState(clip, state);
         QString speakerId;
         if (cachedCurrentSpeakerId(clip.id, transcriptPath, sourceFrame, &speakerId)) {
@@ -417,7 +450,8 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
             sections,
             sourceFrame,
             &activeRange,
-            TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
+            TranscriptOverlayTiming{
+                state->transcriptPrependMs, state->transcriptPostpendMs, state->transcriptOffsetMs});
         if (speakerId.isEmpty()) {
             continue;
         }
@@ -451,12 +485,12 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
     QJsonArray skippedClips;
     QList<TimelineClip> candidates;
     for (const TimelineClip& clip : state->clips) {
-        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
         if (transcriptPath.isEmpty()) {
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
             candidates.push_back(clip);
         } else if (skippedClips.size() < 8) {
@@ -493,7 +527,7 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
 
     QJsonArray candidateDebug;
     for (const TimelineClip& clip : candidates) {
-        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
         QJsonObject clipDebug{
             {QStringLiteral("clip_id"), clip.id},
             {QStringLiteral("file_path"), clip.filePath},
@@ -518,7 +552,8 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
             sections,
             transcriptFrame,
             nullptr,
-            TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
+            TranscriptOverlayTiming{
+                state->transcriptPrependMs, state->transcriptPostpendMs, state->transcriptOffsetMs});
         clipDebug.insert(QStringLiteral("source_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("transcript_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("media_source_frame"), static_cast<qint64>(mediaSourceFrame));

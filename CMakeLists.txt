@@ -31,6 +31,13 @@ find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test
              OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
+get_target_property(JCUT_QT_NETWORK_DISABLED_FEATURES Qt6::Network QT_DISABLED_PUBLIC_FEATURES)
+if(JCUT_QT_NETWORK_DISABLED_FEATURES MATCHES "(^|;)ssl(;|$)")
+    message(FATAL_ERROR
+        "The selected Qt6::Network was built without SSL support, so JCut cannot complete "
+        "Supabase HTTPS login. Use a Qt build with the OpenSSL TLS backend enabled and "
+        "deploy its matching tls/libqopensslbackend.so plugin. Current Qt6_DIR: ${Qt6_DIR}")
+endif()
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_library(CUDA_DRIVER_LIBRARY cuda)
 
@@ -380,6 +387,7 @@ add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ui_icons.qrc
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
@@ -475,6 +483,8 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/media_pipeline_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playback_clock_coordinator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/processing_job_docker.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/processing_job_manifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_face_track_click_policy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_frame_selection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
@@ -493,6 +503,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_runtime_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_document.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_overlay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transform_skip_aware_timing.cpp
@@ -597,6 +608,7 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
 )
@@ -797,6 +809,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp

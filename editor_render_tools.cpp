@@ -544,6 +544,7 @@ void EditorWindow::renderTimelineFromOutputRequestCore(const jcut::render::Rende
     RenderRequest qtRequest = jcut::render::toQtRenderRequest(request, timelineData);
     qtRequest.transcriptPrependMs = qMax(0, m_transcriptPrependMs);
     qtRequest.transcriptPostpendMs = qMax(0, m_transcriptPostpendMs);
+    qtRequest.transcriptOffsetMs = qBound(-10000, m_transcriptOffsetMs, 10000);
     renderTimelineFromOutputRequest(qtRequest);
 }
 
@@ -572,6 +573,23 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         backgroundFillEffectFromString(m_backgroundFillEffectCombo
                                            ? m_backgroundFillEffectCombo->currentData().toString()
                                            : QString());
+    request.backgroundFillOpacity = m_backgroundFillOpacitySpin
+        ? qBound<qreal>(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)
+        : 1.0;
+    request.backgroundFillBrightness = m_backgroundFillBrightnessSpin
+        ? qBound<qreal>(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0)
+        : 0.0;
+    request.backgroundFillSaturation = m_backgroundFillSaturationSpin
+        ? qBound<qreal>(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
+        : 1.0;
+    request.backgroundFillEdgePixels = m_backgroundFillEdgePixelsSlider
+        ? qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512)
+        : 1;
+    request.backgroundFillEdgeProgressive =
+        m_backgroundFillEdgeProgressiveCheckBox && m_backgroundFillEdgeProgressiveCheckBox->isChecked();
+    request.backgroundFillEdgePower = m_backgroundFillEdgePowerSpin
+        ? qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0)
+        : 2.0;
     request.showCurrentSpeakerName = m_speakerShowCurrentSpeakerNameCheckBox &&
                                      m_speakerShowCurrentSpeakerNameCheckBox->isChecked();
     request.showCurrentSpeakerOrganization =
@@ -612,6 +630,7 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.currentSpeakerShadowColor = m_speakerCurrentSpeakerShadowColor;
     request.transcriptPrependMs = qMax(0, m_transcriptPrependMs);
     request.transcriptPostpendMs = qMax(0, m_transcriptPostpendMs);
+    request.transcriptOffsetMs = qBound(-10000, m_transcriptOffsetMs, 10000);
     request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&
                                            m_createImageSequenceCheckBox->isChecked();
     if (request.createVideoFromImageSequence && m_imageSequenceFormatCombo) {
@@ -735,6 +754,8 @@ void EditorWindow::openAudioToolsDialog()
     auto* compressorThreshold =
         makeSpin(-30.0, -1.0, 0.5, 1, m_previewAudioDynamics.compressorThresholdDb);
     auto* compressorRatio = makeSpin(1.0, 20.0, 0.1, 1, m_previewAudioDynamics.compressorRatio);
+    auto* softClipCheck = new QCheckBox(QStringLiteral("Soft Clip"), &dialog);
+    softClipCheck->setChecked(m_previewAudioDynamics.softClipEnabled);
 
     auto* form = new QFormLayout;
     form->addRow(normalizeCheck, normalizeTarget);
@@ -742,6 +763,7 @@ void EditorWindow::openAudioToolsDialog()
     form->addRow(limiterCheck, limiterThreshold);
     form->addRow(compressorCheck, compressorThreshold);
     form->addRow(QStringLiteral("Compressor Ratio"), compressorRatio);
+    form->addRow(softClipCheck);
     layout->addLayout(form);
 
     auto* btnRow = new QHBoxLayout;
@@ -766,6 +788,7 @@ void EditorWindow::openAudioToolsDialog()
     m_previewAudioDynamics.compressorEnabled = compressorCheck->isChecked();
     m_previewAudioDynamics.compressorThresholdDb = compressorThreshold->value();
     m_previewAudioDynamics.compressorRatio = compressorRatio->value();
+    m_previewAudioDynamics.softClipEnabled = softClipCheck->isChecked();
 
     if (m_preview) {
         m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
@@ -1280,7 +1303,7 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
         return;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(*clip);
     QFile transcriptFile(transcriptPath);
     if (!transcriptFile.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this,

@@ -7,6 +7,7 @@
 #include "detector_settings.h"
 #include "editor_shared.h"
 #include "json_io_utils.h"
+#include "processing_job_manifest.h"
 #include "render_internal.h"
 #include "transcript_engine.h"
 
@@ -1035,6 +1036,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QDir(artifactDir).absoluteFilePath(QStringLiteral("facedetections.part.resume_index.json"));
     const QString clipJsonPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("clip_input.json"));
     const QString indexPath = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("index.json"));
+    const QString genericJobManifestPath =
+        QDir(artifactDir).absoluteFilePath(QStringLiteral("manifest.json"));
 
     if (preflight.restartFromScratch) {
         const QStringList restartCheckpointPaths{facedetectionsPartPath, facedetectionsResumeIndexPath};
@@ -1286,6 +1289,45 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (!jcut::jsonio::writeJsonFile(requestPath, request, true, &requestWriteError)) {
         qWarning().noquote() << "Failed to write detection/continuity request file:" << requestWriteError;
     }
+    QJsonObject genericArtifacts{
+        {QStringLiteral("job_root"), artifactDir},
+        {QStringLiteral("manifest"), genericJobManifestPath},
+        {QStringLiteral("checkpoint"), facedetectionsPartPath},
+        {QStringLiteral("resume_index"), facedetectionsResumeIndexPath},
+        {QStringLiteral("detections"), detectionsPath},
+        {QStringLiteral("tracks"), tracksPath},
+        {QStringLiteral("continuity"), outputPath},
+        {QStringLiteral("summary"), summaryPath},
+        {QStringLiteral("request"), requestPath},
+    };
+    QJsonObject genericParameters{
+        {QStringLiteral("clip_id"), selectedClip->id},
+        {QStringLiteral("detector"), QStringLiteral("scrfd-ncnn-vulkan")},
+        {QStringLiteral("start_frame"), static_cast<qint64>(startFrame)},
+        {QStringLiteral("end_frame_exclusive"), static_cast<qint64>(sourceEndFrameExclusive)},
+        {QStringLiteral("max_frames"), static_cast<qint64>(maxFrames)},
+        {QStringLiteral("detector_workers"), launchTopology.detectorWorkers},
+        {QStringLiteral("detector_pipeline_slots"), launchTopology.detectorPipelineSlots},
+        {QStringLiteral("restart_from_scratch"), preflight.restartFromScratch},
+        {QStringLiteral("resume_engine"), QStringLiteral("facedetections.part + resume_index")},
+    };
+    QString genericManifestError;
+    QStringList genericCommand{generatorProgram};
+    genericCommand.append(args);
+    QJsonObject genericManifest =
+        jcut::jobs::makeManifest(QStringLiteral("facedetections"),
+                                 artifactDir,
+                                 mediaPath,
+                                 genericParameters,
+                                 genericArtifacts,
+                                 genericCommand);
+    genericManifest.insert(QStringLiteral("status"), QStringLiteral("running"));
+    if (!jcut::jobs::writeManifest(genericJobManifestPath,
+                                   genericManifest,
+                                   &genericManifestError)) {
+        qWarning().noquote() << "Failed to write generic FaceDetections job manifest:"
+                             << genericManifestError;
+    }
 
     const FaceDetectionsProcessResult processResult =
         [&]() {
@@ -1294,6 +1336,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             return runFaceDetectionsGeneratorProcess(nullptr, generatorProgram, args, true);
         }();
     if (!processResult.started) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("error"), processResult.standardError}},
+            nullptr);
         showAutomationAwareWarning(
             QStringLiteral("JCut DNN Detection + Continuity Generator"),
             QStringLiteral("Failed to start detection/continuity generator.\n\n%1")
@@ -1303,6 +1350,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
     if (processResult.canceled) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("paused"),
+            QJsonObject{{QStringLiteral("pause_reason"), QStringLiteral("user_canceled")}},
+            nullptr);
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("canceled"),
@@ -1315,6 +1367,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         processResult.exitStatus == QProcess::NormalExit &&
         processResult.exitCode == 0;
     if (!processOk) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("exit_code"), processResult.exitCode},
+                        {QStringLiteral("stderr"), processResult.standardError.trimmed()},
+                        {QStringLiteral("stdout"), processResult.standardOutput.trimmed()}},
+            nullptr);
         const QString message =
             QStringLiteral("JCut DNN Detection + Continuity Generator failed (exit code %1).\n\n%2")
                 .arg(processResult.exitCode)
@@ -1337,6 +1396,12 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         }
     }
     if (!missingGeneratorOutputs.isEmpty()) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("missing_artifacts"),
+                         QJsonArray::fromStringList(missingGeneratorOutputs)}},
+            nullptr);
         const QString message =
             QStringLiteral("JCut DNN Detection + Continuity Generator exited without producing required final artifacts.\n\nMissing:\n%1\n\nGenerator stderr:\n%2")
                 .arg(missingGeneratorOutputs.join(QLatin1Char('\n')),
@@ -1355,6 +1420,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     QJsonObject generatedArtifact;
     if (!jcut::jsonio::readBinaryJsonObject(outputPath, &generatedArtifact, 0x4A435554, 1, &parseError) &&
         !readJsonObject(outputPath, &generatedArtifact, &parseError)) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("error"), parseError}},
+            nullptr);
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("error"),
@@ -1367,6 +1437,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     QJsonObject rawTracksArtifact;
     if (!jcut::facedetections::readBinaryJsonObject(tracksPath, &rawTracksArtifact, &parseError) &&
         !readJsonObject(tracksPath, &rawTracksArtifact, &parseError)) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("error"), parseError}},
+            nullptr);
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("error"),
@@ -1402,6 +1477,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
 
     if (rawTracks.isEmpty() && rawFrames.isEmpty()) {
         const QString noDetectionsMessage = QStringLiteral("Generated artifact contains no raw face detections for this clip.");
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("error"), noDetectionsMessage}},
+            nullptr);
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("error"),
@@ -1452,10 +1532,22 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         statusMessage, {requestPath, facedetectionsPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
 
     if (!saved) {
+        jcut::jobs::updateManifestStatus(
+            genericJobManifestPath,
+            QStringLiteral("failed"),
+            QJsonObject{{QStringLiteral("error"), statusMessage}},
+            nullptr);
         showAutomationAwareWarning(QStringLiteral("JCut DNN Detection + Continuity Generator"), statusMessage);
         refresh();
         return;
     }
+    jcut::jobs::updateManifestStatus(
+        genericJobManifestPath,
+        savedProcessed ? QStringLiteral("completed") : QStringLiteral("failed"),
+        QJsonObject{{QStringLiteral("status_message"), statusMessage},
+                    {QStringLiteral("raw_tracks_count"), rawTracks.size()},
+                    {QStringLiteral("raw_frames_count"), rawFramesCount}},
+        nullptr);
 
     emit transcriptDocumentChanged();
     clearFaceDetectionsDerivedCaches();

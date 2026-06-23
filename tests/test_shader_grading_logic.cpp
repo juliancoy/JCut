@@ -10,6 +10,7 @@ private slots:
     void testGlShaderRecomputesLuminanceBeforeSaturation();
     void testVulkanShaderUsesSafePowForMidtones();
     void testVulkanShaderRecomputesLuminanceBeforeSaturation();
+    void testNv12HandoffShaderStoresCanonicalRgba();
 };
 
 void TestShaderGradingLogic::testGlShaderUsesSafePowForMidtones()
@@ -60,6 +61,30 @@ void TestShaderGradingLogic::testVulkanShaderRecomputesLuminanceBeforeSaturation
     QVERIFY2(satPos > lumaPos, "Vulkan shader saturation mix must use refreshed luminance.");
 }
 
+void TestShaderGradingLogic::testNv12HandoffShaderStoresCanonicalRgba()
+{
+    QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/nv12_buffer_to_rgba.comp"));
+    QVERIFY2(shaderFile.open(QIODevice::ReadOnly), "Unable to open NV12 handoff shader.");
+    const QString shader = QString::fromUtf8(shaderFile.readAll());
+
+    QVERIFY2(shader.contains(QStringLiteral("imageStore(outImage, ivec2(p), vec4(rgb, 1.0));")),
+             "NV12 handoff shader must write canonical RGBA after YUV conversion.");
+    QVERIFY2(!shader.contains(QStringLiteral("vec4(rgb.g, rgb.r, rgb.b")),
+             "NV12 handoff shader must not swap red and green channels.");
+    QVERIFY2(shader.contains(QStringLiteral("pc.fullRange")),
+             "NV12 handoff shader must honor full-range source metadata.");
+    QVERIFY2(shader.contains(QStringLiteral("pc.colorMatrix")),
+             "NV12 handoff shader must honor source color-matrix metadata.");
+    QVERIFY2(shader.contains(QStringLiteral("pc.chromaSwap")),
+             "NV12 handoff shader must support decoder paths that expose VU chroma order.");
+    QVERIFY2(shader.contains(QStringLiteral("uint chromaX = p.x & ~1u;")) &&
+                 shader.contains(QStringLiteral("loadUV(chromaX + 1u, p.y)")),
+             "NV12 handoff shader must read both bytes from each interleaved UV pair.");
+    QVERIFY2(shader.contains(QStringLiteral("uint byteOffset = (y >> 1u) * uint(pc.uvPitch) + x;")),
+             "NV12 UV byte loader must not mask away the second chroma byte.");
+    QVERIFY2(shader.contains(QStringLiteral("1.402 * v")),
+             "NV12 handoff shader must support full-range BT.601/SMPTE170M sources.");
+}
+
 QTEST_MAIN(TestShaderGradingLogic)
 #include "test_shader_grading_logic.moc"
-

@@ -1,5 +1,6 @@
 #include "timeline_layout.h"
 #include "timeline_widget.h"
+#include "editor_shared_timing.h"
 
 #include <algorithm>
 
@@ -210,7 +211,10 @@ QRect TimelineLayout::clipRectFor(const TimelineClip& clip) const {
     const qreal clipFrame = samplesToFramePosition(clipTimelineStartSamples(clip));
     const qreal visibleFrame = clipFrame - static_cast<qreal>(m_widget->m_frameOffset);
     const int clipX = timelineContentRect().left() + qRound(visibleFrame * m_widget->m_pixelsPerFrame);
-    const int clipW = qMax(40, m_widget->widthForFrames(clip.durationFrames));
+    const int clipW = qMax(
+        40,
+        qRound(samplesToFramePosition(clipTimelineDurationSamples(clip)) *
+               m_widget->m_pixelsPerFrame));
     const int visualHeight =
         qMax(TimelineWidget::kTimelineClipHeight,
              trackHeight(clip.trackIndex) - (TimelineWidget::kTimelineClipVerticalPadding * 2));

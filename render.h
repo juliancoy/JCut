@@ -73,6 +73,12 @@ struct RenderRequest {
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
     BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
+    qreal backgroundFillOpacity = 1.0;
+    qreal backgroundFillBrightness = 0.0;
+    qreal backgroundFillSaturation = 1.0;
+    int backgroundFillEdgePixels = 1;
+    bool backgroundFillEdgeProgressive = false;
+    qreal backgroundFillEdgePower = 2.0;
     bool suppressCompletionDialog = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;
@@ -90,6 +96,7 @@ struct RenderRequest {
     QColor currentSpeakerShadowColor = QColor(0, 0, 0, 190);
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
+    int transcriptOffsetMs = 0;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;

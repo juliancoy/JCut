@@ -72,7 +72,7 @@ Key functionality:
 - Clear-all-sync-points action.
 - Editor handlers support selection, item changes, and context-menu operations.
 
-## 7) Keyframes
+## 7) Transform
 Purpose:
 - Transform keyframes for selected visual clip.
 

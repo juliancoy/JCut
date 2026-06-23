@@ -21,6 +21,7 @@
 #include <QPainterPath>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QSet>
 #include <QStringList>
 #include <QUrl>
 #include <QUrlQuery>
@@ -36,6 +37,7 @@
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QTabWidget>
@@ -87,6 +89,59 @@ QString aiDisplayIdentity(const QString& explicitIdentity, const QString& access
         return trimmed;
     }
     return cppmonetize::parseAccessTokenIdentity(accessToken).displayIdentity();
+}
+
+bool looksLikeSpeakerOrganizationName(const QString& value)
+{
+    const QString candidate = value.trimmed();
+    if (candidate.isEmpty()) {
+        return false;
+    }
+
+    static const QRegularExpression orgWordRe(
+        QStringLiteral("\\b(agency|association|bank|campaign|center|centre|city|college|committee|"
+                       "company|corporation|council|county|department|foundation|government|group|"
+                       "hospital|inc|institute|llc|ltd|ministry|network|office|organization|party|"
+                       "school|studio|team|union|university)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression legalSuffixRe(
+        QStringLiteral("\\b(inc\\.?|llc|ltd\\.?|corp\\.?|co\\.?)$"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    return candidate.contains(QLatin1Char('&')) ||
+           orgWordRe.match(candidate).hasMatch() ||
+           legalSuffixRe.match(candidate).hasMatch();
+}
+
+bool looksLikeSpeakerPersonName(const QString& value)
+{
+    const QString candidate = value.trimmed();
+    if (candidate.isEmpty() || looksLikeSpeakerOrganizationName(candidate)) {
+        return false;
+    }
+
+    const QStringList parts =
+        candidate.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (parts.size() < 2 || parts.size() > 4) {
+        return false;
+    }
+
+    static const QSet<QString> disallowedLowerWords{
+        QStringLiteral("and"), QStringLiteral("for"), QStringLiteral("from"), QStringLiteral("of"),
+        QStringLiteral("the"), QStringLiteral("to"), QStringLiteral("with")
+    };
+    static const QRegularExpression namePartRe(
+        QStringLiteral("^[A-Z][A-Za-z'\\-]{1,30}$"));
+    for (const QString& part : parts) {
+        if (disallowedLowerWords.contains(part.toLower())) {
+            return false;
+        }
+        if (!namePartRe.match(part).hasMatch()) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool isSupabaseProjectBase(const QString& baseUrl)
@@ -308,26 +363,23 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut,
         cfg.orgName = QStringLiteral("jcut");
         cfg.serviceName = serviceName;
         auto store = cppmonetize::createDefaultTokenStore(cfg);
-        const auto tokenResult = store->loadToken();
-        if (!tokenResult.hasValue()) {
+        const auto sessionResult = cppmonetize::loadStoredAuthSession(*store);
+        if (!sessionResult.hasValue()) {
             continue;
         }
-        const QString token = tokenResult.value().trimmed();
+        const cppmonetize::StoredAuthSession session = sessionResult.value();
+        const QString token = session.accessToken.trimmed();
         if (token.isEmpty()) {
             continue;
         }
-        const QString refreshToken;
-        const QString userId = store->loadUserId().hasValue()
-            ? store->loadUserId().value().trimmed()
-            : QString();
         if (tokenOut) {
             *tokenOut = token;
         }
         if (refreshTokenOut) {
-            *refreshTokenOut = refreshToken;
+            *refreshTokenOut = session.refreshToken.trimmed();
         }
         if (userIdOut) {
-            *userIdOut = userId;
+            *userIdOut = session.userId.trimmed();
         }
         return true;
     }
@@ -353,13 +405,80 @@ bool EditorWindow::writeAiTokenToSecureStore(const QString& token,
     cfg.orgName = QStringLiteral("jcut");
     cfg.serviceName = aiSecureStoreServiceName();
     auto store = cppmonetize::createDefaultTokenStore(cfg);
-    Q_UNUSED(refreshToken);
-    const auto writeResult = store->storeToken(token.trimmed(), m_aiUserId.trimmed());
+    const auto writeResult = cppmonetize::storeStoredAuthSession(
+        *store,
+        cppmonetize::StoredAuthSession{token.trimmed(),
+                                       refreshToken.trimmed(),
+                                       m_aiUserId.trimmed()});
     if (!writeResult.hasValue()) {
         if (errorOut) {
             *errorOut = writeResult.error().message;
         }
         return false;
+    }
+    return true;
+}
+
+bool EditorWindow::refreshAiAuthTokenFromSecureStore()
+{
+    QString refreshToken = m_aiRefreshToken.trimmed();
+    if (refreshToken.isEmpty()) {
+        QString storedToken;
+        QString storedUserId;
+        readAiTokenFromSecureStore(&storedToken, &refreshToken, &storedUserId);
+        if (m_aiAuthToken.trimmed().isEmpty() && !storedToken.trimmed().isEmpty()) {
+            m_aiAuthToken = storedToken.trimmed();
+        }
+        if (m_aiUserId.trimmed().isEmpty() && !storedUserId.trimmed().isEmpty()) {
+            m_aiUserId = storedUserId.trimmed();
+        }
+    }
+    if (refreshToken.isEmpty()) {
+        return false;
+    }
+
+    QString gatewayBase = normalizeBaseUrl(m_aiProxyBaseUrl);
+    if (gatewayBase.isEmpty()) {
+        gatewayBase = normalizeBaseUrl(qEnvironmentVariable("SUPABASE_URL"));
+    }
+    if (gatewayBase.isEmpty()) {
+        gatewayBase = normalizeBaseUrl(QString::fromLatin1(kDefaultSupabaseGateway));
+    }
+
+    cppmonetize::OAuthDesktopFlow oauthFlow;
+    const auto oauthCfgResult = oauthFlow.resolveSupabaseConfig(gatewayBase, m_aiRequestTimeoutMs);
+    if (!oauthCfgResult.hasValue()) {
+        qWarning() << "Failed loading OAuth config for token refresh:" << oauthCfgResult.error().message;
+        return false;
+    }
+    cppmonetize::OAuthConfig flowCfg = oauthCfgResult.value();
+    flowCfg.enabled = true;
+    const auto refreshResult = oauthFlow.refreshWithToken(flowCfg, refreshToken, m_aiRequestTimeoutMs);
+    if (!refreshResult.hasValue()) {
+        qWarning() << "Failed refreshing AI token:" << refreshResult.error().message;
+        return false;
+    }
+    const QString refreshedAccessToken = refreshResult.value().token.trimmed();
+    const QString refreshedRefreshToken = refreshResult.value().refreshToken.trimmed();
+    if (refreshedAccessToken.isEmpty()) {
+        return false;
+    }
+
+    m_aiProxyBaseUrl = gatewayBase;
+    m_aiAuthToken = refreshedAccessToken;
+    m_aiRefreshToken = refreshedRefreshToken.isEmpty() ? refreshToken : refreshedRefreshToken;
+    m_aiRejectedAuthToken.clear();
+    const QString email = refreshResult.value().email.trimmed();
+    if (!email.isEmpty()) {
+        m_aiUserId = email;
+    } else if (m_aiUserId.trimmed().isEmpty()) {
+        m_aiUserId = cppmonetize::parseAccessTokenIdentity(m_aiAuthToken).displayIdentity();
+    }
+
+    QString secureStoreError;
+    if (!writeAiTokenToSecureStore(m_aiAuthToken, m_aiRefreshToken, &secureStoreError) &&
+        !secureStoreError.trimmed().isEmpty()) {
+        qWarning() << "Failed saving refreshed AI token:" << secureStoreError;
     }
     return true;
 }
@@ -670,7 +789,7 @@ void EditorWindow::configureAiGatewayLogin()
         return;
     }
     const QString token = loginResult.value().token.trimmed();
-    const QString refreshToken;
+    const QString refreshToken = loginResult.value().refreshToken.trimmed();
     const QString email = loginResult.value().email.trimmed();
     if (token.isEmpty()) {
         QMessageBox::warning(this,
@@ -889,8 +1008,7 @@ void EditorWindow::refreshAiIntegrationState()
         std::optional<cppmonetize::AiUsageStatus> usageStatus;
         bool entitledByContract = false;
         const auto tryRefreshAuthToken = [this]() -> bool {
-            Q_UNUSED(this);
-            return false;
+            return refreshAiAuthTokenFromSecureStore();
         };
 
         auto entResult = client.getAiEntitlements(m_aiAuthToken);
@@ -1085,8 +1203,7 @@ void EditorWindow::refreshAccessTabData()
     cppmonetize::MonetizeClient client =
         createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
     auto tryRefreshAuthToken = [this]() -> bool {
-        Q_UNUSED(this);
-        return false;
+        return refreshAiAuthTokenFromSecureStore();
     };
     const bool supabaseDirect = isSupabaseProjectBase(normalizedBase);
 
@@ -1308,8 +1425,7 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
     cppmonetize::MonetizeClient client =
         createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
     const auto tryRefreshAuthToken = [this]() -> bool {
-        Q_UNUSED(this);
-        return false;
+        return refreshAiAuthTokenFromSecureStore();
     };
 
     QString lastError;
@@ -1471,9 +1587,9 @@ void EditorWindow::runAiFindSpeakerNames()
         return;
     }
 
-    QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    QString transcriptPath = activeTranscriptPathForClip(*clip);
     if (transcriptPath.isEmpty()) {
-        transcriptPath = transcriptPathForClipFile(clip->filePath);
+        transcriptPath = transcriptPathForClip(*clip);
     }
     appendAiActivityLine(QStringLiteral("Load"),
                          QStringLiteral("Reading transcript JSON: %1").arg(transcriptPath));
@@ -1614,7 +1730,11 @@ void EditorWindow::runAiFindSpeakerNames()
                        "Return JSON array only. Each item must have keys: "
                        "Speaker, Name, Organization, Summary. "
                        "Speaker must be S# from the transcript markers. "
-                       "Name should be a likely human-readable speaker name when inferable, else empty.");
+                       "Name is only for an individual human speaker's display name, such as a first "
+                       "and last name. Do not put companies, committees, agencies, campaigns, parties, "
+                       "universities, cities, counties, or other organizations in Name. "
+                       "Organization is the speaker's affiliation or organization when inferable, else empty. "
+                       "Leave uncertain fields empty instead of guessing.");
     payload[QStringLiteral("transcript_text")] = transcriptText;
     payload[QStringLiteral("speaker_legend")] = speakerLegend;
     appendAiActivityLine(QStringLiteral("AI Request"),
@@ -1720,6 +1840,12 @@ void EditorWindow::runAiFindSpeakerNames()
         if (inferredName.isEmpty()) {
             inferredName = row.value(QStringLiteral("display_name")).toString().trimmed();
         }
+        if (!inferredName.isEmpty() && looksLikeSpeakerOrganizationName(inferredName)) {
+            if (organization.isEmpty()) {
+                organization = inferredName;
+            }
+            inferredName.clear();
+        }
         QString summary = row.value(QStringLiteral("Summary")).toString().trimmed();
         if (summary.isEmpty()) {
             summary = row.value(QStringLiteral("summary")).toString().trimmed();
@@ -1738,12 +1864,11 @@ void EditorWindow::runAiFindSpeakerNames()
                                                       QRegularExpression::CaseInsensitiveOption)
                                        .match(speakerToken)
                                        .hasMatch();
-        if (!inferredName.isEmpty()) {
+        if (looksLikeSpeakerPersonName(inferredName)) {
             profile.name = inferredName;
-        } else if (!speakerToken.isEmpty() && !tokenIsNumber) {
+        } else if (!speakerToken.isEmpty() && !tokenIsNumber &&
+                   looksLikeSpeakerPersonName(speakerToken)) {
             profile.name = speakerToken;
-        } else if (profile.name.trimmed().isEmpty()) {
-            profile.name = sourceSpeakerId;
         }
         if (!organization.isEmpty()) {
             profile.organization = organization;

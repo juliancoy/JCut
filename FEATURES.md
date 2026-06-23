@@ -53,7 +53,7 @@ JCut is a desktop, timeline-based video editor focused on fast iterative editing
 - Render sync marker table (clip/frame/count/action)
 - Global "clear all sync points" action
 
-### Keyframes
+### Transform
 - Transform keyframes: translation, rotation, scale, interpolation
 - Mirror horizontal/vertical toggles and lock-scale behavior
 - Clip-relative keyframe frame space option

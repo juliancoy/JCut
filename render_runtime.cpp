@@ -60,8 +60,15 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.disableParallelImageWrite = request.disableParallelImageWrite;
     qtRequest.backgroundFillEffect =
         backgroundFillEffectFromString(QString::fromStdString(request.backgroundFillEffect));
+    qtRequest.backgroundFillOpacity = qBound(0.0, request.backgroundFillOpacity, 1.0);
+    qtRequest.backgroundFillBrightness = qBound(-1.0, request.backgroundFillBrightness, 1.0);
+    qtRequest.backgroundFillSaturation = qBound(0.0, request.backgroundFillSaturation, 3.0);
+    qtRequest.backgroundFillEdgePixels = qBound(1, request.backgroundFillEdgePixels, 512);
+    qtRequest.backgroundFillEdgeProgressive = request.backgroundFillEdgeProgressive;
+    qtRequest.backgroundFillEdgePower = qBound(0.25, request.backgroundFillEdgePower, 8.0);
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;
     qtRequest.transcriptPostpendMs = request.transcriptPostpendMs;
+    qtRequest.transcriptOffsetMs = request.transcriptOffsetMs;
     qtRequest.exportStartFrame = request.exportStartFrame;
     qtRequest.exportEndFrame = request.exportEndFrame;
     qtRequest.clips = toQVector(timelineData.clips);

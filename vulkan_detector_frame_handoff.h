@@ -63,6 +63,7 @@ public:
     VkFormat imageFormat() const { return m_imageFormat; }
     bool usedCpuUpload() const { return m_lastMode == FrameHandoffMode::CpuUpload; }
     const HardwareInteropProbeResult& lastProbe() const { return m_lastProbe; }
+    QString lastYuvRgbMatrix() const { return m_lastYuvRgbMatrix; }
 
     HardwareInteropProbeResult probeHardwareInterop(const editor::FrameHandle& frame) const;
 
@@ -106,6 +107,9 @@ private:
                               int height,
                               int yPitch,
                               int uvPitch,
+                              int fullRange,
+                              int colorMatrix,
+                              int chromaSwap,
                               QString* errorMessage);
     bool createNv12ConversionPipeline(QString* errorMessage);
     bool ensureCudaExportBuffer(VkDeviceSize bytes,
@@ -122,6 +126,9 @@ private:
                                    int height,
                                    int yPitch,
                                    int uvPitch,
+                                   int fullRange,
+                                   int colorMatrix,
+                                   int chromaSwap,
                                    QString* errorMessage);
     bool ensureImageResources(const jcut::core::SizeI& size,
                               VkFormat format,
@@ -196,6 +203,7 @@ private:
     FrameHandoffMode m_lastMode = FrameHandoffMode::Invalid;
     HardwareInteropProbeResult m_lastProbe;
     QString m_lastHardwareDirectAttemptReason;
+    QString m_lastYuvRgbMatrix;
     FrameHandoffResourceStats m_resourceStats;
 };
 

@@ -3,6 +3,8 @@
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtGlobal>
@@ -326,6 +328,171 @@ QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe&
 
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip) {
     return applyClipGrade(source, evaluateEffectiveClipGradingAtFrame(clip, clip.startFrame));
+}
+
+namespace {
+QString maskFramePathForSourceFrame(const TimelineClip& clip, int64_t sourceFrame)
+{
+    if (clip.maskFramesDir.trimmed().isEmpty()) {
+        return QString();
+    }
+    const QString fileName =
+        QStringLiteral("frame_%1.png")
+            .arg(qMax<int64_t>(0, sourceFrame) + 1, 6, 10, QLatin1Char('0'));
+    return QDir(clip.maskFramesDir).absoluteFilePath(fileName);
+}
+
+QImage morphMask(const QImage& source, int radius, bool dilate)
+{
+    if (source.isNull() || radius <= 0) {
+        return source;
+    }
+    const QImage input = source.convertToFormat(QImage::Format_Grayscale8);
+    QImage output(input.size(), QImage::Format_Grayscale8);
+    const int width = input.width();
+    const int height = input.height();
+    for (int y = 0; y < height; ++y) {
+        uchar* dst = output.scanLine(y);
+        for (int x = 0; x < width; ++x) {
+            int value = dilate ? 0 : 255;
+            for (int yy = qMax(0, y - radius); yy <= qMin(height - 1, y + radius); ++yy) {
+                const uchar* src = input.constScanLine(yy);
+                for (int xx = qMax(0, x - radius); xx <= qMin(width - 1, x + radius); ++xx) {
+                    value = dilate ? qMax(value, static_cast<int>(src[xx]))
+                                   : qMin(value, static_cast<int>(src[xx]));
+                }
+            }
+            dst[x] = static_cast<uchar>(value);
+        }
+    }
+    return output;
+}
+
+QImage blurMask(const QImage& source, int radius)
+{
+    if (source.isNull() || radius <= 0) {
+        return source;
+    }
+    const QImage input = source.convertToFormat(QImage::Format_Grayscale8);
+    QImage output(input.size(), QImage::Format_Grayscale8);
+    const int width = input.width();
+    const int height = input.height();
+    for (int y = 0; y < height; ++y) {
+        uchar* dst = output.scanLine(y);
+        for (int x = 0; x < width; ++x) {
+            int sum = 0;
+            int count = 0;
+            for (int yy = qMax(0, y - radius); yy <= qMin(height - 1, y + radius); ++yy) {
+                const uchar* src = input.constScanLine(yy);
+                for (int xx = qMax(0, x - radius); xx <= qMin(width - 1, x + radius); ++xx) {
+                    sum += src[xx];
+                    ++count;
+                }
+            }
+            dst[x] = static_cast<uchar>(count > 0 ? qBound(0, sum / count, 255) : 0);
+        }
+    }
+    return output;
+}
+
+QImage preparedClipMask(const TimelineClip& clip, int64_t sourceFrame, const QSize& size)
+{
+    const QString path = maskFramePathForSourceFrame(clip, sourceFrame);
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        return QImage();
+    }
+    QImage mask(path);
+    if (mask.isNull()) {
+        return QImage();
+    }
+    if (mask.size() != size) {
+        mask = mask.scaled(size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+    mask = mask.convertToFormat(QImage::Format_Grayscale8);
+    if (clip.maskInvert) {
+        mask.invertPixels();
+    }
+    if (clip.maskErode > 0.0) {
+        mask = morphMask(mask, qRound(clip.maskErode), false);
+    }
+    if (clip.maskDilate > 0.0) {
+        mask = morphMask(mask, qRound(clip.maskDilate), true);
+    }
+    const int blurRadius = qRound(qMax(clip.maskFeather, clip.maskBlur));
+    if (blurRadius > 0) {
+        mask = blurMask(mask, blurRadius);
+    }
+    return mask;
+}
+}
+
+QImage applyClipMaskEffectsToImage(const QImage& source,
+                                   const TimelineClip& clip,
+                                   int64_t sourceFrame)
+{
+    if (source.isNull() || !clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
+        return source;
+    }
+    const QImage mask = preparedClipMask(clip, sourceFrame, source.size());
+    if (mask.isNull()) {
+        return source;
+    }
+
+    QImage base = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage output(base.size(), QImage::Format_ARGB32_Premultiplied);
+    output.fill(Qt::transparent);
+
+    if (clip.maskDropShadowEnabled && clip.maskDropShadowOpacity > 0.0) {
+        QImage shadowMask = clip.maskDropShadowRadius > 0.0
+                                ? blurMask(mask, qRound(clip.maskDropShadowRadius))
+                                : mask;
+        QImage shadow(base.size(), QImage::Format_ARGB32_Premultiplied);
+        shadow.fill(Qt::transparent);
+        for (int y = 0; y < shadow.height(); ++y) {
+            const uchar* maskRow = shadowMask.constScanLine(y);
+            QRgb* dst = reinterpret_cast<QRgb*>(shadow.scanLine(y));
+            for (int x = 0; x < shadow.width(); ++x) {
+                const int alpha =
+                    qBound(0, qRound(maskRow[x] * clip.maskDropShadowOpacity), 255);
+                dst[x] = qRgba(0, 0, 0, alpha);
+            }
+        }
+        QPainter painter(&output);
+        painter.drawImage(QPointF(clip.maskDropShadowOffsetX, clip.maskDropShadowOffsetY), shadow);
+        painter.end();
+    }
+
+    if (clip.maskGradeEnabled) {
+        TimelineClip::GradingKeyframe maskGrade;
+        maskGrade.brightness = clip.maskGradeBrightness;
+        maskGrade.contrast = clip.maskGradeContrast;
+        maskGrade.saturation = clip.maskGradeSaturation;
+        QImage graded = applyClipGrade(base, maskGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QImage composited(base.size(), QImage::Format_ARGB32_Premultiplied);
+        composited.fill(Qt::transparent);
+        for (int y = 0; y < base.height(); ++y) {
+            const uchar* maskRow = mask.constScanLine(y);
+            const QRgb* srcRow = reinterpret_cast<const QRgb*>(base.constScanLine(y));
+            const QRgb* gradeRow = reinterpret_cast<const QRgb*>(graded.constScanLine(y));
+            QRgb* dstRow = reinterpret_cast<QRgb*>(composited.scanLine(y));
+            for (int x = 0; x < base.width(); ++x) {
+                const qreal t =
+                    qBound<qreal>(0.0, (maskRow[x] / 255.0) * clip.maskOpacity, 1.0);
+                const QColor src = QColor::fromRgba(srcRow[x]);
+                const QColor dst = QColor::fromRgba(gradeRow[x]);
+                dstRow[x] = qRgba(qRound(src.red() * (1.0 - t) + dst.red() * t),
+                                  qRound(src.green() * (1.0 - t) + dst.green() * t),
+                                  qRound(src.blue() * (1.0 - t) + dst.blue() * t),
+                                  src.alpha());
+            }
+        }
+        base = composited;
+    }
+
+    QPainter painter(&output);
+    painter.drawImage(0, 0, base);
+    painter.end();
+    return output;
 }
 
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects) {

@@ -6,12 +6,16 @@
 #include "../imgui_project_io.h"
 #include "../editor_runtime_qt_bridge.h"
 #include "../editor_timeline_types.h"
+#include "../clip_serialization.h"
+#include "../editor_shared_render_sync.h"
+#include "../editor_shared_timing.h"
 #include "../render.h"
 #include "../render_qt_compat.h"
 
 #include <nlohmann/json.hpp>
 
 #include <QString>
+#include <QFile>
 #include <QTemporaryDir>
 #include <utility>
 
@@ -37,6 +41,8 @@ private slots:
     void testCoreDocumentFileRoundTrips();
     void testImGuiProjectSessionLoadsActiveQtProjectFiles();
     void testImGuiProjectSessionSaveWritesQtStateFiles();
+    void testAiLoginPersistsRefreshTokenContract();
+    void testAudioClipDurationPreservesSubframeSamples();
 };
 
 namespace {
@@ -202,6 +208,35 @@ void TestEditorRuntime::testTrimClipCommandsUpdateTimeline()
     QCOMPARE(invalidEnd.applied, false);
 }
 
+void TestEditorRuntime::testAudioClipDurationPreservesSubframeSamples()
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("audio-a");
+    clip.filePath = QStringLiteral("/tmp/audio.wav");
+    clip.mediaType = ClipMediaType::Audio;
+    clip.sourceFps = static_cast<qreal>(kTimelineFps);
+    clip.sourceDurationFrames = 120;
+    clip.startFrame = 10;
+    clip.startSubframeSamples = kSamplesPerFrame / 4;
+    clip.durationFrames = 2;
+    clip.durationSubframeSamples = kSamplesPerFrame / 2;
+
+    QCOMPARE(clipTimelineDurationSamples(clip),
+             frameToSamples(2) + (kSamplesPerFrame / 2));
+    QCOMPARE(clipTimelineEndSamples(clip),
+             clipTimelineStartSamples(clip) + frameToSamples(2) + (kSamplesPerFrame / 2));
+
+    const int64_t lastTimelineSample = clipTimelineEndSamples(clip) - 1;
+    const int64_t lastSourceSample =
+        sourceSampleForClipAtTimelineSample(clip, lastTimelineSample, {});
+    QCOMPARE(lastSourceSample, clipTimelineDurationSamples(clip) - 1);
+
+    const TimelineClip loaded = editor::clipFromJson(editor::clipToJson(clip));
+    QCOMPARE(loaded.durationFrames, clip.durationFrames);
+    QCOMPARE(loaded.durationSubframeSamples, clip.durationSubframeSamples);
+    QCOMPARE(clipTimelineDurationSamples(loaded), clipTimelineDurationSamples(clip));
+}
+
 void TestEditorRuntime::testProjectAndClipEditCommandsUpdateDocument()
 {
     jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
@@ -253,6 +288,22 @@ void TestEditorRuntime::testSelectionCommandsSwitchSingleSelection()
     QCOMPARE(selectedClips, 1);
 }
 
+void TestEditorRuntime::testAiLoginPersistsRefreshTokenContract()
+{
+    QFile source(QStringLiteral(JCUT_SOURCE_DIR "/editor_ai_integration.cpp"));
+    QVERIFY2(source.open(QIODevice::ReadOnly | QIODevice::Text), qPrintable(source.fileName()));
+    const QString code = QString::fromUtf8(source.readAll());
+
+    QVERIFY(code.contains(QStringLiteral("loginResult.value().refreshToken.trimmed()")));
+    QVERIFY(code.contains(QStringLiteral("cppmonetize::loadStoredAuthSession(*store)")));
+    QVERIFY(code.contains(QStringLiteral("cppmonetize::storeStoredAuthSession")));
+    QVERIFY(code.contains(QStringLiteral("OAuthDesktopFlow oauthFlow")));
+    QVERIFY(code.contains(QStringLiteral("oauthFlow.refreshWithToken")));
+    QVERIFY(code.contains(QStringLiteral("refreshAiAuthTokenFromSecureStore()")));
+    QVERIFY(!code.contains(QStringLiteral("Q_UNUSED(refreshToken);")));
+    QVERIFY(!code.contains(QStringLiteral("Q_UNUSED(this);\n            return false;")));
+}
+
 void TestEditorRuntime::testExportCommandsUpdateCoreRequest()
 {
     jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
@@ -286,11 +337,23 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     request.outputSize = QSize(1280, 720);
     request.outputFps = 60.0;
     request.playbackSpeed = 1.75;
+    request.backgroundFillOpacity = 0.42;
+    request.backgroundFillBrightness = -0.15;
+    request.backgroundFillSaturation = 1.25;
+    request.backgroundFillEdgePixels = 32;
+    request.backgroundFillEdgeProgressive = true;
+    request.backgroundFillEdgePower = 3.5;
 
     const jcut::render::RenderRequestCore core = jcut::render::toCoreRenderRequest(request);
 
     QCOMPARE(core.outputFps, 60.0);
     QCOMPARE(core.playbackSpeed, 1.75);
+    QCOMPARE(core.backgroundFillOpacity, 0.42);
+    QCOMPARE(core.backgroundFillBrightness, -0.15);
+    QCOMPARE(core.backgroundFillSaturation, 1.25);
+    QCOMPARE(core.backgroundFillEdgePixels, 32);
+    QCOMPARE(core.backgroundFillEdgeProgressive, true);
+    QCOMPARE(core.backgroundFillEdgePower, 3.5);
 }
 
 void TestEditorRuntime::testQtBridgeBuildsDocumentCore()

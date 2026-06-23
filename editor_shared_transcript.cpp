@@ -1,4 +1,5 @@
 #include "editor_shared_transcript.h"
+#include "audio_source_key.h"
 #include "transcript_runtime_cache.h"
 #include "transcript_engine.h"
 
@@ -14,15 +15,151 @@
 #include <QMutexLocker>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QCryptographicHash>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <limits>
 
+namespace {
+
+QMutex& transcriptSourceRootMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QString& transcriptSourceRootStorage()
+{
+    static QString rootPath;
+    return rootPath;
+}
+
+QString resolveTranscriptSourcePath(const QString& path)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty() || QFileInfo(trimmed).isAbsolute()) {
+        return QFileInfo(trimmed).absoluteFilePath();
+    }
+
+    QMutexLocker locker(&transcriptSourceRootMutex());
+    const QString rootPath = transcriptSourceRootStorage();
+    if (!rootPath.trimmed().isEmpty() && QDir(rootPath).exists()) {
+        return QFileInfo(QDir(rootPath).filePath(trimmed)).absoluteFilePath();
+    }
+    return QFileInfo(trimmed).absoluteFilePath();
+}
+
+QString transcriptSourcePathForClip(const TimelineClip& clip)
+{
+    const QString audioSource = clip.audioSourcePath.trimmed();
+    if (!audioSource.isEmpty() &&
+        (clip.audioSourceStatus == QStringLiteral("ok") ||
+         clip.audioSourceMode == QStringLiteral("explicit_file") ||
+         clip.audioSourceMode == QStringLiteral("embedded"))) {
+        return resolveTranscriptSourcePath(audioSource);
+    }
+    return resolveTranscriptSourcePath(clip.filePath);
+}
+
+} // namespace
+
+void setTranscriptSourceRootPath(const QString& rootPath)
+{
+    QMutexLocker locker(&transcriptSourceRootMutex());
+    transcriptSourceRootStorage() = rootPath.trimmed().isEmpty()
+        ? QString()
+        : QFileInfo(rootPath).absoluteFilePath();
+}
+
+QString transcriptSourceRootPath()
+{
+    QMutexLocker locker(&transcriptSourceRootMutex());
+    return transcriptSourceRootStorage();
+}
+
+bool TranscriptSourceKey::isValid() const
+{
+    return !sourcePath.trimmed().isEmpty();
+}
+
+bool TranscriptSourceKey::usesAudioStream() const
+{
+    return audioStreamIndex >= 0;
+}
+
+QString TranscriptSourceKey::canonicalKey() const
+{
+    if (!isValid()) {
+        return QString();
+    }
+    return editor::audio::makeSourceKey(QFileInfo(sourcePath).absoluteFilePath(), audioStreamIndex);
+}
+
+QString TranscriptSourceKey::fileStem() const
+{
+    const QString canonical = canonicalKey();
+    const QFileInfo info(editor::audio::pathFromSourceKey(canonical));
+    QString stem = info.completeBaseName();
+    if (stem.trimmed().isEmpty()) {
+        stem = QStringLiteral("transcript_%1").arg(QString::fromLatin1(
+            QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha1).toHex().left(12)));
+    }
+    if (usesAudioStream()) {
+        stem += QStringLiteral("_audio_stream_%1").arg(audioStreamIndex);
+    }
+    return stem;
+}
+
+QString TranscriptSourceKey::displayName() const
+{
+    const QString fileName = QFileInfo(sourcePath).fileName();
+    if (usesAudioStream()) {
+        return QStringLiteral("%1 audio stream %2").arg(fileName, QString::number(audioStreamIndex));
+    }
+    return fileName;
+}
+
+QJsonObject TranscriptSourceKey::toJson() const
+{
+    QJsonObject object;
+    object[QStringLiteral("source_path")] = QDir::toNativeSeparators(QFileInfo(sourcePath).absoluteFilePath());
+    object[QStringLiteral("audio_stream_index")] = audioStreamIndex;
+    object[QStringLiteral("canonical_key")] = canonicalKey();
+    object[QStringLiteral("display_name")] = displayName();
+    object[QStringLiteral("uses_audio_stream")] = usesAudioStream();
+    return object;
+}
+
+TranscriptSourceKey transcriptSourceKeyFromClip(const TimelineClip& clip)
+{
+    return TranscriptSourceKey{transcriptSourcePathForClip(clip), clip.audioStreamIndex};
+}
+
+TranscriptSourceKey transcriptSourceKeyFromLegacyFilePath(const QString& filePath)
+{
+    return TranscriptSourceKey{resolveTranscriptSourcePath(filePath), -1};
+}
+
 QString transcriptPathForClipFile(const QString& filePath) {
-    const QFileInfo info(filePath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
+    return transcriptPathForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+QString transcriptSourceKeyForClip(const TimelineClip& clip)
+{
+    return transcriptSourceKeyFromClip(clip).canonicalKey();
+}
+
+QString transcriptPathForSource(const TranscriptSourceKey& source)
+{
+    const QFileInfo info(editor::audio::pathFromSourceKey(source.canonicalKey()));
+    return info.dir().filePath(source.fileStem() + QStringLiteral(".json"));
+}
+
+QString transcriptPathForClip(const TimelineClip& clip)
+{
+    return transcriptPathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 SpeakerProfile speakerProfileFromJson(const QString& speakerId, const QJsonObject& profileObj)
@@ -75,6 +212,25 @@ QMutex& activeTranscriptPathMutex() {
 QHash<QString, QString>& activeTranscriptPathByClipFile() {
     static QHash<QString, QString> paths;
     return paths;
+}
+
+bool transcriptSidecarExistsForTranscriptPath(const QString& transcriptPath) {
+    if (transcriptPath.trimmed().isEmpty()) {
+        return false;
+    }
+    const QFileInfo info(transcriptPath);
+    const QStringList candidates{
+        info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin")),
+        info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin")),
+        info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin")),
+        info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),
+    };
+    for (const QString& candidatePath : candidates) {
+        if (QFileInfo::exists(candidatePath)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcriptPath)
@@ -703,38 +859,57 @@ bool evaluateSpeakerTrackingSample(const SpeakerProfileRuntime& runtime,
 }
 
 QString transcriptEditablePathForClipFile(const QString& filePath) {
-    const QFileInfo info(filePath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_editable.json"));
+    return transcriptEditablePathForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+QString transcriptEditablePathForSource(const TranscriptSourceKey& source) {
+    const QFileInfo info(editor::audio::pathFromSourceKey(source.canonicalKey()));
+    return info.dir().filePath(source.fileStem() + QStringLiteral("_editable.json"));
+}
+
+QString transcriptEditablePathForClip(const TimelineClip& clip) {
+    return transcriptEditablePathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 QString transcriptWorkingPathForClipFile(const QString& filePath) {
-    const QString editablePath = transcriptEditablePathForClipFile(filePath);
+    return transcriptWorkingPathForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+QString transcriptWorkingPathForSource(const TranscriptSourceKey& source) {
+    const QString editablePath = transcriptEditablePathForSource(source);
     if (QFileInfo::exists(editablePath)) {
         return editablePath;
     }
-    return transcriptPathForClipFile(filePath);
+    return transcriptPathForSource(source);
+}
+
+QString transcriptWorkingPathForClip(const TimelineClip& clip) {
+    return transcriptWorkingPathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 QStringList transcriptCutPathsForClipFile(const QString& filePath) {
-    if (filePath.isEmpty()) {
+    return transcriptCutPathsForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+QStringList transcriptCutPathsForSource(const TranscriptSourceKey& source) {
+    if (!source.isValid()) {
         return {};
     }
 
     QStringList paths;
-    const QFileInfo clipInfo(filePath);
-    const QString originalPath = QFileInfo(transcriptPathForClipFile(filePath)).absoluteFilePath();
-    const QString editablePath = QFileInfo(transcriptEditablePathForClipFile(filePath)).absoluteFilePath();
-    const QString activePath = QFileInfo(activeTranscriptPathForClipFile(filePath)).absoluteFilePath();
+    const QFileInfo sourceInfo(editor::audio::pathFromSourceKey(source.canonicalKey()));
+    const QString originalPath = QFileInfo(transcriptPathForSource(source)).absoluteFilePath();
+    const QString editablePath = QFileInfo(transcriptEditablePathForSource(source)).absoluteFilePath();
+    const QString activePath = QFileInfo(activeTranscriptPathForSource(source)).absoluteFilePath();
 
     paths << originalPath << editablePath;
     if (!activePath.isEmpty()) {
         paths << activePath;
     }
 
-    const QDir dir = clipInfo.dir();
-    const QString clipBaseName = clipInfo.completeBaseName();
+    const QDir dir = sourceInfo.dir();
     const QStringList versionFiles = dir.entryList(
-        QStringList{clipBaseName + QStringLiteral("_editable_v*.json")},
+        QStringList{source.fileStem() + QStringLiteral("_editable_v*.json")},
         QDir::Files,
         QDir::Name);
     for (const QString& versionFile : versionFiles) {
@@ -749,44 +924,44 @@ QStringList transcriptCutPathsForClipFile(const QString& filePath) {
     return paths;
 }
 
+QStringList transcriptCutPathsForClip(const TimelineClip& clip) {
+    return transcriptCutPathsForSource(transcriptSourceKeyFromClip(clip));
+}
+
 QString activeTranscriptPathForClipFile(const QString& filePath) {
+    return activeTranscriptPathForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+QString activeTranscriptPathForSource(const TranscriptSourceKey& source) {
+    const QString sourceKey = source.canonicalKey();
     {
         QMutexLocker locker(&activeTranscriptPathMutex());
-        const auto it = activeTranscriptPathByClipFile().constFind(filePath);
+        const auto it = activeTranscriptPathByClipFile().constFind(sourceKey);
         if (it != activeTranscriptPathByClipFile().cend() &&
             !it.value().isEmpty() &&
             QFileInfo::exists(it.value())) {
             return it.value();
         }
     }
-    return transcriptWorkingPathForClipFile(filePath);
+    return transcriptWorkingPathForSource(source);
+}
+
+QString activeTranscriptPathForClip(const TimelineClip& clip) {
+    return activeTranscriptPathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
                                                    const QString& preferredTranscriptPath) {
-    const auto sidecarExistsForTranscriptPath = [](const QString& transcriptPath) {
-        if (transcriptPath.trimmed().isEmpty()) {
-            return false;
-        }
-        const QFileInfo info(transcriptPath);
-        const QStringList candidates{
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),
-        };
-        for (const QString& candidatePath : candidates) {
-            if (QFileInfo::exists(candidatePath)) {
-                return true;
-            }
-        }
-        return false;
-    };
+    return transcriptPathForRuntimeSidecarForSource(transcriptSourceKeyFromLegacyFilePath(filePath),
+                                                   preferredTranscriptPath);
+}
 
-    const QString activePath = activeTranscriptPathForClipFile(filePath);
-    const QString editablePath = transcriptEditablePathForClipFile(filePath);
-    const QString workingPath = transcriptWorkingPathForClipFile(filePath);
-    const QString originalPath = transcriptPathForClipFile(filePath);
+QString transcriptPathForRuntimeSidecarForSource(const TranscriptSourceKey& source,
+                                                 const QString& preferredTranscriptPath) {
+    const QString activePath = activeTranscriptPathForSource(source);
+    const QString editablePath = transcriptEditablePathForSource(source);
+    const QString workingPath = transcriptWorkingPathForSource(source);
+    const QString originalPath = transcriptPathForSource(source);
     const QStringList candidates{
         preferredTranscriptPath,
         activePath,
@@ -800,7 +975,7 @@ QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
         }
     }
     for (const QString& candidatePath : candidates) {
-        if (sidecarExistsForTranscriptPath(candidatePath)) {
+        if (transcriptSidecarExistsForTranscriptPath(candidatePath)) {
             return candidatePath;
         }
     }
@@ -812,55 +987,68 @@ QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
     return activePath;
 }
 
-bool facedetectionsSidecarExistsForClipFile(const QString& filePath) {
-    const auto sidecarExistsForTranscriptPath = [](const QString& transcriptPath) {
-        if (transcriptPath.trimmed().isEmpty()) {
-            return false;
-        }
-        const QFileInfo info(transcriptPath);
-        const QStringList candidates{
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin")),
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),
-        };
-        for (const QString& candidatePath : candidates) {
-            if (QFileInfo::exists(candidatePath)) {
-                return true;
-            }
-        }
-        return false;
-    };
+QString transcriptPathForRuntimeSidecarForClip(const TimelineClip& clip,
+                                               const QString& preferredTranscriptPath) {
+    return transcriptPathForRuntimeSidecarForSource(transcriptSourceKeyFromClip(clip),
+                                                   preferredTranscriptPath);
+}
 
-    const QString activePath = transcriptPathForRuntimeSidecarForClipFile(filePath);
-    if (sidecarExistsForTranscriptPath(activePath)) {
+bool facedetectionsSidecarExistsForClipFile(const QString& filePath) {
+    return facedetectionsSidecarExistsForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+bool facedetectionsSidecarExistsForSource(const TranscriptSourceKey& source) {
+    const QString activePath = transcriptPathForRuntimeSidecarForSource(source);
+    if (transcriptSidecarExistsForTranscriptPath(activePath)) {
         return true;
     }
-    const QString workingPath = transcriptWorkingPathForClipFile(filePath);
-    if (workingPath != activePath && sidecarExistsForTranscriptPath(workingPath)) {
+    const QString workingPath = transcriptWorkingPathForSource(source);
+    if (workingPath != activePath && transcriptSidecarExistsForTranscriptPath(workingPath)) {
         return true;
     }
     return false;
 }
 
+bool facedetectionsSidecarExistsForClip(const TimelineClip& clip) {
+    return facedetectionsSidecarExistsForSource(transcriptSourceKeyFromClip(clip));
+}
+
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath) {
-    if (filePath.isEmpty()) {
+    setActiveTranscriptPathForSource(transcriptSourceKeyFromLegacyFilePath(filePath), transcriptPath);
+}
+
+void setActiveTranscriptPathForSource(const TranscriptSourceKey& source, const QString& transcriptPath) {
+    const QString sourceKey = source.canonicalKey();
+    if (sourceKey.isEmpty()) {
         return;
     }
     QMutexLocker locker(&activeTranscriptPathMutex());
     if (transcriptPath.isEmpty()) {
-        activeTranscriptPathByClipFile().remove(filePath);
+        activeTranscriptPathByClipFile().remove(sourceKey);
         return;
     }
-    activeTranscriptPathByClipFile().insert(filePath, transcriptPath);
+    activeTranscriptPathByClipFile().insert(sourceKey, transcriptPath);
+}
+
+void setActiveTranscriptPathForClip(const TimelineClip& clip, const QString& transcriptPath) {
+    setActiveTranscriptPathForSource(transcriptSourceKeyFromClip(clip), transcriptPath);
 }
 
 void clearActiveTranscriptPathForClipFile(const QString& filePath) {
-    if (filePath.isEmpty()) {
+    clearActiveTranscriptPathForSource(transcriptSourceKeyFromLegacyFilePath(filePath));
+}
+
+void clearActiveTranscriptPathForSource(const TranscriptSourceKey& source) {
+    const QString sourceKey = source.canonicalKey();
+    if (sourceKey.isEmpty()) {
         return;
     }
     QMutexLocker locker(&activeTranscriptPathMutex());
-    activeTranscriptPathByClipFile().remove(filePath);
+    activeTranscriptPathByClipFile().remove(sourceKey);
+}
+
+void clearActiveTranscriptPathForClip(const TimelineClip& clip) {
+    clearActiveTranscriptPathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 void clearAllActiveTranscriptPaths() {
@@ -869,7 +1057,11 @@ void clearAllActiveTranscriptPaths() {
 }
 
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut) {
-    const QString editablePath = transcriptEditablePathForClipFile(filePath);
+    return ensureEditableTranscriptForSource(transcriptSourceKeyFromLegacyFilePath(filePath), editablePathOut);
+}
+
+bool ensureEditableTranscriptForSource(const TranscriptSourceKey& source, QString* editablePathOut) {
+    const QString editablePath = transcriptEditablePathForSource(source);
     if (editablePathOut) {
         *editablePathOut = editablePath;
     }
@@ -877,12 +1069,17 @@ bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* edita
         return true;
     }
 
-    const QString originalPath = transcriptPathForClipFile(filePath);
+    const QString originalPath = transcriptPathForSource(source);
     if (!QFileInfo::exists(originalPath)) {
         return false;
     }
+    QDir().mkpath(QFileInfo(editablePath).absolutePath());
     QFile::remove(editablePath);
     return QFile::copy(originalPath, editablePath);
+}
+
+bool ensureEditableTranscriptForClip(const TimelineClip& clip, QString* editablePathOut) {
+    return ensureEditableTranscriptForSource(transcriptSourceKeyFromClip(clip), editablePathOut);
 }
 
 bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut)

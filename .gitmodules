@@ -28,3 +28,6 @@
 [submodule "external/rubberband"]
 	path = external/rubberband
 	url = https://github.com/breakfastquay/rubberband.git
+[submodule "sam3"]
+	path = sam3
+	url = https://github.com/juliancoy/sam3.git

@@ -530,7 +530,7 @@ QVector<ExportRangeSegment> subtractRanges(const QVector<ExportRangeSegment>& ba
 
 QString TranscriptEngine::transcriptPathForClip(const TimelineClip &clip) const
     {
-        return activeTranscriptPathForClipFile(clip.filePath);
+        return activeTranscriptPathForClip(clip);
     }
 
 QString TranscriptEngine::secondsToTranscriptTime(double seconds) const
@@ -831,6 +831,7 @@ void TranscriptEngine::appendMergedExportFrame(QVector<ExportRangeSegment> &rang
 bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
                                                   int transcriptPrependMs,
                                                   int transcriptPostpendMs,
+                                                  int transcriptOffsetMs,
                                                   QVector<ExportRangeSegment>* rangesOut) const
 {
     if (!rangesOut || transcriptPath.trimmed().isEmpty()) {
@@ -855,13 +856,15 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
         cacheIt->modifiedMs == modifiedMs &&
         cacheIt->fileSize == fileSize &&
         cacheIt->prependMs == transcriptPrependMs &&
-        cacheIt->postpendMs == transcriptPostpendMs) {
+        cacheIt->postpendMs == transcriptPostpendMs &&
+        cacheIt->offsetMs == transcriptOffsetMs) {
         *rangesOut = cacheIt->sourceWordRanges;
         return true;
     }
 
     QVector<ExportRangeSegment> sourceWordRanges =
-        transcriptPaddedWordRanges(runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs);
+        transcriptPaddedWordRanges(
+            runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs, transcriptOffsetMs);
 
     sourceWordRanges = mergeRanges(sourceWordRanges);
 
@@ -870,6 +873,7 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
     entry.fileSize = fileSize;
     entry.prependMs = transcriptPrependMs;
     entry.postpendMs = transcriptPostpendMs;
+    entry.offsetMs = transcriptOffsetMs;
     entry.sourceWordRanges = sourceWordRanges;
     entry.valid = true;
     m_transcriptSourceWordRangesCache.insert(transcriptPath, entry);
@@ -882,11 +886,15 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                                                            const QVector<TimelineClip> &clips,
                                                            const QVector<RenderSyncMarker> &markers,
                                                            int transcriptPrependMs,
-                                                           int transcriptPostpendMs) const
+                                                           int transcriptPostpendMs,
+                                                           int transcriptOffsetMs) const
     {
         QString cacheSignature;
         cacheSignature.reserve(256);
-        cacheSignature += QStringLiteral("pre=%1|post=%2|").arg(transcriptPrependMs).arg(transcriptPostpendMs);
+        cacheSignature += QStringLiteral("pre=%1|post=%2|offset=%3|")
+                              .arg(transcriptPrependMs)
+                              .arg(transcriptPostpendMs)
+                              .arg(transcriptOffsetMs);
         for (const ExportRangeSegment &range : baseRanges)
         {
             cacheSignature += QStringLiteral("base:%1-%2|").arg(range.startFrame).arg(range.endFrame);
@@ -955,6 +963,7 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
             if (!transcriptSourceWordRanges(transcriptPathForClip(clip),
                                             transcriptPrependMs,
                                             transcriptPostpendMs,
+                                            transcriptOffsetMs,
                                             &mergedSourceWordRanges))
             {
                 continue;
@@ -1054,14 +1063,16 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
     const QVector<RenderSyncMarker> &markers,
     int transcriptPrependMs,
     int transcriptPostpendMs,
-    int neighborWordRadius) const
+    int neighborWordRadius,
+    int transcriptOffsetMs) const
 {
     const int safeNeighborWordRadius = qBound(0, neighborWordRadius, 10);
     QString cacheSignature;
     cacheSignature.reserve(256);
-    cacheSignature += QStringLiteral("discrete|pre=%1|post=%2|radius=%3|")
+    cacheSignature += QStringLiteral("discrete|pre=%1|post=%2|offset=%3|radius=%4|")
                           .arg(transcriptPrependMs)
                           .arg(transcriptPostpendMs)
+                          .arg(transcriptOffsetMs)
                           .arg(safeNeighborWordRadius);
     for (const ExportRangeSegment &range : baseRanges) {
         cacheSignature += QStringLiteral("base:%1-%2|").arg(range.startFrame).arg(range.endFrame);
@@ -1126,7 +1137,8 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
         }
 
         QVector<ExportRangeSegment> sourceWordRanges =
-            transcriptPaddedWordRanges(runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs);
+            transcriptPaddedWordRanges(
+                runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs, transcriptOffsetMs);
 
         QVector<ExportRangeSegment> normalizeWordRanges = sourceWordRanges;
         if (safeNeighborWordRadius > 0 && sourceWordRanges.size() > 1) {

@@ -29,8 +29,15 @@ struct RenderRequestCore {
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
     std::string backgroundFillEffect = "edge_stretch";
+    double backgroundFillOpacity = 1.0;
+    double backgroundFillBrightness = 0.0;
+    double backgroundFillSaturation = 1.0;
+    int backgroundFillEdgePixels = 1;
+    bool backgroundFillEdgeProgressive = false;
+    double backgroundFillEdgePower = 2.0;
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
+    int transcriptOffsetMs = 0;
     std::int64_t exportStartFrame = 0;
     std::int64_t exportEndFrame = 0;
     std::size_t clipCount = 0;

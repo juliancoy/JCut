@@ -8,6 +8,7 @@
 #include <QList>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSlider>
 #include <QSignalBlocker>
 #include <QShortcut>
 #include <QSpinBox>
@@ -120,6 +121,7 @@ void EditorWindow::bindInspectorWidgets()
     m_audioWaveformPreviewProcessedCheckBox = m_inspectorPane->audioWaveformPreviewProcessedCheckBox();
     m_audioNormalizeEnabledCheckBox = m_inspectorPane->audioNormalizeEnabledCheckBox();
     m_audioNormalizeTargetDbSpin = m_inspectorPane->audioNormalizeTargetDbSpin();
+    m_audioStereoToMonoCheckBox = m_inspectorPane->audioStereoToMonoCheckBox();
     m_audioSelectiveNormalizeEnabledCheckBox = m_inspectorPane->audioSelectiveNormalizeEnabledCheckBox();
     m_audioSelectiveNormalizeMinSecondsSpin = m_inspectorPane->audioSelectiveNormalizeMinSecondsSpin();
     m_audioSelectiveNormalizePeakDbSpin = m_inspectorPane->audioSelectiveNormalizePeakDbSpin();
@@ -134,7 +136,9 @@ void EditorWindow::bindInspectorWidgets()
     m_audioCompressorEnabledCheckBox = m_inspectorPane->audioCompressorEnabledCheckBox();
     m_audioCompressorThresholdDbSpin = m_inspectorPane->audioCompressorThresholdDbSpin();
     m_audioCompressorRatioSpin = m_inspectorPane->audioCompressorRatioSpin();
+    m_audioSoftClipEnabledCheckBox = m_inspectorPane->audioSoftClipEnabledCheckBox();
     m_transcriptOverlayEnabledCheckBox = m_inspectorPane->transcriptOverlayEnabledCheckBox();
+    m_transcriptPlacementModeCombo = m_inspectorPane->transcriptPlacementModeCombo();
     m_transcriptMaxLinesSpin = m_inspectorPane->transcriptMaxLinesSpin();
     m_transcriptMaxCharsSpin = m_inspectorPane->transcriptMaxCharsSpin();
     m_transcriptAutoScrollCheckBox = m_inspectorPane->transcriptAutoScrollCheckBox();
@@ -209,6 +213,12 @@ void EditorWindow::bindInspectorWidgets()
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
     m_backgroundFillEffectCombo = m_inspectorPane->backgroundFillEffectCombo();
+    m_backgroundFillOpacitySpin = m_inspectorPane->backgroundFillOpacitySpin();
+    m_backgroundFillBrightnessSpin = m_inspectorPane->backgroundFillBrightnessSpin();
+    m_backgroundFillSaturationSpin = m_inspectorPane->backgroundFillSaturationSpin();
+    m_backgroundFillEdgePixelsSlider = m_inspectorPane->backgroundFillEdgePixelsSlider();
+    m_backgroundFillEdgeProgressiveCheckBox = m_inspectorPane->backgroundFillEdgeProgressiveCheckBox();
+    m_backgroundFillEdgePowerSpin = m_inspectorPane->backgroundFillEdgePowerSpin();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
@@ -238,6 +248,7 @@ void EditorWindow::bindInspectorWidgets()
     m_renameProjectButton = m_inspectorPane->renameProjectButton();
     m_transcriptPrependMsSpin = m_inspectorPane->transcriptPrependMsSpin();
     m_transcriptPostpendMsSpin = m_inspectorPane->transcriptPostpendMsSpin();
+    m_transcriptOffsetMsSpin = m_inspectorPane->transcriptOffsetMsSpin();
     m_speechFilterEnabledCheckBox = m_inspectorPane->speechFilterEnabledCheckBox();
     m_speechFilterFadeSamplesSpin = m_inspectorPane->speechFilterFadeSamplesSpin();
     m_speechFilterRangeCrossfadeCheckBox = m_inspectorPane->speechFilterRangeCrossfadeCheckBox();
@@ -341,12 +352,13 @@ void EditorWindow::bindInspectorWidgets()
             }
             const QList<QWidget*> controls{
                 m_audioAmplifyEnabledCheckBox, m_audioAmplifyDbSpin, m_audioNormalizeEnabledCheckBox,
-                m_audioNormalizeTargetDbSpin, m_audioSelectiveNormalizeEnabledCheckBox,
+                m_audioNormalizeTargetDbSpin, m_audioStereoToMonoCheckBox,
+                m_audioSelectiveNormalizeEnabledCheckBox,
                 m_audioSelectiveNormalizeMinSecondsSpin, m_audioSelectiveNormalizePeakDbSpin,
                 m_audioSelectiveNormalizePassesSpin, m_audioWaveformPreviewProcessedCheckBox,
                 m_audioPeakReductionEnabledCheckBox, m_audioPeakThresholdDbSpin,
                 m_audioLimiterEnabledCheckBox, m_audioLimiterThresholdDbSpin, m_audioCompressorEnabledCheckBox,
-                m_audioCompressorThresholdDbSpin, m_audioCompressorRatioSpin};
+                m_audioCompressorThresholdDbSpin, m_audioCompressorRatioSpin, m_audioSoftClipEnabledCheckBox};
             for (QWidget* control : controls) {
                 if (control) {
                     control->setEnabled(m_featureAudioDynamicsTools);
@@ -528,19 +540,22 @@ void EditorWindow::setupPreviewControls()
     const auto applyAudioDynamicsFromInspector = [this]() {
         if (!m_audioAmplifyEnabledCheckBox || !m_audioAmplifyDbSpin ||
             !m_audioNormalizeEnabledCheckBox || !m_audioNormalizeTargetDbSpin ||
+            !m_audioStereoToMonoCheckBox ||
             !m_audioSelectiveNormalizeEnabledCheckBox || !m_audioSelectiveNormalizeMinSecondsSpin ||
             !m_audioSelectiveNormalizePassesSpin || !m_audioSelectiveNormalizeOverlayVisibleCheckBox ||
             !m_audioTranscriptNormalizeEnabledCheckBox ||
             !m_audioPeakReductionEnabledCheckBox || !m_audioPeakThresholdDbSpin ||
             !m_audioLimiterEnabledCheckBox || !m_audioLimiterThresholdDbSpin ||
             !m_audioCompressorEnabledCheckBox || !m_audioCompressorThresholdDbSpin ||
-            !m_audioCompressorRatioSpin || !m_audioWaveformPreviewProcessedCheckBox) {
+            !m_audioCompressorRatioSpin || !m_audioSoftClipEnabledCheckBox ||
+            !m_audioWaveformPreviewProcessedCheckBox) {
             return;
         }
         m_previewAudioDynamics.amplifyEnabled = m_audioAmplifyEnabledCheckBox->isChecked();
         m_previewAudioDynamics.amplifyDb = m_audioAmplifyDbSpin->value();
         m_previewAudioDynamics.normalizeEnabled = m_audioNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.normalizeTargetDb = m_audioNormalizeTargetDbSpin->value();
+        m_previewAudioDynamics.stereoToMonoEnabled = m_audioStereoToMonoCheckBox->isChecked();
         m_previewAudioDynamics.selectiveNormalizeEnabled = m_audioSelectiveNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds =
             m_audioSelectiveNormalizeMinSecondsSpin->value();
@@ -559,6 +574,7 @@ void EditorWindow::setupPreviewControls()
         m_previewAudioDynamics.compressorEnabled = m_audioCompressorEnabledCheckBox->isChecked();
         m_previewAudioDynamics.compressorThresholdDb = m_audioCompressorThresholdDbSpin->value();
         m_previewAudioDynamics.compressorRatio = m_audioCompressorRatioSpin->value();
+        m_previewAudioDynamics.softClipEnabled = m_audioSoftClipEnabledCheckBox->isChecked();
         m_previewAudioDynamics.waveformPreviewPostProcessing =
             m_audioWaveformPreviewProcessedCheckBox->isChecked();
         if (m_preview) {
@@ -568,6 +584,7 @@ void EditorWindow::setupPreviewControls()
             m_audioEngine->setTranscriptNormalizeEnabled(
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            scheduleTranscriptNormalizeRangeRefresh(0);
         }
         scheduleSaveState();
     };
@@ -916,6 +933,14 @@ void EditorWindow::setupPreviewControls()
     if (m_audioShowWaveformCheckBox) {
         connect(m_audioShowWaveformCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
             m_audioWaveformVisible = checked;
+            if (m_timeline) {
+                const int selectedTrackIndex = m_timeline->selectedTrackIndex();
+                if (selectedTrackIndex >= 0) {
+                    m_timeline->updateTrackByIndex(selectedTrackIndex, [checked](TimelineTrack& track) {
+                        track.audioWaveformVisible = checked;
+                    });
+                }
+            }
             if (m_preview) {
                 m_preview->setAudioWaveformVisible(checked);
             }
@@ -966,6 +991,10 @@ void EditorWindow::setupPreviewControls()
     if (m_audioNormalizeTargetDbSpin) {
         connect(m_audioNormalizeTargetDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioStereoToMonoCheckBox) {
+        connect(m_audioStereoToMonoCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
     }
     if (m_audioSelectiveNormalizeEnabledCheckBox) {
         connect(m_audioSelectiveNormalizeEnabledCheckBox, &QCheckBox::toggled, this,
@@ -1022,6 +1051,10 @@ void EditorWindow::setupPreviewControls()
     if (m_audioCompressorRatioSpin) {
         connect(m_audioCompressorRatioSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioSoftClipEnabledCheckBox) {
+        connect(m_audioSoftClipEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
     }
     if (m_preview) {
         m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
@@ -1090,6 +1123,93 @@ void EditorWindow::setupPreviewControls()
         if (m_preview) {
             m_preview->setBackgroundFillEffect(
                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()));
+        }
+    }
+
+    if (m_backgroundFillOpacitySpin) {
+        connect(m_backgroundFillOpacitySpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (m_preview) {
+                m_preview->setBackgroundFillOpacity(qBound<qreal>(0.0, value / 100.0, 1.0));
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillOpacity(
+                qBound<qreal>(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0));
+        }
+    }
+
+    if (m_backgroundFillBrightnessSpin) {
+        connect(m_backgroundFillBrightnessSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (m_preview) {
+                m_preview->setBackgroundFillBrightness(qBound<qreal>(-1.0, value / 100.0, 1.0));
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillBrightness(
+                qBound<qreal>(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0));
+        }
+    }
+
+    if (m_backgroundFillSaturationSpin) {
+        connect(m_backgroundFillSaturationSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (m_preview) {
+                m_preview->setBackgroundFillSaturation(qBound<qreal>(0.0, value / 100.0, 3.0));
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillSaturation(
+                qBound<qreal>(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0));
+        }
+    }
+
+    if (m_backgroundFillEdgePixelsSlider) {
+        connect(m_backgroundFillEdgePixelsSlider, &QSlider::valueChanged, this, [this](int value) {
+            if (m_preview) {
+                m_preview->setBackgroundFillEdgePixels(qBound(1, value, 512));
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillEdgePixels(qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512));
+        }
+    }
+
+    if (m_backgroundFillEdgeProgressiveCheckBox) {
+        connect(m_backgroundFillEdgeProgressiveCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setBackgroundFillEdgeProgressive(checked);
+            }
+            if (m_backgroundFillEdgePowerSpin) {
+                m_backgroundFillEdgePowerSpin->setEnabled(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillEdgeProgressive(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
+        }
+        if (m_backgroundFillEdgePowerSpin) {
+            m_backgroundFillEdgePowerSpin->setEnabled(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
+        }
+    }
+
+    if (m_backgroundFillEdgePowerSpin) {
+        connect(m_backgroundFillEdgePowerSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (m_preview) {
+                m_preview->setBackgroundFillEdgePower(qBound<qreal>(0.25, value, 8.0));
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillEdgePower(qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0));
         }
     }
 

@@ -15,6 +15,7 @@ private slots:
   void handoffPipelineRejectsCpuOnlyFrames();
   void strictDisplayabilityDoesNotAcceptCpuFallback();
   void directPreviewDisablesCpuAndQtTextOverlayFallbacks();
+  void directPreviewDrawsAudioOnlyTranscriptOverlaysAfterVideoLoop();
   void visibleDecodePriorityUsesTimelineDomain();
   void schedulingDiagnosticsExposeRequiredFields();
   void streamTimingDiagnosticsExposeClockDomains();
@@ -224,12 +225,24 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!source.isEmpty(), "vulkan_preview_surface.cpp must be readable");
 
   QVERIFY2(source.contains(QStringLiteral(
-               "constexpr bool requireDirectVulkanPayload = true;")),
-           "direct Vulkan preview must require hardware/GPU payloads for "
-           "visible frames; CPU upload fallback is rejected");
+               "const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;")),
+           "direct Vulkan preview must keep hardware/GPU payloads required "
+           "for video while allowing still-image CPU uploads");
   QVERIFY2(
       source.contains(QStringLiteral("requireDirectVulkanPayload);")),
       "visible frame payload policy must be passed into frame requests");
+  QVERIFY2(source.contains(QStringLiteral("directVulkanPreviewSupportsClip")) &&
+               source.contains(QStringLiteral("clip.mediaType == ClipMediaType::Image")),
+           "direct Vulkan preview must explicitly support still image clips");
+
+  const QString backend =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!backend.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(backend.contains(QStringLiteral("status.frame.hasCpuImage()")) &&
+               backend.contains(QStringLiteral("uploadImageTexture(cb, status.frame.cpuImage())")) &&
+               backend.contains(QStringLiteral("cpu_image_upload")),
+           "direct Vulkan preview must upload still-image CPU frames through "
+           "the Vulkan texture path instead of the video handoff path");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -371,7 +384,11 @@ void TestDirectVulkanHandoffPipelineContract::
               backend.indexOf(QStringLiteral("vkCmdBeginRenderPass")),
       "transcript glyph atlas upload must be recorded before "
       "vkCmdBeginRenderPass");
-  QVERIFY2(backend.contains(
+  const QString transcriptBackend =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_transcript.cpp"));
+  QVERIFY2(!transcriptBackend.isEmpty(),
+           "direct_vulkan_preview_transcript.cpp must be readable");
+  QVERIFY2(transcriptBackend.contains(
                QStringLiteral("transcriptFrameForClipSourceFrame(effectiveClip,"
                               " status->presentedSourceFrame)")),
            "live Vulkan transcript subtitles must time against the presented "
@@ -379,6 +396,56 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!backend.contains(QStringLiteral("renderTranscriptOverlay(")),
            "direct Vulkan preview must not retain a CPU-rendered transcript "
            "overlay path");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    directPreviewDrawsAudioOnlyTranscriptOverlaysAfterVideoLoop() {
+  const QString backend =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!backend.isEmpty(),
+           "direct_vulkan_preview_window.cpp must be readable");
+
+  const QString transcriptBackend =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_transcript.cpp"));
+  QVERIFY2(!transcriptBackend.isEmpty(),
+           "direct_vulkan_preview_transcript.cpp must be readable");
+
+  QVERIFY2(transcriptBackend.contains(QStringLiteral("audioOnlyTranscriptActive")),
+           "direct preview must consider transcript overlays on active "
+           "audio-only clips even when no video decode status exists");
+  QVERIFY2(transcriptBackend.contains(QStringLiteral(
+               "if (!statusDrawable && !audioOnlyTranscriptActive)")),
+           "audio-only transcript candidates must bypass the drawable-video "
+           "status gate");
+  QVERIFY2(backend.contains(QStringLiteral(
+               "QSet<QString> drawnTranscriptOverlayClipIds")),
+           "direct preview must track which prepared transcript overlays were "
+           "actually drawn");
+  QVERIFY2(backend.contains(QStringLiteral(
+               "for (auto it = preparedTranscriptOverlays.cbegin(); "
+               "it != preparedTranscriptOverlays.cend(); ++it)")),
+           "direct preview must run a fallback pass for prepared transcript "
+           "overlays skipped by the video clip draw loop");
+  QVERIFY2(backend.contains(QStringLiteral("fallbackTranscriptDrawCount")),
+           "fallback transcript draws must be counted for diagnostics");
+  QVERIFY2(backend.contains(QStringLiteral("textDrawStageMetric")),
+           "draw-stage text telemetry must distinguish prepared overlays from "
+           "visible overlays");
+  QVERIFY2(
+      backend.indexOf(QStringLiteral("preparedTranscriptOverlays.insert(")) <
+          backend.indexOf(QStringLiteral("drawnTranscriptOverlayClipIds")) &&
+          backend.indexOf(QStringLiteral("drawnTranscriptOverlayClipIds")) <
+              backend.indexOf(QStringLiteral("fallbackTranscriptDrawCount")),
+      "audio-only transcript overlays must be prepared before draw tracking, "
+      "and fallback draw telemetry must run after the main draw loop");
+
+  const QString presenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(!presenter.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
+  QVERIFY2(presenter.contains(QStringLiteral("\"text_draw\"")) ||
+               presenter.contains(QStringLiteral("text_draw")),
+           "presenter diagnostics must expose the transcript text draw stage");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

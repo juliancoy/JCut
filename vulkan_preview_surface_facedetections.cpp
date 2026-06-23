@@ -4,6 +4,7 @@
 #include "facedetections_debug.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
+#include "editor_shared_timing.h"
 #include "transcript_engine.h"
 
 #include <QFileInfo>
@@ -54,7 +55,7 @@ FacestreamOverlayCacheIdentity facestreamOverlayCacheIdentity(
     identity.bucket = qMax<int64_t>(0, sourceFrame) / kFacestreamOverlayInteractiveWindowFrames;
     identity.querySourceFrame = identity.bucket * kFacestreamOverlayInteractiveWindowFrames;
     identity.clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-    identity.transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    identity.transcriptPath = activeTranscriptPathForClip(clip);
     const QFileInfo transcriptInfo(identity.transcriptPath);
     identity.transcriptExists = transcriptInfo.exists() && transcriptInfo.isFile();
     identity.transcriptPath = transcriptInfo.absoluteFilePath();
@@ -142,7 +143,7 @@ bool visualClipActiveAtSample(const TimelineClip& clip,
                               bool bypassGrading)
 {
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
-    const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+    const int64_t clipEndSample = clipTimelineEndSamples(clip);
     return clipVisualPlaybackEnabled(clip, tracks) &&
            samplePosition >= clipStartSample &&
            samplePosition < clipEndSample &&
@@ -157,7 +158,7 @@ bool clipSupportsDrawableTranscriptOverlayForSelection(const TimelineClip& clip,
     if (!((clip.mediaType == ClipMediaType::Audio) || clip.hasAudio) || !clip.transcriptOverlay.enabled) {
         return false;
     }
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
         loadTranscriptRuntimeDocument(transcriptPath);
     const QVector<TranscriptSection>& sections =
@@ -1318,7 +1319,8 @@ bool VulkanPreviewSurface::selectedOverlayIsTranscript() const
                                                               m_interaction.renderSyncMarkers,
                                                               TranscriptOverlayTiming{
                                                                   m_interaction.transcriptPrependMs,
-                                                                  m_interaction.transcriptPostpendMs})) {
+                                                                  m_interaction.transcriptPostpendMs,
+                                                                  m_interaction.transcriptOffsetMs})) {
             return false;
         }
         return true;

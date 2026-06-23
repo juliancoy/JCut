@@ -187,15 +187,33 @@ void ClipsTab::onCustomContextMenuRequested(const QPoint& pos) {
         return;
     }
     const QString clipId = idItem->data(Qt::UserRole).toString();
+    const QVector<TimelineClip> clips = m_deps.getClips ? m_deps.getClips() : QVector<TimelineClip>{};
+    const TimelineClip* clip = nullptr;
+    for (const TimelineClip& candidate : clips) {
+        if (candidate.id == clipId) {
+            clip = &candidate;
+            break;
+        }
+    }
 
     QMenu menu(m_widgets.clipsTable);
     QAction* selectAction = menu.addAction(QStringLiteral("Select Clip"));
+    QAction* detectAction = menu.addAction(QStringLiteral("Detect"));
+    detectAction->setEnabled(
+        clip &&
+        clip->mediaType == ClipMediaType::Video &&
+        !clip->filePath.trimmed().isEmpty() &&
+        static_cast<bool>(m_deps.detectClip));
     QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
 
     QAction* selected = menu.exec(m_widgets.clipsTable->viewport()->mapToGlobal(pos));
     if (selected == selectAction) {
         if (m_deps.selectClipId) {
             m_deps.selectClipId(clipId);
+        }
+    } else if (selected == detectAction) {
+        if (m_deps.detectClip) {
+            m_deps.detectClip(clipId);
         }
     } else if (selected == deleteAction) {
         if (m_deps.deleteClipById) {

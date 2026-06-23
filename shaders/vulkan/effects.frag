@@ -10,7 +10,7 @@ layout(push_constant) uniform Push {
     float u_saturation;
     float u_opacity;
     vec4 u_shadows;    // rgb = shadows, a = curve LUT enabled; edge fill uses rgba = source rect
-    vec4 u_midtones;   // rgb = midtones, a = mask feather radius
+    vec4 u_midtones;   // rgb = midtones; edge fill uses x = edge px, y = progressive, z = power; a = mask feather radius
     vec4 u_highlights; // rgb = highlights, a = mask feather gamma; negative a = background fill mode
 } pc;
 
@@ -49,6 +49,30 @@ vec4 edgeStretchFillSample(vec2 uv) {
                               clamp(uv.y, top, bottom));
     vec2 sourceUv = vec2((clampedOutput.x - left) / width,
                          (clampedOutput.y - top) / height);
+    vec2 texSize = vec2(textureSize(u_texture, 0));
+    vec2 edgeBand = max(vec2(0.0), vec2(pc.u_midtones.x - 1.0) / max(vec2(1.0), texSize));
+    bool progressive = pc.u_midtones.y > 0.5;
+    float power = max(0.25, pc.u_midtones.z);
+
+    if (uv.x < left) {
+        float fillT = clamp((left - uv.x) / max(0.0001, left), 0.0, 1.0);
+        float offset = progressive ? edgeBand.x * pow(1.0 - fillT, power) : edgeBand.x;
+        sourceUv.x = offset;
+    } else if (uv.x > right) {
+        float fillT = clamp((uv.x - right) / max(0.0001, 1.0 - right), 0.0, 1.0);
+        float offset = progressive ? edgeBand.x * pow(1.0 - fillT, power) : edgeBand.x;
+        sourceUv.x = 1.0 - offset;
+    }
+
+    if (uv.y < top) {
+        float fillT = clamp((top - uv.y) / max(0.0001, top), 0.0, 1.0);
+        float offset = progressive ? edgeBand.y * pow(1.0 - fillT, power) : edgeBand.y;
+        sourceUv.y = offset;
+    } else if (uv.y > bottom) {
+        float fillT = clamp((uv.y - bottom) / max(0.0001, 1.0 - bottom), 0.0, 1.0);
+        float offset = progressive ? edgeBand.y * pow(1.0 - fillT, power) : edgeBand.y;
+        sourceUv.y = 1.0 - offset;
+    }
     return texture(u_texture, clamp(sourceUv, vec2(0.0), vec2(1.0)));
 }
 

@@ -17,6 +17,9 @@ layout(push_constant) uniform PushConstants {
     int height;
     int yPitch;
     int uvPitch;
+    int fullRange;
+    int colorMatrix;
+    int chromaSwap;
 } pc;
 
 uint loadByteFromWords(uint wordIndex, uint byteIndex)
@@ -34,21 +37,37 @@ uint loadY(uint x, uint y)
 
 uint loadUV(uint x, uint y)
 {
-    uint byteOffset = (y >> 1u) * uint(pc.uvPitch) + (x & ~1u);
+    uint byteOffset = (y >> 1u) * uint(pc.uvPitch) + x;
     uint word = uvWords[byteOffset >> 2u];
     return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
 }
 
 vec3 nv12ToRgb(float yByte, float uByte, float vByte)
 {
-    float y = 1.16438356 * (yByte - 16.0);
+    float y = pc.fullRange != 0 ? yByte : 1.16438356 * (yByte - 16.0);
     float u = uByte - 128.0;
     float v = vByte - 128.0;
-    // HD camera/video sources are normally BT.709 limited range. Keep this
-    // conversion at the decoder handoff boundary so display shaders consume RGB.
-    return clamp(vec3(y + 1.79274107 * v,
-                      y - 0.21324861 * u - 0.53290933 * v,
-                      y + 2.11240179 * u) / 255.0,
+
+    vec3 rgb;
+    if (pc.colorMatrix == 1) {
+        rgb = pc.fullRange != 0
+            ? vec3(y + 1.5748 * v,
+                   y - 0.18732427 * u - 0.46812427 * v,
+                   y + 1.8556 * u)
+            : vec3(y + 1.79274107 * v,
+                   y - 0.21324861 * u - 0.53290933 * v,
+                   y + 2.11240179 * u);
+    } else {
+        rgb = pc.fullRange != 0
+            ? vec3(y + 1.402 * v,
+                   y - 0.344136 * u - 0.714136 * v,
+                   y + 1.772 * u)
+            : vec3(y + 1.59602678 * v,
+                   y - 0.39176229 * u - 0.81296765 * v,
+                   y + 2.01723214 * u);
+    }
+
+    return clamp(rgb / 255.0,
                  vec3(0.0),
                  vec3(1.0));
 }
@@ -61,10 +80,13 @@ void main()
     }
 
     float yValue = float(loadY(p.x, p.y));
-    float uValue = float(loadUV(p.x, p.y));
-    float vValue = float(loadUV(p.x + 1u, p.y));
+    uint chromaX = p.x & ~1u;
+    float chroma0 = float(loadUV(chromaX, p.y));
+    float chroma1 = float(loadUV(chromaX + 1u, p.y));
+    float uValue = pc.chromaSwap != 0 ? chroma1 : chroma0;
+    float vValue = pc.chromaSwap != 0 ? chroma0 : chroma1;
     vec3 rgb = nv12ToRgb(yValue, uValue, vValue);
     // The direct Vulkan preview expects the hardware NV12 handoff image to be
     // canonical RGBA before any grading/composite shader samples it.
-    imageStore(outImage, ivec2(p), vec4(rgb.g, rgb.r, rgb.b, 1.0));
+    imageStore(outImage, ivec2(p), vec4(rgb, 1.0));
 }

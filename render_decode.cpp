@@ -13,7 +13,7 @@ namespace {
 
 QString transcriptSectionsCacheKeyForClip(const TimelineClip& clip)
 {
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     const QFileInfo info(transcriptPath);
     const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
     return clip.filePath + QLatin1Char('|') + transcriptPath + QLatin1Char('|') +
@@ -319,7 +319,7 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
                 ++it;
             }
         }
-        transcriptCache.insert(cacheKey, loadTranscriptSections(activeTranscriptPathForClipFile(clip.filePath)));
+        transcriptCache.insert(cacheKey, loadTranscriptSections(activeTranscriptPathForClip(clip)));
     }
     const QVector<TranscriptSection>& sections = transcriptCache.value(cacheKey);
     if (sections.isEmpty()) {

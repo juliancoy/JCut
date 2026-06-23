@@ -510,6 +510,19 @@ reset_stale_cmake_cache() {
        [[ "${cached_generator}" != "${CMAKE_GENERATOR}" ]]; then
         echo "Detected stale CMake cache in ${build_dir}; recreating build directory..."
         rm -rf "${build_dir}"
+        return 0
+    fi
+
+    local cached_qt_network_dir=""
+    cached_qt_network_dir="$(sed -n 's/^Qt6Network_DIR:PATH=//p' "${cache_file}" | tail -n1)"
+    if [[ -n "${cached_qt_network_dir}" ]]; then
+        local qt_network_targets="${cached_qt_network_dir}/Qt6NetworkTargets.cmake"
+        if [[ -f "${qt_network_targets}" ]] && \
+           grep -Eq 'QT_DISABLED_PUBLIC_FEATURES.*(^|;)ssl(;|")' "${qt_network_targets}"; then
+            echo "Cached Qt in ${build_dir} was built without SSL support; recreating build directory..."
+            rm -rf "${build_dir}"
+            return 0
+        fi
     fi
 }
 
@@ -526,6 +539,15 @@ cmake_configure_args=(
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
     -DWITH_VULKAN=ON
 )
+if [[ -n "${JCUT_QT_PREFIX:-}" ]]; then
+    cmake_configure_args+=(
+        -DCMAKE_PREFIX_PATH="${JCUT_QT_PREFIX}"
+    )
+elif [[ "${UNAME_S}" == "Linux" && -z "${CMAKE_PREFIX_PATH:-}" ]]; then
+    cmake_configure_args+=(
+        -DCMAKE_PREFIX_PATH="/usr/lib/x86_64-linux-gnu/cmake"
+    )
+fi
 if [[ "${UNAME_S}" == "Darwin" ]]; then
     cmake_configure_args+=(
         -DCMAKE_PREFIX_PATH="$(brew --prefix)"

@@ -13,6 +13,7 @@ private slots:
     void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
     void transcriptOverlayLayoutsRemainReadableAcrossPreviewSizes();
     void transcriptOverlaySeparatesAtlasKeyFromActiveWordLayout();
+    void transcriptOverlayKeepsFirstLineStableAcrossLineCounts();
     void emptyInputsDoNotGenerateText();
 };
 
@@ -296,6 +297,54 @@ void TestVulkanTextGeneration::transcriptOverlaySeparatesAtlasKeyFromActiveWordL
              "active word changes must reuse the transcript glyph atlas");
     QVERIFY2(activeThird.atlasKey != changedText.atlasKey,
              "word text changes must invalidate the transcript glyph atlas");
+}
+
+void TestVulkanTextGeneration::transcriptOverlayKeepsFirstLineStableAcrossLineCounts()
+{
+    VulkanTextRenderer renderer;
+    const QSize outputSize(1080, 1920);
+    const QRectF outputRect(90.0, 830.0, 900.0, 262.0);
+    TimelineClip clip = transcriptClip();
+    clip.transcriptOverlay.showShadow = false;
+    clip.transcriptOverlay.showSpeakerTitle = false;
+    clip.transcriptOverlay.fontPointSize = 42;
+    clip.transcriptOverlay.boxWidth = outputRect.width();
+    clip.transcriptOverlay.boxHeight = outputRect.height();
+
+    TranscriptOverlayLine line;
+    line.words = QStringList{QStringLiteral("steady"), QStringLiteral("first"), QStringLiteral("line")};
+    line.activeWord = 1;
+
+    TranscriptOverlayLine secondLine;
+    secondLine.words = QStringList{QStringLiteral("second"), QStringLiteral("line")};
+    secondLine.activeWord = -1;
+
+    TranscriptOverlayLayout oneLine;
+    oneLine.lines = QVector<TranscriptOverlayLine>{line};
+    TranscriptOverlayLayout twoLines;
+    twoLines.lines = QVector<TranscriptOverlayLine>{line, secondLine};
+
+    const VulkanTextLayoutDebug oneLineDebug = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize, clip, oneLine, outputRect, QString());
+    const VulkanTextLayoutDebug twoLineDebug = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize, clip, twoLines, outputRect, QString());
+
+    QVERIFY(oneLineDebug.valid);
+    QVERIFY(twoLineDebug.valid);
+    QVERIFY(!oneLineDebug.glyphRects.isEmpty());
+    QVERIFY(!twoLineDebug.glyphRects.isEmpty());
+
+    auto minGlyphTop = [](const QVector<QRectF>& rects) {
+        qreal top = std::numeric_limits<qreal>::max();
+        for (const QRectF& rect : rects) {
+            top = qMin(top, rect.top());
+        }
+        return top;
+    };
+
+    QVERIFY2(std::abs(minGlyphTop(oneLineDebug.glyphRects) -
+                      minGlyphTop(twoLineDebug.glyphRects)) < 1.0,
+             "the first transcript line should not bounce vertically when a second line appears");
 }
 
 void TestVulkanTextGeneration::emptyInputsDoNotGenerateText()

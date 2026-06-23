@@ -1,13 +1,34 @@
 #include "editor.h"
+#include "facedetections_artifact_utils.h"
 #include "history_tab.h"
+#include "mask_tab.h"
+#include "processing_job_docker.h"
 #include "playback_debug.h"
+#include "processing_job_manifest.h"
 #include "speakers_table.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QColorDialog>
+#include <QCheckBox>
+#include <QDateTime>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
+#include <QJsonArray>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QProcess>
+#include <QPushButton>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QTextCursor>
+#include <QVBoxLayout>
+
+#include <algorithm>
 
 using namespace editor;
 
@@ -18,6 +39,106 @@ bool inspectorTabRefreshIsHeavyDuringPlayback(const QString& tabName)
     const QString normalized = tabName.trimmed();
     return normalized.compare(QStringLiteral("Transcript"), Qt::CaseInsensitive) == 0 ||
            normalized.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
+}
+
+QString jobInputLabel(const QJsonObject& manifest)
+{
+    const QString inputPath =
+        manifest.value(QStringLiteral("input")).toObject().value(QStringLiteral("path")).toString();
+    return QFileInfo(inputPath).fileName().isEmpty()
+        ? inputPath
+        : QFileInfo(inputPath).fileName();
+}
+
+QString jobProcessLabel(const QJsonObject& manifest)
+{
+    const QJsonObject process = manifest.value(QStringLiteral("process")).toObject();
+    const QJsonObject docker = process.value(QStringLiteral("docker")).toObject();
+    const QString containerName = docker.value(QStringLiteral("container_name")).toString();
+    if (!containerName.isEmpty()) {
+        return QStringLiteral("Docker %1").arg(containerName);
+    }
+    const QString legacyContainerName = manifest.value(QStringLiteral("docker_container_name")).toString();
+    if (!legacyContainerName.isEmpty()) {
+        return QStringLiteral("Docker %1").arg(legacyContainerName);
+    }
+    const QJsonValue pidValue = manifest.value(QStringLiteral("pid"));
+    if (pidValue.isDouble()) {
+        return QStringLiteral("PID %1").arg(pidValue.toVariant().toLongLong());
+    }
+    if (manifest.contains(QStringLiteral("exit_code"))) {
+        return QStringLiteral("exit %1").arg(manifest.value(QStringLiteral("exit_code")).toInt());
+    }
+    const QString pauseReason = manifest.value(QStringLiteral("pause_reason")).toString();
+    if (!pauseReason.isEmpty()) {
+        return pauseReason;
+    }
+    return QString();
+}
+
+QString jobStatusLabel(const QJsonObject& manifest,
+                       const jcut::jobs::DockerContainerInfo* container)
+{
+    if (container) {
+        return jcut::jobs::dockerContainerIsRunning(*container)
+            ? QStringLiteral("running")
+            : container->status;
+    }
+    return manifest.value(QStringLiteral("status")).toString();
+}
+
+QString jobProcessLabel(const QJsonObject& manifest,
+                        const jcut::jobs::DockerContainerInfo* container)
+{
+    if (container) {
+        const QString name = jcut::jobs::dockerContainerIdentifier(*container);
+        return container->status.isEmpty()
+            ? QStringLiteral("Docker %1").arg(name)
+            : QStringLiteral("Docker %1 (%2)").arg(name, container->status);
+    }
+    return jobProcessLabel(manifest);
+}
+
+QJsonObject manifestWithDockerProcess(const QJsonObject& manifest,
+                                      const jcut::jobs::DockerContainerInfo& container)
+{
+    QJsonObject patched = manifest;
+    QJsonObject process = patched.value(QStringLiteral("process")).toObject();
+    QJsonObject docker = process.value(QStringLiteral("docker")).toObject();
+    docker.insert(QStringLiteral("container_id"), container.id);
+    docker.insert(QStringLiteral("container_name"), container.name);
+    docker.insert(QStringLiteral("image"), container.image);
+    docker.insert(QStringLiteral("status"), container.status);
+    process.insert(QStringLiteral("type"), QStringLiteral("docker"));
+    process.insert(QStringLiteral("docker"), docker);
+    patched.insert(QStringLiteral("process"), process);
+    patched.insert(QStringLiteral("docker_container_name"), container.name);
+    return patched;
+}
+
+void addManifestPath(QStringList* paths, QSet<QString>* seen, const QString& path)
+{
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (absolute.isEmpty() || seen->contains(absolute) || !QFileInfo::exists(absolute)) {
+        return;
+    }
+    seen->insert(absolute);
+    paths->append(absolute);
+}
+
+void addManifestDir(QStringList* paths, QSet<QString>* seen, const QString& dirPath)
+{
+    const QDir dir(dirPath);
+    if (!dir.exists()) {
+        return;
+    }
+    QDirIterator it(dir.absolutePath(),
+                    QStringList{QStringLiteral("manifest.json")},
+                    QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        addManifestPath(paths, seen, it.next());
+    }
 }
 
 } // namespace
@@ -34,13 +155,16 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
         if (m_opacityTab) m_opacityTab->refresh();
     } else if (normalized.compare(QStringLiteral("Effects"), Qt::CaseInsensitive) == 0) {
         if (m_effectsTab) m_effectsTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Masks"), Qt::CaseInsensitive) == 0) {
+        if (m_maskTab) m_maskTab->refresh();
     } else if (normalized.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0) {
         if (m_correctionsTab) m_correctionsTab->refresh();
     } else if (normalized.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0) {
         if (m_titlesTab) m_titlesTab->refresh();
     } else if (normalized.compare(QStringLiteral("Sync"), Qt::CaseInsensitive) == 0) {
         if (m_syncTab) m_syncTab->refresh();
-    } else if (normalized.compare(QStringLiteral("Keyframes"), Qt::CaseInsensitive) == 0) {
+    } else if (normalized.compare(QStringLiteral("Transform"), Qt::CaseInsensitive) == 0 ||
+               normalized.compare(QStringLiteral("Keyframes"), Qt::CaseInsensitive) == 0) {
         if (m_videoKeyframeTab) m_videoKeyframeTab->refresh();
     } else if (normalized.compare(QStringLiteral("Transcript"), Qt::CaseInsensitive) == 0) {
         if (m_transcriptTab) m_transcriptTab->refresh();
@@ -57,6 +181,8 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
         if (m_tracksTab) m_tracksTab->refresh();
     } else if (normalized.compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
         refreshAudioInspectorViews();
+    } else if (normalized.compare(QStringLiteral("Jobs"), Qt::CaseInsensitive) == 0) {
+        refreshProcessingJobsTab();
     } else if (normalized.compare(QStringLiteral("Output"), Qt::CaseInsensitive) == 0) {
         if (m_outputTab) m_outputTab->refresh();
     } else if (normalized.compare(QStringLiteral("Pipeline"), Qt::CaseInsensitive) == 0) {
@@ -66,6 +192,283 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
     } else if (normalized.compare(QStringLiteral("Projects"), Qt::CaseInsensitive) == 0) {
         if (m_projectsTab) m_projectsTab->refresh();
     }
+}
+
+void EditorWindow::refreshProcessingJobsTab()
+{
+    if (!m_inspectorPane || !m_inspectorPane->processingJobsTable()) {
+        return;
+    }
+
+    QStringList manifestPaths;
+    QSet<QString> seenPaths;
+    const QVector<TimelineClip> clips = m_timeline ? m_timeline->clips() : QVector<TimelineClip>{};
+    if (m_explorerPane) {
+        const QStringList explorerJobRoots{
+            m_explorerPane->currentRootPath(),
+            m_explorerPane->galleryPath(),
+        };
+        for (const QString& root : explorerJobRoots) {
+            if (!root.trimmed().isEmpty()) {
+                addManifestDir(&manifestPaths,
+                               &seenPaths,
+                               QDir(root).absoluteFilePath(QStringLiteral(".jcut_jobs")));
+            }
+        }
+    }
+    for (const TimelineClip& clip : clips) {
+        const QString mediaPath = clip.filePath.trimmed();
+        if (mediaPath.isEmpty()) {
+            continue;
+        }
+        const QFileInfo mediaInfo(mediaPath);
+        addManifestDir(&manifestPaths,
+                       &seenPaths,
+                       mediaInfo.dir().absoluteFilePath(QStringLiteral(".jcut_jobs")));
+        addManifestPath(&manifestPaths,
+                        &seenPaths,
+                        QDir(facedetectionsClipSidecarDir(mediaPath, clip.id))
+                            .absoluteFilePath(QStringLiteral("manifest.json")));
+    }
+
+    struct JobRow {
+        QJsonObject manifest;
+        QString manifestPath;
+        QDateTime updated;
+        jcut::jobs::DockerContainerInfo dockerContainer;
+        bool hasDockerContainer = false;
+    };
+    QString dockerError;
+    const QVector<jcut::jobs::DockerContainerInfo> dockerContainers =
+        jcut::jobs::listDockerContainers(&dockerError);
+    QVector<JobRow> rows;
+    rows.reserve(manifestPaths.size());
+    for (const QString& path : manifestPaths) {
+        QJsonObject manifest;
+        if (!jcut::jobs::readManifest(path, &manifest, nullptr) ||
+            manifest.value(QStringLiteral("schema")).toString() != QStringLiteral("jcut_processing_job_v1")) {
+            continue;
+        }
+        JobRow row{
+            manifest,
+            path,
+            QDateTime::fromString(
+                manifest.value(QStringLiteral("updated_at_utc")).toString(),
+                Qt::ISODate),
+        };
+        if (const jcut::jobs::DockerContainerInfo* container =
+                jcut::jobs::findDockerContainerForManifest(manifest, dockerContainers)) {
+            row.dockerContainer = *container;
+            row.hasDockerContainer = true;
+            row.manifest = manifestWithDockerProcess(row.manifest, *container);
+            if (jcut::jobs::dockerContainerIsRunning(*container)) {
+                const QString manifestContainerName =
+                    jcut::jobs::dockerContainerNameFromManifest(manifest);
+                const bool manifestNeedsDockerPatch =
+                    manifest.value(QStringLiteral("status")).toString() != QStringLiteral("running") ||
+                    manifestContainerName != container->name ||
+                    jcut::jobs::dockerContainerIdFromManifest(manifest) != container->id;
+                if (manifestNeedsDockerPatch) {
+                    jcut::jobs::updateManifestStatus(path, QStringLiteral("running"), row.manifest, nullptr);
+                }
+            }
+        }
+        rows.push_back(row);
+    }
+    std::sort(rows.begin(), rows.end(), [](const JobRow& a, const JobRow& b) {
+        return a.updated > b.updated;
+    });
+
+    int runningCount = 0;
+    int queuedCount = 0;
+    for (const JobRow& row : rows) {
+        const QString status = jobStatusLabel(
+            row.manifest,
+            row.hasDockerContainer ? &row.dockerContainer : nullptr);
+        if (status.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0) {
+            ++runningCount;
+        } else if (status.compare(QStringLiteral("prepared"), Qt::CaseInsensitive) == 0 ||
+                   status.compare(QStringLiteral("queued"), Qt::CaseInsensitive) == 0) {
+            ++queuedCount;
+        }
+    }
+
+    if (QLabel* label = m_inspectorPane->processingJobsSummaryLabel()) {
+        QString text = QStringLiteral("%1 job(s) found. Running: %2. Queued/prepared: %3.")
+                           .arg(rows.size())
+                           .arg(runningCount)
+                           .arg(queuedCount);
+        if (!dockerError.isEmpty()) {
+            text += QStringLiteral(" Docker unavailable: %1.").arg(dockerError);
+        }
+        label->setText(text);
+    }
+
+    QTableWidget* table = m_inspectorPane->processingJobsTable();
+    QSignalBlocker blocker(table);
+    table->clearContents();
+    table->setRowCount(rows.size());
+
+    for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        const JobRow& row = rows.at(rowIndex);
+        const QJsonObject& manifest = row.manifest;
+        const QString operation = manifest.value(QStringLiteral("operation")).toString();
+        const QString status = jobStatusLabel(
+            manifest,
+            row.hasDockerContainer ? &row.dockerContainer : nullptr);
+        const QString updated = row.updated.isValid()
+            ? row.updated.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+            : manifest.value(QStringLiteral("updated_at_utc")).toString();
+        const QString process = jobProcessLabel(
+            manifest,
+            row.hasDockerContainer ? &row.dockerContainer : nullptr);
+
+        const QStringList values{
+            operation,
+            status,
+            jobInputLabel(manifest),
+            updated,
+            process,
+            QDir::toNativeSeparators(row.manifestPath),
+        };
+        for (int col = 0; col < values.size(); ++col) {
+            auto* item = new QTableWidgetItem(values.at(col));
+            item->setToolTip(values.at(col));
+            table->setItem(rowIndex, col, item);
+        }
+        auto* logButton = new QPushButton(QStringLiteral("Open Log"), table);
+        logButton->setObjectName(QStringLiteral("jobs.open_log"));
+        logButton->setEnabled(row.hasDockerContainer);
+        logButton->setToolTip(row.hasDockerContainer
+                                  ? QStringLiteral("Open this job's Docker log.")
+                                  : QStringLiteral("No Docker container was found for this job."));
+        connect(logButton, &QPushButton::clicked, this, [this, manifestPath = row.manifestPath]() {
+            showProcessingJobLog(manifestPath);
+        });
+        table->setCellWidget(rowIndex, 6, logButton);
+    }
+}
+
+void EditorWindow::showProcessingJobLog(const QString& manifestPath)
+{
+    QJsonObject manifest;
+    QString error;
+    if (!jcut::jobs::readManifest(manifestPath, &manifest, &error)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Open Job Log"),
+                             QStringLiteral("Could not read job manifest:\n%1").arg(error));
+        return;
+    }
+
+    QString dockerError;
+    const QVector<jcut::jobs::DockerContainerInfo> containers =
+        jcut::jobs::listDockerContainers(&dockerError);
+    const jcut::jobs::DockerContainerInfo* container =
+        jcut::jobs::findDockerContainerForManifest(manifest, containers);
+    if (!container) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Open Job Log"),
+                             dockerError.isEmpty()
+                                 ? QStringLiteral("No Docker container was found for this job.")
+                                 : QStringLiteral("No Docker container was found for this job.\n\nDocker: %1")
+                                       .arg(dockerError));
+        return;
+    }
+
+    const QString identifier = jcut::jobs::dockerContainerIdentifier(*container);
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Job Log  %1").arg(identifier));
+    dialog->resize(960, 620);
+
+    auto* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto* title = new QLabel(
+        QStringLiteral("%1\n%2")
+            .arg(QDir::toNativeSeparators(manifestPath),
+                 QStringLiteral("docker logs %1%2")
+                     .arg(jcut::jobs::dockerContainerIsRunning(*container)
+                              ? QStringLiteral("-f ")
+                              : QString(),
+                          identifier)),
+        dialog);
+    title->setWordWrap(true);
+    title->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(title);
+
+    auto* output = new QPlainTextEdit(dialog);
+    output->setReadOnly(true);
+    output->setLineWrapMode(QPlainTextEdit::NoWrap);
+    output->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background: #05080c; color: #d6e2ee; border: 1px solid #24303c; "
+        "border-radius: 8px; font-family: monospace; font-size: 12px; }"));
+    layout->addWidget(output, 1);
+
+    auto* autoScrollBox = new QCheckBox(QStringLiteral("Auto-scroll"), dialog);
+    autoScrollBox->setChecked(true);
+    auto* closeButton = new QPushButton(QStringLiteral("Close"), dialog);
+    auto* buttonRow = new QHBoxLayout;
+    buttonRow->addWidget(autoScrollBox);
+    buttonRow->addStretch(1);
+    buttonRow->addWidget(closeButton);
+    layout->addLayout(buttonRow);
+
+    auto* process = new QProcess(dialog);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    const QString docker = QStandardPaths::findExecutable(QStringLiteral("docker"));
+    if (docker.isEmpty()) {
+        output->setPlainText(QStringLiteral("[process error] docker was not found in PATH\n"));
+        process->deleteLater();
+    } else {
+        QStringList args{QStringLiteral("logs"), QStringLiteral("--tail=200")};
+        if (jcut::jobs::dockerContainerIsRunning(*container)) {
+            args << QStringLiteral("-f");
+        }
+        args << identifier;
+        process->setProgram(docker);
+        process->setArguments(args);
+        const auto appendOutput = [output, autoScrollBox](QString text) {
+            if (text.isEmpty()) {
+                return;
+            }
+            text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+            if (autoScrollBox->isChecked()) {
+                output->moveCursor(QTextCursor::End);
+            }
+            output->insertPlainText(text);
+            if (autoScrollBox->isChecked()) {
+                output->moveCursor(QTextCursor::End);
+            }
+        };
+        connect(process, &QProcess::readyReadStandardOutput, dialog, [process, appendOutput]() {
+            appendOutput(QString::fromLocal8Bit(process->readAllStandardOutput()));
+        });
+        connect(process, &QProcess::errorOccurred, dialog, [appendOutput](QProcess::ProcessError processError) {
+            appendOutput(QStringLiteral("\n[process error] %1\n").arg(static_cast<int>(processError)));
+        });
+        connect(process,
+                qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                dialog,
+                [appendOutput](int exitCode, QProcess::ExitStatus exitStatus) {
+                    appendOutput(QStringLiteral("\n[log stream finished] exitCode=%1 status=%2\n")
+                                     .arg(exitCode)
+                                     .arg(exitStatus == QProcess::NormalExit
+                                              ? QStringLiteral("normal")
+                                              : QStringLiteral("crashed")));
+                });
+        process->start();
+    }
+
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+    connect(dialog, &QDialog::finished, dialog, [process](int) {
+        if (process && process->state() != QProcess::NotRunning) {
+            process->kill();
+            process->waitForFinished(1000);
+        }
+    });
+    dialog->show();
 }
 
 void EditorWindow::refreshCurrentInspectorTab()
@@ -97,10 +500,70 @@ void EditorWindow::scheduleDeferredInspectorRefresh(int delayMs)
     m_deferredInspectorRefreshTimer.start(normalizedDelayMs);
 }
 
+void EditorWindow::syncAudioTabTimelineWaveforms()
+{
+    if (!m_timeline) {
+        return;
+    }
+
+    bool audioTabActive = false;
+    if (m_inspectorPane && m_inspectorPane->tabs()) {
+        QTabWidget* tabs = m_inspectorPane->tabs();
+        const int index = tabs->currentIndex();
+        audioTabActive =
+            index >= 0 &&
+            tabs->tabText(index).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0;
+    }
+    m_timeline->setAudioTabWaveformsVisible(audioTabActive);
+}
+
 void EditorWindow::refreshAudioInspectorViews()
 {
     if (!m_audioCurrentSpeakerTitleLabel || !m_audioCurrentSpeakerDetailsLabel || !m_timeline) {
         return;
+    }
+
+    if (m_audioShowWaveformCheckBox) {
+        const int selectedTrackIndex = m_timeline->selectedTrackIndex();
+        const TimelineTrack* selectedTrack = m_timeline->selectedTrack();
+        int audioClipCount = 0;
+        if (selectedTrackIndex >= 0) {
+            for (const TimelineClip& timelineClip : m_timeline->clips()) {
+                if (timelineClip.trackIndex == selectedTrackIndex && timelineClip.hasAudio) {
+                    ++audioClipCount;
+                }
+            }
+        }
+        const bool hasAudioTrack =
+            selectedTrack && selectedTrackIndex >= 0 && m_timeline->trackHasAudioClips(selectedTrackIndex);
+        QSignalBlocker block(m_audioShowWaveformCheckBox);
+        m_audioShowWaveformCheckBox->setChecked(
+            selectedTrack ? selectedTrack->audioWaveformVisible : m_audioWaveformVisible);
+        m_audioShowWaveformCheckBox->setEnabled(hasAudioTrack);
+        m_audioShowWaveformCheckBox->setToolTip(
+            hasAudioTrack
+                ? QStringLiteral("Show timeline waveforms for the selected track while the Audio tab is active.")
+                : QStringLiteral("Select a track with audio clips to control its timeline waveform overlay."));
+        if (m_inspectorPane && m_inspectorPane->audioTrackTitleLabel() &&
+            m_inspectorPane->audioTrackDetailsLabel()) {
+            if (selectedTrack && selectedTrackIndex >= 0) {
+                const QString trackName = selectedTrack->name.trimmed().isEmpty()
+                    ? QStringLiteral("Track %1").arg(selectedTrackIndex + 1)
+                    : selectedTrack->name.trimmed();
+                m_inspectorPane->audioTrackTitleLabel()->setText(
+                    QStringLiteral("%1").arg(trackName));
+                m_inspectorPane->audioTrackDetailsLabel()->setText(
+                    QStringLiteral("%1 audio clip%2 • waveform %3")
+                        .arg(audioClipCount)
+                        .arg(audioClipCount == 1 ? QString() : QStringLiteral("s"))
+                        .arg(selectedTrack->audioWaveformVisible
+                                 ? QStringLiteral("shown")
+                                 : QStringLiteral("hidden")));
+            } else {
+                m_inspectorPane->audioTrackTitleLabel()->setText(QStringLiteral("No track selected"));
+                m_inspectorPane->audioTrackDetailsLabel()->setText(QStringLiteral("0 audio clips"));
+            }
+        }
     }
 
     const TimelineClip *clip = m_timeline->selectedClip();
@@ -111,7 +574,7 @@ void EditorWindow::refreshAudioInspectorViews()
         return;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(*clip);
     if (transcriptPath.trimmed().isEmpty()) {
         m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No speaker information"));
         m_audioCurrentSpeakerDetailsLabel->setText(
@@ -146,7 +609,7 @@ void EditorWindow::refreshAudioInspectorViews()
             transcriptPath,
             runtimeDocument->sections,
             sourceFrame,
-            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs}).trimmed();
+            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs, m_transcriptOffsetMs}).trimmed();
     if (speakerTitle.isEmpty()) {
         m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No current speaker"));
         m_audioCurrentSpeakerDetailsLabel->setText(
@@ -159,7 +622,7 @@ void EditorWindow::refreshAudioInspectorViews()
             transcriptPath,
             runtimeDocument->sections,
             sourceFrame,
-            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs});
+            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs, m_transcriptOffsetMs});
     m_audioCurrentSpeakerTitleLabel->setText(speakerTitle);
 
     QStringList details;
@@ -212,6 +675,9 @@ void EditorWindow::refreshTimelineSelectionInspectorViews()
     }
     if (m_effectsTab) {
         m_effectsTab->refresh();
+    }
+    if (m_maskTab) {
+        m_maskTab->refresh();
     }
     if (m_titlesTab) {
         m_titlesTab->refresh();
@@ -271,7 +737,11 @@ void EditorWindow::createOutputTab()
         OutputTab::Widgets{
             m_outputWidthSpin, m_outputHeightSpin, m_outputFpsSpin,
             m_exportStartSpin, m_exportEndSpin,
-            m_outputFormatCombo, m_backgroundFillEffectCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
+            m_outputFormatCombo, m_backgroundFillEffectCombo, m_backgroundFillOpacitySpin,
+            m_backgroundFillBrightnessSpin, m_backgroundFillSaturationSpin,
+            m_backgroundFillEdgePixelsSlider, m_backgroundFillEdgeProgressiveCheckBox,
+            m_backgroundFillEdgePowerSpin,
+            m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
             m_outputPlaybackCacheFallbackCheckBox, m_outputLeadPrefetchEnabledCheckBox,
             m_outputLeadPrefetchCountSpin, m_outputPlaybackWindowAheadSpin, m_outputVisibleQueueReserveSpin,
             m_outputPrefetchMaxQueueDepthSpin, m_outputPrefetchMaxInflightSpin,
@@ -381,6 +851,7 @@ void EditorWindow::createTranscriptTab()
         TranscriptTab::Widgets{
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
             m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
+            m_transcriptPlacementModeCombo,
             m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
             m_inspectorPane->transcriptBackgroundOpacitySpin(),
             m_inspectorPane->transcriptBackgroundCornerRadiusSpin(),
@@ -395,6 +866,7 @@ void EditorWindow::createTranscriptTab()
             m_transcriptFontFamilyCombo, m_transcriptFontSizeSpin,
             m_transcriptBoldCheckBox, m_transcriptItalicCheckBox,
             m_transcriptPrependMsSpin, m_transcriptPostpendMsSpin,
+            m_inspectorPane->transcriptOffsetMsSpin(),
             m_speechFilterEnabledCheckBox, m_speechFilterFadeSamplesSpin,
             m_inspectorPane->transcriptUnifiedEditModeCheckBox(),
             m_inspectorPane->transcriptSearchFilterLineEdit(),
@@ -412,7 +884,18 @@ void EditorWindow::createTranscriptTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Transcript")); },
-            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() {
+                if (!m_preview || !m_timeline) {
+                    return;
+                }
+                if (const TimelineClip* clip = m_timeline->selectedClip()) {
+                    m_preview->invalidateTranscriptOverlayCache(clip->filePath);
+                } else {
+                    m_preview->invalidateTranscriptOverlayCache();
+                }
+                m_preview->setTimelineTracks(m_timeline->tracks());
+                m_preview->setTimelineClips(m_timeline->clips());
+            },
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t frame) { setCurrentFrame(frame); },
             [this]() { return playbackActive(); },
@@ -462,8 +945,11 @@ void EditorWindow::createTranscriptTab()
         m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
         m_transcriptPrependMs = m_transcriptPrependMsSpin ? qMax(0, m_transcriptPrependMsSpin->value()) : 150;
         m_transcriptPostpendMs = m_transcriptPostpendMsSpin ? qMax(0, m_transcriptPostpendMsSpin->value()) : 70;
+        m_transcriptOffsetMs =
+            m_inspectorPane->transcriptOffsetMsSpin() ? m_inspectorPane->transcriptOffsetMsSpin()->value() : 0;
         if (m_preview) {
-            m_preview->setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+            m_preview->setTranscriptOverlayTimingPaddingMs(
+                m_transcriptPrependMs, m_transcriptPostpendMs, m_transcriptOffsetMs);
         }
         m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();
         m_transcriptEngine.invalidateCache();
@@ -859,6 +1345,49 @@ void EditorWindow::createEffectsTab()
     m_effectsTab->wire();
 }
 
+void EditorWindow::createMaskTab()
+{
+    m_maskTab = std::make_unique<MaskTab>(
+        MaskTab::Widgets{
+            m_inspectorPane->maskClipLabel(),
+            m_inspectorPane->maskEnabledCheck(),
+            m_inspectorPane->maskFramesDirEdit(),
+            m_inspectorPane->maskBrowseButton(),
+            m_inspectorPane->maskShapeFeatherSpin(),
+            m_inspectorPane->maskDilateSpin(),
+            m_inspectorPane->maskErodeSpin(),
+            m_inspectorPane->maskBlurSpin(),
+            m_inspectorPane->maskInvertCheck(),
+            m_inspectorPane->maskOpacitySpin(),
+            m_inspectorPane->maskGradeEnabledCheck(),
+            m_inspectorPane->maskGradeBrightnessSpin(),
+            m_inspectorPane->maskGradeContrastSpin(),
+            m_inspectorPane->maskGradeSaturationSpin(),
+            m_inspectorPane->maskShadowEnabledCheck(),
+            m_inspectorPane->maskShadowRadiusSpin(),
+            m_inspectorPane->maskShadowOffsetXSpin(),
+            m_inspectorPane->maskShadowOffsetYSpin(),
+            m_inspectorPane->maskShadowOpacitySpin()},
+        MaskTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                return m_timeline->updateClipById(id, updater);
+            },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Masks")); },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+            [this](QWidget* parent, const QString& currentPath) {
+                return QFileDialog::getExistingDirectory(
+                    parent ? parent : this,
+                    QStringLiteral("Choose Mask Frames Directory"),
+                    currentPath.trimmed().isEmpty() ? QDir::homePath() : currentPath,
+                    QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+            }});
+    m_maskTab->wire();
+}
+
 void EditorWindow::createCorrectionsTab()
 {
     m_correctionsTab = std::make_unique<CorrectionsTab>(
@@ -995,7 +1524,7 @@ void EditorWindow::createVideoKeyframeTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Keyframes")); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Transform")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
@@ -1022,7 +1551,8 @@ void EditorWindow::createClipsTab()
                 return m_timeline ? m_timeline->updateTrackByIndex(trackIndex, updater) : false;
             },
             [this]() { pushHistorySnapshot(); },
-            [this]() { scheduleSaveState(); }});
+            [this]() { scheduleSaveState(); },
+            [this](const QString& clipId) { openSamDetectorWindow(clipId); }});
     m_clipsTab->wire();
 }
 
@@ -1085,6 +1615,21 @@ void EditorWindow::createTracksTab()
             [this](int trackIndex) -> bool { return m_timeline ? m_timeline->trackAudioEnabled(trackIndex) : false; },
             [this](int trackIndex, TrackVisualMode mode) -> bool { return m_timeline ? m_timeline->updateTrackVisualMode(trackIndex, mode) : false; },
             [this](int trackIndex, bool enabled) -> bool { return m_timeline ? m_timeline->updateTrackAudioEnabled(trackIndex, enabled) : false; },
+            [this](int trackIndex, qreal gain) -> bool {
+                return m_timeline ? m_timeline->updateTrackByIndex(trackIndex, [gain](TimelineTrack& track) {
+                    track.audioGain = qBound<qreal>(0.0, gain, 4.0);
+                }) : false;
+            },
+            [this](int trackIndex, bool muted) -> bool {
+                return m_timeline ? m_timeline->updateTrackByIndex(trackIndex, [muted](TimelineTrack& track) {
+                    track.audioMuted = muted;
+                }) : false;
+            },
+            [this](int trackIndex, bool solo) -> bool {
+                return m_timeline ? m_timeline->updateTrackByIndex(trackIndex, [solo](TimelineTrack& track) {
+                    track.audioSolo = solo;
+                }) : false;
+            },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Tracks")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); }});
@@ -1132,6 +1677,7 @@ void EditorWindow::setupTabs()
     createGradingTab();
     createOpacityTab();
     createEffectsTab();
+    createMaskTab();
     createCorrectionsTab();
     createTitlesTab();
     createVideoKeyframeTab();
@@ -1146,6 +1692,7 @@ void EditorWindow::setupTabs()
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
                 [this](int index) {
             const QString tabName = m_inspectorPane->tabs()->tabText(index);
+            syncAudioTabTimelineWaveforms();
             if (m_preview) {
                 const bool isCorrectionsTab = tabName.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0;
                 const bool isTitlesTab = tabName.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0;
@@ -1161,6 +1708,19 @@ void EditorWindow::setupTabs()
 
             refreshInspectorTabByName(tabName);
         });
+        syncAudioTabTimelineWaveforms();
+        m_processingJobsRefreshTimer.setInterval(2000);
+        connect(&m_processingJobsRefreshTimer, &QTimer::timeout, this, [this]() {
+            if (!m_inspectorPane || !m_inspectorPane->tabs()) {
+                return;
+            }
+            const int index = m_inspectorPane->tabs()->currentIndex();
+            if (index >= 0 &&
+                m_inspectorPane->tabs()->tabText(index).compare(QStringLiteral("Jobs"), Qt::CaseInsensitive) == 0) {
+                refreshProcessingJobsTab();
+            }
+        });
+        m_processingJobsRefreshTimer.start();
     }
     if (m_inspectorPane && m_inspectorPane->speakersSubtabs()) {
         connect(m_inspectorPane->speakersSubtabs(), &QTabWidget::currentChanged, this,

@@ -1052,7 +1052,7 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
         m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip.label));
     }
     if (m_widgets.speakersInspectorDetailsLabel) {
-        const bool sidecarPresent = facedetectionsSidecarExistsForClipFile(clip.filePath);
+        const bool sidecarPresent = facedetectionsSidecarExistsForClip(clip);
         const bool mutableCut = activeCutMutable();
         m_widgets.speakersInspectorDetailsLabel->setText(
             QStringLiteral("%1 | Transcript: %2 | Edit mode: %3")
@@ -1226,7 +1226,7 @@ void SpeakersTab::refresh()
     }
 
     const QString transcriptPath =
-        transcriptPathForRuntimeSidecarForClipFile(clip->filePath, activeTranscriptPathForClipFile(clip->filePath));
+        transcriptPathForRuntimeSidecarForClip(*clip, activeTranscriptPathForClip(*clip));
     const bool transcriptChanged =
         previousTranscriptPath != transcriptPath || previousClipFilePath != clip->filePath;
     if (transcriptChanged) {
@@ -1249,9 +1249,7 @@ void SpeakersTab::refreshForSubtab(const QString& subtabName)
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     const QString transcriptPath = clip
-        ? transcriptPathForRuntimeSidecarForClipFile(
-              clip->filePath,
-              activeTranscriptPathForClipFile(clip->filePath))
+        ? transcriptPathForRuntimeSidecarForClip(*clip, activeTranscriptPathForClip(*clip))
         : QString();
     if (!clip || !clipSupportsTranscript(*clip) || !m_transcriptSession.hasObjectDocument() ||
         !m_transcriptSession.matches(clip->filePath, transcriptPath)) {

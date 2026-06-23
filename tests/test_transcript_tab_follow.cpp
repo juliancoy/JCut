@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QComboBox>
 #include <QPushButton>
+#include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <limits>
@@ -167,6 +168,7 @@ private slots:
     void testFollowBridgesSmallGapsDuringFastReversePlayback();
     void testOutsideCutRowsAreNotAutoSelected();
     void testTranscriptTableUsesStableRowGeometryForMouseActivation();
+    void testOverlayTransformEditsUpdatePreviewImmediately();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
 };
 
@@ -251,7 +253,6 @@ void TestTranscriptTabFollow::testFollowWorksWhileTableHasFocus() {
     QLabel detailsLabel;
     QTableWidget table;
     table.setColumnCount(kTranscriptTestColumnCount);
-    table.show();
     QCheckBox follow;
     follow.setChecked(true);
     QSpinBox prependSpin;
@@ -354,17 +355,22 @@ void TestTranscriptTabFollow::testPauseRefreshRestoresFollowSelectedRow() {
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
     QJsonArray words;
-    words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
-    words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
-    words.push_back(word(QStringLiteral("c"), 0.20, 0.30));
+    for (int i = 0; i < 50; ++i) {
+        const double start = static_cast<double>(i) * 0.10;
+        words.push_back(word(QStringLiteral("word%1").arg(i), start, start + 0.10));
+    }
     QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-pause-refresh"), clipPath);
+    clip.durationFrames = 300;
+    clip.sourceDurationFrames = 300;
 
     QLineEdit clipLabel;
     QLabel detailsLabel;
     QTableWidget table;
     table.setColumnCount(kTranscriptTestColumnCount);
+    table.resize(320, 120);
+    table.show();
     QCheckBox follow;
     follow.setChecked(true);
     QSpinBox prependSpin;
@@ -389,15 +395,25 @@ void TestTranscriptTabFollow::testPauseRefreshRestoresFollowSelectedRow() {
             [&playbackActive]() { return playbackActive; }});
     tab.wire();
     tab.refresh();
-    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
+    constexpr double kTargetSeconds = 1.55;
+    QTRY_VERIFY_WITH_TIMEOUT(firstMatchRow(table, kTargetSeconds) >= 0, 2000);
 
-    tab.syncTableToPlayhead(100, 0.225);
-    QCOMPARE(selectedRow(table), 2);
+    const int targetRow = firstMatchRow(table, kTargetSeconds);
+    QVERIFY(targetRow > 10);
+    tab.syncTableToPlayhead(100, kTargetSeconds);
+    QCOMPARE(selectedRow(table), targetRow);
+
+    table.selectRow(0);
+    table.scrollToTop();
+    QCoreApplication::processEvents();
+    QCOMPARE(selectedRow(table), 0);
+    QCOMPARE(table.rowAt(0), 0);
 
     playbackActive = false;
     tab.refresh();
-    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(selectedRow(table), 2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(firstMatchRow(table, kTargetSeconds) >= 0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(selectedRow(table), targetRow, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowAt(0) > 0, 2000);
 }
 
 void TestTranscriptTabFollow::testFollowSkipsSkippedRowsAndClearsSelection() {
@@ -821,6 +837,96 @@ void TestTranscriptTabFollow::testTranscriptTableUsesStableRowGeometryForMouseAc
     const QTableWidgetItem* targetItem = table.item(targetRow, 0);
     QVERIFY(targetItem != nullptr);
     QCOMPARE(lastSeekFrame, targetItem->data(Qt::UserRole + 2).toLongLong());
+}
+
+void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately()
+{
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-overlay"), QStringLiteral("/tmp/overlay.wav"));
+    clip.transcriptOverlay.enabled = true;
+    clip.transcriptOverlay.useManualPlacement = true;
+    clip.transcriptOverlay.translationX = 0.0;
+    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.boxWidth = 900.0;
+    clip.transcriptOverlay.boxHeight = 220.0;
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    QCheckBox overlayEnabled;
+    overlayEnabled.setChecked(true);
+    QComboBox placementMode;
+    placementMode.addItem(QStringLiteral("Manual"), true);
+    placementMode.addItem(QStringLiteral("Follow Speaker"), false);
+    QDoubleSpinBox overlayX;
+    overlayX.setRange(-1.0, 1.0);
+    overlayX.setValue(0.0);
+    QDoubleSpinBox overlayY;
+    overlayY.setRange(-1.0, 1.0);
+    overlayY.setValue(0.0);
+    QSpinBox overlayWidth;
+    overlayWidth.setRange(
+        static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth),
+        10000);
+    overlayWidth.setValue(900);
+    QSpinBox overlayHeight;
+    overlayHeight.setRange(
+        static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight),
+        10000);
+    overlayHeight.setValue(220);
+
+    int previewUpdateCount = 0;
+    int saveCount = 0;
+    int historyCount = 0;
+
+    TranscriptTab::Widgets widgets;
+    widgets.transcriptInspectorClipLabel = &clipLabel;
+    widgets.transcriptInspectorDetailsLabel = &detailsLabel;
+    widgets.transcriptTable = &table;
+    widgets.transcriptOverlayEnabledCheckBox = &overlayEnabled;
+    widgets.transcriptPlacementModeCombo = &placementMode;
+    widgets.transcriptOverlayXSpin = &overlayX;
+    widgets.transcriptOverlayYSpin = &overlayY;
+    widgets.transcriptOverlayWidthSpin = &overlayWidth;
+    widgets.transcriptOverlayHeightSpin = &overlayHeight;
+
+    TranscriptTab tab(
+        widgets,
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            [&clip](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                if (id != clip.id) {
+                    return false;
+                }
+                updater(clip);
+                return true;
+            },
+            [&saveCount]() { ++saveCount; },
+            [&historyCount]() { ++historyCount; },
+            []() {},
+            [&previewUpdateCount]() { ++previewUpdateCount; },
+            {},
+            {}});
+    tab.wire();
+
+    overlayX.setValue(0.25);
+    QCOMPARE(clip.transcriptOverlay.translationX, 0.25);
+    QVERIFY(clip.transcriptOverlay.useManualPlacement);
+    QCOMPARE(previewUpdateCount, 1);
+    QCOMPARE(saveCount, 1);
+    QCOMPARE(historyCount, 1);
+
+    overlayWidth.setValue(1100);
+    QCOMPARE(clip.transcriptOverlay.boxWidth, 1100.0);
+    QCOMPARE(previewUpdateCount, 2);
+
+    placementMode.setCurrentIndex(1);
+    QVERIFY(!clip.transcriptOverlay.useManualPlacement);
+    QCOMPARE(previewUpdateCount, 3);
+
+    overlayHeight.setValue(260);
+    QCOMPARE(clip.transcriptOverlay.boxHeight, 260.0);
+    QVERIFY(clip.transcriptOverlay.useManualPlacement);
+    QCOMPARE(previewUpdateCount, 4);
 }
 
 void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersion() {

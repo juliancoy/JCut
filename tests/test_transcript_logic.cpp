@@ -10,6 +10,7 @@
 #include "../editor_shared_keyframes.h"
 #include "../editor_shared_transcript.h"
 #include "../clip_serialization.h"
+#include "../transcript_overlay_cache_key.h"
 #include "../transcript_engine.h"
 
 using namespace editor;
@@ -74,16 +75,20 @@ class TestTranscriptLogic : public QObject {
 private slots:
     void init() {
         clearAllActiveTranscriptPaths();
+        setTranscriptSourceRootPath(QString());
     }
 
     void cleanup() {
         clearAllActiveTranscriptPaths();
+        setTranscriptSourceRootPath(QString());
     }
 
     void testSpeechFilterUsesActiveTranscriptCut();
     void testAllSkippedWordsYieldNoSpeechRanges();
     void testEmptyBaseRangesUseInclusiveClipEnd();
     void testRuntimeSidecarPathPrefersEditableLegacyArtifact();
+    void testTranscriptPathsAreIndependentPerAudioStream();
+    void testTranscriptSourceRootResolvesRelativeClipPaths();
     void testSpeakerTrackingInterpolatesOverlayLocation();
     void testSpeakerTrackingIgnoresBoxSizeForPositionInterpolation();
     void testSpeakerLocationFallsBackToProfileLocation();
@@ -103,7 +108,9 @@ private slots:
     void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
+    void testTranscriptOverlayManualTranslationUsesNormalizedOffsets();
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
+    void testTranscriptOverlayStyleCacheMaterialIncludesTransformFields();
     void testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry();
     void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
     void testSpeakerFramingRuntimeSpeakerDescendsFromTranscript();
@@ -208,6 +215,69 @@ void TestTranscriptLogic::testRuntimeSidecarPathPrefersEditableLegacyArtifact() 
 
     QCOMPARE(transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath), editablePath);
     QVERIFY(facedetectionsSidecarExistsForClipFile(clipPath));
+}
+
+void TestTranscriptLogic::testTranscriptPathsAreIndependentPerAudioStream() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.mov"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    TimelineClip legacyClip = makeAudioClip(QStringLiteral("legacy"), clipPath, 0, 30);
+    legacyClip.audioStreamIndex = -1;
+
+    TimelineClip streamOne = legacyClip;
+    streamOne.id = QStringLiteral("stream-one");
+    streamOne.audioSourceMode = QStringLiteral("embedded");
+    streamOne.audioSourceStatus = QStringLiteral("ok");
+    streamOne.audioSourcePath = clipPath;
+    streamOne.audioStreamIndex = 1;
+
+    TimelineClip streamTwo = streamOne;
+    streamTwo.id = QStringLiteral("stream-two");
+    streamTwo.audioStreamIndex = 2;
+
+    const TranscriptSourceKey sourceOne = transcriptSourceKeyFromClip(streamOne);
+    const TranscriptSourceKey sourceTwo = transcriptSourceKeyFromClip(streamTwo);
+    QVERIFY(sourceOne.usesAudioStream());
+    QCOMPARE(sourceOne.audioStreamIndex, 1);
+    QVERIFY(sourceOne.canonicalKey() != sourceTwo.canonicalKey());
+    QCOMPARE(sourceOne.toJson().value(QStringLiteral("audio_stream_index")).toInt(), 1);
+
+    QCOMPARE(transcriptPathForClip(legacyClip), transcriptPathForClipFile(clipPath));
+    QVERIFY(transcriptPathForClip(streamOne).endsWith(QStringLiteral("clip_audio_stream_1.json")));
+    QVERIFY(transcriptPathForClip(streamTwo).endsWith(QStringLiteral("clip_audio_stream_2.json")));
+    QVERIFY(transcriptPathForClip(streamOne) != transcriptPathForClip(streamTwo));
+    QVERIFY(transcriptEditablePathForClip(streamOne) != transcriptEditablePathForClip(streamTwo));
+    QCOMPARE(transcriptPathForSource(sourceOne), transcriptPathForClip(streamOne));
+
+    const QString streamOneCut = dir.filePath(QStringLiteral("stream_one_cut.json"));
+    const QString streamTwoCut = dir.filePath(QStringLiteral("stream_two_cut.json"));
+    QVERIFY(writeTranscriptJson(streamOneCut, QJsonArray{}));
+    QVERIFY(writeTranscriptJson(streamTwoCut, QJsonArray{}));
+
+    setActiveTranscriptPathForClip(streamOne, streamOneCut);
+    setActiveTranscriptPathForClip(streamTwo, streamTwoCut);
+
+    QCOMPARE(activeTranscriptPathForClip(streamOne), streamOneCut);
+    QCOMPARE(activeTranscriptPathForClip(streamTwo), streamTwoCut);
+}
+
+void TestTranscriptLogic::testTranscriptSourceRootResolvesRelativeClipPaths() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    setTranscriptSourceRootPath(dir.path());
+
+    TimelineClip clip = makeAudioClip(QStringLiteral("relative"), QStringLiteral("clip.wav"), 0, 30);
+    clip.audioSourceMode = QStringLiteral("explicit_file");
+    clip.audioSourceStatus = QStringLiteral("ok");
+    clip.audioSourcePath = QStringLiteral("clip.wav");
+
+    const QString expectedSource = QFileInfo(dir.filePath(QStringLiteral("clip.wav"))).absoluteFilePath();
+    QCOMPARE(transcriptSourceKeyFromClip(clip).sourcePath, expectedSource);
+    QCOMPARE(transcriptPathForClip(clip), dir.filePath(QStringLiteral("clip.json")));
 }
 
 void TestTranscriptLogic::testSpeakerTrackingInterpolatesOverlayLocation() {
@@ -899,15 +969,33 @@ void TestTranscriptLogic::testTranscriptOverlayRectInOutputSpaceFallsBackToManua
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 500.0;
     clip.transcriptOverlay.boxHeight = 250.0;
-    clip.transcriptOverlay.translationX = 120.0;
-    clip.transcriptOverlay.translationY = -300.0;
+    clip.transcriptOverlay.translationX = 0.25;
+    clip.transcriptOverlay.translationY = -0.5;
 
     const QSize outputSize(1080, 1920);
     const QRectF rect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, QString(), QVector<TranscriptSection>{}, /*sourceFrame=*/0);
 
-    QVERIFY(std::abs(rect.center().x() - (540.0 + 120.0)) < 0.001);
-    QVERIFY(std::abs(rect.center().y() - (960.0 - 300.0)) < 0.001);
+    QVERIFY(std::abs(rect.center().x() - (540.0 + (0.25 * 540.0))) < 0.001);
+    QVERIFY(std::abs(rect.center().y() - (960.0 - (0.5 * 960.0))) < 0.001);
+    QVERIFY(std::abs(rect.width() - 500.0) < 0.001);
+    QVERIFY(std::abs(rect.height() - 250.0) < 0.001);
+}
+
+void TestTranscriptLogic::testTranscriptOverlayManualTranslationUsesNormalizedOffsets() {
+    TimelineClip clip;
+    clip.transcriptOverlay.boxWidth = 500.0;
+    clip.transcriptOverlay.boxHeight = 250.0;
+    clip.transcriptOverlay.translationX = 0.5;
+    clip.transcriptOverlay.translationY = -0.25;
+    clip.transcriptOverlay.useManualPlacement = true;
+
+    const QSize outputSize(1080, 1920);
+    const QRectF rect = transcriptOverlayRectInOutputSpace(
+        clip, outputSize, QString(), QVector<TranscriptSection>{}, /*sourceFrame=*/0);
+
+    QVERIFY(std::abs(rect.center().x() - (540.0 + (0.5 * 540.0))) < 0.001);
+    QVERIFY(std::abs(rect.center().y() - (960.0 - (0.25 * 960.0))) < 0.001);
     QVERIFY(std::abs(rect.width() - 500.0) < 0.001);
     QVERIFY(std::abs(rect.height() - 250.0) < 0.001);
 }
@@ -949,16 +1037,45 @@ void TestTranscriptLogic::testTranscriptOverlayManualPlacementOverridesSpeakerTr
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 400.0;
     clip.transcriptOverlay.boxHeight = 200.0;
-    clip.transcriptOverlay.translationX = -220.0;
-    clip.transcriptOverlay.translationY = 50.0;
+    clip.transcriptOverlay.translationX = -0.25;
+    clip.transcriptOverlay.translationY = 0.1;
     clip.transcriptOverlay.useManualPlacement = true;
     const QSize outputSize(1080, 1920);
 
     const QRectF rect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, /*sourceFrame=*/15);
 
-    QVERIFY(std::abs(rect.center().x() - (540.0 - 220.0)) < 0.001);
-    QVERIFY(std::abs(rect.center().y() - (960.0 + 50.0)) < 0.001);
+    QVERIFY(std::abs(rect.center().x() - (540.0 - (0.25 * 540.0))) < 0.001);
+    QVERIFY(std::abs(rect.center().y() - (960.0 + (0.1 * 960.0))) < 0.001);
+}
+
+void TestTranscriptLogic::testTranscriptOverlayStyleCacheMaterialIncludesTransformFields() {
+    TimelineClip clip;
+    clip.transcriptOverlay.useManualPlacement = true;
+    clip.transcriptOverlay.autoScroll = true;
+    clip.transcriptOverlay.maxLines = 2;
+    clip.transcriptOverlay.maxCharsPerLine = 28;
+    clip.transcriptOverlay.translationX = 0.0;
+    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.boxWidth = 900.0;
+    clip.transcriptOverlay.boxHeight = 220.0;
+
+    const QString baseMaterial = transcriptOverlayStyleCacheMaterial(clip);
+
+    TimelineClip moved = clip;
+    moved.transcriptOverlay.translationX = 0.25;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(moved) != baseMaterial,
+             "Transcript overlay cache material must change when X translation changes.");
+
+    TimelineClip resized = clip;
+    resized.transcriptOverlay.boxWidth = 1100.0;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(resized) != baseMaterial,
+             "Transcript overlay cache material must change when box width changes.");
+
+    TimelineClip relaidOut = clip;
+    relaidOut.transcriptOverlay.maxCharsPerLine = 42;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(relaidOut) != baseMaterial,
+             "Transcript overlay cache material must change when line layout limits change.");
 }
 
 void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry() {

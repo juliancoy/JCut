@@ -5,6 +5,7 @@
 #include "direct_vulkan_preview_geometry.h"
 #include "direct_vulkan_preview_interaction.h"
 #include "direct_vulkan_preview_overlay_rendering.h"
+#include "direct_vulkan_preview_transcript.h"
 #include "direct_vulkan_frame_handoff_pipeline.h"
 #include "direct_vulkan_preview_audio.h"
 #include "preview_speaker_profiles.h"
@@ -1805,15 +1806,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         QRectF bounds;
         bool ready = false;
     };
-    struct PreparedTranscriptText {
-        TimelineClip clip;
-        TranscriptOverlayLayout layout;
-        QRectF outputRect;
-        QRectF bounds;
-        QString speakerTitle;
-        bool ready = false;
-    };
-    QHash<QString, PreparedTranscriptText> preparedTranscriptOverlays;
+    PreparedTranscriptOverlayMap preparedTranscriptOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
@@ -1836,13 +1829,50 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
                 continue;
             }
-            frameHandoffResults.insert(
-                status.clipId,
-                handoffResources->pipeline->record(
+            DirectVulkanFrameHandoffPipeline::Result handoffResult;
+            if (status.frame.hasCpuImage() &&
+                !status.frame.hasHardwareFrame() &&
+                !status.externalVulkanFrame) {
+                handoffResult.attempted = true;
+                handoffResult.sampledFrameReady =
+                    handoffResources->resources->uploadImageTexture(cb, status.frame.cpuImage());
+                handoffResult.descriptorSet =
+                    handoffResult.sampledFrameReady
+                        ? handoffResources->resources->descriptorSet()
+                        : VK_NULL_HANDLE;
+                handoffResult.descriptorSetIndex =
+                    static_cast<int>(handoffResources->resources->descriptorSetIndex());
+                handoffResult.descriptorSetCount =
+                    static_cast<int>(handoffResources->resources->descriptorSetCount());
+                handoffResult.size = {status.frameSize.width(), status.frameSize.height()};
+                handoffResult.format = VK_FORMAT_R8G8B8A8_UNORM;
+                if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+                    ++stats->handoffAttempts;
+                    if (handoffResult.sampledFrameReady) {
+                        ++stats->handoffSuccesses;
+                        ++stats->sampledImageReady;
+                        stats->lastHandoffError.clear();
+                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload");
+                        stats->lastExternalImageSize = status.frameSize;
+                        stats->lastVulkanImageFormat =
+                            jcut::direct_vulkan_preview::vulkanFormatName(handoffResult.format);
+                        stats->descriptorSetIndex = handoffResult.descriptorSetIndex;
+                        stats->descriptorSetCount = handoffResult.descriptorSetCount;
+                    } else {
+                        ++stats->handoffFailures;
+                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload_failed");
+                        stats->lastHandoffError =
+                            QStringLiteral("Failed to upload CPU image frame to Vulkan texture.");
+                    }
+                }
+            } else {
+                handoffResult = handoffResources->pipeline->record(
                     cb,
                     status,
                     handoffResources->resources.get(),
-                    m_owner ? m_owner->stats() : nullptr));
+                    m_owner ? m_owner->stats() : nullptr);
+            }
+            frameHandoffResults.insert(status.clipId, handoffResult);
             const QByteArray curveLut = curveLutRgbaBytes(status.grading);
             if (!curveLut.isEmpty()) {
                 curveLutUploadResults.insert(
@@ -1854,128 +1884,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     const bool canDrawOverlays = m_pipeline && m_pipeline->isReady();
     if (state && canDrawOverlays) {
-        const QRectF fullSwapRect(QPointF(0, 0), QSizeF(swapSize));
-        const PreviewViewTransform overlayViewTransform(fullSwapRect,
-                                                        state->outputSize,
-                                                        vulkanPreviewCanvasMarginPx(),
-                                                        state->previewZoom,
-                                                        state->previewPanOffset);
-        struct TranscriptOverlayCandidate {
-            bool valid = false;
-            TimelineClip clip;
-            TranscriptOverlayLayout layout;
-            QRectF outputRect;
-            QRectF bounds;
-            QString speakerTitle;
-        };
-        auto buildTranscriptOverlayCandidate =
-            [&](const TimelineClip& clip,
-                const TimelineClip& effectiveClip,
-                int64_t samplePosition,
-                const VulkanPreviewClipFrameStatus* status) -> TranscriptOverlayCandidate {
-            TranscriptOverlayCandidate candidate;
-            const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
-            if (transcriptPath.isEmpty()) {
-                return candidate;
-            }
-            const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
-                loadTranscriptRuntimeDocument(transcriptPath);
-            const QVector<TranscriptSection>& sections =
-                runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
-            const int64_t sourceFrame =
-                status && status->hasFrame && status->presentedSourceFrame >= 0
-                    ? transcriptFrameForClipSourceFrame(effectiveClip, status->presentedSourceFrame)
-                    : transcriptFrameForClipAtTimelineSample(effectiveClip,
-                                                             samplePosition,
-                                                             state->renderSyncMarkers);
-            const TranscriptOverlayLayout overlayLayout =
-                transcriptOverlayLayoutAtSourceFrame(
-                    effectiveClip,
-                    sections,
-                    sourceFrame,
-                    TranscriptOverlayTiming{state->transcriptPrependMs,
-                                            state->transcriptPostpendMs});
-            if (overlayLayout.lines.isEmpty()) {
-                return candidate;
-            }
-            const QRectF outputRect = transcriptOverlayRectInOutputSpace(
-                effectiveClip,
-                state->outputSize,
-                transcriptPath,
-                sections,
-                sourceFrame);
-            const QPointF center = overlayViewTransform.outputToScreen(outputRect.center());
-            const QPointF previewScale = overlayViewTransform.outputScale();
-            const QRectF bounds(center.x() - ((outputRect.width() * previewScale.x()) * 0.5),
-                                center.y() - ((outputRect.height() * previewScale.y()) * 0.5),
-                                outputRect.width() * previewScale.x(),
-                                outputRect.height() * previewScale.y());
-            const QRectF localBounds(0.0, 0.0, outputRect.width(), outputRect.height());
-            const QRectF localTextBounds = localBounds.adjusted(18.0, 14.0, -18.0, -14.0);
-            const qreal fontPixelSize = effectiveClip.transcriptOverlay.fontPointSize;
-            if (outputRect.width() <= 0.0 ||
-                outputRect.height() <= 0.0 ||
-                bounds.width() <= 0.0 ||
-                bounds.height() <= 0.0 ||
-                localTextBounds.width() <= 0.0 ||
-                localTextBounds.height() <= 0.0 ||
-                fontPixelSize <= 0.0) {
-                return candidate;
-            }
-            QString speakerTitle;
-            if (effectiveClip.transcriptOverlay.showSpeakerTitle) {
-                speakerTitle = transcriptSpeakerTitleForSourceFrame(
-                    transcriptPath,
-                    sections,
-                    sourceFrame,
-                    TranscriptOverlayTiming{state->transcriptPrependMs,
-                                            state->transcriptPostpendMs}).trimmed();
-            }
-            candidate.valid = true;
-            candidate.clip = effectiveClip;
-            candidate.layout = overlayLayout;
-            candidate.outputRect = outputRect;
-            candidate.bounds = bounds;
-            candidate.speakerTitle = speakerTitle;
-            return candidate;
-        };
-        for (const TimelineClip& clip : state->clips) {
-            const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
-            const bool statusDrawable = status && status->active && !status->drawSuppressed;
-            const int64_t clipStartSample = clipTimelineStartSamples(clip);
-            const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
-            const bool audioOnlyTranscriptActive =
-                !clipVisualPlaybackEnabled(clip, state->tracks) &&
-                clipSupportsTranscriptOverlay(clip) &&
-                state->currentSample >= clipStartSample &&
-                state->currentSample < clipEndSample &&
-                trackVisualModeForClip(clip, state->tracks) != TrackVisualMode::Hidden;
-            if (!statusDrawable && !audioOnlyTranscriptActive) {
-                continue;
-            }
-            const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
-            if (!clipSupportsTranscriptOverlay(effectiveClip)) {
-                continue;
-            }
-            const TranscriptOverlayCandidate candidate =
-                buildTranscriptOverlayCandidate(
-                    clip,
-                    effectiveClip,
-                    state->currentSample,
-                    statusDrawable ? status : nullptr);
-            if (!candidate.valid) {
-                continue;
-            }
-            preparedTranscriptOverlays.insert(
-                clip.id,
-                PreparedTranscriptText{
-                    candidate.clip,
-                    candidate.layout,
-                    candidate.outputRect,
-                    candidate.bounds,
-                    candidate.speakerTitle,
-                    true});
-        }
+        preparedTranscriptOverlays = collectPreparedTranscriptOverlays(state, swapSize);
         if (m_playbackStatusOverlayResources &&
             m_playbackStatusOverlayResources->isReady() &&
             m_playbackStatusOverlayResources->descriptorSet() != VK_NULL_HANDLE) {
@@ -2050,28 +1959,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         preparedTemporalDebugLabel =
             m_temporalDebugTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedTemporalDebugSpec);
     }
-    QString textPrepMaterial;
-    textPrepMaterial += QStringLiteral("out=%1x%2|").arg(state->outputSize.width()).arg(state->outputSize.height());
-    for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
-        const PreparedTranscriptText& transcript = it.value();
-        if (!transcript.ready) {
-            continue;
-        }
-        textPrepMaterial += QStringLiteral("t:%1:%2,%3,%4,%5:%6:")
-                                .arg(it.key())
-                                .arg(transcript.outputRect.x(), 0, 'f', 2)
-                                .arg(transcript.outputRect.y(), 0, 'f', 2)
-                                .arg(transcript.outputRect.width(), 0, 'f', 2)
-                                .arg(transcript.outputRect.height(), 0, 'f', 2)
-                                .arg(transcript.speakerTitle);
-        for (const TranscriptOverlayLine& line : transcript.layout.lines) {
-            textPrepMaterial += line.words.join(QLatin1Char(' '));
-            textPrepMaterial += QLatin1Char('#');
-            textPrepMaterial += QString::number(line.activeWord);
-            textPrepMaterial += QLatin1Char(';');
-        }
-        textPrepMaterial += QLatin1Char('|');
-    }
+    QString textPrepMaterial = transcriptOverlayTextPrepMaterial(preparedTranscriptOverlays, state->outputSize);
     textPrepMaterial += QStringLiteral("s:%1:%2:%3:%4:%5|")
                             .arg(preparedSpeakerSpec.name)
                             .arg(preparedSpeakerSpec.organization)
@@ -2098,7 +1986,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     } else {
         if (m_textRenderer && m_textRenderer->isReady()) {
             for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
-                const PreparedTranscriptText& transcript = it.value();
+                const PreparedTranscriptOverlay& transcript = it.value();
                 if (!transcript.ready) {
                     continue;
                 }
@@ -2180,6 +2068,28 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 overlayScissor,
                                 overlay.resources->descriptorSet(),
                                 overlayPush);
+    };
+    QSet<QString> drawnTranscriptOverlayClipIds;
+    auto drawPreparedTranscriptOverlayForClip = [&](const QString& clipId, const QRectF& compositeRect) -> bool {
+        const auto transcriptOverlayIt = preparedTranscriptOverlays.constFind(clipId);
+        if (transcriptOverlayIt != preparedTranscriptOverlays.constEnd() &&
+            transcriptOverlayIt.value().ready &&
+            preparedTranscriptAtlasClipIds.contains(clipId) &&
+            m_textRenderer &&
+            m_textRenderer->isReady()) {
+            const PreparedTranscriptOverlay& transcript = transcriptOverlayIt.value();
+            m_textRenderer->drawTranscriptOverlay(cb,
+                                                  swapSize,
+                                                  state->outputSize,
+                                                  compositeRect,
+                                                  transcript.clip,
+                                                  transcript.layout,
+                                                  transcript.outputRect,
+                                                  transcript.speakerTitle);
+            drawnTranscriptOverlayClipIds.insert(clipId);
+            return true;
+        }
+        return false;
     };
     bool audioWaitingForWaveform = false;
     if (renderDirectVulkanAudioFrame(
@@ -2324,10 +2234,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                               backgroundGeometry.localRect,
                                               swapSize,
                                               backgroundPush.mvp);
+                    const render_detail::VulkanDrawEffectState baseEffects =
+                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
                             fillEffect,
-                            static_cast<float>(status->grading.opacity),
+                            baseEffects,
+                            static_cast<float>(state->backgroundFillOpacity),
+                            static_cast<float>(state->backgroundFillBrightness),
+                            static_cast<float>(state->backgroundFillSaturation),
+                            state->backgroundFillEdgePixels,
+                            state->backgroundFillEdgeProgressive,
+                            static_cast<float>(state->backgroundFillEdgePower),
                             sourceRectNorm);
                     backgroundPush.opacity = backgroundEffects.opacity;
                     backgroundPush.brightness = backgroundEffects.brightness;
@@ -2459,22 +2377,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     }
                 }
             }
-            const auto transcriptOverlayIt = preparedTranscriptOverlays.constFind(clip.id);
-            if (transcriptOverlayIt != preparedTranscriptOverlays.constEnd() &&
-                transcriptOverlayIt.value().ready &&
-                preparedTranscriptAtlasClipIds.contains(clip.id) &&
-                m_textRenderer &&
-                m_textRenderer->isReady()) {
-                const PreparedTranscriptText& transcript = transcriptOverlayIt.value();
-                m_textRenderer->drawTranscriptOverlay(cb,
-                                                      swapSize,
-                                                      state->outputSize,
-                                                      compositeRect,
-                                                      transcript.clip,
-                                                      transcript.layout,
-                                                      transcript.outputRect,
-                                                      transcript.speakerTitle);
-            }
+            drawPreparedTranscriptOverlayForClip(clip.id, compositeRect);
             QRectF selectionBounds = transformedBounds;
             if (selected) {
                 const QRectF transcriptBounds = transcriptOverlayBoundsForClip(state, clip, viewTransform);
@@ -2494,6 +2397,29 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (status && status->hasFrame && canDrawTexture && sampledFrameReady) {
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
             }
+        }
+        qint64 fallbackTranscriptDrawCount = 0;
+        for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
+            if (!drawnTranscriptOverlayClipIds.contains(it.key())) {
+                if (drawPreparedTranscriptOverlayForClip(it.key(), compositeRect)) {
+                    ++fallbackTranscriptDrawCount;
+                }
+            }
+        }
+        if (m_owner->stats()) {
+            const qint64 transcriptDrawAttempts = preparedTranscriptAtlasClipIds.size();
+            const qint64 transcriptDrawSuccesses = drawnTranscriptOverlayClipIds.size();
+            editor::accumulatePlaybackStageMetric(&m_owner->stats()->textDrawStageMetric,
+                                          transcriptDrawAttempts,
+                                          transcriptDrawSuccesses,
+                                          qMax<qint64>(0, transcriptDrawAttempts - transcriptDrawSuccesses),
+                                          transcriptDrawAttempts > 0
+                                              ? QStringLiteral("text_draw_evaluated")
+                                              : QStringLiteral("text_draw_not_requested"),
+                                          QStringLiteral("transcript_prepared=%1 transcript_drawn=%2 fallback_drawn=%3")
+                                              .arg(transcriptDrawAttempts)
+                                              .arg(transcriptDrawSuccesses)
+                                              .arg(fallbackTranscriptDrawCount));
         }
         if (preparedSpeakerLabel && m_speakerTextRenderer && m_speakerTextRenderer->isReady()) {
             m_speakerTextRenderer->drawSpeakerLabel(cb,

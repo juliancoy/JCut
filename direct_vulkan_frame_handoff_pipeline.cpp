@@ -159,6 +159,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         stats->lastProbeReason = probe.reason;
         stats->lastHardwareSwFormat = framePixelFormatName(status.frame.hardwareSwPixelFormat());
         stats->lastVulkanImageFormat = vulkanFormatName(m_handoff->imageFormat());
+        stats->lastYuvRgbMatrix = m_handoff->lastYuvRgbMatrix();
         stats->descriptorSetIndex = static_cast<int>(resources->descriptorSetIndex());
         stats->descriptorSetCount = static_cast<int>(resources->descriptorSetCount());
         if (result.sampledFrameReady) {

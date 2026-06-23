@@ -13,6 +13,7 @@ Usage:
   ./sam3.sh <input_path> --prompt "text" [--out /path/to/output] [--max-frames N]
   ./sam3.sh <input_path> --prompt "text" [--out /path/to/output] [--max-frames N] --shell
   ./sam3.sh <input_path> --prompt "text" [--extract-frames] [--scale-width N] [--prescale-width N] [--intermediate-frames-format jpg|png]
+  ./sam3.sh <input_path> --prompt "text" [--video-mode]
   ./sam3.sh <input_path> --prompt "text" [--backend sam3|sam2|mobilesam]
   ./sam3.sh <input_path> --prompt "text" [--profile]
 EOF
@@ -29,7 +30,9 @@ OUT_HOST=""
 MAX_FRAMES=""
 SHELL_MODE=0
 PROFILE_MODE=0
+VIDEO_MODE=0
 EXTRA_ARGS=()
+PATH_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,6 +55,18 @@ while [[ $# -gt 0 ]]; do
     --profile)
       PROFILE_MODE=1
       shift
+      ;;
+    --video-mode)
+      VIDEO_MODE=1
+      shift
+      ;;
+    --binary-mask-dir|--centers-json|--frames-dir|--chunks-dir|--sam2-checkpoint|--mobilesam-checkpoint)
+      if [[ $# -lt 2 || "${2:-}" == --* ]]; then
+        echo "ERROR: $1 requires a path value" >&2
+        exit 2
+      fi
+      PATH_ARGS+=("$1" "$2")
+      shift 2
       ;;
     -h|--help)
       usage
@@ -88,7 +103,7 @@ if [[ -z "$INPUT" || -z "$PROMPT" ]]; then
 fi
 
 if [[ -z "$PROMPT" ]]; then
-  PROMPT="human head, face, hair, ears, hat"
+  PROMPT="FACE"
   echo "[debug] Default prompt: \"$PROMPT\"" >&2
 fi
 
@@ -102,13 +117,17 @@ has_arg() {
   return 1
 }
 
-if ! has_arg "--extract-frames"; then
-  EXTRA_ARGS+=("--extract-frames")
-  echo "[debug] Defaulting to --extract-frames" >&2
-fi
-if ! has_arg "--stream-extract"; then
-  EXTRA_ARGS+=("--stream-extract")
-  echo "[debug] Defaulting to --stream-extract" >&2
+if [[ "$VIDEO_MODE" -eq 1 ]]; then
+  echo "[debug] Video mode enabled; not defaulting to --extract-frames" >&2
+else
+  if ! has_arg "--extract-frames"; then
+    EXTRA_ARGS+=("--extract-frames")
+    echo "[debug] Defaulting to --extract-frames" >&2
+  fi
+  if ! has_arg "--stream-extract"; then
+    EXTRA_ARGS+=("--stream-extract")
+    echo "[debug] Defaulting to --stream-extract" >&2
+  fi
 fi
 
 IN_ABS="$(readlink -f "$INPUT" 2>/dev/null || true)"
@@ -140,10 +159,103 @@ if [[ -z "$OUT_HOST" ]]; then
   OUT_HOST="$IN_DIR"
 fi
 mkdir -p "$OUT_HOST"
+OUT_HOST="$(readlink -f "$OUT_HOST" 2>/dev/null || printf '%s' "$OUT_HOST")"
 
-HF_CACHE_HOST="$ROOT_DIR/.cache/hf"
+require_writable_dir() {
+  local path="${1:?}"
+  local label="${2:?}"
+  if [[ "${SAM3_DOCKER_RUN_AS_ROOT:-0}" == "1" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$path" || ! -w "$path" ]]; then
+    echo "ERROR: $label is not writable by the current user: $path" >&2
+    echo "       If it was created by an earlier root-run container, fix ownership with:" >&2
+    echo "       sudo chown -R $(id -u):$(id -g) \"$path\"" >&2
+    exit 1
+  fi
+}
+
+require_writable_tree() {
+  local path="${1:?}"
+  local label="${2:?}"
+  if [[ "${SAM3_DOCKER_RUN_AS_ROOT:-0}" == "1" ]]; then
+    return 0
+  fi
+  require_writable_dir "$path" "$label"
+  local blocked
+  blocked="$(find "$path" -xdev \( -type d ! -writable -o -type f ! -writable \) -print -quit 2>/dev/null || true)"
+  if [[ -n "$blocked" ]]; then
+    echo "ERROR: $label contains files or directories not writable by the current user." >&2
+    echo "       First blocked path: $blocked" >&2
+    echo "       This usually means an earlier root-run container created cache files." >&2
+    echo "       Fix ownership with:" >&2
+    echo "       sudo chown -R $(id -u):$(id -g) \"$path\"" >&2
+    echo "       Or rerun with SAM3_DOCKER_RUN_AS_ROOT=1." >&2
+    exit 1
+  fi
+}
+
+HF_CACHE_HOST="${SAM3_MODEL_CACHE:-$ROOT_DIR/.cache/hf}"
 PIP_CACHE_HOST="$ROOT_DIR/.cache/pip"
-mkdir -p "$HF_CACHE_HOST" "$PIP_CACHE_HOST"
+CONTAINER_HOME_HOST="$ROOT_DIR/.cache/container-home"
+mkdir -p "$HF_CACHE_HOST" "$PIP_CACHE_HOST" "$CONTAINER_HOME_HOST"
+if [[ "${SAM3_DOCKER_RUN_AS_ROOT:-0}" != "1" ]]; then
+  mkdir -p "$HF_CACHE_HOST/hub" "$HF_CACHE_HOST/transformers"
+fi
+require_writable_dir "$OUT_HOST" "Output directory"
+require_writable_tree "$HF_CACHE_HOST" "SAM3 model cache"
+require_writable_dir "$PIP_CACHE_HOST" "SAM3 pip cache"
+require_writable_dir "$CONTAINER_HOME_HOST" "SAM3 container home"
+echo "[debug] SAM3 model cache: $HF_CACHE_HOST" >&2
+
+container_path_for_host_path() {
+  local path="${1:?}"
+  local abs
+  abs="$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")"
+  case "$abs" in
+    "$OUT_HOST")
+      printf '/out'
+      ;;
+    "$OUT_HOST"/*)
+      printf '/out/%s' "${abs#"$OUT_HOST"/}"
+      ;;
+    "$IN_DIR")
+      printf '/data'
+      ;;
+    "$IN_DIR"/*)
+      printf '/data/%s' "${abs#"$IN_DIR"/}"
+      ;;
+    "$ROOT_DIR")
+      printf '/workspace'
+      ;;
+    "$ROOT_DIR"/*)
+      printf '/workspace/%s' "${abs#"$ROOT_DIR"/}"
+      ;;
+    *)
+      printf '%s' "$path"
+      ;;
+  esac
+}
+
+JOB_HOST="${SAM3_JOB_DIR:-}"
+JOB_CONTAINER=""
+if [[ -n "$JOB_HOST" ]]; then
+  JOB_HOST="$(readlink -f "$JOB_HOST" 2>/dev/null || printf '%s' "$JOB_HOST")"
+  mkdir -p "$JOB_HOST"
+  case "$JOB_HOST" in
+    "$OUT_HOST"/*)
+      JOB_CONTAINER="/out/${JOB_HOST#"$OUT_HOST"/}"
+      ;;
+    "$ROOT_DIR"/*)
+      JOB_CONTAINER="/workspace/${JOB_HOST#"$ROOT_DIR"/}"
+      ;;
+    *)
+      echo "ERROR: SAM3_JOB_DIR must live under output dir or repo root so Docker can mount it: $JOB_HOST" >&2
+      exit 1
+      ;;
+  esac
+  echo "[debug] SAM3 job dir: $JOB_HOST -> $JOB_CONTAINER" >&2
+fi
 
 # Prefer host code if available
 EXTRA_MOUNTS=()
@@ -309,6 +421,116 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
   exit 1
 fi
 
+DOCKER_TTY_ARGS=(-i)
+if [[ -t 1 ]]; then
+  DOCKER_TTY_ARGS=(-it)
+fi
+
+DOCKER_USER_ARGS=()
+if [[ "${SAM3_DOCKER_RUN_AS_ROOT:-0}" != "1" ]]; then
+  DOCKER_USER_ARGS=(--user "$(id -u):$(id -g)")
+  echo "[debug] Running container as host user: $(id -u):$(id -g)" >&2
+else
+  echo "[debug] Running container as root because SAM3_DOCKER_RUN_AS_ROOT=1" >&2
+fi
+
+safe_docker_name_component() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+INPUT_STEM="$(basename "$IN_ABS")"
+INPUT_STEM="${INPUT_STEM%.*}"
+CONTAINER_INPUT_NAME="$(safe_docker_name_component "$INPUT_STEM")"
+CONTAINER_PROMPT_NAME="$(safe_docker_name_component "$PROMPT")"
+CONTAINER_NAME="jcut-sam3-${CONTAINER_INPUT_NAME:-input}-${CONTAINER_PROMPT_NAME:-prompt}-$$"
+echo "[debug] Docker container name: $CONTAINER_NAME" >&2
+
+update_job_manifest_docker_process() {
+  local manifest_path="${1:-}"
+  if [[ -z "$manifest_path" || ! -f "$manifest_path" ]]; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  python3 - "$manifest_path" "$CONTAINER_NAME" "$IMAGE_NAME" <<'PY' || true
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+container_name = sys.argv[2]
+image_name = sys.argv[3]
+try:
+    manifest = json.loads(path.read_text())
+except Exception:
+    manifest = {}
+process = manifest.get("process")
+if not isinstance(process, dict):
+    process = {}
+docker = process.get("docker")
+if not isinstance(docker, dict):
+    docker = {}
+docker.update({
+    "container_name": container_name,
+    "image": image_name,
+    "log_command": ["docker", "logs", "-f", container_name],
+})
+process["type"] = "docker"
+process["docker"] = docker
+manifest["process"] = process
+manifest["docker_container_name"] = container_name
+manifest["status"] = "running"
+path.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
+PY
+}
+
+DOCKER_RUN_ARGS=(
+  --rm
+  --name "$CONTAINER_NAME"
+  --label "jcut.operation=sam3"
+  --label "jcut.container_name=$CONTAINER_NAME"
+  "${DOCKER_TTY_ARGS[@]}"
+  --gpus all
+  "${DOCKER_USER_ARGS[@]}"
+  -v "$IN_DIR:/data"
+  -v "$OUT_HOST:/out"
+  -v "$HF_CACHE_HOST:/cache/hf"
+  -v "$PIP_CACHE_HOST:/cache/pip"
+  -v "$CONTAINER_HOME_HOST:/home/jcut"
+  -v "$ROOT_DIR:/workspace"
+  "${EXTRA_MOUNTS[@]}"
+  -e HOME=/home/jcut
+  -e USER=jcut
+  -e LOGNAME=jcut
+  -e XDG_CACHE_HOME=/home/jcut/.cache
+  -e HF_HOME=/cache/hf
+  -e HUGGINGFACE_HUB_CACHE=/cache/hf/hub
+  -e TRANSFORMERS_CACHE=/cache/hf/transformers
+  -e PIP_CACHE_DIR=/cache/pip
+  -e HF_TOKEN_FILE=/workspace/hftoken.txt
+)
+if [[ -n "$JOB_HOST" ]]; then
+  DOCKER_RUN_ARGS+=( --label "jcut.job_root=$JOB_HOST" )
+  update_job_manifest_docker_process "$JOB_HOST/manifest.json"
+fi
+
+build_python_extra_args() {
+  PYTHON_EXTRA_ARGS=()
+  if [[ "${#PATH_ARGS[@]}" -gt 0 ]]; then
+    local i=0
+    while [[ "$i" -lt "${#PATH_ARGS[@]}" ]]; do
+      PYTHON_EXTRA_ARGS+=("${PATH_ARGS[$i]}" "$(container_path_for_host_path "${PATH_ARGS[$((i + 1))]}")")
+      i=$((i + 2))
+    done
+  fi
+  if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
+    PYTHON_EXTRA_ARGS+=("${EXTRA_ARGS[@]}")
+  fi
+}
+
 run_container() {
   local in_container="${1:?}"
   local out_container="${2:?}"
@@ -319,16 +541,18 @@ run_container() {
   local profile_container="$out_container/${input_stem}_cprofile.prof"
   local python_bin="python"
   local py_args="/workspace/sam3_run.py --input \"$in_container\" --prompt \"$PROMPT\" --output \"$out_container\""
+  if [[ -n "$JOB_CONTAINER" ]]; then
+    py_args="$py_args --job-dir \"$JOB_CONTAINER\""
+  fi
   if [[ -n "$max_frames" ]]; then
     py_args="$py_args --max-frames \"$max_frames\""
   fi
-  if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
-    for a in "${EXTRA_ARGS[@]}"; do
+  build_python_extra_args
+  if [[ "${#PYTHON_EXTRA_ARGS[@]}" -gt 0 ]]; then
+    for a in "${PYTHON_EXTRA_ARGS[@]}"; do
       py_args="$py_args \"$a\""
     done
-  fi
-  if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
-    echo "[debug] Forwarding extra args to python: ${EXTRA_ARGS[*]}" >&2
+    echo "[debug] Forwarding extra args to python: ${PYTHON_EXTRA_ARGS[*]}" >&2
   fi
   if [[ "$PROFILE_MODE" -eq 1 ]]; then
     python_bin="python -m cProfile -o \"$profile_container\""
@@ -339,29 +563,9 @@ run_container() {
   if [[ "$SHELL_MODE" -eq 1 ]]; then
     echo "Run inside container:"
     echo "$cmd"
-    docker run --rm -it \
-      --gpus all \
-      -v "$IN_DIR:/data" \
-      -v "$OUT_HOST:/out" \
-      -v "$HF_CACHE_HOST:/cache/hf" \
-      -v "$PIP_CACHE_HOST:/root/.cache/pip" \
-      -v "$ROOT_DIR:/workspace" \
-      "${EXTRA_MOUNTS[@]}" \
-      -e HF_TOKEN_FILE=/workspace/hftoken.txt \
-      "$IMAGE_NAME" \
-      /bin/bash
+    docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash
   else
-    docker run --rm -it \
-      --gpus all \
-      -v "$IN_DIR:/data" \
-      -v "$OUT_HOST:/out" \
-      -v "$HF_CACHE_HOST:/cache/hf" \
-      -v "$PIP_CACHE_HOST:/root/.cache/pip" \
-      -v "$ROOT_DIR:/workspace" \
-      "${EXTRA_MOUNTS[@]}" \
-      -e HF_TOKEN_FILE=/workspace/hftoken.txt \
-      "$IMAGE_NAME" \
-      /bin/bash -lc "$cmd"
+    docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$cmd"
   fi
 }
 

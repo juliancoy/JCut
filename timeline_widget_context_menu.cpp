@@ -61,6 +61,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* scaleToFillAction = nullptr;
     QAction* propertiesAction = nullptr;
     QAction* refreshMetadataAction = nullptr;
+    QAction* detectAction = nullptr;
     QAction* transcribeAction = nullptr;
     QAction* deleteTranscriptAction = nullptr;
     QAction* useProxyAction = nullptr;
@@ -138,6 +139,10 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].locked);
+        detectAction = menu.addAction(QStringLiteral("Detect"));
+        detectAction->setEnabled(
+            m_clips[clipIndex].mediaType == ClipMediaType::Video &&
+            !m_clips[clipIndex].filePath.trimmed().isEmpty());
         QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
         transcribeAction = transcriptMenu->addAction(QStringLiteral("Transcribe"));
         deleteTranscriptAction = transcriptMenu->addAction(QStringLiteral("Delete Transcript..."));
@@ -179,7 +184,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         const bool canFaceDetections =
             m_clips[clipIndex].mediaType == ClipMediaType::Audio || m_clips[clipIndex].hasAudio;
         bool hasFaceDetections = false;
-        const QString transcriptPath = activeTranscriptPathForClipFile(m_clips[clipIndex].filePath);
+        const QString transcriptPath = activeTranscriptPathForClip(m_clips[clipIndex]);
         if (!transcriptPath.trimmed().isEmpty()) {
             editor::TranscriptEngine transcriptEngine;
             QJsonObject artifactRoot;
@@ -467,6 +472,13 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == scaleToFillAction) {
         if (scaleToFillRequested && clipIndex >= 0) {
             scaleToFillRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    if (selected == detectAction) {
+        if (detectRequested && clipIndex >= 0) {
+            detectRequested(m_clips[clipIndex].id);
         }
         return;
     }

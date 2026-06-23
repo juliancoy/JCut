@@ -6,10 +6,12 @@
 #include "async_decoder.h"
 #include "audio_preview_support.h"
 #include "debug_controls.h"
+#include "direct_vulkan_preview_interaction.h"
 #include "direct_vulkan_preview_presenter.h"
 #include "frame_handle.h"
 #include "media_pipeline_shared.h"
 #include "editor_shared.h"
+#include "editor_shared_timing.h"
 #include "playback_frame_pipeline.h"
 #include "preview_frame_selection.h"
 #include "preview_view_transform.h"
@@ -67,6 +69,13 @@ TimelineClip directVulkanDecodeClip(const TimelineClip& clip, bool useProxyMedia
     return directClip;
 }
 
+bool directVulkanPreviewSupportsClip(const TimelineClip& clip)
+{
+    return !clip.filePath.isEmpty() &&
+           clip.sourceKind != MediaSourceKind::ImageSequence &&
+           (clip.mediaType == ClipMediaType::Video || clip.mediaType == ClipMediaType::Image);
+}
+
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
                               int64_t samplePosition,
@@ -74,7 +83,7 @@ bool visualClipActiveAtSample(const TimelineClip& clip,
                               bool bypassGrading)
 {
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
-    const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+    const int64_t clipEndSample = clipTimelineEndSamples(clip);
     return clipVisualPlaybackEnabled(clip, tracks) &&
            samplePosition >= clipStartSample &&
            samplePosition < clipEndSample &&
@@ -105,9 +114,7 @@ QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& cli
     playbackClips.reserve(clips.size());
     for (const TimelineClip& clip : clips) {
         if (!clipVisualPlaybackEnabled(clip, tracks) ||
-            clip.mediaType != ClipMediaType::Video ||
-            clip.sourceKind == MediaSourceKind::ImageSequence ||
-            clip.filePath.isEmpty()) {
+            !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         playbackClips.push_back(directVulkanDecodeClip(clip, useProxyMedia));
@@ -385,6 +392,11 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
     m_interaction.clipCount = clips.size();
+    if (m_interaction.transient.dragMode == PreviewDragMode::None &&
+        (m_interaction.transient.transformOverrideActive ||
+         m_interaction.transient.transcriptOverrideActive)) {
+        jcut::direct_vulkan_preview::clearVulkanDragOverrides(&m_interaction);
+    }
     m_lastPresentedFrameByClip.clear();
     warmClipsSpeakerFramingContinuityRuntime(m_interaction.clips);
     if (m_playbackPipeline) {
@@ -585,6 +597,42 @@ void VulkanPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect effect)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setBackgroundFillOpacity(qreal opacity)
+{
+    m_interaction.backgroundFillOpacity = qBound<qreal>(0.0, opacity, 1.0);
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillBrightness(qreal brightness)
+{
+    m_interaction.backgroundFillBrightness = qBound<qreal>(-1.0, brightness, 1.0);
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillSaturation(qreal saturation)
+{
+    m_interaction.backgroundFillSaturation = qBound<qreal>(0.0, saturation, 3.0);
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillEdgePixels(int pixels)
+{
+    m_interaction.backgroundFillEdgePixels = qBound(1, pixels, 512);
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillEdgeProgressive(bool progressive)
+{
+    m_interaction.backgroundFillEdgeProgressive = progressive;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillEdgePower(qreal power)
+{
+    m_interaction.backgroundFillEdgePower = qBound<qreal>(0.25, power, 8.0);
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setPreviewZoom(qreal zoom)
 {
     const qreal oldZoom = m_interaction.previewZoom;
@@ -758,16 +806,19 @@ void VulkanPreviewSurface::setCurrentSpeakerShadowColor(const QColor& color)
     requestNativeUpdate();
 }
 
-void VulkanPreviewSurface::setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs)
+void VulkanPreviewSurface::setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs, int offsetMs)
 {
     const int normalizedPrepend = qMax(0, prependMs);
     const int normalizedPostpend = qMax(0, postpendMs);
+    const int normalizedOffset = qBound(-10000, offsetMs, 10000);
     if (m_interaction.transcriptPrependMs == normalizedPrepend &&
-        m_interaction.transcriptPostpendMs == normalizedPostpend) {
+        m_interaction.transcriptPostpendMs == normalizedPostpend &&
+        m_interaction.transcriptOffsetMs == normalizedOffset) {
         return;
     }
     m_interaction.transcriptPrependMs = normalizedPrepend;
     m_interaction.transcriptPostpendMs = normalizedPostpend;
+    m_interaction.transcriptOffsetMs = normalizedOffset;
     invalidateTranscriptOverlayCache();
     requestNativeUpdate();
 }
@@ -1005,7 +1056,7 @@ QString VulkanPreviewSurface::activeAudioClipLabel() const
 bool VulkanPreviewSurface::isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const
 {
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
-    const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+    const int64_t clipEndSample = clipTimelineEndSamples(clip);
     return samplePosition >= clipStartSample && samplePosition < clipEndSample;
 }
 
@@ -1081,9 +1132,7 @@ void VulkanPreviewSurface::registerVisibleClips()
     QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
-            clip.mediaType != ClipMediaType::Video ||
-            clip.sourceKind == MediaSourceKind::ImageSequence ||
-            clip.filePath.isEmpty()) {
+            !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         const TimelineClip decodeClip = directVulkanDecodeClip(clip, m_useProxyMedia);
@@ -1122,7 +1171,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     int activeDecodableClipCount = 0;
     bool hasActiveDecodableClip = false;
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
+        if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (visualClipActiveAtSample(clip,
@@ -1178,9 +1227,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         qint64 unavailableCount = 0;
         const int backlog = m_playbackPipeline->pendingVisibleRequestCount();
         for (const TimelineClip& clip : m_interaction.clips) {
-            if (clip.mediaType != ClipMediaType::Video ||
-                clip.sourceKind == MediaSourceKind::ImageSequence ||
-                clip.filePath.isEmpty()) {
+            if (!directVulkanPreviewSupportsClip(clip)) {
                 continue;
             }
             if (!visualClipActiveAtSample(clip,
@@ -1255,7 +1302,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     qint64 visibleRequestReadyCount = 0;
     qint64 visibleRequestUnavailableCount = 0;
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
+        if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,
@@ -1267,7 +1314,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-        constexpr bool requireDirectVulkanPayload = true;
+        const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;
         const bool displayableCached = m_cache->hasDisplayableFrameForPreview(
             clip.id,
             localFrame,
@@ -1378,9 +1425,7 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
     const int lookaheadFrames = qMax(0, effectivePlaybackLookaheadFrames());
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.id != clipId ||
-            clip.mediaType != ClipMediaType::Video ||
-            clip.sourceKind == MediaSourceKind::ImageSequence ||
-            clip.filePath.isEmpty()) {
+            !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,
@@ -1451,7 +1496,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     qint64 correctionsUnavailableCount = 0;
 
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
+        if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,
@@ -1463,6 +1508,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
+        const int64_t requestFrame = staticImageClip ? 0 : localFrame;
         const int64_t baseMaxStaleFrameDelta =
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
         const int64_t maxStaleFrameDelta =
@@ -1479,7 +1526,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
             editor::PreviewFrameSelectionRequest{
                 clip.id,
-                localFrame,
+                requestFrame,
                 m_interaction.playing,
                 usePlaybackPipeline,
                 false,
@@ -1502,8 +1549,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const int64_t selectedStaleFrameDelta =
             frameSelection.selectedHeld ? maxHeldFrameDelta : maxStaleFrameDelta;
         const bool selectedTooStale =
+            !staticImageClip &&
             m_interaction.playing &&
-            editor::previewFrameIsTooStaleForPlayback(selectedFrame, localFrame, selectedStaleFrameDelta);
+            editor::previewFrameIsTooStaleForPlayback(selectedFrame, requestFrame, selectedStaleFrameDelta);
         if (selectedTooStale) {
             selectedFrame = FrameHandle();
         }
@@ -1514,7 +1562,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.decodePath = QStringLiteral("missing");
         status.frameSelection = frameSelection.selection;
         status.staleFrameRejected = selectedTooStale;
-        status.requestedSourceFrame = localFrame;
+        status.requestedSourceFrame = requestFrame;
         status.active = true;
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
         status.gradingBypassed = m_bypassGrading;
@@ -1795,7 +1843,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
     const bool targetIsCurrentPresentationSample = targetSample == m_interaction.currentSample;
     bool ready = true;
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
+        if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
@@ -1828,9 +1876,7 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
         const int64_t samplePosition = m_interaction.currentSample + frameToSamples(offset);
         const qreal framePosition = samplesToFramePosition(samplePosition);
         for (const TimelineClip& clip : m_interaction.clips) {
-            if (clip.mediaType != ClipMediaType::Video ||
-                clip.sourceKind == MediaSourceKind::ImageSequence ||
-                clip.filePath.isEmpty()) {
+            if (!directVulkanPreviewSupportsClip(clip)) {
                 continue;
             }
             if (!visualClipActiveAtSample(clip,
@@ -1853,9 +1899,7 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
 bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
 {
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (clip.mediaType != ClipMediaType::Video ||
-            clip.sourceKind == MediaSourceKind::ImageSequence ||
-            clip.filePath.isEmpty()) {
+        if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,

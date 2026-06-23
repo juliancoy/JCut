@@ -71,6 +71,7 @@
 #include <mutex>
 
 class ExportVulkanPreviewWidget;
+class MaskTab;
 
 namespace editor {
 
@@ -120,6 +121,7 @@ private:
 
     void loadState();
     void openTranscriptionWindow(const QString &filePath, const QString &label);
+    void openSamDetectorWindow(const QString& clipId);
     void scheduleTranscriptTextCompanionBackfill();
     void scheduleDeferredHistoryLoad(const QString& projectId);
     void applyDeferredStartupPanelState(const QJsonObject& root,
@@ -155,6 +157,8 @@ private:
     QJsonObject playbackConfigSnapshot() const;
     QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
     QJsonObject audioDebugSnapshot() const;
+    void attachTranscriptDocumentsToHistorySnapshot(QJsonObject* snapshot) const;
+    void restoreTranscriptDocumentsFromHistorySnapshot(const QJsonObject& snapshot);
     QString optimizedProfilePath() const;
     QJsonObject optimizedProfileSnapshot() const;
     QJsonObject ensureOptimizedProfile();
@@ -183,6 +187,7 @@ private:
     OptimizedPreviewProfile defaultOptimizedPreviewProfile() const;
 
     void refreshProjectsList();
+    void changeMediaRoot(const QString &path);
     void switchToProject(const QString &projectId);
     void createProject();
     bool saveProjectPayload(const QString &projectId,
@@ -279,6 +284,7 @@ private:
                                    const QString& refreshToken,
                                    QString* errorOut = nullptr) const;
     bool clearAiTokenFromSecureStore(QString* errorOut = nullptr) const;
+    bool refreshAiAuthTokenFromSecureStore();
     void runAiTranscribeForSelection();
     void runAiFindSpeakerNames();
     void runAiFindOrganizations();
@@ -347,6 +353,9 @@ private:
     void scheduleDeferredInspectorRefresh(int delayMs = 75);
     void refreshInspectorTabByName(const QString& tabName);
     void refreshAudioInspectorViews();
+    void syncAudioTabTimelineWaveforms();
+    void refreshProcessingJobsTab();
+    void showProcessingJobLog(const QString& manifestPath);
     void refreshTimelineStructureInspectorViews();
     void refreshTimelineSelectionInspectorViews();
     void refreshPreviewTransformInspectorViews();
@@ -367,6 +376,7 @@ private:
     void createGradingTab();
     void createOpacityTab();
     void createEffectsTab();
+    void createMaskTab();
     void createCorrectionsTab();
     void createTitlesTab();
     void createVideoKeyframeTab();
@@ -521,6 +531,7 @@ private:
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioStereoToMonoCheckBox = nullptr;
     QCheckBox *m_audioSelectiveNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
@@ -534,6 +545,7 @@ private:
     QCheckBox *m_audioCompressorEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioCompressorThresholdDbSpin = nullptr;
     QDoubleSpinBox *m_audioCompressorRatioSpin = nullptr;
+    QCheckBox *m_audioSoftClipEnabledCheckBox = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
 
@@ -565,6 +577,12 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QComboBox *m_renderBackendCombo = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
+    QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
+    QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
+    QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
+    QSlider *m_backgroundFillEdgePixelsSlider = nullptr;
+    QCheckBox *m_backgroundFillEdgeProgressiveCheckBox = nullptr;
+    QDoubleSpinBox *m_backgroundFillEdgePowerSpin = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
@@ -599,6 +617,7 @@ private:
     QCheckBox *m_keyframeSkipAwareTimingCheckBox = nullptr;
 
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
+    QComboBox *m_transcriptPlacementModeCombo = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
     QSpinBox *m_transcriptMaxCharsSpin = nullptr;
     QCheckBox *m_transcriptAutoScrollCheckBox = nullptr;
@@ -606,6 +625,7 @@ private:
 
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
+    QSpinBox *m_transcriptOffsetMsSpin = nullptr;
     QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
@@ -613,6 +633,7 @@ private:
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     int m_transcriptPrependMs = 150;
     int m_transcriptPostpendMs = 70;
+    int m_transcriptOffsetMs = 0;
     bool m_speechFilterEnabled = false;
     int m_speechFilterFadeSamples = 300;
     bool m_speechFilterRangeCrossfade = false;
@@ -651,6 +672,7 @@ private:
     std::unique_ptr<GradingTab> m_gradingTab;
     std::unique_ptr<OpacityTab> m_opacityTab;
     std::unique_ptr<EffectsTab> m_effectsTab;
+    std::unique_ptr<MaskTab> m_maskTab;
     std::unique_ptr<CorrectionsTab> m_correctionsTab;
     std::unique_ptr<TitlesTab> m_titlesTab;
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;
@@ -677,6 +699,7 @@ private:
     QTimer m_autosaveTimer;
     QTimer m_transcriptNormalizeRefreshTimer;
     QTimer m_deferredInspectorRefreshTimer;
+    QTimer m_processingJobsRefreshTimer;
     QFutureWatcher<QVector<ExportRangeSegment>> m_transcriptNormalizeRefreshWatcher;
     QFutureWatcher<QJsonObject> m_transcriptTextCompanionBackfillWatcher;
     QFutureWatcher<QJsonObject> m_deferredHistoryLoadWatcher;

@@ -24,6 +24,15 @@ void TracksTab::refresh()
 
     m_updating = true;
     const QVector<TimelineTrack> tracks = m_deps.getTracks();
+    m_widgets.tracksTable->setColumnCount(6);
+    m_widgets.tracksTable->setHorizontalHeaderLabels({
+        QStringLiteral("Track"),
+        QStringLiteral("Video"),
+        QStringLiteral("Audio"),
+        QStringLiteral("Gain %"),
+        QStringLiteral("Mute"),
+        QStringLiteral("Solo")
+    });
     m_widgets.tracksTable->setRowCount(tracks.size());
 
     for (int row = 0; row < tracks.size(); ++row) {
@@ -66,9 +75,36 @@ void TracksTab::refresh()
             audioItem->setToolTip(QStringLiteral("No audio clips on this track"));
         }
 
+        auto* gainItem = new QTableWidgetItem(QString::number(qRound(track.audioGain * 100.0)));
+        Qt::ItemFlags gainFlags = Qt::ItemIsSelectable;
+        if (hasAudio) {
+            gainFlags |= Qt::ItemIsEnabled | Qt::ItemIsEditable;
+        }
+        gainItem->setFlags(gainFlags);
+        gainItem->setToolTip(QStringLiteral("Track audio gain percentage"));
+
+        auto* muteItem = new QTableWidgetItem;
+        Qt::ItemFlags muteFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
+        if (hasAudio) {
+            muteFlags |= Qt::ItemIsEnabled;
+        }
+        muteItem->setFlags(muteFlags);
+        muteItem->setCheckState(track.audioMuted ? Qt::Checked : Qt::Unchecked);
+
+        auto* soloItem = new QTableWidgetItem;
+        Qt::ItemFlags soloFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
+        if (hasAudio) {
+            soloFlags |= Qt::ItemIsEnabled;
+        }
+        soloItem->setFlags(soloFlags);
+        soloItem->setCheckState(track.audioSolo ? Qt::Checked : Qt::Unchecked);
+
         m_widgets.tracksTable->setItem(row, 0, nameItem);
         m_widgets.tracksTable->setItem(row, 1, visualItem);
         m_widgets.tracksTable->setItem(row, 2, audioItem);
+        m_widgets.tracksTable->setItem(row, 3, gainItem);
+        m_widgets.tracksTable->setItem(row, 4, muteItem);
+        m_widgets.tracksTable->setItem(row, 5, soloItem);
     }
 
     m_widgets.tracksTable->resizeColumnsToContents();
@@ -97,6 +133,18 @@ void TracksTab::onTableItemChanged(QTableWidgetItem* item)
         changed = m_deps.updateTrackVisualMode ? m_deps.updateTrackVisualMode(row, mode) : false;
     } else if (item->column() == 2) {
         changed = m_deps.updateTrackAudioEnabled ? m_deps.updateTrackAudioEnabled(row, checked) : false;
+    } else if (item->column() == 3) {
+        bool ok = false;
+        const qreal gainPercent = item->text().trimmed().toDouble(&ok);
+        if (ok) {
+            changed = m_deps.updateTrackAudioGain
+                ? m_deps.updateTrackAudioGain(row, qBound<qreal>(0.0, gainPercent / 100.0, 4.0))
+                : false;
+        }
+    } else if (item->column() == 4) {
+        changed = m_deps.updateTrackAudioMuted ? m_deps.updateTrackAudioMuted(row, checked) : false;
+    } else if (item->column() == 5) {
+        changed = m_deps.updateTrackAudioSolo ? m_deps.updateTrackAudioSolo(row, checked) : false;
     }
 
     if (changed) {

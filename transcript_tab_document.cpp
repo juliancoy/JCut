@@ -17,6 +17,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QtConcurrent/QtConcurrentRun>
@@ -57,6 +58,25 @@ constexpr int kEditFlagTiming = 1 << 0;
 constexpr int kEditFlagText = 1 << 1;
 constexpr int kEditFlagSkip = 1 << 2;
 constexpr int kEditFlagInserted = 1 << 3;
+
+void revealTranscriptTableRow(QTableWidget* table, int row)
+{
+    if (!table || row < 0 || row >= table->rowCount()) {
+        return;
+    }
+    if (QTableWidgetItem* item = table->item(row, kTranscriptColSourceStart)) {
+        table->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+    }
+    QScrollBar* scrollBar = table->verticalScrollBar();
+    if (!scrollBar) {
+        return;
+    }
+    const int rowHeight = qMax(1, table->rowHeight(row));
+    const int viewportHeight = table->viewport() ? table->viewport()->height() : 0;
+    const int centeredValue =
+        qMax(0, (row * rowHeight) - (viewportHeight / 2) + (rowHeight / 2));
+    scrollBar->setValue(qBound(scrollBar->minimum(), centeredValue, scrollBar->maximum()));
+}
 
 int transcriptEditFlagsFromWordObject(const QJsonObject& word)
 {
@@ -320,11 +340,11 @@ void TranscriptTab::rebuildTranscriptWordAddressIndex()
 void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
 {
     QString baseEditablePath;
-    if (!ensureEditableTranscriptForClipFile(clip.filePath, &baseEditablePath)) {
-        baseEditablePath = transcriptWorkingPathForClipFile(clip.filePath);
+    if (!ensureEditableTranscriptForClip(clip, &baseEditablePath)) {
+        baseEditablePath = transcriptWorkingPathForClip(clip);
     }
 
-    const QString originalPath = originalTranscriptPathForClip(clip.filePath);
+    const QString originalPath = transcriptPathForClip(clip);
     QString transcriptPath = baseEditablePath;
     if (m_widgets.transcriptScriptVersionCombo) {
         const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
@@ -333,7 +353,7 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
         }
     }
     refreshScriptVersionSelector(clip.filePath, transcriptPath);
-    setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
+    setActiveTranscriptPathForClip(clip, transcriptPath);
 
     const bool canReuseLoadedDoc =
         m_transcriptSession.hasObjectDocument() &&
@@ -344,7 +364,7 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
             if (transcriptPath != baseEditablePath && QFileInfo::exists(baseEditablePath)) {
                 transcriptPath = baseEditablePath;
                 refreshScriptVersionSelector(clip.filePath, transcriptPath);
-                setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
+                setActiveTranscriptPathForClip(clip, transcriptPath);
             } else {
                 if (m_widgets.transcriptInspectorDetailsLabel) {
                     m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
@@ -509,11 +529,13 @@ void TranscriptTab::rebuildWordEditIndex(const QVector<TranscriptRow>& rows)
 }
 
 QVector<TranscriptTab::TranscriptRow> TranscriptTab::parseTranscriptRows(int prependMs,
-                                                                         int postpendMs) const
+                                                                         int postpendMs,
+                                                                         int offsetMs) const
 {
     QVector<TranscriptRow> rows;
     const double prependSeconds = prependMs / 1000.0;
     const double postpendSeconds = postpendMs / 1000.0;
+    const double offsetSeconds = offsetMs / 1000.0;
     rows.reserve(m_renderOrderedWordIds.size());
 
     for (const int wordId : m_renderOrderedWordIds) {
@@ -534,8 +556,8 @@ QVector<TranscriptTab::TranscriptRow> TranscriptTab::parseTranscriptRows(int pre
             continue;
         }
 
-        const double adjustedStartTime = qMax(0.0, rawStartTime - prependSeconds);
-        const double adjustedEndTime = qMax(adjustedStartTime, rawEndTime + postpendSeconds);
+        const double adjustedStartTime = qMax(0.0, rawStartTime + offsetSeconds - prependSeconds);
+        const double adjustedEndTime = qMax(adjustedStartTime, rawEndTime + offsetSeconds + postpendSeconds);
 
         TranscriptRow row;
         row.startFrame = qMax<int64_t>(0, static_cast<int64_t>(std::floor(adjustedStartTime * kTimelineFps)));
@@ -654,7 +676,11 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
     int restoreRow = -1;
     int playheadRestoreRow = -1;
     int64_t nearestPlayheadDistance = std::numeric_limits<int64_t>::max();
+    const bool followCurrentWord =
+        m_widgets.transcriptFollowCurrentWordCheckBox &&
+        m_widgets.transcriptFollowCurrentWordCheckBox->isChecked();
     const bool canRestoreFromPlayhead =
+        followCurrentWord &&
         !selectedClipId.isEmpty() &&
         selectedClipId == m_lastSyncClipId &&
         m_lastSyncSourceFrame >= 0;
@@ -729,9 +755,10 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->setRowHeight(row, kTranscriptTableRowHeight);
     }
 
-    if (restoreRow < 0) {
+    if (playheadRestoreRow >= 0) {
         restoreRow = playheadRestoreRow;
     }
+    const int rowToReveal = restoreRow;
     if (restoreRow >= 0 && m_widgets.transcriptTable->selectionModel()) {
         m_suppressSelectionSideEffects = true;
         m_widgets.transcriptTable->setCurrentCell(restoreRow, 0);
@@ -740,6 +767,7 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
     }
 
     m_widgets.transcriptTable->setUpdatesEnabled(true);
+    revealTranscriptTableRow(m_widgets.transcriptTable, rowToReveal);
     rebuildFollowRanges(rows);
 }
 
@@ -752,6 +780,7 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
     const QString activeTranscriptPath = m_transcriptSession.transcriptPath();
     const int prependMs = transcriptPrependMs();
     const int postpendMs = transcriptPostpendMs();
+    const int offsetMs = transcriptOffsetMs();
     const bool includeOutsideCut =
         showOutsideCutLinesEnabled() &&
         activeTranscriptPath != originalPath &&
@@ -766,6 +795,7 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
          originalPath,
          prependMs,
          postpendMs,
+         offsetMs,
          includeOutsideCut]() {
             auto wordAt = [](const QVector<TranscriptDocumentSegment>& docSegments,
                              int segmentIndex,
@@ -872,6 +902,7 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
                 QVector<TranscriptRow> rows;
                 const double prependSeconds = prependMs / 1000.0;
                 const double postpendSeconds = postpendMs / 1000.0;
+                const double offsetSeconds = offsetMs / 1000.0;
                 rows.reserve(docRenderOrder.size());
                 for (const int wordId : docRenderOrder) {
                     const auto addressIt = docAddresses.constFind(wordId);
@@ -889,9 +920,10 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
                         word->endSeconds < word->startSeconds) {
                         continue;
                     }
-                    const double adjustedStartTime = qMax(0.0, word->startSeconds - prependSeconds);
+                    const double adjustedStartTime =
+                        qMax(0.0, word->startSeconds + offsetSeconds - prependSeconds);
                     const double adjustedEndTime =
-                        qMax(adjustedStartTime, word->endSeconds + postpendSeconds);
+                        qMax(adjustedStartTime, word->endSeconds + offsetSeconds + postpendSeconds);
                     TranscriptRow row;
                     row.startFrame =
                         qMax<int64_t>(0, static_cast<int64_t>(std::floor(adjustedStartTime * kTimelineFps)));
@@ -1353,9 +1385,17 @@ void TranscriptTab::refreshScriptVersionSelector(const QString& clipFilePath, co
 
 QStringList TranscriptTab::scriptVersionPathsForClip(const QString& clipFilePath) const
 {
+    const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    const bool useSelectedClip =
+        selectedClip && selectedClip->filePath == clipFilePath;
+
     QString baseEditablePath;
-    if (!ensureEditableTranscriptForClipFile(clipFilePath, &baseEditablePath)) {
-        baseEditablePath = transcriptWorkingPathForClipFile(clipFilePath);
+    if (useSelectedClip) {
+        if (!ensureEditableTranscriptForClip(*selectedClip, &baseEditablePath)) {
+            baseEditablePath = transcriptWorkingPathForClip(*selectedClip);
+        }
+    } else if (!ensureEditableTranscriptForClipFile(clipFilePath, &baseEditablePath)) {
+            baseEditablePath = transcriptWorkingPathForClipFile(clipFilePath);
     }
 
     QStringList paths;
@@ -1369,9 +1409,12 @@ QStringList TranscriptTab::scriptVersionPathsForClip(const QString& clipFilePath
     }
 
     const QDir dir(baseInfo.dir());
-    const QString clipBaseName = QFileInfo(clipFilePath).completeBaseName();
+    QString transcriptStem = baseInfo.completeBaseName();
+    if (transcriptStem.endsWith(QStringLiteral("_editable"))) {
+        transcriptStem.chop(QStringLiteral("_editable").size());
+    }
     const QStringList candidates = dir.entryList(
-        QStringList{clipBaseName + QStringLiteral("_editable_v*.json")},
+        QStringList{transcriptStem + QStringLiteral("_editable_v*.json")},
         QDir::Files,
         QDir::Name);
     for (const QString& candidate : candidates) {
@@ -1440,11 +1483,19 @@ QString TranscriptTab::scriptVersionLabelForPath(const QString& path, const QStr
 
 QString TranscriptTab::defaultEditablePathForClip(const QString& clipFilePath) const
 {
+    const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (selectedClip && selectedClip->filePath == clipFilePath) {
+        return transcriptEditablePathForClip(*selectedClip);
+    }
     return transcriptEditablePathForClipFile(clipFilePath);
 }
 
 QString TranscriptTab::originalTranscriptPathForClip(const QString& clipFilePath) const
 {
+    const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (selectedClip && selectedClip->filePath == clipFilePath) {
+        return transcriptPathForClip(*selectedClip);
+    }
     return transcriptPathForClipFile(clipFilePath);
 }
 

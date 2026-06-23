@@ -535,8 +535,8 @@ The inspector tab order is fixed by `buildPane()` and decorated by
    - Sync table:
      - Columns: `Clip`, `Frame`, `Count`, `Action`
 
-7. `Keyframes`
-   - Heading: `Keyframes`
+7. `Transform`
+   - Heading: `Transform`
    - Clip label.
    - Details label.
    - Transform form:

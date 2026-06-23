@@ -1,5 +1,6 @@
 #include "render_internal.h"
 
+#include "audio_source_key.h"
 #include "audio_time_stretch.h"
 #include "decoder_ffmpeg_utils.h"
 
@@ -58,6 +59,49 @@ namespace {
 
 inline constexpr int64_t kExportAudioDecodeMarginSamples = kRenderAudioSampleRate;
 
+QString audioCacheKeyForClip(const TimelineClip& clip)
+{
+    return editor::audio::makeSourceKey(playbackAudioPathForClip(clip), clip.audioStreamIndex);
+}
+
+bool anyAudioSolo(const QVector<TimelineClip>& clips, const QVector<TimelineTrack>& tracks)
+{
+    for (const TimelineClip& clip : clips) {
+        if (clipAudioPlaybackEnabled(clip) && clip.audioSolo) {
+            return true;
+        }
+    }
+    for (const TimelineTrack& track : tracks) {
+        if (track.audioSolo) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float mixerGainForClip(const TimelineClip& clip,
+                       const QVector<TimelineTrack>& tracks,
+                       bool soloActive)
+{
+    if (!clipAudioPlaybackEnabled(clip)) {
+        return 0.0f;
+    }
+    float gain = static_cast<float>(qBound<qreal>(0.0, clip.audioGain, 4.0));
+    bool clipOrTrackSolo = clip.audioSolo;
+    if (clip.trackIndex >= 0 && clip.trackIndex < tracks.size()) {
+        const TimelineTrack& track = tracks.at(clip.trackIndex);
+        if (!track.audioEnabled || track.audioMuted) {
+            return 0.0f;
+        }
+        gain *= static_cast<float>(qBound<qreal>(0.0, track.audioGain, 4.0));
+        clipOrTrackSolo = clipOrTrackSolo || track.audioSolo;
+    }
+    if (soloActive && !clipOrTrackSolo) {
+        return 0.0f;
+    }
+    return gain;
+}
+
 struct ExportAudioDecodeRange {
     int64_t startSample = 0;
     int64_t endSampleExclusive = 0;
@@ -98,8 +142,7 @@ ExportAudioDecodeRange audioDecodeRangeForPath(const QString& path,
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSampleExclusive =
-            clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+        const int64_t clipEndSampleExclusive = clipTimelineEndSamples(clip);
         for (const ExportRangeSegment& range : exportRanges) {
             const int64_t rangeStartSample = frameToSamples(qMax<int64_t>(0, range.startFrame));
             const int64_t rangeEndSampleExclusive =
@@ -134,7 +177,8 @@ ExportAudioDecodeRange audioDecodeRangeForPath(const QString& path,
 
 DecodedAudioClip decodeClipAudio(const QString& path,
                                  int64_t sourceStartSample,
-                                 int64_t maxOutputFrames) {
+                                 int64_t maxOutputFrames,
+                                 int audioStreamIndex) {
     DecodedAudioClip cache;
     const int64_t requestedSourceStartSample = qMax<int64_t>(0, sourceStartSample);
 
@@ -164,19 +208,25 @@ DecodedAudioClip decodeClipAudio(const QString& path,
         return cache;
     }
 
-    int audioStreamIndex = -1;
-    for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
-        if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            audioStreamIndex = static_cast<int>(i);
-            break;
+    int resolvedAudioStreamIndex = -1;
+    if (audioStreamIndex >= 0 &&
+        audioStreamIndex < static_cast<int>(formatCtx->nb_streams) &&
+        formatCtx->streams[audioStreamIndex]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+        resolvedAudioStreamIndex = audioStreamIndex;
+    } else {
+        for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
+            if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                resolvedAudioStreamIndex = static_cast<int>(i);
+                break;
+            }
         }
     }
-    if (audioStreamIndex < 0) {
+    if (resolvedAudioStreamIndex < 0) {
         avformat_close_input(&formatCtx);
         return cache;
     }
 
-    AVStream* stream = formatCtx->streams[audioStreamIndex];
+    AVStream* stream = formatCtx->streams[resolvedAudioStreamIndex];
     if (!stream || !stream->codecpar) {
         avformat_close_input(&formatCtx);
         return cache;
@@ -233,7 +283,7 @@ DecodedAudioClip decodeClipAudio(const QString& path,
         const AVRational outputSampleTimeBase{1, kRenderAudioSampleRate};
         const int64_t seekTimestamp = av_rescale_q(
             requestedSourceStartSample, outputSampleTimeBase, stream->time_base);
-        if (av_seek_frame(formatCtx, audioStreamIndex, seekTimestamp, AVSEEK_FLAG_BACKWARD) >= 0) {
+        if (av_seek_frame(formatCtx, resolvedAudioStreamIndex, seekTimestamp, AVSEEK_FLAG_BACKWARD) >= 0) {
             avcodec_flush_buffers(codecCtx);
         }
     }
@@ -312,7 +362,7 @@ DecodedAudioClip decodeClipAudio(const QString& path,
     };
 
     while (!hitOutputLimit && av_read_frame(formatCtx, packet) >= 0) {
-        if (packet->stream_index != audioStreamIndex) {
+        if (packet->stream_index != resolvedAudioStreamIndex) {
             av_packet_unref(packet);
             continue;
         }
@@ -372,6 +422,7 @@ DecodedAudioClip decodeClipAudio(const QString& path,
 }
 
 void mixAudioChunk(const QVector<TimelineClip>& clips,
+                   const QVector<TimelineTrack>& tracks,
                    const QVector<RenderSyncMarker>& renderSyncMarkers,
                    const QHash<QString, DecodedAudioClip>& audioCache,
                    float* output,
@@ -383,11 +434,13 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         ? timelineSampleStep
         : 1.0;
 
+    const bool soloActive = anyAudioSolo(clips, tracks);
     for (const TimelineClip& clip : clips) {
-        if (!clipAudioPlaybackEnabled(clip)) {
+        const float mixerGain = mixerGainForClip(clip, tracks, soloActive);
+        if (mixerGain <= 0.0f) {
             continue;
         }
-        const auto audioIt = audioCache.constFind(playbackAudioPathForClip(clip));
+        const auto audioIt = audioCache.constFind(audioCacheKeyForClip(clip));
         if (audioIt == audioCache.constEnd() || !audioIt->valid) {
             continue;
         }
@@ -398,8 +451,7 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         if (decodedFrameCount <= 0) {
             continue;
         }
-        const int64_t clipEndSample =
-            clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         const int64_t chunkEndSample =
             chunkStartSample + static_cast<int64_t>(std::ceil(static_cast<qreal>(frames) * sampleStep));
         if (chunkEndSample <= clipStartSample || chunkStartSample >= clipEndSample) {
@@ -420,8 +472,8 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
             }
             const int outIndex = outFrame * kRenderAudioChannels;
             const int inIndex = static_cast<int>(localInFrame * kRenderAudioChannels);
-            output[outIndex] = qBound(-1.0f, output[outIndex] + audio.samples[inIndex], 1.0f);
-            output[outIndex + 1] = qBound(-1.0f, output[outIndex + 1] + audio.samples[inIndex + 1], 1.0f);
+            output[outIndex] = qBound(-1.0f, output[outIndex] + audio.samples[inIndex] * mixerGain, 1.0f);
+            output[outIndex + 1] = qBound(-1.0f, output[outIndex + 1] + audio.samples[inIndex + 1] * mixerGain, 1.0f);
         }
     }
 }
@@ -454,18 +506,19 @@ bool initializeExportAudio(const RenderRequest& request,
     int failedCount = 0;
     for (const TimelineClip& clip : audioClips) {
         const QString audioPath = playbackAudioPathForClip(clip);
-        if (audioPath.isEmpty() || audioCache.contains(audioPath)) {
+        const QString audioKey = audioCacheKeyForClip(clip);
+        if (audioPath.isEmpty() || audioKey.isEmpty() || audioCache.contains(audioKey)) {
             continue;
         }
         const ExportAudioDecodeRange range =
             audioDecodeRangeForPath(audioPath, audioClips, exportRanges, request.renderSyncMarkers);
         const DecodedAudioClip decoded = range.bounded
-            ? decodeClipAudio(audioPath, range.startSample, range.frameCount())
-            : decodeClipAudio(audioPath);
+            ? decodeClipAudio(audioPath, range.startSample, range.frameCount(), editor::audio::streamIndexFromSourceKey(audioKey))
+            : decodeClipAudio(audioPath, 0, -1, editor::audio::streamIndexFromSourceKey(audioKey));
         if (decoded.valid) {
-            audioCache.insert(audioPath, decoded);
+            audioCache.insert(audioKey, decoded);
             decodedCount++;
-            qDebug() << "Audio export: Successfully decoded audio clip:" << audioPath
+            qDebug() << "Audio export: Successfully decoded audio clip:" << audioKey
                      << "sourceStartSample:" << decoded.sourceStartSample
                      << "frames:" << (decoded.samples.size() / kRenderAudioChannels)
                      << "bounded:" << range.bounded;
@@ -478,7 +531,7 @@ bool initializeExportAudio(const RenderRequest& request,
 
     bool hasDecodedAudio = false;
     for (const TimelineClip& clip : audioClips) {
-        const auto audioIt = audioCache.constFind(playbackAudioPathForClip(clip));
+        const auto audioIt = audioCache.constFind(audioCacheKeyForClip(clip));
         if (audioIt != audioCache.constEnd() && audioIt->valid) {
             hasDecodedAudio = true;
             break;
@@ -556,6 +609,7 @@ bool initializeExportAudio(const RenderRequest& request,
     }
     state->stream->time_base = state->codecCtx->time_base;
     state->clips = audioClips;
+    state->tracks = request.tracks;
     state->cache = audioCache;
     state->renderSyncMarkers = request.renderSyncMarkers;
     state->enabled = true;
@@ -749,6 +803,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 static_cast<int>(qMin<int64_t>(mixChunkFrames, sourceSegmentSamples - mixedSamples));
             const int64_t chunkStartSample = frameToSamples(exportStart) + mixedSamples;
             mixAudioChunk(state.clips,
+                          state.tracks,
                           state.renderSyncMarkers,
                           state.cache,
                           mixBuffer.data(),

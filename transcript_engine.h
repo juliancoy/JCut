@@ -40,13 +40,15 @@ public:
                                                            const QVector<TimelineClip> &clips,
                                                            const QVector<RenderSyncMarker> &markers,
                                                            int transcriptPrependMs,
-                                                           int transcriptPostpendMs) const;
+                                                           int transcriptPostpendMs,
+                                                           int transcriptOffsetMs = 0) const;
     QVector<ExportRangeSegment> transcriptWordExportRangesDiscrete(const QVector<ExportRangeSegment> &baseRanges,
                                                                    const QVector<TimelineClip> &clips,
                                                                    const QVector<RenderSyncMarker> &markers,
                                                                    int transcriptPrependMs,
                                                                    int transcriptPostpendMs,
-                                                                   int neighborWordRadius = 0) const;
+                                                                   int neighborWordRadius = 0,
+                                                                   int transcriptOffsetMs = 0) const;
 
     void invalidateCache();
 
@@ -56,6 +58,7 @@ private:
         qint64 fileSize = -1;
         int prependMs = 0;
         int postpendMs = 0;
+        int offsetMs = 0;
         QVector<ExportRangeSegment> sourceWordRanges;
         bool valid = false;
     };
@@ -63,6 +66,7 @@ private:
     bool transcriptSourceWordRanges(const QString& transcriptPath,
                                     int transcriptPrependMs,
                                     int transcriptPostpendMs,
+                                    int transcriptOffsetMs,
                                     QVector<ExportRangeSegment>* rangesOut) const;
 
     mutable QHash<QString, TranscriptSourceWordRangeCacheEntry> m_transcriptSourceWordRangesCache;

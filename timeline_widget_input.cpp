@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "editor_shared_timing.h"
 #include "titles.h"
 
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -24,6 +26,26 @@ bool exportRangesEqual(const QVector<ExportRangeSegment>& a, const QVector<Expor
         }
     }
     return true;
+}
+
+void setFrameAndSubframeSamples(int64_t samples, int64_t& frame, int64_t& subframeSamples) {
+    samples = qMax<int64_t>(0, samples);
+    frame = samples / kSamplesPerFrame;
+    subframeSamples = samples % kSamplesPerFrame;
+}
+
+void setClipTimelineStartSample(TimelineClip& clip, int64_t startSample) {
+    setFrameAndSubframeSamples(startSample, clip.startFrame, clip.startSubframeSamples);
+}
+
+void setClipTimelineDurationSamples(TimelineClip& clip, int64_t durationSamples) {
+    setFrameAndSubframeSamples(qMax<int64_t>(kSamplesPerFrame, durationSamples),
+                               clip.durationFrames,
+                               clip.durationSubframeSamples);
+}
+
+void setClipSourceInSample(TimelineClip& clip, int64_t sourceSample) {
+    setFrameAndSubframeSamples(sourceSample, clip.sourceInFrame, clip.sourceInSubframeSamples);
 }
 
 } // namespace
@@ -179,6 +201,13 @@ int64_t TimelineWidget::frameFromX(qreal x) const {
     const int left = timelineContentRect().left();
     const qreal normalized = qMax<qreal>(0.0, x - left);
     return m_frameOffset + static_cast<int64_t>(normalized / m_pixelsPerFrame);
+}
+
+int64_t TimelineWidget::sampleFromX(qreal x) const {
+    const int left = timelineContentRect().left();
+    const qreal normalized = qMax<qreal>(0.0, x - left);
+    const qreal framePosition = static_cast<qreal>(m_frameOffset) + (normalized / m_pixelsPerFrame);
+    return framePositionToSamples(framePosition);
 }
 
 int TimelineWidget::xFromFrame(int64_t frame) const {
@@ -503,13 +532,18 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
             m_dragMode = clipDragModeAt(m_clips[hitIndex], event->position().toPoint());
             m_draggedClipIndex = hitIndex;
             m_dragOriginalStartFrame = m_clips[hitIndex].startFrame;
+            m_dragOriginalStartSample = clipTimelineStartSamples(m_clips[hitIndex]);
             m_dragOriginalDurationFrames = m_clips[hitIndex].durationFrames;
+            m_dragOriginalDurationSamples = clipTimelineDurationSamples(m_clips[hitIndex]);
             m_dragOriginalSourceInFrame = m_clips[hitIndex].sourceInFrame;
+            m_dragOriginalSourceInSamples = clipSourceInSamples(m_clips[hitIndex]);
             m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
             m_dragOriginalTitleKeyframes = m_clips[hitIndex].titleKeyframes;
             m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
+            m_dragOffsetSamples = sampleFromX(event->position().x()) - m_dragOriginalStartSample;
             m_dragMoveClipIds.clear();
             m_dragMoveOriginalStartFrames.clear();
+            m_dragMoveOriginalStartSamples.clear();
             m_dragLockedTrackOnly = false;
             if (m_clips[hitIndex].locked) {
                 // Locked clips may move between tracks, but not in time.
@@ -541,6 +575,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                 for (const TimelineClip& clip : m_clips) {
                     if (m_dragMoveClipIds.contains(clip.id)) {
                         m_dragMoveOriginalStartFrames.insert(clip.id, clip.startFrame);
+                        m_dragMoveOriginalStartSamples.insert(clip.id, clipTimelineStartSamples(clip));
                     }
                 }
             }
@@ -607,10 +642,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                : (isSequence ? QStringLiteral("Sequence") : QStringLiteral("Video")));
         const bool proxyVideoAvailable = clipHasProxyAvailable(hoveredClip);
         const bool proxyAudioAvailable = playbackUsesAlternateAudioSource(hoveredClip);
-        const QString transcriptPath = transcriptWorkingPathForClipFile(hoveredClip.filePath);
+        const QString transcriptPath = transcriptWorkingPathForClip(hoveredClip);
         const bool transcriptAvailable =
             !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
-        const bool facedetectionsSidecarAvailable = facedetectionsSidecarExistsForClipFile(hoveredClip.filePath);
+        const bool facedetectionsSidecarAvailable = facedetectionsSidecarExistsForClip(hoveredClip);
         const int64_t localTimelineFrame =
             qBound<int64_t>(0,
                             m_currentFrame - hoveredClip.startFrame,
@@ -673,7 +708,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
     if (m_resizingTrackIndex >= 0 && (event->buttons() & Qt::LeftButton)) {
         ensureTrackCount(m_resizingTrackIndex + 1);
         const int delta = event->position().toPoint().y() - m_resizeOriginY;
-        m_tracks[m_resizingTrackIndex].height = qMax(kMinTrackHeight, m_resizeOriginHeight + delta);
+        m_tracks[m_resizingTrackIndex].height =
+            qBound(kMinTrackHeight, m_resizeOriginHeight + delta, kMaxTrackHeight);
         updateMinimumTimelineHeight();
         if (trackLayoutChanged) {
             trackLayoutChanged();
@@ -727,8 +763,71 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 update();
                 return;
             }
+            auto isPureAudioMoveSelection = [&]() {
+                if (m_dragMoveClipIds.isEmpty()) {
+                    return clip.mediaType == ClipMediaType::Audio;
+                }
+                for (const QString& movingId : m_dragMoveClipIds) {
+                    bool foundAudioClip = false;
+                    for (const TimelineClip& candidateClip : m_clips) {
+                        if (candidateClip.id == movingId) {
+                            foundAudioClip = candidateClip.mediaType == ClipMediaType::Audio;
+                            break;
+                        }
+                    }
+                    if (!foundAudioClip) {
+                        return false;
+                    }
+                }
+                return true;
+            };
             bool snapped = false;
             int64_t snappedBoundaryFrame = -1;
+            const bool movingMultipleClips = m_dragMoveOriginalStartFrames.size() > 1;
+            const bool sampleGranularAudioMove = isPureAudioMoveSelection();
+            if (sampleGranularAudioMove) {
+                const int64_t proposedStartSample = qMax<int64_t>(0, sampleFromX(event->position().x()) - m_dragOffsetSamples);
+                int64_t moveDeltaSamples = proposedStartSample - m_dragOriginalStartSample;
+                int64_t minOriginalStartSample = std::numeric_limits<int64_t>::max();
+                for (auto it = m_dragMoveOriginalStartSamples.constBegin();
+                     it != m_dragMoveOriginalStartSamples.constEnd();
+                     ++it) {
+                    minOriginalStartSample = qMin(minOriginalStartSample, it.value());
+                }
+                if (minOriginalStartSample != std::numeric_limits<int64_t>::max()) {
+                    moveDeltaSamples = qMax<int64_t>(moveDeltaSamples, -minOriginalStartSample);
+                }
+
+                bool insertsTrack = false;
+                const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
+                if (movingMultipleClips) {
+                    for (TimelineClip& movingClip : m_clips) {
+                        const auto it = m_dragMoveOriginalStartSamples.constFind(movingClip.id);
+                        if (it == m_dragMoveOriginalStartSamples.constEnd()) {
+                            continue;
+                        }
+                        setClipTimelineStartSample(movingClip, it.value() + moveDeltaSamples);
+                    }
+                    m_trackDropIndex = clip.trackIndex;
+                    m_trackDropInGap = false;
+                } else {
+                    setClipTimelineStartSample(clip, m_dragOriginalStartSample + moveDeltaSamples);
+                    if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                        TimelineClip tempClip = clip;
+                        tempClip.trackIndex = proposedTrack;
+                        if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
+                            clip.trackIndex = proposedTrack;
+                        }
+                    }
+                    m_trackDropIndex = proposedTrack;
+                    m_trackDropInGap = insertsTrack;
+                }
+                m_snapIndicatorFrame = -1;
+                m_currentFrame = qMax<int64_t>(0, static_cast<int64_t>(std::floor(
+                    samplesToFramePosition(m_dragOriginalStartSample + moveDeltaSamples))));
+                update();
+                return;
+            }
             const int64_t unsnappedStartFrame = qMax<int64_t>(0, pointerFrame - m_dragOffsetFrames);
             const int64_t newStartFrame =
                 snapMoveStartFrame(clip, unsnappedStartFrame, &snapped, &snappedBoundaryFrame);
@@ -743,7 +842,6 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             bool insertsTrack = false;
             const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
 
-            const bool movingMultipleClips = m_dragMoveOriginalStartFrames.size() > 1;
             if (movingMultipleClips) {
                 for (TimelineClip& movingClip : m_clips) {
                     const auto it = m_dragMoveOriginalStartFrames.constFind(movingClip.id);
@@ -775,6 +873,29 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 m_trackDropInGap = false;
             }
         } else if (m_dragMode == ClipDragMode::TrimLeft) {
+            if (clip.mediaType == ClipMediaType::Audio) {
+                const int64_t maxStartSample =
+                    m_dragOriginalStartSample + m_dragOriginalDurationSamples - kSamplesPerFrame;
+                const int64_t newStartSample =
+                    qBound<int64_t>(0, sampleFromX(event->position().x()), maxStartSample);
+                const int64_t trimDeltaSamples = newStartSample - m_dragOriginalStartSample;
+                setClipTimelineStartSample(clip, newStartSample);
+                const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 4.0);
+                const int64_t consumedSourceSamples =
+                    static_cast<int64_t>(std::floor(static_cast<qreal>(trimDeltaSamples) * playbackRate));
+                const int64_t sourceDurationSamples =
+                    sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames)));
+                const int64_t nextSourceInSample =
+                    qBound<int64_t>(0,
+                                    m_dragOriginalSourceInSamples + consumedSourceSamples,
+                                    qMax<int64_t>(0, sourceDurationSamples - 1));
+                setClipSourceInSample(clip, nextSourceInSample);
+                setClipTimelineDurationSamples(clip, m_dragOriginalDurationSamples - trimDeltaSamples);
+                m_snapIndicatorFrame = -1;
+                m_currentFrame = clip.startFrame;
+                update();
+                return;
+            }
             const int64_t maxStartFrame = m_dragOriginalStartFrame + m_dragOriginalDurationFrames - kMinClipFrames;
             bool snapped = false;
             int64_t snappedBoundaryFrame = -1;
@@ -788,12 +909,16 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
             if (isImage) {
                 clip.sourceInFrame = 0;
+                clip.sourceInSubframeSamples = 0;
                 clip.durationFrames = m_dragOriginalDurationFrames + (m_dragOriginalStartFrame - newStartFrame);
+                clip.durationSubframeSamples = 0;
                 clip.sourceDurationFrames = clip.durationFrames;
                 clip.transformKeyframes = m_dragOriginalTransformKeyframes;
             } else if (isTitle) {
                 clip.sourceInFrame = 0;
+                clip.sourceInSubframeSamples = 0;
                 clip.durationFrames = m_dragOriginalDurationFrames + (m_dragOriginalStartFrame - newStartFrame);
+                clip.durationSubframeSamples = 0;
                 clip.sourceDurationFrames = clip.durationFrames;
                 clip.titleKeyframes.clear();
                 for (const TimelineClip::TitleKeyframe& keyframe : m_dragOriginalTitleKeyframes) {
@@ -813,7 +938,9 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 // Prevent extending clip before the beginning of the media
                 // Clamp sourceInFrame to not go below 0
                 clip.sourceInFrame = qBound<int64_t>(0, m_dragOriginalSourceInFrame + consumedSourceFrames, clip.sourceDurationFrames - 1);
+                clip.sourceInSubframeSamples = 0;
                 clip.durationFrames = m_dragOriginalDurationFrames - trimDelta;
+                clip.durationSubframeSamples = 0;
                 clip.transformKeyframes.clear();
                 for (const TimelineClip::TransformKeyframe& keyframe : m_dragOriginalTransformKeyframes) {
                     if (keyframe.frame < trimDelta) {
@@ -827,6 +954,28 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             }
             m_currentFrame = newStartFrame;
         } else if (m_dragMode == ClipDragMode::TrimRight) {
+            if (clip.mediaType == ClipMediaType::Audio) {
+                const int64_t minEndSample = m_dragOriginalStartSample + kSamplesPerFrame;
+                const int64_t sourceRemainingSamples =
+                    sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames))) -
+                    m_dragOriginalSourceInSamples;
+                const int64_t maxEndSample = sourceRemainingSamples > 0
+                    ? m_dragOriginalStartSample +
+                          qMax<int64_t>(kSamplesPerFrame,
+                                        static_cast<int64_t>(std::ceil(
+                                            static_cast<qreal>(sourceRemainingSamples) /
+                                            qBound<qreal>(0.001, clip.playbackRate, 4.0))))
+                    : std::numeric_limits<int64_t>::max();
+                const int64_t newEndSample =
+                    qBound<int64_t>(minEndSample, sampleFromX(event->position().x()), maxEndSample);
+                setClipTimelineDurationSamples(clip, newEndSample - m_dragOriginalStartSample);
+                m_snapIndicatorFrame = -1;
+                m_currentFrame = qMax<int64_t>(
+                    0,
+                    static_cast<int64_t>(std::floor(samplesToFramePosition(newEndSample))));
+                update();
+                return;
+            }
             const int64_t minEndFrame = m_dragOriginalStartFrame + kMinClipFrames;
             const int64_t maxEndFrame = isElasticDuration
                 ? std::numeric_limits<int64_t>::max()
@@ -847,6 +996,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                                   snapTrimRightFrame(clip, boundedPointerFrame, &snapped, &snappedBoundaryFrame),
                                   maxEndFrame);
             clip.durationFrames = newEndFrame - m_dragOriginalStartFrame;
+            clip.durationSubframeSamples = 0;
             m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
             if (isImage) {
                 clip.sourceDurationFrames = clip.durationFrames;
@@ -958,13 +1108,16 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         m_trackDropInGap = false;
         m_snapIndicatorFrame = -1;
         m_dragOffsetFrames = 0;
+        m_dragOffsetSamples = 0;
         m_dragOriginalStartFrame = 0;
+        m_dragOriginalStartSample = 0;
         m_dragOriginalDurationFrames = 0;
         m_dragOriginalSourceInFrame = 0;
         m_dragOriginalTransformKeyframes.clear();
         m_dragOriginalTitleKeyframes.clear();
         m_dragMoveClipIds.clear();
         m_dragMoveOriginalStartFrames.clear();
+        m_dragMoveOriginalStartSamples.clear();
         m_dragLockedTrackOnly = false;
         if (clipsChanged) clipsChanged();
         updateHoverCursor(event->position().toPoint());
@@ -990,7 +1143,7 @@ bool TimelineWidget::handleWheelSteps(int steps,
             const int oldHeight = track.height;
             track.height = qBound(kMinTrackHeight,
                                   qRound(track.height * std::pow(zoomFactor, std::abs(steps))),
-                                  240);
+                                  kMaxTrackHeight);
             changed = changed || track.height != oldHeight;
         }
         if (changed) {

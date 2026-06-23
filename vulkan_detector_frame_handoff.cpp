@@ -82,6 +82,49 @@ VkShaderModule createShaderModule(VkDevice device, const QByteArray& spirv)
     return module;
 }
 
+struct Nv12ColorConversion {
+    int fullRange = 0;
+    int colorMatrix = 1;
+    int chromaSwap = 0;
+};
+
+QString nv12ColorConversionLabel(const Nv12ColorConversion& conversion)
+{
+    const QString matrix = conversion.colorMatrix == 0
+        ? QStringLiteral("bt601")
+        : QStringLiteral("bt709");
+    const QString range = conversion.fullRange != 0
+        ? QStringLiteral("full")
+        : QStringLiteral("limited");
+    const QString chroma = conversion.chromaSwap != 0
+        ? QStringLiteral("vu")
+        : QStringLiteral("uv");
+    return QStringLiteral("%1_%2_%3").arg(matrix, range, chroma);
+}
+
+Nv12ColorConversion nv12ColorConversionForFrame(const editor::FrameHandle& frame)
+{
+    Nv12ColorConversion conversion;
+    const AVFrame* avFrame = frame.hardwareFrame();
+    if (!avFrame) {
+        return conversion;
+    }
+
+    conversion.fullRange = avFrame->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+    switch (avFrame->colorspace) {
+        case AVCOL_SPC_SMPTE170M:
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_FCC:
+            conversion.colorMatrix = 0;
+            break;
+        case AVCOL_SPC_BT709:
+        default:
+            conversion.colorMatrix = 1;
+            break;
+    }
+    return conversion;
+}
+
 #if JCUT_HAS_CUDA_DRIVER
     void destroyCudaExternalMemory(void*& memory, quint64& devicePtr, void* context)
     {
@@ -566,6 +609,9 @@ bool VulkanDetectorFrameHandoff::createNv12ConversionPipeline(QString* errorMess
         int height;
         int yPitch;
         int uvPitch;
+        int fullRange;
+        int colorMatrix;
+        int chromaSwap;
     };
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -724,6 +770,9 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
                                                            int height,
                                                            int yPitch,
                                                            int uvPitch,
+                                                           int fullRange,
+                                                           int colorMatrix,
+                                                           int chromaSwap,
                                                            QString* errorMessage)
 {
     std::string finishError;
@@ -816,7 +865,10 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
         int height;
         int yPitch;
         int uvPitch;
-    } push{width, height, yPitch, uvPitch};
+        int fullRange;
+        int colorMatrix;
+        int chromaSwap;
+    } push{width, height, yPitch, uvPitch, fullRange, colorMatrix, chromaSwap};
     vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_nv12Pipeline);
     vkCmdBindDescriptorSets(m_commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -923,6 +975,7 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
                                              std::string* errorMessage)
 {
     QString qtError;
+    m_lastYuvRgbMatrix.clear();
     if (!m_initialized || frame.isNull()) {
         setStdError(errorMessage, QStringLiteral("Invalid frame handoff upload state."));
         return false;
@@ -1064,6 +1117,7 @@ bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer comma
                                                            std::string* errorMessage)
 {
     QString qtError;
+    m_lastYuvRgbMatrix.clear();
     if (!m_initialized || commandBuffer == VK_NULL_HANDLE || frame.isNull()) {
         setStdError(errorMessage, QStringLiteral("Invalid frame handoff command-buffer upload state."));
         m_lastMode = FrameHandoffMode::Invalid;
@@ -1078,8 +1132,18 @@ bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer comma
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
+    const Nv12ColorConversion colorConversion = nv12ColorConversionForFrame(frame);
+    m_lastYuvRgbMatrix = isNv12 ? nv12ColorConversionLabel(colorConversion) : QString();
     const bool recorded = isNv12
-        ? recordNv12Conversion(commandBuffer, size.width, size.height, yPitch, uvPitch, &qtError)
+        ? recordNv12Conversion(commandBuffer,
+                               size.width,
+                               size.height,
+                               yPitch,
+                               uvPitch,
+                               colorConversion.fullRange,
+                               colorConversion.colorMatrix,
+                               colorConversion.chromaSwap,
+                               &qtError)
         : recordCudaHardwareFrameCopy(commandBuffer, size, &qtError);
     if (!recorded) {
         setStdError(errorMessage, qtError);
@@ -1374,6 +1438,9 @@ bool VulkanDetectorFrameHandoff::recordNv12Conversion(VkCommandBuffer commandBuf
                                                       int height,
                                                       int yPitch,
                                                       int uvPitch,
+                                                      int fullRange,
+                                                      int colorMatrix,
+                                                      int chromaSwap,
                                                       QString* errorMessage)
 {
     if (commandBuffer == VK_NULL_HANDLE ||
@@ -1453,7 +1520,10 @@ bool VulkanDetectorFrameHandoff::recordNv12Conversion(VkCommandBuffer commandBuf
         int height;
         int yPitch;
         int uvPitch;
-    } push{width, height, yPitch, uvPitch};
+        int fullRange;
+        int colorMatrix;
+        int chromaSwap;
+    } push{width, height, yPitch, uvPitch, fullRange, colorMatrix, chromaSwap};
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_nv12Pipeline);
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1706,7 +1776,16 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         if (!signalCudaReadySemaphore(cudaDevice->stream, errorMessage)) {
             return false;
         }
-        if (!convertNv12BuffersToImage(size.width, size.height, hw->linesize[0], uvPitch, errorMessage)) {
+        const Nv12ColorConversion colorConversion = nv12ColorConversionForFrame(frame);
+        m_lastYuvRgbMatrix = nv12ColorConversionLabel(colorConversion);
+        if (!convertNv12BuffersToImage(size.width,
+                                       size.height,
+                                       hw->linesize[0],
+                                       uvPitch,
+                                       colorConversion.fullRange,
+                                       colorConversion.colorMatrix,
+                                       colorConversion.chromaSwap,
+                                       errorMessage)) {
             return false;
         }
         if (uploadMs) {

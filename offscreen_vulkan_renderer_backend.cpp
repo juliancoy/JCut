@@ -1,6 +1,8 @@
 #include "offscreen_vulkan_renderer_backend.h"
 
 #include "cpu_overlay_render_backend.h"
+#include "editor_shared_effects.h"
+#include "editor_shared_timing.h"
 #include "offscreen_vulkan_renderer_helpers.h"
 #include "preview_view_transform.h"
 #include "render_internal.h"
@@ -3009,7 +3011,7 @@ public:
       const QVector<TimelineClip> &orderedClips) {
     QVector<TranscriptTextInput> inputs;
     for (const TimelineClip &clip : orderedClips) {
-      const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+      const QString transcriptPath = activeTranscriptPathForClip(clip);
       QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
       if (sections.isEmpty()) {
         sections = loadTranscriptSections(transcriptPath);
@@ -3023,7 +3025,8 @@ public:
               sections,
               mapping.transcriptFrame,
               TranscriptOverlayTiming{request.transcriptPrependMs,
-                                      request.transcriptPostpendMs});
+                                      request.transcriptPostpendMs,
+                                      request.transcriptOffsetMs});
       if (layout.lines.isEmpty()) {
         continue;
       }
@@ -3038,7 +3041,8 @@ public:
                 sections,
                 mapping.transcriptFrame,
                 TranscriptOverlayTiming{request.transcriptPrependMs,
-                                        request.transcriptPostpendMs}).trimmed()
+                                        request.transcriptPostpendMs,
+                                        request.transcriptOffsetMs}).trimmed()
           : QString();
       inputs.push_back(TranscriptTextInput{clip, layout, outputRect, speakerTitle});
     }
@@ -3078,15 +3082,14 @@ public:
 
     for (const TimelineClip &clip : orderedClips) {
       const int64_t clipStartSample = clipTimelineStartSamples(clip);
-      const int64_t clipEndSample =
-          clipStartSample + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+      const int64_t clipEndSample = clipTimelineEndSamples(clip);
       if (clip.filePath.trimmed().isEmpty() ||
           clock.timelineSample < clipStartSample ||
           clock.timelineSample >= clipEndSample ||
           (!clip.hasAudio && clip.mediaType != ClipMediaType::Audio)) {
         continue;
       }
-      const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+      const QString transcriptPath = activeTranscriptPathForClip(clip);
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }
@@ -3103,7 +3106,8 @@ public:
               mapping.transcriptFrame,
               nullptr,
               TranscriptOverlayTiming{request.transcriptPrependMs,
-                                      request.transcriptPostpendMs}).trimmed();
+                                      request.transcriptPostpendMs,
+                                      request.transcriptOffsetMs}).trimmed();
       if (speakerId.isEmpty()) {
         continue;
       }
@@ -3395,6 +3399,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.frameHandle = frame;
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
+    if (clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty()) {
+      layer.preferHardwareDirect = false;
+    }
     if (!layer.preferHardwareDirect) {
       if (gpuOutputOnly) {
         ++decodeConvertFailCount;
@@ -3406,7 +3413,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         ++decodeConvertFailCount;
         continue;
       }
-      layer.image = layerImage;
+      layer.image = applyClipMaskEffectsToImage(layerImage, clip, localFrame);
       layer.sourceSize = layerImage.size();
     }
     if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
@@ -3502,7 +3509,16 @@ QImage OffscreenVulkanRenderer::renderFrame(
           layerGeometry.bounds.width() / qMax<qreal>(1.0, outputRect.width()),
           layerGeometry.bounds.height() / qMax<qreal>(1.0, outputRect.height()));
       const VulkanDrawEffectState backgroundEffects =
-          vulkanBackgroundFillEffectState(fillEffect, layer.opacity, sourceRectNorm);
+          vulkanBackgroundFillEffectState(
+              fillEffect,
+              layerEffects,
+              static_cast<float>(request.backgroundFillOpacity),
+              static_cast<float>(request.backgroundFillBrightness),
+              static_cast<float>(request.backgroundFillSaturation),
+              request.backgroundFillEdgePixels,
+              request.backgroundFillEdgeProgressive,
+              static_cast<float>(request.backgroundFillEdgePower),
+              sourceRectNorm);
       backgroundLayer.opacity = backgroundEffects.opacity;
       backgroundLayer.brightness = backgroundEffects.brightness;
       backgroundLayer.contrast = backgroundEffects.contrast;

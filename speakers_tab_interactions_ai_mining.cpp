@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStringList>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -117,6 +118,59 @@ QHash<QString, QStringList> transcriptWordsBySpeaker(const QJsonArray& segments)
     return wordsBySpeaker;
 }
 
+bool looksLikeOrganizationName(const QString& value)
+{
+    const QString candidate = value.trimmed();
+    if (candidate.isEmpty()) {
+        return false;
+    }
+
+    static const QRegularExpression orgWordRe(
+        QStringLiteral("\\b(agency|association|bank|campaign|center|centre|city|college|committee|"
+                       "company|corporation|council|county|department|foundation|government|group|"
+                       "hospital|inc|institute|llc|ltd|ministry|network|office|organization|party|"
+                       "school|studio|team|union|university)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression legalSuffixRe(
+        QStringLiteral("\\b(inc\\.?|llc|ltd\\.?|corp\\.?|co\\.?)$"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    return candidate.contains(QLatin1Char('&')) ||
+           orgWordRe.match(candidate).hasMatch() ||
+           legalSuffixRe.match(candidate).hasMatch();
+}
+
+bool looksLikeSpeakerPersonName(const QString& value)
+{
+    const QString candidate = value.trimmed();
+    if (candidate.isEmpty() || looksLikeOrganizationName(candidate)) {
+        return false;
+    }
+
+    const QStringList parts =
+        candidate.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (parts.size() < 2 || parts.size() > 4) {
+        return false;
+    }
+
+    static const QSet<QString> disallowedLowerWords{
+        QStringLiteral("and"), QStringLiteral("for"), QStringLiteral("from"), QStringLiteral("of"),
+        QStringLiteral("the"), QStringLiteral("to"), QStringLiteral("with")
+    };
+    static const QRegularExpression namePartRe(
+        QStringLiteral("^[A-Z][A-Za-z'\\-]{1,30}$"));
+    for (const QString& part : parts) {
+        if (disallowedLowerWords.contains(part.toLower())) {
+            return false;
+        }
+        if (!namePartRe.match(part).hasMatch()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 QString replacementSpeakerForCleanup(const QString& segmentSpeaker,
                                      const QSet<QString>& spuriousSpeakers,
                                      const QString& dominantSpeaker,
@@ -144,7 +198,8 @@ bool SpeakersTab::runAiFindSpeakerNames()
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
-    const QRegularExpression nameRe(QStringLiteral("\\b([A-Z][a-z]{1,20}\\s+[A-Z][a-z]{1,20})\\b"));
+    const QRegularExpression nameRe(
+        QStringLiteral("\\b([A-Z][A-Za-z'\\-]{1,30}(?:\\s+[A-Z][A-Za-z'\\-]{1,30}){1,3})\\b"));
     QVector<AiProposalRow> proposals;
     for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
         const QString speakerId = it.key();
@@ -153,7 +208,7 @@ bool SpeakersTab::runAiFindSpeakerNames()
         QRegularExpressionMatchIterator matchIt = nameRe.globalMatch(text);
         while (matchIt.hasNext()) {
             const QString name = matchIt.next().captured(1).trimmed();
-            if (!name.isEmpty()) {
+            if (looksLikeSpeakerPersonName(name)) {
                 counts[name] += 1;
             }
         }
@@ -182,7 +237,7 @@ bool SpeakersTab::runAiFindSpeakerNames()
             currentName,
             bestName,
             confidence,
-            QStringLiteral("Most frequent full-name token pattern in speaker transcript words.")});
+            QStringLiteral("Most frequent person-name pattern in this speaker's transcript words.")});
     }
     if (proposals.isEmpty()) {
         QMessageBox::information(nullptr,
@@ -290,8 +345,8 @@ bool SpeakersTab::runAiFindOrganizations()
             continue;
         }
         const QJsonObject profile = profiles.value(speakerId).toObject();
-        const QString key = QStringLiteral("organization");
-        const QString currentOrg = profile.value(key).toString().trimmed();
+        const QString currentOrg =
+            profile.value(QString(kTranscriptSpeakerOrganizationKey)).toString().trimmed();
         if (currentOrg == bestOrg) {
             continue;
         }
@@ -327,7 +382,7 @@ bool SpeakersTab::runAiFindOrganizations()
     }
     const SpeakerDocumentEditResult result =
         speaker_document_edit_ops::applyProfileStringFieldUpdates(
-            m_transcriptSession, QStringLiteral("organization"), updates);
+            m_transcriptSession, QString(kTranscriptSpeakerOrganizationKey), updates);
     if (!result.ok || !result.changed || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Organizations"),

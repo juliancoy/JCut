@@ -80,6 +80,12 @@ void NullPreviewSurface::setShowCorrectionOverlays(bool show) { m_showCorrection
 void NullPreviewSurface::setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; requestRepaint(); }
 void NullPreviewSurface::setBackgroundColor(const QColor& color) { m_backgroundColor = color; requestRepaint(); }
 void NullPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillOpacity(qreal) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillBrightness(qreal) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillSaturation(qreal) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillEdgePixels(int) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillEdgeProgressive(bool) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillEdgePower(qreal) { requestRepaint(); }
 void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal>(0.1, zoom); requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }
@@ -98,7 +104,7 @@ void NullPreviewSurface::setCurrentSpeakerBackgroundCornerRadius(qreal radius) {
 void NullPreviewSurface::setCurrentSpeakerBorderWidth(qreal width) { m_currentSpeakerBorderWidth = qBound<qreal>(0.0, width, 16.0); requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerShadowEnabled(bool enabled) { m_currentSpeakerShadowEnabled = enabled; requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerShadowColor(const QColor& color) { if (color.isValid()) m_currentSpeakerShadowColor = color; requestRepaint(); }
-void NullPreviewSurface::setTranscriptOverlayTimingPaddingMs(int, int) {}
+void NullPreviewSurface::setTranscriptOverlayTimingPaddingMs(int, int, int) {}
 void NullPreviewSurface::setPlaybackStatusOverlayText(const QString& text) { m_playbackStatusOverlayText = text.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setPlaybackStatusOverlayProgress(qreal progress) { m_playbackStatusOverlayProgress = progress < 0.0 ? -1.0 : qBound<qreal>(0.0, progress, 1.0); requestRepaint(); }
 void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }

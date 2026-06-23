@@ -608,6 +608,94 @@ QWidget *InspectorPane::buildEffectsTab()
     return page;
 }
 
+QWidget *InspectorPane::buildMasksTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Masks"), page));
+
+    m_maskClipLabel = new QLabel(QStringLiteral("Select a video clip to edit its mask."), page);
+    m_maskClipLabel->setWordWrap(true);
+    m_maskClipLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_maskClipLabel);
+
+    m_maskEnabledCheck = new QCheckBox(QStringLiteral("Enable mask processing"), page);
+    layout->addWidget(m_maskEnabledCheck);
+
+    auto *sourceForm = new QFormLayout;
+    auto *sourceRow = new QHBoxLayout;
+    m_maskFramesDirEdit = new QLineEdit(page);
+    m_maskFramesDirEdit->setClearButtonEnabled(true);
+    m_maskFramesDirEdit->setPlaceholderText(QStringLiteral("SAM binary mask frames directory"));
+    m_maskBrowseButton = new QPushButton(QStringLiteral("Browse"), page);
+    sourceRow->addWidget(m_maskFramesDirEdit, 1);
+    sourceRow->addWidget(m_maskBrowseButton);
+    sourceForm->addRow(QStringLiteral("Source"), sourceRow);
+    layout->addLayout(sourceForm);
+
+    auto makePixelsSpin = [page](double maxValue, double step) {
+        auto *spin = new QDoubleSpinBox(page);
+        spin->setRange(0.0, maxValue);
+        spin->setDecimals(1);
+        spin->setSingleStep(step);
+        spin->setSuffix(QStringLiteral(" px"));
+        return spin;
+    };
+    auto makeScalarSpin = [page](double minValue, double maxValue, double value, double step) {
+        auto *spin = new QDoubleSpinBox(page);
+        spin->setRange(minValue, maxValue);
+        spin->setDecimals(2);
+        spin->setSingleStep(step);
+        spin->setValue(value);
+        return spin;
+    };
+
+    auto *shapeForm = new QFormLayout;
+    m_maskDilateSpin = makePixelsSpin(200.0, 1.0);
+    m_maskErodeSpin = makePixelsSpin(200.0, 1.0);
+    m_maskShapeFeatherSpin = makePixelsSpin(200.0, 0.5);
+    m_maskBlurSpin = makePixelsSpin(200.0, 0.5);
+    m_maskInvertCheck = new QCheckBox(QStringLiteral("Invert"), page);
+    m_maskOpacitySpin = makeScalarSpin(0.0, 1.0, 1.0, 0.05);
+    shapeForm->addRow(QStringLiteral("Dilate"), m_maskDilateSpin);
+    shapeForm->addRow(QStringLiteral("Erode"), m_maskErodeSpin);
+    shapeForm->addRow(QStringLiteral("Feather"), m_maskShapeFeatherSpin);
+    shapeForm->addRow(QStringLiteral("Blur"), m_maskBlurSpin);
+    shapeForm->addRow(QStringLiteral("Invert"), m_maskInvertCheck);
+    shapeForm->addRow(QStringLiteral("Opacity"), m_maskOpacitySpin);
+    layout->addLayout(shapeForm);
+
+    auto *gradeForm = new QFormLayout;
+    m_maskGradeEnabledCheck = new QCheckBox(QStringLiteral("Grade masked area"), page);
+    m_maskGradeBrightnessSpin = makeScalarSpin(-1.0, 1.0, 0.0, 0.01);
+    m_maskGradeContrastSpin = makeScalarSpin(0.0, 4.0, 1.0, 0.05);
+    m_maskGradeSaturationSpin = makeScalarSpin(0.0, 4.0, 1.0, 0.05);
+    gradeForm->addRow(QStringLiteral("Grade"), m_maskGradeEnabledCheck);
+    gradeForm->addRow(QStringLiteral("Brightness"), m_maskGradeBrightnessSpin);
+    gradeForm->addRow(QStringLiteral("Contrast"), m_maskGradeContrastSpin);
+    gradeForm->addRow(QStringLiteral("Saturation"), m_maskGradeSaturationSpin);
+    layout->addLayout(gradeForm);
+
+    auto *shadowForm = new QFormLayout;
+    m_maskShadowEnabledCheck = new QCheckBox(QStringLiteral("Drop shadow"), page);
+    m_maskShadowRadiusSpin = makePixelsSpin(200.0, 1.0);
+    m_maskShadowRadiusSpin->setValue(12.0);
+    m_maskShadowOffsetXSpin = makeScalarSpin(-500.0, 500.0, 0.0, 1.0);
+    m_maskShadowOffsetXSpin->setSuffix(QStringLiteral(" px"));
+    m_maskShadowOffsetYSpin = makeScalarSpin(-500.0, 500.0, 4.0, 1.0);
+    m_maskShadowOffsetYSpin->setSuffix(QStringLiteral(" px"));
+    m_maskShadowOpacitySpin = makeScalarSpin(0.0, 1.0, 0.45, 0.05);
+    shadowForm->addRow(QStringLiteral("Shadow"), m_maskShadowEnabledCheck);
+    shadowForm->addRow(QStringLiteral("Radius"), m_maskShadowRadiusSpin);
+    shadowForm->addRow(QStringLiteral("Offset X"), m_maskShadowOffsetXSpin);
+    shadowForm->addRow(QStringLiteral("Offset Y"), m_maskShadowOffsetYSpin);
+    shadowForm->addRow(QStringLiteral("Opacity"), m_maskShadowOpacitySpin);
+    layout->addLayout(shadowForm);
+
+    layout->addStretch(1);
+    return page;
+}
+
 QWidget *InspectorPane::buildCorrectionsTab()
 {
     auto *page = new QWidget;
@@ -920,7 +1008,7 @@ QWidget *InspectorPane::buildKeyframesTab()
 {
     auto *page = new QWidget;
     auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("Keyframes"), page));
+    layout->addWidget(createTabHeading(QStringLiteral("Transform"), page));
 
     m_keyframesInspectorClipLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
     m_keyframesInspectorDetailsLabel = new QLabel(QStringLiteral("Select a visual clip to inspect its keyframes."), page);
@@ -1099,6 +1187,11 @@ QWidget *InspectorPane::buildTranscriptTab()
     auto *form = new QFormLayout;
     form->setSpacing(4);
     m_transcriptOverlayEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Overlay"), settingsContainer);
+    m_transcriptPlacementModeCombo = new QComboBox(settingsContainer);
+    m_transcriptPlacementModeCombo->addItem(QStringLiteral("Manual"), true);
+    m_transcriptPlacementModeCombo->addItem(QStringLiteral("Follow Speaker"), false);
+    m_transcriptPlacementModeCombo->setToolTip(
+        QStringLiteral("Choose whether transcript overlay X/Y are manual or derived from active speaker tracking."));
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
     m_transcriptBackgroundOpacitySpin = new QSpinBox(settingsContainer);
     m_transcriptBackgroundCornerRadiusSpin = new QSpinBox(settingsContainer);
@@ -1112,8 +1205,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptAutoScrollCheckBox = nullptr;
     m_transcriptOverlayXSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptOverlayYSpin = new QDoubleSpinBox(settingsContainer);
-    m_transcriptCenterHorizontalButton = new QPushButton(QStringLiteral("Center H"), settingsContainer);
-    m_transcriptCenterVerticalButton = new QPushButton(QStringLiteral("Center V"), settingsContainer);
+    m_transcriptCenterHorizontalButton = new QPushButton(QStringLiteral("Center X"), settingsContainer);
+    m_transcriptCenterVerticalButton = new QPushButton(QStringLiteral("Center Y"), settingsContainer);
     m_transcriptOverlayWidthSpin = new QSpinBox(settingsContainer);
     m_transcriptOverlayHeightSpin = new QSpinBox(settingsContainer);
     m_transcriptFontFamilyCombo = new QFontComboBox(settingsContainer);
@@ -1152,20 +1245,29 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptOverlayXSpin->setSingleStep(0.01);
     m_transcriptOverlayYSpin->setSingleStep(0.01);
     m_transcriptOverlayXSpin->setToolTip(
-        QStringLiteral("Normalized horizontal offset from center (-1.0 left, +1.0 right)."));
+        QStringLiteral("Normalized horizontal center offset (-1.0 left, 0 center, +1.0 right). Editing this switches placement to Manual."));
     m_transcriptOverlayYSpin->setToolTip(
-        QStringLiteral("Normalized vertical offset from center (-1.0 up, +1.0 down)."));
+        QStringLiteral("Normalized vertical center offset (-1.0 up, 0 center, +1.0 down). Editing this switches placement to Manual."));
+    m_transcriptCenterHorizontalButton->setToolTip(
+        QStringLiteral("Set the overlay center X offset to 0 and switch placement to Manual."));
+    m_transcriptCenterVerticalButton->setToolTip(
+        QStringLiteral("Set the overlay center Y offset to 0 and switch placement to Manual."));
     m_transcriptOverlayWidthSpin->setRange(
         static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth),
         10000);
+    m_transcriptOverlayWidthSpin->setToolTip(
+        QStringLiteral("Overlay box width in output pixels. Size changes keep the current center position."));
     m_transcriptOverlayHeightSpin->setRange(
         static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight),
         10000);
+    m_transcriptOverlayHeightSpin->setToolTip(
+        QStringLiteral("Overlay box height in output pixels. Size changes keep the current center position."));
     m_transcriptFontSizeSpin->setRange(
         TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize,
         256);
 
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
+    form->addRow(QStringLiteral("Placement"), m_transcriptPlacementModeCombo);
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
     form->addRow(QStringLiteral("Window Opacity"), m_transcriptBackgroundOpacitySpin);
     form->addRow(QStringLiteral("Window Radius"), m_transcriptBackgroundCornerRadiusSpin);
@@ -1174,8 +1276,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
     form->addRow(QStringLiteral("Max Chars"), m_transcriptMaxCharsSpin);
     form->addRow(QStringLiteral("Follow Word"), m_transcriptFollowCurrentWordCheckBox);
-    form->addRow(QStringLiteral("X (Norm)"), m_transcriptOverlayXSpin);
-    form->addRow(QStringLiteral("Y (Norm)"), m_transcriptOverlayYSpin);
+    form->addRow(QStringLiteral("Center X"), m_transcriptOverlayXSpin);
+    form->addRow(QStringLiteral("Center Y"), m_transcriptOverlayYSpin);
     auto *centerButtonsLayout = new QHBoxLayout;
     centerButtonsLayout->setContentsMargins(0, 0, 0, 0);
     centerButtonsLayout->setSpacing(4);
@@ -1204,6 +1306,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_speechFilterEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Speech Filter"), settingsContainer);
     m_transcriptPrependMsSpin = new QSpinBox(settingsContainer);
     m_transcriptPostpendMsSpin = new QSpinBox(settingsContainer);
+    m_transcriptOffsetMsSpin = new QSpinBox(settingsContainer);
     m_speechFilterFadeSamplesSpin = new QSpinBox(settingsContainer);
     m_speechFilterRangeCrossfadeCheckBox =
         new QCheckBox(QStringLiteral("Boundary Crossfade"), settingsContainer);
@@ -1233,6 +1336,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptPostpendMsSpin->setSuffix(QStringLiteral(" ms"));
     m_transcriptPostpendMsSpin->setToolTip(QStringLiteral("Milliseconds to add after each word"));
 
+    m_transcriptOffsetMsSpin->setRange(-10000, 10000);
+    m_transcriptOffsetMsSpin->setValue(0);
+    m_transcriptOffsetMsSpin->setSuffix(QStringLiteral(" ms"));
+    m_transcriptOffsetMsSpin->setToolTip(
+        QStringLiteral("Signed timing offset applied to transcript word windows. Positive values display later; negative values display earlier."));
+
     m_speechFilterFadeSamplesSpin->setRange(0, 5000);
     m_speechFilterFadeSamplesSpin->setValue(300);
     m_speechFilterFadeSamplesSpin->setSuffix(QStringLiteral(" samples"));
@@ -1244,6 +1353,7 @@ QWidget *InspectorPane::buildTranscriptTab()
                        "Does not change audio duration."));
 
     speechForm->addRow(QStringLiteral("Speech Filter"), m_speechFilterEnabledCheckBox);
+    speechForm->addRow(QStringLiteral("Time Offset"), m_transcriptOffsetMsSpin);
     speechForm->addRow(QStringLiteral("Prepend Time"), m_transcriptPrependMsSpin);
     speechForm->addRow(QStringLiteral("Postpend Time"), m_transcriptPostpendMsSpin);
     speechForm->addRow(QStringLiteral("Fade Length"), m_speechFilterFadeSamplesSpin);
@@ -2265,10 +2375,11 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
     m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
     m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
+    m_inspectorTabs->addTab(buildMasksTab(), QStringLiteral("Masks"));
     m_inspectorTabs->addTab(buildCorrectionsTab(), QStringLiteral("Corrections"));
     m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
     m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
-    m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
+    m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Transform"));
     m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
     m_inspectorTabs->addTab(buildSpeakersTab(), QStringLiteral("Speakers"));
     m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
@@ -2277,6 +2388,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
     m_inspectorTabs->addTab(buildAudioTab(), QStringLiteral("Audio"));
+    m_inspectorTabs->addTab(buildProcessingJobsTab(), QStringLiteral("Jobs"));
     m_inspectorTabs->addTab(buildAiTab(), QStringLiteral("AI Assist"));
     m_inspectorTabs->addTab(buildAccessTab(), QStringLiteral("Access"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));

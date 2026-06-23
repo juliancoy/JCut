@@ -45,6 +45,12 @@ public:
     void setSelectedCorrectionPolygon(int polygonIndex) override;
     void setBackgroundColor(const QColor& color) override;
     void setBackgroundFillEffect(BackgroundFillEffect effect) override;
+    void setBackgroundFillOpacity(qreal opacity) override;
+    void setBackgroundFillBrightness(qreal brightness) override;
+    void setBackgroundFillSaturation(qreal saturation) override;
+    void setBackgroundFillEdgePixels(int pixels) override;
+    void setBackgroundFillEdgeProgressive(bool progressive) override;
+    void setBackgroundFillEdgePower(qreal power) override;
     void setPreviewZoom(qreal zoom) override;
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;
@@ -63,7 +69,7 @@ public:
     void setCurrentSpeakerBorderWidth(qreal width) override;
     void setCurrentSpeakerShadowEnabled(bool enabled) override;
     void setCurrentSpeakerShadowColor(const QColor& color) override;
-    void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) override;
+    void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs, int offsetMs = 0) override;
     void setPlaybackStatusOverlayText(const QString& text) override;
     void setPlaybackStatusOverlayProgress(qreal progress) override;
     void setFacestreamOverlaySource(const QString& source) override;

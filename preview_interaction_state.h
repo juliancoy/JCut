@@ -135,6 +135,12 @@ struct PreviewInteractionState {
     QSize outputSize = QSize(1080, 1920);
     QColor backgroundColor = QColor(Qt::black);
     BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
+    qreal backgroundFillOpacity = 1.0;
+    qreal backgroundFillBrightness = 0.0;
+    qreal backgroundFillSaturation = 1.0;
+    int backgroundFillEdgePixels = 1;
+    bool backgroundFillEdgeProgressive = false;
+    qreal backgroundFillEdgePower = 2.0;
     int clipCount = 0;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
@@ -174,6 +180,7 @@ struct PreviewInteractionState {
     QColor currentSpeakerShadowColor = QColor(0, 0, 0, 190);
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
+    int transcriptOffsetMs = 0;
     QString playbackStatusOverlayText;
     qreal playbackStatusOverlayProgress = -1.0;
     QString temporalDebugOverlayText;

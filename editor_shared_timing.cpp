@@ -69,6 +69,17 @@ int64_t clipTimelineStartSamples(const TimelineClip& clip) {
     return frameToSamples(clip.startFrame) + clip.startSubframeSamples;
 }
 
+int64_t clipTimelineDurationSamples(const TimelineClip& clip) {
+    return qMax<int64_t>(
+        kSamplesPerFrame,
+        frameToSamples(qMax<int64_t>(0, clip.durationFrames)) +
+            qMax<int64_t>(0, clip.durationSubframeSamples));
+}
+
+int64_t clipTimelineEndSamples(const TimelineClip& clip) {
+    return clipTimelineStartSamples(clip) + clipTimelineDurationSamples(clip);
+}
+
 int64_t clipSourceInSamples(const TimelineClip& clip) {
     return sourceFramesToSamples(clip, static_cast<qreal>(clip.sourceInFrame)) + clip.sourceInSubframeSamples;
 }
@@ -119,6 +130,12 @@ void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples) {
 void normalizeClipTiming(TimelineClip& clip) {
     normalizeSubframeTiming(clip.startFrame, clip.startSubframeSamples);
     normalizeSubframeTiming(clip.sourceInFrame, clip.sourceInSubframeSamples);
+    if (clip.durationSubframeSamples >= kSamplesPerFrame) {
+        clip.durationFrames += clip.durationSubframeSamples / kSamplesPerFrame;
+        clip.durationSubframeSamples %= kSamplesPerFrame;
+    }
+    clip.durationFrames = qMax<int64_t>(1, clip.durationFrames);
+    clip.durationSubframeSamples = qBound<int64_t>(0, clip.durationSubframeSamples, kSamplesPerFrame - 1);
     clip.playbackRate = qBound<qreal>(0.001, clip.playbackRate, 1000.0);
 }
 

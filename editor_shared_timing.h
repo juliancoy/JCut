@@ -31,6 +31,8 @@ qreal timelineFrameToSeconds(int64_t timelineFrame);
 QRectF normalizedCenterBoxRect(qreal xNorm, qreal yNorm, qreal boxSizeNorm, const QSizeF& frameSizePx);
 int64_t sourceFramesToSamples(const TimelineClip& clip, qreal sourceFrames);
 int64_t clipTimelineStartSamples(const TimelineClip& clip);
+int64_t clipTimelineDurationSamples(const TimelineClip& clip);
+int64_t clipTimelineEndSamples(const TimelineClip& clip);
 int64_t clipSourceInSamples(const TimelineClip& clip);
 void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples);
 void normalizeClipTiming(TimelineClip& clip);

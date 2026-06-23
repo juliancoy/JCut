@@ -48,7 +48,13 @@ struct VulkanDrawEffectState {
 VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
+                                                      const VulkanDrawEffectState& baseEffects,
                                                       float opacity,
+                                                      float brightness = 0.0f,
+                                                      float saturation = 1.0f,
+                                                      int edgePixels = 1,
+                                                      bool progressiveEdge = false,
+                                                      float edgePower = 2.0f,
                                                       const QRectF& sourceRectNorm = QRectF());
 
 } // namespace render_detail

@@ -331,6 +331,24 @@ void OutputTab::renderFromInspector()
     request.backgroundFillEffect = (m_widgets.backgroundFillEffectCombo
         ? m_widgets.backgroundFillEffectCombo->currentData().toString()
         : QStringLiteral("edge_stretch")).toStdString();
+    request.backgroundFillOpacity = m_widgets.backgroundFillOpacitySpin
+        ? qBound(0.0, m_widgets.backgroundFillOpacitySpin->value() / 100.0, 1.0)
+        : 1.0;
+    request.backgroundFillBrightness = m_widgets.backgroundFillBrightnessSpin
+        ? qBound(-1.0, m_widgets.backgroundFillBrightnessSpin->value() / 100.0, 1.0)
+        : 0.0;
+    request.backgroundFillSaturation = m_widgets.backgroundFillSaturationSpin
+        ? qBound(0.0, m_widgets.backgroundFillSaturationSpin->value() / 100.0, 3.0)
+        : 1.0;
+    request.backgroundFillEdgePixels = m_widgets.backgroundFillEdgePixelsSlider
+        ? qBound(1, m_widgets.backgroundFillEdgePixelsSlider->value(), 512)
+        : 1;
+    request.backgroundFillEdgeProgressive =
+        m_widgets.backgroundFillEdgeProgressiveCheckBox &&
+        m_widgets.backgroundFillEdgeProgressiveCheckBox->isChecked();
+    request.backgroundFillEdgePower = m_widgets.backgroundFillEdgePowerSpin
+        ? qBound(0.25, m_widgets.backgroundFillEdgePowerSpin->value(), 8.0)
+        : 2.0;
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
     const double outputSpeed = normalizedExportSpeed(

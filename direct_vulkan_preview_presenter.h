@@ -36,6 +36,7 @@ struct DirectVulkanPreviewStats {
     QString lastProbeReason;
     QString lastHardwareSwFormat;
     QString lastVulkanImageFormat;
+    QString lastYuvRgbMatrix;
     QString lastDiagnosticReadbackFormat;
     QString lastDecoderDiagnosticReadbackFormat;
     QSize lastExternalImageSize;
@@ -67,6 +68,7 @@ struct DirectVulkanPreviewStats {
     int activeClipHandoffResourceCount = 0;
     int retiredClipHandoffResourceCount = 0;
     editor::PlaybackStageMetric textPrepStageMetric;
+    editor::PlaybackStageMetric textDrawStageMetric;
     editor::PlaybackStageMetric gpuHandoffStageMetric;
     editor::PlaybackStageMetric commandRecordingStageMetric;
     editor::PlaybackStageMetric presentationStageMetric;

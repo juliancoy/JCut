@@ -106,15 +106,14 @@ QJsonObject enrichClipForApi(const QJsonObject& clipObject) {
     const QString playbackPath = playbackMediaPathForClip(clip);
     const QString audioPath = playbackAudioPathForClip(clip);
     const QString detectedProxyPath = playbackProxyPathForClip(clip);
-    const QString originalTranscriptPath = transcriptPathForClipFile(clip.filePath);
-    const QFileInfo clipInfo(clip.filePath);
-    const QString editableTranscriptPath =
-        clipInfo.dir().filePath(clipInfo.completeBaseName() + QStringLiteral("_editable.json"));
-    const QString workingTranscriptPath = transcriptWorkingPathForClipFile(clip.filePath);
-    const QString activeTranscriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString originalTranscriptPath = transcriptPathForClip(clip);
+    const QString editableTranscriptPath = transcriptEditablePathForClip(clip);
+    const QString workingTranscriptPath = transcriptWorkingPathForClip(clip);
+    const QString activeTranscriptPath = activeTranscriptPathForClip(clip);
     const QString runtimeTranscriptPath =
-        transcriptPathForRuntimeSidecarForClipFile(clip.filePath, activeTranscriptPath);
-    const QString transcriptPath = transcriptWorkingPathForClipFile(clip.filePath);
+        transcriptPathForRuntimeSidecarForClip(clip, activeTranscriptPath);
+    const QString transcriptPath = transcriptWorkingPathForClip(clip);
+    const TranscriptSourceKey transcriptSource = transcriptSourceKeyFromClip(clip);
     const qint64 startFrame = clip.startFrame;
     const qint64 durationFrames = clip.durationFrames;
     const QJsonObject originalVariant =
@@ -161,6 +160,7 @@ QJsonObject enrichClipForApi(const QJsonObject& clipObject) {
         {QStringLiteral("working_transcript_path"), QDir::toNativeSeparators(QFileInfo(workingTranscriptPath).absoluteFilePath())},
         {QStringLiteral("active_transcript_path"), QDir::toNativeSeparators(QFileInfo(activeTranscriptPath).absoluteFilePath())},
         {QStringLiteral("runtime_transcript_path"), QDir::toNativeSeparators(QFileInfo(runtimeTranscriptPath).absoluteFilePath())},
+        {QStringLiteral("transcript_source"), transcriptSource.toJson()},
         {QStringLiteral("any_transcript_exists"), anyTranscriptExists},
         {QStringLiteral("runtime"), runtimeVariant}
     };
@@ -174,6 +174,7 @@ QJsonObject enrichClipForApi(const QJsonObject& clipObject) {
         QFileInfo(playbackPath).absoluteFilePath() != QFileInfo(clip.filePath).absoluteFilePath();
     enriched[QStringLiteral("proxyAudioActive")] = playbackUsesAlternateAudioSource(clip);
     enriched[QStringLiteral("transcriptPath")] = QDir::toNativeSeparators(transcriptPath);
+    enriched[QStringLiteral("transcriptSource")] = transcriptSource.toJson();
     enriched[QStringLiteral("transcriptAvailable")] =
         !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
     enriched[QStringLiteral("runtimeTranscriptPath")] =

@@ -161,6 +161,7 @@ struct DecodedAudioClip {
 
 struct AudioExportState {
     QVector<TimelineClip> clips;
+    QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QHash<QString, DecodedAudioClip> cache;
     AVStream* stream = nullptr;
@@ -170,8 +171,10 @@ struct AudioExportState {
 
 DecodedAudioClip decodeClipAudio(const QString& path,
                                  int64_t sourceStartSample = 0,
-                                 int64_t maxOutputFrames = -1);
+                                 int64_t maxOutputFrames = -1,
+                                 int audioStreamIndex = -1);
 void mixAudioChunk(const QVector<TimelineClip>& clips,
+                   const QVector<TimelineTrack>& tracks,
                    const QVector<RenderSyncMarker>& renderSyncMarkers,
                    const QHash<QString, DecodedAudioClip>& audioCache,
                    float* output,

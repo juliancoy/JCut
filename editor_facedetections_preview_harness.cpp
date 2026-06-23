@@ -63,8 +63,8 @@ bool ensureEditableTranscriptForHarness(const TimelineClip& clip,
                                         QString* errorOut)
 {
     QString editablePath;
-    if (ensureEditableTranscriptForClipFile(clip.filePath, &editablePath)) {
-        setActiveTranscriptPathForClipFile(clip.filePath, editablePath);
+    if (ensureEditableTranscriptForClip(clip, &editablePath)) {
+        setActiveTranscriptPathForClip(clip, editablePath);
         return true;
     }
 
@@ -173,7 +173,7 @@ bool EditorWindow::prepareVulkanFaceDetectionsPreviewRun(const QString& filePath
         return false;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(clip);
     const int64_t firstFacestreamFrame = firstFacestreamFrameForClip(transcriptPath, clip.id);
     if (firstFacestreamFrame >= 0) {
         setCurrentFrame(clip.startFrame + firstFacestreamFrame, false);
@@ -213,7 +213,7 @@ bool EditorWindow::triggerGenerateFaceDetectionsForSelectedClip(QString* errorOu
         m_preview->setShowSpeakerTrackBoxes(true);
         m_preview->setFacestreamOverlaySource(QStringLiteral("all"));
         const int64_t firstFacestreamFrame =
-            firstFacestreamFrameForClip(activeTranscriptPathForClipFile(m_timeline->selectedClip()->filePath),
+            firstFacestreamFrameForClip(activeTranscriptPathForClip(*m_timeline->selectedClip()),
                                        m_timeline->selectedClip()->id);
         if (firstFacestreamFrame >= 0) {
             setCurrentFrame(m_timeline->selectedClip()->startFrame + firstFacestreamFrame, false);

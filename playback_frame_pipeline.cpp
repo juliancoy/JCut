@@ -354,8 +354,8 @@ void PlaybackFramePipeline::requestFramesForSample(int64_t samplePosition,
         markers = m_renderSyncMarkers;
         for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
             const TimelineClip& clip = it.value().clip;
-            const int64_t clipStartSample = frameToSamples(clip.startFrame) + clip.startSubframeSamples;
-            const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+            const int64_t clipStartSample = clipTimelineStartSamples(clip);
+            const int64_t clipEndSample = clipTimelineEndSamples(clip);
             if (samplePosition >= clipStartSample && samplePosition < clipEndSample) {
                 activeClips.push_back(it.value());
             }

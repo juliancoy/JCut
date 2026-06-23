@@ -219,7 +219,7 @@ QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
         return QRectF();
     }
     const QSize safeOutputSize = state->outputSize.isValid() ? state->outputSize : QSize(1080, 1920);
-    const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
+    const QString transcriptPath = activeTranscriptPathForClip(effectiveClip);
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
         loadTranscriptRuntimeDocument(transcriptPath);
     const QVector<TranscriptSection>& sections =
@@ -230,7 +230,8 @@ QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
         effectiveClip,
         sections,
         sourceFrame,
-        TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
+        TranscriptOverlayTiming{
+            state->transcriptPrependMs, state->transcriptPostpendMs, state->transcriptOffsetMs});
     if (layout.lines.isEmpty()) {
         return QRectF();
     }

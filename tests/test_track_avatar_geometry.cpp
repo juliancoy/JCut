@@ -262,7 +262,7 @@ bool loadActiveProjectTrackContext(ActiveProjectTrackContext* contextOut, QStrin
     }
     context.renderSyncMarkers = renderSyncMarkersFromStartupRoot(root);
 
-    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(context.clip.filePath);
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(context.clip);
     if (transcriptPath.trimmed().isEmpty() || !QFileInfo::exists(transcriptPath)) {
         if (errorOut) {
             *errorOut = QStringLiteral("No transcript sidecar found for selected clip %1").arg(context.clip.filePath);

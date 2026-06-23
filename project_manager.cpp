@@ -174,6 +174,20 @@ void ProjectManager::setRootDirPath(const QString& path)
     }
 }
 
+bool ProjectManager::changeRootDirPath(const QString& path)
+{
+    const QString normalizedPath = normalizedExistingDirPath(path);
+    if (normalizedPath.isEmpty()) {
+        return false;
+    }
+
+    const QString previousRoot = rootDirPath();
+    setRootDirPath(normalizedPath);
+    loadDefaultProjectFromFolders();
+
+    return QDir(previousRoot).absolutePath() != QDir(rootDirPath()).absolutePath();
+}
+
 QString ProjectManager::projectsDirPath() const
 {
     // Projects are stored in a "projects" subfolder of the Root directory
@@ -303,6 +317,14 @@ void ProjectManager::loadProjectsFromFolders()
             marker.cancelWriting();
         }
     }
+}
+
+void ProjectManager::loadDefaultProjectFromFolders()
+{
+    m_loadedRootDirPath = rootDirPath();
+    ensureDefaultProjectExists();
+    m_currentProjectId = QStringLiteral("default");
+    saveCurrentProjectMarker();
 }
 
 void ProjectManager::saveCurrentProjectMarker()

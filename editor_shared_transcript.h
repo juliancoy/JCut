@@ -1,25 +1,66 @@
 #pragma once
 
 #include "editor_shared_core.h"
+#include "editor_timeline_types.h"
 
 #include <QColor>
 #include <QJsonDocument>
 #include <QJsonObject>
 
+struct TranscriptSourceKey {
+    QString sourcePath;
+    int audioStreamIndex = -1;
+
+    bool isValid() const;
+    bool usesAudioStream() const;
+    QString canonicalKey() const;
+    QString fileStem() const;
+    QString displayName() const;
+    QJsonObject toJson() const;
+};
+
+TranscriptSourceKey transcriptSourceKeyFromClip(const TimelineClip& clip);
+TranscriptSourceKey transcriptSourceKeyFromLegacyFilePath(const QString& filePath);
+void setTranscriptSourceRootPath(const QString& rootPath);
+QString transcriptSourceRootPath();
+
 QString transcriptPathForClipFile(const QString& filePath);
+QString transcriptSourceKeyForClip(const TimelineClip& clip);
+QString transcriptPathForSource(const TranscriptSourceKey& source);
+QString transcriptPathForClip(const TimelineClip& clip);
 SpeakerProfile speakerProfileFromJson(const QString& speakerId, const QJsonObject& profileObj);
 QJsonObject speakerProfileToJson(const SpeakerProfile& profile, const QJsonObject& base = QJsonObject());
 QString transcriptEditablePathForClipFile(const QString& filePath);
+QString transcriptEditablePathForSource(const TranscriptSourceKey& source);
+QString transcriptEditablePathForClip(const TimelineClip& clip);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
+QString transcriptWorkingPathForSource(const TranscriptSourceKey& source);
+QString transcriptWorkingPathForClip(const TimelineClip& clip);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
+QStringList transcriptCutPathsForSource(const TranscriptSourceKey& source);
+QStringList transcriptCutPathsForClip(const TimelineClip& clip);
 QString activeTranscriptPathForClipFile(const QString& filePath);
+QString activeTranscriptPathForSource(const TranscriptSourceKey& source);
+QString activeTranscriptPathForClip(const TimelineClip& clip);
 bool facedetectionsSidecarExistsForClipFile(const QString& filePath);
+bool facedetectionsSidecarExistsForSource(const TranscriptSourceKey& source);
+bool facedetectionsSidecarExistsForClip(const TimelineClip& clip);
 QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
                                                    const QString& preferredTranscriptPath = QString());
+QString transcriptPathForRuntimeSidecarForSource(const TranscriptSourceKey& source,
+                                                 const QString& preferredTranscriptPath = QString());
+QString transcriptPathForRuntimeSidecarForClip(const TimelineClip& clip,
+                                               const QString& preferredTranscriptPath = QString());
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath);
+void setActiveTranscriptPathForSource(const TranscriptSourceKey& source, const QString& transcriptPath);
+void setActiveTranscriptPathForClip(const TimelineClip& clip, const QString& transcriptPath);
 void clearActiveTranscriptPathForClipFile(const QString& filePath);
+void clearActiveTranscriptPathForSource(const TranscriptSourceKey& source);
+void clearActiveTranscriptPathForClip(const TimelineClip& clip);
 void clearAllActiveTranscriptPaths();
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut = nullptr);
+bool ensureEditableTranscriptForSource(const TranscriptSourceKey& source, QString* editablePathOut = nullptr);
+bool ensureEditableTranscriptForClip(const TimelineClip& clip, QString* editablePathOut = nullptr);
 bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut);
 std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath);
 std::shared_ptr<const TranscriptRuntimeDocument> cachedTranscriptRuntimeDocumentMemoryOnly(
@@ -62,13 +103,16 @@ void resetTranscriptSpeakerTrackingProfiling();
 struct TranscriptOverlayTiming {
     int prependMs = 150;
     int postpendMs = 70;
+    int offsetMs = 0;
 };
 ExportRangeSegment transcriptPaddedWordRange(const TranscriptWord& word,
                                              int prependMs,
-                                             int postpendMs);
+                                             int postpendMs,
+                                             int offsetMs = 0);
 QVector<ExportRangeSegment> transcriptPaddedWordRanges(const QVector<TranscriptSection>& sections,
                                                        int prependMs,
-                                                       int postpendMs);
+                                                       int postpendMs,
+                                                       int offsetMs = 0);
 QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
                                               const QSize& outputSize,
                                               const QString& transcriptPath,

@@ -87,8 +87,15 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.createVideoFromImageSequence = request.createVideoFromImageSequence;
     core.disableParallelImageWrite = request.disableParallelImageWrite;
     core.backgroundFillEffect = backgroundFillEffectToString(request.backgroundFillEffect).toStdString();
+    core.backgroundFillOpacity = qBound(0.0, static_cast<double>(request.backgroundFillOpacity), 1.0);
+    core.backgroundFillBrightness = qBound(-1.0, static_cast<double>(request.backgroundFillBrightness), 1.0);
+    core.backgroundFillSaturation = qBound(0.0, static_cast<double>(request.backgroundFillSaturation), 3.0);
+    core.backgroundFillEdgePixels = qBound(1, request.backgroundFillEdgePixels, 512);
+    core.backgroundFillEdgeProgressive = request.backgroundFillEdgeProgressive;
+    core.backgroundFillEdgePower = qBound(0.25, static_cast<double>(request.backgroundFillEdgePower), 8.0);
     core.transcriptPrependMs = request.transcriptPrependMs;
     core.transcriptPostpendMs = request.transcriptPostpendMs;
+    core.transcriptOffsetMs = request.transcriptOffsetMs;
     core.exportStartFrame = request.exportStartFrame;
     core.exportEndFrame = request.exportEndFrame;
     core.clipCount = static_cast<std::size_t>(request.clips.size());

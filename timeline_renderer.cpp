@@ -3,11 +3,109 @@
 #include "timeline_layout.h"
 #include "timeline_fps.h"
 #include "debug_controls.h"
+#include "editor_shared_media.h"
+#include "editor_shared_timing.h"
 #include "waveform_service.h"
 
 #include <QFileInfo>
 #include <algorithm>
 #include <cmath>
+
+namespace {
+
+void drawClipAudioWaveform(QPainter* painter,
+                           const TimelineClip& clip,
+                           const QRect& clipRect,
+                           const QRect& visibleClipRect,
+                           bool audioOnly)
+{
+    if (!painter || visibleClipRect.isEmpty()) {
+        return;
+    }
+
+    painter->save();
+    const int verticalInset = audioOnly
+        ? qMax(5, visibleClipRect.height() / 10)
+        : qBound(6, visibleClipRect.height() / 5, 10);
+    const QRect envelopeRect = visibleClipRect.adjusted(8, verticalInset, -8, -verticalInset);
+    if (envelopeRect.isEmpty()) {
+        painter->restore();
+        return;
+    }
+
+    painter->setPen(Qt::NoPen);
+    QColor background = audioOnly
+        ? QColor(QStringLiteral("#163946"))
+        : QColor(12, 26, 32, 150);
+    painter->setBrush(background);
+    painter->drawRoundedRect(envelopeRect, 5, 5);
+    painter->setClipRect(envelopeRect);
+
+    const QColor baselineColor = audioOnly
+        ? QColor(QStringLiteral("#9fe7f4"))
+        : QColor(159, 231, 244, 145);
+    painter->setPen(QPen(baselineColor, audioOnly ? 2.0 : 1.0));
+    painter->drawLine(envelopeRect.left(), envelopeRect.center().y(),
+                      envelopeRect.right(), envelopeRect.center().y());
+
+    const QString audioPath = playbackAudioPathForClip(clip);
+    const int64_t clipSampleSpan = clipTimelineDurationSamples(clip);
+    const qreal visibleStartRatio = qBound<qreal>(
+        0.0,
+        static_cast<qreal>(visibleClipRect.left() - clipRect.left()) /
+            qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
+        1.0);
+    const qreal visibleEndRatio = qBound<qreal>(
+        visibleStartRatio,
+        static_cast<qreal>(visibleClipRect.right() - clipRect.left() + 1) /
+            qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
+        1.0);
+    const int64_t sourceStartSample = qMax<int64_t>(0, clipSourceInSamples(clip));
+    const int64_t visibleSampleStart = sourceStartSample + static_cast<int64_t>(
+        std::floor(static_cast<qreal>(clipSampleSpan) * visibleStartRatio));
+    const int64_t visibleSampleEnd = sourceStartSample + static_cast<int64_t>(
+        std::ceil(static_cast<qreal>(clipSampleSpan) * visibleEndRatio));
+
+    QVector<float> minVals;
+    QVector<float> maxVals;
+    const int columns = qMax(1, envelopeRect.width());
+    const bool hasWaveform = !audioPath.isEmpty() &&
+        editor::WaveformService::instance().queryEnvelope(
+            audioPath,
+            visibleSampleStart,
+            qMax<int64_t>(visibleSampleStart + 1, visibleSampleEnd),
+            columns,
+            &minVals,
+            &maxVals);
+
+    if (hasWaveform && minVals.size() == columns && maxVals.size() == columns) {
+        const QColor waveformColor = audioOnly
+            ? QColor(QStringLiteral("#f2feff"))
+            : QColor(242, 254, 255, 210);
+        painter->setPen(QPen(waveformColor, 1.0));
+        for (int i = 0; i < columns; ++i) {
+            const int x = envelopeRect.left() + i;
+            const qreal minAmp = qBound<qreal>(-1.0, static_cast<qreal>(minVals[i]), 1.0);
+            const qreal maxAmp = qBound<qreal>(-1.0, static_cast<qreal>(maxVals[i]), 1.0);
+            const int yTop = qRound(envelopeRect.center().y() - (maxAmp * envelopeRect.height() * 0.5));
+            const int yBottom = qRound(envelopeRect.center().y() - (minAmp * envelopeRect.height() * 0.5));
+            painter->drawLine(x, yTop, x, yBottom);
+        }
+    } else {
+        const QColor pendingColor = audioOnly
+            ? QColor(QStringLiteral("#8fc8d3"))
+            : QColor(143, 200, 211, 160);
+        painter->setPen(QPen(pendingColor, 1.0, Qt::DashLine));
+        painter->drawLine(envelopeRect.left(),
+                          envelopeRect.center().y(),
+                          envelopeRect.right(),
+                          envelopeRect.center().y());
+    }
+
+    painter->restore();
+}
+
+} // namespace
 
 TimelineRenderer::TimelineRenderer(TimelineWidget* widget)
     : m_widget(widget) {
@@ -162,73 +260,6 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->drawRoundedRect(visibleClipRect.adjusted(1, 1, -1, -1), 7, 7);
         }
 
-        if (audioOnly) {
-            painter->save();
-            const int verticalInset = qMax(5, visibleClipRect.height() / 10);
-            const QRect envelopeRect = visibleClipRect.adjusted(8, verticalInset, -8, -verticalInset);
-            if (envelopeRect.isEmpty()) {
-                painter->restore();
-                continue;
-            }
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(QStringLiteral("#163946")));
-            painter->drawRoundedRect(envelopeRect, 5, 5);
-            painter->setClipRect(envelopeRect);
-            painter->setPen(QPen(QColor(QStringLiteral("#9fe7f4")), 2));
-            painter->drawLine(envelopeRect.left(), envelopeRect.center().y(),
-                             envelopeRect.right(), envelopeRect.center().y());
-
-            const QString audioPath = playbackAudioPathForClip(clip);
-            const int64_t clipSampleSpan =
-                qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-            const qreal visibleStartRatio = qBound<qreal>(
-                0.0,
-                static_cast<qreal>(visibleClipRect.left() - clipRect.left()) /
-                    qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
-                1.0);
-            const qreal visibleEndRatio = qBound<qreal>(
-                visibleStartRatio,
-                static_cast<qreal>(visibleClipRect.right() - clipRect.left() + 1) /
-                    qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
-                1.0);
-            const int64_t sourceStartSample = qMax<int64_t>(0, frameToSamples(clip.sourceInFrame));
-            const int64_t visibleSampleStart = sourceStartSample + static_cast<int64_t>(
-                std::floor(static_cast<qreal>(clipSampleSpan) * visibleStartRatio));
-            const int64_t visibleSampleEnd = sourceStartSample + static_cast<int64_t>(
-                std::ceil(static_cast<qreal>(clipSampleSpan) * visibleEndRatio));
-
-            QVector<float> minVals;
-            QVector<float> maxVals;
-            const int columns = qMax(1, envelopeRect.width());
-            const bool hasWaveform = !audioPath.isEmpty() &&
-                editor::WaveformService::instance().queryEnvelope(
-                    audioPath,
-                    visibleSampleStart,
-                    qMax<int64_t>(visibleSampleStart + 1, visibleSampleEnd),
-                    columns,
-                    &minVals,
-                    &maxVals);
-
-            if (hasWaveform && minVals.size() == columns && maxVals.size() == columns) {
-                painter->setPen(QPen(QColor(QStringLiteral("#f2feff")), 1.0));
-                for (int i = 0; i < columns; ++i) {
-                    const int x = envelopeRect.left() + i;
-                    const qreal minAmp = qBound<qreal>(-1.0, static_cast<qreal>(minVals[i]), 1.0);
-                    const qreal maxAmp = qBound<qreal>(-1.0, static_cast<qreal>(maxVals[i]), 1.0);
-                    const int yTop = qRound(envelopeRect.center().y() - (maxAmp * envelopeRect.height() * 0.5));
-                    const int yBottom = qRound(envelopeRect.center().y() - (minAmp * envelopeRect.height() * 0.5));
-                    painter->drawLine(x, yTop, x, yBottom);
-                }
-            } else {
-                painter->setPen(QPen(QColor(QStringLiteral("#8fc8d3")), 1.0, Qt::DashLine));
-                painter->drawLine(envelopeRect.left(),
-                                  envelopeRect.center().y(),
-                                  envelopeRect.right(),
-                                  envelopeRect.center().y());
-            }
-            painter->restore();
-        }
-
         painter->setPen(QColor(QStringLiteral("#f4f7fb")));
         if (selected) {
             const QColor outerBorder = primarySelected
@@ -263,6 +294,17 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->setPen(QColor(QStringLiteral("#f4f7fb")));
         }
 
+        bool showAudioTabTrackWaveform = false;
+        if (m_widget->m_audioTabWaveformsVisible && clip.hasAudio &&
+            clip.trackIndex >= 0 && clip.trackIndex < m_widget->m_tracks.size()) {
+            showAudioTabTrackWaveform = m_widget->m_tracks[clip.trackIndex].audioWaveformVisible;
+        }
+        const bool showWaveform =
+            showAudioTabTrackWaveform || (!m_widget->m_audioTabWaveformsVisible && audioOnly);
+        if (showWaveform) {
+            drawClipAudioWaveform(painter, clip, clipRect, visibleClipRect, audioOnly);
+        }
+
         const int barHeight = qBound(3, visibleClipRect.height() / 10, 6);
         int barBottom = visibleClipRect.bottom() - 1;
 
@@ -278,7 +320,7 @@ void TimelineRenderer::paint(QPainter* painter) {
             barBottom -= (barHeight + 1);
         }
 
-        const QString transcriptPath = transcriptWorkingPathForClipFile(clip.filePath);
+        const QString transcriptPath = transcriptWorkingPathForClip(clip);
         const bool transcriptExists =
             !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
         if (transcriptExists) {
@@ -292,7 +334,7 @@ void TimelineRenderer::paint(QPainter* painter) {
             barBottom -= (barHeight + 1);
         }
 
-        const bool facedetectionsSidecarExists = facedetectionsSidecarExistsForClipFile(clip.filePath);
+        const bool facedetectionsSidecarExists = facedetectionsSidecarExistsForClip(clip);
         if (facedetectionsSidecarExists) {
             const QRect facedetectionsBarRect(visibleClipRect.left() + 2,
                                           barBottom - barHeight + 1,

@@ -21,6 +21,7 @@ public:
     QString legacyConfigFilePath() const;
     QString rootDirPath() const;
     void setRootDirPath(const QString& path);
+    bool changeRootDirPath(const QString& path);
     
     // Project path helpers
     QString projectsDirPath() const;
@@ -38,6 +39,7 @@ public:
     void ensureDefaultProjectExists() const;
     
     void loadProjectsFromFolders();
+    void loadDefaultProjectFromFolders();
     void saveCurrentProjectMarker();
     QString currentProjectName() const;
     void refreshProjectsList();

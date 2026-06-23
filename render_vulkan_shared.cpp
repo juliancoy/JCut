@@ -167,23 +167,34 @@ VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingK
 
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity)
 {
-    return vulkanBackgroundFillEffectState(BackgroundFillEffect::BlurCover, opacity);
+    return vulkanBackgroundFillEffectState(BackgroundFillEffect::BlurCover,
+                                           VulkanDrawEffectState{},
+                                           opacity);
 }
 
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
+                                                      const VulkanDrawEffectState& baseEffects,
                                                       float opacity,
+                                                      float brightness,
+                                                      float saturation,
+                                                      int edgePixels,
+                                                      bool progressiveEdge,
+                                                      float edgePower,
                                                       const QRectF& sourceRectNorm)
 {
     VulkanDrawEffectState state;
     state.opacity = std::clamp(opacity, 0.0f, 1.0f);
-    state.brightness = -0.16f;
-    state.contrast = 1.0f;
-    state.saturation = 0.68f;
+    state.brightness = std::clamp(baseEffects.brightness + brightness, -1.0f, 1.0f);
+    state.contrast = std::clamp(baseEffects.contrast, 0.0f, 4.0f);
+    state.saturation = std::clamp(baseEffects.saturation * saturation, 0.0f, 3.0f);
     if (effect == BackgroundFillEffect::EdgeStretch) {
         state.shadows[0] = static_cast<float>(sourceRectNorm.left());
         state.shadows[1] = static_cast<float>(sourceRectNorm.top());
         state.shadows[2] = static_cast<float>(sourceRectNorm.right());
         state.shadows[3] = static_cast<float>(sourceRectNorm.bottom());
+        state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
+        state.midtones[1] = progressiveEdge ? 1.0f : 0.0f;
+        state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
         state.highlights[3] = -2.0f;
         return state;
     }

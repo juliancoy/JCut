@@ -186,7 +186,8 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
                                                                m_timeline->clips(),
                                                                m_timeline->renderSyncMarkers(),
                                                                m_transcriptPrependMs,
-                                                               m_transcriptPostpendMs);
+                                                               m_transcriptPostpendMs,
+                                                               m_transcriptOffsetMs);
     }
     if (ranges.isEmpty()) {
         return ranges;
@@ -232,7 +233,8 @@ QVector<ExportRangeSegment> EditorWindow::applySpeechFilterToExportRanges(
                                                         m_timeline->clips(),
                                                         m_timeline->renderSyncMarkers(),
                                                         m_transcriptPrependMs,
-                                                        m_transcriptPostpendMs);
+                                                        m_transcriptPostpendMs,
+                                                        m_transcriptOffsetMs);
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() const
@@ -252,7 +254,8 @@ QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() c
         m_timeline->renderSyncMarkers(),
         m_transcriptPrependMs,
         m_transcriptPostpendMs,
-        neighborWordRadius);
+        neighborWordRadius,
+        m_transcriptOffsetMs);
     m_effectiveTranscriptNormalizeRangesCacheSignature = signature;
     return m_effectiveTranscriptNormalizeRangesCache;
 }
@@ -265,10 +268,11 @@ QString EditorWindow::playbackRangeCacheSignature(bool discrete, int neighborWor
     QString signature;
     signature.reserve(512);
     signature += discrete ? QStringLiteral("discrete|") : QStringLiteral("effective|");
-    signature += QStringLiteral("speech=%1|pre=%2|post=%3|radius=%4|")
+    signature += QStringLiteral("speech=%1|pre=%2|post=%3|offset=%4|radius=%5|")
                      .arg(speechFilterPlaybackEnabled() ? 1 : 0)
                      .arg(m_transcriptPrependMs)
                      .arg(m_transcriptPostpendMs)
+                     .arg(m_transcriptOffsetMs)
                      .arg(qBound(0, neighborWordRadius, 10));
     for (const ExportRangeSegment& range : m_timeline->exportRanges()) {
         signature += QStringLiteral("range:%1-%2|").arg(range.startFrame).arg(range.endFrame);
@@ -357,6 +361,7 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
     const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
     const int transcriptPrependMs = m_transcriptPrependMs;
     const int transcriptPostpendMs = m_transcriptPostpendMs;
+    const int transcriptOffsetMs = m_transcriptOffsetMs;
     const int neighborWordRadius = speechFilterPlaybackEnabled() ? 10 : 0;
     const QString normalizeSignature = playbackRangeCacheSignature(true, neighborWordRadius);
     if (m_effectiveTranscriptNormalizeRangesCacheSignature == normalizeSignature) {
@@ -370,7 +375,8 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
     m_transcriptNormalizeRefreshWatcher.setProperty("generation", generation);
     m_transcriptNormalizeRefreshWatcher.setProperty("signature", normalizeSignature);
     m_transcriptNormalizeRefreshWatcher.setFuture(QtConcurrent::run(
-        [baseRanges, clips, markers, transcriptPrependMs, transcriptPostpendMs, neighborWordRadius]() {
+        [baseRanges, clips, markers, transcriptPrependMs, transcriptPostpendMs, transcriptOffsetMs,
+         neighborWordRadius]() {
             TranscriptEngine engine;
             return engine.transcriptWordExportRangesDiscrete(
                 baseRanges,
@@ -378,7 +384,8 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
                 markers,
                 transcriptPrependMs,
                 transcriptPostpendMs,
-                neighborWordRadius);
+                neighborWordRadius,
+                transcriptOffsetMs);
         }));
 }
 
@@ -1024,6 +1031,15 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
         if (startWhenReady) {
             setPlaybackActive(true);
         }
+        return;
+    }
+
+    if (m_playbackAudioWarmupPending) {
+        if (startWhenReady) {
+            m_startPlaybackAfterAudioWarmup = true;
+        }
+        updateTransportLabels();
+        updatePlaybackStatusOverlay();
         return;
     }
 

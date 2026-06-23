@@ -1,8 +1,10 @@
 #include "editor.h"
+#include "processing_job_manifest.h"
 #include <QApplication>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -17,7 +19,9 @@
 #include <QPushButton>
 #include <QProgressDialog>
 #include <QProgressBar>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTextCursor>
@@ -26,7 +30,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <system_error>
 #include <thread>
+#include <vector>
 
 using namespace editor;
 
@@ -36,6 +43,136 @@ QString shellQuote(const QString& value) {
     QString escaped = value;
     escaped.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     return QStringLiteral("'%1'").arg(escaped);
+}
+
+QString expandUserPath(const QString& path) {
+    QString trimmed = path.trimmed();
+    if (trimmed == QStringLiteral("~")) {
+        return QDir::homePath();
+    }
+    if (trimmed.startsWith(QStringLiteral("~/"))) {
+        return QDir::home().absoluteFilePath(trimmed.mid(2));
+    }
+    return trimmed;
+}
+
+QString defaultSam3ModelCachePath() {
+    const QString appCache =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!appCache.isEmpty()) {
+        return QDir(appCache).absoluteFilePath(QStringLiteral("sam3/hf"));
+    }
+    return QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral(".cache/hf"));
+}
+
+std::filesystem::path fsPathForQtPath(const QString& path) {
+    return std::filesystem::path(path.toStdString()).lexically_normal();
+}
+
+bool pathsEqual(const std::filesystem::path& lhs, const std::filesystem::path& rhs) {
+    std::error_code ec;
+    if (std::filesystem::equivalent(lhs, rhs, ec)) {
+        return true;
+    }
+    return lhs.lexically_normal() == rhs.lexically_normal();
+}
+
+bool pathContains(const std::filesystem::path& parent, const std::filesystem::path& child) {
+    const auto normalizedParent = parent.lexically_normal();
+    const auto normalizedChild = child.lexically_normal();
+    auto parentIt = normalizedParent.begin();
+    auto childIt = normalizedChild.begin();
+    for (; parentIt != normalizedParent.end() && childIt != normalizedChild.end();
+         ++parentIt, ++childIt) {
+        if (*parentIt != *childIt) {
+            return false;
+        }
+    }
+    return parentIt == normalizedParent.end();
+}
+
+bool directoryHasEntries(const QString& path) {
+    std::error_code ec;
+    const std::filesystem::path fsPath = fsPathForQtPath(path);
+    if (!std::filesystem::exists(fsPath, ec) ||
+        !std::filesystem::is_directory(fsPath, ec)) {
+        return false;
+    }
+    return std::filesystem::directory_iterator(fsPath, ec) !=
+           std::filesystem::directory_iterator();
+}
+
+bool moveDirectoryEntry(const std::filesystem::path& source,
+                        const std::filesystem::path& destination,
+                        QString* errorOut) {
+    std::error_code ec;
+    if (std::filesystem::exists(destination, ec)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Destination already contains: %1")
+                            .arg(QString::fromStdString(destination.string()));
+        }
+        return false;
+    }
+
+    std::filesystem::rename(source, destination, ec);
+    if (!ec) {
+        return true;
+    }
+
+    ec.clear();
+    const auto copyOptions = std::filesystem::copy_options::recursive |
+                             std::filesystem::copy_options::copy_symlinks;
+    std::filesystem::copy(source, destination, copyOptions, ec);
+    if (ec) {
+        if (errorOut) {
+            *errorOut = QString::fromStdString(ec.message());
+        }
+        return false;
+    }
+
+    ec.clear();
+    std::filesystem::remove_all(source, ec);
+    if (ec) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Copied but could not remove old cache item: %1")
+                            .arg(QString::fromStdString(ec.message()));
+        }
+        return false;
+    }
+    return true;
+}
+
+bool moveDirectoryContents(const QString& sourcePath,
+                           const QString& destinationPath,
+                           QString* errorOut) {
+    const std::filesystem::path source = fsPathForQtPath(sourcePath);
+    const std::filesystem::path destination = fsPathForQtPath(destinationPath);
+    std::error_code ec;
+    std::filesystem::create_directories(destination, ec);
+    if (ec) {
+        if (errorOut) {
+            *errorOut = QString::fromStdString(ec.message());
+        }
+        return false;
+    }
+
+    std::vector<std::filesystem::path> entries;
+    for (std::filesystem::directory_iterator it(source, ec), end; it != end && !ec; ++it) {
+        entries.push_back(it->path());
+    }
+    if (ec) {
+        if (errorOut) {
+            *errorOut = QString::fromStdString(ec.message());
+        }
+        return false;
+    }
+
+    for (const std::filesystem::path& entry : entries) {
+        if (!moveDirectoryEntry(entry, destination / entry.filename(), errorOut)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 QString extractJsonObject(const QString& text) {
@@ -228,6 +365,536 @@ void EditorWindow::openTranscriptionWindow(const QString &filePath, const QStrin
             });
 
     process->start(QStringLiteral("/bin/bash"), {scriptPath, QFileInfo(filePath).absoluteFilePath()});
+    dialog->show();
+}
+
+void EditorWindow::openSamDetectorWindow(const QString& clipId)
+{
+    if (!m_timeline) {
+        return;
+    }
+
+    const TimelineClip* clip = nullptr;
+    for (const TimelineClip& candidate : m_timeline->clips()) {
+        if (candidate.id == clipId) {
+            clip = &candidate;
+            break;
+        }
+    }
+    if (!clip) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("The selected clip no longer exists."));
+        return;
+    }
+    if (clip->mediaType != ClipMediaType::Video) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("Detect is only available for video clips."));
+        return;
+    }
+
+    const QFileInfo inputInfo(clip->filePath);
+    if (!inputInfo.exists() || !inputInfo.isFile()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("The selected video file does not exist:\n%1")
+                                 .arg(QDir::toNativeSeparators(clip->filePath)));
+        return;
+    }
+
+    const QString scriptPath = QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("sam3.sh"));
+    if (!QFileInfo::exists(scriptPath)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("sam3.sh was not found at:\n%1")
+                                 .arg(QDir::toNativeSeparators(scriptPath)));
+        return;
+    }
+
+    QSettings settings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"));
+    const QString savedModelCachePath =
+        settings.value(QStringLiteral("sam3/modelCachePath"), defaultSam3ModelCachePath())
+            .toString();
+
+    QDialog preflight(this);
+    preflight.setWindowTitle(QStringLiteral("Detect Preflight"));
+    auto* preflightLayout = new QVBoxLayout(&preflight);
+    preflightLayout->setContentsMargins(12, 12, 12, 12);
+    preflightLayout->setSpacing(8);
+
+    auto* inputLabel = new QLabel(
+        QStringLiteral("Input: %1").arg(QDir::toNativeSeparators(inputInfo.absoluteFilePath())),
+        &preflight);
+    inputLabel->setWordWrap(true);
+    preflightLayout->addWidget(inputLabel);
+
+    auto* promptLabel = new QLabel(QStringLiteral("Prompt"), &preflight);
+    preflightLayout->addWidget(promptLabel);
+
+    auto* promptEdit = new QLineEdit(QStringLiteral("FACE"), &preflight);
+    promptEdit->setClearButtonEnabled(true);
+    promptEdit->selectAll();
+    preflightLayout->addWidget(promptEdit);
+
+    auto* cacheLabel = new QLabel(QStringLiteral("Model cache"), &preflight);
+    preflightLayout->addWidget(cacheLabel);
+
+    auto* cacheRow = new QHBoxLayout;
+    cacheRow->setContentsMargins(0, 0, 0, 0);
+    cacheRow->setSpacing(8);
+    auto* cacheEdit = new QLineEdit(savedModelCachePath, &preflight);
+    cacheEdit->setClearButtonEnabled(true);
+    auto* browseCacheButton = new QPushButton(QStringLiteral("Browse"), &preflight);
+    cacheRow->addWidget(cacheEdit, 1);
+    cacheRow->addWidget(browseCacheButton);
+    preflightLayout->addLayout(cacheRow);
+
+    auto* binaryMasksCheckBox = new QCheckBox(QStringLiteral("Write binary mask frames"), &preflight);
+    binaryMasksCheckBox->setChecked(true);
+    binaryMasksCheckBox->setToolTip(
+        QStringLiteral("Write per-frame PNG mattes for video processing. White pixels are detected regions; black pixels are background."));
+    preflightLayout->addWidget(binaryMasksCheckBox);
+
+    auto* videoModeCheckBox =
+        new QCheckBox(QStringLiteral("Run SAM video mode"), &preflight);
+    videoModeCheckBox->setChecked(false);
+    videoModeCheckBox->setToolTip(
+        QStringLiteral("Run SAM on the video stream instead of extracting and processing individual frames. Frame-only exports are disabled in this mode."));
+    preflightLayout->addWidget(videoModeCheckBox);
+
+    auto* maskPreviewFramesCheckBox =
+        new QCheckBox(QStringLiteral("Write masked preview frames"), &preflight);
+    maskPreviewFramesCheckBox->setChecked(false);
+    maskPreviewFramesCheckBox->setToolTip(
+        QStringLiteral("Write diagnostic frames showing the original frame with the detection mask overlay applied."));
+    preflightLayout->addWidget(maskPreviewFramesCheckBox);
+
+    auto* centersJsonCheckBox =
+        new QCheckBox(QStringLiteral("Export centers JSONL"), &preflight);
+    centersJsonCheckBox->setChecked(false);
+    centersJsonCheckBox->setToolTip(
+        QStringLiteral("Write a standalone JSONL file with per-frame detection center records."));
+    preflightLayout->addWidget(centersJsonCheckBox);
+
+    auto* rootModeCheckBox =
+        new QCheckBox(QStringLiteral("Run Docker container as root"), &preflight);
+    rootModeCheckBox->setChecked(false);
+    rootModeCheckBox->setToolTip(
+        QStringLiteral("Run the SAM Docker container as root. Use this only to work around ownership or permission problems."));
+    preflightLayout->addWidget(rootModeCheckBox);
+
+    auto* preflightButtonRow = new QHBoxLayout;
+    auto* cancelPreflightButton = new QPushButton(QStringLiteral("Cancel"), &preflight);
+    auto* runPreflightButton = new QPushButton(QStringLiteral("Run"), &preflight);
+    runPreflightButton->setDefault(true);
+    preflightButtonRow->addStretch(1);
+    preflightButtonRow->addWidget(cancelPreflightButton);
+    preflightButtonRow->addWidget(runPreflightButton);
+    preflightLayout->addLayout(preflightButtonRow);
+
+    connect(browseCacheButton, &QPushButton::clicked, &preflight, [cacheEdit, &preflight]() {
+        const QString selectedPath = QFileDialog::getExistingDirectory(
+            &preflight,
+            QStringLiteral("Choose SAM3 Model Cache"),
+            expandUserPath(cacheEdit->text().trimmed().isEmpty()
+                               ? defaultSam3ModelCachePath()
+                               : cacheEdit->text()),
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (!selectedPath.isEmpty()) {
+            cacheEdit->setText(selectedPath);
+        }
+    });
+    connect(cancelPreflightButton, &QPushButton::clicked, &preflight, &QDialog::reject);
+    connect(videoModeCheckBox, &QCheckBox::toggled, &preflight,
+            [binaryMasksCheckBox, maskPreviewFramesCheckBox](bool checked) {
+        binaryMasksCheckBox->setEnabled(!checked);
+        maskPreviewFramesCheckBox->setEnabled(!checked);
+        if (checked) {
+            binaryMasksCheckBox->setChecked(false);
+            maskPreviewFramesCheckBox->setChecked(false);
+        } else {
+            binaryMasksCheckBox->setChecked(true);
+        }
+    });
+    connect(runPreflightButton, &QPushButton::clicked, &preflight, [&preflight, promptEdit, cacheEdit]() {
+        if (promptEdit->text().trimmed().isEmpty()) {
+            promptEdit->setFocus();
+            return;
+        }
+        if (cacheEdit->text().trimmed().isEmpty()) {
+            cacheEdit->setFocus();
+            return;
+        }
+        preflight.accept();
+    });
+    if (preflight.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QString prompt = promptEdit->text().trimmed();
+    const bool useVideoMode = videoModeCheckBox->isChecked();
+    const bool writeBinaryMasks = !useVideoMode && binaryMasksCheckBox->isChecked();
+    const bool writeMaskPreviewFrames = !useVideoMode && maskPreviewFramesCheckBox->isChecked();
+    const bool exportCentersJson = centersJsonCheckBox->isChecked();
+    const bool runDockerAsRoot = rootModeCheckBox->isChecked();
+    const QString previousModelCachePath =
+        QFileInfo(expandUserPath(savedModelCachePath)).absoluteFilePath();
+    const QString modelCachePath =
+        QFileInfo(expandUserPath(cacheEdit->text())).absoluteFilePath();
+    QDir modelCacheDir(modelCachePath);
+    if (!modelCacheDir.exists() && !modelCacheDir.mkpath(QStringLiteral("."))) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("Could not create the SAM3 model cache:\n%1")
+                                 .arg(QDir::toNativeSeparators(modelCachePath)));
+        return;
+    }
+    const std::filesystem::path previousModelCacheFsPath =
+        fsPathForQtPath(previousModelCachePath);
+    const std::filesystem::path modelCacheFsPath = fsPathForQtPath(modelCachePath);
+    if (!pathsEqual(previousModelCacheFsPath, modelCacheFsPath) &&
+        directoryHasEntries(previousModelCachePath)) {
+        if (pathContains(previousModelCacheFsPath, modelCacheFsPath) ||
+            pathContains(modelCacheFsPath, previousModelCacheFsPath)) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Detect Failed"),
+                QStringLiteral("Choose a model cache folder outside the current cache tree.\n\nCurrent: %1\nSelected: %2")
+                    .arg(QDir::toNativeSeparators(previousModelCachePath),
+                         QDir::toNativeSeparators(modelCachePath)));
+            return;
+        }
+
+        QMessageBox movePrompt(this);
+        movePrompt.setIcon(QMessageBox::Question);
+        movePrompt.setWindowTitle(QStringLiteral("Move SAM3 Models"));
+        movePrompt.setText(QStringLiteral("Move the existing SAM3 model cache to the selected folder?"));
+        movePrompt.setInformativeText(
+            QStringLiteral("Old cache:\n%1\n\nNew cache:\n%2")
+                .arg(QDir::toNativeSeparators(previousModelCachePath),
+                     QDir::toNativeSeparators(modelCachePath)));
+        QPushButton* moveButton =
+            movePrompt.addButton(QStringLiteral("Move Models"), QMessageBox::AcceptRole);
+        QPushButton* useSelectedButton =
+            movePrompt.addButton(QStringLiteral("Use Selected Folder"), QMessageBox::DestructiveRole);
+        movePrompt.addButton(QMessageBox::Cancel);
+        movePrompt.setDefaultButton(moveButton);
+        movePrompt.exec();
+        if (movePrompt.clickedButton() == nullptr ||
+            movePrompt.standardButton(movePrompt.clickedButton()) == QMessageBox::Cancel) {
+            return;
+        }
+        if (movePrompt.clickedButton() == moveButton) {
+            QString moveError;
+            if (!moveDirectoryContents(previousModelCachePath, modelCachePath, &moveError)) {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("Detect Failed"),
+                    QStringLiteral("Could not move the SAM3 model cache:\n%1")
+                        .arg(moveError));
+                return;
+            }
+        } else if (movePrompt.clickedButton() != useSelectedButton) {
+            return;
+        }
+    }
+    settings.setValue(QStringLiteral("sam3/modelCachePath"), modelCachePath);
+
+    const QString samJobRoot =
+        jcut::jobs::defaultJobRootForInput(inputInfo.absoluteFilePath(),
+                                           QStringLiteral("sam3"),
+                                           prompt);
+    const QString samManifestPath = jcut::jobs::manifestPathForJobRoot(samJobRoot);
+    const QString samPromptOutputStem =
+        QStringLiteral("%1_sam3_%2")
+            .arg(inputInfo.completeBaseName(),
+                 jcut::jobs::sanitizedJobComponent(prompt));
+    const QString centersPath =
+        inputInfo.dir().absoluteFilePath(QStringLiteral("%1.jsonl")
+                                             .arg(samPromptOutputStem));
+    const QString binaryMasksPath =
+        inputInfo.dir().absoluteFilePath(QStringLiteral("%1_binary_masks")
+                                             .arg(samPromptOutputStem));
+    const QString defaultOutputPath =
+        inputInfo.dir().absoluteFilePath(QStringLiteral("%1.mp4")
+                                             .arg(samPromptOutputStem));
+    QJsonObject artifacts{
+        {QStringLiteral("job_root"), samJobRoot},
+        {QStringLiteral("manifest"), samManifestPath},
+        {QStringLiteral("centers_json"), exportCentersJson ? centersPath : QString()},
+        {QStringLiteral("binary_masks_dir"), writeBinaryMasks ? binaryMasksPath : QString()},
+        {QStringLiteral("default_output_video"), defaultOutputPath},
+        {QStringLiteral("model_cache"), modelCachePath},
+    };
+    QJsonObject parameters{
+        {QStringLiteral("prompt"), prompt},
+        {QStringLiteral("video_mode"), useVideoMode},
+        {QStringLiteral("extract_frames"), !useVideoMode},
+        {QStringLiteral("stream_extract"), !useVideoMode},
+        {QStringLiteral("binary_masks"), writeBinaryMasks},
+        {QStringLiteral("mask_preview_frames"), writeMaskPreviewFrames},
+        {QStringLiteral("centers_json"), exportCentersJson},
+        {QStringLiteral("docker_root_mode"), runDockerAsRoot},
+    };
+    if (QFileInfo::exists(samManifestPath)) {
+        QJsonObject existingManifest;
+        jcut::jobs::readManifest(samManifestPath, &existingManifest, nullptr);
+        const QString existingStatus =
+            existingManifest.value(QStringLiteral("status")).toString();
+        if (existingStatus != QStringLiteral("completed")) {
+            QMessageBox resumePrompt(this);
+            resumePrompt.setIcon(QMessageBox::Question);
+            resumePrompt.setWindowTitle(QStringLiteral("Resume SAM3 Job"));
+            resumePrompt.setText(QStringLiteral("An unfinished SAM3 job exists for this input and prompt."));
+            resumePrompt.setInformativeText(
+                QStringLiteral("Job manifest:\n%1\n\nResume will continue from existing extracted frames and enabled outputs. Restart removes enabled outputs and the manifest first.")
+                    .arg(QDir::toNativeSeparators(samManifestPath)));
+            QPushButton* resumeButton =
+                resumePrompt.addButton(QStringLiteral("Resume"), QMessageBox::AcceptRole);
+            QPushButton* restartButton =
+                resumePrompt.addButton(QStringLiteral("Restart"), QMessageBox::DestructiveRole);
+            resumePrompt.addButton(QMessageBox::Cancel);
+            resumePrompt.setDefaultButton(resumeButton);
+            resumePrompt.exec();
+            if (resumePrompt.clickedButton() == nullptr ||
+                resumePrompt.standardButton(resumePrompt.clickedButton()) == QMessageBox::Cancel) {
+                return;
+            }
+            if (resumePrompt.clickedButton() == restartButton) {
+                if (exportCentersJson) {
+                    QFile::remove(centersPath);
+                }
+                QFile::remove(samManifestPath);
+                if (writeBinaryMasks) {
+                    QDir(binaryMasksPath).removeRecursively();
+                }
+            }
+        }
+    }
+
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Detect  %1").arg(clip->label));
+    dialog->resize(920, 560);
+
+    auto* layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto* title = new QLabel(
+        QStringLiteral("sam3.sh %1 --prompt %2\nModel cache: %3")
+            .arg(QDir::toNativeSeparators(inputInfo.absoluteFilePath()),
+                 prompt,
+                 QDir::toNativeSeparators(modelCachePath)),
+        dialog);
+    title->setWordWrap(true);
+    layout->addWidget(title);
+
+    auto* output = new QPlainTextEdit(dialog);
+    output->setReadOnly(true);
+    output->setLineWrapMode(QPlainTextEdit::NoWrap);
+    output->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background: #05080c; color: #d6e2ee; border: 1px solid #24303c; "
+        "border-radius: 8px; font-family: monospace; font-size: 12px; }"));
+    layout->addWidget(output, 1);
+
+    auto* autoScrollBox = new QCheckBox(QStringLiteral("Auto-scroll"), dialog);
+    autoScrollBox->setChecked(true);
+    layout->addWidget(autoScrollBox);
+
+    auto* backgroundButton = new QPushButton(QStringLiteral("Send to Background"), dialog);
+    backgroundButton->setToolTip(
+        QStringLiteral("Close this output window and keep the SAM job running. Reopen it from the Jobs tab."));
+    auto* closeButton = new QPushButton(QStringLiteral("Close"), dialog);
+    auto* buttonRow = new QHBoxLayout;
+    buttonRow->addStretch(1);
+    buttonRow->addWidget(backgroundButton);
+    buttonRow->addWidget(closeButton);
+    layout->addLayout(buttonRow);
+
+    auto* process = new QProcess(dialog);
+    auto* keepRunningOnClose = new bool(false);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setWorkingDirectory(QDir::currentPath());
+    QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
+    processEnv.insert(QStringLiteral("SAM3_MODEL_CACHE"), modelCachePath);
+    processEnv.insert(QStringLiteral("SAM3_JOB_DIR"), samJobRoot);
+    if (runDockerAsRoot) {
+        processEnv.insert(QStringLiteral("SAM3_DOCKER_RUN_AS_ROOT"), QStringLiteral("1"));
+    }
+    process->setProcessEnvironment(processEnv);
+
+    const auto appendOutput = [output, autoScrollBox](const QString& text) {
+        if (text.isEmpty()) {
+            return;
+        }
+        if (autoScrollBox->isChecked()) {
+            output->moveCursor(QTextCursor::End);
+        }
+        output->insertPlainText(text);
+        if (autoScrollBox->isChecked()) {
+            output->moveCursor(QTextCursor::End);
+        }
+    };
+
+    connect(process, &QProcess::readyReadStandardOutput, dialog, [process, appendOutput]() {
+        appendOutput(QString::fromLocal8Bit(process->readAllStandardOutput()));
+    });
+    connect(process, &QProcess::started, dialog, [appendOutput,
+                                                  inputPath = inputInfo.absoluteFilePath(),
+                                                  prompt,
+                                                  modelCachePath,
+                                                  samJobRoot,
+                                                  samManifestPath,
+                                                  writeBinaryMasks,
+                                                  binaryMasksPath,
+                                                  writeMaskPreviewFrames,
+                                                  exportCentersJson,
+                                                  centersPath,
+                                                  useVideoMode,
+                                                  runDockerAsRoot]() {
+        const QString videoModeArg = useVideoMode
+            ? QStringLiteral(" --video-mode")
+            : QString();
+        const QString maskArg = writeBinaryMasks
+            ? QStringLiteral(" --binary-mask-dir %1").arg(shellQuote(binaryMasksPath))
+            : QString();
+        const QString previewArg = writeMaskPreviewFrames
+            ? QStringLiteral(" --write-mask-preview-frames")
+            : QString();
+        const QString centersArg = exportCentersJson
+            ? QStringLiteral(" --centers-json %1").arg(shellQuote(centersPath))
+            : QStringLiteral(" --no-centers-json");
+        appendOutput(QStringLiteral("SAM3_MODEL_CACHE=%1\nSAM3_JOB_DIR=%2\nSAM3_DOCKER_RUN_AS_ROOT=%3\njob_manifest=%4\nmode=%5\nbinary_masks=%6\nmask_preview_frames=%7\ncenters_json=%8\n$ ./sam3.sh \"%9\" --prompt %10%11%12%13%14\n")
+                         .arg(QDir::toNativeSeparators(modelCachePath),
+                              QDir::toNativeSeparators(samJobRoot),
+                              runDockerAsRoot ? QStringLiteral("1") : QStringLiteral("0"),
+                              QDir::toNativeSeparators(samManifestPath),
+                              useVideoMode ? QStringLiteral("video") : QStringLiteral("frames"),
+                              writeBinaryMasks ? QDir::toNativeSeparators(binaryMasksPath) : QStringLiteral("disabled"),
+                              writeMaskPreviewFrames ? QStringLiteral("enabled") : QStringLiteral("disabled"),
+                              exportCentersJson ? QDir::toNativeSeparators(centersPath) : QStringLiteral("disabled"),
+                              QDir::toNativeSeparators(inputPath),
+                              shellQuote(prompt),
+                              videoModeArg,
+                              maskArg,
+                              previewArg,
+                              centersArg));
+    });
+    connect(process, &QProcess::errorOccurred, dialog, [appendOutput](QProcess::ProcessError error) {
+        appendOutput(QStringLiteral("\n[process error] %1\n").arg(static_cast<int>(error)));
+    });
+    connect(process,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            dialog,
+            [appendOutput, samManifestPath](int exitCode, QProcess::ExitStatus exitStatus) {
+                QString manifestError;
+                QJsonObject patch{
+                    {QStringLiteral("exit_code"), exitCode},
+                    {QStringLiteral("exit_status"),
+                     exitStatus == QProcess::NormalExit ? QStringLiteral("normal")
+                                                        : QStringLiteral("crashed")},
+                };
+                jcut::jobs::updateManifestStatus(
+                    samManifestPath,
+                    (exitStatus == QProcess::NormalExit && exitCode == 0)
+                        ? QStringLiteral("completed")
+                        : QStringLiteral("failed"),
+                    patch,
+                    &manifestError);
+                if (!manifestError.isEmpty()) {
+                    appendOutput(QStringLiteral("\n[job manifest warning] %1\n").arg(manifestError));
+                }
+                appendOutput(QStringLiteral("\n[process finished] exitCode=%1 status=%2\n")
+                                 .arg(exitCode)
+                                 .arg(exitStatus == QProcess::NormalExit
+                                          ? QStringLiteral("normal")
+                                          : QStringLiteral("crashed")));
+            });
+    connect(backgroundButton, &QPushButton::clicked, dialog, [dialog,
+                                                              process,
+                                                              keepRunningOnClose,
+                                                              samManifestPath]() {
+        *keepRunningOnClose = true;
+        process->setParent(nullptr);
+        QObject::connect(process,
+                         qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                         process,
+                         &QObject::deleteLater);
+        jcut::jobs::updateManifestStatus(
+            samManifestPath,
+            QStringLiteral("running"),
+            QJsonObject{{QStringLiteral("ui_state"), QStringLiteral("background")}},
+            nullptr);
+        dialog->close();
+    });
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+    connect(dialog, &QDialog::finished, dialog, [process,
+                                                 samManifestPath,
+                                                 keepRunningOnClose](int) {
+        if (!*keepRunningOnClose && process->state() != QProcess::NotRunning) {
+            jcut::jobs::updateManifestStatus(samManifestPath,
+                                             QStringLiteral("paused"),
+                                             QJsonObject{{QStringLiteral("pause_reason"),
+                                                          QStringLiteral("ui_closed")}},
+                                             nullptr);
+            process->kill();
+            process->waitForFinished(1000);
+        }
+        delete keepRunningOnClose;
+    });
+
+    QString manifestError;
+    QStringList launchCommand{scriptPath,
+                              inputInfo.absoluteFilePath(),
+                              QStringLiteral("--prompt"),
+                              prompt};
+    if (useVideoMode) {
+        launchCommand << QStringLiteral("--video-mode");
+    }
+    if (writeBinaryMasks) {
+        launchCommand << QStringLiteral("--binary-mask-dir") << binaryMasksPath;
+    }
+    if (writeMaskPreviewFrames) {
+        launchCommand << QStringLiteral("--write-mask-preview-frames");
+    }
+    if (exportCentersJson) {
+        launchCommand << QStringLiteral("--centers-json") << centersPath;
+    } else {
+        launchCommand << QStringLiteral("--no-centers-json");
+    }
+    QJsonObject manifest =
+        jcut::jobs::makeManifest(QStringLiteral("sam3"),
+                                 samJobRoot,
+                                 inputInfo.absoluteFilePath(),
+                                 parameters,
+                                 artifacts,
+                                 launchCommand);
+    manifest.insert(QStringLiteral("status"), QStringLiteral("running"));
+    if (!jcut::jobs::writeManifest(samManifestPath, manifest, &manifestError)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("Could not write SAM3 job manifest:\n%1")
+                                 .arg(manifestError));
+        return;
+    }
+    if (writeBinaryMasks && m_timeline) {
+        if (m_timeline->updateClipById(clipId, [binaryMasksPath](TimelineClip& timelineClip) {
+                timelineClip.maskEnabled = true;
+                timelineClip.maskFramesDir = binaryMasksPath;
+            })) {
+            if (m_preview) {
+                m_preview->setTimelineTracks(m_timeline->tracks());
+                m_preview->setTimelineClips(m_timeline->clips());
+            }
+            if (m_inspectorPane) {
+                m_inspectorPane->refreshTab(QStringLiteral("Masks"));
+            }
+            scheduleSaveState();
+        }
+    }
+
+    process->start(QStringLiteral("/bin/bash"), launchCommand);
     dialog->show();
 }
 

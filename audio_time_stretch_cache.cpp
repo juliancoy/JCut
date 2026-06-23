@@ -1,5 +1,7 @@
 #include "audio_time_stretch_cache.h"
 
+#include "audio_source_key.h"
+
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDir>
@@ -16,10 +18,12 @@ namespace {
 constexpr quint32 kTimeStretchSidecarMagic = 0x4A435453;
 constexpr quint32 kTimeStretchSidecarVersion = 1;
 
-QString cacheFileNameForSource(const QFileInfo& info, int speedKey)
+QString cacheFileNameForSource(const QString& sourceIdentity,
+                               const QFileInfo& info,
+                               int speedKey)
 {
     const QByteArray hash = QCryptographicHash::hash(
-        info.absoluteFilePath().toUtf8(),
+        sourceIdentity.toUtf8(),
         QCryptographicHash::Sha256).toHex().left(16);
     const QString baseName = info.completeBaseName().isEmpty()
         ? QStringLiteral("audio")
@@ -39,11 +43,15 @@ QString writableUserCacheDir()
 
 QStringList candidateSidecarPaths(const QString& sourcePath, int speedKey)
 {
-    const QFileInfo info(sourcePath);
+    const QString mediaPath = editor::audio::pathFromSourceKey(sourcePath);
+    const QFileInfo info(mediaPath);
     if (!info.exists() || !info.isFile() || speedKey <= 1000) {
         return {};
     }
-    const QString fileName = cacheFileNameForSource(info, speedKey);
+    const QString sourceIdentity =
+        editor::audio::makeSourceKey(info.absoluteFilePath(),
+                                     editor::audio::streamIndexFromSourceKey(sourcePath));
+    const QString fileName = cacheFileNameForSource(sourceIdentity, info, speedKey);
     return {
         info.dir().filePath(QStringLiteral(".jcut_audio_cache/%1").arg(fileName)),
         QDir(writableUserCacheDir()).filePath(fileName)
@@ -64,7 +72,7 @@ bool readAudioTimeStretchSidecar(const QString& sourcePath,
     if (entryOut) {
         *entryOut = AudioTimeStretchCacheEntry{};
     }
-    const QFileInfo sourceInfo(sourcePath);
+    const QFileInfo sourceInfo(editor::audio::pathFromSourceKey(sourcePath));
     for (const QString& sidecarPath : candidateSidecarPaths(sourcePath, speedKey)) {
         QFile file(sidecarPath);
         if (!file.open(QIODevice::ReadOnly)) {
@@ -128,7 +136,7 @@ bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
     if (metadataOut) {
         *metadataOut = AudioTimeStretchSidecarMetadata{};
     }
-    const QFileInfo sourceInfo(sourcePath);
+    const QFileInfo sourceInfo(editor::audio::pathFromSourceKey(sourcePath));
     for (const QString& sidecarPath : candidateSidecarPaths(sourcePath, speedKey)) {
         QFile file(sidecarPath);
         if (!file.open(QIODevice::ReadOnly)) {
@@ -182,7 +190,7 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
     if (!entry.valid || !entry.fullyDecoded || entry.samples.isEmpty() || speedKey <= 1000) {
         return false;
     }
-    const QFileInfo sourceInfo(sourcePath);
+    const QFileInfo sourceInfo(editor::audio::pathFromSourceKey(sourcePath));
     const QByteArray sampleBytes(
         reinterpret_cast<const char*>(entry.samples.constData()),
         entry.samples.size() * static_cast<int>(sizeof(float)));

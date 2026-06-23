@@ -28,6 +28,7 @@ public:
         bool compressorEnabled = false;
         float compressorThresholdDb = -18.0f;
         float compressorRatio = 3.0f;
+        bool softClipEnabled = false;
     };
 
     struct WaveformLevel {

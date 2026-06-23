@@ -241,7 +241,7 @@ qreal interpolationFactorForTransformFrames(const TimelineClip& clip,
     }
 
     const QVector<TranscriptSpeechRange> ranges = loadTranscriptSpeechRanges(
-        activeTranscriptPathForClipFile(clip.filePath));
+        activeTranscriptPathForClip(clip));
     if (ranges.isEmpty()) {
         return baseT;
     }

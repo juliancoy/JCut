@@ -9,6 +9,7 @@
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QTimer>
@@ -33,6 +34,7 @@ public:
         QLabel* transcriptInspectorDetailsLabel = nullptr;
         QTableWidget* transcriptTable = nullptr;
         QCheckBox* transcriptOverlayEnabledCheckBox = nullptr;
+        QComboBox* transcriptPlacementModeCombo = nullptr;
         QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
         QSpinBox* transcriptBackgroundOpacitySpin = nullptr;
         QSpinBox* transcriptBackgroundCornerRadiusSpin = nullptr;
@@ -54,6 +56,7 @@ public:
         QCheckBox* transcriptItalicCheckBox = nullptr;
         QSpinBox* transcriptPrependMsSpin = nullptr;
         QSpinBox* transcriptPostpendMsSpin = nullptr;
+        QSpinBox* transcriptOffsetMsSpin = nullptr;
         QCheckBox* speechFilterEnabledCheckBox = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
         QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;
@@ -95,10 +98,18 @@ public:
     void setSelectedRowsSkipped(bool skipped);
     int transcriptPrependMs() const { return m_widgets.transcriptPrependMsSpin ? qMax(0, m_widgets.transcriptPrependMsSpin->value()) : 150; }
     int transcriptPostpendMs() const { return m_widgets.transcriptPostpendMsSpin ? qMax(0, m_widgets.transcriptPostpendMsSpin->value()) : 70; }
+    int transcriptOffsetMs() const { return m_widgets.transcriptOffsetMsSpin ? m_widgets.transcriptOffsetMsSpin->value() : 0; }
     int speechFilterFadeSamples() const { return m_speechFilterFadeSamples; }
     bool speechFilterEnabled() const { return m_speechFilterEnabled; }
     void setManualSelectionHoldMs(int valueMs);
     int manualSelectionHoldMs() const { return m_manualSelectionHoldMs; }
+    QJsonObject debugSnapshot() const;
+    bool activeTranscriptDocumentSnapshot(QString* clipFilePathOut,
+                                          QString* transcriptPathOut,
+                                          QJsonDocument* documentOut) const;
+    void restoreTranscriptDocumentSnapshot(const QString& clipFilePath,
+                                           const QString& transcriptPath,
+                                           const QJsonDocument& document);
 
 signals:
     void transcriptDocumentChanged();
@@ -116,6 +127,7 @@ private slots:
     void onCenterVerticalClicked();
     void onPrependMsChanged(int value);
     void onPostpendMsChanged(int value);
+    void onOffsetMsChanged(int value);
     void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);
@@ -133,6 +145,7 @@ private:
     void startTranscriptLoadRequest(const QString& clipFilePath, const QString& transcriptPath);
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& originalPath);
     void requestRefresh(int delayMs = 35);
+    void setTranscriptPlacementMode(bool manual);
     struct TranscriptRow
     {
         enum EditFlag
@@ -225,7 +238,7 @@ private:
 
     void updateOverlayWidgetsFromClip(const TimelineClip& clip);
     void loadTranscriptFile(const TimelineClip& clip);
-    QVector<TranscriptRow> parseTranscriptRows(int prependMs, int postpendMs) const;
+    QVector<TranscriptRow> parseTranscriptRows(int prependMs, int postpendMs, int offsetMs) const;
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
     void insertGapRows(QVector<TranscriptRow>* rows) const;

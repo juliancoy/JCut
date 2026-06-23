@@ -4,6 +4,9 @@
 
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
+QImage applyClipMaskEffectsToImage(const QImage& source,
+                                   const TimelineClip& clip,
+                                   int64_t sourceFrame);
 QVector<QPointF> defaultGradingCurvePoints();
 QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points);
 qreal sampleGradingCurveAt(const QVector<QPointF>& points,

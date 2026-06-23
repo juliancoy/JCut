@@ -9,8 +9,8 @@
 #include <QWheelEvent>
 
 namespace {
-    constexpr int kDefaultTrackHeight = 44;
-    constexpr int kTrackSpacing = 10;
+    constexpr int kDefaultTrackHeight = 72;
+    constexpr int kTrackSpacing = 4;
 
     void drawEyeIcon(QPainter& painter, const QRect& rect, TrackVisualMode mode, bool interactive) {
         painter.save();

@@ -15,6 +15,7 @@ const QLatin1String kTranscriptWordSpeakerKey("speaker");
 const QLatin1String kTranscriptSegmentSpeakerKey("speaker");
 const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
 const QLatin1String kTranscriptSpeakerNameKey("name");
+const QLatin1String kTranscriptSpeakerOrganizationKey("organization");
 const QLatin1String kTranscriptSpeakerLocationKey("location");
 const QLatin1String kTranscriptSpeakerLocationXKey("x");
 const QLatin1String kTranscriptSpeakerLocationYKey("y");

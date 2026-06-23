@@ -1056,6 +1056,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     const QJsonObject playbackStageMetrics{
         {QStringLiteral("text_prep"),
          editor::playbackStageMetricToJson(m_stats.textPrepStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("text_draw"),
+         editor::playbackStageMetricToJson(m_stats.textDrawStageMetric, QStringLiteral("presenter"))},
         {QStringLiteral("gpu_handoff"),
          editor::playbackStageMetricToJson(m_stats.gpuHandoffStageMetric, QStringLiteral("presenter"))},
         {QStringLiteral("command_recording"),
@@ -1185,9 +1187,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("last_handoff_probe_reason"), m_stats.lastProbeReason},
         {QStringLiteral("last_hardware_sw_format"), m_stats.lastHardwareSwFormat},
         {QStringLiteral("last_vulkan_image_format"), m_stats.lastVulkanImageFormat},
-        {QStringLiteral("last_yuv_rgb_matrix"), m_stats.lastHardwareSwFormat == QStringLiteral("nv12")
-             ? QStringLiteral("bt709_limited")
-             : QString()},
+        {QStringLiteral("last_yuv_rgb_matrix"), m_stats.lastYuvRgbMatrix},
         {QStringLiteral("last_external_image_size"), m_stats.lastExternalImageSize.isValid()
              ? QStringLiteral("%1x%2").arg(m_stats.lastExternalImageSize.width()).arg(m_stats.lastExternalImageSize.height())
              : QString()},
@@ -1233,6 +1233,8 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
     const QJsonObject playbackStageMetrics{
         {QStringLiteral("text_prep"),
          editor::playbackStageMetricToJson(m_stats.textPrepStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("text_draw"),
+         editor::playbackStageMetricToJson(m_stats.textDrawStageMetric, QStringLiteral("presenter"))},
         {QStringLiteral("gpu_handoff"),
          editor::playbackStageMetricToJson(m_stats.gpuHandoffStageMetric, QStringLiteral("presenter"))},
         {QStringLiteral("command_recording"),
@@ -1295,6 +1297,7 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("last_handoff_probe_path"), m_stats.lastProbePath},
         {QStringLiteral("last_hardware_sw_format"), m_stats.lastHardwareSwFormat},
         {QStringLiteral("last_vulkan_image_format"), m_stats.lastVulkanImageFormat},
+        {QStringLiteral("last_yuv_rgb_matrix"), m_stats.lastYuvRgbMatrix},
         {QStringLiteral("failure_reason"), m_failureReason},
         {QStringLiteral("playback_pipeline_stages"), playbackStageMetrics}
     };

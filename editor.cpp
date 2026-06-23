@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "mask_tab.h"
 #include "speakers_table.h"
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
@@ -466,6 +467,7 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
     m_preview->endBulkUpdate();
 
     if (m_audioEngine) {
+        m_audioEngine->setTimelineTracks(m_timeline->tracks());
         m_audioEngine->setTimelineClips(m_timeline->clips());
         m_audioEngine->setExportRanges(playbackRanges);
         m_audioEngine->setTranscriptNormalizeRanges(
@@ -774,9 +776,18 @@ void EditorWindow::syncTranscriptTableToPlayhead()
         m_transcriptTable->clearSelection();
         return;
     }
-    const qreal timelineFramePosition = samplesToFramePosition(m_transportTimelineSample);
+    int64_t timelineSample = m_transportTimelineSample;
+    qreal timelineFramePosition = samplesToFramePosition(timelineSample);
     const qreal clipStart = static_cast<qreal>(clip->startFrame);
     const qreal clipEnd = static_cast<qreal>(clip->startFrame + qMax<int64_t>(0, clip->durationFrames - 1));
+    if (!playbackActive() && (timelineFramePosition < clipStart || timelineFramePosition > clipEnd)) {
+        const int64_t currentFrameSample = frameToSamples(m_timeline->currentFrame());
+        const qreal currentFramePosition = samplesToFramePosition(currentFrameSample);
+        if (currentFramePosition >= clipStart && currentFramePosition <= clipEnd) {
+            timelineSample = currentFrameSample;
+            timelineFramePosition = currentFramePosition;
+        }
+    }
     if (timelineFramePosition < clipStart || timelineFramePosition > clipEnd) {
         m_transcriptTable->clearSelection();
         return;
@@ -784,21 +795,21 @@ void EditorWindow::syncTranscriptTableToPlayhead()
 
     const int64_t sourceSample = sourceSampleForClipAtTimelineSample(
         *clip,
-        m_transportTimelineSample,
+        timelineSample,
         m_timeline->renderSyncMarkers());
     const double sourceSeconds = static_cast<double>(sourceSample) / static_cast<double>(kAudioSampleRate);
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
         *clip,
-        m_transportTimelineSample,
+        timelineSample,
         m_timeline->renderSyncMarkers());
     if (m_transcriptTab) {
-        m_transcriptTab->syncTableToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
+        m_transcriptTab->syncTableToPlayhead(timelineSample, sourceSeconds, sourceFrame);
     }
     if (m_speakerTranscriptTab) {
-        m_speakerTranscriptTab->syncTableToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
+        m_speakerTranscriptTab->syncTableToPlayhead(timelineSample, sourceSeconds, sourceFrame);
     }
     if (m_speakersTab) {
-        m_speakersTab->syncIdentityToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
+        m_speakersTab->syncIdentityToPlayhead(timelineSample, sourceSeconds, sourceFrame);
     }
 }
 
@@ -919,7 +930,9 @@ void EditorWindow::undoHistory()
 
     m_restoringHistory = true;
     m_historyIndex -= 1;
-    applyStateJson(m_historyEntries.at(m_historyIndex).toObject());
+    const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
+    restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
+    applyStateJson(snapshot);
     m_restoringHistory = false;
     saveHistoryNow();
     scheduleSaveState();
@@ -934,7 +947,9 @@ void EditorWindow::redoHistory()
 
     m_restoringHistory = true;
     m_historyIndex += 1;
-    applyStateJson(m_historyEntries.at(m_historyIndex).toObject());
+    const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
+    restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
+    applyStateJson(snapshot);
     m_restoringHistory = false;
     saveHistoryNow();
     scheduleSaveState();
@@ -949,7 +964,9 @@ void EditorWindow::restoreToHistoryIndex(int index)
 
     m_restoringHistory = true;
     m_historyIndex = index;
-    applyStateJson(m_historyEntries.at(m_historyIndex).toObject());
+    const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
+    restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
+    applyStateJson(snapshot);
     m_restoringHistory = false;
     saveHistoryNow();
     scheduleSaveState();
@@ -980,6 +997,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (rootPath.isEmpty() || !QDir(rootPath).exists()) {
         rootPath = QDir::currentPath();
     }
+    setTranscriptSourceRootPath(rootPath);
     QString galleryFolderPath = root.value(QStringLiteral("mediaGalleryPath")).toString();
     if (galleryFolderPath.isEmpty()) {
         galleryFolderPath = root.value(QStringLiteral("explorerGalleryPath")).toString();
@@ -1021,6 +1039,18 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const BackgroundFillEffect backgroundFillEffect =
         backgroundFillEffectFromString(root.value(QStringLiteral("backgroundFillEffect"))
                                            .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect)));
+    const qreal backgroundFillOpacity =
+        qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillOpacity")).toDouble(1.0), 1.0);
+    const qreal backgroundFillBrightness =
+        qBound<qreal>(-1.0, root.value(QStringLiteral("backgroundFillBrightness")).toDouble(0.0), 1.0);
+    const qreal backgroundFillSaturation =
+        qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillSaturation")).toDouble(1.0), 3.0);
+    const int backgroundFillEdgePixels =
+        qBound(1, root.value(QStringLiteral("backgroundFillEdgePixels")).toInt(1), 512);
+    const bool backgroundFillEdgeProgressive =
+        root.value(QStringLiteral("backgroundFillEdgeProgressive")).toBool(false);
+    const qreal backgroundFillEdgePower =
+        qBound<qreal>(0.25, root.value(QStringLiteral("backgroundFillEdgePower")).toDouble(2.0), 8.0);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
@@ -1195,6 +1225,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(150);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(70);
+    const int transcriptOffsetMs = root.value(QStringLiteral("transcriptOffsetMs")).toInt(0);
     const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(300);
     const bool speechFilterRangeCrossfade =
         root.value(QStringLiteral("speechFilterRangeCrossfade")).toBool(false);
@@ -1277,6 +1308,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
     loadedAudioDynamics.normalizeEnabled = root.value(QStringLiteral("audioNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.normalizeTargetDb = root.value(QStringLiteral("audioNormalizeTargetDb")).toDouble(-1.0);
+    loadedAudioDynamics.stereoToMonoEnabled = root.value(QStringLiteral("audioStereoToMonoEnabled")).toBool(false);
     loadedAudioDynamics.selectiveNormalizeEnabled =
         root.value(QStringLiteral("audioSelectiveNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.selectiveNormalizeMinSegmentSeconds =
@@ -1307,6 +1339,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     loadedAudioDynamics.compressorEnabled = root.value(QStringLiteral("audioCompressorEnabled")).toBool(false);
     loadedAudioDynamics.compressorThresholdDb = root.value(QStringLiteral("audioCompressorThresholdDb")).toDouble(-18.0);
     loadedAudioDynamics.compressorRatio = root.value(QStringLiteral("audioCompressorRatio")).toDouble(3.0);
+    loadedAudioDynamics.softClipEnabled = root.value(QStringLiteral("audioSoftClipEnabled")).toBool(false);
     const bool audioSpeakerHoverModalEnabled =
         root.value(QStringLiteral("audioSpeakerHoverModalEnabled")).toBool(true);
     const bool audioWaveformVisible =
@@ -1416,7 +1449,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         const QJsonObject obj = tracks.at(i).toObject();
         TimelineTrack track;
         track.name = obj.value(QStringLiteral("name")).toString(QStringLiteral("Track %1").arg(i + 1));
-        track.height = qMax(28, obj.value(QStringLiteral("height")).toInt(44));
+        track.height = qMax(28, obj.value(QStringLiteral("height")).toInt(72));
         if (obj.contains(QStringLiteral("visualMode"))) {
             track.visualMode = trackVisualModeFromString(obj.value(QStringLiteral("visualMode")).toString());
         } else if (obj.contains(QStringLiteral("visualEnabled")) &&
@@ -1424,6 +1457,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             track.visualMode = TrackVisualMode::Hidden;
         }
         track.audioEnabled = obj.value(QStringLiteral("audioEnabled")).toBool(true);
+        track.audioBusId = obj.value(QStringLiteral("audioBusId")).toString();
+        track.audioGain = qBound<qreal>(0.0, obj.value(QStringLiteral("audioGain")).toDouble(1.0), 4.0);
+        track.audioMuted = obj.value(QStringLiteral("audioMuted")).toBool(false);
+        track.audioSolo = obj.value(QStringLiteral("audioSolo")).toBool(false);
+        track.audioWaveformVisible = obj.value(QStringLiteral("audioWaveformVisible")).toBool(true);
         loadedTracks.push_back(track);
     }
     markStartup(QStringLiteral("apply_state.tracks_parse.end"),
@@ -1511,6 +1549,31 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         const int effectIndex = m_backgroundFillEffectCombo->findData(
             backgroundFillEffectToString(backgroundFillEffect));
         m_backgroundFillEffectCombo->setCurrentIndex(qMax(0, effectIndex));
+    }
+    if (m_backgroundFillOpacitySpin) {
+        QSignalBlocker block(m_backgroundFillOpacitySpin);
+        m_backgroundFillOpacitySpin->setValue(backgroundFillOpacity * 100.0);
+    }
+    if (m_backgroundFillBrightnessSpin) {
+        QSignalBlocker block(m_backgroundFillBrightnessSpin);
+        m_backgroundFillBrightnessSpin->setValue(backgroundFillBrightness * 100.0);
+    }
+    if (m_backgroundFillSaturationSpin) {
+        QSignalBlocker block(m_backgroundFillSaturationSpin);
+        m_backgroundFillSaturationSpin->setValue(backgroundFillSaturation * 100.0);
+    }
+    if (m_backgroundFillEdgePixelsSlider) {
+        QSignalBlocker block(m_backgroundFillEdgePixelsSlider);
+        m_backgroundFillEdgePixelsSlider->setValue(backgroundFillEdgePixels);
+    }
+    if (m_backgroundFillEdgeProgressiveCheckBox) {
+        QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
+        m_backgroundFillEdgeProgressiveCheckBox->setChecked(backgroundFillEdgeProgressive);
+    }
+    if (m_backgroundFillEdgePowerSpin) {
+        QSignalBlocker block(m_backgroundFillEdgePowerSpin);
+        m_backgroundFillEdgePowerSpin->setValue(backgroundFillEdgePower);
+        m_backgroundFillEdgePowerSpin->setEnabled(backgroundFillEdgeProgressive);
     }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
@@ -1720,14 +1783,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
 
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
+    m_transcriptOffsetMs = qBound(-10000, transcriptOffsetMs, 10000);
     if (m_preview) {
-        m_preview->setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+        m_preview->setTranscriptOverlayTimingPaddingMs(
+            m_transcriptPrependMs, m_transcriptPostpendMs, m_transcriptOffsetMs);
     }
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);
     m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
     
     if (m_transcriptPrependMsSpin) { QSignalBlocker block(m_transcriptPrependMsSpin); m_transcriptPrependMsSpin->setValue(m_transcriptPrependMs); }
     if (m_transcriptPostpendMsSpin) { QSignalBlocker block(m_transcriptPostpendMsSpin); m_transcriptPostpendMsSpin->setValue(m_transcriptPostpendMs); }
+    if (m_transcriptOffsetMsSpin) { QSignalBlocker block(m_transcriptOffsetMsSpin); m_transcriptOffsetMsSpin->setValue(m_transcriptOffsetMs); }
     if (m_speechFilterFadeSamplesSpin) { QSignalBlocker block(m_speechFilterFadeSamplesSpin); m_speechFilterFadeSamplesSpin->setValue(m_speechFilterFadeSamples); }
     if (m_speechFilterRangeCrossfadeCheckBox) {
         QSignalBlocker block(m_speechFilterRangeCrossfadeCheckBox);
@@ -1827,6 +1893,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
         m_preview->setBackgroundFillEffect(backgroundFillEffect);
+        m_preview->setBackgroundFillOpacity(backgroundFillOpacity);
+        m_preview->setBackgroundFillBrightness(backgroundFillBrightness);
+        m_preview->setBackgroundFillSaturation(backgroundFillSaturation);
+        m_preview->setBackgroundFillEdgePixels(backgroundFillEdgePixels);
+        m_preview->setBackgroundFillEdgeProgressive(backgroundFillEdgeProgressive);
+        m_preview->setBackgroundFillEdgePower(backgroundFillEdgePower);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);
@@ -1918,6 +1990,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioNormalizeTargetDbSpin->setValue(m_previewAudioDynamics.normalizeTargetDb);
         m_audioNormalizeTargetDbSpin->setEnabled(m_featureAudioDynamicsTools);
     }
+    if (m_audioStereoToMonoCheckBox) {
+        QSignalBlocker block(m_audioStereoToMonoCheckBox);
+        m_audioStereoToMonoCheckBox->setChecked(m_previewAudioDynamics.stereoToMonoEnabled);
+        m_audioStereoToMonoCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
     if (m_audioSelectiveNormalizeEnabledCheckBox) {
         QSignalBlocker block(m_audioSelectiveNormalizeEnabledCheckBox);
         m_audioSelectiveNormalizeEnabledCheckBox->setChecked(
@@ -1994,6 +2071,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_audioCompressorRatioSpin);
         m_audioCompressorRatioSpin->setValue(m_previewAudioDynamics.compressorRatio);
         m_audioCompressorRatioSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioSoftClipEnabledCheckBox) {
+        QSignalBlocker block(m_audioSoftClipEnabledCheckBox);
+        m_audioSoftClipEnabledCheckBox->setChecked(m_previewAudioDynamics.softClipEnabled);
+        m_audioSoftClipEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
     }
     if (m_preview) {
         m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);

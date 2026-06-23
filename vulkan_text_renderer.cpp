@@ -1,6 +1,7 @@
 #include "vulkan_text_renderer.h"
 
 #include "preview_view_transform.h"
+#include "transcript_overlay_cache_key.h"
 #include "vulkan_clear_helpers.h"
 
 #include <QCryptographicHash>
@@ -185,21 +186,13 @@ QString transcriptOverlayLayoutKey(const QSize& outputSize,
         layoutMaterial += QString::number(line.activeWord);
         layoutMaterial += QLatin1Char('|');
     }
-    const auto& overlay = clip.transcriptOverlay;
     const QString material =
         QStringLiteral("transcript-layout-v2|") +
         clip.id + QLatin1Char('|') +
         QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
         rectKey(outputRect) + QLatin1Char('|') +
         speakerTitle + QLatin1Char('|') +
-        overlay.fontFamily + QLatin1Char('|') +
-        QString::number(overlay.fontPointSize) + QLatin1Char('|') +
-        QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
-        QString::number(overlay.showBackground ? 1 : 0) + QLatin1Char('|') +
-        QString::number(overlay.backgroundOpacity, 'f', 4) + QLatin1Char('|') +
-        QString::number(overlay.backgroundCornerRadius, 'f', 2) + QLatin1Char('|') +
-        QString::number(overlay.showShadow ? 1 : 0) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(overlay.textColor.rgba())) + QLatin1Char('|') +
+        transcriptOverlayStyleCacheMaterial(clip) + QLatin1Char('|') +
         layoutMaterial;
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
@@ -1034,7 +1027,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         (lineHeight(bodyFace.face) * layout.lines.size());
     const qreal docScale = qMin(contentWidth > textBounds.width() ? textBounds.width() / contentWidth : 1.0,
                                 contentHeight > textBounds.height() ? textBounds.height() / contentHeight : 1.0);
-    qreal cursorY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - (contentHeight * docScale)) / 2.0);
+    qreal cursorY = textBounds.top();
     const qreal shadowOffset = 5.0 * docScale;
 
     auto emitRun = [&](FT_Face face,

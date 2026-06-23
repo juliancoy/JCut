@@ -1,6 +1,7 @@
 #include "audio_engine.h"
 
 #include "audio_mix_readiness.h"
+#include "audio_source_key.h"
 #include "debug_controls.h"
 #include "decoder_ffmpeg_utils.h"
 #include "ffmpeg_compat.h"
@@ -29,6 +30,47 @@ extern "C" {
 }
 
 #include <RtAudio.h>
+
+namespace {
+
+bool anyAudioSolo(const QVector<TimelineClip> &clips,
+                  const QVector<TimelineTrack> &tracks) {
+  for (const TimelineClip &clip : clips) {
+    if (clipAudioPlaybackEnabled(clip) && clip.audioSolo) {
+      return true;
+    }
+  }
+  for (const TimelineTrack &track : tracks) {
+    if (track.audioSolo) {
+      return true;
+    }
+  }
+  return false;
+}
+
+float mixerGainForClip(const TimelineClip &clip,
+                       const QVector<TimelineTrack> &tracks,
+                       bool soloActive) {
+  if (!clipAudioPlaybackEnabled(clip)) {
+    return 0.0f;
+  }
+  float gain = static_cast<float>(qBound<qreal>(0.0, clip.audioGain, 4.0));
+  bool clipOrTrackSolo = clip.audioSolo;
+  if (clip.trackIndex >= 0 && clip.trackIndex < tracks.size()) {
+    const TimelineTrack &track = tracks.at(clip.trackIndex);
+    if (!track.audioEnabled || track.audioMuted) {
+      return 0.0f;
+    }
+    gain *= static_cast<float>(qBound<qreal>(0.0, track.audioGain, 4.0));
+    clipOrTrackSolo = clipOrTrackSolo || track.audioSolo;
+  }
+  if (soloActive && !clipOrTrackSolo) {
+    return 0.0f;
+  }
+  return gain;
+}
+
+} // namespace
 
 size_t AudioRingBuffer::available() const {
   return m_writePos.load(std::memory_order_acquire) -
@@ -95,6 +137,14 @@ void AudioEngine::setTimelineClips(const QVector<TimelineClip> &clips) {
   if (queueChanged) {
     m_decodeCondition.notify_one();
   }
+}
+
+void AudioEngine::setTimelineTracks(const QVector<TimelineTrack> &tracks) {
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_timelineTracks = tracks;
+  }
+  m_mixCondition.notify_one();
 }
 
 void AudioEngine::setExportRanges(const QVector<ExportRangeSegment> &ranges) {
@@ -188,6 +238,9 @@ void AudioEngine::setAudioDynamicsSettings(
   m_compressorThresholdDb.store(settings.compressorThresholdDb,
                                 std::memory_order_release);
   m_compressorRatio.store(settings.compressorRatio, std::memory_order_release);
+  m_softClipEnabled.store(settings.softClipEnabled, std::memory_order_release);
+  m_stereoToMonoEnabled.store(settings.stereoToMonoEnabled,
+                              std::memory_order_release);
 }
 
 void AudioEngine::setBackgroundDecodeSuppressed(bool suppressed) {
@@ -1110,8 +1163,7 @@ bool AudioEngine::clipAndSourceSampleAtTimelineSampleLocked(
       continue;
     }
     const int64_t clipStart = clipTimelineStartSamples(clip);
-    const int64_t clipEnd =
-        clipStart + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+    const int64_t clipEnd = clipTimelineEndSamples(clip);
     if (timelineSample < clipStart || timelineSample >= clipEnd) {
       continue;
     }
@@ -1362,7 +1414,7 @@ void AudioEngine::enqueueDecodePathLocked(const QString &audioPath,
   if (m_pendingDecodeSet.contains(audioPath)) {
     for (auto it = m_pendingDecodePaths.begin();
          it != m_pendingDecodePaths.end(); ++it) {
-      if (it->path == audioPath) {
+      if (it->key == audioPath) {
         if (fullDecode && !it->fullDecode) {
           it->fullDecode = true;
         }
@@ -1383,7 +1435,7 @@ void AudioEngine::enqueueDecodePathLocked(const QString &audioPath,
     m_pendingDecodeSet.remove(audioPath);
   }
   DecodeTask task;
-  task.path = audioPath;
+  task.key = audioPath;
   task.fullDecode = fullDecode;
   task.precomputeTimeStretch = precomputeTimeStretch;
   task.sourceStartSample = boundedSourceStartSample;
@@ -1466,7 +1518,7 @@ void AudioEngine::removePendingDecodePathLocked(const QString &audioPath) {
   m_pendingDecodeSet.remove(audioPath);
   for (auto it = m_pendingDecodePaths.begin();
        it != m_pendingDecodePaths.end();) {
-    if (it->path == audioPath) {
+    if (it->key == audioPath) {
       it = m_pendingDecodePaths.erase(it);
     } else {
       ++it;
@@ -1479,14 +1531,16 @@ AudioEngine::clipAudioPathForScheduling(const TimelineClip &clip) const {
   if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
     return QString();
   }
+  QString audioPath;
   if (clip.audioSourceStatus == QStringLiteral("ok") &&
       !clip.audioSourcePath.trimmed().isEmpty()) {
-    return QFileInfo(clip.audioSourcePath).absoluteFilePath();
+    audioPath = QFileInfo(clip.audioSourcePath).absoluteFilePath();
+  } else if (clip.audioSourceMode == QStringLiteral("embedded")) {
+    audioPath = QFileInfo(clip.filePath).absoluteFilePath();
+  } else {
+    audioPath = playbackAudioPathForClip(clip);
   }
-  if (clip.audioSourceMode == QStringLiteral("embedded")) {
-    return QFileInfo(clip.filePath).absoluteFilePath();
-  }
-  return playbackAudioPathForClip(clip);
+  return editor::audio::makeSourceKey(audioPath, clip.audioStreamIndex);
 }
 
 QSet<QString> AudioEngine::scheduledAudioPathsFromClips(
@@ -1518,7 +1572,7 @@ void AudioEngine::prioritizeDecodesNearSampleLocked(int64_t focusSample) {
 
   struct Candidate {
     int64_t distance = std::numeric_limits<int64_t>::max();
-    QString path;
+    QString key;
   };
   QVector<Candidate> candidates;
   candidates.reserve(m_timelineClips.size());
@@ -1529,8 +1583,7 @@ void AudioEngine::prioritizeDecodesNearSampleLocked(int64_t focusSample) {
       continue;
     }
     const int64_t clipStart = clipTimelineStartSamples(clip);
-    const int64_t clipLenSamples =
-        qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const int64_t clipLenSamples = clipTimelineDurationSamples(clip);
     const int64_t clipEndExclusive = clipStart + clipLenSamples;
     int64_t distance = 0;
     if (focusSample < clipStart) {
@@ -1550,33 +1603,32 @@ void AudioEngine::prioritizeDecodesNearSampleLocked(int64_t focusSample) {
               if (a.distance != b.distance) {
                 return a.distance < b.distance;
               }
-              return a.path < b.path;
+              return a.key < b.key;
             });
 
   constexpr int kHighPriorityDecodeCount = 4;
   QSet<QString> promoted;
   int promotedCount = 0;
   for (const Candidate &candidate : std::as_const(candidates)) {
-    if (promoted.contains(candidate.path)) {
+    if (promoted.contains(candidate.key)) {
       continue;
     }
     int64_t sourceStartSample = 0;
     for (const TimelineClip &clip : std::as_const(m_timelineClips)) {
-      if (clipAudioPathForScheduling(clip) != candidate.path) {
+      if (clipAudioPathForScheduling(clip) != candidate.key) {
         continue;
       }
       const int64_t clipStart = clipTimelineStartSamples(clip);
-      const int64_t clipEnd =
-          clipStart + frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+      const int64_t clipEnd = clipTimelineEndSamples(clip);
       const int64_t timelineSample =
           qBound<int64_t>(clipStart, focusSample, clipEnd - 1);
       sourceStartSample = sourceSampleForClipAtTimelineSample(
           clip, timelineSample, m_renderSyncMarkers);
       break;
     }
-    enqueueDecodePathLocked(candidate.path, true, false, false,
+    enqueueDecodePathLocked(candidate.key, true, false, false,
                             sourceStartSample, true);
-    promoted.insert(candidate.path);
+    promoted.insert(candidate.key);
     if (++promotedCount >= kHighPriorityDecodeCount) {
       break;
     }
@@ -1702,7 +1754,8 @@ float AudioEngine::calculateClipCrossfadeGain(int64_t samplePos,
 
 AudioEngine::AudioClipCacheEntry
 AudioEngine::decodeClipAudio(const QString &path, int64_t maxOutputFrames,
-                             int64_t sourceStartSample) {
+                             int64_t sourceStartSample,
+                             int audioStreamIndex) {
   AudioClipCacheEntry cache;
   const int64_t requestedSourceStartSample =
       qMax<int64_t>(0, sourceStartSample);
@@ -1723,19 +1776,31 @@ AudioEngine::decodeClipAudio(const QString &path, int64_t maxOutputFrames,
     return cache;
   }
 
-  int audioStreamIndex = -1;
-  for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
-    if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-      audioStreamIndex = static_cast<int>(i);
-      break;
+  int resolvedAudioStreamIndex = -1;
+  if (audioStreamIndex >= 0 &&
+      audioStreamIndex < static_cast<int>(formatCtx->nb_streams) &&
+      formatCtx->streams[audioStreamIndex]->codecpar->codec_type ==
+          AVMEDIA_TYPE_AUDIO) {
+    resolvedAudioStreamIndex = audioStreamIndex;
+  } else {
+    for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
+      if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+        resolvedAudioStreamIndex = static_cast<int>(i);
+        break;
+      }
     }
   }
-  if (audioStreamIndex < 0) {
+  if (resolvedAudioStreamIndex < 0) {
     avformat_close_input(&formatCtx);
     return cache;
   }
 
-  AVStream *stream = formatCtx->streams[audioStreamIndex];
+  AVStream *stream = formatCtx->streams[resolvedAudioStreamIndex];
+  if (!stream || !stream->codecpar) {
+    avformat_close_input(&formatCtx);
+    return cache;
+  }
+
   const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
   if (!decoder) {
     avformat_close_input(&formatCtx);
@@ -1783,7 +1848,7 @@ AudioEngine::decodeClipAudio(const QString &path, int64_t maxOutputFrames,
     const AVRational outputSampleTimeBase{1, m_sampleRate};
     const int64_t seekTimestamp = av_rescale_q(
         requestedSourceStartSample, outputSampleTimeBase, stream->time_base);
-    if (av_seek_frame(formatCtx, audioStreamIndex, seekTimestamp,
+    if (av_seek_frame(formatCtx, resolvedAudioStreamIndex, seekTimestamp,
                       AVSEEK_FLAG_BACKWARD) >= 0) {
       avcodec_flush_buffers(codecCtx);
     }
@@ -1870,7 +1935,7 @@ AudioEngine::decodeClipAudio(const QString &path, int64_t maxOutputFrames,
   };
 
   while (!hitOutputLimit && av_read_frame(formatCtx, packet) >= 0) {
-    if (packet->stream_index != audioStreamIndex) {
+    if (packet->stream_index != resolvedAudioStreamIndex) {
       av_packet_unref(packet);
       continue;
     }
@@ -2377,17 +2442,17 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
                                         std::memory_order_release);
     m_audioPlaybackBlocked.store(true, std::memory_order_release);
   };
+  const bool soloActive = anyAudioSolo(context.clips, context.tracks);
   for (const TimelineClip &clip : context.clips) {
-    if (!clipAudioPlaybackEnabled(clip)) {
+    const float mixerGain = mixerGainForClip(clip, context.tracks, soloActive);
+    if (mixerGain <= 0.0f) {
       continue;
     }
     const QString audioPath = clipAudioPathForScheduling(clip);
     AudioClipCacheEntry audio;
     bool usingPrecomputedTimeStretch = false;
     const int64_t clipStartSampleForLookup = clipTimelineStartSamples(clip);
-    const int64_t clipEndSampleForLookup =
-        clipStartSampleForLookup +
-        frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+    const int64_t clipEndSampleForLookup = clipTimelineEndSamples(clip);
     const int64_t lookupTimelineSample = qBound<int64_t>(
         clipStartSampleForLookup, chunkStartSample, clipEndSampleForLookup - 1);
     const int64_t chunkTimelineStep =
@@ -2415,9 +2480,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         m_lastTimeStretchCacheMissSpeed.store(
             timeStretchRateKey(timeStretchSpeed), std::memory_order_release);
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample =
-            clipStartSample +
-            frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         const int64_t timelineSample = qBound<int64_t>(
             clipStartSample, chunkStartSample, clipEndSample - 1);
         const int64_t sourceSample = sourceSampleForClipAtTimelineSample(
@@ -2452,9 +2515,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       } else {
         ++invalidAudioCount;
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample =
-            clipStartSample +
-            frameToSamples(qMax<int64_t>(1, clip.durationFrames));
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         const int64_t timelineSample = qBound<int64_t>(
             clipStartSample, chunkStartSample, clipEndSample - 1);
         enqueuePreviewDecodeForPath(
@@ -2484,8 +2545,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
             ? sourceSamplesCoveredByTimeStretchCacheSamples(
                   clipAvailableSamples, timeStretchSpeed)
             : clipAvailableSamples;
-    const int64_t timelineClipSamples =
-        clip.durationFrames * m_sampleRate / kTimelineFps;
+    const int64_t timelineClipSamples = clipTimelineDurationSamples(clip);
     const int64_t clipEndSample = clipStartSample + timelineClipSamples;
     if (clipEndSample <= clipStartSample) {
       continue;
@@ -2813,8 +2873,9 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
           clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
       const float transcriptNormalizeGain =
           transcriptNormalizeGainAtSample(prepared, timelineSamplePos);
+      const float mixerGain = mixerGainForClip(clip, context.tracks, soloActive);
       const float primaryGain =
-          primarySpeechGain * primaryClipGain * transcriptNormalizeGain;
+          primarySpeechGain * primaryClipGain * transcriptNormalizeGain * mixerGain;
       primaryGainPeak = qMax(primaryGainPeak, std::abs(primaryGain));
       if (primarySpeechGain <= 0.0f && secondarySpeechGain <= 0.0f) {
         frameSpeechGainZero = true;
@@ -2856,7 +2917,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
               prepared.clipEndSample,
               clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
           const float secondaryGain =
-              secondarySpeechGain * secondaryClipGain * transcriptNormalizeGain;
+              secondarySpeechGain * secondaryClipGain * transcriptNormalizeGain * mixerGain;
           output[outIndex] += audio.samples[secondaryInIndex] * secondaryGain;
           output[outIndex + 1] +=
               audio.samples[secondaryInIndex + 1] * secondaryGain;
@@ -2914,6 +2975,10 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       m_compressorThresholdDb.load(std::memory_order_acquire);
   const qreal compressorRatio =
       m_compressorRatio.load(std::memory_order_acquire);
+  const bool softClipEnabled =
+      m_softClipEnabled.load(std::memory_order_acquire);
+  const bool stereoToMonoEnabled =
+      m_stereoToMonoEnabled.load(std::memory_order_acquire);
 
   auto dbToAmpLocal = [](float db) -> float {
     return std::pow(10.0f, db / 20.0f);
@@ -2947,6 +3012,11 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     }
     if (peakReductionEnabled && out > peakLinear) {
       out = peakLinear + (out - peakLinear) * 0.35f;
+    }
+    if (softClipEnabled) {
+      constexpr float kSoftClipDrive = 1.75f;
+      constexpr float kSoftClipNorm = 1.0f / 0.94137555f; // tanh(1.75)
+      out = std::tanh(out * kSoftClipDrive) * kSoftClipNorm;
     }
     if (limiterEnabled) {
       out = std::min(out, limiterLinear);
@@ -3049,6 +3119,20 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       const float normalizeGain = normalizeTargetLinear / postPeak;
       for (int i = 0; i < frames * m_channelCount; ++i) {
         output[i] = std::clamp(output[i] * normalizeGain, -1.0f, 1.0f);
+      }
+    }
+  }
+
+  if (stereoToMonoEnabled && m_channelCount > 1) {
+    for (int frame = 0; frame < frames; ++frame) {
+      const int frameOffset = frame * m_channelCount;
+      float mono = 0.0f;
+      for (int channel = 0; channel < m_channelCount; ++channel) {
+        mono += output[frameOffset + channel];
+      }
+      mono /= static_cast<float>(m_channelCount);
+      for (int channel = 0; channel < m_channelCount; ++channel) {
+        output[frameOffset + channel] = mono;
       }
     }
   }
@@ -3196,35 +3280,39 @@ void AudioEngine::decodeLoop() {
       }
       nextTask = m_pendingDecodePaths.front();
       m_pendingDecodePaths.pop_front();
-      m_pendingDecodeSet.remove(nextTask.path);
-      m_activeDecodeFullDecode.insert(nextTask.path, nextTask.fullDecode);
+      m_pendingDecodeSet.remove(nextTask.key);
+      m_activeDecodeFullDecode.insert(nextTask.key, nextTask.fullDecode);
     }
 
+    const QString decodePath = editor::audio::pathFromSourceKey(nextTask.key);
+    const int decodeStreamIndex =
+        editor::audio::streamIndexFromSourceKey(nextTask.key);
     AudioClipCacheEntry decoded = decodeClipAudio(
-        nextTask.path,
+        decodePath,
         nextTask.fullDecode
             ? -1
             : (nextTask.precomputeTimeStretch ? kTimeStretchPreviewDecodeFrames
                                               : kPreviewDecodeFrames),
-        nextTask.fullDecode ? 0 : nextTask.sourceStartSample);
+        nextTask.fullDecode ? 0 : nextTask.sourceStartSample,
+        decodeStreamIndex);
     QHash<int, AudioClipCacheEntry> warpedBySpeed =
-        buildPrecomputedTimeStretchEntries(nextTask.path, decoded,
+        buildPrecomputedTimeStretchEntries(nextTask.key, decoded,
                                            nextTask.precomputeTimeStretch);
 
     {
       std::lock_guard<std::mutex> lock(m_stateMutex);
       const bool fullDecodeRequestedWhileActive =
-          m_fullDecodeRequestedWhileActive.remove(nextTask.path) > 0;
+          m_fullDecodeRequestedWhileActive.remove(nextTask.key) > 0;
       const bool timeStretchRequestedWhileActive =
-          m_timeStretchPrecomputeRequestedWhileActive.contains(nextTask.path);
+          m_timeStretchPrecomputeRequestedWhileActive.contains(nextTask.key);
       const int64_t activeTimeStretchSourceStart =
-          m_timeStretchPrecomputeRequestedWhileActive.take(nextTask.path);
-      m_activeDecodeFullDecode.remove(nextTask.path);
+          m_timeStretchPrecomputeRequestedWhileActive.take(nextTask.key);
+      m_activeDecodeFullDecode.remove(nextTask.key);
       if (nextTask.fullDecode) {
         if (decoded.valid) {
-          m_audioCache.insert(nextTask.path, decoded);
+          m_audioCache.insert(nextTask.key, decoded);
           if (!warpedBySpeed.isEmpty()) {
-            insertTimeStretchSegmentsLocked(nextTask.path,
+            insertTimeStretchSegmentsLocked(nextTask.key,
                                             std::move(warpedBySpeed));
             m_timeStretchPrecomputeBlocked.store(false,
                                                  std::memory_order_release);
@@ -3232,9 +3320,9 @@ void AudioEngine::decodeLoop() {
         }
       } else {
         if (decoded.valid) {
-          m_audioCache.insert(nextTask.path, decoded);
+          m_audioCache.insert(nextTask.key, decoded);
           if (!warpedBySpeed.isEmpty()) {
-            insertTimeStretchSegmentsLocked(nextTask.path,
+            insertTimeStretchSegmentsLocked(nextTask.key,
                                             std::move(warpedBySpeed));
             m_timeStretchPrecomputeBlocked.store(false,
                                                  std::memory_order_release);
@@ -3242,11 +3330,11 @@ void AudioEngine::decodeLoop() {
         }
       }
       if (fullDecodeRequestedWhileActive && !nextTask.fullDecode) {
-        enqueueDecodePathLocked(nextTask.path, true, true, true, 0, true);
+        enqueueDecodePathLocked(nextTask.key, true, true, true, 0, true);
       } else if (timeStretchRequestedWhileActive &&
                  !nextTask.precomputeTimeStretch) {
         enqueueDecodePathLocked(
-            nextTask.path, true, nextTask.fullDecode, true,
+            nextTask.key, true, nextTask.fullDecode, true,
             nextTask.fullDecode ? 0 : activeTimeStretchSourceStart, true);
       }
     }
@@ -3301,6 +3389,7 @@ void AudioEngine::mixLoop() {
         continue;
       }
       context.clips = m_timelineClips;
+      context.tracks = m_timelineTracks;
       context.exportRanges = exportRangesCopy();
       context.speechSampleRanges.reserve(context.exportRanges.size());
       for (const ExportRangeSegment &range : std::as_const(context.exportRanges)) {

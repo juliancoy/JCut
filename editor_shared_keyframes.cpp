@@ -850,7 +850,7 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     }
     const QString trimmedSpeakerId = speakerId.trimmed();
     QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, trimmedSpeakerId);
-    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
     if (currentThreadIsGuiThread() && !speakerFramingRuntimeBuildAllowed()) {
         AssignedContinuityStreamsPtr cachedStreams;
         QJsonDocument transcriptDoc;
@@ -1145,7 +1145,7 @@ bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
         return false;
     }
 
-    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
     if (transcriptPath.trimmed().isEmpty()) {
         return false;
     }
@@ -2042,7 +2042,7 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
         return;
     }
 
-    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
     if (transcriptPath.trimmed().isEmpty()) {
         warmManualContinuityForClip(clip);
         return;
@@ -2397,7 +2397,7 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         QString diagnosticAssignmentCacheToken;
         qreal diagnosticSectionRotationDegrees = 0.0;
         if (diagnosticsOut && !activeSpeaker.isEmpty()) {
-            const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+            const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
             QJsonDocument transcriptDoc;
             if (!transcriptPath.trimmed().isEmpty() &&
                 loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {

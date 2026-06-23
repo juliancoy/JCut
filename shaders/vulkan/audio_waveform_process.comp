@@ -37,6 +37,12 @@ float softReducePeak(float v, float threshold) {
     return sign(v) * min(reduced, 1.0);
 }
 
+float softClipSample(float v) {
+    const float drive = 1.75;
+    const float norm = 1.0 / 0.94137555; // tanh(1.75)
+    return tanh(v * drive) * norm;
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     uint totalBins = uint(max(1.0, pc.u_bins.x));
@@ -65,6 +71,10 @@ void main() {
     if (pc.u_flags.w > 0.5) {
         minV = softReducePeak(minV, pc.u_gainNormalizeLimiterPeak.w);
         maxV = softReducePeak(maxV, pc.u_gainNormalizeLimiterPeak.w);
+    }
+    if (pc.u_bins.z > 0.5) {
+        minV = softClipSample(minV);
+        maxV = softClipSample(maxV);
     }
     if (pc.u_flags.z > 0.5) {
         float limit = max(0.0, pc.u_gainNormalizeLimiterPeak.z);

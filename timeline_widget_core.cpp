@@ -182,6 +182,14 @@ void TimelineWidget::setCurrentFrame(int64_t frame) {
     update();
 }
 
+void TimelineWidget::setAudioTabWaveformsVisible(bool visible) {
+    if (m_audioTabWaveformsVisible == visible) {
+        return;
+    }
+    m_audioTabWaveformsVisible = visible;
+    update();
+}
+
 int64_t TimelineWidget::totalFrames() const {
     int64_t lastFrame = 300;
     for (const TimelineClip& clip : m_clips) {
@@ -1363,7 +1371,7 @@ bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds, bool 
             TimelineClip& rightClip = m_clips[clipIndices[i + 1]];
 
             const int64_t leftStartSamples = clipTimelineStartSamples(leftClip);
-            const int64_t leftEndSamples = leftStartSamples + (leftClip.durationFrames * kSamplesPerFrame);
+            const int64_t leftEndSamples = leftStartSamples + clipTimelineDurationSamples(leftClip);
             const int64_t targetRightStartSamples = qMax<int64_t>(0, leftEndSamples - fadeSamples);
             if (clipTimelineStartSamples(rightClip) != targetRightStartSamples) {
                 rightClip.startFrame = targetRightStartSamples / kSamplesPerFrame;
@@ -1435,8 +1443,8 @@ bool TimelineWidget::wouldClipConflictWithTrack(const TimelineClip& clip, int tr
     const bool clipIsAudio = isAudioMediaType(clip.mediaType);
     
     // Calculate clip time range
-    const int64_t clipStart = clip.startFrame;
-    const int64_t clipEnd = clip.startFrame + clip.durationFrames;
+    const int64_t clipStart = clipTimelineStartSamples(clip);
+    const int64_t clipEnd = clipTimelineEndSamples(clip);
     
     for (const TimelineClip& other : m_clips) {
         if (other.id == excludeClipId || other.id == clip.id) {
@@ -1452,8 +1460,8 @@ bool TimelineWidget::wouldClipConflictWithTrack(const TimelineClip& clip, int tr
         // Only check for conflicts if they're the same media type
         if ((clipIsVisual && otherIsVisual) || (clipIsAudio && otherIsAudio)) {
             // Check for time overlap
-            const int64_t otherStart = other.startFrame;
-            const int64_t otherEnd = other.startFrame + other.durationFrames;
+            const int64_t otherStart = clipTimelineStartSamples(other);
+            const int64_t otherEnd = clipTimelineEndSamples(other);
             
             // Check if the clips overlap in time
             if (clipEnd > otherStart && clipStart < otherEnd) {

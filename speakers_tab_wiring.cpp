@@ -501,7 +501,7 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
-            QStringLiteral("Mine transcript text with AI and overwrite existing speaker names when stronger candidates are found."));
+            QStringLiteral("Mine transcript text for speaker profile names only; organizations stay in the Organization field."));
         connect(m_widgets.speakerAiFindNamesButton, &QPushButton::clicked, this, [this]() {
             runAiFindSpeakerNames();
         });

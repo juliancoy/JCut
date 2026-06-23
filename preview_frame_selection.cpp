@@ -167,6 +167,9 @@ PreviewFrameSelectionResult selectPreviewFrame(
 
     if (request.usePlaybackPipeline && result.frame.isNull() && cache) {
         const FrameHandle cacheExact = cache->getCachedFrame(request.clipId, request.frameNumber);
+        if (!cacheExact.isNull()) {
+            result.exactFrame = cacheExact;
+        }
         result.frame = !cacheExact.isNull()
                            ? cacheExact
                            : (request.playing

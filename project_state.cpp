@@ -4,6 +4,7 @@
 #include "speakers_table.h"
 #include "clip_serialization.h"
 #include "debug_controls.h"
+#include "editor_shared_transcript.h"
 #include "startup_project_state.h"
 
 #include <QDir>
@@ -26,6 +27,8 @@
 using namespace editor;
 
 namespace {
+
+const QLatin1String kHistoryTranscriptDocumentsKey("__historyTranscriptDocuments");
 
 void stripHeavyClipState(QJsonObject* clipObj)
 {
@@ -105,6 +108,100 @@ TimelineClip clipWithRelativeStatePaths(TimelineClip clip, const QString& rootPa
 }
 
 } // namespace
+
+void EditorWindow::attachTranscriptDocumentsToHistorySnapshot(QJsonObject* snapshot) const
+{
+    if (!snapshot || !m_timeline) {
+        return;
+    }
+
+    QString liveClipFilePath;
+    QString liveTranscriptPath;
+    QJsonDocument liveDocument;
+    const bool hasLiveDocument =
+        m_transcriptTab &&
+        m_transcriptTab->activeTranscriptDocumentSnapshot(
+            &liveClipFilePath, &liveTranscriptPath, &liveDocument) &&
+        liveDocument.isObject();
+    if (hasLiveDocument) {
+        liveTranscriptPath = QFileInfo(liveTranscriptPath).absoluteFilePath();
+    }
+
+    QSet<QString> capturedPaths;
+    QJsonArray documents;
+    for (const TimelineClip& clip : m_timeline->clips()) {
+        if (!(clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
+            continue;
+        }
+        QString transcriptPath = activeTranscriptPathForClip(clip).trimmed();
+        if (transcriptPath.isEmpty()) {
+            continue;
+        }
+        transcriptPath = QFileInfo(transcriptPath).absoluteFilePath();
+        if (capturedPaths.contains(transcriptPath)) {
+            continue;
+        }
+
+        QJsonDocument document;
+        if (hasLiveDocument &&
+            QFileInfo(liveClipFilePath).absoluteFilePath() == QFileInfo(clip.filePath).absoluteFilePath() &&
+            liveTranscriptPath == transcriptPath) {
+            document = liveDocument;
+        } else if (!loadTranscriptJsonCached(transcriptPath, &document)) {
+            continue;
+        }
+        if (!document.isObject()) {
+            continue;
+        }
+
+        documents.push_back(QJsonObject{
+            {QStringLiteral("clipFilePath"), clip.filePath},
+            {QStringLiteral("transcriptPath"), transcriptPath},
+            {QStringLiteral("document"), document.object()},
+        });
+        capturedPaths.insert(transcriptPath);
+    }
+
+    if (!documents.isEmpty()) {
+        (*snapshot)[QString(kHistoryTranscriptDocumentsKey)] = documents;
+    }
+}
+
+void EditorWindow::restoreTranscriptDocumentsFromHistorySnapshot(const QJsonObject& snapshot)
+{
+    const QJsonArray documents = snapshot.value(QString(kHistoryTranscriptDocumentsKey)).toArray();
+    if (documents.isEmpty()) {
+        return;
+    }
+
+    for (const QJsonValue& value : documents) {
+        const QJsonObject entry = value.toObject();
+        const QString clipFilePath = entry.value(QStringLiteral("clipFilePath")).toString();
+        const QString transcriptPath =
+            QFileInfo(entry.value(QStringLiteral("transcriptPath")).toString()).absoluteFilePath();
+        const QJsonObject documentObject = entry.value(QStringLiteral("document")).toObject();
+        if (transcriptPath.trimmed().isEmpty() || documentObject.isEmpty()) {
+            continue;
+        }
+
+        QDir().mkpath(QFileInfo(transcriptPath).absolutePath());
+        const QByteArray payload =
+            jcut::jsonio::serializeIndented(QJsonDocument(documentObject).object());
+        QSaveFile file(transcriptPath);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+            file.write(payload) == payload.size() &&
+            file.commit()) {
+            invalidateTranscriptJsonCache(transcriptPath);
+            invalidateTranscriptSpeakerProfileCache(transcriptPath);
+            if (m_transcriptTab) {
+                m_transcriptTab->restoreTranscriptDocumentSnapshot(
+                    clipFilePath, transcriptPath, QJsonDocument(documentObject));
+            }
+        } else {
+            file.cancelWriting();
+        }
+    }
+}
 
 void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
 {
@@ -248,6 +345,44 @@ void EditorWindow::refreshProjectsList()
         m_projectManager->loadProjectsFromFolders();
     }
     m_projectsTab->refresh();
+}
+
+void EditorWindow::changeMediaRoot(const QString &path)
+{
+    if (!m_projectManager || path.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QString previousRoot = m_projectManager->rootDirPath();
+    const QString requestedRoot = QFileInfo(path).absoluteFilePath();
+    if (QDir(previousRoot).absolutePath() == QDir(requestedRoot).absolutePath()) {
+        if (m_explorerPane) {
+            m_explorerPane->setInitialRootPath(previousRoot);
+        }
+        refreshProjectsList();
+        return;
+    }
+
+    stopPlaybackWithReason(QStringLiteral("media_root_changed"));
+    saveStateNow();
+    saveHistoryNow();
+    m_stateSaveTimer.stop();
+    m_historySaveTimer.stop();
+    m_pendingSaveAfterLoad = false;
+    m_pendingSaveAfterPlayback = false;
+
+    if (!m_projectManager->changeRootDirPath(path)) {
+        refreshProjectsList();
+        return;
+    }
+
+    m_lastSavedState.clear();
+    m_historyEntries = QJsonArray();
+    m_historyIndex = -1;
+
+    loadState();
+    refreshProjectsList();
+    refreshCurrentInspectorTab();
 }
 
 void EditorWindow::switchToProject(const QString &projectId)
@@ -434,6 +569,26 @@ QJsonObject EditorWindow::buildStateJson() const
         m_backgroundFillEffectCombo
             ? m_backgroundFillEffectCombo->currentData().toString()
             : backgroundFillEffectToString(kDefaultBackgroundFillEffect);
+    root[QStringLiteral("backgroundFillOpacity")] =
+        m_backgroundFillOpacitySpin
+            ? qBound(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)
+            : 1.0;
+    root[QStringLiteral("backgroundFillBrightness")] =
+        m_backgroundFillBrightnessSpin
+            ? qBound(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0)
+            : 0.0;
+    root[QStringLiteral("backgroundFillSaturation")] =
+        m_backgroundFillSaturationSpin
+            ? qBound(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
+            : 1.0;
+    root[QStringLiteral("backgroundFillEdgePixels")] =
+        m_backgroundFillEdgePixelsSlider ? qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512) : 1;
+    root[QStringLiteral("backgroundFillEdgeProgressive")] =
+        m_backgroundFillEdgeProgressiveCheckBox ? m_backgroundFillEdgeProgressiveCheckBox->isChecked() : false;
+    root[QStringLiteral("backgroundFillEdgePower")] =
+        m_backgroundFillEdgePowerSpin
+            ? qBound(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0)
+            : 2.0;
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
@@ -542,6 +697,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
+    root[QStringLiteral("transcriptOffsetMs")] = m_transcriptOffsetMs;
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
     root[QStringLiteral("speechFilterRangeCrossfade")] = m_speechFilterRangeCrossfade;
     root[QStringLiteral("transcriptUnifiedEditColors")] =
@@ -646,6 +802,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("loiaconoAlgorithmMode")] = m_loiaconoSpectrumSettings.algorithmMode;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
+    root[QStringLiteral("audioStereoToMonoEnabled")] = m_previewAudioDynamics.stereoToMonoEnabled;
     root[QStringLiteral("audioSelectiveNormalizeEnabled")] = m_previewAudioDynamics.selectiveNormalizeEnabled;
     root[QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds")] =
         m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds;
@@ -664,6 +821,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("audioCompressorEnabled")] = m_previewAudioDynamics.compressorEnabled;
     root[QStringLiteral("audioCompressorThresholdDb")] = m_previewAudioDynamics.compressorThresholdDb;
     root[QStringLiteral("audioCompressorRatio")] = m_previewAudioDynamics.compressorRatio;
+    root[QStringLiteral("audioSoftClipEnabled")] = m_previewAudioDynamics.softClipEnabled;
     root[QStringLiteral("timelineZoom")] =
         m_timeline ? m_timeline->timelineZoom() : 4.0;
     root[QStringLiteral("timelineVerticalScroll")] =
@@ -732,6 +890,11 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("height")] = track.height;
             trackObj[QStringLiteral("visualMode")] = trackVisualModeToString(track.visualMode);
             trackObj[QStringLiteral("audioEnabled")] = track.audioEnabled;
+            trackObj[QStringLiteral("audioBusId")] = track.audioBusId;
+            trackObj[QStringLiteral("audioGain")] = track.audioGain;
+            trackObj[QStringLiteral("audioMuted")] = track.audioMuted;
+            trackObj[QStringLiteral("audioSolo")] = track.audioSolo;
+            trackObj[QStringLiteral("audioWaveformVisible")] = track.audioWaveformVisible;
             tracks.push_back(trackObj);
         }
     }
@@ -845,6 +1008,7 @@ void EditorWindow::pushHistorySnapshot()
     }
 
     QJsonObject snapshot = buildStateJson();
+    attachTranscriptDocumentsToHistorySnapshot(&snapshot);
     stripHeavyStateSnapshot(&snapshot);
     if (m_historyIndex >= 0 &&
         m_historyIndex < m_historyEntries.size() &&

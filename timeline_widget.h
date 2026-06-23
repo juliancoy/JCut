@@ -103,6 +103,8 @@ public:
     qreal timelineZoom() const { return m_pixelsPerFrame; }
     void setTimelineZoom(qreal pixelsPerFrame);
     void handleSidebarWheelSteps(int steps, Qt::KeyboardModifiers modifiers);
+    void setAudioTabWaveformsVisible(bool visible);
+    bool audioTabWaveformsVisible() const { return m_audioTabWaveformsVisible; }
 
     int verticalScrollOffset() const { return m_verticalScrollOffset; }
     void setVerticalScrollOffset(int offset);
@@ -126,6 +128,7 @@ public:
     std::function<void(const QString&)> deleteProxyRequested;
     std::function<void(const QString&)> generateFaceDetectionsRequested;
     std::function<void(const QString&)> deleteFaceDetectionsRequested;
+    std::function<void(const QString&)> detectRequested;
     std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
     std::function<void()> toolModeChanged;
@@ -165,8 +168,9 @@ private:
     };
 
 
-    static constexpr int kDefaultTrackHeight = 44;
+    static constexpr int kDefaultTrackHeight = 72;
     static constexpr int kMinTrackHeight = 28;
+    static constexpr int kMaxTrackHeight = 480;
     static constexpr int kTrackResizeHandleHalfHeight = 4;
     static constexpr int kTimelineOuterMargin = 16;
     static constexpr int kTimelineTopBarHeight = 52;
@@ -177,7 +181,7 @@ private:
     static constexpr int kTimelineLabelGap = 16;
     static constexpr int kTimelineTrackInnerPadding = 12;
     static constexpr int kTimelineClipVerticalPadding = 6;
-    static constexpr int kTimelineTrackSpacing = 10;
+    static constexpr int kTimelineTrackSpacing = 4;
 
     void sortClips();
     void sortRenderSyncMarkers();
@@ -199,6 +203,7 @@ private:
     int trackDividerAt(const QPoint& pos) const;
 
     int64_t frameFromX(qreal x) const;
+    int64_t sampleFromX(qreal x) const;
     int xFromFrame(int64_t frame) const;
     int widthForFrames(int64_t frames) const;
     QString timecodeForFrame(int64_t frame) const;
@@ -275,13 +280,18 @@ private:
     int m_draggedClipIndex = -1;
     ClipDragMode m_dragMode = ClipDragMode::None;
     int64_t m_dragOriginalStartFrame = 0;
+    int64_t m_dragOriginalStartSample = 0;
     int64_t m_dragOriginalDurationFrames = 0;
+    int64_t m_dragOriginalDurationSamples = 0;
     int64_t m_dragOriginalSourceInFrame = 0;
+    int64_t m_dragOriginalSourceInSamples = 0;
     QVector<TimelineClip::TransformKeyframe> m_dragOriginalTransformKeyframes;
     QVector<TimelineClip::TitleKeyframe> m_dragOriginalTitleKeyframes;
     int64_t m_dragOffsetFrames = 0;
+    int64_t m_dragOffsetSamples = 0;
     QSet<QString> m_dragMoveClipIds;
     QHash<QString, int64_t> m_dragMoveOriginalStartFrames;
+    QHash<QString, int64_t> m_dragMoveOriginalStartSamples;
     bool m_dragLockedTrackOnly = false;
     int m_draggedTrackIndex = -1;
     int m_trackDropIndex = -1;
@@ -303,4 +313,5 @@ private:
     bool m_exportRangeMouseGrabbed = false;
     ToolMode m_toolMode = ToolMode::Select;
     int64_t m_razorHoverFrame = -1;
+    bool m_audioTabWaveformsVisible = false;
 };

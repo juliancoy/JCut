@@ -1,10 +1,11 @@
 #include "audio_preview_support.h"
 
+#include "editor_shared_timing.h"
 #include "waveform_service.h"
 
 QString audioPreviewDynamicsCacheKey(const PreviewSurface::AudioDynamicsSettings& settings)
 {
-    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15")
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16")
         .arg(settings.amplifyEnabled ? 1 : 0)
         .arg(settings.amplifyDb, 0, 'f', 2)
         .arg(settings.normalizeEnabled ? 1 : 0)
@@ -21,13 +22,13 @@ QString audioPreviewDynamicsCacheKey(const PreviewSurface::AudioDynamicsSettings
         .arg(QStringLiteral("%1|%2")
                  .arg(settings.compressorThresholdDb, 0, 'f', 2)
                  .arg(settings.compressorRatio, 0, 'f', 2))
+        .arg(settings.softClipEnabled ? 1 : 0)
         .arg(settings.waveformPreviewPostProcessing ? 1 : 0);
 }
 
 int64_t resolvedAudioPreviewClipSamples(const TimelineClip& clip)
 {
-    const int64_t fallbackSamples =
-        qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const int64_t fallbackSamples = clipTimelineDurationSamples(clip);
 
     QString mediaPath = playbackAudioPathForClip(clip);
     if (mediaPath.isEmpty()) {
@@ -117,7 +118,7 @@ bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state,
     const TimelineClip* audioClip = nullptr;
     for (const TimelineClip& clip : state->clips) {
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const int64_t clipEndSample = clipTimelineEndSamples(clip);
         const bool withinClip =
             state->currentSample >= clipStartSample && state->currentSample < clipEndSample;
         const bool includeForAudioView =
@@ -209,7 +210,8 @@ bool queryAudioWaveformEnvelopeForClip(const TimelineClip& clip,
         static_cast<float>(settings.limiterThresholdDb),
         settings.compressorEnabled,
         static_cast<float>(settings.compressorThresholdDb),
-        static_cast<float>(settings.compressorRatio)};
+        static_cast<float>(settings.compressorRatio),
+        settings.softClipEnabled};
 
     QVector<float> minValues;
     QVector<float> maxValues;

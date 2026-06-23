@@ -47,6 +47,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("audioSourcePath")] = clip.audioSourcePath;
         obj[QStringLiteral("audioSourceOriginalPath")] = clip.audioSourceOriginalPath;
         obj[QStringLiteral("audioSourceStatus")] = clip.audioSourceStatus;
+        obj[QStringLiteral("audioStreamIndex")] = clip.audioStreamIndex;
+        obj[QStringLiteral("audioBusId")] = clip.audioBusId;
+        obj[QStringLiteral("audioGain")] = clip.audioGain;
+        obj[QStringLiteral("audioPan")] = clip.audioPan;
+        obj[QStringLiteral("audioSolo")] = clip.audioSolo;
+        obj[QStringLiteral("audioLinkedToVideo")] = clip.audioLinkedToVideo;
         obj[QStringLiteral("audioSourceLastVerifiedMs")] = static_cast<qint64>(clip.audioSourceLastVerifiedMs);
         obj[QStringLiteral("sourceFps")] = clip.sourceFps;
         obj[QStringLiteral("sourceDurationFrames")] = static_cast<qint64>(clip.sourceDurationFrames);
@@ -59,6 +65,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("startFrame")] = static_cast<qint64>(clip.startFrame);
         obj[QStringLiteral("startSubframeSamples")] = static_cast<qint64>(clip.startSubframeSamples);
         obj[QStringLiteral("durationFrames")] = static_cast<qint64>(clip.durationFrames);
+        obj[QStringLiteral("durationSubframeSamples")] = static_cast<qint64>(clip.durationSubframeSamples);
         obj[QStringLiteral("trackIndex")] = clip.trackIndex;
         obj[QStringLiteral("playbackRate")] = clip.playbackRate;
         obj[QStringLiteral("videoEnabled")] = clip.videoEnabled;
@@ -254,8 +261,24 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("transcriptOverlay")] = transcriptOverlayObj;
         obj[QStringLiteral("fadeSamples")] = clip.fadeSamples;
         obj[QStringLiteral("locked")] = clip.locked;
+        obj[QStringLiteral("maskEnabled")] = clip.maskEnabled;
+        obj[QStringLiteral("maskFramesDir")] = clip.maskFramesDir;
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
+        obj[QStringLiteral("maskDilate")] = clip.maskDilate;
+        obj[QStringLiteral("maskErode")] = clip.maskErode;
+        obj[QStringLiteral("maskBlur")] = clip.maskBlur;
+        obj[QStringLiteral("maskInvert")] = clip.maskInvert;
+        obj[QStringLiteral("maskOpacity")] = clip.maskOpacity;
+        obj[QStringLiteral("maskGradeEnabled")] = clip.maskGradeEnabled;
+        obj[QStringLiteral("maskGradeBrightness")] = clip.maskGradeBrightness;
+        obj[QStringLiteral("maskGradeContrast")] = clip.maskGradeContrast;
+        obj[QStringLiteral("maskGradeSaturation")] = clip.maskGradeSaturation;
+        obj[QStringLiteral("maskDropShadowEnabled")] = clip.maskDropShadowEnabled;
+        obj[QStringLiteral("maskDropShadowRadius")] = clip.maskDropShadowRadius;
+        obj[QStringLiteral("maskDropShadowOffsetX")] = clip.maskDropShadowOffsetX;
+        obj[QStringLiteral("maskDropShadowOffsetY")] = clip.maskDropShadowOffsetY;
+        obj[QStringLiteral("maskDropShadowOpacity")] = clip.maskDropShadowOpacity;
         QJsonArray correctionPolygons;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
             if (polygon.pointsNormalized.size() < 3) {
@@ -295,6 +318,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.audioSourcePath = obj.value(QStringLiteral("audioSourcePath")).toString();
         clip.audioSourceOriginalPath = obj.value(QStringLiteral("audioSourceOriginalPath")).toString();
         clip.audioSourceStatus = obj.value(QStringLiteral("audioSourceStatus")).toString(QStringLiteral("unknown"));
+        clip.audioStreamIndex = obj.value(QStringLiteral("audioStreamIndex")).toInt(-1);
+        clip.audioBusId = obj.value(QStringLiteral("audioBusId")).toString();
+        clip.audioGain = qBound<qreal>(0.0, obj.value(QStringLiteral("audioGain")).toDouble(1.0), 4.0);
+        clip.audioPan = qBound<qreal>(-1.0, obj.value(QStringLiteral("audioPan")).toDouble(0.0), 1.0);
+        clip.audioSolo = obj.value(QStringLiteral("audioSolo")).toBool(false);
+        clip.audioLinkedToVideo = obj.value(QStringLiteral("audioLinkedToVideo")).toBool(true);
         clip.audioSourceLastVerifiedMs =
             obj.value(QStringLiteral("audioSourceLastVerifiedMs")).toVariant().toLongLong();
         clip.sourceFps = obj.value(QStringLiteral("sourceFps"))
@@ -308,6 +337,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.startFrame = obj.value(QStringLiteral("startFrame")).toVariant().toLongLong();
         clip.startSubframeSamples = obj.value(QStringLiteral("startSubframeSamples")).toVariant().toLongLong();
         clip.durationFrames = obj.value(QStringLiteral("durationFrames")).toVariant().toLongLong();
+        clip.durationSubframeSamples = obj.value(QStringLiteral("durationSubframeSamples")).toVariant().toLongLong();
         clip.trackIndex = obj.value(QStringLiteral("trackIndex")).toInt(-1);
         clip.playbackRate = obj.value(QStringLiteral("playbackRate")).toDouble(1.0);
         clip.videoEnabled = obj.value(QStringLiteral("videoEnabled")).toBool(true);
@@ -637,8 +667,24 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.normalizeReadableBounds();
         clip.fadeSamples = qMax(0, obj.value(QStringLiteral("fadeSamples")).toInt(250));
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
+        clip.maskEnabled = obj.value(QStringLiteral("maskEnabled")).toBool(false);
+        clip.maskFramesDir = obj.value(QStringLiteral("maskFramesDir")).toString().trimmed();
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
         clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
+        clip.maskDilate = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDilate")).toDouble(0.0), 200.0);
+        clip.maskErode = qBound<qreal>(0.0, obj.value(QStringLiteral("maskErode")).toDouble(0.0), 200.0);
+        clip.maskBlur = qBound<qreal>(0.0, obj.value(QStringLiteral("maskBlur")).toDouble(0.0), 200.0);
+        clip.maskInvert = obj.value(QStringLiteral("maskInvert")).toBool(false);
+        clip.maskOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskOpacity")).toDouble(1.0), 1.0);
+        clip.maskGradeEnabled = obj.value(QStringLiteral("maskGradeEnabled")).toBool(false);
+        clip.maskGradeBrightness = qBound<qreal>(-1.0, obj.value(QStringLiteral("maskGradeBrightness")).toDouble(0.0), 1.0);
+        clip.maskGradeContrast = qBound<qreal>(0.0, obj.value(QStringLiteral("maskGradeContrast")).toDouble(1.0), 4.0);
+        clip.maskGradeSaturation = qBound<qreal>(0.0, obj.value(QStringLiteral("maskGradeSaturation")).toDouble(1.0), 4.0);
+        clip.maskDropShadowEnabled = obj.value(QStringLiteral("maskDropShadowEnabled")).toBool(false);
+        clip.maskDropShadowRadius = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDropShadowRadius")).toDouble(12.0), 200.0);
+        clip.maskDropShadowOffsetX = qBound<qreal>(-500.0, obj.value(QStringLiteral("maskDropShadowOffsetX")).toDouble(0.0), 500.0);
+        clip.maskDropShadowOffsetY = qBound<qreal>(-500.0, obj.value(QStringLiteral("maskDropShadowOffsetY")).toDouble(4.0), 500.0);
+        clip.maskDropShadowOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDropShadowOpacity")).toDouble(0.45), 1.0);
         const QJsonArray correctionPolygons = obj.value(QStringLiteral("correctionPolygons")).toArray();
         for (const QJsonValue& polygonValue : correctionPolygons) {
             if (!polygonValue.isObject()) {

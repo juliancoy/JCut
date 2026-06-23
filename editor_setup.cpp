@@ -17,6 +17,8 @@
 #include <QWidget>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <cmath>
+
 using namespace editor;
 
 namespace {
@@ -84,12 +86,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     });
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
     connect(m_explorerPane, &ExplorerPane::folderRootChosen, this, [this](const QString& path) {
-        // Persist only an explicit user-picked media root.
-        if (m_projectManager) {
-            m_projectManager->setRootDirPath(path);
-            m_projectManager->loadProjectsFromFolders();
-        }
-        refreshProjectsList();
+        changeMediaRoot(path);
     });
     connect(m_explorerPane, &ExplorerPane::stateChanged, this, [this]() {
         scheduleSaveState();
@@ -421,7 +418,20 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
                 {QStringLiteral("startup_readiness"), startupReadinessSnapshot()}};
         },
         [this]() {
-            return buildStateJson();
+            QJsonObject state = buildStateJson();
+            QJsonObject transcriptDebug;
+            transcriptDebug[QStringLiteral("timeline_current_frame")] =
+                static_cast<qint64>(m_timeline ? m_timeline->currentFrame() : 0);
+            transcriptDebug[QStringLiteral("transport_timeline_sample")] =
+                static_cast<qint64>(m_transportTimelineSample);
+            transcriptDebug[QStringLiteral("transport_timeline_frame")] =
+                static_cast<qint64>(std::floor(samplesToFramePosition(m_transportTimelineSample)));
+            transcriptDebug[QStringLiteral("playback_active")] = m_playbackTimer.isActive();
+            if (m_transcriptTab) {
+                transcriptDebug[QStringLiteral("tab")] = m_transcriptTab->debugSnapshot();
+            }
+            state[QStringLiteral("transcriptDebug")] = transcriptDebug;
+            return state;
         },
         [this]() {
             const QString projectId = m_projectManager

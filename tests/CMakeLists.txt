@@ -19,10 +19,12 @@ set(EDITOR_TEST_TARGETS
     test_audio_time_stretch
     test_audio_time_stretch_cache
     test_audio_mix_policy
+    test_processing_job_manifest
     test_transform_skip_aware_timing
     test_preview_geometry
     test_waveform_service
     test_shader_grading_logic
+    test_media_color_passthrough
     test_grading_keyframes
     test_editor_runtime
     test_facedetections_time_mapping
@@ -49,7 +51,7 @@ set(EDITOR_TEST_TARGETS
 # gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
 function(_jcut_assign_tier_labels target_name)
     set(_labels "logic")
-    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
         list(APPEND _labels "decode")
     endif()
     if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
@@ -107,6 +109,7 @@ target_sources(test_standard_preview_presentation_pipeline
 target_sources(test_vulkan_text_generation
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../transcript_overlay_cache_key.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
 )
@@ -153,6 +156,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
 )
 target_link_libraries(test_vulkan_subtitle_render
@@ -286,6 +290,16 @@ add_test(
 set_tests_properties(test_imgui_binary_no_qt PROPERTIES
     LABELS "imgui;linkage;logic"
     SKIP_RETURN_CODE 77
+)
+
+add_test(
+    NAME test_sam3_resume
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_sam3_resume.py
+)
+set_tests_properties(test_sam3_resume PROPERTIES
+    LABELS "logic;sam3"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/..:$ENV{PYTHONPATH}"
 )
 
 add_executable(test_imgui_standalone_render

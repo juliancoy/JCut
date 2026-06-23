@@ -622,6 +622,7 @@ void VulkanAudioTab::processWaveform(VkCommandBuffer commandBuffer,
     push.flags[3] = settings.peakReductionEnabled ? 1.0f : 0.0f;
     push.bins[0] = static_cast<float>(safeBins);
     push.bins[1] = settings.compressorEnabled ? 1.0f : 0.0f;
+    push.bins[2] = settings.softClipEnabled ? 1.0f : 0.0f;
 
     barrierHostToCompute(commandBuffer, m_rawWaveformBuffer, kWaveformBufferBytes);
     m_funcs->vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_waveformComputePipeline);

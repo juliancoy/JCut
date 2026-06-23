@@ -52,6 +52,8 @@ public:
         bool compressorEnabled = false;
         qreal compressorThresholdDb = -18.0;
         qreal compressorRatio = 3.0;
+        bool softClipEnabled = false;
+        bool stereoToMonoEnabled = false;
         bool waveformPreviewPostProcessing = true;
     };
 
@@ -102,6 +104,12 @@ public:
     virtual void setSelectedCorrectionPolygon(int polygonIndex) = 0;
     virtual void setBackgroundColor(const QColor& color) = 0;
     virtual void setBackgroundFillEffect(BackgroundFillEffect effect) = 0;
+    virtual void setBackgroundFillOpacity(qreal opacity) = 0;
+    virtual void setBackgroundFillBrightness(qreal brightness) = 0;
+    virtual void setBackgroundFillSaturation(qreal saturation) = 0;
+    virtual void setBackgroundFillEdgePixels(int pixels) = 0;
+    virtual void setBackgroundFillEdgeProgressive(bool progressive) = 0;
+    virtual void setBackgroundFillEdgePower(qreal power) = 0;
     virtual void setPreviewZoom(qreal zoom) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
@@ -120,7 +128,7 @@ public:
     virtual void setCurrentSpeakerBorderWidth(qreal width) = 0;
     virtual void setCurrentSpeakerShadowEnabled(bool enabled) = 0;
     virtual void setCurrentSpeakerShadowColor(const QColor& color) = 0;
-    virtual void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) = 0;
+    virtual void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs, int offsetMs = 0) = 0;
     virtual void setPlaybackStatusOverlayText(const QString& text) = 0;
     virtual void setPlaybackStatusOverlayProgress(qreal progress) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
