@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QCheckBox>
+#include <QColor>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
@@ -38,6 +39,9 @@ public:
         QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
         QSpinBox* transcriptBackgroundOpacitySpin = nullptr;
         QSpinBox* transcriptBackgroundCornerRadiusSpin = nullptr;
+        QPushButton* transcriptTextColorButton = nullptr;
+        QPushButton* transcriptBackgroundColorButton = nullptr;
+        QPushButton* transcriptHighlightColorButton = nullptr;
         QCheckBox* transcriptShadowEnabledCheckBox = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;
@@ -123,6 +127,7 @@ private slots:
     void onTranscriptSelectionChanged();
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
+    void onOverlayColorButtonClicked();
     void onCenterHorizontalClicked();
     void onCenterVerticalClicked();
     void onPrependMsChanged(int value);
@@ -146,6 +151,9 @@ private:
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& originalPath);
     void requestRefresh(int delayMs = 35);
     void setTranscriptPlacementMode(bool manual);
+    void setOverlayColorButtonSwatch(QPushButton* button, const QColor& color) const;
+    QColor overlayColorForButton(const QPushButton* button, const TimelineClip& clip) const;
+    void setOverlayColorForButton(const QPushButton* button, const QColor& color, TimelineClip& clip) const;
     struct TranscriptRow
     {
         enum EditFlag

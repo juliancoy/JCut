@@ -279,8 +279,9 @@ def run_image(
     scale_width: int | None,
     centers_path: Path | None,
     produce_output_video: bool,
+    compile_model: bool,
 ):
-    model = build_sam3_image_model()
+    model = build_sam3_image_model(compile=compile_model)
     processor = Sam3Processor(model)
 
     image = Image.open(input_path).convert("RGB")
@@ -327,8 +328,9 @@ def run_video(
     centers_method: str,
     smooth_alpha: float | None,
     add_center: bool,
+    compile_model: bool,
 ):
-    predictor = build_sam3_video_predictor()
+    predictor = build_sam3_video_predictor(compile=compile_model)
     source_path = input_path
     temp_scaled = None
     if scale_width is not None and scale_width > 0:
@@ -643,6 +645,7 @@ def run_video_as_frames(
     use_tqdm: bool = True,
     job_dir: Path | None = None,
     binary_mask_dir: Path | None = None,
+    compile_model: bool = False,
 ):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     stem = base_stem or input_path.stem
@@ -658,7 +661,7 @@ def run_video_as_frames(
     source_ext = intermediate_frames_format
     output_ext = frames_format
 
-    model = build_sam3_image_model()
+    model = build_sam3_image_model(compile=compile_model)
     processor = Sam3Processor(model)
     text_outputs_cache = None
     if encode_workers < 1:
@@ -1106,6 +1109,7 @@ def run_video_chunked(
     centers_method: str = "bbox",
     smooth_alpha: float | None = None,
     add_center: bool = False,
+    compile_model: bool = False,
 ):
     if chunk_seconds <= 0:
         raise ValueError("--chunk-seconds must be > 0")
@@ -1300,6 +1304,8 @@ def run_video_chunked(
             cmd.append("--add-center")
         if produce_output_video:
             cmd.append("--produce-output-video")
+        if compile_model:
+            cmd.append("--compile-model")
         subprocess.check_call(cmd)
         out_files.append(out_file)
 
@@ -1376,6 +1382,14 @@ def main():
         choices=["sam3", "sam2", "mobilesam"],
         default="sam3",
         help="Segmentation backend to use (default: sam3).",
+    )
+    parser.add_argument(
+        "--compile-model",
+        action="store_true",
+        help=(
+            "Enable SAM3 torch.compile support. This can improve long runs after "
+            "warmup, but may add startup latency and extra compile cache/memory use."
+        ),
     )
     parser.add_argument(
         "--sam2-checkpoint",
@@ -1585,6 +1599,7 @@ def main():
             args.scale_width,
             centers_path,
             args.produce_output_video,
+            args.compile_model,
         )
         print(f"[image] {input_path} -> {out_path}")
     elif is_video(input_path):
@@ -1627,6 +1642,7 @@ def main():
                 use_tqdm=args.tqdm,
                 job_dir=job_dir,
                 binary_mask_dir=binary_mask_dir,
+                compile_model=args.compile_model,
             )
         elif args.chunk_seconds is not None and not args.child_run:
             chunks_dir = Path(args.chunks_dir) if args.chunks_dir else None
@@ -1643,6 +1659,7 @@ def main():
                 centers_method=args.centers_method,
                 smooth_alpha=args.smooth_alpha,
                 add_center=args.add_center,
+                compile_model=args.compile_model,
             )
         else:
             run_video(
@@ -1656,6 +1673,7 @@ def main():
                 args.centers_method,
                 args.smooth_alpha,
                 args.add_center,
+                args.compile_model,
             )
         print(f"[video] {input_path} -> {out_path}")
     else:

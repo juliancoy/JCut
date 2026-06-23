@@ -900,14 +900,14 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
     connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptDocumentLoadResult>::finished, this, [this]() {
         const TranscriptDocumentLoadResult result = m_transcriptLoadWatcher.result();
         if (!result.ok) {
-            if (m_transcriptSession.matches(result.clipFilePath, result.transcriptPath) &&
-                m_widgets.speakersInspectorDetailsLabel) {
-                m_widgets.speakersInspectorDetailsLabel->setText(
-                    result.error.isEmpty() ? QStringLiteral("Unable to load transcript JSON file.") : result.error);
+            if (m_transcriptSession.matches(result.clipFilePath, result.transcriptPath)) {
+                const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+                showNoTranscriptState(
+                    clip,
+                    result.error.isEmpty()
+                        ? QStringLiteral("No transcript is attached to this media.")
+                        : QStringLiteral("%1 Path: %2").arg(result.error, result.transcriptPath));
             }
-            m_updating = false;
-            updateSelectedSpeakerPanel();
-            updateSpeakerTrackingStatusLabel();
             return;
         }
         if (!m_transcriptSession.matches(result.clipFilePath, result.transcriptPath)) {
@@ -999,6 +999,59 @@ void SpeakersTab::queueLoadedTranscriptDocumentSave()
         });
 }
 
+void SpeakersTab::setTableMessage(QTableWidget* table, int columnCount, const QString& message)
+{
+    if (!table) {
+        return;
+    }
+    QSignalBlocker blocker(table);
+    table->clearSpans();
+    table->clearContents();
+    table->setRowCount(1);
+    table->setColumnCount(columnCount);
+    auto* item = new QTableWidgetItem(message);
+    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    item->setTextAlignment(Qt::AlignCenter);
+    table->setItem(0, 0, item);
+    if (columnCount > 1) {
+        table->setSpan(0, 0, 1, columnCount);
+    }
+    table->setEnabled(false);
+}
+
+void SpeakersTab::showNoTranscriptState(const TimelineClip* clip, const QString& detail)
+{
+    m_transcriptSession.clear();
+    m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
+    m_lastSpeakerSectionsTableRowCount = 0;
+    m_lastSpeakerSectionsTableRefreshSkippedReason = QStringLiteral("no_transcript");
+    clearFaceDetectionsDerivedCaches();
+    m_faceStreamPanelRefreshSignature.clear();
+
+    const QString label = clip ? clip->label.trimmed() : QString();
+    const QString displayLabel = label.isEmpty() ? QStringLiteral("selected media") : label;
+    const QString message = detail.trimmed().isEmpty()
+        ? QStringLiteral("No transcript is attached to %1.").arg(displayLabel)
+        : detail.trimmed();
+
+    if (m_widgets.speakersInspectorClipLabel) {
+        m_widgets.speakersInspectorClipLabel->setText(
+            clip ? QStringLiteral("Speakers\n%1").arg(displayLabel)
+                 : QStringLiteral("No media selected"));
+    }
+    if (m_widgets.speakersInspectorDetailsLabel) {
+        m_widgets.speakersInspectorDetailsLabel->setText(message);
+    }
+
+    setTableMessage(m_widgets.speakersTable, 7, message);
+    setTableMessage(m_widgets.speakerSectionsTable, SpeakerSectionColumnCount, message);
+    syncSpeakerListMode();
+    m_updating = false;
+    updateSelectedSpeakerPanel();
+    updateSpeakerTrackingStatusLabel();
+}
+
 void SpeakersTab::startTranscriptLoadRequest(const QString& clipFilePath,
                                              const QString& transcriptPath,
                                              const QString& preferredSpeakerId)
@@ -1026,12 +1079,12 @@ void SpeakersTab::startTranscriptLoadRequest(const QString& clipFilePath,
                 m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1")
                                                                   .arg(m_deps.getSelectedClip ? m_deps.getSelectedClip()->label : QString()));
             }
-            if (m_widgets.speakersInspectorDetailsLabel) {
-                m_widgets.speakersInspectorDetailsLabel->setText(result.error);
-            }
-            m_updating = false;
-            updateSelectedSpeakerPanel();
-            updateSpeakerTrackingStatusLabel();
+            const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+            showNoTranscriptState(
+                clip,
+                result.error.isEmpty()
+                    ? QStringLiteral("No transcript is attached to this media.")
+                    : QStringLiteral("%1 Path: %2").arg(result.error, transcriptPath));
         }
         return;
     }
@@ -1082,6 +1135,9 @@ void SpeakersTab::refreshTranscriptSpeakerViews(const QString& preferredSpeakerI
     }
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setEnabled(activeCutMutable());
+    }
+    if (m_widgets.speakerSectionsTable) {
+        m_widgets.speakerSectionsTable->setEnabled(activeCutMutable());
     }
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
@@ -1209,24 +1265,24 @@ void SpeakersTab::refresh()
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip)) {
-        m_transcriptSession.clear();
-        m_speakersTableRefreshSignature.clear();
-        m_speakerSectionsTableRefreshSignature.clear();
-        if (m_widgets.speakersInspectorClipLabel) {
-            m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("No clip selected"));
-        }
-        if (m_widgets.speakersInspectorDetailsLabel) {
-            m_widgets.speakersInspectorDetailsLabel->setText(
-                QStringLiteral("Select a clip with a transcript to review speakers, generate continuity tracks, and bind tracks to identities."));
-        }
-        m_updating = false;
-        updateSelectedSpeakerPanel();
-        updateSpeakerTrackingStatusLabel();
+        showNoTranscriptState(
+            clip,
+            clip ? QStringLiteral("No transcript is attached to %1. Select audio or video with a transcript sidecar, or create one in the Transcript tab.")
+                       .arg(clip->label.trimmed().isEmpty() ? QStringLiteral("this media") : clip->label.trimmed())
+                 : QStringLiteral("Select media with an attached transcript to review speakers, sections, and continuity-track assignments."));
         return;
     }
 
     const QString transcriptPath =
         transcriptPathForRuntimeSidecarForClip(*clip, activeTranscriptPathForClip(*clip));
+    if (transcriptPath.trimmed().isEmpty() || !QFileInfo::exists(transcriptPath)) {
+        showNoTranscriptState(
+            clip,
+            QStringLiteral("No transcript is attached to %1. Expected transcript path: %2")
+                .arg(clip->label.trimmed().isEmpty() ? QStringLiteral("this media") : clip->label.trimmed(),
+                     transcriptPath.trimmed().isEmpty() ? QStringLiteral("(none)") : transcriptPath));
+        return;
+    }
     const bool transcriptChanged =
         previousTranscriptPath != transcriptPath || previousClipFilePath != clip->filePath;
     if (transcriptChanged) {
@@ -1783,6 +1839,7 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     flushCurrentRow();
 
     QSignalBlocker blocker(m_widgets.speakerSectionsTable);
+    m_widgets.speakerSectionsTable->clearSpans();
     m_widgets.speakerSectionsTable->clearContents();
     m_widgets.speakerSectionsTable->setRowCount(rows.size());
     std::unique_ptr<editor::DecoderContext> avatarDecoder;
@@ -2684,6 +2741,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
     }
 
     QSignalBlocker blocker(m_widgets.speakersTable);
+    m_widgets.speakersTable->clearSpans();
     m_widgets.speakersTable->clearContents();
     m_widgets.speakersTable->setRowCount(ids.size());
     const bool playbackActive = m_speakerDeps.isPlaybackActive && m_speakerDeps.isPlaybackActive();
@@ -2737,6 +2795,12 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
                                     .arg(id,
                                          organization.isEmpty() ? QStringLiteral("None") : organization,
                                          description.isEmpty() ? QStringLiteral("None") : description));
+        auto* organizationItem = new QTableWidgetItem(
+            organization.isEmpty() ? QStringLiteral("-") : organization);
+        organizationItem->setData(Qt::UserRole, id);
+        organizationItem->setToolTip(QStringLiteral("Speaker ID: %1\nOrganization: %2")
+                                         .arg(id,
+                                              organization.isEmpty() ? QStringLiteral("None") : organization));
         auto* xItem = new QTableWidgetItem(QString::number(x, 'f', 3));
         xItem->setData(Qt::UserRole, id);
         auto* yItem = new QTableWidgetItem(QString::number(y, 'f', 3));
@@ -2776,10 +2840,11 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         });
         m_widgets.speakersTable->setItem(row, 0, avatarItem);
         m_widgets.speakersTable->setItem(row, 1, displayItem);
-        m_widgets.speakersTable->setItem(row, 2, xItem);
-        m_widgets.speakersTable->setItem(row, 3, yItem);
-        m_widgets.speakersTable->setItem(row, 4, assignedTracksItem);
-        m_widgets.speakersTable->setCellWidget(row, 5, addTrackButton);
+        m_widgets.speakersTable->setItem(row, 2, organizationItem);
+        m_widgets.speakersTable->setItem(row, 3, xItem);
+        m_widgets.speakersTable->setItem(row, 4, yItem);
+        m_widgets.speakersTable->setItem(row, 5, assignedTracksItem);
+        m_widgets.speakersTable->setCellWidget(row, 6, addTrackButton);
         m_widgets.speakersTable->setRowHeight(row, 34);
     }
 

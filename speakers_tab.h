@@ -244,6 +244,8 @@ private:
     void startTranscriptLoadRequest(const QString& clipFilePath,
                                     const QString& transcriptPath,
                                     const QString& preferredSpeakerId);
+    void showNoTranscriptState(const TimelineClip* clip, const QString& detail);
+    void setTableMessage(QTableWidget* table, int columnCount, const QString& message);
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
     void refreshTranscriptSpeakerViews(const QString& preferredSpeakerId = QString(),
                                        bool refreshTrackPanels = false);

@@ -6,6 +6,9 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -22,6 +25,7 @@
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTextCursor>
@@ -450,6 +454,59 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     cacheRow->addWidget(browseCacheButton);
     preflightLayout->addLayout(cacheRow);
 
+    auto* performanceForm = new QFormLayout;
+    performanceForm->setContentsMargins(0, 0, 0, 0);
+    performanceForm->setSpacing(8);
+
+    auto* scaleWidthSpin = new QSpinBox(&preflight);
+    scaleWidthSpin->setRange(0, 8192);
+    scaleWidthSpin->setSingleStep(64);
+    scaleWidthSpin->setSpecialValueText(QStringLiteral("Original"));
+    scaleWidthSpin->setValue(settings.value(QStringLiteral("sam3/scaleWidth"), 0).toInt());
+    scaleWidthSpin->setToolTip(
+        QStringLiteral("Resize frames to this width during SAM processing. Lower values are faster but less detailed."));
+    performanceForm->addRow(QStringLiteral("Scale width"), scaleWidthSpin);
+
+    auto* prescaleWidthSpin = new QSpinBox(&preflight);
+    prescaleWidthSpin->setRange(0, 8192);
+    prescaleWidthSpin->setSingleStep(64);
+    prescaleWidthSpin->setSpecialValueText(QStringLiteral("Disabled"));
+    prescaleWidthSpin->setValue(settings.value(QStringLiteral("sam3/prescaleWidth"), 0).toInt());
+    prescaleWidthSpin->setToolTip(
+        QStringLiteral("Pre-encode a resized temporary video before SAM. Useful for long jobs when using a lower working resolution."));
+    performanceForm->addRow(QStringLiteral("Prescale width"), prescaleWidthSpin);
+
+    auto* extractFpsSpin = new QDoubleSpinBox(&preflight);
+    extractFpsSpin->setRange(0.0, 240.0);
+    extractFpsSpin->setDecimals(3);
+    extractFpsSpin->setSingleStep(1.0);
+    extractFpsSpin->setSpecialValueText(QStringLiteral("Source"));
+    extractFpsSpin->setValue(settings.value(QStringLiteral("sam3/extractFps"), 0.0).toDouble());
+    extractFpsSpin->setToolTip(
+        QStringLiteral("Process only this many frames per second in extracted-frame mode. Leave at Source for every frame."));
+    performanceForm->addRow(QStringLiteral("Extract FPS"), extractFpsSpin);
+
+    auto* frameFormatCombo = new QComboBox(&preflight);
+    frameFormatCombo->addItem(QStringLiteral("JPEG"), QStringLiteral("jpg"));
+    frameFormatCombo->addItem(QStringLiteral("PNG"), QStringLiteral("png"));
+    const QString savedFrameFormat =
+        settings.value(QStringLiteral("sam3/intermediateFramesFormat"), QStringLiteral("jpg"))
+            .toString();
+    const int savedFrameFormatIndex = frameFormatCombo->findData(savedFrameFormat);
+    frameFormatCombo->setCurrentIndex(savedFrameFormatIndex >= 0 ? savedFrameFormatIndex : 0);
+    frameFormatCombo->setToolTip(
+        QStringLiteral("Intermediate extracted frame format. JPEG is smaller and usually faster; PNG is lossless but heavier."));
+    performanceForm->addRow(QStringLiteral("Frame format"), frameFormatCombo);
+
+    auto* compileModelCheckBox = new QCheckBox(QStringLiteral("Enable torch.compile"), &preflight);
+    compileModelCheckBox->setChecked(
+        settings.value(QStringLiteral("sam3/compileModel"), false).toBool());
+    compileModelCheckBox->setToolTip(
+        QStringLiteral("Compile supported SAM3 modules. This can improve long runs after warmup but may add startup time and memory use."));
+    performanceForm->addRow(QString(), compileModelCheckBox);
+
+    preflightLayout->addLayout(performanceForm);
+
     auto* binaryMasksCheckBox = new QCheckBox(QStringLiteral("Write binary mask frames"), &preflight);
     binaryMasksCheckBox->setChecked(true);
     binaryMasksCheckBox->setToolTip(
@@ -507,9 +564,11 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     });
     connect(cancelPreflightButton, &QPushButton::clicked, &preflight, &QDialog::reject);
     connect(videoModeCheckBox, &QCheckBox::toggled, &preflight,
-            [binaryMasksCheckBox, maskPreviewFramesCheckBox](bool checked) {
+            [binaryMasksCheckBox, maskPreviewFramesCheckBox, extractFpsSpin, frameFormatCombo](bool checked) {
         binaryMasksCheckBox->setEnabled(!checked);
         maskPreviewFramesCheckBox->setEnabled(!checked);
+        extractFpsSpin->setEnabled(!checked);
+        frameFormatCombo->setEnabled(!checked);
         if (checked) {
             binaryMasksCheckBox->setChecked(false);
             maskPreviewFramesCheckBox->setChecked(false);
@@ -537,6 +596,11 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     const bool writeMaskPreviewFrames = !useVideoMode && maskPreviewFramesCheckBox->isChecked();
     const bool exportCentersJson = centersJsonCheckBox->isChecked();
     const bool runDockerAsRoot = rootModeCheckBox->isChecked();
+    const int scaleWidth = scaleWidthSpin->value();
+    const int prescaleWidth = prescaleWidthSpin->value();
+    const double extractFps = extractFpsSpin->value();
+    const QString intermediateFramesFormat = frameFormatCombo->currentData().toString();
+    const bool compileModel = compileModelCheckBox->isChecked();
     const QString previousModelCachePath =
         QFileInfo(expandUserPath(savedModelCachePath)).absoluteFilePath();
     const QString modelCachePath =
@@ -599,6 +663,35 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         }
     }
     settings.setValue(QStringLiteral("sam3/modelCachePath"), modelCachePath);
+    settings.setValue(QStringLiteral("sam3/scaleWidth"), scaleWidth);
+    settings.setValue(QStringLiteral("sam3/prescaleWidth"), prescaleWidth);
+    settings.setValue(QStringLiteral("sam3/extractFps"), extractFps);
+    settings.setValue(QStringLiteral("sam3/intermediateFramesFormat"), intermediateFramesFormat);
+    settings.setValue(QStringLiteral("sam3/compileModel"), compileModel);
+
+    QStringList samOptimizationArgs;
+    if (scaleWidth > 0) {
+        samOptimizationArgs << QStringLiteral("--scale-width") << QString::number(scaleWidth);
+    }
+    if (prescaleWidth > 0) {
+        samOptimizationArgs << QStringLiteral("--prescale-width") << QString::number(prescaleWidth);
+    }
+    if (!useVideoMode && extractFps > 0.0) {
+        samOptimizationArgs << QStringLiteral("--extract-fps")
+                            << QString::number(extractFps, 'f', 3);
+    }
+    if (!useVideoMode && !intermediateFramesFormat.isEmpty() &&
+        intermediateFramesFormat != QStringLiteral("jpg")) {
+        samOptimizationArgs << QStringLiteral("--intermediate-frames-format")
+                            << intermediateFramesFormat;
+    }
+    if (compileModel) {
+        samOptimizationArgs << QStringLiteral("--compile-model");
+    }
+    QString samOptimizationArgsPreview;
+    for (const QString& arg : samOptimizationArgs) {
+        samOptimizationArgsPreview += QStringLiteral(" ") + shellQuote(arg);
+    }
 
     const QString samJobRoot =
         jcut::jobs::defaultJobRootForInput(inputInfo.absoluteFilePath(),
@@ -635,6 +728,11 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         {QStringLiteral("mask_preview_frames"), writeMaskPreviewFrames},
         {QStringLiteral("centers_json"), exportCentersJson},
         {QStringLiteral("docker_root_mode"), runDockerAsRoot},
+        {QStringLiteral("scale_width"), scaleWidth},
+        {QStringLiteral("prescale_width"), prescaleWidth},
+        {QStringLiteral("extract_fps"), extractFps},
+        {QStringLiteral("intermediate_frames_format"), intermediateFramesFormat},
+        {QStringLiteral("compile_model"), compileModel},
     };
     if (QFileInfo::exists(samManifestPath)) {
         QJsonObject existingManifest;
@@ -752,7 +850,8 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
                                                   exportCentersJson,
                                                   centersPath,
                                                   useVideoMode,
-                                                  runDockerAsRoot]() {
+                                                  runDockerAsRoot,
+                                                  samOptimizationArgsPreview]() {
         const QString videoModeArg = useVideoMode
             ? QStringLiteral(" --video-mode")
             : QString();
@@ -765,7 +864,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         const QString centersArg = exportCentersJson
             ? QStringLiteral(" --centers-json %1").arg(shellQuote(centersPath))
             : QStringLiteral(" --no-centers-json");
-        appendOutput(QStringLiteral("SAM3_MODEL_CACHE=%1\nSAM3_JOB_DIR=%2\nSAM3_DOCKER_RUN_AS_ROOT=%3\njob_manifest=%4\nmode=%5\nbinary_masks=%6\nmask_preview_frames=%7\ncenters_json=%8\n$ ./sam3.sh \"%9\" --prompt %10%11%12%13%14\n")
+        appendOutput(QStringLiteral("SAM3_MODEL_CACHE=%1\nSAM3_JOB_DIR=%2\nSAM3_DOCKER_RUN_AS_ROOT=%3\njob_manifest=%4\nmode=%5\nbinary_masks=%6\nmask_preview_frames=%7\ncenters_json=%8\n$ ./sam3.sh \"%9\" --prompt %10%11%12%13%14%15\n")
                          .arg(QDir::toNativeSeparators(modelCachePath),
                               QDir::toNativeSeparators(samJobRoot),
                               runDockerAsRoot ? QStringLiteral("1") : QStringLiteral("0"),
@@ -779,7 +878,8 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
                               videoModeArg,
                               maskArg,
                               previewArg,
-                              centersArg));
+                              centersArg,
+                              samOptimizationArgsPreview));
     });
     connect(process, &QProcess::errorOccurred, dialog, [appendOutput](QProcess::ProcessError error) {
         appendOutput(QStringLiteral("\n[process error] %1\n").arg(static_cast<int>(error)));
@@ -863,6 +963,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     } else {
         launchCommand << QStringLiteral("--no-centers-json");
     }
+    launchCommand << samOptimizationArgs;
     QJsonObject manifest =
         jcut::jobs::makeManifest(QStringLiteral("sam3"),
                                  samJobRoot,

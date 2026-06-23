@@ -73,6 +73,9 @@ public:
     QCheckBox *transcriptBackgroundVisibleCheckBox() const { return m_transcriptBackgroundVisibleCheckBox; }
     QSpinBox *transcriptBackgroundOpacitySpin() const { return m_transcriptBackgroundOpacitySpin; }
     QSpinBox *transcriptBackgroundCornerRadiusSpin() const { return m_transcriptBackgroundCornerRadiusSpin; }
+    QPushButton *transcriptTextColorButton() const { return m_transcriptTextColorButton; }
+    QPushButton *transcriptBackgroundColorButton() const { return m_transcriptBackgroundColorButton; }
+    QPushButton *transcriptHighlightColorButton() const { return m_transcriptHighlightColorButton; }
     QCheckBox *transcriptShadowEnabledCheckBox() const { return m_transcriptShadowEnabledCheckBox; }
     QCheckBox *transcriptShowSpeakerTitleCheckBox() const { return m_transcriptShowSpeakerTitleCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
@@ -683,6 +686,9 @@ private:
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_transcriptBackgroundOpacitySpin = nullptr;
     QSpinBox *m_transcriptBackgroundCornerRadiusSpin = nullptr;
+    QPushButton *m_transcriptTextColorButton = nullptr;
+    QPushButton *m_transcriptBackgroundColorButton = nullptr;
+    QPushButton *m_transcriptHighlightColorButton = nullptr;
     QCheckBox *m_transcriptShadowEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptShowSpeakerTitleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;

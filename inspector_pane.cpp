@@ -1195,6 +1195,27 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
     m_transcriptBackgroundOpacitySpin = new QSpinBox(settingsContainer);
     m_transcriptBackgroundCornerRadiusSpin = new QSpinBox(settingsContainer);
+    auto makeTranscriptColorButton = [settingsContainer](const QString& color, const QString& tooltip) {
+        auto* button = new QPushButton(color, settingsContainer);
+        button->setMinimumHeight(24);
+        button->setToolTip(tooltip);
+        button->setStyleSheet(
+            QStringLiteral("QPushButton { background: %1; color: %2; "
+                           "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
+                .arg(color,
+                     QColor(color).lightness() > 128 ? QStringLiteral("#000000")
+                                                     : QStringLiteral("#ffffff")));
+        return button;
+    };
+    m_transcriptTextColorButton = makeTranscriptColorButton(
+        QStringLiteral("#ffffff"),
+        QStringLiteral("Set the transcript overlay text color."));
+    m_transcriptBackgroundColorButton = makeTranscriptColorButton(
+        QStringLiteral("#000000"),
+        QStringLiteral("Set the transcript overlay window background color."));
+    m_transcriptHighlightColorButton = makeTranscriptColorButton(
+        QStringLiteral("#fff2a8"),
+        QStringLiteral("Set the active word highlight color."));
     m_transcriptShadowEnabledCheckBox = new QCheckBox(QStringLiteral("Show Shadow"), settingsContainer);
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
@@ -1269,6 +1290,9 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
     form->addRow(QStringLiteral("Placement"), m_transcriptPlacementModeCombo);
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
+    form->addRow(QStringLiteral("Text Color"), m_transcriptTextColorButton);
+    form->addRow(QStringLiteral("Window Color"), m_transcriptBackgroundColorButton);
+    form->addRow(QStringLiteral("Highlight Color"), m_transcriptHighlightColorButton);
     form->addRow(QStringLiteral("Window Opacity"), m_transcriptBackgroundOpacitySpin);
     form->addRow(QStringLiteral("Window Radius"), m_transcriptBackgroundCornerRadiusSpin);
     form->addRow(QStringLiteral("Shadow"), m_transcriptShadowEnabledCheckBox);
@@ -1488,10 +1512,11 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     m_speakersTable = new SpeakersTable(page);
     m_speakersTable->setObjectName(QStringLiteral("speakers.roster"));
-    m_speakersTable->setColumnCount(6);
+    m_speakersTable->setColumnCount(7);
     m_speakersTable->setHorizontalHeaderLabels(
         {QStringLiteral("Avatar"),
          QStringLiteral("Speaker"),
+         QStringLiteral("Organization"),
          QStringLiteral("X"),
          QStringLiteral("Y"),
          QStringLiteral("Assigned Tracks"),
@@ -1515,6 +1540,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     m_speakerHideUnidentifiedCheckBox =
         new QCheckBox(QStringLiteral("Hide Unidentified"), page);
     m_speakerHideUnidentifiedCheckBox->setChecked(false);

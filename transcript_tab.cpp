@@ -8,6 +8,7 @@
 #include <QAbstractItemView>
 #include <QAbstractItemModel>
 #include <QColor>
+#include <QColorDialog>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -754,6 +755,13 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptBackgroundCornerRadiusSpin) {
         connect(m_widgets.transcriptBackgroundCornerRadiusSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    for (QPushButton* button : {m_widgets.transcriptTextColorButton,
+                                m_widgets.transcriptBackgroundColorButton,
+                                m_widgets.transcriptHighlightColorButton}) {
+        if (button) {
+            connect(button, &QPushButton::clicked, this, &TranscriptTab::onOverlayColorButtonClicked);
+        }
     }
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         connect(m_widgets.transcriptShadowEnabledCheckBox, &QCheckBox::toggled,

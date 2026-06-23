@@ -2,7 +2,9 @@
 
 #include "editor_tab_edit_effects.h"
 
+#include <QColorDialog>
 #include <QFont>
+#include <QPushButton>
 #include <QSignalBlocker>
 
 #include <cmath>
@@ -85,6 +87,80 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
 
     applyTabEditEffects(transcriptOverlayEditCallbacks(m_deps),
                         TabEditEffects{.pushHistory = pushHistory});
+}
+
+void TranscriptTab::setOverlayColorButtonSwatch(QPushButton* button, const QColor& color) const
+{
+    if (!button) {
+        return;
+    }
+    const QColor validColor = color.isValid() ? color : QColor(Qt::white);
+    const QColor opaqueColor(validColor.red(), validColor.green(), validColor.blue());
+    button->setText(opaqueColor.name(QColor::HexRgb));
+    button->setStyleSheet(
+        QStringLiteral("QPushButton { background: %1; color: %2; "
+                       "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
+            .arg(opaqueColor.name(QColor::HexRgb),
+                 opaqueColor.lightness() > 128 ? QStringLiteral("#000000")
+                                                : QStringLiteral("#ffffff")));
+}
+
+QColor TranscriptTab::overlayColorForButton(const QPushButton* button, const TimelineClip& clip) const
+{
+    if (button == m_widgets.transcriptTextColorButton) {
+        return clip.transcriptOverlay.textColor;
+    }
+    if (button == m_widgets.transcriptBackgroundColorButton) {
+        return clip.transcriptOverlay.backgroundColor;
+    }
+    if (button == m_widgets.transcriptHighlightColorButton) {
+        return clip.transcriptOverlay.highlightColor;
+    }
+    return QColor();
+}
+
+void TranscriptTab::setOverlayColorForButton(const QPushButton* button, const QColor& color, TimelineClip& clip) const
+{
+    const QColor opaqueColor(color.red(), color.green(), color.blue());
+    if (button == m_widgets.transcriptTextColorButton) {
+        clip.transcriptOverlay.textColor = opaqueColor;
+    } else if (button == m_widgets.transcriptBackgroundColorButton) {
+        clip.transcriptOverlay.backgroundColor = opaqueColor;
+    } else if (button == m_widgets.transcriptHighlightColorButton) {
+        clip.transcriptOverlay.highlightColor = opaqueColor;
+        clip.transcriptOverlay.highlightTextColor =
+            opaqueColor.lightness() > 128 ? QColor(QStringLiteral("#181818"))
+                                          : QColor(QStringLiteral("#ffffff"));
+    }
+}
+
+void TranscriptTab::onOverlayColorButtonClicked()
+{
+    if (m_updating || !m_deps.getSelectedClip || !m_deps.updateClipById) {
+        return;
+    }
+    auto* button = qobject_cast<QPushButton*>(sender());
+    const TimelineClip* selectedClip = m_deps.getSelectedClip();
+    if (!button || !selectedClip) {
+        return;
+    }
+    const QColor current = overlayColorForButton(button, *selectedClip);
+    const QColor chosen = QColorDialog::getColor(
+        current.isValid() ? current : QColor(Qt::white),
+        nullptr,
+        button->toolTip().isEmpty() ? QStringLiteral("Transcript Overlay Color") : button->toolTip());
+    if (!chosen.isValid()) {
+        return;
+    }
+    const bool updated = m_deps.updateClipById(selectedClip->id, [this, button, chosen](TimelineClip& clip) {
+        setOverlayColorForButton(button, chosen, clip);
+    });
+    if (!updated) {
+        return;
+    }
+    setOverlayColorButtonSwatch(button, chosen);
+    applyTabEditEffects(transcriptOverlayEditCallbacks(m_deps),
+                        TabEditEffects{.pushHistory = true});
 }
 
 void TranscriptTab::onOverlaySettingChanged()
@@ -181,6 +257,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
         m_widgets.transcriptBackgroundCornerRadiusSpin->setValue(
             static_cast<int>(std::round(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0))));
     }
+    setOverlayColorButtonSwatch(m_widgets.transcriptTextColorButton, clip.transcriptOverlay.textColor);
+    setOverlayColorButtonSwatch(m_widgets.transcriptBackgroundColorButton, clip.transcriptOverlay.backgroundColor);
+    setOverlayColorButtonSwatch(m_widgets.transcriptHighlightColorButton, clip.transcriptOverlay.highlightColor);
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         m_widgets.transcriptShadowEnabledCheckBox->setChecked(clip.transcriptOverlay.showShadow);
     }

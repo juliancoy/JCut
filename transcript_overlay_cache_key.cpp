@@ -14,6 +14,9 @@ QString transcriptOverlayStyleCacheMaterial(const TimelineClip& clip)
         QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.italic ? 1 : 0) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(overlay.textColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(overlay.backgroundColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(overlay.highlightColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(overlay.highlightTextColor.rgba())) + QLatin1Char('|') +
         QString::number(overlay.useManualPlacement ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.autoScroll ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.maxLines) + QLatin1Char('|') +

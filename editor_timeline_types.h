@@ -135,6 +135,9 @@ struct TimelineClip {
         bool bold = true;
         bool italic = false;
         QColor textColor = QColor(QStringLiteral("#ffffff"));
+        QColor backgroundColor = QColor(QStringLiteral("#000000"));
+        QColor highlightColor = QColor(QStringLiteral("#fff2a8"));
+        QColor highlightTextColor = QColor(QStringLiteral("#181818"));
 
         void normalizeReadableBounds() {
             boxWidth = qMax<qreal>(kMinReadableBoxWidth, boxWidth);

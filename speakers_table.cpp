@@ -35,13 +35,26 @@ QJsonArray SpeakersTable::hiddenColumnsState() const
 
 void SpeakersTable::applyHiddenColumns(const QJsonArray& hiddenColumns)
 {
-    const int limit = qMin(columnCount(), hiddenColumns.size());
+    QJsonArray migratedHiddenColumns = hiddenColumns;
+    if (columnCount() == 7 && hiddenColumns.size() == 6) {
+        migratedHiddenColumns = QJsonArray{
+            hiddenColumns.at(0),
+            hiddenColumns.at(1),
+            false,
+            hiddenColumns.at(2),
+            hiddenColumns.at(3),
+            hiddenColumns.at(4),
+            hiddenColumns.at(5),
+        };
+    }
+
+    const int limit = qMin(columnCount(), migratedHiddenColumns.size());
     for (int column = 0; column < limit; ++column) {
         if (isAlwaysVisibleColumn(column)) {
             setColumnHidden(column, false);
             continue;
         }
-        setColumnHidden(column, hiddenColumns.at(column).toBool(false));
+        setColumnHidden(column, migratedHiddenColumns.at(column).toBool(false));
     }
 }
 

@@ -134,6 +134,10 @@ private:
         QColor color;
         qreal radius = 0.0;
     };
+    struct TranscriptHighlight {
+        QRectF rect;
+        QColor color;
+    };
     struct Atlas {
         QString key;
         render_detail::OverlayImage image;
@@ -154,7 +158,7 @@ private:
         Atlas atlas;
         QVector<LaidOutGlyph> glyphs;
         QVector<TranscriptBackground> backgrounds;
-        QVector<QRectF> highlights;
+        QVector<TranscriptHighlight> highlights;
     };
 
     bool buildAtlasAndLayout(const QSize& outputSize,
@@ -170,7 +174,7 @@ private:
                                        Atlas* atlas,
                                        QVector<LaidOutGlyph>* glyphs,
                                        QVector<TranscriptBackground>* backgrounds,
-                                       QVector<QRectF>* highlights) const;
+                                       QVector<TranscriptHighlight>* highlights) const;
     bool buildTranscriptAtlas(const TimelineClip& clip,
                               const TranscriptOverlayLayout& layout,
                               const QString& speakerTitle,
@@ -183,7 +187,7 @@ private:
                                const Atlas& atlas,
                                QVector<LaidOutGlyph>* glyphs,
                                QVector<TranscriptBackground>* backgrounds,
-                               QVector<QRectF>* highlights) const;
+                               QVector<TranscriptHighlight>* highlights) const;
     const SpeakerLayoutCache* speakerLabelLayout(const QSize& outputSize,
                                                  const render_detail::SpeakerLabelOverlaySpec& spec) const;
     const TranscriptLayoutCache* transcriptOverlayLayout(const QSize& outputSize,

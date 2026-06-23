@@ -615,7 +615,7 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting
     Atlas atlas;
     QVector<LaidOutGlyph> glyphs;
     QVector<TranscriptBackground> backgrounds;
-    QVector<QRectF> highlights;
+    QVector<TranscriptHighlight> highlights;
     VulkanTextLayoutDebug debug;
     debug.valid = buildTranscriptAtlasAndLayout(
         outputSize, clip, layout, outputRect, speakerTitle, &atlas, &glyphs, &backgrounds, &highlights);
@@ -630,7 +630,10 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting
     for (const TranscriptBackground& background : backgrounds) {
         debug.backgrounds.push_back(background.rect);
     }
-    debug.highlights = highlights;
+    debug.highlights.reserve(highlights.size());
+    for (const TranscriptHighlight& highlight : highlights) {
+        debug.highlights.push_back(highlight.rect);
+    }
     debug.glyphRects.reserve(glyphs.size());
     debug.glyphColors.reserve(glyphs.size());
     for (const LaidOutGlyph& glyph : glyphs) {
@@ -847,7 +850,7 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
                                                        Atlas* atlas,
                                                        QVector<LaidOutGlyph>* glyphs,
                                                        QVector<TranscriptBackground>* backgrounds,
-                                                       QVector<QRectF>* highlights) const
+                                                       QVector<TranscriptHighlight>* highlights) const
 {
     if (!atlas || !glyphs || !backgrounds || !highlights) {
         return false;
@@ -967,7 +970,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
                                                const Atlas& atlas,
                                                QVector<LaidOutGlyph>* glyphs,
                                                QVector<TranscriptBackground>* backgrounds,
-                                               QVector<QRectF>* highlights) const
+                                               QVector<TranscriptHighlight>* highlights) const
 {
     if (!glyphs || !backgrounds || !highlights ||
         !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty() || atlas.key.isEmpty()) {
@@ -997,7 +1000,9 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         return false;
     }
     if (clip.transcriptOverlay.showBackground) {
-        QColor backgroundColor(0, 0, 0);
+        QColor backgroundColor = clip.transcriptOverlay.backgroundColor.isValid()
+            ? clip.transcriptOverlay.backgroundColor
+            : QColor(Qt::black);
         backgroundColor.setAlphaF(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0));
         backgrounds->push_back(TranscriptBackground{
             outputRect,
@@ -1067,7 +1072,12 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         ? clip.transcriptOverlay.textColor
         : QColor(Qt::white);
     const QColor shadowColor(0, 0, 0, 200);
-    const QColor highlightTextColor(QStringLiteral("#181818"));
+    const QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
+        ? clip.transcriptOverlay.highlightColor
+        : QColor(QStringLiteral("#fff2a8"));
+    const QColor highlightTextColor = clip.transcriptOverlay.highlightTextColor.isValid()
+        ? clip.transcriptOverlay.highlightTextColor
+        : QColor(QStringLiteral("#181818"));
 
     if (hasTitle) {
         const qreal x = textBounds.left() + qMax<qreal>(0.0, (textBounds.width() - (titleWidth * docScale)) / 2.0);
@@ -1095,10 +1105,12 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
             if (active) {
                 const qreal padX = 0.18 * clip.transcriptOverlay.fontPointSize * docScale;
                 const qreal padY = 0.02 * clip.transcriptOverlay.fontPointSize * docScale;
-                highlights->push_back(QRectF(cursorX - padX,
-                                             baseline - bodyAscender - padY,
-                                             wordWidth + padX * 2.0,
-                                             bodyTextHeight + padY * 2.0));
+                highlights->push_back(TranscriptHighlight{
+                    QRectF(cursorX - padX,
+                           baseline - bodyAscender - padY,
+                           wordWidth + padX * 2.0,
+                           bodyTextHeight + padY * 2.0),
+                    highlightFillColor});
             }
             const QColor glyphColor = active ? highlightTextColor : textColor;
             if (clip.transcriptOverlay.showShadow && !active) {
@@ -1394,11 +1406,13 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                              cachedLayout->atlas.solidUv,
                              background.color);
     }
-    for (const QRectF& highlight : cachedLayout->highlights) {
+    for (const TranscriptHighlight& highlight : cachedLayout->highlights) {
         clearRect(m_funcs,
                   commandBuffer,
-                  clearValueForColor(QColor(QStringLiteral("#fff2a8"))),
-                  clearRectFromQRect(mapRect(highlight), swapSize));
+                  clearValueForColor(highlight.color.isValid()
+                                         ? highlight.color
+                                         : QColor(QStringLiteral("#fff2a8"))),
+                  clearRectFromQRect(mapRect(highlight.rect), swapSize));
     }
     for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);

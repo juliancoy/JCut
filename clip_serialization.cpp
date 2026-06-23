@@ -258,6 +258,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("italic")] = clip.transcriptOverlay.italic;
         transcriptOverlayObj[QStringLiteral("textColor")] =
             clip.transcriptOverlay.textColor.name(QColor::HexArgb);
+        transcriptOverlayObj[QStringLiteral("backgroundColor")] =
+            clip.transcriptOverlay.backgroundColor.name(QColor::HexArgb);
+        transcriptOverlayObj[QStringLiteral("highlightColor")] =
+            clip.transcriptOverlay.highlightColor.name(QColor::HexArgb);
+        transcriptOverlayObj[QStringLiteral("highlightTextColor")] =
+            clip.transcriptOverlay.highlightTextColor.name(QColor::HexArgb);
         obj[QStringLiteral("transcriptOverlay")] = transcriptOverlayObj;
         obj[QStringLiteral("fadeSamples")] = clip.fadeSamples;
         obj[QStringLiteral("locked")] = clip.locked;
@@ -664,6 +670,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.italic = transcriptOverlayObj.value(QStringLiteral("italic")).toBool(false);
         clip.transcriptOverlay.textColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("textColor")).toString(QStringLiteral("#ffffffff")));
+        clip.transcriptOverlay.backgroundColor =
+            QColor(transcriptOverlayObj.value(QStringLiteral("backgroundColor")).toString(QStringLiteral("#ff000000")));
+        clip.transcriptOverlay.highlightColor =
+            QColor(transcriptOverlayObj.value(QStringLiteral("highlightColor")).toString(QStringLiteral("#fffff2a8")));
+        clip.transcriptOverlay.highlightTextColor =
+            QColor(transcriptOverlayObj.value(QStringLiteral("highlightTextColor")).toString(QStringLiteral("#ff181818")));
         clip.transcriptOverlay.normalizeReadableBounds();
         clip.fadeSamples = qMax(0, obj.value(QStringLiteral("fadeSamples")).toInt(250));
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
