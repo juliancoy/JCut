@@ -195,6 +195,99 @@ def save_frame_image(path: Path, image: np.ndarray, image_mode: str | None = Non
         pil_image.save(path)
 
 
+def source_frame_rate_for_index_map(input_path: Path) -> float | None:
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=nb_frames,duration,avg_frame_rate",
+                "-of",
+                "json",
+                str(input_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        data = json.loads(probe.stdout or "{}")
+        streams = data.get("streams") or []
+        if streams:
+            stream = streams[0]
+            frames = int(stream.get("nb_frames") or 0)
+            duration = float(stream.get("duration") or 0.0)
+            if frames > 0 and duration > 0.0:
+                return frames / duration
+            rate = stream.get("avg_frame_rate") or ""
+            if "/" in rate:
+                num, den = rate.split("/", 1)
+                if float(den) != 0.0:
+                    return float(num) / float(den)
+    except Exception:
+        return None
+    return None
+
+
+def write_jcut_frame_index_map(input_path: Path, map_path: Path):
+    if map_path.exists() and map_path.stat().st_size > 0:
+        return
+    source_fps = source_frame_rate_for_index_map(input_path)
+    if source_fps is None or source_fps <= 0.0:
+        return
+    # The editor historically reported video frame handles from packet/frame
+    # timestamps. SAM masks are decode-order artifacts. This map lets JCut
+    # translate that timestamp-derived source frame back to the decode ordinal
+    # without re-running detection or renaming generated masks.
+    probe = subprocess.Popen(
+        [
+            "ffprobe",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts_time",
+            "-of",
+            "csv=p=0",
+            str(input_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = map_path.with_suffix(".tsv.tmp")
+    frame_idx = 0
+    with tmp.open("w", encoding="utf-8") as out:
+        out.write("# source_frame\tmask_frame\n")
+        if probe.stdout is not None:
+            for line in probe.stdout:
+                value = line.strip().split(",", 1)[0]
+                if not value:
+                    continue
+                try:
+                    source_frame = int(float(value) * source_fps + 0.5)
+                except ValueError:
+                    continue
+                out.write(f"{source_frame}\t{frame_idx}\n")
+                frame_idx += 1
+    _, stderr = probe.communicate()
+    if probe.returncode != 0:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"ffprobe frame index map failed: {stderr.strip()}")
+    tmp.replace(map_path)
+
+
 def safe_name_component(value: str, fallback: str = "prompt") -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
     safe = re.sub(r"_+", "_", safe).strip("._-")
@@ -657,6 +750,7 @@ def run_video_as_frames(
         out_frames_dir.mkdir(parents=True, exist_ok=True)
     if binary_mask_dir is not None:
         binary_mask_dir.mkdir(parents=True, exist_ok=True)
+        write_jcut_frame_index_map(input_path, binary_mask_dir / "jcut_frame_map.tsv")
 
     source_ext = intermediate_frames_format
     output_ext = frames_format
@@ -706,6 +800,12 @@ def run_video_as_frames(
             "centers_json": str(centers_path) if centers_path is not None else None,
             "binary_masks_dir": str(binary_mask_dir) if binary_mask_dir is not None else None,
             "output_video": str(out_path),
+            "frame_index": {
+                "domain": "source_decode_order",
+                "base": 1,
+                "source_frame_pattern": f"frame_%06d.{source_ext}",
+                "binary_mask_pattern": "frame_%06d.png" if binary_mask_dir is not None else None,
+            },
         },
     )
 

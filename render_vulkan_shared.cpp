@@ -154,7 +154,7 @@ VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingK
     state.shadows[0] = static_cast<float>(grade.shadowsR);
     state.shadows[1] = static_cast<float>(grade.shadowsG);
     state.shadows[2] = static_cast<float>(grade.shadowsB);
-    state.shadows[3] = 1.0f;
+    state.shadows[3] = gradingUsesCurveLut(grade) ? kVulkanEffectModeCurve : kVulkanEffectModeNormal;
     state.midtones[0] = static_cast<float>(grade.midtonesR);
     state.midtones[1] = static_cast<float>(grade.midtonesG);
     state.midtones[2] = static_cast<float>(grade.midtonesB);
@@ -195,10 +195,10 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
         state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
         state.midtones[1] = progressiveEdge ? 1.0f : 0.0f;
         state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
-        state.highlights[3] = -2.0f;
+        state.highlights[3] = kVulkanEffectModeBackgroundEdgeStretch;
         return state;
     }
-    state.highlights[3] = -1.0f;
+    state.highlights[3] = kVulkanEffectModeBackgroundBlur;
     state.midtones[3] = -34.0f;
     return state;
 }

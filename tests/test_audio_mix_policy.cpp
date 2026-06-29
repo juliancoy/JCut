@@ -13,6 +13,7 @@ private slots:
   void testPolicyHelpers();
   void testStarvedClipDoesNotBlockReadyClip();
   void testOnlyStarvedClipBlocksChunk();
+  void testSpeechFilterRangesAreDerivedFromExportRanges();
   void testSpliceSecondaryTapStopsAtClipEnd();
   void testTrackGainMuteAndSoloAffectMix();
 
@@ -129,6 +130,32 @@ void TestAudioMixPolicy::testOnlyStarvedClipBlocksChunk() {
   QVERIFY(!engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
   QVERIFY(engine.m_audioPlaybackBlocked.load());
   QCOMPARE(engine.m_lastMixStarvedClipCount.load(), 0);
+}
+
+void TestAudioMixPolicy::testSpeechFilterRangesAreDerivedFromExportRanges() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_mix_policy_speech_filter.wav");
+
+  AudioEngine::MixContext context;
+  context.clips.push_back(
+      makeAudioClip(QStringLiteral("speech"), path, 0, 100));
+  context.exportRanges.push_back(ExportRangeSegment{0, 14});
+  context.exportRanges.push_back(ExportRangeSegment{60, 74});
+  context.volume = 1.0;
+
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    engine.m_audioCache.insert(path, makeCacheEntry(0, 160000, 0.25f));
+  }
+  engine.m_speechFilterFadeSamples.store(0);
+
+  QVector<float> output(1024 * 2, 0.0f);
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, frameToSamples(30), 1.0, 1.0));
+
+  for (float sample : std::as_const(output)) {
+    QVERIFY2(std::abs(sample) < 0.000001f,
+             qPrintable(QStringLiteral("expected speech-filtered gap silence, got %1").arg(sample)));
+  }
 }
 
 void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {

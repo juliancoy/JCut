@@ -237,6 +237,10 @@ void GradingTab::wire()
         connect(m_widgets.gradingKeyAtPlayheadButton, &QPushButton::clicked,
                 this, &GradingTab::onKeyAtPlayheadClicked);
     }
+    if (m_widgets.gradingResetButton) {
+        connect(m_widgets.gradingResetButton, &QPushButton::clicked,
+                this, &GradingTab::onResetGradingClicked);
+    }
     if (m_widgets.gradingAutoOpposeButton) {
         connect(m_widgets.gradingAutoOpposeButton, &QPushButton::clicked,
                 this, &GradingTab::onAutoOpposeGradeChangesClicked);
@@ -424,18 +428,10 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
         keyframe.highlightsR = m_widgets.highlightsRSpin ? m_widgets.highlightsRSpin->value() : 0.0;
         keyframe.highlightsG = m_widgets.highlightsGSpin ? m_widgets.highlightsGSpin->value() : 0.0;
         keyframe.highlightsB = m_widgets.highlightsBSpin ? m_widgets.highlightsBSpin->value() : 0.0;
-        keyframe.curvePointsR = m_curveThreePointLock
-            ? defaultGradingCurvePoints()
-            : sanitizeGradingCurvePoints(m_curvePointsR);
-        keyframe.curvePointsG = m_curveThreePointLock
-            ? defaultGradingCurvePoints()
-            : sanitizeGradingCurvePoints(m_curvePointsG);
-        keyframe.curvePointsB = m_curveThreePointLock
-            ? defaultGradingCurvePoints()
-            : sanitizeGradingCurvePoints(m_curvePointsB);
-        keyframe.curvePointsLuma = m_curveThreePointLock
-            ? defaultGradingCurvePoints()
-            : sanitizeGradingCurvePoints(m_curvePointsLuma);
+        keyframe.curvePointsR = sanitizeGradingCurvePoints(m_curvePointsR);
+        keyframe.curvePointsG = sanitizeGradingCurvePoints(m_curvePointsG);
+        keyframe.curvePointsB = sanitizeGradingCurvePoints(m_curvePointsB);
+        keyframe.curvePointsLuma = sanitizeGradingCurvePoints(m_curvePointsLuma);
         keyframe.curveThreePointLock = m_curveThreePointLock;
         keyframe.curveSmoothingEnabled = m_curveSmoothingEnabled;
         keyframe.linearInterpolation = true;
@@ -571,6 +567,43 @@ void GradingTab::onFollowCurrentToggled(bool checked)
 void GradingTab::onKeyAtPlayheadClicked()
 {
     upsertKeyframeAtPlayhead();
+}
+
+void GradingTab::onResetGradingClicked()
+{
+    if (m_updating) {
+        return;
+    }
+
+    const auto setSpin = [](QDoubleSpinBox* spin, double value) {
+        if (!spin) {
+            return;
+        }
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+    };
+
+    setSpin(m_widgets.brightnessSpin, 0.0);
+    setSpin(m_widgets.contrastSpin, 1.0);
+    setSpin(m_widgets.saturationSpin, 1.0);
+    for (QDoubleSpinBox* spin : {m_widgets.shadowsRSpin,
+                                 m_widgets.shadowsGSpin,
+                                 m_widgets.shadowsBSpin,
+                                 m_widgets.midtonesRSpin,
+                                 m_widgets.midtonesGSpin,
+                                 m_widgets.midtonesBSpin,
+                                 m_widgets.highlightsRSpin,
+                                 m_widgets.highlightsGSpin,
+                                 m_widgets.highlightsBSpin}) {
+        setSpin(spin, 0.0);
+    }
+
+    m_curvePointsR = defaultGradingCurvePoints();
+    m_curvePointsG = defaultGradingCurvePoints();
+    m_curvePointsB = defaultGradingCurvePoints();
+    m_curvePointsLuma = defaultGradingCurvePoints();
+    updateCurveFromInspectorValues();
+    applyGradeFromInspector(true);
 }
 
 bool GradingTab::configureAutoOpposeSettings(AutoOpposeSettings* settings)

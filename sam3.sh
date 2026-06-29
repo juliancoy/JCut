@@ -195,9 +195,10 @@ require_writable_tree() {
   fi
 }
 
-HF_CACHE_HOST="${SAM3_MODEL_CACHE:-$ROOT_DIR/.cache/hf}"
-PIP_CACHE_HOST="$ROOT_DIR/.cache/pip"
-CONTAINER_HOME_HOST="$ROOT_DIR/.cache/container-home"
+RUNTIME_CACHE_HOST="${SAM3_RUNTIME_CACHE:-$ROOT_DIR/.cache}"
+HF_CACHE_HOST="${SAM3_MODEL_CACHE:-$RUNTIME_CACHE_HOST/hf}"
+PIP_CACHE_HOST="$RUNTIME_CACHE_HOST/pip"
+CONTAINER_HOME_HOST="$RUNTIME_CACHE_HOST/container-home"
 mkdir -p "$HF_CACHE_HOST" "$PIP_CACHE_HOST" "$CONTAINER_HOME_HOST"
 if [[ "${SAM3_DOCKER_RUN_AS_ROOT:-0}" != "1" ]]; then
   mkdir -p "$HF_CACHE_HOST/hub" "$HF_CACHE_HOST/transformers"
@@ -473,9 +474,11 @@ if not isinstance(process, dict):
 docker = process.get("docker")
 if not isinstance(docker, dict):
     docker = {}
+docker.pop("container_id", None)
 docker.update({
     "container_name": container_name,
     "image": image_name,
+    "restart_policy": "always",
     "log_command": ["docker", "logs", "-f", container_name],
 })
 process["type"] = "docker"
@@ -483,12 +486,22 @@ process["docker"] = docker
 manifest["process"] = process
 manifest["docker_container_name"] = container_name
 manifest["status"] = "running"
+for stale_key in ("exit_code", "exit_status", "pause_reason", "error"):
+    manifest.pop(stale_key, None)
 path.write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
 PY
 }
 
+DOCKER_LIFECYCLE_ARGS=(--rm)
+if [[ -n "$JOB_HOST" ]]; then
+  # Durable app-launched jobs must survive Docker daemon restarts and host
+  # interruptions. They cannot use --rm because Docker restart policies require
+  # the container record to persist.
+  DOCKER_LIFECYCLE_ARGS=(--restart always)
+fi
+
 DOCKER_RUN_ARGS=(
-  --rm
+  "${DOCKER_LIFECYCLE_ARGS[@]}"
   --name "$CONTAINER_NAME"
   --label "jcut.operation=sam3"
   --label "jcut.container_name=$CONTAINER_NAME"
@@ -565,7 +578,13 @@ run_container() {
     echo "$cmd"
     docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash
   else
-    docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$cmd"
+    if [[ -n "$JOB_CONTAINER" ]]; then
+      local wrapped_cmd
+      wrapped_cmd="$cmd; rc=\$?; if [ \"\$rc\" -eq 0 ]; then echo '[jcut] SAM3 completed; holding container so Docker restart policy does not rerun completed work.'; exec sleep infinity; fi; exit \"\$rc\""
+      docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$wrapped_cmd"
+    else
+      docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$cmd"
+    fi
   fi
 }
 

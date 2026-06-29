@@ -29,6 +29,8 @@ using namespace editor;
 namespace {
 
 const QLatin1String kHistoryTranscriptDocumentsKey("__historyTranscriptDocuments");
+constexpr int kFallbackHistoryMaxEntries = 100;
+constexpr int kFallbackHistoryMaxMegabytes = 16;
 
 void stripHeavyClipState(QJsonObject* clipObj)
 {
@@ -43,6 +45,8 @@ void stripHeavyStateSnapshot(QJsonObject* snapshot)
     if (!snapshot) {
         return;
     }
+
+    snapshot->remove(QString(kHistoryTranscriptDocumentsKey));
 
     QJsonArray timeline = snapshot->value(QStringLiteral("timeline")).toArray();
     for (int i = 0; i < timeline.size(); ++i) {
@@ -74,6 +78,194 @@ bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
         }
     }
     return changed;
+}
+
+QJsonObject diffHistoryObject(const QJsonObject& previous, const QJsonObject& current)
+{
+    QJsonObject set;
+    QJsonArray remove;
+
+    for (auto it = current.begin(); it != current.end(); ++it) {
+        const QJsonValue previousValue = previous.value(it.key());
+        if (previousValue == it.value()) {
+            continue;
+        }
+        if (previousValue.isObject() && it.value().isObject()) {
+            const QJsonObject nested =
+                diffHistoryObject(previousValue.toObject(), it.value().toObject());
+            if (!nested.value(QStringLiteral("set")).toObject().isEmpty() ||
+                !nested.value(QStringLiteral("remove")).toArray().isEmpty()) {
+                set[it.key()] = nested;
+            }
+        } else {
+            set[it.key()] = it.value();
+        }
+    }
+
+    for (auto it = previous.begin(); it != previous.end(); ++it) {
+        if (!current.contains(it.key())) {
+            remove.push_back(it.key());
+        }
+    }
+
+    return QJsonObject{
+        {QStringLiteral("set"), set},
+        {QStringLiteral("remove"), remove},
+    };
+}
+
+QJsonObject applyHistoryObjectPatch(QJsonObject base, const QJsonObject& patch)
+{
+    const QJsonObject set = patch.value(QStringLiteral("set")).toObject();
+    for (auto it = set.begin(); it != set.end(); ++it) {
+        const QJsonValue existing = base.value(it.key());
+        if (existing.isObject() && it.value().isObject()) {
+            const QJsonObject patchObject = it.value().toObject();
+            if (patchObject.contains(QStringLiteral("set")) ||
+                patchObject.contains(QStringLiteral("remove"))) {
+                base[it.key()] = applyHistoryObjectPatch(existing.toObject(), patchObject);
+                continue;
+            }
+        }
+        base[it.key()] = it.value();
+    }
+
+    const QJsonArray remove = patch.value(QStringLiteral("remove")).toArray();
+    for (const QJsonValue& value : remove) {
+        base.remove(value.toString());
+    }
+    return base;
+}
+
+QJsonObject historyRootFromEntries(const QJsonArray& entries, int index)
+{
+    QJsonObject root;
+    root[QStringLiteral("format")] = QStringLiteral("snapshot-delta-v1");
+    root[QStringLiteral("index")] = index;
+    if (entries.isEmpty()) {
+        root[QStringLiteral("base")] = QJsonObject();
+        root[QStringLiteral("patches")] = QJsonArray();
+        return root;
+    }
+
+    QJsonObject previous = entries.at(0).toObject();
+    root[QStringLiteral("base")] = previous;
+    QJsonArray patches;
+    for (int i = 1; i < entries.size(); ++i) {
+        const QJsonObject current = entries.at(i).toObject();
+        patches.push_back(diffHistoryObject(previous, current));
+        previous = current;
+    }
+    root[QStringLiteral("patches")] = patches;
+    return root;
+}
+
+QJsonArray historyEntriesFromRoot(const QJsonObject& root)
+{
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("snapshot-delta-v1")) {
+        return root.value(QStringLiteral("entries")).toArray();
+    }
+
+    QJsonArray entries;
+    QJsonObject current = root.value(QStringLiteral("base")).toObject();
+    if (current.isEmpty() && root.value(QStringLiteral("patches")).toArray().isEmpty()) {
+        return entries;
+    }
+    entries.push_back(current);
+    const QJsonArray patches = root.value(QStringLiteral("patches")).toArray();
+    for (const QJsonValue& value : patches) {
+        current = applyHistoryObjectPatch(current, value.toObject());
+        entries.push_back(current);
+    }
+    return entries;
+}
+
+qsizetype historyEntriesCompactSize(const QJsonArray& entries)
+{
+    return jcut::jsonio::serializeCompact(historyRootFromEntries(entries, entries.size() - 1)).size();
+}
+
+void trimHistoryEntriesInPlace(QJsonArray* entries,
+                               int* historyIndex,
+                               int maxEntries,
+                               int maxMegabytes)
+{
+    if (!entries || entries->isEmpty()) {
+        if (historyIndex) {
+            *historyIndex = -1;
+        }
+        return;
+    }
+
+    if (historyIndex) {
+        *historyIndex = qBound(0, *historyIndex, entries->size() - 1);
+    }
+
+    auto removeOldest = [&]() {
+        entries->removeAt(0);
+        if (historyIndex) {
+            *historyIndex = qMax(-1, *historyIndex - 1);
+        }
+    };
+
+    const int boundedMaxEntries = qBound(1, maxEntries, 500);
+    const qsizetype maxCompactBytes =
+        static_cast<qsizetype>(qBound(1, maxMegabytes, 256)) * 1024 * 1024;
+
+    while (entries->size() > boundedMaxEntries) {
+        removeOldest();
+    }
+    while (entries->size() > 1 && historyEntriesCompactSize(*entries) > maxCompactBytes) {
+        removeOldest();
+    }
+
+    if (historyIndex) {
+        *historyIndex = entries->isEmpty() ? -1 : qBound(0, *historyIndex, entries->size() - 1);
+    }
+}
+
+bool writeJsonObjectAtomic(const QString& path, const QJsonObject& root)
+{
+    if (path.trimmed().isEmpty()) {
+        return false;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const QByteArray payload = jcut::jsonio::serializeIndented(root);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
+}
+
+QByteArray writeStateObjectAtomic(const QString& path,
+                                  const QJsonObject& root,
+                                  const QByteArray& lastSavedState)
+{
+    if (path.trimmed().isEmpty()) {
+        return QByteArray();
+    }
+    const QByteArray serializedState = jcut::jsonio::serializeIndented(root);
+    if (serializedState == lastSavedState) {
+        return serializedState;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return QByteArray();
+    }
+    if (file.write(serializedState) != serializedState.size()) {
+        file.cancelWriting();
+        return QByteArray();
+    }
+    if (!file.commit()) {
+        return QByteArray();
+    }
+    return serializedState;
 }
 
 QString relativeStatePath(const QString& path, const QString& rootPath)
@@ -218,7 +410,8 @@ void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
         QJsonObject result{
             {QStringLiteral("project_id"), projectId},
             {QStringLiteral("entry_count"), 0},
-            {QStringLiteral("history_index"), -1}
+            {QStringLiteral("history_index"), -1},
+            {QStringLiteral("history_sanitized"), false}
         };
         QFile historyFile(historyPath);
         if (!historyFile.open(QIODevice::ReadOnly)) {
@@ -226,15 +419,23 @@ void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
         }
         QJsonObject historyRoot;
         jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
-        QJsonArray entries = historyRoot.value(QStringLiteral("entries")).toArray();
-        sanitizeHistoryEntriesInPlace(&entries);
-        const int entryCount = entries.size();
-        const int index = entryCount > 0
-            ? qBound(0, historyRoot.value(QStringLiteral("index")).toInt(entryCount - 1), entryCount - 1)
+        QJsonArray entries = historyEntriesFromRoot(historyRoot);
+        const bool historySanitized = sanitizeHistoryEntriesInPlace(&entries);
+        const int entryCountBeforeTrim = entries.size();
+        int index = entryCountBeforeTrim > 0
+            ? qBound(0,
+                     historyRoot.value(QStringLiteral("index")).toInt(entryCountBeforeTrim - 1),
+                     entryCountBeforeTrim - 1)
             : -1;
+        trimHistoryEntriesInPlace(&entries,
+                                  &index,
+                                  kFallbackHistoryMaxEntries,
+                                  kFallbackHistoryMaxMegabytes);
         result[QStringLiteral("entries")] = entries;
-        result[QStringLiteral("entry_count")] = entryCount;
+        result[QStringLiteral("entry_count")] = entries.size();
         result[QStringLiteral("history_index")] = index;
+        result[QStringLiteral("history_sanitized")] =
+            historySanitized || entries.size() != entryCountBeforeTrim;
         return result;
     }));
 }
@@ -288,15 +489,20 @@ void EditorWindow::loadState()
         {
             QJsonObject historyRoot;
             jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
-            m_historyEntries = historyRoot.value(QStringLiteral("entries")).toArray();
+            m_historyEntries = historyEntriesFromRoot(historyRoot);
             const bool historySanitized = sanitizeHistoryEntriesInPlace(&m_historyEntries);
             m_historyIndex = historyRoot.value(QStringLiteral("index")).toInt(m_historyEntries.size() - 1);
+            const int beforeTrimEntryCount = m_historyEntries.size();
+            trimHistoryEntriesInPlace(&m_historyEntries,
+                                      &m_historyIndex,
+                                      m_historyMaxEntries,
+                                      m_historyMaxMegabytes);
             if (!m_historyEntries.isEmpty())
             {
                 m_historyIndex = qBound(0, m_historyIndex, m_historyEntries.size() - 1);
                 root = m_historyEntries.at(m_historyIndex).toObject();
             }
-            if (historySanitized) {
+            if (historySanitized || m_historyEntries.size() != beforeTrimEntryCount) {
                 saveHistoryNow();
             }
         }
@@ -364,8 +570,8 @@ void EditorWindow::changeMediaRoot(const QString &path)
     }
 
     stopPlaybackWithReason(QStringLiteral("media_root_changed"));
-    saveStateNow();
-    saveHistoryNow();
+    flushStateSaveNow();
+    flushHistorySaveNow();
     m_stateSaveTimer.stop();
     m_historySaveTimer.stop();
     m_pendingSaveAfterLoad = false;
@@ -395,8 +601,8 @@ void EditorWindow::switchToProject(const QString &projectId)
         return;
     }
 
-    saveStateNow();
-    saveHistoryNow();
+    flushStateSaveNow();
+    flushHistorySaveNow();
 
     m_lastSavedState.clear();
     m_historyEntries = QJsonArray();
@@ -470,16 +676,21 @@ void EditorWindow::saveProjectAs()
         return;
     }
 
-    saveStateNow();
-    saveHistoryNow();
+    flushStateSaveNow();
+    flushHistorySaveNow();
 
     const QString newProjectId = m_projectManager ? m_projectManager->sanitizedProjectId(name) : QString();
     const QByteArray statePayload =
         jcut::jsonio::serializeIndented(buildStateJson());
 
-    QJsonObject historyRoot;
-    historyRoot[QStringLiteral("index")] = m_historyIndex;
-    historyRoot[QStringLiteral("entries")] = m_historyEntries;
+    QJsonArray historyEntries = m_historyEntries;
+    int historyIndex = m_historyIndex;
+    sanitizeHistoryEntriesInPlace(&historyEntries);
+    trimHistoryEntriesInPlace(&historyEntries,
+                              &historyIndex,
+                              m_historyMaxEntries,
+                              m_historyMaxMegabytes);
+    QJsonObject historyRoot = historyRootFromEntries(historyEntries, historyIndex);
     const QByteArray historyPayload =
         jcut::jsonio::serializeIndented(historyRoot);
 
@@ -694,6 +905,8 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("debugDeterministicPipelineExplicit")] = true;
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
+    root[QStringLiteral("historyMaxEntries")] = m_historyMaxEntries;
+    root[QStringLiteral("historyMaxMegabytes")] = m_historyMaxMegabytes;
     root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
@@ -941,32 +1154,41 @@ void EditorWindow::saveStateNow()
         QDir().mkpath(m_projectManager->projectPath(m_projectManager->currentProjectIdOrDefault()));
     }
 
-    const QByteArray serializedState =
-        jcut::jsonio::serializeIndented(buildStateJson());
-    if (serializedState == m_lastSavedState)
-    {
+    const QString statePath = m_projectManager ? m_projectManager->stateFilePath() : QString();
+    if (statePath.trimmed().isEmpty()) {
         return;
     }
 
-    QSaveFile file(m_projectManager ? m_projectManager->stateFilePath() : QString());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
+    if (m_stateSaveWatcher.isRunning()) {
+        m_stateSavePending = true;
         return;
     }
 
-    if (file.write(serializedState) != serializedState.size())
-    {
-        file.cancelWriting();
-        return;
-    }
+    const QJsonObject state = buildStateJson();
+    const QByteArray lastSavedState = m_lastSavedState;
+    m_stateSaveWatcher.setFuture(QtConcurrent::run([statePath, state, lastSavedState]() {
+        return writeStateObjectAtomic(statePath, state, lastSavedState);
+    }));
+}
 
-    if (!file.commit())
-    {
-        return;
+void EditorWindow::flushStateSaveNow()
+{
+    if (m_stateSaveTimer.isActive()) {
+        m_stateSaveTimer.stop();
     }
-
-    m_lastSavedState = serializedState;
-    m_pendingSaveAfterPlayback = false;
+    saveStateNow();
+    while (m_stateSaveWatcher.isRunning()) {
+        m_stateSaveWatcher.waitForFinished();
+        const QByteArray savedState = m_stateSaveWatcher.result();
+        if (!savedState.isEmpty()) {
+            m_lastSavedState = savedState;
+            m_pendingSaveAfterPlayback = false;
+        }
+        if (m_stateSavePending) {
+            m_stateSavePending = false;
+            saveStateNow();
+        }
+    }
 }
 
 void EditorWindow::saveHistoryNow()
@@ -977,27 +1199,61 @@ void EditorWindow::saveHistoryNow()
     }
 
     QJsonObject root;
-    root[QStringLiteral("index")] = m_historyIndex;
     QJsonArray sanitizedEntries = m_historyEntries;
     sanitizeHistoryEntriesInPlace(&sanitizedEntries);
+    int sanitizedIndex = m_historyIndex;
+    trimHistoryEntriesInPlace(&sanitizedEntries,
+                              &sanitizedIndex,
+                              m_historyMaxEntries,
+                              m_historyMaxMegabytes);
     m_historyEntries = sanitizedEntries;
-    root[QStringLiteral("entries")] = sanitizedEntries;
+    m_historyIndex = sanitizedIndex;
+    root = historyRootFromEntries(sanitizedEntries, m_historyIndex);
 
-    QSaveFile file(m_projectManager ? m_projectManager->historyFilePath() : QString());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
+    const QString historyPath = m_projectManager ? m_projectManager->historyFilePath() : QString();
+    if (historyPath.trimmed().isEmpty()) {
         return;
     }
 
-    const QByteArray payload =
-        jcut::jsonio::serializeIndented(root);
-    if (file.write(payload) != payload.size())
-    {
-        file.cancelWriting();
+    if (m_historySaveWatcher.isRunning()) {
+        m_historySavePending = true;
         return;
     }
 
-    file.commit();
+    m_historySaveWatcher.setFuture(QtConcurrent::run([historyPath, root]() {
+        return writeJsonObjectAtomic(historyPath, root);
+    }));
+}
+
+void EditorWindow::flushHistorySaveNow()
+{
+    if (m_historySaveTimer.isActive()) {
+        m_historySaveTimer.stop();
+    }
+    saveHistoryNow();
+    while (m_historySaveWatcher.isRunning()) {
+        m_historySaveWatcher.waitForFinished();
+        if (m_historySavePending) {
+            m_historySavePending = false;
+            saveHistoryNow();
+        }
+    }
+}
+
+void EditorWindow::trimHistoryToConfiguredLimits()
+{
+    const int beforeSize = m_historyEntries.size();
+    const int beforeIndex = m_historyIndex;
+    trimHistoryEntriesInPlace(&m_historyEntries,
+                              &m_historyIndex,
+                              m_historyMaxEntries,
+                              m_historyMaxMegabytes);
+    if (m_historyEntries.size() != beforeSize || m_historyIndex != beforeIndex) {
+        saveHistoryNow();
+        if (m_historyTab) {
+            m_historyTab->refresh();
+        }
+    }
 }
 
 void EditorWindow::pushHistorySnapshot()
@@ -1008,7 +1264,6 @@ void EditorWindow::pushHistorySnapshot()
     }
 
     QJsonObject snapshot = buildStateJson();
-    attachTranscriptDocumentsToHistorySnapshot(&snapshot);
     stripHeavyStateSnapshot(&snapshot);
     if (m_historyIndex >= 0 &&
         m_historyIndex < m_historyEntries.size() &&
@@ -1023,12 +1278,11 @@ void EditorWindow::pushHistorySnapshot()
     }
 
     m_historyEntries.append(snapshot);
-    if (m_historyEntries.size() > 200)
-    {
-        m_historyEntries.removeAt(0);
-    }
-
     m_historyIndex = m_historyEntries.size() - 1;
+    trimHistoryEntriesInPlace(&m_historyEntries,
+                              &m_historyIndex,
+                              m_historyMaxEntries,
+                              m_historyMaxMegabytes);
     if (!m_historySaveTimer.isActive()) {
         m_historySaveTimer.start();
     }

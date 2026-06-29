@@ -1,0 +1,35 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D u_input_mask;
+layout(binding = 1, rgba8) writeonly uniform image2D u_output_mask;
+
+layout(push_constant) uniform Push {
+    ivec2 outputSize;
+    ivec2 inputSize;
+    int invert;
+    int _pad0;
+} pc;
+
+float maskValueAt(ivec2 srcCoord)
+{
+    return texelFetch(u_input_mask, clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0))), 0).r;
+}
+
+void main()
+{
+    ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (dstCoord.x >= pc.outputSize.x || dstCoord.y >= pc.outputSize.y) {
+        return;
+    }
+
+    vec2 dstUv = (vec2(dstCoord) + vec2(0.5)) / vec2(max(pc.outputSize, ivec2(1)));
+    ivec2 srcCoord = ivec2(floor(dstUv * vec2(max(pc.inputSize, ivec2(1)))));
+    srcCoord = clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0)));
+    float value = maskValueAt(srcCoord);
+    if (pc.invert != 0) {
+        value = 1.0 - value;
+    }
+    imageStore(u_output_mask, dstCoord, vec4(value, value, value, 1.0));
+}

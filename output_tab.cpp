@@ -169,6 +169,14 @@ void OutputTab::wire()
         connect(m_widgets.autosaveMaxBackupsSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &OutputTab::onAutosaveMaxBackupsChanged);
     }
+    if (m_widgets.historyMaxEntriesSpin) {
+        connect(m_widgets.historyMaxEntriesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onHistoryMaxEntriesChanged);
+    }
+    if (m_widgets.historyMaxMegabytesSpin) {
+        connect(m_widgets.historyMaxMegabytesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onHistoryMaxMegabytesChanged);
+    }
     if (m_widgets.createImageSequenceCheckBox) {
         connect(m_widgets.createImageSequenceCheckBox, &QCheckBox::toggled,
                 this, [this](bool checked) {
@@ -227,6 +235,14 @@ void OutputTab::refresh()
     if (m_widgets.autosaveMaxBackupsSpin && m_deps.autosaveMaxBackups) {
         QSignalBlocker blocker(m_widgets.autosaveMaxBackupsSpin);
         m_widgets.autosaveMaxBackupsSpin->setValue(m_deps.autosaveMaxBackups());
+    }
+    if (m_widgets.historyMaxEntriesSpin && m_deps.historyMaxEntries) {
+        QSignalBlocker blocker(m_widgets.historyMaxEntriesSpin);
+        m_widgets.historyMaxEntriesSpin->setValue(m_deps.historyMaxEntries());
+    }
+    if (m_widgets.historyMaxMegabytesSpin && m_deps.historyMaxMegabytes) {
+        QSignalBlocker blocker(m_widgets.historyMaxMegabytesSpin);
+        m_widgets.historyMaxMegabytesSpin->setValue(m_deps.historyMaxMegabytes());
     }
     if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
         QSignalBlocker blocker(m_widgets.outputPlaybackCacheFallbackCheckBox);
@@ -657,6 +673,24 @@ void OutputTab::onAutosaveMaxBackupsChanged(int value)
     }
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onHistoryMaxEntriesChanged(int value)
+{
+    if (m_updating) return;
+    if (m_deps.setHistoryMaxEntries) {
+        m_deps.setHistoryMaxEntries(value);
+    }
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onHistoryMaxMegabytesChanged(int value)
+{
+    if (m_updating) return;
+    if (m_deps.setHistoryMaxMegabytes) {
+        m_deps.setHistoryMaxMegabytes(value);
+    }
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
 }
 
 void OutputTab::updateRangeSummary()

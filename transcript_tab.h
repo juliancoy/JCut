@@ -93,6 +93,7 @@ public:
 
     void wire();
     void refresh();
+    void syncSpeechFilterControlsFromWidgets();
     void applyOverlayFromInspector(bool pushHistory = false);
     void syncTableToPlayhead(int64_t absolutePlaybackSample,
                              double sourceSeconds,

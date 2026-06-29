@@ -319,6 +319,9 @@ EditorWindow::EditorWindow(quint16 controlPort)
         }
         m_historyEntries = entries;
         m_historyIndex = (entryCount > 0) ? qBound(0, index, entryCount - 1) : -1;
+        if (result.value(QStringLiteral("history_sanitized")).toBool(false)) {
+            saveHistoryNow();
+        }
         if (m_historyEntries.isEmpty() && m_timeline) {
             pushHistorySnapshot();
         }
@@ -417,11 +420,8 @@ EditorWindow::EditorWindow(quint16 controlPort)
 
 EditorWindow::~EditorWindow()
 {
-    if (m_historySaveTimer.isActive()) {
-        m_historySaveTimer.stop();
-        saveHistoryNow();
-    }
-    saveStateNow();
+    flushHistorySaveNow();
+    flushStateSaveNow();
 }
 
 void EditorWindow::closeEvent(QCloseEvent *event)
@@ -440,11 +440,8 @@ void EditorWindow::closeEvent(QCloseEvent *event)
     if (m_audioEngine) {
         m_audioEngine->stop();
     }
-    if (m_historySaveTimer.isActive()) {
-        m_historySaveTimer.stop();
-        saveHistoryNow();
-    }
-    saveStateNow();
+    flushHistorySaveNow();
+    flushStateSaveNow();
     QMainWindow::closeEvent(event);
 }
 
@@ -1138,6 +1135,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("autosaveMaxBackups"))
             .toInt(kDefaultAutosaveMaxBackups),
         200);
+    const int historyMaxEntries = qBound(
+        10,
+        root.value(QStringLiteral("historyMaxEntries"))
+            .toInt(kDefaultHistoryMaxEntries),
+        500);
+    const int historyMaxMegabytes = qBound(
+        1,
+        root.value(QStringLiteral("historyMaxMegabytes"))
+            .toInt(kDefaultHistoryMaxMegabytes),
+        256);
     const bool previewPlaybackCacheFallback =
         root.value(QStringLiteral("previewPlaybackCacheFallback")).toBool(editor::debugPlaybackCacheFallbackEnabled());
     const bool previewLeadPrefetchEnabled =
@@ -1580,6 +1587,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     m_autosaveIntervalMinutes = autosaveIntervalMinutes;
     m_autosaveMaxBackups = autosaveMaxBackups;
+    m_historyMaxEntries = historyMaxEntries;
+    m_historyMaxMegabytes = historyMaxMegabytes;
     if (m_autosaveIntervalMinutesSpin) {
         QSignalBlocker block(m_autosaveIntervalMinutesSpin);
         m_autosaveIntervalMinutesSpin->setValue(m_autosaveIntervalMinutes);
@@ -1587,6 +1596,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_autosaveMaxBackupsSpin) {
         QSignalBlocker block(m_autosaveMaxBackupsSpin);
         m_autosaveMaxBackupsSpin->setValue(m_autosaveMaxBackups);
+    }
+    if (m_inspectorPane && m_inspectorPane->historyMaxEntriesSpin()) {
+        QSignalBlocker block(m_inspectorPane->historyMaxEntriesSpin());
+        m_inspectorPane->historyMaxEntriesSpin()->setValue(m_historyMaxEntries);
+    }
+    if (m_inspectorPane && m_inspectorPane->historyMaxMegabytesSpin()) {
+        QSignalBlocker block(m_inspectorPane->historyMaxMegabytesSpin());
+        m_inspectorPane->historyMaxMegabytesSpin()->setValue(m_historyMaxMegabytes);
     }
     m_autosaveTimer.setInterval(m_autosaveIntervalMinutes * 60 * 1000);
     if (m_previewHideOutsideOutputCheckBox) {
@@ -1799,6 +1816,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_speechFilterRangeCrossfadeCheckBox);
         m_speechFilterRangeCrossfadeCheckBox->setChecked(m_speechFilterRangeCrossfade);
     }
+    if (m_transcriptTab) {
+        m_transcriptTab->syncSpeechFilterControlsFromWidgets();
+    }
+    invalidatePlaybackRangeCaches();
     if (m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()) {
         QSignalBlocker block(m_inspectorPane->transcriptUnifiedEditModeCheckBox());
         m_inspectorPane->transcriptUnifiedEditModeCheckBox()->setChecked(transcriptUnifiedEditColors);

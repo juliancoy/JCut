@@ -3,17 +3,155 @@
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
 
+#include <QCache>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
+#include <QTextStream>
 #include <QtGlobal>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
 int clampChannel(int value) {
     return qBound(0, value, 255);
+}
+
+TimelineClip::GradingKeyframe maskGradeForClip(const TimelineClip& clip)
+{
+    TimelineClip::GradingKeyframe grade;
+    grade.brightness = clip.maskGradeBrightness;
+    grade.contrast = clip.maskGradeContrast;
+    grade.saturation = clip.maskGradeSaturation;
+    grade.curvePointsR = clip.maskGradeCurvePointsR;
+    grade.curvePointsG = clip.maskGradeCurvePointsG;
+    grade.curvePointsB = clip.maskGradeCurvePointsB;
+    grade.curvePointsLuma = clip.maskGradeCurvePointsLuma;
+    grade.curveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+    return grade;
+}
+
+QCache<QString, QImage>& preparedMaskCache()
+{
+    static QCache<QString, QImage> cache(256 * 1024);
+    return cache;
+}
+
+QMutex& preparedMaskCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+struct MaskFrameMap {
+    qint64 mtimeMs = -1;
+    qint64 size = -1;
+    QHash<int64_t, int64_t> exact;
+    QVector<QPair<int64_t, int64_t>> sorted;
+};
+
+QHash<QString, MaskFrameMap>& maskFrameMapCache()
+{
+    static QHash<QString, MaskFrameMap> cache;
+    return cache;
+}
+
+QMutex& maskFrameMapCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+MaskFrameMap loadMaskFrameMap(const QString& path)
+{
+    MaskFrameMap map;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return map;
+    }
+
+    QTextStream stream(&file);
+    const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    while (!stream.atEnd()) {
+        const QString line = stream.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+            continue;
+        }
+        const QStringList parts = line.split(whitespace, Qt::SkipEmptyParts);
+        if (parts.size() < 2 || parts.at(0) == QStringLiteral("source_frame")) {
+            continue;
+        }
+        bool okSource = false;
+        bool okMask = false;
+        const int64_t sourceFrame = parts.at(0).toLongLong(&okSource);
+        const int64_t maskFrame = parts.at(1).toLongLong(&okMask);
+        if (!okSource || !okMask || sourceFrame < 0 || maskFrame < 0) {
+            continue;
+        }
+        if (!map.exact.contains(sourceFrame)) {
+            map.exact.insert(sourceFrame, maskFrame);
+            map.sorted.push_back(qMakePair(sourceFrame, maskFrame));
+        }
+    }
+    std::sort(map.sorted.begin(), map.sorted.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+    return map;
+}
+
+int64_t mappedMaskFrameForSourceFrame(const QString& maskDir, int64_t sourceFrame)
+{
+    const QString mapPath = QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_frame_map.tsv"));
+    const QFileInfo info(mapPath);
+    if (!info.exists() || !info.isFile()) {
+        return sourceFrame;
+    }
+
+    MaskFrameMap map;
+    {
+        QMutexLocker lock(&maskFrameMapCacheMutex());
+        MaskFrameMap& cached = maskFrameMapCache()[info.absoluteFilePath()];
+        if (cached.mtimeMs != info.lastModified().toMSecsSinceEpoch() ||
+            cached.size != info.size()) {
+            cached = loadMaskFrameMap(info.absoluteFilePath());
+            cached.mtimeMs = info.lastModified().toMSecsSinceEpoch();
+            cached.size = info.size();
+        }
+        map = cached;
+    }
+
+    const auto exactIt = map.exact.constFind(sourceFrame);
+    if (exactIt != map.exact.constEnd()) {
+        return exactIt.value();
+    }
+    if (map.sorted.isEmpty()) {
+        return sourceFrame;
+    }
+
+    const auto lower = std::lower_bound(
+        map.sorted.constBegin(),
+        map.sorted.constEnd(),
+        sourceFrame,
+        [](const QPair<int64_t, int64_t>& entry, int64_t value) {
+            return entry.first < value;
+        });
+    if (lower == map.sorted.constBegin()) {
+        return lower->second;
+    }
+    if (lower == map.sorted.constEnd()) {
+        return (map.sorted.constEnd() - 1)->second;
+    }
+    const auto previous = lower - 1;
+    return qAbs(previous->first - sourceFrame) <= qAbs(lower->first - sourceFrame)
+               ? previous->second
+               : lower->second;
 }
 
 qreal catmullRom(qreal p0, qreal p1, qreal p2, qreal p3, qreal t) {
@@ -55,7 +193,7 @@ QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points) {
     normalized.reserve(points.size() + 2);
     for (const QPointF& point : points) {
         normalized.push_back(QPointF(qBound<qreal>(0.0, point.x(), 1.0),
-                                     qBound<qreal>(0.0, point.y(), 1.0)));
+                                     qBound<qreal>(-1.0, point.y(), 2.0)));
     }
     std::sort(normalized.begin(), normalized.end(), [](const QPointF& a, const QPointF& b) {
         if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
@@ -135,6 +273,23 @@ QVector<quint8> gradingCurveLut8(const QVector<QPointF>& points, int samples, bo
         lut[i] = static_cast<quint8>(qBound(0, qRound(y * 255.0), 255));
     }
     return lut;
+}
+
+bool gradingCurveDiffersFromIdentity(const QVector<QPointF>& points, bool smoothingEnabled)
+{
+    const QVector<quint8> lut =
+        gradingCurveLut8(points, TimelineClip::kGradingCurveLutSize, smoothingEnabled);
+    const QVector<quint8> identityLut =
+        gradingCurveLut8(defaultGradingCurvePoints(), TimelineClip::kGradingCurveLutSize, smoothingEnabled);
+    return !lut.isEmpty() && !identityLut.isEmpty() && lut != identityLut;
+}
+
+bool gradingUsesCurveLut(const TimelineClip::GradingKeyframe& grade)
+{
+    return gradingCurveDiffersFromIdentity(grade.curvePointsR, grade.curveSmoothingEnabled) ||
+           gradingCurveDiffersFromIdentity(grade.curvePointsG, grade.curveSmoothingEnabled) ||
+           gradingCurveDiffersFromIdentity(grade.curvePointsB, grade.curveSmoothingEnabled) ||
+           gradingCurveDiffersFromIdentity(grade.curvePointsLuma, grade.curveSmoothingEnabled);
 }
 
 qreal evaluateEffectiveClipOpacityAtFrame(const TimelineClip& clip,
@@ -236,18 +391,25 @@ QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe&
         !qFuzzyIsNull(grade.midtonesR) || !qFuzzyIsNull(grade.midtonesG) || !qFuzzyIsNull(grade.midtonesB) ||
         !qFuzzyIsNull(grade.highlightsR) || !qFuzzyIsNull(grade.highlightsG) || !qFuzzyIsNull(grade.highlightsB);
 
-    const QVector<quint8> curveLutR =
-        gradingCurveLut8(grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> curveLutG =
-        gradingCurveLut8(grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> curveLutB =
-        gradingCurveLut8(grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> curveLutL =
-        gradingCurveLut8(grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const bool needsCurveGrade = gradingUsesCurveLut(grade);
 
-    if (source.isNull() || (!needsBasicGrade && !needsToneGrade &&
-                            curveLutR.isEmpty() && curveLutG.isEmpty() && curveLutB.isEmpty())) {
+    if (source.isNull() || (!needsBasicGrade && !needsToneGrade && !needsCurveGrade)) {
         return source;
+    }
+
+    QVector<quint8> curveLutR;
+    QVector<quint8> curveLutG;
+    QVector<quint8> curveLutB;
+    QVector<quint8> curveLutL;
+    if (needsCurveGrade) {
+        curveLutR =
+            gradingCurveLut8(grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+        curveLutG =
+            gradingCurveLut8(grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+        curveLutB =
+            gradingCurveLut8(grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+        curveLutL =
+            gradingCurveLut8(grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
     }
 
     auto smoothShadows = [](float luma) { return std::pow(1.0f - luma, 2.0f); };
@@ -297,12 +459,19 @@ QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe&
                 gf = static_cast<float>(curveLutG[gi]) / 255.0f;
                 bf = static_cast<float>(curveLutB[bi]) / 255.0f;
                 if (!curveLutL.isEmpty()) {
-                    const int rmi = qBound(0, qRound(rf * 255.0f), 255);
-                    const int gmi = qBound(0, qRound(gf * 255.0f), 255);
-                    const int bmi = qBound(0, qRound(bf * 255.0f), 255);
-                    rf = static_cast<float>(curveLutL[rmi]) / 255.0f;
-                    gf = static_cast<float>(curveLutL[gmi]) / 255.0f;
-                    bf = static_cast<float>(curveLutL[bmi]) / 255.0f;
+                    const float curveLuma = (rf * 0.2126f) + (gf * 0.7152f) + (bf * 0.0722f);
+                    const int lumaIndex = qBound(0, qRound(curveLuma * 255.0f), 255);
+                    const float remappedLuma = static_cast<float>(curveLutL[lumaIndex]) / 255.0f;
+                    if (curveLuma > 0.0001f) {
+                        const float lumaScale = remappedLuma / curveLuma;
+                        rf *= lumaScale;
+                        gf *= lumaScale;
+                        bf *= lumaScale;
+                    } else {
+                        rf = remappedLuma;
+                        gf = remappedLuma;
+                        bf = remappedLuma;
+                    }
                 }
             }
 
@@ -336,9 +505,10 @@ QString maskFramePathForSourceFrame(const TimelineClip& clip, int64_t sourceFram
     if (clip.maskFramesDir.trimmed().isEmpty()) {
         return QString();
     }
+    const int64_t maskFrame = mappedMaskFrameForSourceFrame(clip.maskFramesDir, qMax<int64_t>(0, sourceFrame));
     const QString fileName =
         QStringLiteral("frame_%1.png")
-            .arg(qMax<int64_t>(0, sourceFrame) + 1, 6, 10, QLatin1Char('0'));
+            .arg(maskFrame + 1, 6, 10, QLatin1Char('0'));
     return QDir(clip.maskFramesDir).absoluteFilePath(fileName);
 }
 
@@ -374,22 +544,68 @@ QImage blurMask(const QImage& source, int radius)
         return source;
     }
     const QImage input = source.convertToFormat(QImage::Format_Grayscale8);
-    QImage output(input.size(), QImage::Format_Grayscale8);
     const int width = input.width();
     const int height = input.height();
+    if (width <= 0 || height <= 0) {
+        return input;
+    }
+
+    QVector<int> horizontal(width * height, 0);
+    for (int y = 0; y < height; ++y) {
+        const uchar* src = input.constScanLine(y);
+        int sum = 0;
+        int count = 0;
+        for (int x = 0; x <= qMin(width - 1, radius); ++x) {
+            sum += src[x];
+            ++count;
+        }
+        for (int x = 0; x < width; ++x) {
+            horizontal[(y * width) + x] = count > 0 ? sum / count : 0;
+            const int removeX = x - radius;
+            if (removeX >= 0) {
+                sum -= src[removeX];
+                --count;
+            }
+            const int addX = x + radius + 1;
+            if (addX < width) {
+                sum += src[addX];
+                ++count;
+            }
+        }
+    }
+
+    QImage output(input.size(), QImage::Format_Grayscale8);
+    QVector<int> columnSums(width, 0);
+    QVector<int> columnCounts(width, 0);
+    for (int y = 0; y <= qMin(height - 1, radius); ++y) {
+        const int* row = horizontal.constData() + (y * width);
+        for (int x = 0; x < width; ++x) {
+            columnSums[x] += row[x];
+            ++columnCounts[x];
+        }
+    }
     for (int y = 0; y < height; ++y) {
         uchar* dst = output.scanLine(y);
         for (int x = 0; x < width; ++x) {
-            int sum = 0;
-            int count = 0;
-            for (int yy = qMax(0, y - radius); yy <= qMin(height - 1, y + radius); ++yy) {
-                const uchar* src = input.constScanLine(yy);
-                for (int xx = qMax(0, x - radius); xx <= qMin(width - 1, x + radius); ++xx) {
-                    sum += src[xx];
-                    ++count;
-                }
+            dst[x] = static_cast<uchar>(columnCounts[x] > 0
+                                            ? qBound(0, columnSums[x] / columnCounts[x], 255)
+                                            : 0);
+        }
+        const int removeY = y - radius;
+        if (removeY >= 0) {
+            const int* row = horizontal.constData() + (removeY * width);
+            for (int x = 0; x < width; ++x) {
+                columnSums[x] -= row[x];
+                --columnCounts[x];
             }
-            dst[x] = static_cast<uchar>(count > 0 ? qBound(0, sum / count, 255) : 0);
+        }
+        const int addY = y + radius + 1;
+        if (addY < height) {
+            const int* row = horizontal.constData() + (addY * width);
+            for (int x = 0; x < width; ++x) {
+                columnSums[x] += row[x];
+                ++columnCounts[x];
+            }
         }
     }
     return output;
@@ -398,8 +614,28 @@ QImage blurMask(const QImage& source, int radius)
 QImage preparedClipMask(const TimelineClip& clip, int64_t sourceFrame, const QSize& size)
 {
     const QString path = maskFramePathForSourceFrame(clip, sourceFrame);
-    if (path.isEmpty() || !QFileInfo::exists(path)) {
+    const QFileInfo info(path);
+    if (path.isEmpty() || !info.exists()) {
         return QImage();
+    }
+    const QString cacheKey =
+        QStringLiteral("%1|%2x%3|%4|%5|inv=%6|er=%7|di=%8|fe=%9|fg=%10|bl=%11")
+            .arg(info.absoluteFilePath())
+            .arg(size.width())
+            .arg(size.height())
+            .arg(info.size())
+            .arg(info.lastModified().toMSecsSinceEpoch())
+            .arg(clip.maskInvert ? 1 : 0)
+            .arg(clip.maskErode, 0, 'g', 8)
+            .arg(clip.maskDilate, 0, 'g', 8)
+            .arg(clip.maskFeather, 0, 'g', 8)
+            .arg(clip.maskFeatherGamma, 0, 'g', 8)
+            .arg(clip.maskBlur, 0, 'g', 8);
+    {
+        QMutexLocker lock(&preparedMaskCacheMutex());
+        if (QImage* cached = preparedMaskCache().object(cacheKey)) {
+            return *cached;
+        }
     }
     QImage mask(path);
     if (mask.isNull()) {
@@ -422,13 +658,42 @@ QImage preparedClipMask(const TimelineClip& clip, int64_t sourceFrame, const QSi
     if (blurRadius > 0) {
         mask = blurMask(mask, blurRadius);
     }
+    {
+        QMutexLocker lock(&preparedMaskCacheMutex());
+        const int costKb = qMax(1, static_cast<int>((mask.sizeInBytes() + 1023) / 1024));
+        preparedMaskCache().insert(cacheKey, new QImage(mask), costKb);
+    }
     return mask;
 }
+}
+
+QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, const QSize& size)
+{
+    return preparedClipMask(clip, sourceFrame, size);
+}
+
+QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
+{
+    const QString path = maskFramePathForSourceFrame(clip, sourceFrame);
+    const QFileInfo info(path);
+    if (path.isEmpty() || !info.exists()) {
+        return QImage();
+    }
+    return QImage(path);
 }
 
 QImage applyClipMaskEffectsToImage(const QImage& source,
                                    const TimelineClip& clip,
                                    int64_t sourceFrame)
+{
+    TimelineClip::GradingKeyframe neutralGrade;
+    return applyClipMaskEffectsToImage(source, clip, sourceFrame, neutralGrade);
+}
+
+QImage applyClipMaskEffectsToImage(const QImage& source,
+                                   const TimelineClip& clip,
+                                   int64_t sourceFrame,
+                                   const TimelineClip::GradingKeyframe& clipGrade)
 {
     if (source.isNull() || !clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
         return source;
@@ -438,7 +703,23 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
         return source;
     }
 
-    QImage base = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (clip.maskShowOnly) {
+        QImage output(mask.size(), QImage::Format_ARGB32_Premultiplied);
+        for (int y = 0; y < output.height(); ++y) {
+            const uchar* maskRow = mask.constScanLine(y);
+            QRgb* dstRow = reinterpret_cast<QRgb*>(output.scanLine(y));
+            for (int x = 0; x < output.width(); ++x) {
+                const int v = maskRow[x] >= 128 ? 255 : 0;
+                dstRow[x] = qRgba(v, v, v, 255);
+            }
+        }
+        return output;
+    }
+
+    QImage original = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage base = clip.maskGradeEnabled
+                      ? applyClipGrade(original, clipGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied)
+                      : original;
     QImage output(base.size(), QImage::Format_ARGB32_Premultiplied);
     output.fill(Qt::transparent);
 
@@ -463,11 +744,8 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
     }
 
     if (clip.maskGradeEnabled) {
-        TimelineClip::GradingKeyframe maskGrade;
-        maskGrade.brightness = clip.maskGradeBrightness;
-        maskGrade.contrast = clip.maskGradeContrast;
-        maskGrade.saturation = clip.maskGradeSaturation;
-        QImage graded = applyClipGrade(base, maskGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const TimelineClip::GradingKeyframe maskGrade = maskGradeForClip(clip);
+        QImage graded = applyClipGrade(original, maskGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied);
         QImage composited(base.size(), QImage::Format_ARGB32_Premultiplied);
         composited.fill(Qt::transparent);
         for (int y = 0; y < base.height(); ++y) {
@@ -476,14 +754,20 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
             const QRgb* gradeRow = reinterpret_cast<const QRgb*>(graded.constScanLine(y));
             QRgb* dstRow = reinterpret_cast<QRgb*>(composited.scanLine(y));
             for (int x = 0; x < base.width(); ++x) {
-                const qreal t =
-                    qBound<qreal>(0.0, (maskRow[x] / 255.0) * clip.maskOpacity, 1.0);
-                const QColor src = QColor::fromRgba(srcRow[x]);
-                const QColor dst = QColor::fromRgba(gradeRow[x]);
-                dstRow[x] = qRgba(qRound(src.red() * (1.0 - t) + dst.red() * t),
-                                  qRound(src.green() * (1.0 - t) + dst.green() * t),
-                                  qRound(src.blue() * (1.0 - t) + dst.blue() * t),
-                                  src.alpha());
+                const int alpha = qBound(0, qRound(maskRow[x] * clip.maskOpacity), 255);
+                if (alpha <= 0) {
+                    dstRow[x] = srcRow[x];
+                    continue;
+                }
+                if (alpha >= 255) {
+                    dstRow[x] = qRgba(qRed(gradeRow[x]), qGreen(gradeRow[x]), qBlue(gradeRow[x]), qAlpha(srcRow[x]));
+                    continue;
+                }
+                const int invAlpha = 255 - alpha;
+                dstRow[x] = qRgba((qRed(srcRow[x]) * invAlpha + qRed(gradeRow[x]) * alpha + 127) / 255,
+                                  (qGreen(srcRow[x]) * invAlpha + qGreen(gradeRow[x]) * alpha + 127) / 255,
+                                  (qBlue(srcRow[x]) * invAlpha + qBlue(gradeRow[x]) * alpha + 127) / 255,
+                                  qAlpha(srcRow[x]));
             }
         }
         base = composited;

@@ -4,6 +4,7 @@
 #include <QString>
 
 #include <cstdint>
+#include <functional>
 
 struct AudioTimeStretchCacheEntry {
     QVector<float> samples;
@@ -32,7 +33,8 @@ bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
 
 bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,
-                                  const AudioTimeStretchCacheEntry& entry);
+                                  const AudioTimeStretchCacheEntry& entry,
+                                  const std::function<void(double)>& progressCallback = {});
 
 int64_t audioTimeStretchCacheSampleForSourceSample(int64_t sourceSample, double playbackRate);
 int64_t audioTimeStretchCacheEndSampleForSourceEndSample(int64_t sourceEndSample, double playbackRate);

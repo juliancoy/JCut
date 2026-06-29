@@ -24,6 +24,7 @@
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSplitter>
 #include <QSpinBox>
 #include <QTabBar>
@@ -271,14 +272,24 @@ InspectorPane::InspectorPane(QWidget *parent)
 QWidget *InspectorPane::buildGradingTab()
 {
     auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("Grade"), page));
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setSpacing(0);
 
-    m_gradingPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
+    auto *scrollArea = new QScrollArea(page);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *content = new QWidget(scrollArea);
+    auto *layout = createTabLayout(content);
+    layout->addWidget(createTabHeading(QStringLiteral("Grade"), content));
+
+    m_gradingPathLabel = new QLabel(QStringLiteral("No visual clip selected"), content);
     m_gradingPathLabel->setWordWrap(true);
     layout->addWidget(m_gradingPathLabel);
 
-    m_gradingEditModeCombo = new QComboBox(page);
+    m_gradingEditModeCombo = new QComboBox(content);
     m_gradingEditModeCombo->addItem(QStringLiteral("Levels"));
     m_gradingEditModeCombo->addItem(QStringLiteral("Curves"));
     m_gradingEditModeCombo->setVisible(false);
@@ -286,10 +297,10 @@ QWidget *InspectorPane::buildGradingTab()
     auto *commonForm = new QFormLayout;
     commonForm->setRowWrapPolicy(QFormLayout::WrapAllRows);
     commonForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    m_brightnessSpin = new QDoubleSpinBox(page);
-    m_contrastSpin = new QDoubleSpinBox(page);
-    m_saturationSpin = new QDoubleSpinBox(page);
-    m_opacitySpin = new QDoubleSpinBox(page);
+    m_brightnessSpin = new QDoubleSpinBox(content);
+    m_contrastSpin = new QDoubleSpinBox(content);
+    m_saturationSpin = new QDoubleSpinBox(content);
+    m_opacitySpin = new QDoubleSpinBox(content);
 
     for (QDoubleSpinBox *spin : {m_brightnessSpin, m_contrastSpin, m_saturationSpin})
     {
@@ -300,7 +311,7 @@ QWidget *InspectorPane::buildGradingTab()
     commonForm->addRow(QStringLiteral("Saturation"), m_saturationSpin);
     layout->addLayout(commonForm);
 
-    m_gradingLevelsPanel = new QWidget(page);
+    m_gradingLevelsPanel = new QWidget(content);
     auto *levelsLayout = new QFormLayout(m_gradingLevelsPanel);
     levelsLayout->setContentsMargins(0, 0, 0, 0);
     levelsLayout->setRowWrapPolicy(QFormLayout::WrapAllRows);
@@ -309,16 +320,16 @@ QWidget *InspectorPane::buildGradingTab()
     levelsLayout->addRow(QStringLiteral("Contrast"), m_contrastSpin);
 
     // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
-    m_gradingCurvesPanel = new QWidget(page);
+    m_gradingCurvesPanel = new QWidget(content);
     auto *curvesLayout = new QVBoxLayout(m_gradingCurvesPanel);
     curvesLayout->setContentsMargins(0, 0, 0, 0);
     curvesLayout->setSpacing(6);
 
     auto *shadowsGroup = new QGroupBox(QStringLiteral("Shadows (Lift)"), m_gradingCurvesPanel);
     auto *shadowsLayout = new QHBoxLayout(shadowsGroup);
-    m_shadowsRSpin = new QDoubleSpinBox(page);
-    m_shadowsGSpin = new QDoubleSpinBox(page);
-    m_shadowsBSpin = new QDoubleSpinBox(page);
+    m_shadowsRSpin = new QDoubleSpinBox(shadowsGroup);
+    m_shadowsGSpin = new QDoubleSpinBox(shadowsGroup);
+    m_shadowsBSpin = new QDoubleSpinBox(shadowsGroup);
     for (QDoubleSpinBox *spin : {m_shadowsRSpin, m_shadowsGSpin, m_shadowsBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -334,9 +345,9 @@ QWidget *InspectorPane::buildGradingTab()
 
     auto *midtonesGroup = new QGroupBox(QStringLiteral("Midtones (Gamma)"), m_gradingCurvesPanel);
     auto *midtonesLayout = new QHBoxLayout(midtonesGroup);
-    m_midtonesRSpin = new QDoubleSpinBox(page);
-    m_midtonesGSpin = new QDoubleSpinBox(page);
-    m_midtonesBSpin = new QDoubleSpinBox(page);
+    m_midtonesRSpin = new QDoubleSpinBox(midtonesGroup);
+    m_midtonesGSpin = new QDoubleSpinBox(midtonesGroup);
+    m_midtonesBSpin = new QDoubleSpinBox(midtonesGroup);
     for (QDoubleSpinBox *spin : {m_midtonesRSpin, m_midtonesGSpin, m_midtonesBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -352,9 +363,9 @@ QWidget *InspectorPane::buildGradingTab()
 
     auto *highlightsGroup = new QGroupBox(QStringLiteral("Highlights (Gain)"), m_gradingCurvesPanel);
     auto *highlightsLayout = new QHBoxLayout(highlightsGroup);
-    m_highlightsRSpin = new QDoubleSpinBox(page);
-    m_highlightsGSpin = new QDoubleSpinBox(page);
-    m_highlightsBSpin = new QDoubleSpinBox(page);
+    m_highlightsRSpin = new QDoubleSpinBox(highlightsGroup);
+    m_highlightsGSpin = new QDoubleSpinBox(highlightsGroup);
+    m_highlightsBSpin = new QDoubleSpinBox(highlightsGroup);
     for (QDoubleSpinBox *spin : {m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -372,14 +383,15 @@ QWidget *InspectorPane::buildGradingTab()
     auto* curveChannelLabel = new QLabel(QStringLiteral("Channel"), m_gradingCurvesPanel);
     curveChannelLabel->setToolTip(QStringLiteral("Curve channel"));
     curveChannelLayout->addWidget(curveChannelLabel);
-    m_gradingCurveChannelTabs = new QTabWidget(m_gradingCurvesPanel);
-    m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Red"));
-    m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Green"));
-    m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Blue"));
-    m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Brightness"));
-    m_gradingCurveChannelTabs->setDocumentMode(true);
+    m_gradingCurveChannelTabs = new QTabBar(m_gradingCurvesPanel);
+    m_gradingCurveChannelTabs->addTab(QStringLiteral("Red"));
+    m_gradingCurveChannelTabs->addTab(QStringLiteral("Green"));
+    m_gradingCurveChannelTabs->addTab(QStringLiteral("Blue"));
+    m_gradingCurveChannelTabs->addTab(QStringLiteral("Brightness"));
+    m_gradingCurveChannelTabs->setDrawBase(false);
+    m_gradingCurveChannelTabs->setExpanding(false);
+    m_gradingCurveChannelTabs->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     m_gradingCurveChannelTabs->setStyleSheet(QStringLiteral(
-        "QTabWidget::pane { border: 0; }"
         "QTabBar::tab { background:#1a2028; color:#9fb0c2; padding:5px 10px; border:1px solid #2f3a46; border-bottom:0; }"
         "QTabBar::tab:selected { background:#223246; color:#dbe9f8; }"));
     curveChannelLayout->addWidget(m_gradingCurveChannelTabs, 1);
@@ -392,7 +404,7 @@ QWidget *InspectorPane::buildGradingTab()
     curveChannelLayout->addWidget(m_gradingCurveChannelCombo);
     curveChannelLayout->addStretch();
 
-    connect(m_gradingCurveChannelTabs, &QTabWidget::currentChanged, this, [this](int index) {
+    connect(m_gradingCurveChannelTabs, &QTabBar::currentChanged, this, [this](int index) {
         if (!m_gradingCurveChannelCombo) {
             return;
         }
@@ -427,38 +439,41 @@ QWidget *InspectorPane::buildGradingTab()
     curveOptionsLayout->addStretch();
 
     m_gradingHistogramWidget = new GradingHistogramWidget(m_gradingCurvesPanel);
-    m_gradingHistogramWidget->setMinimumHeight(240);
-    m_gradingHistogramWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_gradingHistogramWidget->setMinimumHeight(180);
+    m_gradingHistogramWidget->setMaximumHeight(220);
+    m_gradingHistogramWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_gradingHistogramWidget->setToolTip(QStringLiteral(
         "Current-frame histogram.\n"
         "Select a channel, click to add points, drag points to shape the curve, right-click a point to remove it."));
 
-    curvesLayout->addLayout(curveChannelLayout);
-    curvesLayout->addWidget(m_gradingHistogramWidget, 1);
-    curvesLayout->addLayout(curveOptionsLayout);
     curvesLayout->addWidget(shadowsGroup);
     curvesLayout->addWidget(midtonesGroup);
     curvesLayout->addWidget(highlightsGroup);
+    curvesLayout->addLayout(curveChannelLayout);
+    curvesLayout->addLayout(curveOptionsLayout);
+    curvesLayout->addWidget(m_gradingHistogramWidget);
 
     layout->addWidget(m_gradingLevelsPanel);
     layout->addWidget(m_gradingCurvesPanel);
     m_gradingLevelsPanel->setVisible(true);
     m_gradingCurvesPanel->setVisible(true);
 
-    m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
-    m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current"), page);
-    m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), page);
+    m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), content);
+    m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current"), content);
+    m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), content);
     m_gradingAutoScrollCheckBox->setChecked(true);
     m_gradingFollowCurrentCheckBox->setChecked(true);
     m_gradingPreviewCheckBox->setChecked(true);
-    m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), page);
-    m_gradingAutoOpposeButton = new QPushButton(QStringLiteral("Auto Oppose"), page);
+    m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), content);
+    m_gradingResetButton = new QPushButton(QStringLiteral("Reset Grading"), content);
+    m_gradingResetButton->setToolTip(QStringLiteral("Reset the current grading values and curves to neutral."));
+    m_gradingAutoOpposeButton = new QPushButton(QStringLiteral("Auto Oppose"), content);
     m_gradingAutoOpposeButton->setToolTip(QStringLiteral(
         "Analyze the selected clip and add grading keyframes that oppose major exposure/color shifts."));
-    m_gradingFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), page);
-    m_gradingFadeOutButton = new QPushButton(QStringLiteral("Fade Out From Playhead"), page);
+    m_gradingFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), content);
+    m_gradingFadeOutButton = new QPushButton(QStringLiteral("Fade Out From Playhead"), content);
     
-    m_gradingFadeDurationSpin = new QDoubleSpinBox(page);
+    m_gradingFadeDurationSpin = new QDoubleSpinBox(content);
     m_gradingFadeDurationSpin->setRange(0.1, 60.0);
     m_gradingFadeDurationSpin->setValue(1.0);
     m_gradingFadeDurationSpin->setSuffix(QStringLiteral(" s"));
@@ -466,7 +481,7 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingFadeDurationSpin->setSingleStep(0.5);
     m_gradingFadeDurationSpin->setToolTip(QStringLiteral("Fade duration in seconds"));
 
-    m_gradingKeyframeTable = new QTableWidget(page);
+    m_gradingKeyframeTable = new QTableWidget(content);
     m_gradingKeyframeTable->setColumnCount(5);
     m_gradingKeyframeTable->setHorizontalHeaderLabels({QStringLiteral("Frame"),
                                                        QStringLiteral("Bright"),
@@ -485,8 +500,12 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(m_gradingFollowCurrentCheckBox);
     layout->addWidget(m_gradingPreviewCheckBox);
     layout->addWidget(m_gradingKeyAtPlayheadButton);
+    layout->addWidget(m_gradingResetButton);
     layout->addWidget(m_gradingAutoOpposeButton);
-    layout->addWidget(m_gradingKeyframeTable, 1);
+    layout->addWidget(m_gradingKeyframeTable);
+
+    scrollArea->setWidget(content);
+    pageLayout->addWidget(scrollArea, 1);
     return page;
 }
 
@@ -611,7 +630,18 @@ QWidget *InspectorPane::buildEffectsTab()
 QWidget *InspectorPane::buildMasksTab()
 {
     auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setSpacing(0);
+
+    auto *scrollArea = new QScrollArea(page);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    pageLayout->addWidget(scrollArea);
+
+    auto *content = new QWidget(scrollArea);
+    auto *layout = createTabLayout(content);
     layout->addWidget(createTabHeading(QStringLiteral("Masks"), page));
 
     m_maskClipLabel = new QLabel(QStringLiteral("Select a video clip to edit its mask."), page);
@@ -639,7 +669,52 @@ QWidget *InspectorPane::buildMasksTab()
         spin->setDecimals(1);
         spin->setSingleStep(step);
         spin->setSuffix(QStringLiteral(" px"));
+        spin->setAccelerated(true);
+        spin->setKeyboardTracking(false);
+        spin->setMinimumWidth(96);
         return spin;
+    };
+    struct PixelControl {
+        QDoubleSpinBox* spin = nullptr;
+        QWidget* row = nullptr;
+    };
+    auto makePixelsSliderControl = [page, makePixelsSpin](double maxValue, double step, const QString& tooltip) {
+        PixelControl control;
+        auto *row = new QWidget(page);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(6);
+
+        auto *slider = new QSlider(Qt::Horizontal, row);
+        slider->setRange(0, qRound(maxValue * 10.0));
+        slider->setSingleStep(qMax(1, qRound(step * 10.0)));
+        slider->setPageStep(qMax(10, qRound(step * 50.0)));
+        slider->setToolTip(tooltip);
+        slider->setMinimumWidth(120);
+
+        auto *spin = makePixelsSpin(maxValue, step);
+        spin->setParent(row);
+        spin->setToolTip(tooltip);
+
+        QObject::connect(slider, &QSlider::valueChanged, spin, [spin](int value) {
+            const double nextValue = static_cast<double>(value) / 10.0;
+            if (!qFuzzyCompare(spin->value() + 1.0, nextValue + 1.0)) {
+                spin->setValue(nextValue);
+            }
+        });
+        QObject::connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), slider, [slider](double value) {
+            const int nextValue = qRound(value * 10.0);
+            if (slider->value() != nextValue) {
+                QSignalBlocker blocker(slider);
+                slider->setValue(nextValue);
+            }
+        });
+
+        rowLayout->addWidget(slider, 1);
+        rowLayout->addWidget(spin);
+        control.spin = spin;
+        control.row = row;
+        return control;
     };
     auto makeScalarSpin = [page](double minValue, double maxValue, double value, double step) {
         auto *spin = new QDoubleSpinBox(page);
@@ -651,17 +726,36 @@ QWidget *InspectorPane::buildMasksTab()
     };
 
     auto *shapeForm = new QFormLayout;
-    m_maskDilateSpin = makePixelsSpin(200.0, 1.0);
-    m_maskErodeSpin = makePixelsSpin(200.0, 1.0);
-    m_maskShapeFeatherSpin = makePixelsSpin(200.0, 0.5);
-    m_maskBlurSpin = makePixelsSpin(200.0, 0.5);
+    const PixelControl dilateControl = makePixelsSliderControl(
+        512.0,
+        1.0,
+        QStringLiteral("Expand the mask edge outward in pixels."));
+    const PixelControl erodeControl = makePixelsSliderControl(
+        512.0,
+        1.0,
+        QStringLiteral("Contract the mask edge inward in pixels."));
+    const PixelControl featherControl = makePixelsSliderControl(
+        512.0,
+        0.5,
+        QStringLiteral("Soften the processed mask edge in pixels."));
+    const PixelControl blurControl = makePixelsSliderControl(
+        512.0,
+        0.5,
+        QStringLiteral("Blur the mask matte in pixels before compositing."));
+    m_maskDilateSpin = dilateControl.spin;
+    m_maskErodeSpin = erodeControl.spin;
+    m_maskShapeFeatherSpin = featherControl.spin;
+    m_maskBlurSpin = blurControl.spin;
     m_maskInvertCheck = new QCheckBox(QStringLiteral("Invert"), page);
+    m_maskShowOnlyCheck = new QCheckBox(QStringLiteral("Show mask only"), page);
+    m_maskShowOnlyCheck->setToolTip(QStringLiteral("Preview/export the processed mask instead of the source clip."));
     m_maskOpacitySpin = makeScalarSpin(0.0, 1.0, 1.0, 0.05);
-    shapeForm->addRow(QStringLiteral("Dilate"), m_maskDilateSpin);
-    shapeForm->addRow(QStringLiteral("Erode"), m_maskErodeSpin);
-    shapeForm->addRow(QStringLiteral("Feather"), m_maskShapeFeatherSpin);
-    shapeForm->addRow(QStringLiteral("Blur"), m_maskBlurSpin);
+    shapeForm->addRow(QStringLiteral("Dilate"), dilateControl.row);
+    shapeForm->addRow(QStringLiteral("Erode"), erodeControl.row);
+    shapeForm->addRow(QStringLiteral("Feather"), featherControl.row);
+    shapeForm->addRow(QStringLiteral("Blur"), blurControl.row);
     shapeForm->addRow(QStringLiteral("Invert"), m_maskInvertCheck);
+    shapeForm->addRow(QStringLiteral("View"), m_maskShowOnlyCheck);
     shapeForm->addRow(QStringLiteral("Opacity"), m_maskOpacitySpin);
     layout->addLayout(shapeForm);
 
@@ -670,11 +764,75 @@ QWidget *InspectorPane::buildMasksTab()
     m_maskGradeBrightnessSpin = makeScalarSpin(-1.0, 1.0, 0.0, 0.01);
     m_maskGradeContrastSpin = makeScalarSpin(0.0, 4.0, 1.0, 0.05);
     m_maskGradeSaturationSpin = makeScalarSpin(0.0, 4.0, 1.0, 0.05);
+    m_maskResetGradeButton = new QPushButton(QStringLiteral("Reset Grading"), page);
+    m_maskResetGradeButton->setToolTip(QStringLiteral("Reset masked-area grading values and curves to neutral."));
     gradeForm->addRow(QStringLiteral("Grade"), m_maskGradeEnabledCheck);
     gradeForm->addRow(QStringLiteral("Brightness"), m_maskGradeBrightnessSpin);
     gradeForm->addRow(QStringLiteral("Contrast"), m_maskGradeContrastSpin);
     gradeForm->addRow(QStringLiteral("Saturation"), m_maskGradeSaturationSpin);
+    gradeForm->addRow(QString(), m_maskResetGradeButton);
     layout->addLayout(gradeForm);
+
+    auto *maskCurveChannelLayout = new QHBoxLayout;
+    auto *maskCurveChannelLabel = new QLabel(QStringLiteral("Channel"), page);
+    maskCurveChannelLabel->setToolTip(QStringLiteral("Mask grade curve channel"));
+    maskCurveChannelLayout->addWidget(maskCurveChannelLabel);
+    m_maskCurveChannelTabs = new QTabBar(page);
+    m_maskCurveChannelTabs->addTab(QStringLiteral("Red"));
+    m_maskCurveChannelTabs->addTab(QStringLiteral("Green"));
+    m_maskCurveChannelTabs->addTab(QStringLiteral("Blue"));
+    m_maskCurveChannelTabs->addTab(QStringLiteral("Brightness"));
+    m_maskCurveChannelTabs->setDrawBase(false);
+    m_maskCurveChannelTabs->setExpanding(false);
+    m_maskCurveChannelTabs->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    m_maskCurveChannelTabs->setStyleSheet(QStringLiteral(
+        "QTabBar::tab { background:#1a2028; color:#9fb0c2; padding:5px 10px; border:1px solid #2f3a46; border-bottom:0; }"
+        "QTabBar::tab:selected { background:#223246; color:#dbe9f8; }"));
+    maskCurveChannelLayout->addWidget(m_maskCurveChannelTabs, 1);
+    m_maskCurveChannelCombo = new QComboBox(page);
+    m_maskCurveChannelCombo->addItem(QStringLiteral("Red"));
+    m_maskCurveChannelCombo->addItem(QStringLiteral("Green"));
+    m_maskCurveChannelCombo->addItem(QStringLiteral("Blue"));
+    m_maskCurveChannelCombo->addItem(QStringLiteral("Brightness"));
+    m_maskCurveChannelCombo->setVisible(false);
+    maskCurveChannelLayout->addWidget(m_maskCurveChannelCombo);
+    maskCurveChannelLayout->addStretch();
+    layout->addLayout(maskCurveChannelLayout);
+
+    connect(m_maskCurveChannelTabs, &QTabBar::currentChanged, this, [this](int index) {
+        if (!m_maskCurveChannelCombo) {
+            return;
+        }
+        if (index >= 0 && index < m_maskCurveChannelCombo->count() &&
+            m_maskCurveChannelCombo->currentIndex() != index) {
+            m_maskCurveChannelCombo->setCurrentIndex(index);
+        }
+    });
+    connect(m_maskCurveChannelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (!m_maskCurveChannelTabs) {
+            return;
+        }
+        if (index >= 0 && index < m_maskCurveChannelTabs->count() &&
+            m_maskCurveChannelTabs->currentIndex() != index) {
+            m_maskCurveChannelTabs->setCurrentIndex(index);
+        }
+    });
+
+    auto *maskCurveOptionsLayout = new QHBoxLayout;
+    m_maskCurveSmoothingCheckBox = new QCheckBox(QStringLiteral("Smooth"), page);
+    m_maskCurveSmoothingCheckBox->setChecked(true);
+    m_maskCurveSmoothingCheckBox->setToolTip(QStringLiteral("Smooth mask curve interpolation"));
+    maskCurveOptionsLayout->addWidget(m_maskCurveSmoothingCheckBox);
+    maskCurveOptionsLayout->addStretch();
+    layout->addLayout(maskCurveOptionsLayout);
+
+    m_maskHistogramWidget = new GradingHistogramWidget(page);
+    m_maskHistogramWidget->setMinimumHeight(200);
+    m_maskHistogramWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_maskHistogramWidget->setToolTip(QStringLiteral(
+        "Mask grade curve.\n"
+        "Select a channel, click to add points, drag points to shape the curve, right-click a point to remove it."));
+    layout->addWidget(m_maskHistogramWidget);
 
     auto *shadowForm = new QFormLayout;
     m_maskShadowEnabledCheck = new QCheckBox(QStringLiteral("Drop shadow"), page);
@@ -693,6 +851,7 @@ QWidget *InspectorPane::buildMasksTab()
     layout->addLayout(shadowForm);
 
     layout->addStretch(1);
+    scrollArea->setWidget(content);
     return page;
 }
 

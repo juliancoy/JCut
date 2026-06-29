@@ -11,6 +11,7 @@
 #include "frame_handle.h"
 #include "media_pipeline_shared.h"
 #include "editor_shared.h"
+#include "editor_shared_effects.h"
 #include "editor_shared_timing.h"
 #include "playback_frame_pipeline.h"
 #include "preview_frame_selection.h"
@@ -90,20 +91,18 @@ bool visualClipActiveAtSample(const TimelineClip& clip,
            editor::clipIsActiveAtTimelineFrame(clip, tracks, framePosition, bypassGrading);
 }
 
-bool gradingCurveDiffersFromIdentity(const QVector<QPointF>& points, bool smoothingEnabled)
+TimelineClip::GradingKeyframe maskGradeForClip(const TimelineClip& clip)
 {
-    const QVector<QPointF> identity = defaultGradingCurvePoints();
-    const QVector<quint8> lut = gradingCurveLut8(points, TimelineClip::kGradingCurveLutSize, smoothingEnabled);
-    const QVector<quint8> identityLut = gradingCurveLut8(identity, TimelineClip::kGradingCurveLutSize, smoothingEnabled);
-    return !lut.isEmpty() && !identityLut.isEmpty() && lut != identityLut;
-}
-
-bool gradingUsesCurveLut(const TimelineClip::GradingKeyframe& grade)
-{
-    return gradingCurveDiffersFromIdentity(grade.curvePointsR, grade.curveSmoothingEnabled) ||
-           gradingCurveDiffersFromIdentity(grade.curvePointsG, grade.curveSmoothingEnabled) ||
-           gradingCurveDiffersFromIdentity(grade.curvePointsB, grade.curveSmoothingEnabled) ||
-           gradingCurveDiffersFromIdentity(grade.curvePointsLuma, grade.curveSmoothingEnabled);
+    TimelineClip::GradingKeyframe grade;
+    grade.brightness = clip.maskGradeBrightness;
+    grade.contrast = clip.maskGradeContrast;
+    grade.saturation = clip.maskGradeSaturation;
+    grade.curvePointsR = clip.maskGradeCurvePointsR;
+    grade.curvePointsG = clip.maskGradeCurvePointsG;
+    grade.curvePointsB = clip.maskGradeCurvePointsB;
+    grade.curvePointsLuma = clip.maskGradeCurvePointsLuma;
+    grade.curveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+    return grade;
 }
 
 QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& clips,
@@ -1599,6 +1598,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.grading = effects.grading;
         status.maskFeather = effects.maskFeather;
         status.maskFeatherGamma = effects.maskFeatherGamma;
+        status.maskInvert = clip.maskInvert;
+        status.maskErode = clip.maskErode;
+        status.maskDilate = clip.maskDilate;
+        status.maskBlur = clip.maskBlur;
         status.correctionPolygonCount = effects.correctionPolygons.size();
         status.correctionsApplied = false;
         status.correctionsSupported = false;
@@ -1638,6 +1641,28 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             status.presentedSourceFrame = selectedFrame.frameNumber();
             m_lastPresentedFrameByClip.insert(clip.id, selectedFrame);
             status.frameSize = selectedFrame.size();
+            const bool gpuMaskEnabled =
+                clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
+                (clip.maskShowOnly || clip.maskGradeEnabled);
+            const bool maskFrameMatchesPresentedFrame =
+                staticImageClip ||
+                status.exact ||
+                status.presentedSourceFrame == requestFrame;
+            if (gpuMaskEnabled && maskFrameMatchesPresentedFrame) {
+                const QImage mask = rawClipMaskImage(clip, requestFrame);
+                if (!mask.isNull()) {
+                    status.maskImage = mask;
+                    status.maskTextureEnabled = true;
+                    status.maskShowOnly = clip.maskShowOnly;
+                    status.maskGradeEnabled = clip.maskGradeEnabled;
+                    status.maskOpacity = clip.maskOpacity;
+                    status.maskGradeBrightness = clip.maskGradeBrightness;
+                    status.maskGradeContrast = clip.maskGradeContrast;
+                    status.maskGradeSaturation = clip.maskGradeSaturation;
+                    status.maskGrade = maskGradeForClip(clip);
+                    status.maskCurveLutApplied = gradingUsesCurveLut(status.maskGrade);
+                }
+            }
             status.hardwareFrame = selectedHasHardwareFrame;
             status.gpuTexture = selectedHasGpuTexture;
             status.cpuImage = selectedHasCpuFrame && !selectedHasHardwareFrame && !selectedHasGpuTexture;

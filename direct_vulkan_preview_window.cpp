@@ -1792,6 +1792,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     rp.pClearValues = clearValues;
 
     VkCommandBuffer cb = m_window->currentCommandBuffer();
+    const uint32_t swapchainImageIndex =
+        static_cast<uint32_t>(std::max(0, m_window->currentSwapChainImageIndex()));
     advanceRetiredClipHandoffResources();
     struct DecoderReadbackCandidate {
         VkImage image = VK_NULL_HANDLE;
@@ -1801,6 +1803,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     } decoderReadbackCandidate;
     QHash<QString, DirectVulkanFrameHandoffPipeline::Result> frameHandoffResults;
     QHash<QString, bool> curveLutUploadResults;
+    QHash<QString, bool> maskCurveLutUploadResults;
+    QHash<QString, bool> maskUploadResults;
     struct PreparedOverlayTexture {
         VulkanResources* resources = nullptr;
         QRectF bounds;
@@ -1827,6 +1831,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             ClipHandoffResources* handoffResources = ensureClipHandoffResources(status.clipId);
             if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
+                continue;
+            }
+            if (!handoffResources->resources->beginFrameUploads(
+                    swapchainImageIndex,
+                    qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                 static_cast<size_t>(swapchainImageIndex) + 1))) {
                 continue;
             }
             DirectVulkanFrameHandoffPipeline::Result handoffResult;
@@ -1868,6 +1878,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             } else {
                 handoffResult = handoffResources->pipeline->record(
                     cb,
+                    swapchainImageIndex,
                     status,
                     handoffResources->resources.get(),
                     m_owner ? m_owner->stats() : nullptr);
@@ -1875,10 +1886,30 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             frameHandoffResults.insert(status.clipId, handoffResult);
             const QByteArray curveLut = curveLutRgbaBytes(status.grading);
             if (!curveLut.isEmpty()) {
-                curveLutUploadResults.insert(
-                    status.clipId,
-                    handoffResources->resources->uploadCurveLut(cb, curveLut));
+                const bool uploaded =
+                    handoffResources->resources->uploadCurveLut(cb, curveLut);
+                curveLutUploadResults.insert(status.clipId, uploaded);
             }
+            if (status.maskGradeEnabled && status.maskCurveLutApplied) {
+                const QByteArray maskCurveLut = curveLutRgbaBytes(status.maskGrade);
+                if (!maskCurveLut.isEmpty()) {
+                    const bool uploaded =
+                        handoffResources->resources->uploadMaskCurveLut(cb, maskCurveLut);
+                    maskCurveLutUploadResults.insert(status.clipId, uploaded);
+                }
+            }
+            if (status.maskTextureEnabled) {
+                VulkanMaskPreprocessOptions maskOptions;
+                maskOptions.outputSize = status.frameSize;
+                maskOptions.invert = status.maskInvert;
+                maskOptions.erodeRadius = qRound(qMax<qreal>(0.0, status.maskErode));
+                maskOptions.dilateRadius = qRound(qMax<qreal>(0.0, status.maskDilate));
+                maskOptions.blurRadius = qRound(qMax<qreal>(status.maskFeather, status.maskBlur));
+                maskUploadResults.insert(
+                    status.clipId,
+                    handoffResources->resources->uploadMaskTexture(cb, status.maskImage, maskOptions));
+            }
+            handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
         }
         updateClipHandoffResourceStats();
     }
@@ -2299,19 +2330,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     push.highlights[0] = effects.highlights[0];
                     push.highlights[1] = effects.highlights[1];
                     push.highlights[2] = effects.highlights[2];
-                    push.shadows[3] = status->curveLutApplied ? 1.0f : 0.0f;
+                    push.shadows[3] = status->curveLutApplied
+                        ? render_detail::kVulkanEffectModeCurve
+                        : render_detail::kVulkanEffectModeNormal;
                     push.midtones[3] = static_cast<float>(std::max<qreal>(0.0, status->maskFeather));
                     push.highlights[3] = static_cast<float>(std::max<qreal>(0.01, status->maskFeatherGamma));
-                    const auto curveUploadIt = curveLutUploadResults.constFind(status->clipId);
-                    if (curveUploadIt != curveLutUploadResults.constEnd() && curveUploadIt.value()) {
-                        if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-                            stats->lastCurveLutApplied = status->curveLutApplied;
-                        }
-                    } else if (status->curveLutApplied) {
-                        if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-                            stats->lastUnsupportedEffect = QStringLiteral("curve_lut_upload_failed");
-                        }
-                    }
                     if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                         stats->lastEffectsPath = status->effectsPath;
                         stats->lastTargetRect = compositeRect;
@@ -2339,7 +2362,58 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                                       static_cast<uint32_t>(std::max(1, swapSize.height()))};
                 }
-                m_pipeline->bindAndDraw(cb, viewport, scissor, handoffResult.descriptorSet, push);
+                auto drawPush = [&](const VulkanPipeline::Push& drawState) {
+                    m_pipeline->bindAndDraw(cb, viewport, scissor, handoffResult.descriptorSet, drawState);
+                };
+                const bool maskReady =
+                    status && status->maskTextureEnabled &&
+                    maskUploadResults.value(status->clipId, false);
+                if (maskReady && status->maskShowOnly) {
+                    VulkanPipeline::Push maskPush = push;
+                    maskPush.brightness = 0.0f;
+                    maskPush.contrast = 1.0f;
+                    maskPush.saturation = 1.0f;
+                    maskPush.opacity = static_cast<float>(std::clamp(status->maskOpacity, 0.0, 1.0));
+                    maskPush.shadows[3] = render_detail::kVulkanEffectModeMaskOnly;
+                    drawPush(maskPush);
+                } else {
+                    VulkanPipeline::Push basePush = push;
+                    if (status && status->curveLutApplied &&
+                        !curveLutUploadResults.value(status->clipId, false)) {
+                        basePush.shadows[3] = render_detail::kVulkanEffectModeNormal;
+                        if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                            stats->lastUnsupportedEffect = QStringLiteral("curve_lut_upload_failed");
+                        }
+                    }
+                    drawPush(basePush);
+                    if (maskReady && status->maskGradeEnabled) {
+                        VulkanPipeline::Push maskPush = push;
+                        maskPush.brightness = static_cast<float>(status->maskGradeBrightness);
+                        maskPush.contrast = static_cast<float>(status->maskGradeContrast);
+                        maskPush.saturation = static_cast<float>(status->maskGradeSaturation);
+                        maskPush.opacity = static_cast<float>(std::clamp(status->maskOpacity, 0.0, 1.0));
+                        maskPush.shadows[0] = 0.0f;
+                        maskPush.shadows[1] = 0.0f;
+                        maskPush.shadows[2] = 0.0f;
+                        maskPush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
+                        maskPush.midtones[0] = 0.0f;
+                        maskPush.midtones[1] = 0.0f;
+                        maskPush.midtones[2] = 0.0f;
+                        maskPush.midtones[3] = 0.0f;
+                        maskPush.highlights[0] = 0.0f;
+                        maskPush.highlights[1] = 0.0f;
+                        maskPush.highlights[2] = 0.0f;
+                        maskPush.highlights[3] = 1.0f;
+                        if (maskCurveLutUploadResults.value(status->clipId, false)) {
+                            maskPush.midtones[3] = render_detail::kVulkanMaskGradeUseSelectedCurveLut;
+                        } else if (status->maskCurveLutApplied) {
+                            if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                                stats->lastUnsupportedEffect = QStringLiteral("mask_curve_lut_upload_failed");
+                            }
+                        }
+                        drawPush(maskPush);
+                    }
+                }
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->explicitFailureDraws;

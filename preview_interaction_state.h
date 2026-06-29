@@ -6,6 +6,7 @@
 #include "editor_shared.h"
 
 #include <QColor>
+#include <QImage>
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
@@ -93,6 +94,20 @@ struct VulkanPreviewClipFrameStatus {
     int correctionPolygonCount = 0;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    bool maskInvert = false;
+    qreal maskErode = 0.0;
+    qreal maskDilate = 0.0;
+    qreal maskBlur = 0.0;
+    bool maskTextureEnabled = false;
+    bool maskShowOnly = false;
+    bool maskGradeEnabled = false;
+    qreal maskOpacity = 1.0;
+    qreal maskGradeBrightness = 0.0;
+    qreal maskGradeContrast = 1.0;
+    qreal maskGradeSaturation = 1.0;
+    TimelineClip::GradingKeyframe maskGrade;
+    bool maskCurveLutApplied = false;
+    QImage maskImage;
     QRect targetRect;
     QRect fittedRect;
     TimelineClip::TransformKeyframe transform;

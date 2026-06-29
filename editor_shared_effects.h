@@ -7,6 +7,12 @@ QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe&
 QImage applyClipMaskEffectsToImage(const QImage& source,
                                    const TimelineClip& clip,
                                    int64_t sourceFrame);
+QImage applyClipMaskEffectsToImage(const QImage& source,
+                                   const TimelineClip& clip,
+                                   int64_t sourceFrame,
+                                   const TimelineClip::GradingKeyframe& clipGrade);
+QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame);
+QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, const QSize& size);
 QVector<QPointF> defaultGradingCurvePoints();
 QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points);
 qreal sampleGradingCurveAt(const QVector<QPointF>& points,
@@ -15,6 +21,9 @@ qreal sampleGradingCurveAt(const QVector<QPointF>& points,
 QVector<quint8> gradingCurveLut8(const QVector<QPointF>& points,
                                  int samples = TimelineClip::kGradingCurveLutSize,
                                  bool smoothingEnabled = true);
+bool gradingCurveDiffersFromIdentity(const QVector<QPointF>& points,
+                                     bool smoothingEnabled = true);
+bool gradingUsesCurveLut(const TimelineClip::GradingKeyframe& grade);
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);
 QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma = 1.0);
 EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip& clip,

@@ -30,6 +30,31 @@ bool clipLooksLikeFullSourceDuration(const TimelineClip& clip)
     return qAbs(clip.durationFrames - expectedDuration) <= 1;
 }
 
+QJsonArray curvePointsToJson(const QVector<QPointF>& points)
+{
+    QJsonArray array;
+    for (const QPointF& point : points) {
+        QJsonObject pointObj;
+        pointObj[QStringLiteral("x")] = point.x();
+        pointObj[QStringLiteral("y")] = point.y();
+        array.push_back(pointObj);
+    }
+    return array;
+}
+
+QVector<QPointF> curvePointsFromJson(const QJsonValue& value)
+{
+    QVector<QPointF> points;
+    const QJsonArray array = value.toArray();
+    points.reserve(array.size());
+    for (const QJsonValue& pointValue : array) {
+        const QJsonObject pointObj = pointValue.toObject();
+        points.push_back(QPointF(pointObj.value(QStringLiteral("x")).toDouble(),
+                                 pointObj.value(QStringLiteral("y")).toDouble()));
+    }
+    return points;
+}
+
 }
 
 QJsonObject clipToJson(const TimelineClip &clip)
@@ -275,11 +300,17 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskErode")] = clip.maskErode;
         obj[QStringLiteral("maskBlur")] = clip.maskBlur;
         obj[QStringLiteral("maskInvert")] = clip.maskInvert;
+        obj[QStringLiteral("maskShowOnly")] = clip.maskShowOnly;
         obj[QStringLiteral("maskOpacity")] = clip.maskOpacity;
         obj[QStringLiteral("maskGradeEnabled")] = clip.maskGradeEnabled;
         obj[QStringLiteral("maskGradeBrightness")] = clip.maskGradeBrightness;
         obj[QStringLiteral("maskGradeContrast")] = clip.maskGradeContrast;
         obj[QStringLiteral("maskGradeSaturation")] = clip.maskGradeSaturation;
+        obj[QStringLiteral("maskGradeCurvePointsR")] = curvePointsToJson(clip.maskGradeCurvePointsR);
+        obj[QStringLiteral("maskGradeCurvePointsG")] = curvePointsToJson(clip.maskGradeCurvePointsG);
+        obj[QStringLiteral("maskGradeCurvePointsB")] = curvePointsToJson(clip.maskGradeCurvePointsB);
+        obj[QStringLiteral("maskGradeCurvePointsLuma")] = curvePointsToJson(clip.maskGradeCurvePointsLuma);
+        obj[QStringLiteral("maskGradeCurveSmoothingEnabled")] = clip.maskGradeCurveSmoothingEnabled;
         obj[QStringLiteral("maskDropShadowEnabled")] = clip.maskDropShadowEnabled;
         obj[QStringLiteral("maskDropShadowRadius")] = clip.maskDropShadowRadius;
         obj[QStringLiteral("maskDropShadowOffsetX")] = clip.maskDropShadowOffsetX;
@@ -687,11 +718,17 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskErode = qBound<qreal>(0.0, obj.value(QStringLiteral("maskErode")).toDouble(0.0), 200.0);
         clip.maskBlur = qBound<qreal>(0.0, obj.value(QStringLiteral("maskBlur")).toDouble(0.0), 200.0);
         clip.maskInvert = obj.value(QStringLiteral("maskInvert")).toBool(false);
+        clip.maskShowOnly = obj.value(QStringLiteral("maskShowOnly")).toBool(false);
         clip.maskOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskOpacity")).toDouble(1.0), 1.0);
         clip.maskGradeEnabled = obj.value(QStringLiteral("maskGradeEnabled")).toBool(false);
         clip.maskGradeBrightness = qBound<qreal>(-1.0, obj.value(QStringLiteral("maskGradeBrightness")).toDouble(0.0), 1.0);
         clip.maskGradeContrast = qBound<qreal>(0.0, obj.value(QStringLiteral("maskGradeContrast")).toDouble(1.0), 4.0);
         clip.maskGradeSaturation = qBound<qreal>(0.0, obj.value(QStringLiteral("maskGradeSaturation")).toDouble(1.0), 4.0);
+        clip.maskGradeCurvePointsR = curvePointsFromJson(obj.value(QStringLiteral("maskGradeCurvePointsR")));
+        clip.maskGradeCurvePointsG = curvePointsFromJson(obj.value(QStringLiteral("maskGradeCurvePointsG")));
+        clip.maskGradeCurvePointsB = curvePointsFromJson(obj.value(QStringLiteral("maskGradeCurvePointsB")));
+        clip.maskGradeCurvePointsLuma = curvePointsFromJson(obj.value(QStringLiteral("maskGradeCurvePointsLuma")));
+        clip.maskGradeCurveSmoothingEnabled = obj.value(QStringLiteral("maskGradeCurveSmoothingEnabled")).toBool(true);
         clip.maskDropShadowEnabled = obj.value(QStringLiteral("maskDropShadowEnabled")).toBool(false);
         clip.maskDropShadowRadius = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDropShadowRadius")).toDouble(12.0), 200.0);
         clip.maskDropShadowOffsetX = qBound<qreal>(-500.0, obj.value(QStringLiteral("maskDropShadowOffsetX")).toDouble(0.0), 500.0);

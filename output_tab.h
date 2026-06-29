@@ -54,6 +54,8 @@ public:
         QPushButton* outputResetPipelineDefaultsButton = nullptr;
         QSpinBox* autosaveIntervalMinutesSpin = nullptr;
         QSpinBox* autosaveMaxBackupsSpin = nullptr;
+        QSpinBox* historyMaxEntriesSpin = nullptr;
+        QSpinBox* historyMaxMegabytesSpin = nullptr;
         QCheckBox* createImageSequenceCheckBox = nullptr;
         QComboBox* imageSequenceFormatCombo = nullptr;
         QPushButton* renderButton = nullptr;
@@ -78,6 +80,10 @@ public:
         std::function<void(int)> setAutosaveIntervalMinutes;
         std::function<int()> autosaveMaxBackups;
         std::function<void(int)> setAutosaveMaxBackups;
+        std::function<int()> historyMaxEntries;
+        std::function<void(int)> setHistoryMaxEntries;
+        std::function<int()> historyMaxMegabytes;
+        std::function<void(int)> setHistoryMaxMegabytes;
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;
     };
@@ -113,6 +119,8 @@ private slots:
     void onOutputResetPipelineDefaultsClicked();
     void onAutosaveIntervalMinutesChanged(int value);
     void onAutosaveMaxBackupsChanged(int value);
+    void onHistoryMaxEntriesChanged(int value);
+    void onHistoryMaxMegabytesChanged(int value);
     void onRenderClicked();
 
 private:

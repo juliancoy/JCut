@@ -358,6 +358,19 @@ QWidget *InspectorPane::buildPreferencesTab()
     m_autosaveMaxBackupsSpin->setToolTip(
         QStringLiteral("How many autosave backup files to keep per project."));
     autosaveForm->addRow(QStringLiteral("Autosave Backups"), m_autosaveMaxBackupsSpin);
+    m_historyMaxEntriesSpin = new QSpinBox(page);
+    m_historyMaxEntriesSpin->setRange(10, 500);
+    m_historyMaxEntriesSpin->setValue(100);
+    m_historyMaxEntriesSpin->setToolTip(
+        QStringLiteral("Maximum undo snapshots to keep in project history."));
+    autosaveForm->addRow(QStringLiteral("History Entries"), m_historyMaxEntriesSpin);
+    m_historyMaxMegabytesSpin = new QSpinBox(page);
+    m_historyMaxMegabytesSpin->setRange(1, 256);
+    m_historyMaxMegabytesSpin->setValue(16);
+    m_historyMaxMegabytesSpin->setSuffix(QStringLiteral(" MB"));
+    m_historyMaxMegabytesSpin->setToolTip(
+        QStringLiteral("Approximate maximum compact history payload size."));
+    autosaveForm->addRow(QStringLiteral("History Size"), m_historyMaxMegabytesSpin);
     autosaveSection.body->addLayout(autosaveForm);
     layout->addWidget(autosaveSection.container);
 

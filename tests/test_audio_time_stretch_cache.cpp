@@ -103,6 +103,40 @@ private slots:
         QCOMPARE(loaded.samples, streamTwo.samples);
     }
 
+    void writeProgressReachesCompleteAfterCommit()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString sourcePath = dir.filePath(QStringLiteral("source.wav"));
+        QFile source(sourcePath);
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        QVERIFY(source.write("source-audio") > 0);
+        source.close();
+
+        AudioTimeStretchCacheEntry entry;
+        entry.samples.resize((8 * 1024 * 1024 / static_cast<int>(sizeof(float))) + 4);
+        for (int i = 0; i < entry.samples.size(); ++i) {
+            entry.samples[i] = static_cast<float>(i % 17) / 17.0f;
+        }
+        entry.sampleRate = 48000;
+        entry.channelCount = 2;
+        entry.valid = true;
+        entry.fullyDecoded = true;
+
+        QVector<double> progressValues;
+        QVERIFY(writeAudioTimeStretchSidecar(
+            sourcePath,
+            1500,
+            entry,
+            [&progressValues](double progress) { progressValues.append(progress); }));
+
+        QVERIFY(!progressValues.isEmpty());
+        QCOMPARE(progressValues.constLast(), 1.0);
+        for (int i = 1; i < progressValues.size(); ++i) {
+            QVERIFY(progressValues[i] >= progressValues[i - 1]);
+        }
+    }
+
     void segmentCoverageUsesRetimedDomain()
     {
         QCOMPARE(audioTimeStretchCacheSampleForSourceSample(3000, 1.5), static_cast<int64_t>(2000));

@@ -238,11 +238,17 @@ struct TimelineClip {
     qreal maskErode = 0.0;
     qreal maskBlur = 0.0;
     bool maskInvert = false;
+    bool maskShowOnly = false;
     qreal maskOpacity = 1.0;
     bool maskGradeEnabled = false;
     qreal maskGradeBrightness = 0.0;
     qreal maskGradeContrast = 1.0;
     qreal maskGradeSaturation = 1.0;
+    QVector<QPointF> maskGradeCurvePointsR;
+    QVector<QPointF> maskGradeCurvePointsG;
+    QVector<QPointF> maskGradeCurvePointsB;
+    QVector<QPointF> maskGradeCurvePointsLuma;
+    bool maskGradeCurveSmoothingEnabled = true;
     bool maskDropShadowEnabled = false;
     qreal maskDropShadowRadius = 12.0;
     qreal maskDropShadowOffsetX = 0.0;

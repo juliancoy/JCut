@@ -77,12 +77,46 @@ QRectF faceTargetRectFromTransformDiagnostics(const QJsonObject &diagnostics) {
                 center.y() - (targetSide * 0.5), targetSide, targetSide);
 }
 
+struct MaskPreparePush {
+  int outputSize[2];
+  int inputSize[2];
+  int invert = 0;
+  int pad0 = 0;
+};
+
+struct MaskMorphBlurPush {
+  int outputSize[2];
+  int radius = 0;
+  int mode = 0;
+};
+
+QImage rgbaMaskImageForUpload(const QImage &mask) {
+  if (mask.isNull()) {
+    return QImage();
+  }
+  const QImage gray = mask.convertToFormat(QImage::Format_Grayscale8);
+  QImage rgba(gray.size(), QImage::Format_RGBA8888);
+  for (int y = 0; y < gray.height(); ++y) {
+    const uchar *src = gray.constScanLine(y);
+    uchar *dst = rgba.scanLine(y);
+    for (int x = 0; x < gray.width(); ++x) {
+      const uchar v = src[x];
+      dst[x * 4 + 0] = v;
+      dst[x * 4 + 1] = v;
+      dst[x * 4 + 2] = v;
+      dst[x * 4 + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
 } // namespace
 
 class OffscreenVulkanRendererPrivate {
 public:
   static constexpr int kMaxLayerTextures = 12;
   static constexpr int kFrameSlots = 3;
+  static constexpr int kMaskComputeDescriptorSetCount = 128;
   struct FrameSlot {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
@@ -100,6 +134,36 @@ public:
     VkFence fence = VK_NULL_HANDLE;
     bool stagingHostCoherent = false;
     bool inFlight = false;
+  };
+  struct LayerTextureSlot {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkImage curveLutImage = VK_NULL_HANDLE;
+    VkDeviceMemory curveLutMemory = VK_NULL_HANDLE;
+    VkImageView curveLutView = VK_NULL_HANDLE;
+    VkImage maskCurveLutImage = VK_NULL_HANDLE;
+    VkDeviceMemory maskCurveLutMemory = VK_NULL_HANDLE;
+    VkImageView maskCurveLutView = VK_NULL_HANDLE;
+    VkImage maskImage = VK_NULL_HANDLE;
+    VkDeviceMemory maskMemory = VK_NULL_HANDLE;
+    VkImageView maskView = VK_NULL_HANDLE;
+    VkImage maskRawImage = VK_NULL_HANDLE;
+    VkDeviceMemory maskRawMemory = VK_NULL_HANDLE;
+    VkImageView maskRawView = VK_NULL_HANDLE;
+    VkImage maskWorkImage = VK_NULL_HANDLE;
+    VkDeviceMemory maskWorkMemory = VK_NULL_HANDLE;
+    VkImageView maskWorkView = VK_NULL_HANDLE;
+    VkImageLayout maskLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    bool uploaded = false;
+    bool curveUploaded = false;
+    bool maskCurveUploaded = false;
+    bool maskUploaded = false;
+    std::shared_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff>
+        hardwareFrameHandoff;
   };
   ~OffscreenVulkanRendererPrivate() { release(); }
 
@@ -421,7 +485,7 @@ public:
       return false;
     }
 
-    VkDescriptorSetLayoutBinding descriptorBindings[2]{};
+    VkDescriptorSetLayoutBinding descriptorBindings[4]{};
     descriptorBindings[0].binding = 0;
     descriptorBindings[0].descriptorType =
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -432,11 +496,21 @@ public:
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptorBindings[1].descriptorCount = 1;
     descriptorBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    descriptorBindings[2].binding = 2;
+    descriptorBindings[2].descriptorType =
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorBindings[2].descriptorCount = 1;
+    descriptorBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    descriptorBindings[3].binding = 3;
+    descriptorBindings[3].descriptorType =
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorBindings[3].descriptorCount = 1;
+    descriptorBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
     descriptorSetLayoutInfo.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutInfo.bindingCount = 2;
+    descriptorSetLayoutInfo.bindingCount = 4;
     descriptorSetLayoutInfo.pBindings = descriptorBindings;
 
     if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr,
@@ -450,7 +524,7 @@ public:
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = (1 + kMaxLayerTextures) * 2;
+    poolSize.descriptorCount = (1 + kMaxLayerTextures) * 4;
 
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -562,6 +636,43 @@ public:
               QStringLiteral("Vulkan layer curve LUT"), err)) {
         return false;
       }
+      if (!createDeviceImage(
+              kCurveLutWidth, kCurveLutHeight, VK_FORMAT_R8G8B8A8_UNORM,
+              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+              &slot.maskCurveLutImage, &slot.maskCurveLutMemory, &slot.maskCurveLutView,
+              QStringLiteral("Vulkan layer mask curve LUT"), err)) {
+        return false;
+      }
+      if (!createDeviceImage(static_cast<uint32_t>(m_outputSize.width()),
+                             static_cast<uint32_t>(m_outputSize.height()),
+                             VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_STORAGE_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                             &slot.maskImage, &slot.maskMemory, &slot.maskView,
+                             QStringLiteral("Vulkan layer mask image"), err)) {
+        return false;
+      }
+      if (!createDeviceImage(static_cast<uint32_t>(m_outputSize.width()),
+                             static_cast<uint32_t>(m_outputSize.height()),
+                             VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_STORAGE_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                             &slot.maskRawImage, &slot.maskRawMemory, &slot.maskRawView,
+                             QStringLiteral("Vulkan layer raw mask image"), err)) {
+        return false;
+      }
+      if (!createDeviceImage(static_cast<uint32_t>(m_outputSize.width()),
+                             static_cast<uint32_t>(m_outputSize.height()),
+                             VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_STORAGE_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                             &slot.maskWorkImage, &slot.maskWorkMemory, &slot.maskWorkView,
+                             QStringLiteral("Vulkan layer work mask image"), err)) {
+        return false;
+      }
       VkDescriptorSetAllocateInfo dsi{};
       dsi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
       dsi.descriptorPool = m_descriptorPool;
@@ -574,15 +685,21 @@ public:
               QStringLiteral("Failed to allocate Vulkan layer descriptor set.");
         return false;
       }
-      VkDescriptorImageInfo di[2]{};
+      VkDescriptorImageInfo di[4]{};
       di[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[0].imageView = slot.view;
       di[0].sampler = m_sampler;
       di[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[1].imageView = slot.curveLutView;
       di[1].sampler = m_sampler;
-      VkWriteDescriptorSet writes[2]{};
-      for (uint32_t binding = 0; binding < 2; ++binding) {
+      di[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      di[2].imageView = slot.maskView;
+      di[2].sampler = m_sampler;
+      di[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      di[3].imageView = slot.maskCurveLutView;
+      di[3].sampler = m_sampler;
+      VkWriteDescriptorSet writes[4]{};
+      for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = slot.descriptorSet;
         writes[binding].dstBinding = binding;
@@ -591,7 +708,7 @@ public:
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[binding].pImageInfo = &di[binding];
       }
-      vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+      vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
       m_layerSlots.push_back(slot);
       return true;
     };
@@ -656,7 +773,10 @@ public:
     const VkDeviceSize layerStagingSize =
         static_cast<VkDeviceSize>(m_outputSize.width()) *
             static_cast<VkDeviceSize>(m_outputSize.height()) * 4 +
-        kCurveLutBytes;
+        kCurveLutBytes +
+        kCurveLutBytes +
+        static_cast<VkDeviceSize>(m_outputSize.width()) *
+            static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
     const VkDeviceSize stagingSize = layerStagingSize * kMaxLayerTextures;
     VkBufferCreateInfo stagingBufInfo{};
     stagingBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1084,6 +1204,61 @@ public:
     }
     vkUpdateDescriptorSets(m_device, 4, yuvWrites, 0, nullptr);
 
+    VkDescriptorSetLayoutBinding maskComputeBindings[2]{};
+    maskComputeBindings[0].binding = 0;
+    maskComputeBindings[0].descriptorType =
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    maskComputeBindings[0].descriptorCount = 1;
+    maskComputeBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    maskComputeBindings[1].binding = 1;
+    maskComputeBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    maskComputeBindings[1].descriptorCount = 1;
+    maskComputeBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo maskComputeLayoutInfo{};
+    maskComputeLayoutInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    maskComputeLayoutInfo.bindingCount = 2;
+    maskComputeLayoutInfo.pBindings = maskComputeBindings;
+    if (vkCreateDescriptorSetLayout(m_device, &maskComputeLayoutInfo, nullptr,
+                                    &m_maskComputeDescriptorSetLayout) !=
+        VK_SUCCESS) {
+      if (errorMessage)
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan mask compute descriptor layout.");
+      return false;
+    }
+    VkDescriptorPoolSize maskComputePoolSizes[2]{};
+    maskComputePoolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    maskComputePoolSizes[0].descriptorCount = kMaskComputeDescriptorSetCount;
+    maskComputePoolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    maskComputePoolSizes[1].descriptorCount = kMaskComputeDescriptorSetCount;
+    VkDescriptorPoolCreateInfo maskComputePoolInfo{};
+    maskComputePoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    maskComputePoolInfo.poolSizeCount = 2;
+    maskComputePoolInfo.pPoolSizes = maskComputePoolSizes;
+    maskComputePoolInfo.maxSets = kMaskComputeDescriptorSetCount;
+    if (vkCreateDescriptorPool(m_device, &maskComputePoolInfo, nullptr,
+                               &m_maskComputeDescriptorPool) != VK_SUCCESS) {
+      if (errorMessage)
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan mask compute descriptor pool.");
+      return false;
+    }
+    VkDescriptorSetAllocateInfo maskComputeSetInfo{};
+    maskComputeSetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    maskComputeSetInfo.descriptorPool = m_maskComputeDescriptorPool;
+    std::array<VkDescriptorSetLayout, kMaskComputeDescriptorSetCount> maskComputeLayouts{};
+    maskComputeLayouts.fill(m_maskComputeDescriptorSetLayout);
+    maskComputeSetInfo.descriptorSetCount = kMaskComputeDescriptorSetCount;
+    maskComputeSetInfo.pSetLayouts = maskComputeLayouts.data();
+    if (vkAllocateDescriptorSets(m_device, &maskComputeSetInfo,
+                                 m_maskComputeDescriptorSets.data()) != VK_SUCCESS) {
+      if (errorMessage)
+        *errorMessage =
+            QStringLiteral("Failed to allocate Vulkan mask compute descriptor set.");
+      return false;
+    }
+
     VkPushConstantRange effectsPushConstantRange{};
     effectsPushConstantRange.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1146,6 +1321,37 @@ public:
       }
       return false;
     }
+    VkPushConstantRange maskPreparePush{};
+    maskPreparePush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    maskPreparePush.offset = 0;
+    maskPreparePush.size = sizeof(MaskPreparePush);
+    VkPipelineLayoutCreateInfo maskPrepareLayoutInfo{};
+    maskPrepareLayoutInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    maskPrepareLayoutInfo.setLayoutCount = 1;
+    maskPrepareLayoutInfo.pSetLayouts = &m_maskComputeDescriptorSetLayout;
+    maskPrepareLayoutInfo.pushConstantRangeCount = 1;
+    maskPrepareLayoutInfo.pPushConstantRanges = &maskPreparePush;
+    if (vkCreatePipelineLayout(m_device, &maskPrepareLayoutInfo, nullptr,
+                               &m_maskPreparePipelineLayout) != VK_SUCCESS) {
+      if (errorMessage)
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan mask prepare pipeline layout.");
+      return false;
+    }
+    VkPushConstantRange maskMorphPush{};
+    maskMorphPush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    maskMorphPush.offset = 0;
+    maskMorphPush.size = sizeof(MaskMorphBlurPush);
+    VkPipelineLayoutCreateInfo maskMorphLayoutInfo = maskPrepareLayoutInfo;
+    maskMorphLayoutInfo.pPushConstantRanges = &maskMorphPush;
+    if (vkCreatePipelineLayout(m_device, &maskMorphLayoutInfo, nullptr,
+                               &m_maskMorphBlurPipelineLayout) != VK_SUCCESS) {
+      if (errorMessage)
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan mask morph/blur pipeline layout.");
+      return false;
+    }
 
     const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
     m_effectsVertModule = createShaderModule(
@@ -1175,6 +1381,15 @@ public:
     m_yuv420pComputeModule = createShaderModule(
         m_device,
         readBinaryFile(shaderDir + QStringLiteral("/yuv420p.comp.spv")));
+    m_maskPrepareModule = createShaderModule(
+        m_device,
+        readBinaryFile(shaderDir + QStringLiteral("/mask_prepare.comp.spv")));
+    m_maskMorphModule = createShaderModule(
+        m_device,
+        readBinaryFile(shaderDir + QStringLiteral("/mask_morph.comp.spv")));
+    m_maskBlurModule = createShaderModule(
+        m_device,
+        readBinaryFile(shaderDir + QStringLiteral("/mask_blur.comp.spv")));
 
     if (m_effectsVertModule == VK_NULL_HANDLE ||
         m_effectsFragModule == VK_NULL_HANDLE ||
@@ -1185,7 +1400,10 @@ public:
         m_nv12UvFragModule == VK_NULL_HANDLE ||
         m_yuv420pUFragModule == VK_NULL_HANDLE ||
         m_yuv420pVFragModule == VK_NULL_HANDLE ||
-        m_yuv420pComputeModule == VK_NULL_HANDLE) {
+        m_yuv420pComputeModule == VK_NULL_HANDLE ||
+        m_maskPrepareModule == VK_NULL_HANDLE ||
+        m_maskMorphModule == VK_NULL_HANDLE ||
+        m_maskBlurModule == VK_NULL_HANDLE) {
       if (errorMessage) {
         *errorMessage = QStringLiteral(
             "Failed to load Vulkan SPIR-V shader modules. Ensure "
@@ -1194,7 +1412,7 @@ public:
       return false;
     }
 
-    VkDescriptorImageInfo imageInfoDesc[2]{};
+    VkDescriptorImageInfo imageInfoDesc[4]{};
     imageInfoDesc[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfoDesc[0].imageView = m_colorImageView;
     imageInfoDesc[0].sampler = m_sampler;
@@ -1203,8 +1421,18 @@ public:
                                      ? m_layerSlots.first().curveLutView
                                      : VK_NULL_HANDLE;
     imageInfoDesc[1].sampler = m_sampler;
-    VkWriteDescriptorSet writes[2]{};
-    for (uint32_t binding = 0; binding < 2; ++binding) {
+    imageInfoDesc[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfoDesc[2].imageView = !m_layerSlots.isEmpty()
+                                     ? m_layerSlots.first().maskView
+                                     : VK_NULL_HANDLE;
+    imageInfoDesc[2].sampler = m_sampler;
+    imageInfoDesc[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfoDesc[3].imageView = !m_layerSlots.isEmpty()
+                                     ? m_layerSlots.first().maskCurveLutView
+                                     : VK_NULL_HANDLE;
+    imageInfoDesc[3].sampler = m_sampler;
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t binding = 0; binding < 4; ++binding) {
       writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[binding].dstSet = m_descriptorSet;
       writes[binding].dstBinding = binding;
@@ -1213,7 +1441,7 @@ public:
           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       writes[binding].pImageInfo = &imageInfoDesc[binding];
     }
-    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
 
     auto createPipeline = [&](VkShaderModule vert, VkShaderModule frag,
                               VkPipelineLayout layout, VkRenderPass renderPass,
@@ -1259,6 +1487,13 @@ public:
       multisampling.sType =
           VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
       multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+      VkPipelineDepthStencilStateCreateInfo depthStencil{};
+      depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+      depthStencil.depthTestEnable = VK_FALSE;
+      depthStencil.depthWriteEnable = VK_FALSE;
+      depthStencil.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+      depthStencil.depthBoundsTestEnable = VK_FALSE;
+      depthStencil.stencilTestEnable = VK_FALSE;
 
       VkPipelineColorBlendAttachmentState colorBlendAttachment{};
       colorBlendAttachment.colorWriteMask =
@@ -1294,6 +1529,7 @@ public:
       pipelineInfo.pViewportState = &viewportState;
       pipelineInfo.pRasterizationState = &rasterizer;
       pipelineInfo.pMultisampleState = &multisampling;
+      pipelineInfo.pDepthStencilState = &depthStencil;
       pipelineInfo.pColorBlendState = &colorBlending;
       pipelineInfo.pDynamicState = &dynamicState;
       pipelineInfo.layout = layout;
@@ -1319,6 +1555,33 @@ public:
       if (errorMessage) {
         *errorMessage =
             QStringLiteral("Failed to create Vulkan YUV420P compute pipeline.");
+      }
+      return false;
+    }
+
+    auto createComputePipeline = [&](VkShaderModule module,
+                                     VkPipelineLayout layout,
+                                     VkPipeline *pipeline) -> bool {
+      VkComputePipelineCreateInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      info.stage.sType =
+          VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+      info.stage.module = module;
+      info.stage.pName = "main";
+      info.layout = layout;
+      return vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &info,
+                                      nullptr, pipeline) == VK_SUCCESS;
+    };
+    if (!createComputePipeline(m_maskPrepareModule, m_maskPreparePipelineLayout,
+                               &m_maskPreparePipeline) ||
+        !createComputePipeline(m_maskMorphModule, m_maskMorphBlurPipelineLayout,
+                               &m_maskMorphPipeline) ||
+        !createComputePipeline(m_maskBlurModule, m_maskMorphBlurPipelineLayout,
+                               &m_maskBlurPipeline)) {
+      if (errorMessage) {
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan mask compute pipelines.");
       }
       return false;
     }
@@ -1430,6 +1693,42 @@ public:
     m_submitFence = VK_NULL_HANDLE;
     m_cudaExportBuffersReady = false;
     for (LayerTextureSlot &slot : m_layerSlots) {
+      if (slot.maskView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_device, slot.maskView, nullptr);
+        slot.maskView = VK_NULL_HANDLE;
+      }
+      if (slot.maskImage != VK_NULL_HANDLE) {
+        vkDestroyImage(m_device, slot.maskImage, nullptr);
+        slot.maskImage = VK_NULL_HANDLE;
+      }
+      if (slot.maskMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, slot.maskMemory, nullptr);
+        slot.maskMemory = VK_NULL_HANDLE;
+      }
+      if (slot.maskRawView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_device, slot.maskRawView, nullptr);
+        slot.maskRawView = VK_NULL_HANDLE;
+      }
+      if (slot.maskRawImage != VK_NULL_HANDLE) {
+        vkDestroyImage(m_device, slot.maskRawImage, nullptr);
+        slot.maskRawImage = VK_NULL_HANDLE;
+      }
+      if (slot.maskRawMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, slot.maskRawMemory, nullptr);
+        slot.maskRawMemory = VK_NULL_HANDLE;
+      }
+      if (slot.maskWorkView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_device, slot.maskWorkView, nullptr);
+        slot.maskWorkView = VK_NULL_HANDLE;
+      }
+      if (slot.maskWorkImage != VK_NULL_HANDLE) {
+        vkDestroyImage(m_device, slot.maskWorkImage, nullptr);
+        slot.maskWorkImage = VK_NULL_HANDLE;
+      }
+      if (slot.maskWorkMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, slot.maskWorkMemory, nullptr);
+        slot.maskWorkMemory = VK_NULL_HANDLE;
+      }
       if (slot.curveLutView != VK_NULL_HANDLE) {
         vkDestroyImageView(m_device, slot.curveLutView, nullptr);
         slot.curveLutView = VK_NULL_HANDLE;
@@ -1441,6 +1740,18 @@ public:
       if (slot.curveLutMemory != VK_NULL_HANDLE) {
         vkFreeMemory(m_device, slot.curveLutMemory, nullptr);
         slot.curveLutMemory = VK_NULL_HANDLE;
+      }
+      if (slot.maskCurveLutView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_device, slot.maskCurveLutView, nullptr);
+        slot.maskCurveLutView = VK_NULL_HANDLE;
+      }
+      if (slot.maskCurveLutImage != VK_NULL_HANDLE) {
+        vkDestroyImage(m_device, slot.maskCurveLutImage, nullptr);
+        slot.maskCurveLutImage = VK_NULL_HANDLE;
+      }
+      if (slot.maskCurveLutMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, slot.maskCurveLutMemory, nullptr);
+        slot.maskCurveLutMemory = VK_NULL_HANDLE;
       }
       if (slot.view != VK_NULL_HANDLE) {
         vkDestroyImageView(m_device, slot.view, nullptr);
@@ -1483,6 +1794,18 @@ public:
     if (m_yuv420pComputePipeline != VK_NULL_HANDLE) {
       vkDestroyPipeline(m_device, m_yuv420pComputePipeline, nullptr);
       m_yuv420pComputePipeline = VK_NULL_HANDLE;
+    }
+    if (m_maskPreparePipeline != VK_NULL_HANDLE) {
+      vkDestroyPipeline(m_device, m_maskPreparePipeline, nullptr);
+      m_maskPreparePipeline = VK_NULL_HANDLE;
+    }
+    if (m_maskMorphPipeline != VK_NULL_HANDLE) {
+      vkDestroyPipeline(m_device, m_maskMorphPipeline, nullptr);
+      m_maskMorphPipeline = VK_NULL_HANDLE;
+    }
+    if (m_maskBlurPipeline != VK_NULL_HANDLE) {
+      vkDestroyPipeline(m_device, m_maskBlurPipeline, nullptr);
+      m_maskBlurPipeline = VK_NULL_HANDLE;
     }
     if (m_nv12YFramebuffer != VK_NULL_HANDLE) {
       vkDestroyFramebuffer(m_device, m_nv12YFramebuffer, nullptr);
@@ -1572,6 +1895,14 @@ public:
       vkDestroyPipelineLayout(m_device, m_yuvComputePipelineLayout, nullptr);
       m_yuvComputePipelineLayout = VK_NULL_HANDLE;
     }
+    if (m_maskMorphBlurPipelineLayout != VK_NULL_HANDLE) {
+      vkDestroyPipelineLayout(m_device, m_maskMorphBlurPipelineLayout, nullptr);
+      m_maskMorphBlurPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_maskPreparePipelineLayout != VK_NULL_HANDLE) {
+      vkDestroyPipelineLayout(m_device, m_maskPreparePipelineLayout, nullptr);
+      m_maskPreparePipelineLayout = VK_NULL_HANDLE;
+    }
     if (m_effectsVertModule != VK_NULL_HANDLE) {
       vkDestroyShaderModule(m_device, m_effectsVertModule, nullptr);
       m_effectsVertModule = VK_NULL_HANDLE;
@@ -1612,6 +1943,18 @@ public:
       vkDestroyShaderModule(m_device, m_yuv420pComputeModule, nullptr);
       m_yuv420pComputeModule = VK_NULL_HANDLE;
     }
+    if (m_maskPrepareModule != VK_NULL_HANDLE) {
+      vkDestroyShaderModule(m_device, m_maskPrepareModule, nullptr);
+      m_maskPrepareModule = VK_NULL_HANDLE;
+    }
+    if (m_maskMorphModule != VK_NULL_HANDLE) {
+      vkDestroyShaderModule(m_device, m_maskMorphModule, nullptr);
+      m_maskMorphModule = VK_NULL_HANDLE;
+    }
+    if (m_maskBlurModule != VK_NULL_HANDLE) {
+      vkDestroyShaderModule(m_device, m_maskBlurModule, nullptr);
+      m_maskBlurModule = VK_NULL_HANDLE;
+    }
 
     if (m_framebuffer != VK_NULL_HANDLE) {
       vkDestroyFramebuffer(m_device, m_framebuffer, nullptr);
@@ -1629,6 +1972,10 @@ public:
       vkDestroyDescriptorPool(m_device, m_yuvComputeDescriptorPool, nullptr);
       m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
     }
+    if (m_maskComputeDescriptorPool != VK_NULL_HANDLE) {
+      vkDestroyDescriptorPool(m_device, m_maskComputeDescriptorPool, nullptr);
+      m_maskComputeDescriptorPool = VK_NULL_HANDLE;
+    }
     if (m_descriptorSetLayout != VK_NULL_HANDLE) {
       vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
       m_descriptorSetLayout = VK_NULL_HANDLE;
@@ -1637,6 +1984,11 @@ public:
       vkDestroyDescriptorSetLayout(m_device, m_yuvComputeDescriptorSetLayout,
                                    nullptr);
       m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (m_maskComputeDescriptorSetLayout != VK_NULL_HANDLE) {
+      vkDestroyDescriptorSetLayout(m_device, m_maskComputeDescriptorSetLayout,
+                                   nullptr);
+      m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
     }
     if (m_sampler != VK_NULL_HANDLE) {
       vkDestroySampler(m_device, m_sampler, nullptr);
@@ -1672,6 +2024,8 @@ public:
     m_commandBuffer = VK_NULL_HANDLE;
     m_descriptorSet = VK_NULL_HANDLE;
     m_yuvComputeDescriptorSet = VK_NULL_HANDLE;
+    m_maskComputeDescriptorSets.fill(VK_NULL_HANDLE);
+    m_maskComputeDescriptorSetIndex = 0;
     m_graphicsQueueFamily = UINT32_MAX;
     m_initialized = false;
     m_yuv420pPlanesPrimed = false;
@@ -1680,12 +2034,28 @@ public:
 
   struct LayerInput {
     QImage image;
+    QImage maskImage;
+    QSize maskSourceSize;
     OverlayImage overlayImage;
     editor::FrameHandle frameHandle;
     QSize sourceSize;
     bool preferHardwareDirect = false;
+    bool maskTextureEnabled = false;
+    bool maskShowOnly = false;
+    bool maskGradeEnabled = false;
+    bool maskInvert = false;
+    int maskErodeRadius = 0;
+    int maskDilateRadius = 0;
+    int maskBlurRadius = 0;
     QString cacheKey;
     QByteArray curveLutRgba = identityCurveLutBytes();
+    QByteArray maskCurveLutRgba = identityCurveLutBytes();
+    bool curveLutApplied = false;
+    bool maskCurveLutApplied = false;
+    float maskOpacity = 1.0f;
+    float maskBrightness = 0.0f;
+    float maskContrast = 1.0f;
+    float maskSaturation = 1.0f;
     float brightness = 0.0f;
     float contrast = 1.0f;
     float saturation = 1.0f;
@@ -1745,6 +2115,136 @@ public:
                   static_cast<size_t>(rowBytes));
     }
     return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
+  }
+
+  bool runMaskComputePass(VkPipeline pipeline,
+                          VkPipelineLayout layout,
+                          const void *pushData,
+                          uint32_t pushDataSize,
+                          VkImageView inputView,
+                          VkImageView outputView,
+                          VkImage outputImage,
+                          VkImageLayout &outputLayout) {
+    if (pipeline == VK_NULL_HANDLE || layout == VK_NULL_HANDLE ||
+        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex] == VK_NULL_HANDLE ||
+        inputView == VK_NULL_HANDLE || outputView == VK_NULL_HANDLE ||
+        outputImage == VK_NULL_HANDLE) {
+      return false;
+    }
+    VkDescriptorSet computeDescriptorSet =
+        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex];
+    m_maskComputeDescriptorSetIndex =
+        (m_maskComputeDescriptorSetIndex + 1) % kMaskComputeDescriptorSetCount;
+    transitionImageLayout(m_commandBuffer, outputImage, outputLayout,
+                          VK_IMAGE_LAYOUT_GENERAL);
+    outputLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkDescriptorImageInfo inputInfo{};
+    inputInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    inputInfo.imageView = inputView;
+    inputInfo.sampler = m_sampler;
+    VkDescriptorImageInfo outputInfo{};
+    outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    outputInfo.imageView = outputView;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = computeDescriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &inputInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = computeDescriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].pImageInfo = &outputInfo;
+    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+
+    vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      pipeline);
+    vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            layout, 0, 1, &computeDescriptorSet, 0,
+                            nullptr);
+    vkCmdPushConstants(m_commandBuffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       pushDataSize, pushData);
+    vkCmdDispatch(m_commandBuffer,
+                  static_cast<uint32_t>((m_outputSize.width() + 15) / 16),
+                  static_cast<uint32_t>((m_outputSize.height() + 15) / 16),
+                  1);
+    transitionImageLayout(m_commandBuffer, outputImage,
+                          VK_IMAGE_LAYOUT_GENERAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    outputLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return true;
+  }
+
+  bool preprocessLayerMask(LayerTextureSlot &slot, const LayerInput &layer) {
+    MaskPreparePush prepare{};
+    prepare.outputSize[0] = m_outputSize.width();
+    prepare.outputSize[1] = m_outputSize.height();
+    const QSize inputSize = layer.maskSourceSize.isValid() ? layer.maskSourceSize : m_outputSize;
+    prepare.inputSize[0] = inputSize.width();
+    prepare.inputSize[1] = inputSize.height();
+    prepare.invert = layer.maskInvert ? 1 : 0;
+    if (!runMaskComputePass(m_maskPreparePipeline,
+                            m_maskPreparePipelineLayout, &prepare,
+                            sizeof(prepare), slot.maskRawView, slot.maskView,
+                            slot.maskImage, slot.maskLayout)) {
+      return false;
+    }
+
+    VkImageView currentView = slot.maskView;
+    bool currentIsFinal = true;
+    auto dispatchMorphBlur = [&](VkPipeline pipeline, int radius,
+                                 int mode) -> bool {
+      VkImageView dstView = currentIsFinal ? slot.maskWorkView : slot.maskView;
+      VkImage dstImage = currentIsFinal ? slot.maskWorkImage : slot.maskImage;
+      VkImageLayout &dstLayout =
+          currentIsFinal ? slot.maskWorkLayout : slot.maskLayout;
+      MaskMorphBlurPush push{};
+      push.outputSize[0] = m_outputSize.width();
+      push.outputSize[1] = m_outputSize.height();
+      push.radius = radius;
+      push.mode = mode;
+      if (!runMaskComputePass(pipeline, m_maskMorphBlurPipelineLayout,
+                              &push, sizeof(push), currentView, dstView,
+                              dstImage, dstLayout)) {
+        return false;
+      }
+      currentView = dstView;
+      currentIsFinal = !currentIsFinal;
+      return true;
+    };
+
+    if (layer.maskErodeRadius > 0 &&
+        !dispatchMorphBlur(m_maskMorphPipeline, layer.maskErodeRadius, 0)) {
+      return false;
+    }
+    if (layer.maskDilateRadius > 0 &&
+        !dispatchMorphBlur(m_maskMorphPipeline, layer.maskDilateRadius, 1)) {
+      return false;
+    }
+    if (layer.maskBlurRadius > 0 &&
+        (!dispatchMorphBlur(m_maskBlurPipeline, layer.maskBlurRadius, 1) ||
+         !dispatchMorphBlur(m_maskBlurPipeline, layer.maskBlurRadius, 0))) {
+      return false;
+    }
+    if (!currentIsFinal) {
+      MaskPreparePush copy{};
+      copy.outputSize[0] = m_outputSize.width();
+      copy.outputSize[1] = m_outputSize.height();
+      copy.inputSize[0] = m_outputSize.width();
+      copy.inputSize[1] = m_outputSize.height();
+      if (!runMaskComputePass(m_maskPreparePipeline,
+                              m_maskPreparePipelineLayout, &copy,
+                              sizeof(copy), currentView, slot.maskView,
+                              slot.maskImage, slot.maskLayout)) {
+        return false;
+      }
+    }
+    slot.maskUploaded = true;
+    return true;
   }
 
   bool submitAndWait() {
@@ -1922,7 +2422,7 @@ public:
     const VkDeviceSize layerImageBytes =
         static_cast<VkDeviceSize>(m_outputSize.width()) *
         static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
-    const VkDeviceSize layerStagingSize = layerImageBytes + kCurveLutBytes;
+    const VkDeviceSize layerStagingSize = (layerImageBytes * 2) + kCurveLutBytes;
     auto layerHasRenderableSource = [](const LayerInput &layer) {
       return !layer.overlayImage.isNull() || !layer.image.isNull() ||
              !layer.frameHandle.isNull();
@@ -1930,15 +2430,21 @@ public:
     auto updateLayerDescriptorSet = [&](LayerTextureSlot &slot,
                                         VkImageView sourceView,
                                         VkImageLayout sourceLayout) {
-      VkDescriptorImageInfo di[2]{};
+      VkDescriptorImageInfo di[4]{};
       di[0].imageLayout = sourceLayout;
       di[0].imageView = sourceView;
       di[0].sampler = m_sampler;
       di[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[1].imageView = slot.curveLutView;
       di[1].sampler = m_sampler;
-      VkWriteDescriptorSet writes[2]{};
-      for (uint32_t binding = 0; binding < 2; ++binding) {
+      di[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      di[2].imageView = slot.maskView;
+      di[2].sampler = m_sampler;
+      di[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      di[3].imageView = slot.maskCurveLutView;
+      di[3].sampler = m_sampler;
+      VkWriteDescriptorSet writes[4]{};
+      for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = slot.descriptorSet;
         writes[binding].dstBinding = binding;
@@ -1947,7 +2453,7 @@ public:
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[binding].pImageInfo = &di[binding];
       }
-      vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+      vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
     };
     auto prepareLayerSource =
         [&](LayerTextureSlot &slot, const LayerInput &layer,
@@ -2085,8 +2591,14 @@ public:
         }
       }
       if (rgba.isNull()) {
-        rgba = !layer.image.isNull() ? layer.image
-                                     : frameHandleToCpuImage(layer.frameHandle);
+        if (!layer.image.isNull()) {
+          rgba = layer.image;
+        } else if (!layer.frameHandle.isNull() &&
+                   (layer.frameHandle.hasHardwareFrame() || layer.frameHandle.hasGpuTexture())) {
+          return false;
+        } else {
+          rgba = frameHandleToCpuImage(layer.frameHandle);
+        }
         if (rgba.format() != QImage::Format_RGBA8888) {
           rgba = rgba.convertToFormat(QImage::Format_RGBA8888);
         }
@@ -2215,6 +2727,122 @@ public:
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         slot.curveUploaded = true;
+
+        const QByteArray maskCurveBytes =
+            layer.maskCurveLutRgba.size() == static_cast<int>(kCurveLutBytes)
+                ? layer.maskCurveLutRgba
+                : identityCurveLutBytes();
+        const VkDeviceSize maskCurveStagingOffset =
+            stagingOffset + layerImageBytes + kCurveLutBytes;
+        std::memcpy(
+            reinterpret_cast<uint8_t *>(m_stagingMapped) + maskCurveStagingOffset,
+            maskCurveBytes.constData(), static_cast<size_t>(kCurveLutBytes));
+        if (!flushActiveStagingWrite(maskCurveStagingOffset, kCurveLutBytes)) {
+          vkEndCommandBuffer(m_commandBuffer);
+          return QImage();
+        }
+        transitionImageLayout(m_commandBuffer, slot.maskCurveLutImage,
+                              slot.maskCurveUploaded
+                                  ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                  : VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy maskCurveUploadRegion{};
+        maskCurveUploadRegion.bufferOffset = maskCurveStagingOffset;
+        maskCurveUploadRegion.bufferRowLength = 0;
+        maskCurveUploadRegion.bufferImageHeight = 0;
+        maskCurveUploadRegion.imageSubresource.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        maskCurveUploadRegion.imageSubresource.mipLevel = 0;
+        maskCurveUploadRegion.imageSubresource.baseArrayLayer = 0;
+        maskCurveUploadRegion.imageSubresource.layerCount = 1;
+        maskCurveUploadRegion.imageExtent = {static_cast<uint32_t>(kCurveLutWidth),
+                                             static_cast<uint32_t>(kCurveLutHeight),
+                                             1};
+        vkCmdCopyBufferToImage(
+            m_commandBuffer, m_stagingBuffer, slot.maskCurveLutImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &maskCurveUploadRegion);
+        transitionImageLayout(m_commandBuffer, slot.maskCurveLutImage,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        slot.maskCurveUploaded = true;
+        if (layer.maskTextureEnabled) {
+          QImage maskUpload = layer.maskImage;
+          if (maskUpload.isNull()) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          if (maskUpload.format() != QImage::Format_RGBA8888) {
+            maskUpload = maskUpload.convertToFormat(QImage::Format_RGBA8888);
+          }
+          const VkDeviceSize maskStagingOffset =
+              stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
+          if (!writeRgbaImageToStagingTopLeft(maskUpload, maskStagingOffset)) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
+                                slot.maskRawLayout,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+          slot.maskRawLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+          VkBufferImageCopy maskUploadRegion{};
+          maskUploadRegion.bufferOffset = maskStagingOffset;
+          maskUploadRegion.bufferRowLength = 0;
+          maskUploadRegion.bufferImageHeight = 0;
+          maskUploadRegion.imageSubresource.aspectMask =
+              VK_IMAGE_ASPECT_COLOR_BIT;
+          maskUploadRegion.imageSubresource.mipLevel = 0;
+          maskUploadRegion.imageSubresource.baseArrayLayer = 0;
+          maskUploadRegion.imageSubresource.layerCount = 1;
+          maskUploadRegion.imageExtent = {
+              static_cast<uint32_t>(maskUpload.width()),
+              static_cast<uint32_t>(maskUpload.height()), 1};
+          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
+                                 slot.maskRawImage,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 &maskUploadRegion);
+          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+          if (!preprocessLayerMask(slot, layer)) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+        } else if (!slot.maskUploaded) {
+          QImage whiteMask(m_outputSize, QImage::Format_RGBA8888);
+          whiteMask.fill(Qt::white);
+          const VkDeviceSize maskStagingOffset =
+              stagingOffset + layerImageBytes + kCurveLutBytes;
+          if (!writeRgbaImageToStagingTopLeft(whiteMask, maskStagingOffset)) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          transitionImageLayout(m_commandBuffer, slot.maskImage,
+                                slot.maskLayout,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+          slot.maskLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+          VkBufferImageCopy maskUploadRegion{};
+          maskUploadRegion.bufferOffset = maskStagingOffset;
+          maskUploadRegion.bufferRowLength = 0;
+          maskUploadRegion.bufferImageHeight = 0;
+          maskUploadRegion.imageSubresource.aspectMask =
+              VK_IMAGE_ASPECT_COLOR_BIT;
+          maskUploadRegion.imageSubresource.mipLevel = 0;
+          maskUploadRegion.imageSubresource.baseArrayLayer = 0;
+          maskUploadRegion.imageSubresource.layerCount = 1;
+          maskUploadRegion.imageExtent = {
+              static_cast<uint32_t>(m_outputSize.width()),
+              static_cast<uint32_t>(m_outputSize.height()), 1};
+          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
+                                 slot.maskImage,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 &maskUploadRegion);
+          transitionImageLayout(m_commandBuffer, slot.maskImage,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          slot.maskLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+          slot.maskUploaded = true;
+        }
         updateLayerDescriptorSet(slot, preparedLayers[i].view,
                                  preparedLayers[i].layout);
       }
@@ -2234,28 +2862,71 @@ public:
         vkCmdBindDescriptorSets(
             m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 0, nullptr);
-        std::memcpy(push.mvp, layer.mvp, sizeof(push.mvp));
-        push.brightness = layer.brightness;
-        push.contrast = layer.contrast;
-        push.saturation = layer.saturation;
-        push.opacity = qBound(0.0f, layer.opacity, 1.0f);
-        push.shadows[0] = layer.shadows[0];
-        push.shadows[1] = layer.shadows[1];
-        push.shadows[2] = layer.shadows[2];
-        push.shadows[3] = layer.shadows[3];
-        push.midtones[0] = layer.midtones[0];
-        push.midtones[1] = layer.midtones[1];
-        push.midtones[2] = layer.midtones[2];
-        push.midtones[3] = layer.midtones[3];
-        push.highlights[0] = layer.highlights[0];
-        push.highlights[1] = layer.highlights[1];
-        push.highlights[2] = layer.highlights[2];
-        push.highlights[3] = layer.highlights[3];
-        vkCmdPushConstants(m_commandBuffer, m_effectsPipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT |
-                               VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(Push), &push);
-        vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
+        auto drawLayer = [&](float brightness,
+                             float contrast,
+                             float saturation,
+                             float opacity,
+                             const float shadows[4],
+                             const float midtones[4],
+                             const float highlights[4],
+                             float mode) {
+          std::memcpy(push.mvp, layer.mvp, sizeof(push.mvp));
+          push.brightness = brightness;
+          push.contrast = contrast;
+          push.saturation = saturation;
+          push.opacity = qBound(0.0f, opacity, 1.0f);
+          push.shadows[0] = shadows[0];
+          push.shadows[1] = shadows[1];
+          push.shadows[2] = shadows[2];
+          push.shadows[3] = mode;
+          push.midtones[0] = midtones[0];
+          push.midtones[1] = midtones[1];
+          push.midtones[2] = midtones[2];
+          push.midtones[3] = midtones[3];
+          push.highlights[0] = highlights[0];
+          push.highlights[1] = highlights[1];
+          push.highlights[2] = highlights[2];
+          push.highlights[3] = highlights[3];
+          vkCmdPushConstants(m_commandBuffer, m_effectsPipelineLayout,
+                             VK_SHADER_STAGE_VERTEX_BIT |
+                                 VK_SHADER_STAGE_FRAGMENT_BIT,
+                             0, sizeof(Push), &push);
+          vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
+        };
+        if (layer.maskTextureEnabled && layer.maskShowOnly) {
+          drawLayer(0.0f,
+                    1.0f,
+                    1.0f,
+                    layer.maskOpacity,
+                    layer.shadows,
+                    layer.midtones,
+                    layer.highlights,
+                    kVulkanEffectModeMaskOnly);
+          continue;
+        }
+        drawLayer(layer.brightness,
+                  layer.contrast,
+                  layer.saturation,
+                  layer.opacity,
+                  layer.shadows,
+                  layer.midtones,
+                  layer.highlights,
+                  layer.shadows[3]);
+        if (layer.maskTextureEnabled && layer.maskGradeEnabled) {
+          float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+          float maskMidtones[4] = {0.0f, 0.0f, 0.0f,
+                                   layer.maskCurveLutApplied
+                                       ? kVulkanMaskGradeUseSelectedCurveLut
+                                       : 0.0f};
+          drawLayer(layer.maskBrightness,
+                    layer.maskContrast,
+                    layer.maskSaturation,
+                    layer.maskOpacity,
+                    neutral,
+                    maskMidtones,
+                    neutral,
+                    kVulkanEffectModeMaskGrade);
+        }
       }
       vkCmdEndRenderPass(m_commandBuffer);
       layerIndex += batchCount;
@@ -3182,23 +3853,14 @@ private:
   VkDescriptorSetLayout m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet m_yuvComputeDescriptorSet = VK_NULL_HANDLE;
+  VkDescriptorSetLayout m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool m_maskComputeDescriptorPool = VK_NULL_HANDLE;
+  std::array<VkDescriptorSet, kMaskComputeDescriptorSetCount> m_maskComputeDescriptorSets{};
+  int m_maskComputeDescriptorSetIndex = 0;
 
   VkRenderPass m_renderPass = VK_NULL_HANDLE;
 
   VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
-  struct LayerTextureSlot {
-    VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-    VkImage curveLutImage = VK_NULL_HANDLE;
-    VkDeviceMemory curveLutMemory = VK_NULL_HANDLE;
-    VkImageView curveLutView = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    bool uploaded = false;
-    bool curveUploaded = false;
-    std::shared_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff>
-        hardwareFrameHandoff;
-  };
   QVector<LayerTextureSlot> m_layerSlots;
   QHash<QString, QImage> m_preparedImageCache;
   QHash<QString, QVector<TranscriptSection>> m_transcriptCache;
@@ -3211,6 +3873,8 @@ private:
   VkPipelineLayout m_maskPipelineLayout = VK_NULL_HANDLE;
   VkPipelineLayout m_nv12PipelineLayout = VK_NULL_HANDLE;
   VkPipelineLayout m_yuvComputePipelineLayout = VK_NULL_HANDLE;
+  VkPipelineLayout m_maskPreparePipelineLayout = VK_NULL_HANDLE;
+  VkPipelineLayout m_maskMorphBlurPipelineLayout = VK_NULL_HANDLE;
   VkShaderModule m_effectsVertModule = VK_NULL_HANDLE;
   VkShaderModule m_effectsFragModule = VK_NULL_HANDLE;
   VkShaderModule m_maskVertModule = VK_NULL_HANDLE;
@@ -3221,6 +3885,9 @@ private:
   VkShaderModule m_yuv420pUFragModule = VK_NULL_HANDLE;
   VkShaderModule m_yuv420pVFragModule = VK_NULL_HANDLE;
   VkShaderModule m_yuv420pComputeModule = VK_NULL_HANDLE;
+  VkShaderModule m_maskPrepareModule = VK_NULL_HANDLE;
+  VkShaderModule m_maskMorphModule = VK_NULL_HANDLE;
+  VkShaderModule m_maskBlurModule = VK_NULL_HANDLE;
   VkPipeline m_effectsPipeline = VK_NULL_HANDLE;
   VkPipeline m_maskPipeline = VK_NULL_HANDLE;
   VkPipeline m_nv12YPipeline = VK_NULL_HANDLE;
@@ -3228,6 +3895,9 @@ private:
   VkPipeline m_yuv420pUPipeline = VK_NULL_HANDLE;
   VkPipeline m_yuv420pVPipeline = VK_NULL_HANDLE;
   VkPipeline m_yuv420pComputePipeline = VK_NULL_HANDLE;
+  VkPipeline m_maskPreparePipeline = VK_NULL_HANDLE;
+  VkPipeline m_maskMorphPipeline = VK_NULL_HANDLE;
+  VkPipeline m_maskBlurPipeline = VK_NULL_HANDLE;
   VkImage m_nv12YImage = VK_NULL_HANDLE;
   VkDeviceMemory m_nv12YImageMemory = VK_NULL_HANDLE;
   VkImageView m_nv12YImageView = VK_NULL_HANDLE;
@@ -3399,9 +4069,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.frameHandle = frame;
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
-    if (clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty()) {
-      layer.preferHardwareDirect = false;
-    }
     if (!layer.preferHardwareDirect) {
       if (gpuOutputOnly) {
         ++decodeConvertFailCount;
@@ -3413,11 +4080,44 @@ QImage OffscreenVulkanRenderer::renderFrame(
         ++decodeConvertFailCount;
         continue;
       }
-      layer.image = applyClipMaskEffectsToImage(layerImage, clip, localFrame);
+      layer.image = layerImage;
       layer.sourceSize = layerImage.size();
     }
     if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
       layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
+    }
+    const bool gpuMaskEnabled =
+        clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
+        (clip.maskShowOnly || clip.maskGradeEnabled);
+    if (gpuMaskEnabled) {
+      const QImage mask = rawClipMaskImage(clip, localFrame);
+      const QImage maskRgba = rgbaMaskImageForUpload(mask);
+      if (!maskRgba.isNull()) {
+        layer.maskImage = maskRgba;
+        layer.maskSourceSize = maskRgba.size();
+        layer.maskTextureEnabled = true;
+        layer.maskShowOnly = clip.maskShowOnly;
+        layer.maskGradeEnabled = clip.maskGradeEnabled;
+        layer.maskInvert = clip.maskInvert;
+        layer.maskErodeRadius = qRound(qMax<qreal>(0.0, clip.maskErode));
+        layer.maskDilateRadius = qRound(qMax<qreal>(0.0, clip.maskDilate));
+        layer.maskBlurRadius = qRound(qMax<qreal>(clip.maskFeather, clip.maskBlur));
+        layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, clip.maskOpacity, 1.0));
+        layer.maskBrightness = static_cast<float>(clip.maskGradeBrightness);
+        layer.maskContrast = static_cast<float>(clip.maskGradeContrast);
+        layer.maskSaturation = static_cast<float>(clip.maskGradeSaturation);
+        TimelineClip::GradingKeyframe maskGrade;
+        maskGrade.brightness = clip.maskGradeBrightness;
+        maskGrade.contrast = clip.maskGradeContrast;
+        maskGrade.saturation = clip.maskGradeSaturation;
+        maskGrade.curvePointsR = clip.maskGradeCurvePointsR;
+        maskGrade.curvePointsG = clip.maskGradeCurvePointsG;
+        maskGrade.curvePointsB = clip.maskGradeCurvePointsB;
+        maskGrade.curvePointsLuma = clip.maskGradeCurvePointsLuma;
+        maskGrade.curveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+        layer.maskCurveLutRgba = curveLutBytesForGrade(maskGrade);
+        layer.maskCurveLutApplied = gradingUsesCurveLut(maskGrade);
+      }
     }
     const VulkanDrawEffectState layerEffects = vulkanDrawEffectStateForGrade(grade);
     layer.opacity = layerEffects.opacity;
@@ -3436,6 +4136,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.highlights[1] = layerEffects.highlights[1];
     layer.highlights[2] = layerEffects.highlights[2];
     layer.highlights[3] = layerEffects.highlights[3];
+    layer.curveLutApplied = gradingUsesCurveLut(grade);
+    layer.shadows[3] = layer.curveLutApplied
+                           ? kVulkanEffectModeCurve
+                           : kVulkanEffectModeNormal;
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     QJsonObject transformDiagnostics;
     const TimelineClip::TransformKeyframe transform =

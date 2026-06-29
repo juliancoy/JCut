@@ -357,7 +357,11 @@ void EditorWindow::setupHeartbeat()
     m_mainThreadHeartbeatTimer.setInterval(m_mainThreadHeartbeatIntervalMs);
     connect(&m_mainThreadHeartbeatTimer, &QTimer::timeout, this, [this]() {
         m_lastMainThreadHeartbeatMs.store(nowMs());
-        if (m_playbackAudioWarmupPending || m_playbackVideoWarmupPending || m_retimingAudioForPlayback) {
+        const bool rubberBandGenerationActive =
+            m_audioEngine && m_audioEngine->timeStretchGenerationActive();
+        if (m_playbackAudioWarmupPending || m_playbackVideoWarmupPending ||
+            m_retimingAudioForPlayback || rubberBandGenerationActive ||
+            m_rubberBandProgressDialog) {
             updatePlaybackStatusOverlay();
         }
     });
@@ -373,10 +377,29 @@ void EditorWindow::setupStateSaveTimer()
     m_stateSaveTimer.setSingleShot(true);
     m_stateSaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
     connect(&m_stateSaveTimer, &QTimer::timeout, this, [this]() { saveStateNow(); });
+    connect(&m_stateSaveWatcher, &QFutureWatcher<QByteArray>::finished, this, [this]() {
+        const QByteArray savedState = m_stateSaveWatcher.result();
+        if (!savedState.isEmpty()) {
+            m_lastSavedState = savedState;
+            m_pendingSaveAfterPlayback = false;
+        }
+        if (!m_stateSavePending) {
+            return;
+        }
+        m_stateSavePending = false;
+        saveStateNow();
+    });
 
     m_historySaveTimer.setSingleShot(true);
     m_historySaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
     connect(&m_historySaveTimer, &QTimer::timeout, this, [this]() { saveHistoryNow(); });
+    connect(&m_historySaveWatcher, &QFutureWatcher<bool>::finished, this, [this]() {
+        if (!m_historySavePending) {
+            return;
+        }
+        m_historySavePending = false;
+        saveHistoryNow();
+    });
 }
 
 void EditorWindow::setupDeferredSeekTimers()

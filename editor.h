@@ -54,6 +54,7 @@
 #include <QPointer>
 #include <QPixmap>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QTextBrowser>
 #include <QTreeWidget>
@@ -198,7 +199,10 @@ private:
     QJsonObject buildStateJson() const;
     void scheduleSaveState();
     void saveStateNow();
+    void flushStateSaveNow();
     void saveHistoryNow();
+    void flushHistorySaveNow();
+    void trimHistoryToConfiguredLimits();
     void pushHistorySnapshot();
     void undoHistory();
     void redoHistory();
@@ -321,6 +325,9 @@ private:
     void reconcileActivePlaybackAudioState(bool alignRunningAudioToPlayhead = false);
     void requestPlaybackAudioWarmup(bool startWhenReady);
     void updatePlaybackStatusOverlay();
+    void updateRubberBandProgressDialog(
+        const AudioEngine::TimeStretchProgressSnapshot& progress,
+        const QString& statusText);
     void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
     void stopPlaybackWithReason(const QString& reason);
@@ -356,6 +363,7 @@ private:
     void syncAudioTabTimelineWaveforms();
     void refreshProcessingJobsTab();
     void showProcessingJobLog(const QString& manifestPath);
+    void resumeSamProcessingJob(const QString& manifestPath);
     void refreshTimelineStructureInspectorViews();
     void refreshTimelineSelectionInspectorViews();
     void refreshPreviewTransformInspectorViews();
@@ -695,7 +703,9 @@ private:
     QTimer m_playbackTimer;
     QTimer m_mainThreadHeartbeatTimer;
     QTimer m_stateSaveTimer;
+    QFutureWatcher<QByteArray> m_stateSaveWatcher;
     QTimer m_historySaveTimer;
+    QFutureWatcher<bool> m_historySaveWatcher;
     QTimer m_autosaveTimer;
     QTimer m_transcriptNormalizeRefreshTimer;
     QTimer m_deferredInspectorRefreshTimer;
@@ -711,10 +721,16 @@ private:
     bool m_pendingSaveAfterPlayback = false;
     static constexpr int kDefaultAutosaveIntervalMinutes = 5;
     static constexpr int kDefaultAutosaveMaxBackups = 20;
+    static constexpr int kDefaultHistoryMaxEntries = 100;
+    static constexpr int kDefaultHistoryMaxMegabytes = 16;
     int m_autosaveIntervalMinutes = kDefaultAutosaveIntervalMinutes;
     int m_autosaveMaxBackups = kDefaultAutosaveMaxBackups;
+    int m_historyMaxEntries = kDefaultHistoryMaxEntries;
+    int m_historyMaxMegabytes = kDefaultHistoryMaxMegabytes;
     bool m_restoringHistory = false;
     bool m_suppressHistorySnapshots = false;
+    bool m_stateSavePending = false;
+    bool m_historySavePending = false;
     bool m_updatingTracksTab = false;
 
     QColor m_backgroundColor = QColor(Qt::black);
@@ -730,6 +746,7 @@ private:
     bool m_playbackAudioWarmupPending = false;
     bool m_playbackVideoWarmupPending = false;
     bool m_retimingAudioForPlayback = false;
+    QPointer<QProgressDialog> m_rubberBandProgressDialog;
     bool m_startPlaybackAfterAudioWarmup = false;
     int m_playbackAudioWarmupRequestId = 0;
     qreal m_audioDriftRetimeMultiplier = 1.0;

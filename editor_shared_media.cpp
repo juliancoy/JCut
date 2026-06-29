@@ -41,6 +41,25 @@ namespace {
 QStringList collectSequenceFrames(const QString& path);
 bool cachedIsImageSequencePathImpl(const QString& path);
 
+int64_t streamDeclaredFrameCount(const AVStream* stream)
+{
+    return stream && stream->nb_frames > 0 ? static_cast<int64_t>(stream->nb_frames) : 0;
+}
+
+double streamDurationSeconds(const AVFormatContext* formatCtx, const AVStream* stream)
+{
+    if (stream && stream->duration != AV_NOPTS_VALUE) {
+        const double seconds = stream->duration * av_q2d(stream->time_base);
+        if (seconds > 0.0) {
+            return seconds;
+        }
+    }
+    if (formatCtx && formatCtx->duration > 0) {
+        return formatCtx->duration / static_cast<double>(AV_TIME_BASE);
+    }
+    return 0.0;
+}
+
 bool isImageSuffix(const QString& suffix) {
     static const QSet<QString> kImageSuffixes = {
         QStringLiteral("png"),
@@ -859,6 +878,7 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
     }
 
     double sourceFps = static_cast<double>(kTimelineFps);
+    int64_t sourceFrameCount = 0;
     bool durationFound = false;
 
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
@@ -891,6 +911,14 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
                 if (framerate.num > 0 && framerate.den > 0) {
                     sourceFps = av_q2d(framerate);
                 }
+                const int64_t declaredFrames = streamDeclaredFrameCount(stream);
+                const double videoDurationSeconds = streamDurationSeconds(formatCtx, stream);
+                if (declaredFrames > 0) {
+                    sourceFrameCount = declaredFrames;
+                    if (videoDurationSeconds > 0.0) {
+                        sourceFps = static_cast<double>(declaredFrames) / videoDurationSeconds;
+                    }
+                }
             } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
                 result.hasAudio = true;
             }
@@ -902,7 +930,11 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
             }
         }
 
-        if (durationSeconds > 0.0) {
+        if (sourceFrameCount > 0) {
+            result.durationFrames = sourceFrameCount;
+            result.fps = sourceFps;
+            durationFound = true;
+        } else if (durationSeconds > 0.0) {
             result.durationFrames = qMax<int64_t>(1, qRound64(durationSeconds * sourceFps));
             result.fps = sourceFps;
             durationFound = true;

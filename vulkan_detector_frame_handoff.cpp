@@ -266,6 +266,7 @@ void VulkanDetectorFrameHandoff::release()
 {
     finishPendingUpload(nullptr, nullptr);
     if (m_context.device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(m_context.device);
 #if JCUT_HAS_CUDA_DRIVER
         destroyCudaExternalMemory(m_cudaExternalMemory, m_cudaExternalDevicePtr, m_cudaImportContext);
         destroyCudaExternalMemory(m_cudaExternalUvMemory, m_cudaExternalUvDevicePtr, m_cudaImportContext);
@@ -275,6 +276,7 @@ void VulkanDetectorFrameHandoff::release()
         m_cudaSemaphoreImportContext = nullptr;
         destroyBuffer(m_cudaExportBuffer, m_cudaExportMemory, &m_resourceStats.stagingBufferFrees);
         destroyBuffer(m_cudaExportUvBuffer, m_cudaExportUvMemory, &m_resourceStats.stagingBufferFrees);
+        destroyRetiredCudaExportBuffers();
         m_cudaExportSize = 0;
         m_cudaExportUvSize = 0;
         if (m_nv12Pipeline != VK_NULL_HANDLE) vkDestroyPipeline(m_context.device, m_nv12Pipeline, nullptr);
@@ -325,6 +327,7 @@ void VulkanDetectorFrameHandoff::release()
     m_stagingSize = 0;
     m_cudaExportSize = 0;
     m_cudaExportUvSize = 0;
+    m_retiredCudaExportBuffers.clear();
     m_cudaExternalMemory = nullptr;
     m_cudaExternalUvMemory = nullptr;
     m_cudaExternalReadySemaphore = nullptr;
@@ -520,8 +523,6 @@ bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer(VkDeviceSize bytes,
     if (buffer != VK_NULL_HANDLE && memory != VK_NULL_HANDLE && size >= bytes) {
         return true;
     }
-    destroyBuffer(buffer, memory, &m_resourceStats.stagingBufferFrees);
-    size = 0;
 
     VkExternalMemoryBufferCreateInfo extBuf{};
     extBuf.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
@@ -540,6 +541,8 @@ bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer(VkDeviceSize bytes,
     vkGetBufferMemoryRequirements(m_context.device, buffer, &req);
     const uint32_t memType = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (memType == UINT32_MAX) {
+        destroyBuffer(buffer, memory, nullptr);
+        size = 0;
         if (errorMessage) *errorMessage = QStringLiteral("no device-local memory for CUDA-export Vulkan buffer");
         return false;
     }
@@ -553,6 +556,8 @@ bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer(VkDeviceSize bytes,
     alloc.memoryTypeIndex = memType;
     if (vkAllocateMemory(m_context.device, &alloc, nullptr, &memory) != VK_SUCCESS ||
         vkBindBufferMemory(m_context.device, buffer, memory, 0) != VK_SUCCESS) {
+        destroyBuffer(buffer, memory, nullptr);
+        size = 0;
         if (errorMessage) *errorMessage = QStringLiteral("failed to allocate/bind CUDA-export Vulkan memory");
         return false;
     }
@@ -1251,12 +1256,26 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
     const bool recreateY = m_cudaExportBuffer == VK_NULL_HANDLE || m_cudaExportSize < bytes;
     const bool recreateUv = isNv12 && (m_cudaExportUvBuffer == VK_NULL_HANDLE || m_cudaExportUvSize < uvBytes);
     if (recreateY || recreateUv) {
-        destroyCudaExternalMemory(m_cudaExternalMemory, m_cudaExternalDevicePtr, m_cudaImportContext);
+        if (recreateY) {
+            retireCudaExportBuffer(m_cudaExportBuffer,
+                                   m_cudaExportMemory,
+                                   m_cudaExportSize,
+                                   m_cudaExternalMemory,
+                                   m_cudaExternalDevicePtr,
+                                   m_cudaImportContext);
+        }
         if (recreateY && !ensureCudaExportBuffer(bytes, m_cudaExportBuffer, m_cudaExportMemory, m_cudaExportSize, errorMessage)) {
             return false;
         }
         if (isNv12) {
-            destroyCudaExternalMemory(m_cudaExternalUvMemory, m_cudaExternalUvDevicePtr, m_cudaImportContext);
+            if (recreateUv) {
+                retireCudaExportBuffer(m_cudaExportUvBuffer,
+                                       m_cudaExportUvMemory,
+                                       m_cudaExportUvSize,
+                                       m_cudaExternalUvMemory,
+                                       m_cudaExternalUvDevicePtr,
+                                       m_cudaImportContext);
+            }
             if (!ensureCudaExportBuffer(uvBytes, m_cudaExportUvBuffer, m_cudaExportUvMemory, m_cudaExportUvSize, errorMessage)) {
                 return false;
             }
@@ -1659,12 +1678,26 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     const bool recreateY = m_cudaExportBuffer == VK_NULL_HANDLE || m_cudaExportSize < bytes;
     const bool recreateUv = isNv12 && (m_cudaExportUvBuffer == VK_NULL_HANDLE || m_cudaExportUvSize < uvBytes);
     if (recreateY || recreateUv) {
-        destroyCudaExternalMemory(m_cudaExternalMemory, m_cudaExternalDevicePtr, m_cudaImportContext);
+        if (recreateY) {
+            retireCudaExportBuffer(m_cudaExportBuffer,
+                                   m_cudaExportMemory,
+                                   m_cudaExportSize,
+                                   m_cudaExternalMemory,
+                                   m_cudaExternalDevicePtr,
+                                   m_cudaImportContext);
+        }
         if (recreateY && !ensureCudaExportBuffer(bytes, m_cudaExportBuffer, m_cudaExportMemory, m_cudaExportSize, errorMessage)) {
             return false;
         }
         if (isNv12) {
-            destroyCudaExternalMemory(m_cudaExternalUvMemory, m_cudaExternalUvDevicePtr, m_cudaImportContext);
+            if (recreateUv) {
+                retireCudaExportBuffer(m_cudaExportUvBuffer,
+                                       m_cudaExportUvMemory,
+                                       m_cudaExportUvSize,
+                                       m_cudaExternalUvMemory,
+                                       m_cudaExternalUvDevicePtr,
+                                       m_cudaImportContext);
+            }
             if (!ensureCudaExportBuffer(uvBytes, m_cudaExportUvBuffer, m_cudaExportUvMemory, m_cudaExportUvSize, errorMessage)) {
                 return false;
             }
@@ -2323,6 +2356,46 @@ void VulkanDetectorFrameHandoff::destroyBuffer(VkBuffer& buffer, VkDeviceMemory&
     }
     buffer = VK_NULL_HANDLE;
     memory = VK_NULL_HANDLE;
+}
+
+void VulkanDetectorFrameHandoff::retireCudaExportBuffer(VkBuffer& buffer,
+                                                        VkDeviceMemory& memory,
+                                                        VkDeviceSize& size,
+                                                        void*& externalMemory,
+                                                        quint64& externalDevicePtr,
+                                                        void* importContext)
+{
+    if (buffer != VK_NULL_HANDLE || memory != VK_NULL_HANDLE || externalMemory) {
+        RetiredCudaExportBuffer retired;
+        retired.buffer = buffer;
+        retired.memory = memory;
+        retired.externalMemory = externalMemory;
+        retired.externalDevicePtr = externalDevicePtr;
+        retired.importContext = importContext;
+        m_retiredCudaExportBuffers.push_back(retired);
+    }
+    buffer = VK_NULL_HANDLE;
+    memory = VK_NULL_HANDLE;
+    size = 0;
+    externalMemory = nullptr;
+    externalDevicePtr = 0;
+}
+
+void VulkanDetectorFrameHandoff::destroyRetiredCudaExportBuffers()
+{
+    for (RetiredCudaExportBuffer& retired : m_retiredCudaExportBuffers) {
+#if JCUT_HAS_CUDA_DRIVER
+        destroyCudaExternalMemory(retired.externalMemory,
+                                  retired.externalDevicePtr,
+                                  retired.importContext);
+#else
+        retired.externalMemory = nullptr;
+        retired.externalDevicePtr = 0;
+        Q_UNUSED(retired);
+#endif
+        destroyBuffer(retired.buffer, retired.memory, &m_resourceStats.stagingBufferFrees);
+    }
+    m_retiredCudaExportBuffers.clear();
 }
 
 uint32_t VulkanDetectorFrameHandoff::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const

@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QString>
 #include <QtGlobal>
+#include <QVector>
 
 #include <string>
 
@@ -147,6 +148,13 @@ private:
                          VkImageLayout newLayout);
     void transitionImage(VkImageLayout oldLayout, VkImageLayout newLayout);
     void destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory, quint64* freeCounter = nullptr);
+    void retireCudaExportBuffer(VkBuffer& buffer,
+                                VkDeviceMemory& memory,
+                                VkDeviceSize& size,
+                                void*& externalMemory,
+                                quint64& externalDevicePtr,
+                                void* importContext);
+    void destroyRetiredCudaExportBuffers();
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     VulkanDeviceContext m_context;
@@ -182,6 +190,14 @@ private:
     VkBuffer m_cudaExportUvBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_cudaExportUvMemory = VK_NULL_HANDLE;
     VkDeviceSize m_cudaExportUvSize = 0;
+    struct RetiredCudaExportBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* externalMemory = nullptr;
+        quint64 externalDevicePtr = 0;
+        void* importContext = nullptr;
+    };
+    QVector<RetiredCudaExportBuffer> m_retiredCudaExportBuffers;
     void* m_cudaExternalMemory = nullptr;
     void* m_cudaExternalUvMemory = nullptr;
     void* m_cudaExternalReadySemaphore = nullptr;

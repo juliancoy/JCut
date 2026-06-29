@@ -52,6 +52,25 @@ void warnNoVideoStreamThrottled(const QString& path) {
     }
 }
 
+int64_t streamDeclaredFrameCount(const AVStream* stream)
+{
+    return stream && stream->nb_frames > 0 ? static_cast<int64_t>(stream->nb_frames) : 0;
+}
+
+double streamDurationSeconds(const AVFormatContext* formatCtx, const AVStream* stream)
+{
+    if (stream && stream->duration != AV_NOPTS_VALUE) {
+        const double seconds = stream->duration * av_q2d(stream->time_base);
+        if (seconds > 0.0) {
+            return seconds;
+        }
+    }
+    if (formatCtx && formatCtx->duration > 0) {
+        return formatCtx->duration / static_cast<double>(AV_TIME_BASE);
+    }
+    return 0.0;
+}
+
 } // namespace
 
 DecoderContext::DecoderContext(const QString& path,
@@ -160,12 +179,15 @@ bool DecoderContext::openInput() {
                 ? av_q2d(framerate)
                 : static_cast<double>(kTimelineFps);
 
-            if (stream->duration != AV_NOPTS_VALUE) {
-                const double secs = stream->duration * av_q2d(stream->time_base);
-                m_info.durationFrames = static_cast<int64_t>(secs * m_info.fps);
-            } else if (m_formatCtx->duration > 0) {
-                const double secs = m_formatCtx->duration / static_cast<double>(AV_TIME_BASE);
-                m_info.durationFrames = static_cast<int64_t>(secs * m_info.fps);
+            const int64_t declaredFrames = streamDeclaredFrameCount(stream);
+            const double durationSeconds = streamDurationSeconds(m_formatCtx, stream);
+            if (declaredFrames > 0) {
+                m_info.durationFrames = declaredFrames;
+                if (durationSeconds > 0.0) {
+                    m_info.fps = static_cast<double>(declaredFrames) / durationSeconds;
+                }
+            } else if (durationSeconds > 0.0) {
+                m_info.durationFrames = static_cast<int64_t>(durationSeconds * m_info.fps);
             }
 
             m_info.bitrate = stream->codecpar->bit_rate;

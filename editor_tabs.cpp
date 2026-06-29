@@ -76,6 +76,19 @@ QString jobProcessLabel(const QJsonObject& manifest)
     return QString();
 }
 
+bool manifestReferencesDockerProcess(const QJsonObject& manifest)
+{
+    const QJsonObject process = manifest.value(QStringLiteral("process")).toObject();
+    if (process.value(QStringLiteral("type")).toString()
+            .compare(QStringLiteral("docker"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (!process.value(QStringLiteral("docker")).toObject().isEmpty()) {
+        return true;
+    }
+    return !manifest.value(QStringLiteral("docker_container_name")).toString().trimmed().isEmpty();
+}
+
 QString jobStatusLabel(const QJsonObject& manifest,
                        const jcut::jobs::DockerContainerInfo* container)
 {
@@ -84,7 +97,12 @@ QString jobStatusLabel(const QJsonObject& manifest,
             ? QStringLiteral("running")
             : container->status;
     }
-    return manifest.value(QStringLiteral("status")).toString();
+    const QString status = manifest.value(QStringLiteral("status")).toString();
+    if (status.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0 &&
+        manifestReferencesDockerProcess(manifest)) {
+        return QStringLiteral("stale");
+    }
+    return status;
 }
 
 QString jobProcessLabel(const QJsonObject& manifest,
@@ -116,6 +134,22 @@ QJsonObject manifestWithDockerProcess(const QJsonObject& manifest,
     return patched;
 }
 
+bool canResumeSamJob(const QJsonObject& manifest, bool hasDockerContainer)
+{
+    if (hasDockerContainer) {
+        return false;
+    }
+    if (manifest.value(QStringLiteral("operation")).toString()
+            .compare(QStringLiteral("sam3"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+    const QString status = manifest.value(QStringLiteral("status")).toString();
+    if (status.compare(QStringLiteral("completed"), Qt::CaseInsensitive) == 0) {
+        return false;
+    }
+    return !manifest.value(QStringLiteral("command")).toArray().isEmpty();
+}
+
 void addManifestPath(QStringList* paths, QSet<QString>* seen, const QString& path)
 {
     const QString absolute = QFileInfo(path).absoluteFilePath();
@@ -142,6 +176,92 @@ void addManifestDir(QStringList* paths, QSet<QString>* seen, const QString& dirP
 }
 
 } // namespace
+
+void EditorWindow::resumeSamProcessingJob(const QString& manifestPath)
+{
+    QJsonObject manifest;
+    QString error;
+    if (!jcut::jobs::readManifest(manifestPath, &manifest, &error)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Resume SAM3 Job"),
+                             QStringLiteral("Could not read job manifest:\n%1").arg(error));
+        return;
+    }
+    if (!canResumeSamJob(manifest, false)) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Resume SAM3 Job"),
+                                 QStringLiteral("This job is not resumable from the Jobs tab."));
+        return;
+    }
+
+    const QJsonArray commandArray = manifest.value(QStringLiteral("command")).toArray();
+    QStringList command;
+    command.reserve(commandArray.size());
+    for (const QJsonValue& value : commandArray) {
+        command.push_back(value.toString());
+    }
+    if (command.isEmpty() || command.first().trimmed().isEmpty()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Resume SAM3 Job"),
+                             QStringLiteral("The job manifest does not contain a launch command."));
+        return;
+    }
+
+    const QJsonObject artifacts = manifest.value(QStringLiteral("artifacts")).toObject();
+    const QJsonObject parameters = manifest.value(QStringLiteral("parameters")).toObject();
+    const QString jobRoot = manifest.value(QStringLiteral("job_root")).toString(
+        artifacts.value(QStringLiteral("job_root")).toString());
+    const QString modelCache = artifacts.value(QStringLiteral("model_cache")).toString();
+    const QString runtimeCache = artifacts.value(QStringLiteral("runtime_cache")).toString();
+    if (jobRoot.trimmed().isEmpty()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Resume SAM3 Job"),
+                             QStringLiteral("The job manifest does not contain a SAM3 job root."));
+        return;
+    }
+
+    QDir().mkpath(jobRoot);
+    const QString logPath = QDir(jobRoot).absoluteFilePath(
+        QStringLiteral("resume_%1.log")
+            .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
+
+    QProcess process;
+    process.setProgram(command.takeFirst());
+    process.setArguments(command);
+    process.setWorkingDirectory(QDir::currentPath());
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("SAM3_JOB_DIR"), QFileInfo(jobRoot).absoluteFilePath());
+    if (!modelCache.trimmed().isEmpty()) {
+        env.insert(QStringLiteral("SAM3_MODEL_CACHE"), QFileInfo(modelCache).absoluteFilePath());
+    }
+    if (!runtimeCache.trimmed().isEmpty()) {
+        env.insert(QStringLiteral("SAM3_RUNTIME_CACHE"), QFileInfo(runtimeCache).absoluteFilePath());
+    }
+    if (parameters.value(QStringLiteral("docker_root_mode")).toBool(false)) {
+        env.insert(QStringLiteral("SAM3_DOCKER_RUN_AS_ROOT"), QStringLiteral("1"));
+    }
+    process.setProcessEnvironment(env);
+    process.setStandardOutputFile(logPath, QIODevice::Append);
+    process.setStandardErrorFile(logPath, QIODevice::Append);
+
+    qint64 pid = 0;
+    if (!process.startDetached(&pid)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Resume SAM3 Job"),
+                             QStringLiteral("Failed to start the SAM3 resume process."));
+        return;
+    }
+
+    jcut::jobs::updateManifestStatus(
+        manifestPath,
+        QStringLiteral("running"),
+        QJsonObject{{QStringLiteral("resume_pid"), static_cast<qint64>(pid)},
+                    {QStringLiteral("resume_log"), logPath},
+                    {QStringLiteral("resume_started_at_utc"),
+                     QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}},
+        nullptr);
+    refreshProcessingJobsTab();
+}
 
 void EditorWindow::refreshInspectorTabByName(const QString& tabName)
 {
@@ -336,7 +456,12 @@ void EditorWindow::refreshProcessingJobsTab()
             item->setToolTip(values.at(col));
             table->setItem(rowIndex, col, item);
         }
-        auto* logButton = new QPushButton(QStringLiteral("Open Log"), table);
+        auto* actionsWidget = new QWidget(table);
+        auto* actionsLayout = new QHBoxLayout(actionsWidget);
+        actionsLayout->setContentsMargins(0, 0, 0, 0);
+        actionsLayout->setSpacing(6);
+
+        auto* logButton = new QPushButton(QStringLiteral("Open Log"), actionsWidget);
         logButton->setObjectName(QStringLiteral("jobs.open_log"));
         logButton->setEnabled(row.hasDockerContainer);
         logButton->setToolTip(row.hasDockerContainer
@@ -345,7 +470,22 @@ void EditorWindow::refreshProcessingJobsTab()
         connect(logButton, &QPushButton::clicked, this, [this, manifestPath = row.manifestPath]() {
             showProcessingJobLog(manifestPath);
         });
-        table->setCellWidget(rowIndex, 6, logButton);
+
+        auto* resumeButton = new QPushButton(QStringLiteral("Resume"), actionsWidget);
+        resumeButton->setObjectName(QStringLiteral("jobs.resume"));
+        const bool resumeEnabled = canResumeSamJob(manifest, row.hasDockerContainer);
+        resumeButton->setEnabled(resumeEnabled);
+        resumeButton->setToolTip(resumeEnabled
+                                     ? QStringLiteral("Resume this SAM3 job from existing outputs.")
+                                     : QStringLiteral("This job cannot be resumed from here."));
+        connect(resumeButton, &QPushButton::clicked, this, [this, manifestPath = row.manifestPath]() {
+            resumeSamProcessingJob(manifestPath);
+        });
+
+        actionsLayout->addWidget(logButton);
+        actionsLayout->addWidget(resumeButton);
+        actionsLayout->addStretch(1);
+        table->setCellWidget(rowIndex, 6, actionsWidget);
     }
 }
 
@@ -749,6 +889,8 @@ void EditorWindow::createOutputTab()
             m_outputDecoderLaneCountSpin, m_outputDecodeModeCombo,
             m_outputDeterministicPipelineCheckBox, m_outputResetPipelineDefaultsButton,
             m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
+            m_inspectorPane ? m_inspectorPane->historyMaxEntriesSpin() : nullptr,
+            m_inspectorPane ? m_inspectorPane->historyMaxMegabytesSpin() : nullptr,
             m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
         OutputTab::Dependencies{
             [this]() { return m_timeline != nullptr; },
@@ -777,6 +919,16 @@ void EditorWindow::createOutputTab()
             [this]() { return m_autosaveMaxBackups; },
             [this](int maxBackups) {
                 m_autosaveMaxBackups = qBound(1, maxBackups, 200);
+            },
+            [this]() { return m_historyMaxEntries; },
+            [this](int entries) {
+                m_historyMaxEntries = qBound(10, entries, 500);
+                this->trimHistoryToConfiguredLimits();
+            },
+            [this]() { return m_historyMaxMegabytes; },
+            [this](int megabytes) {
+                m_historyMaxMegabytes = qBound(1, megabytes, 256);
+                this->trimHistoryToConfiguredLimits();
             },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); }});
@@ -1251,6 +1403,7 @@ void EditorWindow::createGradingTab()
             m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
             m_gradingKeyAtPlayheadButton,
+            m_inspectorPane->gradingResetButton(),
             m_inspectorPane->gradingAutoOpposeButton(),
             m_inspectorPane->gradingCurveChannelCombo(),
             m_inspectorPane->gradingCurveThreePointLockCheckBox(),
@@ -1361,11 +1514,16 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskErodeSpin(),
             m_inspectorPane->maskBlurSpin(),
             m_inspectorPane->maskInvertCheck(),
+            m_inspectorPane->maskShowOnlyCheck(),
             m_inspectorPane->maskOpacitySpin(),
             m_inspectorPane->maskGradeEnabledCheck(),
             m_inspectorPane->maskGradeBrightnessSpin(),
             m_inspectorPane->maskGradeContrastSpin(),
             m_inspectorPane->maskGradeSaturationSpin(),
+            m_inspectorPane->maskResetGradeButton(),
+            m_inspectorPane->maskCurveChannelCombo(),
+            m_inspectorPane->maskHistogramWidget(),
+            m_inspectorPane->maskCurveSmoothingCheckBox(),
             m_inspectorPane->maskShadowEnabledCheck(),
             m_inspectorPane->maskShadowRadiusSpin(),
             m_inspectorPane->maskShadowOffsetXSpin(),

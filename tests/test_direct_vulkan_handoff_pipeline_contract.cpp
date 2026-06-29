@@ -9,7 +9,12 @@ class TestDirectVulkanHandoffPipelineContract : public QObject {
 private slots:
   void directPreviewUsesExtractedPipelineBeforeRenderPass();
   void directPreviewRecordsTextureUploadsBeforeRenderPass();
-  void directPreviewUsesSubmitBasedGpuHandoffApis();
+  void directPreviewRecordsGpuHandoffIntoFrameCommandBuffer();
+  void hardwareDirectExportBuffersAreRetiredBeforeReplacement();
+  void uploadStagingBuffersAreRetiredBeforeReplacement();
+  void sampledImagesAreRetiredBeforeReplacement();
+  void graphicsPipelinesDeclareDisabledDepthStencilState();
+  void directPreviewTransitionsAuxiliarySampledImagesBeforeDraw();
   void directPreviewUsesPerClipHandoffDescriptors();
   void directPreviewRequiresHardwarePayloadsFromCache();
   void handoffPipelineRejectsCpuOnlyFrames();
@@ -31,6 +36,8 @@ private slots:
   void speakerFramingAndExportUseFractionalFitGeometry();
   void contiguousTranscriptSectionsCanHoldMultipleTracks();
   void trackAssignmentDoesNotCreateFaceBoxKeyframes();
+  void maskMorphControlsUseWideSliderInputs();
+  void startupRestoresSpeechFilterRouting();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -111,7 +118,7 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
-    directPreviewUsesSubmitBasedGpuHandoffApis() {
+    directPreviewRecordsGpuHandoffIntoFrameCommandBuffer() {
   const QString previewSource =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
   const QString pipelineSource =
@@ -122,17 +129,239 @@ void TestDirectVulkanHandoffPipelineContract::
            "direct_vulkan_frame_handoff_pipeline.cpp must be readable");
 
   QVERIFY2(
-      pipelineSource.contains(QStringLiteral("m_handoff->uploadFrame(")),
-      "direct preview handoff must use the owned uploadFrame submit path so "
-      "CUDA/Vulkan semaphore waits can be attached to the handoff submit");
+      pipelineSource.contains(
+          QStringLiteral("handoff->recordHardwareFrameUpload(commandBuffer, status.frame")),
+      "direct preview handoff must record hardware-frame upload work into "
+      "the QVulkanWindow frame command buffer");
   QVERIFY2(
-      pipelineSource.contains(QStringLiteral("m_handoff->importOffscreenFrame(")),
-      "direct preview external Vulkan handoff must use the owned import submit "
-      "path rather than recording into Qt's caller-owned submit");
+      pipelineSource.contains(
+          QStringLiteral("handoff->recordImportedFrameCopy(commandBuffer, offscreenFrame")),
+      "direct preview external Vulkan handoff must record import copies into "
+      "the QVulkanWindow frame command buffer");
   QVERIFY2(
-      pipelineSource.contains(QStringLiteral("uploadFrame(status.frame, false")),
+      !pipelineSource.contains(QStringLiteral("m_handoff->uploadFrame(")) &&
+          !pipelineSource.contains(QStringLiteral("m_handoff->importOffscreenFrame(")),
+      "direct preview must not submit and wait on a separate handoff command "
+      "buffer during presentation");
+  QVERIFY2(
+      pipelineSource.contains(QStringLiteral("handoffForFrameSlot(uint32_t frameSlot)")) &&
+          pipelineSource.contains(QStringLiteral("frameSlot) % m_handoffs.size()")),
+      "direct preview must key independent handoff resources by swapchain "
+      "frame slot so a slot is reused only after Qt/Vulkan reacquires that "
+      "swapchain image");
+  QVERIFY2(
+      previewSource.contains(QStringLiteral("currentSwapChainImageIndex()")) &&
+          previewSource.contains(QStringLiteral("swapchainImageIndex")),
+      "direct preview must pass QVulkanWindow's current swapchain image index "
+      "into the handoff resource selection");
+  QVERIFY2(
+      pipelineSource.contains(QStringLiteral("!status.externalVulkanFrame && !status.frame.hasHardwareFrame()")),
       "direct preview must disable VulkanDetectorFrameHandoff CPU upload "
       "fallback; visible frames require hardware/external GPU payloads");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    hardwareDirectExportBuffersAreRetiredBeforeReplacement() {
+  const QString source =
+      readSourceFile(QStringLiteral("vulkan_detector_frame_handoff.cpp"));
+  const QString header =
+      readSourceFile(QStringLiteral("vulkan_detector_frame_handoff.h"));
+  QVERIFY2(!source.isEmpty(),
+           "vulkan_detector_frame_handoff.cpp must be readable");
+  QVERIFY2(!header.isEmpty(),
+           "vulkan_detector_frame_handoff.h must be readable");
+
+  QVERIFY2(header.contains(QStringLiteral("RetiredCudaExportBuffer")) &&
+               header.contains(QStringLiteral("m_retiredCudaExportBuffers")),
+           "hardware-direct CUDA export buffers must have a retired-resource "
+           "list for buffers that may still be referenced by frame command "
+           "buffers");
+  QVERIFY2(source.contains(QStringLiteral("retireCudaExportBuffer(")) &&
+               source.contains(QStringLiteral("destroyRetiredCudaExportBuffers()")),
+           "hardware-direct CUDA export buffers must be retired and drained "
+           "through explicit helpers");
+  QVERIFY2(source.contains(QStringLiteral("vkDeviceWaitIdle(m_context.device);")) &&
+               source.contains(QStringLiteral("destroyRetiredCudaExportBuffers();")),
+           "retired CUDA export buffers must be destroyed only after device "
+           "work is quiesced during handoff release");
+
+  const qsizetype ensureStart =
+      source.indexOf(QStringLiteral("bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer"));
+  const qsizetype nextFunction =
+      source.indexOf(QStringLiteral("bool VulkanDetectorFrameHandoff::createNv12ConversionPipeline"),
+                     ensureStart);
+  QVERIFY2(ensureStart >= 0 && nextFunction > ensureStart,
+           "ensureCudaExportBuffer function body must be discoverable");
+  const QString ensureBody = source.mid(ensureStart, nextFunction - ensureStart);
+  QVERIFY2(!ensureBody.contains(QStringLiteral("destroyBuffer(buffer, memory, &m_resourceStats")),
+           "ensureCudaExportBuffer must not immediately destroy an export "
+           "buffer that may still be referenced by an in-flight presentation "
+           "command buffer");
+  QVERIFY2(source.count(QStringLiteral("retireCudaExportBuffer(m_cudaExportBuffer")) >= 2 &&
+               source.count(QStringLiteral("retireCudaExportBuffer(m_cudaExportUvBuffer")) >= 2,
+           "both hardware-direct upload paths must retire Y/RGBA and UV "
+           "export buffers before replacement");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    uploadStagingBuffersAreRetiredBeforeReplacement() {
+  const QString source = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  const QString header = readSourceFile(QStringLiteral("vulkan_resources.h"));
+  QVERIFY2(!source.isEmpty(), "vulkan_resources.cpp must be readable");
+  QVERIFY2(!header.isEmpty(), "vulkan_resources.h must be readable");
+
+  QVERIFY2(header.contains(QStringLiteral("RetiredStagingBuffer")) &&
+               header.contains(QStringLiteral("m_retiredStagingBuffers")),
+           "Vulkan upload staging buffers must have a retired-resource list "
+           "for buffers referenced by submitted frame command buffers");
+  QVERIFY2(header.contains(QStringLiteral("reserveStagingUpload")) &&
+               header.contains(QStringLiteral("writeStagingUpload")) &&
+               header.contains(QStringLiteral("beginFrameUploads")) &&
+               header.contains(QStringLiteral("StagingUploadRing")) &&
+               header.contains(QStringLiteral("resetAllocation()")) &&
+               header.contains(QStringLiteral("writeOffset")),
+           "VulkanResources must track per-upload staging offsets so later "
+           "LUT uploads cannot overwrite earlier texture or mask uploads in "
+           "the same recorded command buffer");
+  QVERIFY2(source.contains(QStringLiteral("m_retiredStagingBuffers.push_back(retired)")) &&
+               source.contains(QStringLiteral("m_retiredStagingBuffers.clear()")),
+           "Vulkan upload staging buffers must be retired on growth and "
+           "drained on resource destruction");
+  QVERIFY2(source.contains(QStringLiteral("bool VulkanResources::reserveStagingUpload")) &&
+               source.contains(QStringLiteral("bool VulkanResources::writeStagingUpload")) &&
+               source.contains(QStringLiteral("bool VulkanResources::beginFrameUploads")) &&
+               source.contains(QStringLiteral("checkedAdd")) &&
+               source.contains(QStringLiteral("checkedMul")) &&
+               source.contains(QStringLiteral("alignUp")) &&
+               source.count(QStringLiteral("region.bufferOffset = stagingOffset")) >= 5 &&
+               source.count(QStringLiteral("writeStagingUpload(")) >= 6,
+           "every direct-preview staging upload path must reserve a distinct "
+           "buffer slice and copy from that slice");
+  QVERIFY2(source.contains(QStringLiteral("m_stagingRing.frameSlotBytes = std::max(kTextureBytes, kCurveLutBytes)")) &&
+               source.contains(QStringLiteral("initialStagingBytes")),
+           "initial direct-preview staging allocation must be sized for the "
+           "per-frame slot layout instead of reallocating on the first real "
+           "frame upload");
+  QVERIFY2(source.contains(QStringLiteral("m_stagingRing.resetAllocation()")) &&
+               !source.contains(QStringLiteral("m_stagingRing.reset();\n    }\n\n    VkBufferCreateInfo bufferInfo")),
+           "staging buffer growth must preserve the active swapchain frame "
+           "slot; only full resource teardown should reset the whole ring");
+  QVERIFY2(source.contains(QStringLiteral("return false;")) &&
+               !source.contains(QStringLiteral("m_stagingRing.writeOffset = 0;\n    }\n    return true;")),
+           "beginFrameUploads must fail explicitly if the frame-slot base "
+           "cannot be represented; it must not silently fall back to offset 0");
+  QVERIFY2(!source.contains(QStringLiteral("vkMapMemory(m_device, m_stagingMemory, 0, bytes")) &&
+               !source.contains(QStringLiteral("vkMapMemory(m_device, m_stagingMemory, 0, kCurveLutBytes")) &&
+               !source.contains(QStringLiteral("vkMapMemory(m_device, m_stagingMemory, 0, kTextureBytes")),
+           "direct-preview staging uploads must not keep remapping offset 0 "
+           "while multiple copies are recorded into one frame command buffer");
+  QVERIFY2(source.contains(QStringLiteral("vkDeviceWaitIdle(m_device);")) &&
+               source.contains(QStringLiteral("for (RetiredStagingBuffer& retired")),
+           "retired staging buffers must be destroyed only after device work "
+           "is quiesced");
+
+  const qsizetype ensureStart =
+      source.indexOf(QStringLiteral("bool VulkanResources::ensureStagingCapacity"));
+  const qsizetype nextFunction =
+      source.indexOf(QStringLiteral("uint32_t VulkanResources::findMemoryType"),
+                     ensureStart);
+  QVERIFY2(ensureStart >= 0 && nextFunction > ensureStart,
+           "ensureStagingCapacity function body must be discoverable");
+  const QString ensureBody = source.mid(ensureStart, nextFunction - ensureStart);
+  const qsizetype createInfoIndex =
+      ensureBody.indexOf(QStringLiteral("VkBufferCreateInfo bufferInfo"));
+  QVERIFY2(createInfoIndex > 0,
+           "ensureStagingCapacity must create a replacement buffer after "
+           "handling the previous staging buffer");
+  const QString preCreateBody = ensureBody.left(createInfoIndex);
+  QVERIFY2(!preCreateBody.contains(
+               QStringLiteral("vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);")),
+           "ensureStagingCapacity must not destroy the previous staging "
+           "buffer while earlier presentation command buffers may still copy "
+           "from it");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    sampledImagesAreRetiredBeforeReplacement() {
+  const QString source = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  const QString header = readSourceFile(QStringLiteral("vulkan_resources.h"));
+  QVERIFY2(!source.isEmpty(), "vulkan_resources.cpp must be readable");
+  QVERIFY2(!header.isEmpty(), "vulkan_resources.h must be readable");
+
+  QVERIFY2(header.contains(QStringLiteral("RetiredImageResource")) &&
+               header.contains(QStringLiteral("m_retiredImageResources")),
+           "resized sampled images must have a retired-resource list for "
+           "image views/images/memory referenced by submitted command buffers");
+  QVERIFY2(source.contains(QStringLiteral("retireTextureImage()")) &&
+               source.contains(QStringLiteral("retireMaskImage(m_maskImage")) &&
+               source.contains(QStringLiteral("retireMaskImage(m_maskRawImage")) &&
+               source.contains(QStringLiteral("m_retiredImageResources.clear()")),
+           "texture and mask resize paths must retire old sampled images and "
+           "drain them on resource destruction");
+
+  const qsizetype createTextureStart =
+      source.indexOf(QStringLiteral("bool VulkanResources::createTextureImage"));
+  const qsizetype createMaskStart =
+      source.indexOf(QStringLiteral("bool VulkanResources::createMaskImage"),
+                     createTextureStart);
+  QVERIFY2(createTextureStart >= 0 && createMaskStart > createTextureStart,
+           "createTextureImage body must be discoverable");
+  const QString createTextureBody =
+      source.mid(createTextureStart, createMaskStart - createTextureStart);
+  const qsizetype firstCreateCall =
+      createTextureBody.indexOf(QStringLiteral("vkCreateImage("));
+  QVERIFY2(firstCreateCall > 0, "createTextureImage must create a replacement image");
+  const QString preCreateTextureBody = createTextureBody.left(firstCreateCall);
+  QVERIFY2(preCreateTextureBody.contains(QStringLiteral("retireTextureImage();")) &&
+               !preCreateTextureBody.contains(QStringLiteral("destroyTextureImage();")),
+           "createTextureImage must retire the previous sampled texture "
+           "instead of destroying it before replacement");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    graphicsPipelinesDeclareDisabledDepthStencilState() {
+  const QStringList paths{
+      QStringLiteral("vulkan_pipeline.cpp"),
+      QStringLiteral("vulkan_text_renderer.cpp"),
+      QStringLiteral("vulkan_audio_tab.cpp"),
+      QStringLiteral("offscreen_vulkan_renderer_backend.cpp")};
+  for (const QString& path : paths) {
+    const QString source = readSourceFile(path);
+    QVERIFY2(!source.isEmpty(),
+             qPrintable(QStringLiteral("%1 must be readable").arg(path)));
+    QVERIFY2(source.contains(QStringLiteral("VkPipelineDepthStencilStateCreateInfo depthStencil")) &&
+                 source.contains(QStringLiteral("depthStencil.depthTestEnable = VK_FALSE")) &&
+                 source.contains(QStringLiteral("depthStencil.stencilTestEnable = VK_FALSE")) &&
+                 source.contains(QStringLiteral("pipelineInfo.pDepthStencilState = &depthStencil")),
+             qPrintable(QStringLiteral(
+                            "%1 must provide an explicit disabled "
+                            "depth/stencil state for render passes with "
+                            "depth/stencil attachments")
+                            .arg(path)));
+  }
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    directPreviewTransitionsAuxiliarySampledImagesBeforeDraw() {
+  const QString resources = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  const QString preview = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!resources.isEmpty(), "vulkan_resources.cpp must be readable");
+  QVERIFY2(!preview.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
+
+  QVERIFY2(resources.contains(QStringLiteral("ensureAuxiliaryImagesReadable")) &&
+               resources.contains(QStringLiteral("transitionIfUndefined(m_curveLutImage, m_curveLutLayout)")) &&
+               resources.contains(QStringLiteral("transitionIfUndefined(m_maskImage, m_maskLayout)")) &&
+               resources.contains(QStringLiteral("transitionIfUndefined(m_maskCurveLutImage, m_maskCurveLutLayout)")),
+           "VulkanResources must transition default auxiliary sampled images "
+           "to shader-read layout before descriptor sets using them are drawn");
+
+  const qsizetype ensureIndex =
+      preview.indexOf(QStringLiteral("ensureAuxiliaryImagesReadable(cb)"));
+  const qsizetype beginRenderPassIndex =
+      preview.indexOf(QStringLiteral("vkCmdBeginRenderPass"));
+  QVERIFY2(ensureIndex >= 0 && beginRenderPassIndex > ensureIndex,
+           "direct preview must make auxiliary sampled images readable before "
+           "starting the render pass that draws descriptor sets");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -257,8 +486,9 @@ void TestDirectVulkanHandoffPipelineContract::
       "handoff pipeline must reject CPU-only frames before the handoff layer");
   QVERIFY2(!source.contains(QStringLiteral("QStringLiteral(\"cpu_upload\")")),
            "handoff pipeline must not report CPU upload as a render mode");
-  QVERIFY2(source.contains(QStringLiteral("uploadFrame(status.frame, false")),
-           "handoff pipeline must disable CPU image upload fallback");
+  QVERIFY2(source.contains(QStringLiteral("!status.externalVulkanFrame && !status.frame.hasHardwareFrame()")),
+           "handoff pipeline must reject CPU-only video frames instead of "
+           "falling back to CPU image upload");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -957,9 +1187,16 @@ void TestDirectVulkanHandoffPipelineContract::
            "playback startup must gate on the exact retimed audio needed at "
            "the current frame");
   QVERIFY2(
-      playback.contains(QStringLiteral("requestPlaybackAudioWarmup(false)")),
-      "missing retimed audio must enter a background warmup/generation path "
-      "without stopping transport playback");
+      playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")) &&
+          playback.contains(QStringLiteral(
+              "startup gated: waiting for re-timed audio")),
+      "missing retimed audio at startup must enter warmup/generation and "
+      "start playback only after it is ready");
+  QVERIFY2(
+      playback.contains(QStringLiteral(
+          "transport playback waiting while pitch-preserving audio warms")),
+      "active playback must visibly wait when required retimed audio is not "
+      "ready");
   QVERIFY2(
       playback.contains(QStringLiteral("Audio being generated")),
       "preview overlay must make retimed audio generation visible to the user");
@@ -1592,6 +1829,71 @@ void TestDirectVulkanHandoffPipelineContract::
                tracks.contains(QStringLiteral("m_speakerDeps.refreshPreview()")),
            "contiguous section rotation changes must warm the selected clip and "
            "refresh preview immediately so the GPU transform follows the row");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    maskMorphControlsUseWideSliderInputs() {
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
+  const QString maskTab = readSourceFile(QStringLiteral("mask_tab.cpp"));
+  QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
+  QVERIFY2(!maskTab.isEmpty(), "mask_tab.cpp must be readable");
+
+  QVERIFY2(inspector.contains(QStringLiteral("#include <QSlider>")) &&
+               inspector.contains(QStringLiteral("makePixelsSliderControl")) &&
+               inspector.contains(QStringLiteral("slider->setRange(0, qRound(maxValue * 10.0))")),
+           "mask morph controls must expose slider input, not only narrow "
+           "spin-box arrows");
+  QVERIFY2(inspector.contains(QStringLiteral("512.0")) &&
+               inspector.contains(QStringLiteral("m_maskDilateSpin = dilateControl.spin")) &&
+               inspector.contains(QStringLiteral("shapeForm->addRow(QStringLiteral(\"Dilate\"), dilateControl.row)")) &&
+               inspector.contains(QStringLiteral("shapeForm->addRow(QStringLiteral(\"Blur\"), blurControl.row)")),
+           "mask morph controls must use wider practical ranges and keep the "
+           "spin boxes wired to the saved clip fields");
+  QVERIFY2(inspector.contains(QStringLiteral("new QScrollArea(page)")) &&
+               inspector.contains(QStringLiteral("scrollArea->setWidgetResizable(true)")) &&
+               inspector.contains(QStringLiteral("scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff)")),
+           "the mask tab must be vertically scrollable so grading and mask "
+           "controls are reachable in a narrow inspector");
+  QVERIFY2(maskTab.contains(QStringLiteral(
+               "auto setSpin = [](QDoubleSpinBox* spin, double value) {\n"
+               "        if (!spin) return;\n"
+               "        spin->setValue(value);\n"
+               "    };")),
+           "mask refresh must allow restored spin-box values to notify paired "
+           "sliders while m_updating suppresses clip writes");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    startupRestoresSpeechFilterRouting() {
+  const QString editor = readSourceFile(QStringLiteral("editor.cpp"));
+  const QString transcriptHeader = readSourceFile(QStringLiteral("transcript_tab.h"));
+  const QString transcriptSource = readSourceFile(QStringLiteral("transcript_tab.cpp"));
+  QVERIFY2(!editor.isEmpty(), "editor.cpp must be readable");
+  QVERIFY2(!transcriptHeader.isEmpty(), "transcript_tab.h must be readable");
+  QVERIFY2(!transcriptSource.isEmpty(), "transcript_tab.cpp must be readable");
+
+  QVERIFY2(transcriptHeader.contains(QStringLiteral("syncSpeechFilterControlsFromWidgets")) &&
+               transcriptSource.contains(QStringLiteral("void TranscriptTab::syncSpeechFilterControlsFromWidgets()")) &&
+               transcriptSource.contains(QStringLiteral("m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked()")),
+           "TranscriptTab must expose an explicit way to synchronize its "
+           "speech-filter model from restored widgets when signals are blocked");
+
+  const qsizetype restoreIndex =
+      editor.indexOf(QStringLiteral("m_speechFilterEnabled = speechFilterEnabled"));
+  const qsizetype syncIndex =
+      editor.indexOf(QStringLiteral("m_transcriptTab->syncSpeechFilterControlsFromWidgets()"),
+                     restoreIndex);
+  const qsizetype invalidateIndex =
+      editor.indexOf(QStringLiteral("invalidatePlaybackRangeCaches();"), syncIndex);
+  const qsizetype playbackRangesIndex =
+      editor.indexOf(QStringLiteral("const QVector<ExportRangeSegment> playbackRanges"),
+                     invalidateIndex);
+  QVERIFY2(restoreIndex >= 0 && syncIndex > restoreIndex,
+           "startup state restore must synchronize TranscriptTab after the "
+           "speech-filter checkbox is restored with signal blockers");
+  QVERIFY2(invalidateIndex > syncIndex && playbackRangesIndex > invalidateIndex,
+           "startup state restore must invalidate playback range caches before "
+           "computing deferred speech-filter playback ranges");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

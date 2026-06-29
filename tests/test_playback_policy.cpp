@@ -307,13 +307,49 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
              "transport-clock playback must smoothly retime follower audio "
              "instead of only seeking on drift");
     QVERIFY2(!playback.contains(QStringLiteral("playbackActive() && ") + removedSelectableClockHook + QStringLiteral("()")),
-             "retimed-audio warmup must not stop active system-clock transport "
-             "playback");
-    QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup(false)")) &&
-                 playback.contains(QStringLiteral("continuing transport playback while re-timed audio warms")) &&
+             "retimed-audio warmup must not restore a selectable audio clock "
+             "playback path");
+    QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")) &&
+                 playback.contains(QStringLiteral("startup gated: waiting for re-timed audio")) &&
                  playback.contains(QStringLiteral("reconcileActivePlaybackAudioState(true)")),
-             "missing pitch-preserving audio at playback start must warm in "
-             "the background and rejoin active playback when ready");
+             "missing pitch-preserving audio at playback start must gate "
+             "startup and begin playback when ready");
+    QVERIFY2(playback.contains(QStringLiteral("transport playback waiting while pitch-preserving audio warms")) &&
+                 playback.contains(QStringLiteral("m_timelineAdvanceCarrySamples = 0.0")) &&
+                 playback.contains(QStringLiteral("return;")),
+             "active playback must visibly hold the transport while required "
+             "pitch-preserving audio warms");
+    QVERIFY2(playback.contains(QStringLiteral("audioOutputUnavailableForPlayback()")) &&
+                 playback.contains(QStringLiteral("audioOutputStatusText()")),
+             "playback overlay must distinguish audio-output failures from "
+             "retimed-audio generation or video buffering");
+    QVERIFY2(playback.contains(QStringLiteral("updateRubberBandProgressDialog")) &&
+                 playback.contains(QStringLiteral("QProgressDialog")) &&
+                 playback.contains(QStringLiteral("Rubber Band Audio Retiming")) &&
+                 playback.contains(QStringLiteral("timeStretchProgressSnapshot()")) &&
+                 playback.contains(QStringLiteral("Current: %2")) &&
+                 playback.contains(QStringLiteral("%1 of %2 complete, %3 remaining")),
+             "Rubber Band generation must show one aggregate progress dialog "
+             "with the current clip and remaining clip count");
+    const QString setup = readSourceFile(QStringLiteral("editor_setup.cpp"));
+    QVERIFY2(setup.contains(QStringLiteral("rubberBandGenerationActive")) &&
+                 setup.contains(QStringLiteral("m_rubberBandProgressDialog")) &&
+                 setup.contains(QStringLiteral("updatePlaybackStatusOverlay()")),
+             "main-thread heartbeat must keep the Rubber Band progress dialog "
+             "updated and close it after generation finishes");
+    const QString audio = readSourceFile(QStringLiteral("audio_engine.cpp"));
+    QVERIFY2(audio.contains(QStringLiteral("audio_output_unavailable")) &&
+                 audio.contains(QStringLiteral("audio_output_status")) &&
+                 audio.contains(QStringLiteral("Audio output unavailable")),
+             "audio diagnostics must expose a clear output-device/stream "
+             "status separate from Rubber Band readiness");
+    QVERIFY2(audio.contains(QStringLiteral("TimeStretchProgressSnapshot")) &&
+                 audio.contains(QStringLiteral("time_stretch_progress_total_clips")) &&
+                 audio.contains(QStringLiteral("time_stretch_progress_remaining_clips")) &&
+                 audio.contains(QStringLiteral("TimeStretchJobProgress")) &&
+                 audio.contains(QStringLiteral("markTimeStretchJob")),
+             "audio diagnostics must expose aggregate Rubber Band progress "
+             "from an explicit job tracker, not decode queue inspection");
     QVERIFY2(!playback.contains(QStringLiteral("PlaybackClockInput{")),
              "PlaybackClockInput must use named field assignment so adding "
              "clock fields cannot silently shift audio/current-frame values");

@@ -7,6 +7,7 @@
 
 #include <QString>
 
+#include <array>
 #include <memory>
 
 class VulkanResources;
@@ -37,14 +38,19 @@ public:
     bool isInitialized() const;
 
     Result record(VkCommandBuffer commandBuffer,
+                  uint32_t frameSlot,
                   const VulkanPreviewClipFrameStatus& status,
                   VulkanResources* resources,
                   DirectVulkanPreviewStats* stats);
 
 private:
+    static constexpr size_t kInFlightHandoffCount = 16;
+
     static QString framePixelFormatName(int format);
     static QString vulkanFormatName(VkFormat format);
 
-    std::unique_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff> m_handoff;
+    jcut::vulkan_detector::VulkanDetectorFrameHandoff* handoffForFrameSlot(uint32_t frameSlot);
+
+    std::array<std::unique_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff>, kInFlightHandoffCount> m_handoffs;
     QString m_lastError;
 };

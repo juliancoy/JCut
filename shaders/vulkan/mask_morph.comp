@@ -1,0 +1,37 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D u_input_mask;
+layout(binding = 1, rgba8) writeonly uniform image2D u_output_mask;
+
+layout(push_constant) uniform Push {
+    ivec2 outputSize;
+    int radius;
+    int dilate;
+} pc;
+
+float sampleMask(ivec2 coord)
+{
+    ivec2 clampedCoord = clamp(coord, ivec2(0), max(pc.outputSize - ivec2(1), ivec2(0)));
+    vec2 uv = (vec2(clampedCoord) + vec2(0.5)) / vec2(max(pc.outputSize, ivec2(1)));
+    return texture(u_input_mask, uv).r;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= pc.outputSize.x || coord.y >= pc.outputSize.y) {
+        return;
+    }
+
+    int r = max(pc.radius, 0);
+    float value = pc.dilate != 0 ? 0.0 : 1.0;
+    for (int y = -r; y <= r; ++y) {
+        for (int x = -r; x <= r; ++x) {
+            float sampleValue = sampleMask(coord + ivec2(x, y));
+            value = pc.dilate != 0 ? max(value, sampleValue) : min(value, sampleValue);
+        }
+    }
+    imageStore(u_output_mask, coord, vec4(value, value, value, 1.0));
+}

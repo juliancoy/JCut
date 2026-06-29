@@ -108,6 +108,10 @@ public:
 
   bool audioClockAvailable() const;
 
+  bool audioOutputUnavailableForPlayback() const;
+
+  QString audioOutputStatusText() const;
+
   bool playbackStarted() const;
 
   QJsonObject profilingSnapshot() const;
@@ -121,6 +125,20 @@ public:
   qreal timeStretchGenerationProgress() const;
 
   bool timeStretchGenerationActive() const;
+
+  struct TimeStretchProgressSnapshot {
+    bool visible = false;
+    bool generationActive = false;
+    QString currentPath;
+    QString phase;
+    int totalClips = 0;
+    int completedClips = 0;
+    int remainingClips = 0;
+    qreal currentProgress = -1.0;
+    qreal overallProgress = -1.0;
+  };
+
+  TimeStretchProgressSnapshot timeStretchProgressSnapshot() const;
 
 private:
   struct DecodeTask {
@@ -162,6 +180,34 @@ private:
   };
 
   static QString timeStretchGenerationPhaseString(int phase);
+
+  enum TimeStretchJobState {
+    TimeStretchJobQueued = 0,
+    TimeStretchJobDecoding = 1,
+    TimeStretchJobReadingSidecar = 2,
+    TimeStretchJobGenerating = 3,
+    TimeStretchJobWritingSidecar = 4,
+    TimeStretchJobComplete = 5,
+    TimeStretchJobFailed = 6,
+  };
+
+  struct TimeStretchJobProgress {
+    QString key;
+    QString path;
+    int speedKey = 0;
+    int state = TimeStretchJobQueued;
+    qreal progress = 0.0;
+    qint64 updatedMs = 0;
+  };
+
+  static QString timeStretchJobStateString(int state);
+
+  static QString timeStretchJobKey(const QString &path, int speedKey);
+
+  void markTimeStretchJob(const QString &path, int speedKey, int state,
+                          qreal progress);
+  bool timeStretchJobRecentlyFailed(const QString &path, int speedKey) const;
+  int beginTimeStretchJobAttempt(const QString &path, int speedKey);
 
   enum TimeStretchReadinessState {
     TimeStretchReadinessIdle = 0,
@@ -432,9 +478,16 @@ private:
   std::atomic<bool> m_timeStretchPrecomputeBlocked{false};
   std::atomic<int> m_timeStretchReadinessState{TimeStretchReadinessIdle};
   mutable std::mutex m_timeStretchGenerationMutex;
+  mutable QHash<QString, TimeStretchJobProgress> m_timeStretchJobs;
+  mutable QHash<QString, qint64> m_timeStretchFailedJobs;
+  mutable QHash<QString, int> m_timeStretchJobAttemptCounts;
+  mutable QHash<QString, qint64> m_timeStretchRetrySuppressedMs;
   mutable QString m_timeStretchGenerationPath;
   mutable QString m_timeStretchGenerationSidecarPath;
   mutable QString m_timeStretchGenerationLastError;
+  mutable QString m_timeStretchGenerationLastEndReason;
+  mutable std::atomic<int> m_timeStretchGenerationAttempt{0};
+  mutable std::atomic<qint64> m_timeStretchGenerationRetrySuppressedMs{0};
   mutable std::atomic<bool> m_timeStretchGenerationActive{false};
   mutable std::atomic<int> m_timeStretchGenerationPhase{
       TimeStretchGenerationIdle};

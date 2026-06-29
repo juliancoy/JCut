@@ -33,6 +33,8 @@ extern "C" {
 
 namespace {
 
+constexpr qint64 kTimeStretchFailedJobRetryDelayMs = 10 * 60 * 1000;
+
 bool anyAudioSolo(const QVector<TimelineClip> &clips,
                   const QVector<TimelineTrack> &tracks) {
   for (const TimelineClip &clip : clips) {
@@ -546,6 +548,10 @@ bool AudioEngine::warmPlaybackAudio(int64_t startFrame, int timeoutMs) {
     m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
     return true;
   }
+  if (m_timeStretchReadinessState.load(std::memory_order_acquire) ==
+      TimeStretchReadinessMissing) {
+    return false;
+  }
 
   std::unique_lock<std::mutex> lock(m_stateMutex);
   while (m_running.load(std::memory_order_acquire)) {
@@ -561,6 +567,10 @@ bool AudioEngine::warmPlaybackAudio(int64_t startFrame, int timeoutMs) {
       m_pitchPreservingAudioBlocked.store(false, std::memory_order_release);
       m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
       return true;
+    }
+    if (m_timeStretchReadinessState.load(std::memory_order_acquire) ==
+        TimeStretchReadinessMissing) {
+      return false;
     }
     lock.lock();
     if (m_stateCondition.wait_until(lock, deadline) ==
@@ -609,6 +619,9 @@ bool AudioEngine::playbackAudioNeedsRetimingForFrame(int64_t startFrame) const {
   if (sidecarSpeedKey <= 1) {
     return true;
   }
+  if (timeStretchJobRecentlyFailed(audioPath, sidecarSpeedKey)) {
+    return false;
+  }
 
   AudioTimeStretchSidecarMetadata metadata;
   return !readAudioTimeStretchSidecarMetadata(audioPath, sidecarSpeedKey,
@@ -619,6 +632,80 @@ bool AudioEngine::playbackAudioNeedsRetimingForFrame(int64_t startFrame) const {
 bool AudioEngine::audioClockAvailable() const {
   std::lock_guard<std::mutex> lock(m_stateMutex);
   return m_initialized && m_rtaudio && m_rtaudio->isStreamRunning();
+}
+
+bool AudioEngine::audioOutputUnavailableForPlayback() const {
+  bool initialized = false;
+  bool playing = false;
+  bool hasPlayable = false;
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    initialized = m_initialized;
+    playing = m_playing.load(std::memory_order_acquire);
+    for (const TimelineClip &clip : m_timelineClips) {
+      if (clipAudioPlaybackEnabled(clip)) {
+        hasPlayable = true;
+        break;
+      }
+    }
+  }
+  if (!hasPlayable) {
+    return false;
+  }
+  if (!initialized || !m_rtaudio || !m_rtaudio->isStreamOpen()) {
+    return true;
+  }
+  return playing && !m_rtaudio->isStreamRunning();
+}
+
+QString AudioEngine::audioOutputStatusText() const {
+  bool initialized = false;
+  bool playing = false;
+  bool hasPlayable = false;
+  qint64 deviceCount = 0;
+  bool defaultOutputValid = false;
+  QString deviceInfoError;
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    initialized = m_initialized;
+    playing = m_playing.load(std::memory_order_acquire);
+    deviceCount = m_lastKnownDeviceCount;
+    defaultOutputValid = m_lastKnownDefaultOutputValid;
+    deviceInfoError = m_lastDeviceInfoError;
+    for (const TimelineClip &clip : m_timelineClips) {
+      if (clipAudioPlaybackEnabled(clip)) {
+        hasPlayable = true;
+        break;
+      }
+    }
+  }
+  if (!hasPlayable) {
+    return QString();
+  }
+  if (!initialized || !m_rtaudio) {
+    if (deviceCount == 0) {
+      return QStringLiteral("Audio output unavailable: no output device");
+    }
+    if (!deviceInfoError.isEmpty()) {
+      return QStringLiteral("Audio output unavailable: %1")
+          .arg(deviceInfoError);
+    }
+    return QStringLiteral("Audio output unavailable: device initialization failed");
+  }
+  if (!m_rtaudio->isStreamOpen()) {
+    return QStringLiteral("Audio output unavailable: stream is not open");
+  }
+  if (playing && !m_rtaudio->isStreamRunning()) {
+    if (!deviceInfoError.isEmpty()) {
+      return QStringLiteral("Audio output unavailable: %1")
+          .arg(deviceInfoError);
+    }
+    if (!defaultOutputValid) {
+      return QStringLiteral("Audio output unavailable: default output device is invalid");
+    }
+    return QStringLiteral("Audio output unavailable: stream is stopped");
+  }
+  return QString();
 }
 
 bool AudioEngine::playbackStarted() const {
@@ -801,6 +888,87 @@ QJsonObject AudioEngine::profilingSnapshot() const {
       m_lastMixStarvedClipCount.load(std::memory_order_acquire);
   snapshot[QStringLiteral("mix_degraded_chunk_count")] = static_cast<qint64>(
       m_mixDegradedChunkCount.load(std::memory_order_acquire));
+  const TimeStretchProgressSnapshot timeStretchProgress =
+      timeStretchProgressSnapshot();
+  snapshot[QStringLiteral("time_stretch_progress_visible")] =
+      timeStretchProgress.visible;
+  snapshot[QStringLiteral("time_stretch_progress_current_path")] =
+      timeStretchProgress.currentPath;
+  snapshot[QStringLiteral("time_stretch_progress_phase")] =
+      timeStretchProgress.phase;
+  snapshot[QStringLiteral("time_stretch_progress_total_clips")] =
+      timeStretchProgress.totalClips;
+  snapshot[QStringLiteral("time_stretch_progress_completed_clips")] =
+      timeStretchProgress.completedClips;
+  snapshot[QStringLiteral("time_stretch_progress_remaining_clips")] =
+      timeStretchProgress.remainingClips;
+  snapshot[QStringLiteral("time_stretch_progress_current")] =
+      timeStretchProgress.currentProgress;
+  snapshot[QStringLiteral("time_stretch_progress_overall")] =
+      timeStretchProgress.overallProgress;
+  qint64 timeStretchGenerationStartedMs = 0;
+  qint64 timeStretchGenerationLastFinishMs = 0;
+  bool timeStretchGenerationActive = false;
+  QString timeStretchGenerationPhase;
+  int timeStretchGenerationSpeedKey = 0;
+  int64_t timeStretchGenerationSourceFrames = 0;
+  int64_t timeStretchGenerationOutputFrames = 0;
+  double timeStretchGenerationProgress = 0.0;
+  bool timeStretchGenerationLastSucceeded = false;
+  int timeStretchGenerationAttempt = 0;
+  qint64 timeStretchGenerationRetrySuppressedMs = 0;
+  QString timeStretchGenerationPath;
+  QString timeStretchGenerationSidecarPath;
+  QString timeStretchGenerationLastError;
+  QString timeStretchGenerationLastEndReason;
+  qint64 timeStretchJobFailedMs = 0;
+  qint64 timeStretchJobRetrySuppressedMs = 0;
+  {
+    std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+    timeStretchGenerationStartedMs =
+        m_timeStretchGenerationStartedMs.load(std::memory_order_acquire);
+    timeStretchGenerationLastFinishMs =
+        m_timeStretchGenerationLastFinishMs.load(std::memory_order_acquire);
+    timeStretchGenerationActive =
+        m_timeStretchGenerationActive.load(std::memory_order_acquire);
+    timeStretchGenerationPhase = timeStretchGenerationPhaseString(
+        m_timeStretchGenerationPhase.load(std::memory_order_acquire));
+    timeStretchGenerationSpeedKey =
+        m_timeStretchGenerationSpeedKey.load(std::memory_order_acquire);
+    timeStretchGenerationSourceFrames =
+        m_timeStretchGenerationSourceFrames.load(std::memory_order_acquire);
+    timeStretchGenerationOutputFrames =
+        m_timeStretchGenerationOutputFrames.load(std::memory_order_acquire);
+    timeStretchGenerationProgress =
+        static_cast<double>(m_timeStretchGenerationProgressPermille.load(
+            std::memory_order_acquire)) /
+        1000.0;
+    timeStretchGenerationLastSucceeded =
+        m_timeStretchGenerationLastSucceeded.load(std::memory_order_acquire);
+    timeStretchGenerationAttempt =
+        m_timeStretchGenerationAttempt.load(std::memory_order_acquire);
+    timeStretchGenerationRetrySuppressedMs =
+        m_timeStretchGenerationRetrySuppressedMs.load(
+            std::memory_order_acquire);
+    timeStretchGenerationPath = m_timeStretchGenerationPath;
+    timeStretchGenerationSidecarPath = m_timeStretchGenerationSidecarPath;
+    timeStretchGenerationLastError = m_timeStretchGenerationLastError;
+    timeStretchGenerationLastEndReason = m_timeStretchGenerationLastEndReason;
+    const QString generationKey = timeStretchJobKey(
+        timeStretchGenerationPath, timeStretchGenerationSpeedKey);
+    timeStretchJobFailedMs = m_timeStretchFailedJobs.value(generationKey, 0);
+    timeStretchJobRetrySuppressedMs =
+        m_timeStretchRetrySuppressedMs.value(generationKey, 0);
+  }
+  QFileInfo timeStretchSidecarInfo(timeStretchGenerationSidecarPath);
+  AudioTimeStretchSidecarMetadata timeStretchSidecarMetadata;
+  const bool timeStretchSidecarMetadataReadable =
+      !timeStretchGenerationPath.isEmpty() &&
+      timeStretchGenerationSpeedKey > 1 &&
+      readAudioTimeStretchSidecarMetadata(timeStretchGenerationPath,
+                                          timeStretchGenerationSpeedKey,
+                                          &timeStretchSidecarMetadata);
+  const QString audioOutputStatus = audioOutputStatusText();
 
   std::lock_guard<std::mutex> lock(m_stateMutex);
   snapshot[QStringLiteral("decoded_audio_path_count")] =
@@ -846,51 +1014,67 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   snapshot[QStringLiteral("time_stretch_readiness_state")] =
       timeStretchReadinessStateString(
           m_timeStretchReadinessState.load(std::memory_order_acquire));
-  {
-    std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
-    const qint64 startedMs =
-        m_timeStretchGenerationStartedMs.load(std::memory_order_acquire);
-    const qint64 finishedMs =
-        m_timeStretchGenerationLastFinishMs.load(std::memory_order_acquire);
-    const bool active =
-        m_timeStretchGenerationActive.load(std::memory_order_acquire);
-    snapshot[QStringLiteral("time_stretch_generation_active")] = active;
-    snapshot[QStringLiteral("time_stretch_generation_phase")] =
-        timeStretchGenerationPhaseString(
-            m_timeStretchGenerationPhase.load(std::memory_order_acquire));
-    snapshot[QStringLiteral("time_stretch_generation_started_ms")] = startedMs;
-    snapshot[QStringLiteral("time_stretch_generation_elapsed_ms")] =
-        active
-            ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - startedMs)
-            : 0;
-    snapshot[QStringLiteral("time_stretch_generation_last_finish_ms")] =
-        finishedMs;
-    snapshot[QStringLiteral("time_stretch_generation_speed_key")] =
-        m_timeStretchGenerationSpeedKey.load(std::memory_order_acquire);
-    snapshot[QStringLiteral("time_stretch_generation_source_frames")] =
-        static_cast<qint64>(m_timeStretchGenerationSourceFrames.load(
-            std::memory_order_acquire));
-    snapshot[QStringLiteral("time_stretch_generation_output_frames")] =
-        static_cast<qint64>(m_timeStretchGenerationOutputFrames.load(
-            std::memory_order_acquire));
-    snapshot[QStringLiteral("time_stretch_generation_progress")] =
-        static_cast<double>(m_timeStretchGenerationProgressPermille.load(
-            std::memory_order_acquire)) /
-        1000.0;
-    snapshot[QStringLiteral("time_stretch_generation_last_succeeded")] =
-        m_timeStretchGenerationLastSucceeded.load(std::memory_order_acquire);
-    snapshot[QStringLiteral("time_stretch_generation_path")] =
-        m_timeStretchGenerationPath;
-    snapshot[QStringLiteral("time_stretch_generation_sidecar_path")] =
-        m_timeStretchGenerationSidecarPath;
-    snapshot[QStringLiteral("time_stretch_generation_last_error")] =
-        m_timeStretchGenerationLastError;
-  }
+  snapshot[QStringLiteral("time_stretch_generation_active")] =
+      timeStretchGenerationActive;
+  snapshot[QStringLiteral("time_stretch_generation_phase")] =
+      timeStretchGenerationPhase;
+  snapshot[QStringLiteral("time_stretch_generation_started_ms")] =
+      timeStretchGenerationStartedMs;
+  snapshot[QStringLiteral("time_stretch_generation_elapsed_ms")] =
+      timeStretchGenerationActive
+          ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() -
+                                timeStretchGenerationStartedMs)
+          : 0;
+  snapshot[QStringLiteral("time_stretch_generation_last_finish_ms")] =
+      timeStretchGenerationLastFinishMs;
+  snapshot[QStringLiteral("time_stretch_generation_speed_key")] =
+      timeStretchGenerationSpeedKey;
+  snapshot[QStringLiteral("time_stretch_generation_source_frames")] =
+      static_cast<qint64>(timeStretchGenerationSourceFrames);
+  snapshot[QStringLiteral("time_stretch_generation_output_frames")] =
+      static_cast<qint64>(timeStretchGenerationOutputFrames);
+  snapshot[QStringLiteral("time_stretch_generation_progress")] =
+      timeStretchGenerationProgress;
+  snapshot[QStringLiteral("time_stretch_generation_last_succeeded")] =
+      timeStretchGenerationLastSucceeded;
+  snapshot[QStringLiteral("time_stretch_generation_attempt")] =
+      timeStretchGenerationAttempt;
+  snapshot[QStringLiteral("time_stretch_generation_last_end_reason")] =
+      timeStretchGenerationLastEndReason;
+  snapshot[QStringLiteral("time_stretch_generation_retry_suppressed_ms")] =
+      timeStretchGenerationRetrySuppressedMs;
+  snapshot[QStringLiteral("time_stretch_generation_job_failed_ms")] =
+      timeStretchJobFailedMs;
+  snapshot[QStringLiteral("time_stretch_generation_job_retry_suppressed_ms")] =
+      timeStretchJobRetrySuppressedMs;
+  snapshot[QStringLiteral("time_stretch_generation_path")] =
+      timeStretchGenerationPath;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_path")] =
+      timeStretchGenerationSidecarPath;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_exists")] =
+      timeStretchSidecarInfo.exists();
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_bytes")] =
+      timeStretchSidecarInfo.exists() ? timeStretchSidecarInfo.size() : 0;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_metadata_readable")] =
+      timeStretchSidecarMetadataReadable;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_metadata_valid")] =
+      timeStretchSidecarMetadata.valid;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_metadata_fully_decoded")] =
+      timeStretchSidecarMetadata.fullyDecoded;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_metadata_sample_rate")] =
+      timeStretchSidecarMetadata.sampleRate;
+  snapshot[QStringLiteral("time_stretch_generation_sidecar_metadata_channel_count")] =
+      timeStretchSidecarMetadata.channelCount;
+  snapshot[QStringLiteral("time_stretch_generation_last_error")] =
+      timeStretchGenerationLastError;
   snapshot[QStringLiteral("time_stretch_sidecar_only")] = true;
   snapshot[QStringLiteral("pitch_preserving_audio_blocked")] =
       m_pitchPreservingAudioBlocked.load(std::memory_order_acquire);
   snapshot[QStringLiteral("audio_playback_blocked")] =
       m_audioPlaybackBlocked.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("audio_output_unavailable")] =
+      !audioOutputStatus.isEmpty();
+  snapshot[QStringLiteral("audio_output_status")] = audioOutputStatus;
   if (!m_rtaudio) {
     snapshot[QStringLiteral("api")] = QStringLiteral("none");
     snapshot[QStringLiteral("device_count")] = 0;
@@ -977,6 +1161,182 @@ qreal AudioEngine::timeStretchGenerationProgress() const {
 
 bool AudioEngine::timeStretchGenerationActive() const {
   return m_timeStretchGenerationActive.load(std::memory_order_acquire);
+}
+
+QString AudioEngine::timeStretchJobStateString(int state) {
+  switch (state) {
+  case TimeStretchJobDecoding:
+    return QStringLiteral("decoding_source");
+  case TimeStretchJobReadingSidecar:
+    return QStringLiteral("reading_sidecar");
+  case TimeStretchJobGenerating:
+    return QStringLiteral("generating");
+  case TimeStretchJobWritingSidecar:
+    return QStringLiteral("writing_sidecar");
+  case TimeStretchJobComplete:
+    return QStringLiteral("complete");
+  case TimeStretchJobFailed:
+    return QStringLiteral("failed");
+  case TimeStretchJobQueued:
+  default:
+    return QStringLiteral("queued");
+  }
+}
+
+QString AudioEngine::timeStretchJobKey(const QString &path, int speedKey) {
+  return QStringLiteral("%1|%2").arg(path, QString::number(speedKey));
+}
+
+void AudioEngine::markTimeStretchJob(const QString &path, int speedKey,
+                                     int state, qreal progress) {
+  if (path.isEmpty() || speedKey <= 1) {
+    return;
+  }
+  std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+  const QString key = timeStretchJobKey(path, speedKey);
+  TimeStretchJobProgress job = m_timeStretchJobs.value(key);
+  job.key = key;
+  job.path = path;
+  job.speedKey = speedKey;
+  job.state = state;
+  job.progress = qBound<qreal>(0.0, progress, 1.0);
+  job.updatedMs = QDateTime::currentMSecsSinceEpoch();
+  m_timeStretchJobs.insert(key, job);
+  if (state == TimeStretchJobFailed) {
+    m_timeStretchFailedJobs.insert(key, job.updatedMs);
+  } else if (state == TimeStretchJobComplete) {
+    m_timeStretchFailedJobs.remove(key);
+    m_timeStretchRetrySuppressedMs.remove(key);
+  }
+}
+
+bool AudioEngine::timeStretchJobRecentlyFailed(const QString &path,
+                                               int speedKey) const {
+  if (path.isEmpty() || speedKey <= 1) {
+    return false;
+  }
+  const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+  std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+  const QString key = timeStretchJobKey(path, speedKey);
+  const auto it = m_timeStretchFailedJobs.constFind(key);
+  if (it == m_timeStretchFailedJobs.constEnd()) {
+    return false;
+  }
+  const bool recent = nowMs - it.value() < kTimeStretchFailedJobRetryDelayMs;
+  if (recent) {
+    m_timeStretchRetrySuppressedMs.insert(key, nowMs);
+    m_timeStretchGenerationRetrySuppressedMs.store(nowMs,
+                                                   std::memory_order_release);
+    m_timeStretchGenerationLastEndReason =
+        QStringLiteral("retry_suppressed_after_recent_failure");
+  }
+  return recent;
+}
+
+int AudioEngine::beginTimeStretchJobAttempt(const QString &path,
+                                            int speedKey) {
+  if (path.isEmpty() || speedKey <= 1) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+  const QString key = timeStretchJobKey(path, speedKey);
+  const int attempt = m_timeStretchJobAttemptCounts.value(key, 0) + 1;
+  m_timeStretchJobAttemptCounts.insert(key, attempt);
+  m_timeStretchRetrySuppressedMs.remove(key);
+  m_timeStretchGenerationAttempt.store(attempt, std::memory_order_release);
+  m_timeStretchGenerationRetrySuppressedMs.store(0, std::memory_order_release);
+  m_timeStretchGenerationLastEndReason.clear();
+  return attempt;
+}
+
+AudioEngine::TimeStretchProgressSnapshot
+AudioEngine::timeStretchProgressSnapshot() const {
+  TimeStretchProgressSnapshot snapshot;
+  const int speedKey = precomputedTimeStretchSpeedKey(
+      m_playbackRate.load(std::memory_order_acquire));
+
+  QVector<TimeStretchJobProgress> jobs;
+  {
+    std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+    jobs.reserve(m_timeStretchJobs.size());
+    for (auto it = m_timeStretchJobs.cbegin(); it != m_timeStretchJobs.cend();
+         ++it) {
+      if (speedKey <= 1 || it.value().speedKey == speedKey) {
+        jobs.push_back(it.value());
+      }
+    }
+  }
+
+  if (jobs.isEmpty()) {
+    return snapshot;
+  }
+
+  auto statePriority = [](int state) {
+    switch (state) {
+    case TimeStretchJobGenerating:
+      return 0;
+    case TimeStretchJobWritingSidecar:
+      return 1;
+    case TimeStretchJobReadingSidecar:
+      return 2;
+    case TimeStretchJobDecoding:
+      return 3;
+    case TimeStretchJobQueued:
+      return 4;
+    case TimeStretchJobFailed:
+      return 5;
+    case TimeStretchJobComplete:
+    default:
+      return 6;
+    }
+  };
+
+  int currentIndex = -1;
+  int currentPriority = 99;
+  int completed = 0;
+  int remaining = 0;
+  for (int i = 0; i < jobs.size(); ++i) {
+    const TimeStretchJobProgress &job = jobs.at(i);
+    if (job.state == TimeStretchJobComplete) {
+      ++completed;
+      continue;
+    }
+    ++remaining;
+    const int priority = statePriority(job.state);
+    if (currentIndex < 0 || priority < currentPriority ||
+        (priority == currentPriority &&
+         job.updatedMs > jobs.at(currentIndex).updatedMs)) {
+      currentIndex = i;
+      currentPriority = priority;
+    }
+  }
+
+  snapshot.totalClips = jobs.size();
+  snapshot.completedClips = completed;
+  snapshot.remainingClips = remaining;
+  snapshot.visible = remaining > 0;
+  if (currentIndex >= 0) {
+    const TimeStretchJobProgress &current = jobs.at(currentIndex);
+    snapshot.generationActive =
+        current.state == TimeStretchJobGenerating ||
+        current.state == TimeStretchJobWritingSidecar ||
+        current.state == TimeStretchJobReadingSidecar;
+    snapshot.currentPath = current.path;
+    snapshot.phase = timeStretchJobStateString(current.state);
+    snapshot.currentProgress = current.progress;
+  }
+  if (snapshot.totalClips > 0) {
+    const qreal currentContribution =
+        currentIndex >= 0 && snapshot.currentProgress >= 0.0
+            ? snapshot.currentProgress
+            : 0.0;
+    snapshot.overallProgress = qBound<qreal>(
+        0.0,
+        (static_cast<qreal>(snapshot.completedClips) + currentContribution) /
+            static_cast<qreal>(snapshot.totalClips),
+        1.0);
+  }
+  return snapshot;
 }
 
 qreal AudioEngine::normalizedTimeStretchSpeed(qreal playbackRate) {
@@ -1256,6 +1616,18 @@ bool AudioEngine::ensureTimeStretchAudioReadyForTimelineSample(
     }
   }
 
+  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(playbackRate);
+  if (sidecarSpeedKey > 1 &&
+      timeStretchJobRecentlyFailed(audioPath, sidecarSpeedKey)) {
+    m_audioPlaybackBlocked.store(true, std::memory_order_release);
+    m_pitchPreservingAudioBlocked.store(true, std::memory_order_release);
+    m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
+    m_timeStretchReadinessState.store(TimeStretchReadinessMissing,
+                                      std::memory_order_release);
+    markTimeStretchJob(audioPath, sidecarSpeedKey, TimeStretchJobFailed, 0.0);
+    return false;
+  }
+
   m_timeStretchReadinessState.store(TimeStretchReadinessReadingSidecar,
                                     std::memory_order_release);
   const AudioClipCacheEntry entry = timeStretchCacheForPathCopy(
@@ -1456,17 +1828,28 @@ void AudioEngine::enqueueTimeStretchPrecomputeForScheduledPaths() {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(m_stateMutex);
-  bool queued = false;
-  for (const QString &audioPath : m_scheduledDecodePaths) {
-    if (timeStretchCacheHasFullyDecodedPathLocked(audioPath, speed)) {
-      continue;
+  const int speedKey = precomputedTimeStretchSpeedKey(speed);
+  QVector<QString> queuedPaths;
+  QVector<QString> completedPaths;
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    for (const QString &audioPath : m_scheduledDecodePaths) {
+      if (timeStretchCacheHasFullyDecodedPathLocked(audioPath, speed)) {
+        completedPaths.push_back(audioPath);
+        continue;
+      }
+      queuedPaths.push_back(audioPath);
+      enqueueDecodePathLocked(audioPath, false, true, true, 0, true);
+      ++m_timeStretchPrecomputeRequestCount;
     }
-    enqueueDecodePathLocked(audioPath, false, true, true, 0, true);
-    ++m_timeStretchPrecomputeRequestCount;
-    queued = true;
   }
-  if (!queued) {
+  for (const QString &audioPath : std::as_const(completedPaths)) {
+    markTimeStretchJob(audioPath, speedKey, TimeStretchJobComplete, 1.0);
+  }
+  for (const QString &audioPath : std::as_const(queuedPaths)) {
+    markTimeStretchJob(audioPath, speedKey, TimeStretchJobQueued, 0.0);
+  }
+  if (queuedPaths.isEmpty()) {
     m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
     return;
   }
@@ -1477,6 +1860,15 @@ void AudioEngine::enqueueTimeStretchPrecomputeForScheduledPaths() {
 void AudioEngine::enqueueTimeStretchPrecomputeForPath(
     const QString &audioPath, int64_t sourceStartSample) {
   if (!audioPath.isEmpty()) {
+    const int speedKey = precomputedTimeStretchSpeedKey(
+        m_playbackRate.load(std::memory_order_acquire));
+    if (timeStretchJobRecentlyFailed(audioPath, speedKey)) {
+      m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
+      m_audioPlaybackBlocked.store(true, std::memory_order_release);
+      m_pitchPreservingAudioBlocked.store(true, std::memory_order_release);
+      return;
+    }
+    markTimeStretchJob(audioPath, speedKey, TimeStretchJobQueued, 0.0);
     std::lock_guard<std::mutex> lock(m_stateMutex);
     m_lastTimeStretchCacheMissPath = audioPath;
     enqueueTimeStretchPrecomputeForPathLocked(audioPath, sourceStartSample,
@@ -2185,6 +2577,9 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
       decoded.fullyDecoded) {
     const int64_t sourceFrames = static_cast<int64_t>(
         decoded.samples.size() / qMax(1, decoded.channelCount));
+    beginTimeStretchJobAttempt(path, sidecarSpeedKey);
+    markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobReadingSidecar,
+                       0.0);
     {
       std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
       m_timeStretchGenerationPath = path;
@@ -2222,25 +2617,36 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
                                                     std::memory_order_release);
       m_timeStretchGenerationLastSucceeded.store(true,
                                                  std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> generationLock(
+            m_timeStretchGenerationMutex);
+        m_timeStretchGenerationLastEndReason =
+            QStringLiteral("sidecar_cache_hit");
+      }
       m_timeStretchGenerationPhase.store(TimeStretchGenerationFinished,
                                          std::memory_order_release);
       m_timeStretchGenerationLastFinishMs.store(
           QDateTime::currentMSecsSinceEpoch(), std::memory_order_release);
       m_timeStretchGenerationActive.store(false, std::memory_order_release);
+      markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobComplete, 1.0);
       return warped;
     }
   }
   if (sidecarSpeedKey > 1 && decoded.sourceStartSample == 0 &&
       decoded.fullyDecoded) {
+    markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobGenerating, 0.0);
     m_timeStretchGenerationPhase.store(TimeStretchGenerationRubberBand,
                                        std::memory_order_release);
     const QVector<float> stretched = timeStretchPreservePitch(
         decoded.samples, decoded.channelCount, decoded.sampleRate, speed,
         AudioTimeStretchBackend::RubberBand,
-        [this](double progress) {
+        [this, path, sidecarSpeedKey](double progress) {
           m_timeStretchGenerationProgressPermille.store(
               qBound(0, qRound(progress * 950.0), 950),
               std::memory_order_release);
+          markTimeStretchJob(path, sidecarSpeedKey,
+                             TimeStretchJobGenerating,
+                             qBound<qreal>(0.0, progress * 0.95, 0.95));
         },
         rubberBandSettingsFromRuntimeControls());
     if (!stretched.isEmpty()) {
@@ -2270,12 +2676,15 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
               QStringLiteral("short_output:%1:%2")
                   .arg(stretchedFrames)
                   .arg(minExpectedFrames);
+          m_timeStretchGenerationLastEndReason =
+              QStringLiteral("rubberband_short_output");
         }
         m_timeStretchGenerationPhase.store(TimeStretchGenerationFailed,
                                            std::memory_order_release);
         m_timeStretchGenerationLastFinishMs.store(
             QDateTime::currentMSecsSinceEpoch(), std::memory_order_release);
         m_timeStretchGenerationActive.store(false, std::memory_order_release);
+        markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobFailed, 0.0);
         return {};
       }
       AudioTimeStretchCacheEntry sidecar;
@@ -2288,10 +2697,39 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
                                          std::memory_order_release);
       m_timeStretchGenerationProgressPermille.store(980,
                                                     std::memory_order_release);
-      if (writeAudioTimeStretchSidecar(path, sidecarSpeedKey, sidecar)) {
-        warped = audioCacheEntryFromTimeStretchEntry(
-            readTimeStretchSidecarEntrySingleFlight(path, sidecarSpeedKey));
+      markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobWritingSidecar,
+                         0.98);
+      if (writeAudioTimeStretchSidecar(
+              path, sidecarSpeedKey, sidecar,
+              [this, path, sidecarSpeedKey](double writeProgress) {
+                const qreal boundedProgress =
+                    qBound<qreal>(0.0, writeProgress, 1.0);
+                const qreal totalProgress = 0.98 + (boundedProgress * 0.02);
+                m_timeStretchGenerationProgressPermille.store(
+                    qBound(980, qRound(totalProgress * 1000.0), 1000),
+                    std::memory_order_release);
+                markTimeStretchJob(path, sidecarSpeedKey,
+                                   TimeStretchJobWritingSidecar,
+                                   qBound<qreal>(0.98, totalProgress, 1.0));
+              })) {
+        warped = audioCacheEntryFromTimeStretchEntry(sidecar);
+      } else {
+        std::lock_guard<std::mutex> generationLock(
+            m_timeStretchGenerationMutex);
+        m_timeStretchGenerationLastError =
+            QStringLiteral("sidecar_write_failed:%1")
+                .arg(audioTimeStretchSidecarPathForSource(path,
+                                                          sidecarSpeedKey));
+        m_timeStretchGenerationLastEndReason =
+            QStringLiteral("sidecar_write_failed");
       }
+    } else {
+      std::lock_guard<std::mutex> generationLock(
+          m_timeStretchGenerationMutex);
+      m_timeStretchGenerationLastError =
+          QStringLiteral("rubberband_empty_output");
+      m_timeStretchGenerationLastEndReason =
+          QStringLiteral("rubberband_empty_output");
     }
   }
   if (sidecarSpeedKey > 1 && decoded.sourceStartSample == 0 &&
@@ -2308,6 +2746,17 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
         m_timeStretchGenerationLastError =
             QStringLiteral("generation_failed_or_empty_output");
       }
+      if (m_timeStretchGenerationLastEndReason.isEmpty()) {
+        m_timeStretchGenerationLastEndReason =
+            QStringLiteral("generation_failed_or_empty_output");
+      }
+    }
+    if (succeeded) {
+      std::lock_guard<std::mutex> generationLock(m_timeStretchGenerationMutex);
+      if (m_timeStretchGenerationLastEndReason.isEmpty()) {
+        m_timeStretchGenerationLastEndReason =
+            QStringLiteral("generated_and_sidecar_committed");
+      }
     }
     m_timeStretchGenerationLastSucceeded.store(succeeded,
                                                std::memory_order_release);
@@ -2319,6 +2768,10 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
     m_timeStretchGenerationLastFinishMs.store(
         QDateTime::currentMSecsSinceEpoch(), std::memory_order_release);
     m_timeStretchGenerationActive.store(false, std::memory_order_release);
+    markTimeStretchJob(path, sidecarSpeedKey,
+                       succeeded ? TimeStretchJobComplete
+                                 : TimeStretchJobFailed,
+                       succeeded ? 1.0 : 0.0);
   }
   return warped;
 }
@@ -2361,6 +2814,20 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
   std::fill(output, output + frames * m_channelCount, 0.0f);
   const qreal clampedRate = qBound<qreal>(0.1, playbackRate, 3.0);
   const qreal clampedTimelineRate = qBound<qreal>(0.05, timelineRate, 3.05);
+  QVector<SpeechSampleRange> derivedSpeechSampleRanges;
+  const QVector<SpeechSampleRange> *speechSampleRanges = &context.speechSampleRanges;
+  if (speechSampleRanges->isEmpty() && !context.exportRanges.isEmpty()) {
+    derivedSpeechSampleRanges.reserve(context.exportRanges.size());
+    for (const ExportRangeSegment &range : context.exportRanges) {
+      const int64_t startSample = timelineFrameToSamples(range.startFrame);
+      const int64_t endSampleExclusive = timelineFrameToSamples(range.endFrame + 1);
+      if (endSampleExclusive > startSample) {
+        derivedSpeechSampleRanges.push_back(
+            SpeechSampleRange{startSample, endSampleExclusive});
+      }
+    }
+    speechSampleRanges = &derivedSpeechSampleRanges;
+  }
   struct PreparedClipAudio {
     struct TranscriptNormalizeSegment {
       int64_t startSample = 0;
@@ -2856,9 +3323,9 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       float primarySpeechGain = 1.0f;
       float secondarySpeechGain = 0.0f;
       int64_t secondaryTimelineSample = -1;
-      if (!context.speechSampleRanges.isEmpty()) {
+      if (!speechSampleRanges->isEmpty()) {
         const SpeechRangeBlend blend = calculateSpeechRangeBlend(
-            timelineSamplePos, context.speechSampleRanges,
+            timelineSamplePos, *speechSampleRanges,
             m_speechFilterFadeSamples.load(std::memory_order_acquire),
             m_speechFilterRangeCrossfadeEnabled.load(
                 std::memory_order_acquire));
@@ -3285,6 +3752,15 @@ void AudioEngine::decodeLoop() {
     }
 
     const QString decodePath = editor::audio::pathFromSourceKey(nextTask.key);
+    const int activeTimeStretchSpeedKey =
+        nextTask.precomputeTimeStretch
+            ? precomputedTimeStretchSpeedKey(
+                  m_playbackRate.load(std::memory_order_acquire))
+            : 0;
+    if (nextTask.precomputeTimeStretch) {
+      markTimeStretchJob(nextTask.key, activeTimeStretchSpeedKey,
+                         TimeStretchJobDecoding, 0.0);
+    }
     const int decodeStreamIndex =
         editor::audio::streamIndexFromSourceKey(nextTask.key);
     AudioClipCacheEntry decoded = decodeClipAudio(

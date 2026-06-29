@@ -61,6 +61,82 @@ qreal catmullRom(qreal p0, qreal p1, qreal p2, qreal p3, qreal t) {
                   (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
+QVector<QPointF> sanitizeWidgetCurvePoints(const QVector<QPointF>& points)
+{
+    QVector<QPointF> normalized;
+    normalized.reserve(points.size() + 2);
+    for (const QPointF& point : points) {
+        normalized.push_back(QPointF(qBound<qreal>(0.0, point.x(), 1.0),
+                                     qBound<qreal>(-1.0, point.y(), 2.0)));
+    }
+    std::sort(normalized.begin(), normalized.end(), [](const QPointF& a, const QPointF& b) {
+        if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
+            return a.y() < b.y();
+        }
+        return a.x() < b.x();
+    });
+
+    QVector<QPointF> deduped;
+    deduped.reserve(normalized.size() + 2);
+    for (const QPointF& point : normalized) {
+        if (!deduped.isEmpty() && std::abs(deduped.constLast().x() - point.x()) <= 0.000001) {
+            deduped.last().setY(point.y());
+        } else {
+            deduped.push_back(point);
+        }
+    }
+
+    if (deduped.isEmpty()) {
+        deduped = defaultGradingCurvePoints();
+    } else if (deduped.size() == 1) {
+        const qreal x = deduped.constFirst().x();
+        const qreal y = deduped.constFirst().y();
+        const qreal extraX = x < 0.5 ? 1.0 : 0.0;
+        deduped.push_back(QPointF(extraX, y));
+        std::sort(deduped.begin(), deduped.end(), [](const QPointF& a, const QPointF& b) {
+            if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
+                return a.y() < b.y();
+            }
+            return a.x() < b.x();
+        });
+    }
+    return deduped;
+}
+
+qreal sampleWidgetCurveAt(const QVector<QPointF>& points, qreal xNorm, bool smoothingEnabled)
+{
+    const QVector<QPointF> curve = sanitizeWidgetCurvePoints(points);
+    if (curve.size() < 2) {
+        return qBound<qreal>(-1.0, xNorm, 2.0);
+    }
+    const qreal x = qBound<qreal>(0.0, xNorm, 1.0);
+    if (x <= curve.constFirst().x()) {
+        return qBound<qreal>(-1.0, curve.constFirst().y(), 2.0);
+    }
+    if (x >= curve.constLast().x()) {
+        return qBound<qreal>(-1.0, curve.constLast().y(), 2.0);
+    }
+
+    int right = 1;
+    while (right < curve.size() && curve.at(right).x() < x) {
+        ++right;
+    }
+    const int i1 = qBound(0, right - 1, curve.size() - 1);
+    const int i2 = qBound(0, right, curve.size() - 1);
+    const qreal x1 = curve.at(i1).x();
+    const qreal x2 = curve.at(i2).x();
+    const qreal denom = qMax<qreal>(0.000001, x2 - x1);
+    const qreal t = qBound<qreal>(0.0, (x - x1) / denom, 1.0);
+    if (!smoothingEnabled) {
+        const qreal yLinear = curve.at(i1).y() + ((curve.at(i2).y() - curve.at(i1).y()) * t);
+        return qBound<qreal>(-1.0, yLinear, 2.0);
+    }
+    const int i0 = qMax(0, i1 - 1);
+    const int i3 = qMin(curve.size() - 1, i2 + 1);
+    const qreal y = catmullRom(curve.at(i0).y(), curve.at(i1).y(), curve.at(i2).y(), curve.at(i3).y(), t);
+    return qBound<qreal>(-1.0, y, 2.0);
+}
+
 } // namespace
 
 GradingHistogramWidget::GradingHistogramWidget(QWidget* parent)
@@ -162,7 +238,7 @@ void GradingHistogramWidget::setCurvePoints(const QVector<QPointF>& points)
     if (m_threePointLockEnabled) {
         m_points = lockToThreePointCurve(points);
     } else {
-        m_points = sanitizeGradingCurvePoints(points);
+        m_points = sanitizeWidgetCurvePoints(points);
     }
     update();
 }
@@ -170,7 +246,7 @@ void GradingHistogramWidget::setCurvePoints(const QVector<QPointF>& points)
 QVector<QPointF> GradingHistogramWidget::curvePoints() const
 {
     if (m_threePointLockEnabled) {
-        return lockToThreePointCurve(m_points);
+        return sanitizeGradingCurvePoints(lockToThreePointCurve(m_points));
     }
     return sanitizeGradingCurvePoints(m_points);
 }
@@ -182,7 +258,7 @@ void GradingHistogramWidget::setThreePointLockEnabled(bool enabled)
     }
     m_threePointLockEnabled = enabled;
     m_points = m_threePointLockEnabled ? lockToThreePointCurve(m_points)
-                                       : sanitizeGradingCurvePoints(m_points);
+                                       : sanitizeWidgetCurvePoints(m_points);
     m_activePoint = -1;
     m_dragging = false;
     update();
@@ -226,7 +302,6 @@ QPointF GradingHistogramWidget::pointToWidget(const QPointF& point) const
 {
     const QRectF rect = chartRect();
     const qreal x = rect.left() + (qBound<qreal>(0.0, point.x(), 1.0) * rect.width());
-    // Display curve in delta space: zero adjustment (y == x) is centered, not diagonal.
     const qreal delta = qBound<qreal>(-1.0, point.y() - point.x(), 1.0);
     const qreal displayNorm = qBound<qreal>(0.0, (delta * 0.5) + 0.5, 1.0);
     const qreal y = rect.bottom() - (displayNorm * rect.height());
@@ -243,7 +318,7 @@ QPointF GradingHistogramWidget::widgetToPoint(const QPointF& pos) const
                                   ? 0.5
                                   : qBound<qreal>(0.0, (rect.bottom() - pos.y()) / rect.height(), 1.0);
     const qreal delta = (displayNorm - 0.5) * 2.0;
-    const qreal yNorm = qBound<qreal>(0.0, xNorm + delta, 1.0);
+    const qreal yNorm = qBound<qreal>(-1.0, xNorm + delta, 2.0);
     return QPointF(xNorm, yNorm);
 }
 
@@ -252,15 +327,23 @@ void GradingHistogramWidget::sortAndClampPoints()
     if (m_threePointLockEnabled) {
         m_points = lockToThreePointCurve(m_points);
     } else {
-        m_points = sanitizeGradingCurvePoints(m_points);
+        m_points = sanitizeWidgetCurvePoints(m_points);
     }
 }
 
 QVector<QPointF> GradingHistogramWidget::lockToThreePointCurve(const QVector<QPointF>& points) const
 {
-    const QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
-    const qreal midY = sampleGradingCurveAt(sanitized, 0.5, m_curveSmoothingEnabled);
-    return {QPointF(0.0, 0.0), QPointF(0.5, qBound<qreal>(0.0, midY, 1.0)), QPointF(1.0, 1.0)};
+    const QVector<QPointF> sanitized = sanitizeWidgetCurvePoints(points);
+    const qreal shadowY = sanitized.isEmpty()
+                              ? 0.0
+                              : qBound<qreal>(-1.0, sanitized.constFirst().y(), 2.0);
+    const qreal midY = sampleWidgetCurveAt(sanitized, 0.5, m_curveSmoothingEnabled);
+    const qreal highlightY = sanitized.isEmpty()
+                                 ? 1.0
+                                 : qBound<qreal>(-1.0, sanitized.constLast().y(), 2.0);
+    return {QPointF(0.0, shadowY),
+            QPointF(0.5, qBound<qreal>(-1.0, midY, 2.0)),
+            QPointF(1.0, highlightY)};
 }
 
 const std::array<float, 256>& GradingHistogramWidget::selectedHistogram() const
@@ -282,7 +365,7 @@ const std::array<float, 256>& GradingHistogramWidget::selectedHistogram() const
 
 int GradingHistogramWidget::nearestPointIndex(const QPointF& pos) const
 {
-    const QVector<QPointF> points = sanitizeGradingCurvePoints(m_points);
+    const QVector<QPointF> points = sanitizeWidgetCurvePoints(m_points);
     int nearest = -1;
     qreal bestDistance = kHandleHitRadius * kHandleHitRadius;
     for (int i = 0; i < points.size(); ++i) {
@@ -300,7 +383,7 @@ int GradingHistogramWidget::nearestPointIndex(const QPointF& pos) const
 
 int GradingHistogramWidget::segmentIndexAtX(qreal xNorm) const
 {
-    const QVector<QPointF> points = sanitizeGradingCurvePoints(m_points);
+    const QVector<QPointF> points = sanitizeWidgetCurvePoints(m_points);
     for (int i = 1; i < points.size(); ++i) {
         if (xNorm <= points.at(i).x()) {
             return i - 1;
@@ -312,7 +395,7 @@ int GradingHistogramWidget::segmentIndexAtX(qreal xNorm) const
 void GradingHistogramWidget::emitCurveChanged(bool finalized)
 {
     if (m_threePointLockEnabled) {
-        emit curvePointsAdjusted(lockToThreePointCurve(m_points), finalized);
+        emit curvePointsAdjusted(sanitizeGradingCurvePoints(lockToThreePointCurve(m_points)), finalized);
     } else {
         emit curvePointsAdjusted(sanitizeGradingCurvePoints(m_points), finalized);
     }
@@ -337,7 +420,7 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
         painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
         painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
     }
-    // Flat reference bar: 0 adjustment (passthrough).
+    // Horizontal reference: zero adjustment / passthrough.
     const qreal midY = rect.center().y();
     painter.setPen(QPen(QColor(160, 170, 182, 155), 1.2));
     painter.drawLine(QPointF(rect.left(), midY), QPointF(rect.right(), midY));
@@ -383,7 +466,7 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
     }
 
     const QVector<QPointF> points = m_threePointLockEnabled ? lockToThreePointCurve(m_points)
-                                                             : sanitizeGradingCurvePoints(m_points);
+                                                             : sanitizeWidgetCurvePoints(m_points);
 
     QPainterPath curvePath;
     if (!points.isEmpty()) {
@@ -404,7 +487,7 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
                     const qreal x = catmullRom(p0.x(), p1.x(), p2.x(), p3.x(), t);
                     const qreal y = catmullRom(p0.y(), p1.y(), p2.y(), p3.y(), t);
                     curvePath.lineTo(pointToWidget(QPointF(qBound<qreal>(0.0, x, 1.0),
-                                                           qBound<qreal>(0.0, y, 1.0))));
+                                                           qBound<qreal>(-1.0, y, 2.0))));
                 }
             }
         }
@@ -448,11 +531,6 @@ void GradingHistogramWidget::mousePressEvent(QMouseEvent* event)
 
     m_activePoint = nearestPointIndex(event->position());
     if (m_activePoint >= 0) {
-        if (m_threePointLockEnabled && m_activePoint != 1) {
-            m_activePoint = -1;
-            event->accept();
-            return;
-        }
         m_dragging = true;
         event->accept();
         return;
@@ -477,21 +555,25 @@ void GradingHistogramWidget::mouseMoveEvent(QMouseEvent* event)
     if (m_dragging && m_activePoint >= 0 && m_activePoint < m_points.size()) {
         QPointF pointNorm = widgetToPoint(event->position());
         if (m_threePointLockEnabled) {
-            pointNorm.setX(0.5);
-            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
+            if (m_activePoint == 0) {
+                pointNorm.setX(0.0);
+            } else if (m_activePoint == m_points.size() - 1) {
+                pointNorm.setX(1.0);
+            } else {
+                pointNorm.setX(0.5);
+            }
+            pointNorm.setY(qBound<qreal>(-1.0, pointNorm.y(), 2.0));
         } else if (m_activePoint == 0) {
-            const qreal nextX = m_points.size() > 1 ? (m_points.at(1).x() - 0.001) : 1.0;
-            pointNorm.setX(qBound<qreal>(0.0, pointNorm.x(), qMax<qreal>(0.0, nextX)));
-            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
+            pointNorm.setX(0.0);
+            pointNorm.setY(qBound<qreal>(-1.0, pointNorm.y(), 2.0));
         } else if (m_activePoint == m_points.size() - 1) {
-            const qreal prevX = m_points.size() > 1 ? (m_points.at(m_points.size() - 2).x() + 0.001) : 0.0;
-            pointNorm.setX(qBound<qreal>(qMin<qreal>(1.0, prevX), pointNorm.x(), 1.0));
-            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
+            pointNorm.setX(1.0);
+            pointNorm.setY(qBound<qreal>(-1.0, pointNorm.y(), 2.0));
         } else {
             const qreal prevX = m_points.at(m_activePoint - 1).x() + 0.001;
             const qreal nextX = m_points.at(m_activePoint + 1).x() - 0.001;
             pointNorm.setX(qBound(prevX, pointNorm.x(), nextX));
-            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
+            pointNorm.setY(qBound<qreal>(-1.0, pointNorm.y(), 2.0));
         }
         m_points[m_activePoint] = pointNorm;
         sortAndClampPoints();

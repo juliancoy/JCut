@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class QLabel;
+class QTabBar;
 class QTabWidget;
 class QHBoxLayout;
 class QDoubleSpinBox;
@@ -186,6 +187,7 @@ public:
     QCheckBox *gradingFollowCurrentCheckBox() const { return m_gradingFollowCurrentCheckBox; }
     QCheckBox *gradingPreviewCheckBox() const { return m_gradingPreviewCheckBox; }
     QPushButton *gradingKeyAtPlayheadButton() const { return m_gradingKeyAtPlayheadButton; }
+    QPushButton *gradingResetButton() const { return m_gradingResetButton; }
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
     QPushButton *gradingAutoOpposeButton() const { return m_gradingAutoOpposeButton; }
@@ -209,11 +211,16 @@ public:
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
     QDoubleSpinBox *maskBlurSpin() const { return m_maskBlurSpin; }
     QCheckBox *maskInvertCheck() const { return m_maskInvertCheck; }
+    QCheckBox *maskShowOnlyCheck() const { return m_maskShowOnlyCheck; }
     QDoubleSpinBox *maskOpacitySpin() const { return m_maskOpacitySpin; }
     QCheckBox *maskGradeEnabledCheck() const { return m_maskGradeEnabledCheck; }
     QDoubleSpinBox *maskGradeBrightnessSpin() const { return m_maskGradeBrightnessSpin; }
     QDoubleSpinBox *maskGradeContrastSpin() const { return m_maskGradeContrastSpin; }
     QDoubleSpinBox *maskGradeSaturationSpin() const { return m_maskGradeSaturationSpin; }
+    QPushButton *maskResetGradeButton() const { return m_maskResetGradeButton; }
+    QComboBox *maskCurveChannelCombo() const { return m_maskCurveChannelCombo; }
+    GradingHistogramWidget *maskHistogramWidget() const { return m_maskHistogramWidget; }
+    QCheckBox *maskCurveSmoothingCheckBox() const { return m_maskCurveSmoothingCheckBox; }
     QCheckBox *maskShadowEnabledCheck() const { return m_maskShadowEnabledCheck; }
     QDoubleSpinBox *maskShadowRadiusSpin() const { return m_maskShadowRadiusSpin; }
     QDoubleSpinBox *maskShadowOffsetXSpin() const { return m_maskShadowOffsetXSpin; }
@@ -394,6 +401,8 @@ public:
     QPushButton *outputResetPipelineDefaultsButton() const { return m_outputResetPipelineDefaultsButton; }
     QSpinBox *autosaveIntervalMinutesSpin() const { return m_autosaveIntervalMinutesSpin; }
     QSpinBox *autosaveMaxBackupsSpin() const { return m_autosaveMaxBackupsSpin; }
+    QSpinBox *historyMaxEntriesSpin() const { return m_historyMaxEntriesSpin; }
+    QSpinBox *historyMaxMegabytesSpin() const { return m_historyMaxMegabytesSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
     QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
@@ -480,6 +489,7 @@ private:
     QCheckBox *m_opacityAutoScrollCheckBox = nullptr;
     QCheckBox *m_opacityFollowCurrentCheckBox = nullptr;
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
+    QPushButton *m_gradingResetButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
     QPushButton *m_gradingAutoOpposeButton = nullptr;
@@ -490,7 +500,7 @@ private:
     QComboBox *m_gradingEditModeCombo = nullptr;
     QWidget *m_gradingLevelsPanel = nullptr;
     QWidget *m_gradingCurvesPanel = nullptr;
-    QTabWidget *m_gradingCurveChannelTabs = nullptr;
+    QTabBar *m_gradingCurveChannelTabs = nullptr;
     QComboBox *m_gradingCurveChannelCombo = nullptr;
     GradingHistogramWidget *m_gradingHistogramWidget = nullptr;
     QCheckBox *m_gradingCurveThreePointLockCheckBox = nullptr;
@@ -510,11 +520,17 @@ private:
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
     QDoubleSpinBox *m_maskBlurSpin = nullptr;
     QCheckBox *m_maskInvertCheck = nullptr;
+    QCheckBox *m_maskShowOnlyCheck = nullptr;
     QDoubleSpinBox *m_maskOpacitySpin = nullptr;
     QCheckBox *m_maskGradeEnabledCheck = nullptr;
     QDoubleSpinBox *m_maskGradeBrightnessSpin = nullptr;
     QDoubleSpinBox *m_maskGradeContrastSpin = nullptr;
     QDoubleSpinBox *m_maskGradeSaturationSpin = nullptr;
+    QPushButton *m_maskResetGradeButton = nullptr;
+    QTabBar *m_maskCurveChannelTabs = nullptr;
+    QComboBox *m_maskCurveChannelCombo = nullptr;
+    GradingHistogramWidget *m_maskHistogramWidget = nullptr;
+    QCheckBox *m_maskCurveSmoothingCheckBox = nullptr;
     QCheckBox *m_maskShadowEnabledCheck = nullptr;
     QDoubleSpinBox *m_maskShadowRadiusSpin = nullptr;
     QDoubleSpinBox *m_maskShadowOffsetXSpin = nullptr;
@@ -820,6 +836,8 @@ private:
     QPushButton *m_outputResetPipelineDefaultsButton = nullptr;
     QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
+    QSpinBox *m_historyMaxEntriesSpin = nullptr;
+    QSpinBox *m_historyMaxMegabytesSpin = nullptr;
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;

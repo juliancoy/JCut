@@ -964,12 +964,7 @@ void TranscriptTab::refresh()
     m_allTranscriptRows.clear();
     m_wordEditIndex.clear();
     m_lastSyncRow = -1;
-    if (m_widgets.speechFilterFadeSamplesSpin) {
-        m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
-    }
-    if (m_widgets.speechFilterEnabledCheckBox) {
-        m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked();
-    }
+    syncSpeechFilterControlsFromWidgets();
 
     if (!clip || !clipSupportsTranscript(*clip)) {
         clearActiveTranscriptPathForClipFile(previousClipFilePath);
@@ -1006,6 +1001,16 @@ void TranscriptTab::refresh()
     updateOverlayWidgetsFromClip(*clip);
     loadTranscriptFile(*clip);
     m_updating = false;
+}
+
+void TranscriptTab::syncSpeechFilterControlsFromWidgets()
+{
+    if (m_widgets.speechFilterFadeSamplesSpin) {
+        m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
+    }
+    if (m_widgets.speechFilterEnabledCheckBox) {
+        m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked();
+    }
 }
 
 void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,

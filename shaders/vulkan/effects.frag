@@ -3,6 +3,8 @@ layout(location = 0) in vec2 v_texCoord;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D u_texture;
 layout(set = 0, binding = 1) uniform sampler2D u_curve_lut;
+layout(set = 0, binding = 2) uniform sampler2D u_mask;
+layout(set = 0, binding = 3) uniform sampler2D u_mask_curve_lut;
 layout(push_constant) uniform Push {
     mat4 u_mvp;
     float u_brightness;
@@ -126,14 +128,31 @@ void main() {
         rgb.b = pow(max(rgb.b, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.b));
         rgb += pc.u_highlights.rgb * highlightWeight;
 
-        if (pc.u_shadows.a > 0.5) {
-            float rr = texture(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
-            float gg = texture(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
-            float bb = texture(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
-            rr = texture(u_curve_lut, vec2(clamp(rr, 0.0, 1.0), 0.5)).a;
-            gg = texture(u_curve_lut, vec2(clamp(gg, 0.0, 1.0), 0.5)).a;
-            bb = texture(u_curve_lut, vec2(clamp(bb, 0.0, 1.0), 0.5)).a;
+        bool maskOverlay = pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
+        bool maskOnly = pc.u_shadows.a > 2.5;
+        bool maskCurveEnabled = maskOverlay && pc.u_midtones.a < -0.5;
+        bool curveEnabled = (pc.u_shadows.a > 0.5 && pc.u_shadows.a < 1.5) ||
+                            maskCurveEnabled;
+        if (curveEnabled) {
+            float rr = maskCurveEnabled
+                ? texture(u_mask_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r
+                : texture(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
+            float gg = maskCurveEnabled
+                ? texture(u_mask_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g
+                : texture(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
+            float bb = maskCurveEnabled
+                ? texture(u_mask_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b
+                : texture(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
             rgb = vec3(rr, gg, bb);
+            float curveLuma = lumaOf(rgb);
+            float remappedLuma = maskCurveEnabled
+                ? texture(u_mask_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a
+                : texture(u_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a;
+            if (curveLuma > 0.0001) {
+                rgb *= remappedLuma / curveLuma;
+            } else {
+                rgb = vec3(remappedLuma);
+            }
         }
     }
 
@@ -141,6 +160,18 @@ void main() {
     float luma = lumaOf(rgb);
     rgb = mix(vec3(luma), rgb, pc.u_saturation);
     rgb = clamp(rgb, vec3(0.0), vec3(1.0));
+
+    bool maskOverlay = pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
+    bool maskOnly = pc.u_shadows.a > 2.5;
+    if (maskOverlay || maskOnly) {
+        float maskValue = clamp(texture(u_mask, v_texCoord).r, 0.0, 1.0);
+        if (maskOnly) {
+            float v = maskValue >= 0.5 ? 1.0 : 0.0;
+            outColor = vec4(vec3(v), 1.0);
+            return;
+        }
+        sourceAlpha *= maskValue;
+    }
 
     c.a = clamp(sourceAlpha * pc.u_opacity, 0.0, 1.0);
     c.rgb = rgb * c.a;

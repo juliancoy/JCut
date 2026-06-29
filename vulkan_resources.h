@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QSize>
+#include <QVector>
 
 #include <vulkan/vulkan.h>
 
@@ -12,9 +13,18 @@
 
 class QVulkanDeviceFunctions;
 
+struct VulkanMaskPreprocessOptions {
+    QSize outputSize;
+    bool invert = false;
+    int erodeRadius = 0;
+    int dilateRadius = 0;
+    int blurRadius = 0;
+};
+
 class VulkanResources final {
 public:
     static constexpr size_t kDescriptorSetCount = 3;
+    static constexpr size_t kMaskComputeDescriptorSetCount = 128;
 
     VulkanResources() = default;
     ~VulkanResources();
@@ -31,7 +41,14 @@ public:
     bool setSampledImage(VkImageView imageView, VkImageLayout imageLayout);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const render_detail::OverlayImage& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image);
+    bool uploadMaskTexture(VkCommandBuffer commandBuffer, const QImage& image);
+    bool uploadMaskTexture(VkCommandBuffer commandBuffer,
+                           const QImage& image,
+                           const VulkanMaskPreprocessOptions& options);
+    bool ensureAuxiliaryImagesReadable(VkCommandBuffer commandBuffer);
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
+    bool uploadMaskCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
+    bool beginFrameUploads(size_t frameSlot, size_t frameSlotCount);
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }
     VkDescriptorSet descriptorSet() const { return m_descriptorSets[m_descriptorSetIndex]; }
@@ -41,10 +58,39 @@ public:
 
 private:
     bool createTextureResources();
+    bool createMaskComputeResources();
+    void destroyMaskComputeResources();
     bool createTextureImage(const QSize& size);
     void destroyTextureImage();
+    void retireTextureImage();
+    bool ensureRawMaskImage(const QSize& size);
+    bool ensureMaskImages(const QSize& size);
+    bool createMaskImage(const QSize& size,
+                         VkImage* image,
+                         VkDeviceMemory* memory,
+                         VkImageView* view);
+    void destroyMaskImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view);
+    void retireMaskImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view);
+    VkShaderModule createShaderModule(const QString& path) const;
+    bool runMaskComputePass(VkCommandBuffer commandBuffer,
+                            VkPipeline pipeline,
+                            const void* pushData,
+                            uint32_t pushDataSize,
+                            VkImageView inputView,
+                            VkImageView outputView,
+                            VkImage outputImage,
+                            VkImageLayout& outputLayout);
+    bool preprocessMaskTexture(VkCommandBuffer commandBuffer,
+                               const VulkanMaskPreprocessOptions& options);
     bool ensureTextureSize(const QSize& size);
     bool ensureStagingCapacity(VkDeviceSize bytes);
+    bool reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize* offsetOut);
+    bool writeStagingUpload(const void* data, VkDeviceSize bytes, VkDeviceSize* offsetOut);
+    bool uploadCurveLutImage(VkCommandBuffer commandBuffer,
+                             const QByteArray& rgbaLut,
+                             VkImage image,
+                             VkImageLayout& layout,
+                             QByteArray& cachedBytes);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
     void transitionTextureImage(VkCommandBuffer cb,
                          VkImageLayout oldLayout,
@@ -77,8 +123,73 @@ private:
     VkImageView m_curveLutView = VK_NULL_HANDLE;
     VkImageLayout m_curveLutLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     QByteArray m_curveLutBytes;
+    VkImage m_maskCurveLutImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_maskCurveLutMemory = VK_NULL_HANDLE;
+    VkImageView m_maskCurveLutView = VK_NULL_HANDLE;
+    VkImageLayout m_maskCurveLutLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    QByteArray m_maskCurveLutBytes;
+
+    VkImage m_maskImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_maskMemory = VK_NULL_HANDLE;
+    VkImageView m_maskView = VK_NULL_HANDLE;
+    VkImageLayout m_maskLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage m_maskRawImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_maskRawMemory = VK_NULL_HANDLE;
+    VkImageView m_maskRawView = VK_NULL_HANDLE;
+    VkImageLayout m_maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage m_maskWorkImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_maskWorkMemory = VK_NULL_HANDLE;
+    VkImageView m_maskWorkView = VK_NULL_HANDLE;
+    VkImageLayout m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    QSize m_maskSize;
+    QSize m_maskRawSize;
+
+    VkDescriptorSetLayout m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_maskComputeDescriptorPool = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, kMaskComputeDescriptorSetCount> m_maskComputeDescriptorSets{};
+    size_t m_maskComputeDescriptorSetIndex = 0;
+    VkPipelineLayout m_maskPreparePipelineLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_maskMorphBlurPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_maskPreparePipeline = VK_NULL_HANDLE;
+    VkPipeline m_maskMorphPipeline = VK_NULL_HANDLE;
+    VkPipeline m_maskBlurPipeline = VK_NULL_HANDLE;
+    VkShaderModule m_maskPrepareModule = VK_NULL_HANDLE;
+    VkShaderModule m_maskMorphModule = VK_NULL_HANDLE;
+    VkShaderModule m_maskBlurModule = VK_NULL_HANDLE;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
-    VkDeviceSize m_stagingCapacity = 0;
+    struct StagingUploadRing {
+        VkDeviceSize capacity = 0;
+        VkDeviceSize frameSlotBytes = 0;
+        VkDeviceSize writeOffset = 0;
+        size_t frameSlot = 0;
+        size_t frameSlotCount = kDescriptorSetCount;
+
+        void resetAllocation()
+        {
+            capacity = 0;
+            frameSlotBytes = 0;
+            writeOffset = 0;
+        }
+
+        void reset()
+        {
+            resetAllocation();
+            frameSlot = 0;
+            frameSlotCount = kDescriptorSetCount;
+        }
+    };
+    StagingUploadRing m_stagingRing;
+    struct RetiredStagingBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+    QVector<RetiredStagingBuffer> m_retiredStagingBuffers;
+    struct RetiredImageResource {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+    };
+    QVector<RetiredImageResource> m_retiredImageResources;
 };

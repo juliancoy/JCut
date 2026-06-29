@@ -12,6 +12,14 @@
 
 namespace render_detail {
 
+inline constexpr float kVulkanEffectModeNormal = 0.0f;
+inline constexpr float kVulkanEffectModeCurve = 1.0f;
+inline constexpr float kVulkanEffectModeMaskGrade = 2.0f;
+inline constexpr float kVulkanEffectModeMaskOnly = 3.0f;
+inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
+inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
+inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
+
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
 QByteArray vulkanIdentityCurveLutRgbaBytes();
 

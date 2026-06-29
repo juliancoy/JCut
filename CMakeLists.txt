@@ -359,6 +359,9 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_v.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_buffer_to_rgba.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_prepare.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_morph.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_blur.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/scrfd_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_infer_heuristic.comp

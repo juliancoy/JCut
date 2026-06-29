@@ -106,10 +106,14 @@ inline const char* visualEffectsFragmentShaderSource() {
                 float rr = texture2D(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
                 float gg = texture2D(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
                 float bb = texture2D(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
-                rr = texture2D(u_curve_lut, vec2(clamp(rr, 0.0, 1.0), 0.5)).a;
-                gg = texture2D(u_curve_lut, vec2(clamp(gg, 0.0, 1.0), 0.5)).a;
-                bb = texture2D(u_curve_lut, vec2(clamp(bb, 0.0, 1.0), 0.5)).a;
                 rgb = vec3(rr, gg, bb);
+                float curveLuma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+                float remappedLuma = texture2D(u_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a;
+                if (curveLuma > 0.0001) {
+                    rgb *= remappedLuma / curveLuma;
+                } else {
+                    rgb = vec3(remappedLuma);
+                }
             }
 
             rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
@@ -245,10 +249,14 @@ inline const char* visualEffectsFragmentShaderSourceVulkan() {
                 float rr = texture(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
                 float gg = texture(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
                 float bb = texture(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
-                rr = texture(u_curve_lut, vec2(clamp(rr, 0.0, 1.0), 0.5)).a;
-                gg = texture(u_curve_lut, vec2(clamp(gg, 0.0, 1.0), 0.5)).a;
-                bb = texture(u_curve_lut, vec2(clamp(bb, 0.0, 1.0), 0.5)).a;
                 rgb = vec3(rr, gg, bb);
+                float curveLuma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+                float remappedLuma = texture(u_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a;
+                if (curveLuma > 0.0001) {
+                    rgb *= remappedLuma / curveLuma;
+                } else {
+                    rgb = vec3(remappedLuma);
+                }
             }
 
             rgb = ((rgb - 0.5) * p.u_contrast) + 0.5 + vec3(p.u_brightness);

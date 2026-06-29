@@ -38,7 +38,7 @@ private slots:
         QCOMPARE(state.shadows[0], -0.25f);
         QCOMPARE(state.shadows[1], 0.125f);
         QCOMPARE(state.shadows[2], 0.375f);
-        QCOMPARE(state.shadows[3], 1.0f);
+        QCOMPARE(state.shadows[3], render_detail::kVulkanEffectModeNormal);
         QCOMPARE(state.midtones[0], 0.5f);
         QCOMPARE(state.midtones[1], -0.125f);
         QCOMPARE(state.midtones[2], 0.25f);
@@ -46,6 +46,11 @@ private slots:
         QCOMPARE(state.highlights[1], 0.625f);
         QCOMPARE(state.highlights[2], -0.5f);
         QCOMPARE(state.highlights[3], 1.0f);
+
+        grade.curvePointsR = QVector<QPointF>{{0.0, 0.0}, {1.0, 0.8}};
+        const render_detail::VulkanDrawEffectState curveState =
+            render_detail::vulkanDrawEffectStateForGrade(grade);
+        QCOMPARE(curveState.shadows[3], render_detail::kVulkanEffectModeCurve);
     }
 
     void sharedCurveLutHasShaderTextureShape()
@@ -185,6 +190,12 @@ private slots:
                  "Direct Vulkan presenter must drag edge pixels across missing background rows.");
         QVERIFY2(source.contains(QStringLiteral("blurredFillSample")),
                  "Direct Vulkan presenter must blur the cover-fill background in shader.");
+        QVERIFY2(source.contains(QStringLiteral("float curveLuma = lumaOf(rgb);")),
+                 "Direct Vulkan shader must compute luminance after RGB curve channels.");
+        QVERIFY2(source.contains(QStringLiteral("rgb *= remappedLuma / curveLuma;")),
+                 "Direct Vulkan shader must preserve chroma when applying the Brightness/Luma curve.");
+        QVERIFY2(!source.contains(QStringLiteral("rr = texture(u_curve_lut, vec2(clamp(rr")),
+                 "Direct Vulkan shader must not apply the luma curve independently to each RGB channel.");
 
         const int shadowsPos = source.indexOf(QStringLiteral("rgb *= (1.0 + pc.u_shadows.rgb"));
         const int midtonesPos = source.indexOf(QStringLiteral("vec3 midtoneAdjust = pc.u_midtones.rgb"));

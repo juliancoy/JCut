@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "audio_source_key.h"
 #include "debug_controls.h"
 #include "playback_clock_coordinator.h"
 #include "playback_debug.h"
@@ -6,6 +7,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QProgressDialog>
 #include <QSignalBlocker>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -56,12 +58,16 @@ void EditorWindow::advanceFrame()
                                           : QStringLiteral("retimed_audio_not_ready"));
         if (debugPlaybackWarnEnabled()) {
             qWarning().noquote()
-                << QStringLiteral("[PLAYBACK WARN] transport playback continuing while pitch-preserving audio warms: %1")
+                << QStringLiteral("[PLAYBACK WARN] transport playback waiting while pitch-preserving audio warms: %1")
                        .arg(audioBlocked
                                 ? QStringLiteral("audio_blocked")
                                 : QStringLiteral("retimed_audio_not_ready"));
         }
         requestPlaybackAudioWarmup(false);
+        updatePlaybackStatusOverlay();
+        m_lastTimelineAdvanceTickMs = tickNowMs;
+        m_timelineAdvanceCarrySamples = 0.0;
+        return;
     }
 
     editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
@@ -1094,7 +1100,11 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
 
 void EditorWindow::updatePlaybackStatusOverlay()
 {
+    const AudioEngine::TimeStretchProgressSnapshot rubberBandProgress =
+        m_audioEngine ? m_audioEngine->timeStretchProgressSnapshot()
+                      : AudioEngine::TimeStretchProgressSnapshot{};
     if (!m_preview) {
+        updateRubberBandProgressDialog(rubberBandProgress, QString());
         return;
     }
 
@@ -1105,13 +1115,13 @@ void EditorWindow::updatePlaybackStatusOverlay()
         const bool audioReady =
             m_audioEngine && m_timeline &&
             m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame());
-        const bool timeStretchGenerationActive =
-            m_audioEngine && m_audioEngine->timeStretchGenerationActive();
-        if (m_retimingAudioForPlayback || timeStretchGenerationActive) {
-            progress = m_audioEngine ? m_audioEngine->timeStretchGenerationProgress() : -1.0;
+        if (m_retimingAudioForPlayback || rubberBandProgress.visible) {
+            progress = rubberBandProgress.overallProgress >= 0.0
+                           ? rubberBandProgress.overallProgress
+                           : rubberBandProgress.currentProgress;
             const int generationPercent = progress >= 0.0 ? qRound(progress * 100.0) : 0;
             text = progress >= 0.0
-                ? QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%) %2%")
+                ? QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%) %2% overall")
                       .arg(percent)
                       .arg(generationPercent)
                 : QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%)").arg(percent);
@@ -1126,10 +1136,82 @@ void EditorWindow::updatePlaybackStatusOverlay()
             text = QStringLiteral("Playback waiting: buffering video frames");
         } else if (m_lastPlaybackStopReason == QStringLiteral("video_not_ready")) {
             text = QStringLiteral("Playback waiting: video frames are still buffering");
+        } else if (playbackActive() && m_audioEngine &&
+                   m_audioEngine->audioOutputUnavailableForPlayback()) {
+            text = m_audioEngine->audioOutputStatusText();
         }
     }
     m_preview->setPlaybackStatusOverlayText(text);
     m_preview->setPlaybackStatusOverlayProgress(progress);
+    updateRubberBandProgressDialog(rubberBandProgress, text);
+}
+
+void EditorWindow::updateRubberBandProgressDialog(
+    const AudioEngine::TimeStretchProgressSnapshot& progress,
+    const QString& statusText)
+{
+    if (!progress.visible) {
+        if (m_rubberBandProgressDialog) {
+            m_rubberBandProgressDialog->hide();
+            m_rubberBandProgressDialog->deleteLater();
+            m_rubberBandProgressDialog.clear();
+        }
+        return;
+    }
+
+    bool createdDialog = false;
+    if (!m_rubberBandProgressDialog) {
+        auto* dialog = new QProgressDialog(this);
+        dialog->setWindowTitle(QStringLiteral("Rubber Band Audio Retiming"));
+        dialog->setCancelButton(nullptr);
+        dialog->setMinimumDuration(0);
+        dialog->setAutoClose(false);
+        dialog->setAutoReset(false);
+        dialog->setWindowModality(Qt::NonModal);
+        dialog->setRange(0, 100);
+        m_rubberBandProgressDialog = dialog;
+        createdDialog = true;
+    }
+
+    const QString currentClip = progress.currentPath.trimmed().isEmpty()
+        ? QStringLiteral("Queued")
+        : QFileInfo(editor::audio::pathFromSourceKey(progress.currentPath)).fileName();
+    const QString title = statusText.trimmed().isEmpty()
+        ? QStringLiteral("Audio being generated: Rubber Band tempo shift")
+        : statusText.trimmed();
+    const QString stage = progress.phase.trimmed().isEmpty()
+        ? QStringLiteral("preparing")
+        : progress.phase;
+    const QString clipSummary = progress.totalClips > 0
+        ? QStringLiteral("%1 of %2 complete, %3 remaining")
+              .arg(progress.completedClips)
+              .arg(progress.totalClips)
+              .arg(progress.remainingClips)
+        : QStringLiteral("Preparing audio retiming queue");
+    const QString currentProgressText = progress.currentProgress >= 0.0
+        ? QStringLiteral("Current clip: %1%")
+              .arg(qRound(progress.currentProgress * 100.0))
+        : QStringLiteral("Current clip: pending");
+    const QString labelText = QStringLiteral(
+                                  "%1\nCurrent: %2\nClips: %3\nStage: %4\n%5")
+                                  .arg(title, currentClip, clipSummary, stage,
+                                       currentProgressText);
+    m_rubberBandProgressDialog->setLabelText(labelText);
+    if (progress.overallProgress >= 0.0) {
+        m_rubberBandProgressDialog->setRange(0, 100);
+        m_rubberBandProgressDialog->setValue(
+            qBound(0, qRound(progress.overallProgress * 100.0), 100));
+    } else {
+        m_rubberBandProgressDialog->setRange(0, 0);
+    }
+    if (!m_rubberBandProgressDialog->isVisible()) {
+        m_rubberBandProgressDialog->show();
+        createdDialog = true;
+    }
+    if (createdDialog) {
+        m_rubberBandProgressDialog->raise();
+        m_rubberBandProgressDialog->activateWindow();
+    }
 }
 
 void EditorWindow::updatePlaybackTimerInterval()
@@ -1262,16 +1344,18 @@ void EditorWindow::setPlaybackActive(bool playing)
             runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
         if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
-            bool audioReadyToStart = true;
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(playbackStartFrame)) {
-                audioReadyToStart = false;
-                requestPlaybackAudioWarmup(false);
+                m_lastPlaybackStopReason = QStringLiteral("audio_not_ready");
+                requestPlaybackAudioWarmup(true);
                 qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] continuing transport playback while re-timed audio warms at frame %1")
+                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for re-timed audio at frame %1")
                            .arg(playbackStartFrame);
+                updateTransportLabels();
+                updatePlaybackStatusOverlay();
+                return;
             }
-            if (audioReadyToStart && !needsPitchPreservingAudio &&
+            if (!needsPitchPreservingAudio &&
                 !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
                                                effectiveAudioWarpRate(),
                                                needsPitchPreservingAudio) &&
@@ -1285,19 +1369,17 @@ void EditorWindow::setPlaybackActive(bool playing)
                     << QStringLiteral("[PLAYBACK WARN] continuing system-clock transport playback without warmed audio at frame %1")
                            .arg(playbackStartFrame);
             }
-            if (audioReadyToStart) {
-                m_audioEngine->start(playbackStartFrame);
-                const int64_t anchorSample = frameToSamples(playbackStartFrame);
-                m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
-                m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
-                if (!m_startupReadinessAudioStarted.exchange(true)) {
-                    startupReadinessMark(QStringLiteral("audio.start.invoked"),
-                                         QJsonObject{{QStringLiteral("frame"),
-                                                      static_cast<qint64>(playbackStartFrame)},
-                                                     {QStringLiteral("warp_mode"),
-                                                      playbackAudioWarpModeToString(runtimeWarpMode)},
-                                                     {QStringLiteral("speed"), m_playbackSpeed}});
-                }
+            m_audioEngine->start(playbackStartFrame);
+            const int64_t anchorSample = frameToSamples(playbackStartFrame);
+            m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+            m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
+            if (!m_startupReadinessAudioStarted.exchange(true)) {
+                startupReadinessMark(QStringLiteral("audio.start.invoked"),
+                                     QJsonObject{{QStringLiteral("frame"),
+                                                  static_cast<qint64>(playbackStartFrame)},
+                                                 {QStringLiteral("warp_mode"),
+                                                  playbackAudioWarpModeToString(runtimeWarpMode)},
+                                                 {QStringLiteral("speed"), m_playbackSpeed}});
             }
         }
         if (m_preview) {

@@ -10,6 +10,10 @@
 
 namespace {
 
+const QLatin1String kHistoryTranscriptDocumentsKey("__historyTranscriptDocuments");
+constexpr int kMaxHistoryEntries = 100;
+constexpr qsizetype kMaxHistoryCompactBytes = 16 * 1024 * 1024;
+
 void stripHeavyClipState(QJsonObject* clipObj)
 {
     if (!clipObj) {
@@ -23,6 +27,8 @@ void stripHeavyStateSnapshot(QJsonObject* snapshot)
     if (!snapshot) {
         return;
     }
+
+    snapshot->remove(QString(kHistoryTranscriptDocumentsKey));
 
     QJsonArray timeline = snapshot->value(QStringLiteral("timeline")).toArray();
     for (int i = 0; i < timeline.size(); ++i) {
@@ -54,6 +60,88 @@ bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
         }
     }
     return changed;
+}
+
+QJsonObject applyHistoryObjectPatch(QJsonObject base, const QJsonObject& patch)
+{
+    const QJsonObject set = patch.value(QStringLiteral("set")).toObject();
+    for (auto it = set.begin(); it != set.end(); ++it) {
+        const QJsonValue existing = base.value(it.key());
+        if (existing.isObject() && it.value().isObject()) {
+            const QJsonObject patchObject = it.value().toObject();
+            if (patchObject.contains(QStringLiteral("set")) ||
+                patchObject.contains(QStringLiteral("remove"))) {
+                base[it.key()] = applyHistoryObjectPatch(existing.toObject(), patchObject);
+                continue;
+            }
+        }
+        base[it.key()] = it.value();
+    }
+
+    const QJsonArray remove = patch.value(QStringLiteral("remove")).toArray();
+    for (const QJsonValue& value : remove) {
+        base.remove(value.toString());
+    }
+    return base;
+}
+
+QJsonArray historyEntriesFromRoot(const QJsonObject& root)
+{
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("snapshot-delta-v1")) {
+        return root.value(QStringLiteral("entries")).toArray();
+    }
+
+    QJsonArray entries;
+    QJsonObject current = root.value(QStringLiteral("base")).toObject();
+    if (current.isEmpty() && root.value(QStringLiteral("patches")).toArray().isEmpty()) {
+        return entries;
+    }
+    entries.push_back(current);
+    const QJsonArray patches = root.value(QStringLiteral("patches")).toArray();
+    for (const QJsonValue& value : patches) {
+        current = applyHistoryObjectPatch(current, value.toObject());
+        entries.push_back(current);
+    }
+    return entries;
+}
+
+qsizetype historyEntriesCompactSize(const QJsonArray& entries)
+{
+    QJsonObject root;
+    root[QStringLiteral("entries")] = entries;
+    return jcut::jsonio::serializeCompact(root).size();
+}
+
+void trimHistoryEntriesInPlace(QJsonArray* entries, int* historyIndex)
+{
+    if (!entries || entries->isEmpty()) {
+        if (historyIndex) {
+            *historyIndex = -1;
+        }
+        return;
+    }
+
+    if (historyIndex) {
+        *historyIndex = qBound(0, *historyIndex, entries->size() - 1);
+    }
+
+    auto removeOldest = [&]() {
+        entries->removeAt(0);
+        if (historyIndex) {
+            *historyIndex = qMax(-1, *historyIndex - 1);
+        }
+    };
+
+    while (entries->size() > kMaxHistoryEntries) {
+        removeOldest();
+    }
+    while (entries->size() > 1 && historyEntriesCompactSize(*entries) > kMaxHistoryCompactBytes) {
+        removeOldest();
+    }
+
+    if (historyIndex) {
+        *historyIndex = entries->isEmpty() ? -1 : qBound(0, *historyIndex, entries->size() - 1);
+    }
 }
 
 } // namespace
@@ -91,20 +179,24 @@ QJsonObject loadStartupStatePayload(const QString& projectId,
 
     QJsonObject historyRoot;
     jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
-    QJsonArray entries = historyRoot.value(QStringLiteral("entries")).toArray();
+    QJsonArray entries = historyEntriesFromRoot(historyRoot);
     const bool historySanitized = sanitizeHistoryEntriesInPlace(&entries);
-    const int entryCount = entries.size();
-    const int historyIndex = entryCount > 0
-        ? qBound(0, historyRoot.value(QStringLiteral("index")).toInt(entryCount - 1), entryCount - 1)
+    const int entryCountBeforeTrim = entries.size();
+    int historyIndex = entryCountBeforeTrim > 0
+        ? qBound(0,
+                 historyRoot.value(QStringLiteral("index")).toInt(entryCountBeforeTrim - 1),
+                 entryCountBeforeTrim - 1)
         : -1;
-    if (entryCount > 0) {
+    trimHistoryEntriesInPlace(&entries, &historyIndex);
+    if (!entries.isEmpty() && historyIndex >= 0) {
         root = entries.at(historyIndex).toObject();
     }
 
     result[QStringLiteral("root")] = root;
     result[QStringLiteral("history_entries")] = entries;
     result[QStringLiteral("history_index")] = historyIndex;
-    result[QStringLiteral("history_sanitized")] = historySanitized;
+    result[QStringLiteral("history_sanitized")] =
+        historySanitized || entries.size() != entryCountBeforeTrim;
     return result;
 }
 

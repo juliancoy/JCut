@@ -1,6 +1,7 @@
 #include "transcript_engine.h"
 
 #include "editor_shared.h"
+#include "editor_shared_render_sync.h"
 #include "json_io_utils.h"
 
 #include <QFile>
@@ -981,62 +982,30 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
 
             QVector<ExportRangeSegment> clipTimelineRanges;
 
-            if (markers.isEmpty())
+            for (const ExportRangeSegment &baseRange : resolvedBaseRanges)
             {
-                for (const ExportRangeSegment& wordRange : std::as_const(mergedSourceWordRanges))
+                const int64_t clipStart = qMax<int64_t>(clip.startFrame, baseRange.startFrame);
+                const int64_t clipEnd =
+                    qMin<int64_t>(clip.startFrame + clip.durationFrames - 1, baseRange.endFrame);
+                if (clipEnd < clipStart)
                 {
-                    const int64_t localStart = qMax<int64_t>(0, wordRange.startFrame - clip.sourceInFrame);
-                    const int64_t localEnd = qMin<int64_t>(
-                        clip.durationFrames - 1, wordRange.endFrame - clip.sourceInFrame);
-                    if (localEnd < localStart) {
-                        continue;
-                    }
-
-                    const int64_t wordTimelineStart = clip.startFrame + localStart;
-                    const int64_t wordTimelineEnd = clip.startFrame + localEnd;
-                    for (const ExportRangeSegment& baseRange : resolvedBaseRanges)
-                    {
-                        const int64_t start = qMax<int64_t>(wordTimelineStart, baseRange.startFrame);
-                        const int64_t end = qMin<int64_t>(wordTimelineEnd, baseRange.endFrame);
-                        if (end >= start) {
-                            clipTimelineRanges.push_back(ExportRangeSegment{start, end});
-                        }
-                    }
+                    continue;
                 }
-                clipTimelineRanges = mergeRanges(clipTimelineRanges);
-            }
-            else
-            {
-                for (const ExportRangeSegment &baseRange : resolvedBaseRanges)
-                {
-                    const int64_t clipStart = qMax<int64_t>(clip.startFrame, baseRange.startFrame);
-                    const int64_t clipEnd =
-                        qMin<int64_t>(clip.startFrame + clip.durationFrames - 1, baseRange.endFrame);
-                    if (clipEnd < clipStart)
-                    {
-                        continue;
-                    }
 
-                    int wordRangeIndex = 0;
-                    for (int64_t timelineFrame = clipStart; timelineFrame <= clipEnd; ++timelineFrame)
+                int wordRangeIndex = 0;
+                for (int64_t timelineFrame = clipStart; timelineFrame <= clipEnd; ++timelineFrame)
+                {
+                    const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+                        clip, frameToSamples(timelineFrame), markers);
+                    while (wordRangeIndex < mergedSourceWordRanges.size() &&
+                           mergedSourceWordRanges.at(wordRangeIndex).endFrame < transcriptFrame) {
+                        ++wordRangeIndex;
+                    }
+                    if (wordRangeIndex < mergedSourceWordRanges.size() &&
+                        transcriptFrame >= mergedSourceWordRanges.at(wordRangeIndex).startFrame &&
+                        transcriptFrame <= mergedSourceWordRanges.at(wordRangeIndex).endFrame)
                     {
-                        const int64_t localTimelineFrame = timelineFrame - clip.startFrame;
-                        if (localTimelineFrame < 0 || localTimelineFrame >= clip.durationFrames)
-                        {
-                            continue;
-                        }
-                        const int64_t adjustedLocalFrame = adjustedLocalFrameForClip(clip, localTimelineFrame, markers);
-                        const int64_t sourceFrame = clip.sourceInFrame + adjustedLocalFrame;
-                        while (wordRangeIndex < mergedSourceWordRanges.size() &&
-                               mergedSourceWordRanges.at(wordRangeIndex).endFrame < sourceFrame) {
-                            ++wordRangeIndex;
-                        }
-                        if (wordRangeIndex < mergedSourceWordRanges.size() &&
-                            sourceFrame >= mergedSourceWordRanges.at(wordRangeIndex).startFrame &&
-                            sourceFrame <= mergedSourceWordRanges.at(wordRangeIndex).endFrame)
-                        {
-                            appendMergedExportFrame(clipTimelineRanges, timelineFrame);
-                        }
+                        appendMergedExportFrame(clipTimelineRanges, timelineFrame);
                     }
                 }
             }
@@ -1171,10 +1140,9 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
                     if (localTimelineFrame < 0 || localTimelineFrame >= clip.durationFrames) {
                         continue;
                     }
-                    const int64_t adjustedLocalFrame =
-                        adjustedLocalFrameForClip(clip, localTimelineFrame, markers);
-                    const int64_t sourceFrame = clip.sourceInFrame + adjustedLocalFrame;
-                    if (sourceFrame >= wordRange.startFrame && sourceFrame <= wordRange.endFrame) {
+                    const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+                        clip, frameToSamples(timelineFrame), markers);
+                    if (transcriptFrame >= wordRange.startFrame && transcriptFrame <= wordRange.endFrame) {
                         appendMergedExportFrame(timelineRangesForWord, timelineFrame);
                     }
                 }

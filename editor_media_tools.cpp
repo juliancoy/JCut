@@ -69,6 +69,27 @@ QString defaultSam3ModelCachePath() {
     return QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral(".cache/hf"));
 }
 
+QString defaultSam3RuntimeCachePath() {
+    const QString appCache =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!appCache.isEmpty()) {
+        return QDir(appCache).absoluteFilePath(QStringLiteral("sam3/runtime"));
+    }
+    return QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral(".cache"));
+}
+
+QString defaultSam3RuntimeCachePath(const QString& modelCachePath) {
+    const QString expandedModelCache = expandUserPath(modelCachePath);
+    if (!expandedModelCache.trimmed().isEmpty()) {
+        const QFileInfo modelInfo(expandedModelCache);
+        if (modelInfo.fileName().compare(QStringLiteral("hf"), Qt::CaseInsensitive) == 0) {
+            return modelInfo.dir().absoluteFilePath(QStringLiteral("runtime"));
+        }
+        return modelInfo.dir().absoluteFilePath(QStringLiteral("sam3_runtime"));
+    }
+    return defaultSam3RuntimeCachePath();
+}
+
 std::filesystem::path fsPathForQtPath(const QString& path) {
     return std::filesystem::path(path.toStdString()).lexically_normal();
 }
@@ -420,6 +441,9 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     const QString savedModelCachePath =
         settings.value(QStringLiteral("sam3/modelCachePath"), defaultSam3ModelCachePath())
             .toString();
+    const QString savedRuntimeCachePath =
+        settings.value(QStringLiteral("sam3/runtimeCachePath"), defaultSam3RuntimeCachePath(savedModelCachePath))
+            .toString();
 
     QDialog preflight(this);
     preflight.setWindowTitle(QStringLiteral("Detect Preflight"));
@@ -453,6 +477,21 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     cacheRow->addWidget(cacheEdit, 1);
     cacheRow->addWidget(browseCacheButton);
     preflightLayout->addLayout(cacheRow);
+
+    auto* runtimeCacheLabel = new QLabel(QStringLiteral("Runtime cache"), &preflight);
+    preflightLayout->addWidget(runtimeCacheLabel);
+
+    auto* runtimeCacheRow = new QHBoxLayout;
+    runtimeCacheRow->setContentsMargins(0, 0, 0, 0);
+    runtimeCacheRow->setSpacing(8);
+    auto* runtimeCacheEdit = new QLineEdit(savedRuntimeCachePath, &preflight);
+    runtimeCacheEdit->setClearButtonEnabled(true);
+    runtimeCacheEdit->setToolTip(
+        QStringLiteral("Docker runtime cache root for pip, container home, torch kernels, and related temporary model runtime data."));
+    auto* browseRuntimeCacheButton = new QPushButton(QStringLiteral("Browse"), &preflight);
+    runtimeCacheRow->addWidget(runtimeCacheEdit, 1);
+    runtimeCacheRow->addWidget(browseRuntimeCacheButton);
+    preflightLayout->addLayout(runtimeCacheRow);
 
     auto* performanceForm = new QFormLayout;
     performanceForm->setContentsMargins(0, 0, 0, 0);
@@ -562,6 +601,18 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
             cacheEdit->setText(selectedPath);
         }
     });
+    connect(browseRuntimeCacheButton, &QPushButton::clicked, &preflight, [runtimeCacheEdit, cacheEdit, &preflight]() {
+        const QString selectedPath = QFileDialog::getExistingDirectory(
+            &preflight,
+            QStringLiteral("Choose SAM3 Runtime Cache"),
+            expandUserPath(runtimeCacheEdit->text().trimmed().isEmpty()
+                               ? defaultSam3RuntimeCachePath(cacheEdit->text())
+                               : runtimeCacheEdit->text()),
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (!selectedPath.isEmpty()) {
+            runtimeCacheEdit->setText(selectedPath);
+        }
+    });
     connect(cancelPreflightButton, &QPushButton::clicked, &preflight, &QDialog::reject);
     connect(videoModeCheckBox, &QCheckBox::toggled, &preflight,
             [binaryMasksCheckBox, maskPreviewFramesCheckBox, extractFpsSpin, frameFormatCombo](bool checked) {
@@ -576,13 +627,17 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
             binaryMasksCheckBox->setChecked(true);
         }
     });
-    connect(runPreflightButton, &QPushButton::clicked, &preflight, [&preflight, promptEdit, cacheEdit]() {
+    connect(runPreflightButton, &QPushButton::clicked, &preflight, [&preflight, promptEdit, cacheEdit, runtimeCacheEdit]() {
         if (promptEdit->text().trimmed().isEmpty()) {
             promptEdit->setFocus();
             return;
         }
         if (cacheEdit->text().trimmed().isEmpty()) {
             cacheEdit->setFocus();
+            return;
+        }
+        if (runtimeCacheEdit->text().trimmed().isEmpty()) {
+            runtimeCacheEdit->setFocus();
             return;
         }
         preflight.accept();
@@ -605,12 +660,22 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         QFileInfo(expandUserPath(savedModelCachePath)).absoluteFilePath();
     const QString modelCachePath =
         QFileInfo(expandUserPath(cacheEdit->text())).absoluteFilePath();
+    const QString runtimeCachePath =
+        QFileInfo(expandUserPath(runtimeCacheEdit->text())).absoluteFilePath();
     QDir modelCacheDir(modelCachePath);
     if (!modelCacheDir.exists() && !modelCacheDir.mkpath(QStringLiteral("."))) {
         QMessageBox::warning(this,
                              QStringLiteral("Detect Failed"),
                              QStringLiteral("Could not create the SAM3 model cache:\n%1")
                                  .arg(QDir::toNativeSeparators(modelCachePath)));
+        return;
+    }
+    QDir runtimeCacheDir(runtimeCachePath);
+    if (!runtimeCacheDir.exists() && !runtimeCacheDir.mkpath(QStringLiteral("."))) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Detect Failed"),
+                             QStringLiteral("Could not create the SAM3 runtime cache:\n%1")
+                                 .arg(QDir::toNativeSeparators(runtimeCachePath)));
         return;
     }
     const std::filesystem::path previousModelCacheFsPath =
@@ -663,6 +728,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         }
     }
     settings.setValue(QStringLiteral("sam3/modelCachePath"), modelCachePath);
+    settings.setValue(QStringLiteral("sam3/runtimeCachePath"), runtimeCachePath);
     settings.setValue(QStringLiteral("sam3/scaleWidth"), scaleWidth);
     settings.setValue(QStringLiteral("sam3/prescaleWidth"), prescaleWidth);
     settings.setValue(QStringLiteral("sam3/extractFps"), extractFps);
@@ -718,6 +784,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         {QStringLiteral("binary_masks_dir"), writeBinaryMasks ? binaryMasksPath : QString()},
         {QStringLiteral("default_output_video"), defaultOutputPath},
         {QStringLiteral("model_cache"), modelCachePath},
+        {QStringLiteral("runtime_cache"), runtimeCachePath},
     };
     QJsonObject parameters{
         {QStringLiteral("prompt"), prompt},
@@ -816,6 +883,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     process->setWorkingDirectory(QDir::currentPath());
     QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
     processEnv.insert(QStringLiteral("SAM3_MODEL_CACHE"), modelCachePath);
+    processEnv.insert(QStringLiteral("SAM3_RUNTIME_CACHE"), runtimeCachePath);
     processEnv.insert(QStringLiteral("SAM3_JOB_DIR"), samJobRoot);
     if (runDockerAsRoot) {
         processEnv.insert(QStringLiteral("SAM3_DOCKER_RUN_AS_ROOT"), QStringLiteral("1"));
@@ -842,6 +910,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
                                                   inputPath = inputInfo.absoluteFilePath(),
                                                   prompt,
                                                   modelCachePath,
+                                                  runtimeCachePath,
                                                   samJobRoot,
                                                   samManifestPath,
                                                   writeBinaryMasks,
@@ -864,8 +933,9 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         const QString centersArg = exportCentersJson
             ? QStringLiteral(" --centers-json %1").arg(shellQuote(centersPath))
             : QStringLiteral(" --no-centers-json");
-        appendOutput(QStringLiteral("SAM3_MODEL_CACHE=%1\nSAM3_JOB_DIR=%2\nSAM3_DOCKER_RUN_AS_ROOT=%3\njob_manifest=%4\nmode=%5\nbinary_masks=%6\nmask_preview_frames=%7\ncenters_json=%8\n$ ./sam3.sh \"%9\" --prompt %10%11%12%13%14%15\n")
+        appendOutput(QStringLiteral("SAM3_MODEL_CACHE=%1\nSAM3_RUNTIME_CACHE=%2\nSAM3_JOB_DIR=%3\nSAM3_DOCKER_RUN_AS_ROOT=%4\njob_manifest=%5\nmode=%6\nbinary_masks=%7\nmask_preview_frames=%8\ncenters_json=%9\n$ ./sam3.sh \"%10\" --prompt %11%12%13%14%15%16\n")
                          .arg(QDir::toNativeSeparators(modelCachePath),
+                              QDir::toNativeSeparators(runtimeCachePath),
                               QDir::toNativeSeparators(samJobRoot),
                               runDockerAsRoot ? QStringLiteral("1") : QStringLiteral("0"),
                               QDir::toNativeSeparators(samManifestPath),
