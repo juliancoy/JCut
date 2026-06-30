@@ -447,16 +447,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.usedGpu = useGpuRenderer;
 
     std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
-    if (useGpuRenderer || exportNeedsAsyncDecode(orderedClips)) {
+    if (exportNeedsAsyncDecode(orderedClips)) {
         asyncDecoder = std::make_unique<editor::AsyncDecoder>();
         asyncDecoder->initialize();
     }
     ScopedAvBufferRef sharedCudaDeviceForEncoder(
         asyncDecoder ? asyncDecoder->acquireSharedHwDevice(AV_HWDEVICE_TYPE_CUDA) : nullptr);
-    if (useGpuRenderer && !sharedCudaDeviceForEncoder.get()) {
-        qWarning().noquote()
-            << QStringLiteral("[render-export-path] shared CUDA decode device unavailable; disabling CUDA hardware frames for this export");
-    }
 
     AVFormatContext* formatCtx = nullptr;
     const QByteArray outputPathBytes = QFile::encodeName(request.outputPath);
@@ -504,7 +500,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         configureCodecOptions(candidateCtx, request.outputFormat, choice.label);
         const bool tryCudaFrames =
             choice.label == QStringLiteral("h264_nvenc") &&
-            (!useGpuRenderer || sharedCudaDeviceForEncoder.get()) &&
             qEnvironmentVariable("JCUT_NVENC_CUDA_HWFRAMES", QStringLiteral("1")) != QStringLiteral("0");
         if (tryCudaFrames) {
             QString cudaError;

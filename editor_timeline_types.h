@@ -35,6 +35,12 @@ enum class TrackVisualMode {
     Hidden,
 };
 
+enum class ClipEffectPreset {
+    None,
+    NewsLogoTicker,
+    PersonOrbit,
+};
+
 struct TimelineClip {
     static constexpr int kGradingCurveLutSize = 256;
     static constexpr int kSpeakerFramingSmoothingMaxFrames = 500;
@@ -254,6 +260,12 @@ struct TimelineClip {
     qreal maskDropShadowOffsetX = 0.0;
     qreal maskDropShadowOffsetY = 4.0;
     qreal maskDropShadowOpacity = 0.45;
+    bool maskForegroundLayerEnabled = false;
+    ClipEffectPreset effectPreset = ClipEffectPreset::None;
+    int effectRows = 32;
+    qreal effectSpeed = 1.0;
+    qreal effectScale = 1.0;
+    bool effectAlternateDirection = true;
     QVector<CorrectionPolygon> correctionPolygons;
 };
 

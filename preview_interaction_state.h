@@ -99,6 +99,7 @@ struct VulkanPreviewClipFrameStatus {
     qreal maskDilate = 0.0;
     qreal maskBlur = 0.0;
     bool maskTextureEnabled = false;
+    bool maskForegroundLayerEnabled = false;
     bool maskShowOnly = false;
     bool maskGradeEnabled = false;
     qreal maskOpacity = 1.0;

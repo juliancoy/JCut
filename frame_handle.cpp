@@ -61,16 +61,26 @@ static size_t hardwareFrameEstimateBytes(const FrameData* data) {
         return 0;
     }
 
+    size_t payloadBytes = 0;
     switch (data->hardwareSwPixelFormat) {
         case AV_PIX_FMT_NV12:
         case AV_PIX_FMT_YUV420P:
-            return (width * height * 3) / 2;
+            payloadBytes = (width * height * 3) / 2;
+            break;
         case AV_PIX_FMT_P010:
         case AV_PIX_FMT_P016:
-            return width * height * 3;
+            payloadBytes = width * height * 3;
+            break;
         default:
-            return width * height * 4;
+            payloadBytes = width * height * 4;
+            break;
     }
+
+    // Hardware decode frames retain driver-side resources beyond the visible
+    // image payload, especially with CUDA/NVDEC/Vulkan interop. Account for
+    // that residency conservatively so caches trim before system memory swaps.
+    constexpr size_t kHardwareFrameResidencyMultiplier = 4;
+    return payloadBytes * kHardwareFrameResidencyMultiplier;
 }
 
 // ============================================================================

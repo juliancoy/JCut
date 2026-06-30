@@ -58,33 +58,51 @@ vec4 edgeStretchFillSample(vec2 uv) {
 
     if (uv.x < left) {
         float fillT = clamp((left - uv.x) / max(0.0001, left), 0.0, 1.0);
-        float offset = progressive ? edgeBand.x * pow(1.0 - fillT, power) : edgeBand.x;
-        sourceUv.x = offset;
+        sourceUv.x = progressive ? pow(fillT, power) : edgeBand.x;
     } else if (uv.x > right) {
         float fillT = clamp((uv.x - right) / max(0.0001, 1.0 - right), 0.0, 1.0);
-        float offset = progressive ? edgeBand.x * pow(1.0 - fillT, power) : edgeBand.x;
-        sourceUv.x = 1.0 - offset;
+        sourceUv.x = progressive ? 1.0 - pow(fillT, power) : 1.0 - edgeBand.x;
     }
 
     if (uv.y < top) {
         float fillT = clamp((top - uv.y) / max(0.0001, top), 0.0, 1.0);
-        float offset = progressive ? edgeBand.y * pow(1.0 - fillT, power) : edgeBand.y;
-        sourceUv.y = offset;
+        sourceUv.y = progressive ? pow(fillT, power) : edgeBand.y;
     } else if (uv.y > bottom) {
         float fillT = clamp((uv.y - bottom) / max(0.0001, 1.0 - bottom), 0.0, 1.0);
-        float offset = progressive ? edgeBand.y * pow(1.0 - fillT, power) : edgeBand.y;
-        sourceUv.y = 1.0 - offset;
+        sourceUv.y = progressive ? 1.0 - pow(fillT, power) : 1.0 - edgeBand.y;
     }
     return texture(u_texture, clamp(sourceUv, vec2(0.0), vec2(1.0)));
 }
 
+float mirroredCoord(float t) {
+    float wrapped = mod(abs(t), 2.0);
+    return wrapped <= 1.0 ? wrapped : 2.0 - wrapped;
+}
+
+vec4 mirrorFillSample(vec2 uv) {
+    vec4 rect = pc.u_shadows;
+    float left = min(rect.x, rect.z);
+    float right = max(rect.x, rect.z);
+    float top = min(rect.y, rect.w);
+    float bottom = max(rect.y, rect.w);
+    float width = max(0.0001, right - left);
+    float height = max(0.0001, bottom - top);
+    vec2 sourceUv = vec2((uv.x - left) / width,
+                         (uv.y - top) / height);
+    return texture(u_texture, vec2(mirroredCoord(sourceUv.x),
+                                   mirroredCoord(sourceUv.y)));
+}
+
 void main() {
-    bool edgeStretchFill = pc.u_highlights.a < -1.5;
-    bool blurredFill = pc.u_highlights.a < -0.5 && !edgeStretchFill;
-    bool backgroundFill = edgeStretchFill || blurredFill;
-    vec4 c = edgeStretchFill
-        ? edgeStretchFillSample(v_texCoord)
-        : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, v_texCoord));
+    bool mirrorFill = pc.u_highlights.a < -2.5;
+    bool edgeStretchFill = pc.u_highlights.a < -1.5 && !mirrorFill;
+    bool blurredFill = pc.u_highlights.a < -0.5 && !edgeStretchFill && !mirrorFill;
+    bool backgroundFill = mirrorFill || edgeStretchFill || blurredFill;
+    vec4 c = mirrorFill
+        ? mirrorFillSample(v_texCoord)
+        : (edgeStretchFill
+            ? edgeStretchFillSample(v_texCoord)
+            : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, v_texCoord)));
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;

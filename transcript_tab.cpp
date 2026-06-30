@@ -1564,6 +1564,22 @@ void TranscriptTab::configureTranscriptTableView()
         horizontal->setStretchLastSection(false);
         horizontal->setSectionsClickable(true);
         horizontal->setMinimumSectionSize(56);
+        horizontal->setSectionResizeMode(QHeaderView::Interactive);
+        if (table->columnCount() > kTranscriptColSourceStart) {
+            horizontal->resizeSection(kTranscriptColSourceStart, 108);
+        }
+        if (table->columnCount() > kTranscriptColSourceEnd) {
+            horizontal->resizeSection(kTranscriptColSourceEnd, 108);
+        }
+        if (table->columnCount() > kTranscriptColSpeaker) {
+            horizontal->resizeSection(kTranscriptColSpeaker, 96);
+        }
+        if (table->columnCount() > kTranscriptColText) {
+            horizontal->setSectionResizeMode(kTranscriptColText, QHeaderView::Stretch);
+        }
+        if (table->columnCount() > kTranscriptColEdits) {
+            horizontal->resizeSection(kTranscriptColEdits, 92);
+        }
     }
 }
 

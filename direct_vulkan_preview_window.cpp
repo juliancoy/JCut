@@ -2033,7 +2033,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
         m_lastPreparedTextKey = textPrepKey;
         m_lastPreparedTextReady =
-            !preparedTranscriptOverlays.isEmpty() ||
+            !preparedTranscriptAtlasClipIds.isEmpty() ||
             preparedSpeakerLabel ||
             preparedTemporalDebugLabel;
     }
@@ -2165,6 +2165,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         const QRectF compositeRect = viewTransform.targetRect();
         const QPointF previewScale = viewTransform.outputScale();
         bool backgroundFilled = false;
+        struct PendingMaskForegroundDraw {
+            VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+            VulkanPipeline::Push push;
+            VkRect2D scissor{};
+        };
+        QVector<PendingMaskForegroundDraw> pendingMaskForegroundDraws;
         VkClearValue canvasClear{};
         canvasClear.color.float32[0] = static_cast<float>(std::clamp<double>(base.redF(), 0.0, 1.0));
         canvasClear.color.float32[1] = static_cast<float>(std::clamp<double>(base.greenF(), 0.0, 1.0));
@@ -2241,15 +2247,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             qMax<qreal>(1.0, compositeRect.height()),
                         effectiveClipGeometry.bounds.width() / qMax<qreal>(1.0, compositeRect.width()),
                         effectiveClipGeometry.bounds.height() / qMax<qreal>(1.0, compositeRect.height()));
+                    const bool fullCanvasFill =
+                        fillEffect == BackgroundFillEffect::EdgeStretch ||
+                        fillEffect == BackgroundFillEffect::Mirror;
                     PreviewClipGeometry backgroundGeometry =
-                        fillEffect == BackgroundFillEffect::EdgeStretch
-                            ? PreviewViewTransform::clipGeometry(
-                                  compositeRect,
-                                  QPointF(1.0, 1.0),
-                                  QPointF(),
-                                  0.0,
-                                  QPointF(1.0, 1.0))
-                            : effectiveClipGeometry;
+                        fullCanvasFill ? PreviewViewTransform::clipGeometry(
+                                             compositeRect,
+                                             QPointF(1.0, 1.0),
+                                             QPointF(),
+                                             0.0,
+                                             QPointF(1.0, 1.0))
+                                       : effectiveClipGeometry;
                     if (fillEffect == BackgroundFillEffect::BlurCover) {
                         const qreal coverScale = std::max<qreal>(
                             1.0,
@@ -2385,7 +2393,26 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             stats->lastUnsupportedEffect = QStringLiteral("curve_lut_upload_failed");
                         }
                     }
-                    drawPush(basePush);
+                    const QVector<QRectF> effectRects =
+                        render_detail::vulkanPresetEffectRects(
+                            clip,
+                            compositeRect,
+                            frameSize.isValid() ? frameSize : clip.sourceFrameSize,
+                            state->currentFramePosition);
+                    if (!effectRects.isEmpty()) {
+                        for (const QRectF& effectRect : effectRects) {
+                            VulkanPipeline::Push effectPush = basePush;
+                            render_detail::vulkanMvpForOutputRectMaybeFlippedY(
+                                effectRect,
+                                swapSize,
+                                0.0,
+                                status && status->sampledFrameNeedsYFlip,
+                                effectPush.mvp);
+                            drawPush(effectPush);
+                        }
+                    } else {
+                        drawPush(basePush);
+                    }
                     if (maskReady && status->maskGradeEnabled) {
                         VulkanPipeline::Push maskPush = push;
                         maskPush.brightness = static_cast<float>(status->maskGradeBrightness);
@@ -2412,6 +2439,27 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             }
                         }
                         drawPush(maskPush);
+                    }
+                    if (maskReady && status->maskForegroundLayerEnabled) {
+                        VulkanPipeline::Push foregroundPush = push;
+                        foregroundPush.brightness = 0.0f;
+                        foregroundPush.contrast = 1.0f;
+                        foregroundPush.saturation = 1.0f;
+                        foregroundPush.opacity = 1.0f;
+                        foregroundPush.shadows[0] = 0.0f;
+                        foregroundPush.shadows[1] = 0.0f;
+                        foregroundPush.shadows[2] = 0.0f;
+                        foregroundPush.shadows[3] = render_detail::kVulkanEffectModeMaskOnly;
+                        foregroundPush.midtones[0] = 0.0f;
+                        foregroundPush.midtones[1] = 0.0f;
+                        foregroundPush.midtones[2] = 0.0f;
+                        foregroundPush.midtones[3] = 0.0f;
+                        foregroundPush.highlights[0] = 0.0f;
+                        foregroundPush.highlights[1] = 0.0f;
+                        foregroundPush.highlights[2] = 0.0f;
+                        foregroundPush.highlights[3] = 1.0f;
+                        pendingMaskForegroundDraws.push_back(
+                            PendingMaskForegroundDraw{handoffResult.descriptorSet, foregroundPush, scissor});
                     }
                 }
             } else {
@@ -2470,6 +2518,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             activeClipGeometry.insert(clip.id, effectiveClipGeometry);
             if (status && status->hasFrame && canDrawTexture && sampledFrameReady) {
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
+            }
+        }
+        for (const PendingMaskForegroundDraw& draw : std::as_const(pendingMaskForegroundDraws)) {
+            if (draw.descriptorSet != VK_NULL_HANDLE) {
+                m_pipeline->bindAndDraw(cb, viewport, draw.scissor, draw.descriptorSet, draw.push);
             }
         }
         qint64 fallbackTranscriptDrawCount = 0;

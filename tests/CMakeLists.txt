@@ -26,6 +26,7 @@ set(EDITOR_TEST_TARGETS
     test_shader_grading_logic
     test_media_color_passthrough
     test_grading_keyframes
+    test_effect_presets
     test_editor_runtime
     test_facedetections_time_mapping
     test_facedetections_tracking

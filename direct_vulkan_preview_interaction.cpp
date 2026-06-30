@@ -7,6 +7,7 @@
 #include "titles.h"
 
 #include <QApplication>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QPainterPath>
@@ -17,6 +18,27 @@
 #include <limits>
 
 namespace jcut::direct_vulkan_preview {
+
+namespace {
+
+void emitThrottledInteractionStatus(const std::function<void(const QString&)>& statusCallback,
+                                    const QString& message,
+                                    qint64 intervalMs = 1500)
+{
+    if (!statusCallback) {
+        return;
+    }
+    static QHash<QString, qint64> lastEmitByMessage;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 last = lastEmitByMessage.value(message, 0);
+    if (now - last < intervalMs) {
+        return;
+    }
+    lastEmitByMessage.insert(message, now);
+    statusCallback(message);
+}
+
+} // namespace
 
 bool applyVideoPreviewWheelZoom(PreviewInteractionState* state,
                                const QRectF& surfaceRect,
@@ -433,15 +455,15 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
     QElapsedTimer clickTimer;
     clickTimer.start();
     if (!state || !callback) {
-        if (statusCallback) {
-            statusCallback(QStringLiteral("Face box click ignored: FaceDetections click callback is not installed."));
-        }
+        emitThrottledInteractionStatus(
+            statusCallback,
+            QStringLiteral("Face box click ignored: FaceDetections click callback is not installed."));
         return false;
     }
     if (state->facedetectionsOverlays.isEmpty()) {
-        if (statusCallback) {
-            statusCallback(QStringLiteral("Face box click ignored: no FaceDetections boxes are available at this frame."));
-        }
+        emitThrottledInteractionStatus(
+            statusCallback,
+            QStringLiteral("Face box click ignored: no FaceDetections boxes are available at this frame."));
         return false;
     }
     const VulkanPreviewFacestreamOverlay* nearestOverlay = nullptr;
@@ -530,9 +552,9 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
                  boxSideNorm);
         return true;
     }
-    if (statusCallback) {
-        statusCallback(QStringLiteral("Face box click ignored: no FaceDetections box at the clicked location."));
-    }
+    emitThrottledInteractionStatus(
+        statusCallback,
+        QStringLiteral("Face box click ignored: no FaceDetections box at the clicked location."));
     return false;
 }
 

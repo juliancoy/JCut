@@ -87,6 +87,16 @@ private slots:
         QVERIFY2(edgeState.highlights[3] < -1.5f,
                  "Edge-stretch background fill must signal row-wise edge sampling.");
 
+        const render_detail::VulkanDrawEffectState mirrorState =
+            render_detail::vulkanBackgroundFillEffectState(
+                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f, sourceRect);
+        QCOMPARE(mirrorState.shadows[0], 0.25f);
+        QCOMPARE(mirrorState.shadows[1], 0.0f);
+        QCOMPARE(mirrorState.shadows[2], 0.75f);
+        QCOMPARE(mirrorState.shadows[3], 1.0f);
+        QVERIFY2(mirrorState.highlights[3] < -2.5f,
+                 "Mirror background fill must signal reflected source sampling.");
+
         const render_detail::VulkanDrawEffectState blurState =
             render_detail::vulkanBlurredBackgroundEffectState(0.8f);
 
@@ -238,6 +248,8 @@ private slots:
                  "Direct Vulkan presenter must use the output background fill edge curve.");
         QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::EdgeStretch")),
                  "Direct Vulkan presenter must default through the edge-stretch background path.");
+        QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::Mirror")),
+                 "Direct Vulkan presenter must draw mirror fill across the full canvas.");
         QVERIFY2(source.contains(QStringLiteral("backgroundPush.highlights[3] = backgroundEffects.highlights[3]")),
                  "Direct Vulkan presenter must pass the background fill mode signal into the draw.");
     }

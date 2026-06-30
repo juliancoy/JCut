@@ -10,6 +10,35 @@ namespace editor
 
 namespace {
 
+QString effectPresetToJson(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::NewsLogoTicker:
+        return QStringLiteral("news_logo_ticker");
+    case ClipEffectPreset::PersonOrbit:
+        return QStringLiteral("person_orbit");
+    case ClipEffectPreset::None:
+    default:
+        return QStringLiteral("none");
+    }
+}
+
+ClipEffectPreset effectPresetFromJson(const QString& value)
+{
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("news_logo_ticker") ||
+        normalized == QStringLiteral("ticker") ||
+        normalized == QStringLiteral("stock_ticker")) {
+        return ClipEffectPreset::NewsLogoTicker;
+    }
+    if (normalized == QStringLiteral("person_orbit") ||
+        normalized == QStringLiteral("orbit") ||
+        normalized == QStringLiteral("encircle")) {
+        return ClipEffectPreset::PersonOrbit;
+    }
+    return ClipEffectPreset::None;
+}
+
 int64_t timelineFramesFromSourceFrames(int64_t sourceFrames, qreal sourceFps)
 {
     const qreal resolvedSourceFps =
@@ -316,6 +345,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskDropShadowOffsetX")] = clip.maskDropShadowOffsetX;
         obj[QStringLiteral("maskDropShadowOffsetY")] = clip.maskDropShadowOffsetY;
         obj[QStringLiteral("maskDropShadowOpacity")] = clip.maskDropShadowOpacity;
+        obj[QStringLiteral("maskForegroundLayerEnabled")] = clip.maskForegroundLayerEnabled;
+        obj[QStringLiteral("effectPreset")] = effectPresetToJson(clip.effectPreset);
+        obj[QStringLiteral("effectRows")] = clip.effectRows;
+        obj[QStringLiteral("effectSpeed")] = clip.effectSpeed;
+        obj[QStringLiteral("effectScale")] = clip.effectScale;
+        obj[QStringLiteral("effectAlternateDirection")] = clip.effectAlternateDirection;
         QJsonArray correctionPolygons;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
             if (polygon.pointsNormalized.size() < 3) {
@@ -734,6 +769,17 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskDropShadowOffsetX = qBound<qreal>(-500.0, obj.value(QStringLiteral("maskDropShadowOffsetX")).toDouble(0.0), 500.0);
         clip.maskDropShadowOffsetY = qBound<qreal>(-500.0, obj.value(QStringLiteral("maskDropShadowOffsetY")).toDouble(4.0), 500.0);
         clip.maskDropShadowOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDropShadowOpacity")).toDouble(0.45), 1.0);
+        clip.maskForegroundLayerEnabled =
+            obj.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(false);
+        clip.effectPreset =
+            effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
+        clip.effectRows = qBound(1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
+        clip.effectSpeed =
+            qBound<qreal>(-8.0, obj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
+        clip.effectScale =
+            qBound<qreal>(0.1, obj.value(QStringLiteral("effectScale")).toDouble(1.0), 8.0);
+        clip.effectAlternateDirection =
+            obj.value(QStringLiteral("effectAlternateDirection")).toBool(true);
         const QJsonArray correctionPolygons = obj.value(QStringLiteral("correctionPolygons")).toArray();
         for (const QJsonValue& polygonValue : correctionPolygons) {
             if (!polygonValue.isObject()) {

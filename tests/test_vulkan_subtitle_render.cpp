@@ -196,6 +196,7 @@ private slots:
     void testOffscreenVulkanSubtitleTextPixels();
     void testOffscreenVulkanTitleTextPixels();
     void testOffscreenVulkanImageTextureOrientation();
+    void testOffscreenVulkanTickerPresetDrawsRepeatedImagePixels();
 };
 
 void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels_data()
@@ -462,6 +463,101 @@ void TestVulkanSubtitleRender::testOffscreenVulkanImageTextureOrientation()
     QVERIFY2(bottom.blue() > bottom.red() + 80,
              qPrintable(QStringLiteral("Expected blue bottom half, got rgb=(%1,%2,%3)")
                             .arg(bottom.red()).arg(bottom.green()).arg(bottom.blue())));
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanTickerPresetDrawsRepeatedImagePixels()
+{
+    const QSize outputSize(256, 256);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("ticker_logo.png"));
+    QImage logo(32, 16, QImage::Format_RGBA8888);
+    logo.fill(QColor(235, 24, 24, 255));
+    QVERIFY2(logo.save(imagePath), "Failed to write ticker logo fixture");
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    TimelineClip clip = makeImageClip(imagePath);
+    clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
+    clip.effectRows = 8;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 1.0;
+    clip.effectAlternateDirection = true;
+
+    RenderRequest request;
+    request.outputPath = QStringLiteral("test://vulkan-ticker-preset");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.correctionsEnabled = true;
+    request.clips = QVector<TimelineClip>{clip};
+    request.exportStartFrame = 0;
+    request.exportEndFrame = 0;
+
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    render_detail::OffscreenRenderFrame output;
+    QVERIFY2(renderer.renderFrameToOutput(request,
+                                          0,
+                                          decoders,
+                                          nullptr,
+                                          &asyncCache,
+                                          orderedClips,
+                                          &output,
+                                          true,
+                                          nullptr,
+                                          &decodeMs,
+                                          &textureMs,
+                                          &compositeMs,
+                                          &readbackMs),
+             "Offscreen Vulkan renderer failed to render ticker preset frame");
+
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+    QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
+             "Offscreen Vulkan renderer failed to copy ticker preset BGRA frame");
+
+    QImage rawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                    outputSize.width(),
+                    outputSize.height(),
+                    outputSize.width() * 4,
+                    QImage::Format_ARGB32);
+
+    int rowsWithLogoPixels = 0;
+    const int rowHeight = outputSize.height() / clip.effectRows;
+    for (int row = 0; row < clip.effectRows; ++row) {
+        int redPixels = 0;
+        const int y0 = row * rowHeight;
+        const int y1 = qMin(outputSize.height(), y0 + rowHeight);
+        for (int y = y0; y < y1; ++y) {
+            for (int x = 0; x < outputSize.width(); ++x) {
+                const QColor c = rawImage.pixelColor(x, y);
+                if (c.red() > 180 && c.green() < 80 && c.blue() < 80) {
+                    ++redPixels;
+                }
+            }
+        }
+        if (redPixels > 80) {
+            ++rowsWithLogoPixels;
+        }
+    }
+
+    QVERIFY2(rowsWithLogoPixels >= 6,
+             qPrintable(QStringLiteral("Expected ticker logo pixels across rows, got %1 rows")
+                            .arg(rowsWithLogoPixels)));
 }
 
 QTEST_MAIN(TestVulkanSubtitleRender)

@@ -48,6 +48,62 @@ QByteArray vulkanIdentityCurveLutRgbaBytes()
     return vulkanCurveLutRgbaBytes(grade);
 }
 
+QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
+                                        const QRectF& outputRect,
+                                        const QSize& textureSize,
+                                        qreal timelineFrame)
+{
+    QVector<QRectF> rects;
+    if (clip.effectPreset == ClipEffectPreset::None || outputRect.isEmpty()) {
+        return rects;
+    }
+
+    const int count = qBound(1, clip.effectRows, 96);
+    const qreal aspect = textureSize.height() > 0
+        ? static_cast<qreal>(std::max(1, textureSize.width())) /
+              static_cast<qreal>(textureSize.height())
+        : 1.0;
+    const qreal scale = qBound<qreal>(0.1, clip.effectScale, 8.0);
+    const qreal speed = qBound<qreal>(-8.0, clip.effectSpeed, 8.0);
+
+    if (clip.effectPreset == ClipEffectPreset::NewsLogoTicker) {
+        const qreal rowH = outputRect.height() / static_cast<qreal>(count);
+        const qreal tileH = std::max<qreal>(2.0, rowH * 0.78 * scale);
+        const qreal tileW = std::max<qreal>(2.0, tileH * aspect);
+        const qreal spacing = tileW * 1.35;
+        for (int row = 0; row < count; ++row) {
+            const qreal direction = (clip.effectAlternateDirection && (row % 2)) ? -1.0 : 1.0;
+            const qreal phase = std::fmod((timelineFrame * speed * direction * rowH * 0.08) +
+                                              (row * spacing * 0.37),
+                                          spacing);
+            const qreal y = outputRect.top() + (row + 0.5) * rowH - tileH * 0.5;
+            for (qreal x = outputRect.left() - spacing + phase;
+                 x < outputRect.right() + spacing;
+                 x += spacing) {
+                rects.push_back(QRectF(x, y, tileW, tileH));
+            }
+        }
+    } else if (clip.effectPreset == ClipEffectPreset::PersonOrbit) {
+        constexpr qreal kTwoPi = 6.28318530717958647692;
+        const qreal tileSide =
+            std::max<qreal>(4.0, std::min(outputRect.width(), outputRect.height()) * 0.072 * scale);
+        const qreal tileW = tileSide * aspect;
+        const qreal tileH = tileSide;
+        const QPointF center = outputRect.center();
+        const qreal rx = outputRect.width() * 0.28;
+        const qreal ry = outputRect.height() * 0.24;
+        const qreal phase = timelineFrame * speed * 0.025;
+        for (int i = 0; i < count; ++i) {
+            const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
+            const QPointF p(center.x() + std::cos(angle) * rx,
+                            center.y() + std::sin(angle) * ry);
+            rects.push_back(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+        }
+    }
+
+    return rects;
+}
+
 void vulkanMvpForOutputRect(const QRectF& rect,
                             const QSize& outputSize,
                             qreal rotationDegrees,
@@ -187,7 +243,8 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
     state.brightness = std::clamp(baseEffects.brightness + brightness, -1.0f, 1.0f);
     state.contrast = std::clamp(baseEffects.contrast, 0.0f, 4.0f);
     state.saturation = std::clamp(baseEffects.saturation * saturation, 0.0f, 3.0f);
-    if (effect == BackgroundFillEffect::EdgeStretch) {
+    if (effect == BackgroundFillEffect::EdgeStretch ||
+        effect == BackgroundFillEffect::Mirror) {
         state.shadows[0] = static_cast<float>(sourceRectNorm.left());
         state.shadows[1] = static_cast<float>(sourceRectNorm.top());
         state.shadows[2] = static_cast<float>(sourceRectNorm.right());
@@ -195,7 +252,9 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
         state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
         state.midtones[1] = progressiveEdge ? 1.0f : 0.0f;
         state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
-        state.highlights[3] = kVulkanEffectModeBackgroundEdgeStretch;
+        state.highlights[3] = effect == BackgroundFillEffect::Mirror
+            ? kVulkanEffectModeBackgroundMirror
+            : kVulkanEffectModeBackgroundEdgeStretch;
         return state;
     }
     state.highlights[3] = kVulkanEffectModeBackgroundBlur;

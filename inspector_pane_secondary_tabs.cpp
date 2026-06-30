@@ -177,6 +177,8 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo = new QComboBox(page);
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Edge Stretch"),
                                          backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
+    m_backgroundFillEffectCombo->addItem(QStringLiteral("Mirror"),
+                                         backgroundFillEffectToString(BackgroundFillEffect::Mirror));
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Blur Cover"),
                                          backgroundFillEffectToString(BackgroundFillEffect::BlurCover));
     m_backgroundFillEffectCombo->setCurrentIndex(0);

@@ -561,14 +561,14 @@ void VulkanPreviewSurface::setHideOutsideOutputWindow(bool hide)
 void VulkanPreviewSurface::setBypassGrading(bool bypass)
 {
     m_bypassGrading = bypass;
-    refreshVulkanFrameStatuses();
+    queueFrameStatusRefresh(false);
     requestNativeUpdate();
 }
 
 void VulkanPreviewSurface::setCorrectionsEnabled(bool enabled)
 {
     m_correctionsEnabled = enabled;
-    refreshVulkanFrameStatuses();
+    queueFrameStatusRefresh(false);
     requestNativeUpdate();
 }
 
@@ -1203,7 +1203,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                       ? QStringLiteral("active_clip_count=%1").arg(activeDecodableClipCount)
                                       : QStringLiteral("no_active_decodable_clip"));
     if (!hasActiveDecodableClip) {
-        refreshVulkanFrameStatuses();
+        queueFrameStatusRefresh(false);
         return;
     }
 
@@ -1215,7 +1215,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                       1,
                                       QStringLiteral("source_unavailable"),
                                       QStringLiteral("cache_unavailable"));
-        refreshVulkanFrameStatuses();
+        queueFrameStatusRefresh(false);
         return;
     }
 
@@ -1292,7 +1292,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                                       .arg(backlog)
                                                       .arg(requestWindow ? 1 : 0));
         }
-        refreshVulkanFrameStatuses();
+        queueFrameStatusRefresh(false);
         return;
     }
 
@@ -1412,7 +1412,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                           .arg(visibleRequestReadyCount)
                                           .arg(visibleRequestUnavailableCount));
     }
-    refreshVulkanFrameStatuses();
+    queueFrameStatusRefresh(false);
 }
 
 bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, int64_t frame) const
@@ -1465,7 +1465,15 @@ void VulkanPreviewSurface::queueFrameStatusRefresh(bool requestVisibleFrames)
             m_frameStatusRefreshQueued = false;
             const bool requestVisibleFrames = m_frameStatusRefreshNeedsVisibleRequest;
             m_frameStatusRefreshNeedsVisibleRequest = false;
+            if (m_frameStatusRefreshInProgress) {
+                m_frameStatusRefreshNeedsVisibleRequest =
+                    m_frameStatusRefreshNeedsVisibleRequest || requestVisibleFrames;
+                queueFrameStatusRefresh(requestVisibleFrames);
+                return;
+            }
+            m_frameStatusRefreshInProgress = true;
             refreshVulkanFrameStatuses();
+            m_frameStatusRefreshInProgress = false;
             if (requestVisibleFrames) {
                 if (m_cache) {
                     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1643,7 +1651,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             status.frameSize = selectedFrame.size();
             const bool gpuMaskEnabled =
                 clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-                (clip.maskShowOnly || clip.maskGradeEnabled);
+                (clip.maskShowOnly || clip.maskGradeEnabled || clip.maskForegroundLayerEnabled);
             const bool maskFrameMatchesPresentedFrame =
                 staticImageClip ||
                 status.exact ||
@@ -1653,6 +1661,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 if (!mask.isNull()) {
                     status.maskImage = mask;
                     status.maskTextureEnabled = true;
+                    status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
                     status.maskShowOnly = clip.maskShowOnly;
                     status.maskGradeEnabled = clip.maskGradeEnabled;
                     status.maskOpacity = clip.maskOpacity;

@@ -1485,6 +1485,13 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->maskFeatherSpin(),
             m_inspectorPane->maskFeatherGammaSpin(),
             m_inspectorPane->maskFeatherEnabledCheck(),
+            m_inspectorPane->maskForegroundLayerCheck(),
+            m_inspectorPane->effectPresetCombo(),
+            m_inspectorPane->effectRowsSpin(),
+            m_inspectorPane->effectSpeedSpin(),
+            m_inspectorPane->effectScaleSpin(),
+            m_inspectorPane->effectAlternateDirectionCheck(),
+            m_inspectorPane->titleFlyInPresetButton(),
             nullptr},
         EffectsTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },

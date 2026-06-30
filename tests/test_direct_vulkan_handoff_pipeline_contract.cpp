@@ -661,6 +661,12 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(backend.contains(QStringLiteral("textDrawStageMetric")),
            "draw-stage text telemetry must distinguish prepared overlays from "
            "visible overlays");
+  QVERIFY2(backend.contains(QStringLiteral(
+               "m_lastPreparedTextReady =\n"
+               "            !preparedTranscriptAtlasClipIds.isEmpty()")),
+           "text prep cache hits must only be enabled after at least one "
+           "transcript atlas was actually prepared, so a failed first prep "
+           "does not permanently hide a paused audio-only transcript overlay");
   QVERIFY2(
       backend.indexOf(QStringLiteral("preparedTranscriptOverlays.insert(")) <
           backend.indexOf(QStringLiteral("drawnTranscriptOverlayClipIds")) &&

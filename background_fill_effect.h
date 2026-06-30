@@ -4,6 +4,7 @@
 
 enum class BackgroundFillEffect {
     EdgeStretch,
+    Mirror,
     BlurCover,
 };
 
@@ -14,6 +15,8 @@ inline QString backgroundFillEffectToString(BackgroundFillEffect effect)
     switch (effect) {
     case BackgroundFillEffect::EdgeStretch:
         return QStringLiteral("edge_stretch");
+    case BackgroundFillEffect::Mirror:
+        return QStringLiteral("mirror");
     case BackgroundFillEffect::BlurCover:
         return QStringLiteral("blur_cover");
     }
@@ -27,6 +30,11 @@ inline BackgroundFillEffect backgroundFillEffectFromString(const QString& value)
         normalized == QStringLiteral("blur_cover") ||
         normalized == QStringLiteral("blurred_cover")) {
         return BackgroundFillEffect::BlurCover;
+    }
+    if (normalized == QStringLiteral("mirror") ||
+        normalized == QStringLiteral("mirror_cover") ||
+        normalized == QStringLiteral("mirrored_cover")) {
+        return BackgroundFillEffect::Mirror;
     }
     return BackgroundFillEffect::EdgeStretch;
 }

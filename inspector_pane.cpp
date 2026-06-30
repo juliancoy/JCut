@@ -614,11 +614,58 @@ QWidget *InspectorPane::buildEffectsTab()
     
     layout->addLayout(featherGroup);
     
+    auto maskLayerSection = createDisclosureSection(page, QStringLiteral("Person Layer"), true);
+    m_maskForegroundLayerCheck = new QCheckBox(QStringLiteral("SAM mask is foreground layer"), page);
+    m_maskForegroundLayerCheck->setToolTip(QStringLiteral("Draw masked person pixels as a later Vulkan pass."));
+    maskLayerSection.body->addWidget(m_maskForegroundLayerCheck);
+    layout->addWidget(maskLayerSection.container);
+
+    auto presetSection = createDisclosureSection(page, QStringLiteral("Image Presets"), true);
+    auto *presetForm = new QFormLayout();
+    presetForm->setContentsMargins(0, 0, 0, 0);
+    presetForm->setSpacing(6);
+    m_effectPresetCombo = new QComboBox(page);
+    m_effectPresetCombo->addItem(QStringLiteral("Off"), static_cast<int>(ClipEffectPreset::None));
+    m_effectPresetCombo->addItem(QStringLiteral("Logo ticker rows"), static_cast<int>(ClipEffectPreset::NewsLogoTicker));
+    m_effectPresetCombo->addItem(QStringLiteral("Encircle person"), static_cast<int>(ClipEffectPreset::PersonOrbit));
+    presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
+
+    m_effectRowsSpin = new QSpinBox(page);
+    m_effectRowsSpin->setRange(1, 96);
+    m_effectRowsSpin->setValue(32);
+    m_effectRowsSpin->setToolTip(QStringLiteral("Ticker rows or orbit copies."));
+    presetForm->addRow(QStringLiteral("Copies"), m_effectRowsSpin);
+
+    m_effectSpeedSpin = new QDoubleSpinBox(page);
+    m_effectSpeedSpin->setRange(-8.0, 8.0);
+    m_effectSpeedSpin->setDecimals(2);
+    m_effectSpeedSpin->setSingleStep(0.25);
+    m_effectSpeedSpin->setValue(1.0);
+    presetForm->addRow(QStringLiteral("Speed"), m_effectSpeedSpin);
+
+    m_effectScaleSpin = new QDoubleSpinBox(page);
+    m_effectScaleSpin->setRange(0.1, 8.0);
+    m_effectScaleSpin->setDecimals(2);
+    m_effectScaleSpin->setSingleStep(0.1);
+    m_effectScaleSpin->setValue(1.0);
+    presetForm->addRow(QStringLiteral("Scale"), m_effectScaleSpin);
+
+    m_effectAlternateDirectionCheck = new QCheckBox(QStringLiteral("Alternate row direction"), page);
+    m_effectAlternateDirectionCheck->setChecked(true);
+    presetForm->addRow(QString(), m_effectAlternateDirectionCheck);
+    presetSection.body->addLayout(presetForm);
+    layout->addWidget(presetSection.container);
+
+    auto titleSection = createDisclosureSection(page, QStringLiteral("Title Presets"), true);
+    m_titleFlyInPresetButton = new QPushButton(QStringLiteral("News lower-third fly in"), page);
+    m_titleFlyInPresetButton->setToolTip(QStringLiteral("Creates fly-in, hold, and fly-out title keyframes."));
+    titleSection.body->addWidget(m_titleFlyInPresetButton);
+    layout->addWidget(titleSection.container);
+
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(
-        "Mask feathering smooths the edges of transparent areas. "
-        "Use Gamma to control edge sharpness: 1.0=soft, 2.0=default, 3.0+=sharp. "
-        "Only applies to clips with alpha channels (PNG, ProRes, etc.)."), page);
+        "Image presets render as repeated Vulkan draws from the clip texture. "
+        "For SAM cutouts, enable the foreground layer on the masked clip and place effect images below it in the timeline."), page);
     infoLabel->setWordWrap(true);
     infoLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
     layout->addWidget(infoLabel);
@@ -1586,11 +1633,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTable->verticalHeader()->setMinimumSectionSize(30);
     m_transcriptTable->horizontalHeader()->setHighlightSections(false);
     m_transcriptTable->horizontalHeader()->setStretchLastSection(false);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    m_transcriptTable->horizontalHeader()->resizeSection(0, 108);
+    m_transcriptTable->horizontalHeader()->resizeSection(1, 108);
+    m_transcriptTable->horizontalHeader()->resizeSection(2, 96);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->resizeSection(4, 92);
 
     splitter->addWidget(settingsScroll);
     splitter->addWidget(m_transcriptTable);

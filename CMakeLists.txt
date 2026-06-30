@@ -467,6 +467,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder_image_io.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/debug_controls.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_effect_presets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_effects.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_keyframes.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_keyframes_cache.cpp

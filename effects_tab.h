@@ -4,7 +4,9 @@
 #include <QLabel>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QPushButton>
+#include <QSpinBox>
 #include <functional>
 
 #include "editor_shared.h"
@@ -20,6 +22,13 @@ public:
         QDoubleSpinBox* maskFeatherSpin = nullptr;
         QDoubleSpinBox* maskFeatherGammaSpin = nullptr;
         QCheckBox* maskFeatherEnabledCheck = nullptr;
+        QCheckBox* maskForegroundLayerCheck = nullptr;
+        QComboBox* effectPresetCombo = nullptr;
+        QSpinBox* effectRowsSpin = nullptr;
+        QDoubleSpinBox* effectSpeedSpin = nullptr;
+        QDoubleSpinBox* effectScaleSpin = nullptr;
+        QCheckBox* effectAlternateDirectionCheck = nullptr;
+        QPushButton* titleFlyInPresetButton = nullptr;
         QPushButton* applyButton = nullptr;
     };
 
@@ -42,6 +51,8 @@ public:
     void wire();
     void refresh();
     void applyMaskFeather(bool pushHistory = false);
+    void applyEffectPreset(bool pushHistory = false);
+    void applyNewsTitlePreset();
 
 signals:
     void effectsApplied();
@@ -52,6 +63,9 @@ private slots:
     void onMaskFeatherEnabledChanged(bool enabled);
     void onApplyClicked();
     void onEditingFinished();
+    void onEffectPresetChanged(int index);
+    void onEffectControlChanged();
+    void onTitleFlyInPresetClicked();
 
 private:
     Widgets m_widgets;

@@ -2043,6 +2043,7 @@ public:
     bool maskTextureEnabled = false;
     bool maskShowOnly = false;
     bool maskGradeEnabled = false;
+    bool maskForegroundLayerEnabled = false;
     bool maskInvert = false;
     int maskErodeRadius = 0;
     int maskDilateRadius = 0;
@@ -2065,6 +2066,7 @@ public:
     float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
+    QVector<QRectF> presetRects;
   };
 
   struct TranscriptTextInput {
@@ -2862,15 +2864,16 @@ public:
         vkCmdBindDescriptorSets(
             m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 0, nullptr);
-        auto drawLayer = [&](float brightness,
-                             float contrast,
-                             float saturation,
-                             float opacity,
-                             const float shadows[4],
-                             const float midtones[4],
-                             const float highlights[4],
-                             float mode) {
-          std::memcpy(push.mvp, layer.mvp, sizeof(push.mvp));
+        auto drawLayerWithMvp = [&](const float drawMvp[16],
+                                    float brightness,
+                                    float contrast,
+                                    float saturation,
+                                    float opacity,
+                                    const float shadows[4],
+                                    const float midtones[4],
+                                    const float highlights[4],
+                                    float mode) {
+          std::memcpy(push.mvp, drawMvp, sizeof(push.mvp));
           push.brightness = brightness;
           push.contrast = contrast;
           push.saturation = saturation;
@@ -2893,6 +2896,24 @@ public:
                              0, sizeof(Push), &push);
           vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
         };
+        auto drawLayer = [&](float brightness,
+                             float contrast,
+                             float saturation,
+                             float opacity,
+                             const float shadows[4],
+                             const float midtones[4],
+                             const float highlights[4],
+                             float mode) {
+          drawLayerWithMvp(layer.mvp,
+                           brightness,
+                           contrast,
+                           saturation,
+                           opacity,
+                           shadows,
+                           midtones,
+                           highlights,
+                           mode);
+        };
         if (layer.maskTextureEnabled && layer.maskShowOnly) {
           drawLayer(0.0f,
                     1.0f,
@@ -2904,14 +2925,30 @@ public:
                     kVulkanEffectModeMaskOnly);
           continue;
         }
-        drawLayer(layer.brightness,
-                  layer.contrast,
-                  layer.saturation,
-                  layer.opacity,
-                  layer.shadows,
-                  layer.midtones,
-                  layer.highlights,
-                  layer.shadows[3]);
+        if (!layer.presetRects.isEmpty()) {
+          for (const QRectF& rect : layer.presetRects) {
+            float presetMvp[16];
+            vulkanMvpForOutputRect(rect, m_outputSize, 0.0, presetMvp);
+            drawLayerWithMvp(presetMvp,
+                             layer.brightness,
+                             layer.contrast,
+                             layer.saturation,
+                             layer.opacity,
+                             layer.shadows,
+                             layer.midtones,
+                             layer.highlights,
+                             layer.shadows[3]);
+          }
+        } else {
+          drawLayer(layer.brightness,
+                    layer.contrast,
+                    layer.saturation,
+                    layer.opacity,
+                    layer.shadows,
+                    layer.midtones,
+                    layer.highlights,
+                    layer.shadows[3]);
+        }
         if (layer.maskTextureEnabled && layer.maskGradeEnabled) {
           float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
           float maskMidtones[4] = {0.0f, 0.0f, 0.0f,
@@ -3972,6 +4009,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   const bool gpuOutputOnly = (readbackMs == nullptr);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
   layers.reserve((orderedClips.size() * 2) + 1);
+  QVector<OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayers;
   bool hasTranscriptCandidate = false;
   const QVector<TimelineClip> transcriptOverlayClips =
       sortedTranscriptOverlayClips(request.clips, request.tracks);
@@ -4088,7 +4126,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     }
     const bool gpuMaskEnabled =
         clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-        (clip.maskShowOnly || clip.maskGradeEnabled);
+        (clip.maskShowOnly || clip.maskGradeEnabled || clip.maskForegroundLayerEnabled);
     if (gpuMaskEnabled) {
       const QImage mask = rawClipMaskImage(clip, localFrame);
       const QImage maskRgba = rgbaMaskImageForUpload(mask);
@@ -4098,6 +4136,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskTextureEnabled = true;
         layer.maskShowOnly = clip.maskShowOnly;
         layer.maskGradeEnabled = clip.maskGradeEnabled;
+        layer.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
         layer.maskInvert = clip.maskInvert;
         layer.maskErodeRadius = qRound(qMax<qreal>(0.0, clip.maskErode));
         layer.maskDilateRadius = qRound(qMax<qreal>(0.0, clip.maskDilate));
@@ -4152,6 +4191,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QSize sourceSize = clip.sourceFrameSize.isValid()
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
+    layer.presetRects = vulkanPresetEffectRects(
+        clip,
+        QRectF(QPointF(0.0, 0.0), QSizeF(request.outputSize)),
+        sourceSize,
+        timelineFrame);
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
     QPointF exportVideoTranslation(transform.translationX, transform.translationY);
     PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
@@ -4243,14 +4287,16 @@ QImage OffscreenVulkanRenderer::renderFrame(
       backgroundLayer.sourceSize = sourceSize;
       backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
 
+      const bool fullCanvasFill =
+          fillEffect == BackgroundFillEffect::EdgeStretch ||
+          fillEffect == BackgroundFillEffect::Mirror;
       PreviewClipGeometry backgroundGeometry =
-          fillEffect == BackgroundFillEffect::EdgeStretch
-              ? PreviewViewTransform::clipGeometry(outputRect,
-                                                   QPointF(1.0, 1.0),
-                                                   QPointF(),
-                                                   0.0,
-                                                   QPointF(1.0, 1.0))
-              : layerGeometry;
+          fullCanvasFill ? PreviewViewTransform::clipGeometry(outputRect,
+                                                              QPointF(1.0, 1.0),
+                                                              QPointF(),
+                                                              0.0,
+                                                              QPointF(1.0, 1.0))
+                         : layerGeometry;
       if (fillEffect == BackgroundFillEffect::BlurCover) {
         const qreal coverScale = std::max<qreal>(
             1.0,
@@ -4269,8 +4315,20 @@ QImage OffscreenVulkanRenderer::renderFrame(
       }
     }
     layers.push_back(layer);
+    if (layer.maskTextureEnabled && layer.maskForegroundLayerEnabled) {
+      OffscreenVulkanRendererPrivate::LayerInput foregroundLayer = layer;
+      foregroundLayer.presetRects.clear();
+      foregroundLayer.maskShowOnly = true;
+      foregroundLayer.maskGradeEnabled = false;
+      foregroundLayer.opacity = 1.0f;
+      foregroundLayer.brightness = 0.0f;
+      foregroundLayer.contrast = 1.0f;
+      foregroundLayer.saturation = 1.0f;
+      foregroundMaskLayers.push_back(foregroundLayer);
+    }
     ++visualLayersResolved;
   }
+  layers += foregroundMaskLayers;
   if (hasTranscriptCandidate) {
     textInputs.transcripts = d->buildTranscriptTextInputs(
         request.outputSize, request,

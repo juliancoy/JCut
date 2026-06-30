@@ -16,6 +16,7 @@
 #include <QJsonParseError>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSet>
@@ -41,6 +42,9 @@ const QLatin1String kTranscriptWordRenderOrderKey("render_order");
 const QLatin1String kTranscriptWordOriginalSegmentKey("original_segment_index");
 const QLatin1String kTranscriptWordOriginalWordKey("original_word_index");
 constexpr int kTranscriptTableRowHeight = 30;
+constexpr int kTranscriptSourceColumnWidth = 108;
+constexpr int kTranscriptSpeakerColumnWidth = 96;
+constexpr int kTranscriptEditsColumnWidth = 92;
 const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
 const QLatin1String kTranscriptSpeakerNameKey("name");
 const QLatin1String kAllSpeakersFilterValue("__all__");
@@ -124,6 +128,34 @@ bool shouldSkipTranscriptDeleteConfirmation()
     }
     const QString appName = QCoreApplication::applicationName().trimmed().toLower();
     return appName.startsWith(QStringLiteral("test_")) || appName.contains(QStringLiteral("qtest"));
+}
+
+void configureTranscriptHeaderForLargeModel(QTableWidget* table)
+{
+    if (!table) {
+        return;
+    }
+    QHeaderView* header = table->horizontalHeader();
+    if (!header) {
+        return;
+    }
+    header->setStretchLastSection(false);
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    if (table->columnCount() > kTranscriptColSourceStart) {
+        header->resizeSection(kTranscriptColSourceStart, kTranscriptSourceColumnWidth);
+    }
+    if (table->columnCount() > kTranscriptColSourceEnd) {
+        header->resizeSection(kTranscriptColSourceEnd, kTranscriptSourceColumnWidth);
+    }
+    if (table->columnCount() > kTranscriptColSpeaker) {
+        header->resizeSection(kTranscriptColSpeaker, kTranscriptSpeakerColumnWidth);
+    }
+    if (table->columnCount() > kTranscriptColText) {
+        header->setSectionResizeMode(kTranscriptColText, QHeaderView::Stretch);
+    }
+    if (table->columnCount() > kTranscriptColEdits) {
+        header->resizeSection(kTranscriptColEdits, kTranscriptEditsColumnWidth);
+    }
 }
 
 } // namespace
@@ -658,17 +690,23 @@ void TranscriptTab::insertGapRows(QVector<TranscriptRow>* rows) const
 void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
 {
     if (!m_widgets.transcriptTable) return;
+    QTableWidget* table = m_widgets.transcriptTable;
     const QString selectedClipId =
         (m_deps.getSelectedClip && m_deps.getSelectedClip()) ? m_deps.getSelectedClip()->id : QString();
-    QSignalBlocker tableBlocker(m_widgets.transcriptTable);
+    const bool sortingWasEnabled = table->isSortingEnabled();
+    const bool updatesWereEnabled = table->updatesEnabled();
+    QSignalBlocker tableBlocker(table);
     std::unique_ptr<QSignalBlocker> selectionBlocker;
-    if (m_widgets.transcriptTable->selectionModel()) {
-        selectionBlocker = std::make_unique<QSignalBlocker>(m_widgets.transcriptTable->selectionModel());
+    if (table->selectionModel()) {
+        selectionBlocker = std::make_unique<QSignalBlocker>(table->selectionModel());
     }
-    m_widgets.transcriptTable->setUpdatesEnabled(false);
+    table->setUpdatesEnabled(false);
+    table->setSortingEnabled(false);
+    table->clearContents();
+    configureTranscriptHeaderForLargeModel(table);
 
-    m_widgets.transcriptTable->setRowCount(rows.size());
-    if (QHeaderView* vertical = m_widgets.transcriptTable->verticalHeader()) {
+    table->setRowCount(rows.size());
+    if (QHeaderView* vertical = table->verticalHeader()) {
         vertical->setSectionResizeMode(QHeaderView::Fixed);
         vertical->setDefaultSectionSize(kTranscriptTableRowHeight);
         vertical->setMinimumSectionSize(kTranscriptTableRowHeight);
@@ -747,27 +785,41 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
             }
         }
 
-        m_widgets.transcriptTable->setItem(row, kTranscriptColSourceStart, sourceStartItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColSourceEnd, sourceEndItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColSpeaker, speakerItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColText, textItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColEdits, editsItem);
-        m_widgets.transcriptTable->setRowHeight(row, kTranscriptTableRowHeight);
+        table->setItem(row, kTranscriptColSourceStart, sourceStartItem);
+        table->setItem(row, kTranscriptColSourceEnd, sourceEndItem);
+        table->setItem(row, kTranscriptColSpeaker, speakerItem);
+        table->setItem(row, kTranscriptColText, textItem);
+        table->setItem(row, kTranscriptColEdits, editsItem);
+        table->setRowHeight(row, kTranscriptTableRowHeight);
     }
 
     if (playheadRestoreRow >= 0) {
         restoreRow = playheadRestoreRow;
     }
     const int rowToReveal = restoreRow;
-    if (restoreRow >= 0 && m_widgets.transcriptTable->selectionModel()) {
+    if (restoreRow >= 0 && table->selectionModel()) {
         m_suppressSelectionSideEffects = true;
-        m_widgets.transcriptTable->setCurrentCell(restoreRow, 0);
-        m_widgets.transcriptTable->selectRow(restoreRow);
+        table->setCurrentCell(restoreRow, 0);
+        table->selectRow(restoreRow);
         m_suppressSelectionSideEffects = false;
     }
 
-    m_widgets.transcriptTable->setUpdatesEnabled(true);
-    revealTranscriptTableRow(m_widgets.transcriptTable, rowToReveal);
+    table->setSortingEnabled(sortingWasEnabled);
+    table->setUpdatesEnabled(updatesWereEnabled);
+    if (table->viewport()) {
+        table->viewport()->update();
+    }
+    if (rowToReveal >= 0) {
+        QPointer<QTableWidget> tablePtr(table);
+        QMetaObject::invokeMethod(
+            table,
+            [tablePtr, rowToReveal]() {
+                if (tablePtr) {
+                    revealTranscriptTableRow(tablePtr, rowToReveal);
+                }
+            },
+            Qt::QueuedConnection);
+    }
     rebuildFollowRanges(rows);
 }
 

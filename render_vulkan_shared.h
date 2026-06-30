@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QMatrix4x4>
 #include <QPointF>
+#include <QVector>
 #include <QRectF>
 #include <QSize>
 #include <QTransform>
@@ -18,10 +19,15 @@ inline constexpr float kVulkanEffectModeMaskGrade = 2.0f;
 inline constexpr float kVulkanEffectModeMaskOnly = 3.0f;
 inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
+inline constexpr float kVulkanEffectModeBackgroundMirror = -3.0f;
 inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
 QByteArray vulkanIdentityCurveLutRgbaBytes();
+QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
+                                        const QRectF& outputRect,
+                                        const QSize& textureSize,
+                                        qreal timelineFrame);
 
 void vulkanMvpForOutputRect(const QRectF& rect,
                             const QSize& outputSize,

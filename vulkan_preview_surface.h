@@ -319,6 +319,7 @@ private:
     int m_lastFacedetectionsRawDetectionMatchCount = 0;
     bool m_frameStatusRefreshQueued = false;
     bool m_frameStatusRefreshNeedsVisibleRequest = false;
+    bool m_frameStatusRefreshInProgress = false;
     qint64 m_lastFrameStatusTrimMs = 0;
     qint64 m_frameStatusRefreshCount = 0;
     qint64 m_lastFrameStatusRefreshMs = 0;
