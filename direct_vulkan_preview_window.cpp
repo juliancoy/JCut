@@ -1915,7 +1915,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     const bool canDrawOverlays = m_pipeline && m_pipeline->isReady();
     if (state && canDrawOverlays) {
-        preparedTranscriptOverlays = collectPreparedTranscriptOverlays(state, swapSize);
+        TranscriptOverlayCollectionStats transcriptCollectionStats;
+        preparedTranscriptOverlays =
+            collectPreparedTranscriptOverlays(state, swapSize, &transcriptCollectionStats);
+        if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+            stats->transcriptCandidateCount = transcriptCollectionStats.candidateCount;
+            stats->transcriptPreparedCount = transcriptCollectionStats.preparedCount;
+            stats->lastTranscriptSkipReason = transcriptCollectionStats.lastSkipReason;
+        }
         if (m_playbackStatusOverlayResources &&
             m_playbackStatusOverlayResources->isReady() &&
             m_playbackStatusOverlayResources->descriptorSet() != VK_NULL_HANDLE) {
@@ -1954,12 +1961,35 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 m_playbackStatusOverlayTextureReady = false;
             }
         }
+    } else if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+        stats->transcriptCandidateCount = 0;
+        stats->transcriptPreparedCount = 0;
+        stats->transcriptDrawnCount = 0;
+        stats->lastTranscriptSkipReason = QStringLiteral("overlays_unavailable");
     }
     render_detail::SpeakerLabelOverlaySpec preparedSpeakerSpec;
     bool preparedSpeakerLabel = false;
     render_detail::SpeakerLabelOverlaySpec preparedTemporalDebugSpec;
     bool preparedTemporalDebugLabel = false;
     QSet<QString> preparedTranscriptAtlasClipIds;
+    QString textPrepFailureReason;
+    const size_t textFrameSlotCount =
+        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                     static_cast<size_t>(swapchainImageIndex) + 1);
+    auto beginTextFrameUploads = [&](VulkanTextRenderer* renderer, const QString& failureReason) {
+        if (renderer &&
+            renderer->isReady() &&
+            !renderer->beginFrameUploads(swapchainImageIndex, textFrameSlotCount) &&
+            textPrepFailureReason.isEmpty()) {
+            textPrepFailureReason = failureReason;
+        }
+    };
+    beginTextFrameUploads(m_textRenderer.get(),
+                          QStringLiteral("transcript:text_upload_frame_slot_unavailable"));
+    beginTextFrameUploads(m_speakerTextRenderer.get(),
+                          QStringLiteral("speaker:text_upload_frame_slot_unavailable"));
+    beginTextFrameUploads(m_temporalDebugTextRenderer.get(),
+                          QStringLiteral("debug:text_upload_frame_slot_unavailable"));
     if (m_speakerTextRenderer &&
         m_speakerTextRenderer->isReady() &&
         (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
@@ -1970,6 +2000,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         if (hasVisibleLabel) {
             preparedSpeakerLabel =
                 m_speakerTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedSpeakerSpec);
+            if (!preparedSpeakerLabel) {
+                textPrepFailureReason = QStringLiteral("speaker:%1")
+                    .arg(m_speakerTextRenderer->lastFailureReason());
+            }
         }
     }
     if (m_temporalDebugTextRenderer &&
@@ -1989,6 +2023,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         preparedTemporalDebugSpec.borderColor = QColor(255, 209, 102, 170);
         preparedTemporalDebugLabel =
             m_temporalDebugTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedTemporalDebugSpec);
+        if (!preparedTemporalDebugLabel) {
+            textPrepFailureReason = QStringLiteral("debug:%1")
+                .arg(m_temporalDebugTextRenderer->lastFailureReason());
+        }
     }
     QString textPrepMaterial = transcriptOverlayTextPrepMaterial(preparedTranscriptOverlays, state->outputSize);
     textPrepMaterial += QStringLiteral("s:%1:%2:%3:%4:%5|")
@@ -2028,14 +2066,23 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                                   transcript.outputRect,
                                                                   transcript.speakerTitle)) {
                     preparedTranscriptAtlasClipIds.insert(it.key());
+                } else {
+                    textPrepFailureReason = QStringLiteral("transcript:%1")
+                        .arg(m_textRenderer->lastFailureReason());
                 }
             }
+        } else if (!preparedTranscriptOverlays.isEmpty()) {
+            textPrepFailureReason = QStringLiteral("transcript:text_renderer_not_ready");
         }
         m_lastPreparedTextKey = textPrepKey;
         m_lastPreparedTextReady =
             !preparedTranscriptAtlasClipIds.isEmpty() ||
             preparedSpeakerLabel ||
             preparedTemporalDebugLabel;
+    }
+    if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+        stats->lastTextPrepFailureReason = textPrepFailureReason;
+        stats->lastTextDrawFailureReason.clear();
     }
     if (m_owner->stats()) {
         const qint64 textAttemptCount =
@@ -2109,16 +2156,22 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             m_textRenderer &&
             m_textRenderer->isReady()) {
             const PreparedTranscriptOverlay& transcript = transcriptOverlayIt.value();
-            m_textRenderer->drawTranscriptOverlay(cb,
-                                                  swapSize,
-                                                  state->outputSize,
-                                                  compositeRect,
-                                                  transcript.clip,
-                                                  transcript.layout,
-                                                  transcript.outputRect,
-                                                  transcript.speakerTitle);
-            drawnTranscriptOverlayClipIds.insert(clipId);
-            return true;
+            const bool drawn = m_textRenderer->drawTranscriptOverlay(cb,
+                                                                     swapSize,
+                                                                     state->outputSize,
+                                                                     compositeRect,
+                                                                     transcript.clip,
+                                                                     transcript.layout,
+                                                                     transcript.outputRect,
+                                                                     transcript.speakerTitle);
+            if (drawn) {
+                drawnTranscriptOverlayClipIds.insert(clipId);
+                return true;
+            }
+            if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+                stats->lastTextDrawFailureReason = QStringLiteral("transcript:%1")
+                    .arg(m_textRenderer->lastFailureReason());
+            }
         }
         return false;
     };
@@ -2536,6 +2589,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         if (m_owner->stats()) {
             const qint64 transcriptDrawAttempts = preparedTranscriptAtlasClipIds.size();
             const qint64 transcriptDrawSuccesses = drawnTranscriptOverlayClipIds.size();
+            m_owner->stats()->transcriptDrawnCount = static_cast<int>(transcriptDrawSuccesses);
             editor::accumulatePlaybackStageMetric(&m_owner->stats()->textDrawStageMetric,
                                           transcriptDrawAttempts,
                                           transcriptDrawSuccesses,
@@ -2549,11 +2603,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                               .arg(fallbackTranscriptDrawCount));
         }
         if (preparedSpeakerLabel && m_speakerTextRenderer && m_speakerTextRenderer->isReady()) {
-            m_speakerTextRenderer->drawSpeakerLabel(cb,
-                                                    swapSize,
-                                                    state->outputSize,
-                                                    compositeRect,
-                                                    preparedSpeakerSpec);
+            if (!m_speakerTextRenderer->drawSpeakerLabel(cb,
+                                                         swapSize,
+                                                         state->outputSize,
+                                                         compositeRect,
+                                                         preparedSpeakerSpec)) {
+                if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+                    stats->lastTextDrawFailureReason = QStringLiteral("speaker:%1")
+                        .arg(m_speakerTextRenderer->lastFailureReason());
+                }
+            }
         }
         if (preparedTemporalDebugLabel &&
             m_temporalDebugTextRenderer &&

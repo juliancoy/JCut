@@ -628,6 +628,7 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectPresetCombo->addItem(QStringLiteral("Off"), static_cast<int>(ClipEffectPreset::None));
     m_effectPresetCombo->addItem(QStringLiteral("Logo ticker rows"), static_cast<int>(ClipEffectPreset::NewsLogoTicker));
     m_effectPresetCombo->addItem(QStringLiteral("Encircle person"), static_cast<int>(ClipEffectPreset::PersonOrbit));
+    m_effectPresetCombo->addItem(QStringLiteral("Alternating motion background"), static_cast<int>(ClipEffectPreset::AlternatingMotionBackground));
     presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
 
     m_effectRowsSpin = new QSpinBox(page);
@@ -1424,6 +1425,9 @@ QWidget *InspectorPane::buildTranscriptTab()
         QStringLiteral("Set the active word highlight color."));
     m_transcriptShadowEnabledCheckBox = new QCheckBox(QStringLiteral("Show Shadow"), settingsContainer);
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
+    m_transcriptHighlightCurrentWordCheckBox = new QCheckBox(QStringLiteral("Highlight Current Word"), settingsContainer);
+    m_transcriptHighlightCurrentWordCheckBox->setToolTip(
+        QStringLiteral("Highlight the active transcript word in the video overlay."));
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
     m_transcriptMaxCharsSpin = new QSpinBox(settingsContainer);
     m_transcriptFollowCurrentWordCheckBox = new QCheckBox(QStringLiteral("Follow Current Word"), settingsContainer);
@@ -1503,6 +1507,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Window Radius"), m_transcriptBackgroundCornerRadiusSpin);
     form->addRow(QStringLiteral("Shadow"), m_transcriptShadowEnabledCheckBox);
     form->addRow(QStringLiteral("Title"), m_transcriptShowSpeakerTitleCheckBox);
+    form->addRow(QStringLiteral("Word Highlight"), m_transcriptHighlightCurrentWordCheckBox);
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
     form->addRow(QStringLiteral("Max Chars"), m_transcriptMaxCharsSpin);
     form->addRow(QStringLiteral("Follow Word"), m_transcriptFollowCurrentWordCheckBox);

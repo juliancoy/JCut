@@ -67,6 +67,12 @@ struct DirectVulkanPreviewStats {
     int descriptorSetCount = 0;
     int activeClipHandoffResourceCount = 0;
     int retiredClipHandoffResourceCount = 0;
+    int transcriptCandidateCount = 0;
+    int transcriptPreparedCount = 0;
+    int transcriptDrawnCount = 0;
+    QString lastTranscriptSkipReason;
+    QString lastTextPrepFailureReason;
+    QString lastTextDrawFailureReason;
     editor::PlaybackStageMetric textPrepStageMetric;
     editor::PlaybackStageMetric textDrawStageMetric;
     editor::PlaybackStageMetric gpuHandoffStageMetric;

@@ -21,8 +21,15 @@ struct PreparedTranscriptOverlay {
 
 using PreparedTranscriptOverlayMap = QHash<QString, PreparedTranscriptOverlay>;
 
+struct TranscriptOverlayCollectionStats {
+    int candidateCount = 0;
+    int preparedCount = 0;
+    QString lastSkipReason;
+};
+
 PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInteractionState* state,
-                                                               const QSize& swapSize);
+                                                               const QSize& swapSize,
+                                                               TranscriptOverlayCollectionStats* stats = nullptr);
 QString transcriptOverlayTextPrepMaterial(const PreparedTranscriptOverlayMap& overlays,
                                           const QSize& outputSize);
 

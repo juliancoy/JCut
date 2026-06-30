@@ -640,13 +640,13 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!transcriptBackend.isEmpty(),
            "direct_vulkan_preview_transcript.cpp must be readable");
 
-  QVERIFY2(transcriptBackend.contains(QStringLiteral("audioOnlyTranscriptActive")),
+  QVERIFY2(transcriptBackend.contains(QStringLiteral("timelineTranscriptActive")),
            "direct preview must consider transcript overlays on active "
-           "audio-only clips even when no video decode status exists");
+           "timeline clips even when no drawable video status exists");
   QVERIFY2(transcriptBackend.contains(QStringLiteral(
-               "if (!statusDrawable && !audioOnlyTranscriptActive)")),
-           "audio-only transcript candidates must bypass the drawable-video "
-           "status gate");
+               "if (!statusDrawable && !timelineTranscriptActive)")),
+           "transcript candidates must bypass the drawable-video status gate "
+           "while their clip is active on the timeline");
   QVERIFY2(backend.contains(QStringLiteral(
                "QSet<QString> drawnTranscriptOverlayClipIds")),
            "direct preview must track which prepared transcript overlays were "
@@ -661,6 +661,16 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(backend.contains(QStringLiteral("textDrawStageMetric")),
            "draw-stage text telemetry must distinguish prepared overlays from "
            "visible overlays");
+  QVERIFY2(backend.contains(QStringLiteral("transcriptCandidateCount")) &&
+               backend.contains(QStringLiteral("transcriptPreparedCount")) &&
+               backend.contains(QStringLiteral("transcriptDrawnCount")),
+           "direct preview must expose simple transcript candidate/prepared/"
+           "drawn counters for playback diagnostics");
+  QVERIFY2(backend.contains(QStringLiteral("lastTranscriptSkipReason")),
+           "direct preview must expose the last transcript skip reason");
+  QVERIFY2(backend.contains(QStringLiteral("lastTextPrepFailureReason")) &&
+               backend.contains(QStringLiteral("lastTextDrawFailureReason")),
+           "direct preview must expose text prep/draw failure reasons");
   QVERIFY2(backend.contains(QStringLiteral(
                "m_lastPreparedTextReady =\n"
                "            !preparedTranscriptAtlasClipIds.isEmpty()")),

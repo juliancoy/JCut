@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "editor_effect_presets.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "transcript_engine.h"
@@ -70,6 +71,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* deleteProxyAction = nullptr;
     QAction* generateFaceDetectionsAction = nullptr;
     QAction* deleteFaceDetectionsAction = nullptr;
+    QAction* generateSamMaskMatteAction = nullptr;
+    QAction* createMotionBackgroundAction = nullptr;
+    QAction* generateSpeakerTitleClipsAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
     if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
@@ -139,12 +143,27 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].locked);
+        QMenu* generatedMenu = menu.addMenu(QStringLiteral("Generated Clips"));
+        generateSamMaskMatteAction =
+            generatedMenu->addAction(QStringLiteral("Create/Update SAM Mask Matte"));
+        generateSamMaskMatteAction->setEnabled(
+            clipHasVisuals(m_clips[clipIndex]) &&
+            m_clips[clipIndex].maskEnabled &&
+            !m_clips[clipIndex].maskFramesDir.trimmed().isEmpty());
+        createMotionBackgroundAction =
+            generatedMenu->addAction(QStringLiteral("Create Alternating Motion Background"));
+        createMotionBackgroundAction->setEnabled(
+            clipHasVisuals(m_clips[clipIndex]) &&
+            m_clips[clipIndex].mediaType != ClipMediaType::Title &&
+            !m_clips[clipIndex].filePath.trimmed().isEmpty());
         detectAction = menu.addAction(QStringLiteral("Detect"));
         detectAction->setEnabled(
             m_clips[clipIndex].mediaType == ClipMediaType::Video &&
             !m_clips[clipIndex].filePath.trimmed().isEmpty());
         QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
         transcribeAction = transcriptMenu->addAction(QStringLiteral("Transcribe"));
+        generateSpeakerTitleClipsAction =
+            transcriptMenu->addAction(QStringLiteral("Create/Update Speaker Title Clips"));
         deleteTranscriptAction = transcriptMenu->addAction(QStringLiteral("Delete Transcript..."));
         bool transcriptExists = false;
         const QStringList transcriptPaths = transcriptCutPathsForClipFile(m_clips[clipIndex].filePath);
@@ -154,6 +173,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 break;
             }
         }
+        generateSpeakerTitleClipsAction->setEnabled(transcriptExists);
         deleteTranscriptAction->setEnabled(transcriptExists);
         TimelineClip proxyDetectionClip = m_clips[clipIndex];
         proxyDetectionClip.useProxy = true;
@@ -472,6 +492,124 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == scaleToFillAction) {
         if (scaleToFillRequested && clipIndex >= 0) {
             scaleToFillRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    auto removeGeneratedClipsForSource = [this](const QString& sourceId, ClipRole role) {
+        bool removed = false;
+        for (int i = m_clips.size() - 1; i >= 0; --i) {
+            if (m_clips[i].clipRole == role && m_clips[i].linkedSourceClipId == sourceId) {
+                m_clips.removeAt(i);
+                removed = true;
+            }
+        }
+        return removed;
+    };
+    auto trackNameStartsWith = [this](int trackIndex, const QString& prefix) {
+        return trackIndex >= 0 && trackIndex < m_tracks.size() &&
+               m_tracks[trackIndex].name.trimmed().startsWith(prefix, Qt::CaseInsensitive);
+    };
+    auto nextGeneratedTrackName = [this](const QString& baseName) {
+        int count = 0;
+        for (const TimelineTrack& track : m_tracks) {
+            if (track.name.trimmed().startsWith(baseName, Qt::CaseInsensitive)) {
+                ++count;
+            }
+        }
+        return count <= 0 ? baseName : QStringLiteral("%1 %2").arg(baseName).arg(count + 1);
+    };
+    auto placeGeneratedClip = [&](TimelineClip clip, const QString& trackBaseName, int preferredTrack) {
+        auto clipIdExists = [this](const QString& id) {
+            for (const TimelineClip& existingClip : m_clips) {
+                if (existingClip.id == id) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (clip.id.trimmed().isEmpty() || clipIdExists(clip.id)) {
+            clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+        int targetTrack = -1;
+        for (int t = 0; t < m_tracks.size(); ++t) {
+            if (!trackNameStartsWith(t, trackBaseName)) {
+                continue;
+            }
+            clip.trackIndex = t;
+            if (!wouldClipConflictWithTrack(clip, t)) {
+                targetTrack = t;
+                break;
+            }
+        }
+        if (targetTrack < 0) {
+            targetTrack = qBound(0, preferredTrack, trackCount());
+            insertTrackAt(targetTrack);
+            m_tracks[targetTrack].name = nextGeneratedTrackName(trackBaseName);
+            m_tracks[targetTrack].audioEnabled = false;
+        }
+        clip.trackIndex = targetTrack;
+        normalizeClipTiming(clip);
+        m_clips.push_back(clip);
+        return clip.id;
+    };
+    auto finishGeneratedClipMutation = [this](const QString& primarySelection) {
+        normalizeTrackIndices();
+        sortClips();
+        if (!primarySelection.isEmpty()) {
+            setSelectedClipId(primarySelection);
+        }
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        update();
+    };
+
+    if (selected == generateSamMaskMatteAction) {
+        if (clipIndex >= 0) {
+            const TimelineClip source = m_clips[clipIndex];
+            removeGeneratedClipsForSource(source.id, ClipRole::MaskMatte);
+            TimelineClip matte = makeSamMaskMatteClip(source);
+            const QString matteId =
+                placeGeneratedClip(matte, QStringLiteral("SAM Masks"), source.trackIndex + 1);
+            finishGeneratedClipMutation(matteId);
+        }
+        return;
+    }
+
+    if (selected == createMotionBackgroundAction) {
+        if (clipIndex >= 0) {
+            const TimelineClip source = m_clips[clipIndex];
+            TimelineClip synth = makeAlternatingMotionBackgroundClip(source, source.trackIndex + 1);
+            const QString synthId =
+                placeGeneratedClip(synth, QStringLiteral("Effect Synths"), source.trackIndex + 1);
+            finishGeneratedClipMutation(synthId);
+        }
+        return;
+    }
+
+    if (selected == generateSpeakerTitleClipsAction) {
+        if (clipIndex >= 0) {
+            const TimelineClip source = m_clips[clipIndex];
+            const QString transcriptPath = activeTranscriptPathForClip(source).trimmed();
+            const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
+            const bool removedExisting = removeGeneratedClipsForSource(source.id, ClipRole::SpeakerTitle);
+            const QVector<TimelineClip> titles = makeSpeakerTitleClipsForTranscriptIntroductions(
+                source,
+                transcriptPath,
+                sections,
+                trackCount());
+            QString firstTitleId;
+            for (TimelineClip title : titles) {
+                const QString titleId =
+                    placeGeneratedClip(title, QStringLiteral("Speaker Titles"), trackCount());
+                if (firstTitleId.isEmpty()) {
+                    firstTitleId = titleId;
+                }
+            }
+            if (!titles.isEmpty() || removedExisting) {
+                finishGeneratedClipMutation(firstTitleId);
+            }
         }
         return;
     }

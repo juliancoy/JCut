@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QDebug>
@@ -12,7 +11,12 @@
 
 inline qint64 nowMs()
 {
-    return QDateTime::currentMSecsSinceEpoch();
+    static QElapsedTimer timer = [] {
+        QElapsedTimer t;
+        t.start();
+        return t;
+    }();
+    return timer.elapsed();
 }
 
 inline qint64 playbackTraceMs()

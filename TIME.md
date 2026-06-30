@@ -99,11 +99,12 @@ proportionally larger `deltaSamples`, catching up to the correct timeline
 position. An early tick produces a smaller step, with the remainder held in
 `carrySamples` for the next tick. No time is gained or lost.
 
-### Fallback Minimum Step
+### Sub-Sample Ticks
 
 If `deltaSamples <= 0` (e.g., the timer fired faster than one sample's worth of
-real time), a minimum step of one frame at the current speed is forced. This
-prevents playback from stalling on very fast timer intervals.
+real time), playback does not advance. The fractional carry remains accumulated
+for a later tick. The transport must never manufacture a frame advance that did
+not come from elapsed monotonic time.
 
 ### Anchor Reset Events
 

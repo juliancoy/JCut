@@ -142,7 +142,8 @@ TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section
 QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
                               const QColor& textColor,
                               const QColor& highlightTextColor,
-                              const QColor& highlightFillColor);
+                              const QColor& highlightFillColor,
+                              bool highlightCurrentWord = true);
 QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
                                              const QVector<TranscriptSection>& sections,
                                              int64_t sourceFrame,

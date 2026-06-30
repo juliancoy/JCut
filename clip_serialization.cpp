@@ -17,6 +17,8 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("news_logo_ticker");
     case ClipEffectPreset::PersonOrbit:
         return QStringLiteral("person_orbit");
+    case ClipEffectPreset::AlternatingMotionBackground:
+        return QStringLiteral("alternating_motion_background");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -36,7 +38,49 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("encircle")) {
         return ClipEffectPreset::PersonOrbit;
     }
+    if (normalized == QStringLiteral("alternating_motion_background") ||
+        normalized == QStringLiteral("alternating_background") ||
+        normalized == QStringLiteral("motion_background") ||
+        normalized == QStringLiteral("background_tiler")) {
+        return ClipEffectPreset::AlternatingMotionBackground;
+    }
     return ClipEffectPreset::None;
+}
+
+QString clipRoleToJson(ClipRole role)
+{
+    switch (role) {
+    case ClipRole::MaskMatte:
+        return QStringLiteral("mask_matte");
+    case ClipRole::EffectSynth:
+        return QStringLiteral("effect_synth");
+    case ClipRole::SpeakerTitle:
+        return QStringLiteral("speaker_title");
+    case ClipRole::Media:
+    default:
+        return QStringLiteral("media");
+    }
+}
+
+ClipRole clipRoleFromJson(const QString& value)
+{
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("mask_matte") ||
+        normalized == QStringLiteral("mask") ||
+        normalized == QStringLiteral("matte")) {
+        return ClipRole::MaskMatte;
+    }
+    if (normalized == QStringLiteral("effect_synth") ||
+        normalized == QStringLiteral("effect") ||
+        normalized == QStringLiteral("synth")) {
+        return ClipRole::EffectSynth;
+    }
+    if (normalized == QStringLiteral("speaker_title") ||
+        normalized == QStringLiteral("lower_third") ||
+        normalized == QStringLiteral("speaker_lower_third")) {
+        return ClipRole::SpeakerTitle;
+    }
+    return ClipRole::Media;
 }
 
 int64_t timelineFramesFromSourceFrames(int64_t sourceFrames, qreal sourceFps)
@@ -90,6 +134,10 @@ QJsonObject clipToJson(const TimelineClip &clip)
     {
         QJsonObject obj;
         obj[QStringLiteral("id")] = clip.id;
+        obj[QStringLiteral("clipRole")] = clipRoleToJson(clip.clipRole);
+        obj[QStringLiteral("linkedSourceClipId")] = clip.linkedSourceClipId;
+        obj[QStringLiteral("generatedFromMaskId")] = clip.generatedFromMaskId;
+        obj[QStringLiteral("syncLockedToSource")] = clip.syncLockedToSource;
         obj[QStringLiteral("filePath")] = clip.filePath;
         obj[QStringLiteral("proxyPath")] = clip.proxyPath;
         obj[QStringLiteral("useProxy")] = clip.useProxy;
@@ -298,6 +346,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("backgroundCornerRadius")] = clip.transcriptOverlay.backgroundCornerRadius;
         transcriptOverlayObj[QStringLiteral("showShadow")] = clip.transcriptOverlay.showShadow;
         transcriptOverlayObj[QStringLiteral("showSpeakerTitle")] = clip.transcriptOverlay.showSpeakerTitle;
+        transcriptOverlayObj[QStringLiteral("highlightCurrentWord")] = clip.transcriptOverlay.highlightCurrentWord;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
         transcriptOverlayObj[QStringLiteral("useManualPlacement")] = clip.transcriptOverlay.useManualPlacement;
         transcriptOverlayObj[QStringLiteral("translationX")] = clip.transcriptOverlay.translationX;
@@ -379,6 +428,10 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         TimelineClip clip;
         const bool hasSourceFps = obj.contains(QStringLiteral("sourceFps"));
         clip.id = obj.value(QStringLiteral("id")).toString();
+        clip.clipRole = clipRoleFromJson(obj.value(QStringLiteral("clipRole")).toString(QStringLiteral("media")));
+        clip.linkedSourceClipId = obj.value(QStringLiteral("linkedSourceClipId")).toString().trimmed();
+        clip.generatedFromMaskId = obj.value(QStringLiteral("generatedFromMaskId")).toString().trimmed();
+        clip.syncLockedToSource = obj.value(QStringLiteral("syncLockedToSource")).toBool(false);
         clip.filePath = obj.value(QStringLiteral("filePath")).toString();
         clip.proxyPath = obj.value(QStringLiteral("proxyPath")).toString();
         clip.useProxy = obj.value(QStringLiteral("useProxy")).toBool(true);
@@ -718,6 +771,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.showShadow = transcriptOverlayObj.value(QStringLiteral("showShadow")).toBool(true);
         clip.transcriptOverlay.showSpeakerTitle =
             transcriptOverlayObj.value(QStringLiteral("showSpeakerTitle")).toBool(false);
+        clip.transcriptOverlay.highlightCurrentWord =
+            transcriptOverlayObj.value(QStringLiteral("highlightCurrentWord")).toBool(true);
         clip.transcriptOverlay.autoScroll = transcriptOverlayObj.value(QStringLiteral("autoScroll")).toBool(false);
         clip.transcriptOverlay.useManualPlacement =
             transcriptOverlayObj.value(QStringLiteral("useManualPlacement")).toBool(false);

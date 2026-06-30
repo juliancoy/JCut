@@ -89,9 +89,14 @@ void EditorWindow::advanceFrame()
     int64_t deltaSamples = static_cast<int64_t>(std::floor(m_timelineAdvanceCarrySamples));
     m_timelineAdvanceCarrySamples -= static_cast<double>(deltaSamples);
     if (deltaSamples <= 0) {
-        deltaSamples = qMax<int64_t>(
-            1, static_cast<int64_t>(std::llround(speed * static_cast<qreal>(kSamplesPerFrame))));
-        m_timelineAdvanceCarrySamples = 0.0;
+        editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                      0,
+                                      1,
+                                      0,
+                                      QStringLiteral("monotonic_transport"),
+                                      QStringLiteral("sub_sample_tick"));
+        updatePlaybackStatusOverlay();
+        return;
     }
 
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();

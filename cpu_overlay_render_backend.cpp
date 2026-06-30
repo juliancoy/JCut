@@ -771,7 +771,8 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
             for (int wordIndex = 0; wordIndex < line.words.size(); ++wordIndex) {
                 const QString& word = line.words.at(wordIndex);
                 const qreal wordWidth = metrics.wordWidths.at(wordIndex) * docScale;
-                const bool active = wordIndex == line.activeWord;
+                const bool active = clip.transcriptOverlay.highlightCurrentWord &&
+                                    wordIndex == line.activeWord;
                 if (active) {
                     const qreal padX = 0.18 * clip.transcriptOverlay.fontPointSize * docScale;
                     const qreal padY = 0.02 * clip.transcriptOverlay.fontPointSize * docScale;

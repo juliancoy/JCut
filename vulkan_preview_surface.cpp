@@ -28,6 +28,7 @@
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QObject>
+#include <QSet>
 #include <QStringList>
 #include <QThread>
 
@@ -358,6 +359,34 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
     const int64_t boundedSample = std::max<int64_t>(0, samplePosition);
     if (m_interaction.currentSample == boundedSample) {
         return;
+    }
+    auto activeVisualClipIdsAtSample = [this](int64_t sample) {
+        QSet<QString> ids;
+        const qreal framePosition = samplesToFramePosition(sample);
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (!directVulkanPreviewSupportsClip(clip)) {
+                continue;
+            }
+            if (visualClipActiveAtSample(clip,
+                                         m_interaction.tracks,
+                                         sample,
+                                         framePosition,
+                                         m_bypassGrading)) {
+                ids.insert(clip.id);
+            }
+        }
+        return ids;
+    };
+    const int64_t previousSample = m_interaction.currentSample;
+    if (m_interaction.playing && previousSample >= 0 && !m_lastPresentedFrameByClip.isEmpty()) {
+        const int64_t sampleDelta = qAbs(boundedSample - previousSample);
+        const bool largeJump =
+            sampleDelta > frameToSamples(editor::kPreviewMaxHeldPresentationFrameDelta);
+        const bool activeVisualSetChanged =
+            activeVisualClipIdsAtSample(previousSample) != activeVisualClipIdsAtSample(boundedSample);
+        if (largeJump || activeVisualSetChanged) {
+            m_lastPresentedFrameByClip.clear();
+        }
     }
     m_interaction.currentSample = boundedSample;
     m_interaction.currentFramePosition = samplesToFramePosition(m_interaction.currentSample);

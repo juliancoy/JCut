@@ -85,19 +85,8 @@ QImage loadSingleImageFile(const QString& framePath) {
                 return QImage();
             }
 
-            if (image.format() != QImage::Format_ARGB32_Premultiplied) {
-                QImage safeImage = image;
-                if (image.hasAlphaChannel() &&
-                    image.format() != QImage::Format_RGBA8888 &&
-                    image.format() != QImage::Format_ARGB32) {
-                    safeImage = image.convertToFormat(QImage::Format_RGBA8888);
-                    if (safeImage.isNull()) {
-                        qWarning() << "Failed to convert to intermediate RGBA format for file:" << framePath;
-                        return QImage();
-                    }
-                }
-
-                QImage converted = safeImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            if (image.format() != QImage::Format_RGBA8888) {
+                QImage converted = image.convertToFormat(QImage::Format_RGBA8888);
                 if (converted.isNull()) {
                     qWarning() << "Failed to convert image format for file:" << framePath;
                     return QImage();

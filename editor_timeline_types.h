@@ -39,6 +39,14 @@ enum class ClipEffectPreset {
     None,
     NewsLogoTicker,
     PersonOrbit,
+    AlternatingMotionBackground,
+};
+
+enum class ClipRole {
+    Media,
+    MaskMatte,
+    EffectSynth,
+    SpeakerTitle,
 };
 
 struct TimelineClip {
@@ -124,6 +132,7 @@ struct TimelineClip {
         qreal backgroundCornerRadius = 14.0;
         bool showShadow = true;
         bool showSpeakerTitle = false;
+        bool highlightCurrentWord = true;
         bool autoScroll = false;
         bool useManualPlacement = false;
         qreal translationX = 0.0;
@@ -169,6 +178,10 @@ struct TimelineClip {
     };
 
     QString id;
+    ClipRole clipRole = ClipRole::Media;
+    QString linkedSourceClipId;
+    QString generatedFromMaskId;
+    bool syncLockedToSource = false;
     QString filePath;
     QString proxyPath;
     bool useProxy = true;

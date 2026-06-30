@@ -10,6 +10,7 @@
 #include <QString>
 #include <QVector>
 
+#include <cstddef>
 #include <memory>
 
 #include <vulkan/vulkan.h>
@@ -84,6 +85,8 @@ public:
                     QString* errorMessage);
     void destroy();
     bool isReady() const;
+    QString lastFailureReason() const { return m_lastFailureReason; }
+    bool beginFrameUploads(size_t frameSlot, size_t frameSlotCount);
 
     bool drawSpeakerLabel(VkCommandBuffer commandBuffer,
                           const QSize& swapSize,
@@ -196,6 +199,7 @@ private:
                                                         const QRectF& outputRect,
                                                         const QString& speakerTitle) const;
     bool ensureAtlasUploaded(VkCommandBuffer commandBuffer, const Atlas& atlas);
+    bool fail(const QString& reason) const;
     void drawGlyph(VkCommandBuffer commandBuffer,
                    const QSize& swapSize,
                    const QRectF& rect,
@@ -214,6 +218,7 @@ private:
     std::unique_ptr<VulkanResources> m_atlasResources;
     std::unique_ptr<VulkanTextPipeline> m_pipeline;
     QString m_uploadedAtlasKey;
+    mutable QString m_lastFailureReason;
     mutable SpeakerLayoutCache m_speakerLayoutCache;
     mutable TranscriptLayoutCache m_transcriptLayoutCache;
 };

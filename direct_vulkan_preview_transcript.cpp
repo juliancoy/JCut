@@ -21,14 +21,17 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
                                                  const PreviewViewTransform& viewTransform,
                                                  const TimelineClip& effectiveClip,
                                                  int64_t samplePosition,
-                                                 const VulkanPreviewClipFrameStatus* status)
+                                                 const VulkanPreviewClipFrameStatus* status,
+                                                 QString* skipReason)
 {
     PreparedTranscriptOverlay prepared;
     if (!state) {
+        if (skipReason) *skipReason = QStringLiteral("invalid_state");
         return prepared;
     }
     const QString transcriptPath = activeTranscriptPathForClip(effectiveClip);
     if (transcriptPath.isEmpty()) {
+        if (skipReason) *skipReason = QStringLiteral("missing_transcript_source");
         return prepared;
     }
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
@@ -46,6 +49,7 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
     const TranscriptOverlayLayout layout =
         transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame, timing);
     if (layout.lines.isEmpty()) {
+        if (skipReason) *skipReason = QStringLiteral("empty_layout");
         return prepared;
     }
 
@@ -70,6 +74,7 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
         localTextBounds.width() <= 0.0 ||
         localTextBounds.height() <= 0.0 ||
         effectiveClip.transcriptOverlay.fontPointSize <= 0.0) {
+        if (skipReason) *skipReason = QStringLiteral("invalid_geometry");
         return prepared;
     }
 
@@ -94,12 +99,19 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
 } // namespace
 
 PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInteractionState* state,
-                                                               const QSize& swapSize)
+                                                               const QSize& swapSize,
+                                                               TranscriptOverlayCollectionStats* stats)
 {
     PreparedTranscriptOverlayMap overlays;
     if (!state || !swapSize.isValid()) {
+        if (stats) {
+            stats->candidateCount = 0;
+            stats->preparedCount = 0;
+            stats->lastSkipReason = QStringLiteral("invalid_state");
+        }
         return overlays;
     }
+    TranscriptOverlayCollectionStats localStats;
 
     const QRectF fullSwapRect(QPointF(0, 0), QSizeF(swapSize));
     const PreviewViewTransform viewTransform(fullSwapRect,
@@ -113,29 +125,44 @@ PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInte
         const bool statusDrawable = status && status->active && !status->drawSuppressed;
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
         const int64_t clipEndSample = clipTimelineEndSamples(clip);
-        const bool audioOnlyTranscriptActive =
-            !clipVisualPlaybackEnabled(clip, state->tracks) &&
-            clipSupportsTranscriptOverlay(clip) &&
+        const bool supportsTranscriptOverlay = clipSupportsTranscriptOverlay(clip);
+        const bool timelineInRange =
             state->currentSample >= clipStartSample &&
-            state->currentSample < clipEndSample &&
-            trackVisualModeForClip(clip, state->tracks) != TrackVisualMode::Hidden;
-        if (!statusDrawable && !audioOnlyTranscriptActive) {
+            state->currentSample < clipEndSample;
+        const bool trackVisible = trackVisualModeForClip(clip, state->tracks) != TrackVisualMode::Hidden;
+        const bool timelineTranscriptActive =
+            supportsTranscriptOverlay && timelineInRange && trackVisible;
+        if (!supportsTranscriptOverlay) {
             continue;
         }
+        if (!statusDrawable && !timelineTranscriptActive) {
+            localStats.lastSkipReason = !trackVisible ? QStringLiteral("track_hidden") : QStringLiteral("inactive");
+            continue;
+        }
+        ++localStats.candidateCount;
 
         const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
         if (!clipSupportsTranscriptOverlay(effectiveClip)) {
+            localStats.lastSkipReason = QStringLiteral("unsupported_after_override");
             continue;
         }
+        QString skipReason;
         const PreparedTranscriptOverlay prepared =
             buildTranscriptOverlay(state,
                                    viewTransform,
                                    effectiveClip,
                                    state->currentSample,
-                                   statusDrawable ? status : nullptr);
+                                   statusDrawable ? status : nullptr,
+                                   &skipReason);
         if (prepared.ready) {
             overlays.insert(clip.id, prepared);
+            ++localStats.preparedCount;
+        } else if (!skipReason.isEmpty()) {
+            localStats.lastSkipReason = skipReason;
         }
+    }
+    if (stats) {
+        *stats = localStats;
     }
     return overlays;
 }

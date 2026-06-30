@@ -588,6 +588,17 @@ bool VulkanTextRenderer::isReady() const
     return m_atlasResources && m_atlasResources->isReady() && m_pipeline && m_pipeline->isReady();
 }
 
+bool VulkanTextRenderer::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
+{
+    return m_atlasResources && m_atlasResources->beginFrameUploads(frameSlot, frameSlotCount);
+}
+
+bool VulkanTextRenderer::fail(const QString& reason) const
+{
+    m_lastFailureReason = reason;
+    return false;
+}
+
 VulkanTextLayoutDebug VulkanTextRenderer::buildSpeakerLabelLayoutForTesting(
     const QSize& outputSize,
     const render_detail::SpeakerLabelOverlaySpec& spec) const
@@ -658,12 +669,12 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
                                              QVector<QRectF>* cards) const
 {
     if (!atlas || !glyphs || !cards || !outputSize.isValid()) {
-        return false;
+        return fail(QStringLiteral("speaker_invalid_input"));
     }
     const QString name = spec.name.trimmed();
     const QString organization = spec.organization.trimmed();
     if ((spec.showName && name.isEmpty()) && (spec.showOrganization && organization.isEmpty())) {
-        return false;
+        return fail(QStringLiteral("speaker_empty_text"));
     }
 
     const qreal base = qMax<qreal>(1.0, qMin(outputSize.width(), outputSize.height()));
@@ -674,7 +685,7 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
     FaceGuard orgFace;
     if (!loadFace(spec.fontFamily, true, namePixelSize, &nameFace) ||
         !loadFace(spec.fontFamily, false, orgPixelSize, &orgFace)) {
-        return false;
+        return fail(QStringLiteral("speaker_font_load_failed"));
     }
 
     struct Line {
@@ -715,7 +726,7 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         const FT_UInt glyphIndex = FT_Get_Char_Index(face, codepoint);
         if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT) != 0 ||
             FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
-            return false;
+            return fail(QStringLiteral("speaker_glyph_render_failed"));
         }
         const FT_GlyphSlot slot = face->glyph;
         const FT_Bitmap& bitmap = slot->bitmap;
@@ -727,7 +738,7 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
             rowHeight = 0;
         }
         if (penY + height + kGlyphPadding >= kAtlasSize) {
-            return false;
+            return fail(QStringLiteral("speaker_atlas_full"));
         }
         for (int row = 0; row < height; ++row) {
             for (int col = 0; col < width; ++col) {
@@ -761,7 +772,9 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         return true;
     };
     if (!addLineGlyphs(nameLines) || !addLineGlyphs(orgLines)) {
-        return false;
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("speaker_add_glyph_failed")
+                        : m_lastFailureReason);
     }
 
     auto lineHeight = [](FT_Face face) {
@@ -847,7 +860,7 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         QString::number(spec.showShadow ? 1 : 0) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(spec.shadowColor.rgba()));
     atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
-    return !glyphs->isEmpty();
+    return !glyphs->isEmpty() ? true : fail(QStringLiteral("speaker_empty_glyph_layout"));
 }
 
 bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
@@ -861,7 +874,7 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
                                                        QVector<TranscriptHighlight>* highlights) const
 {
     if (!atlas || !glyphs || !backgrounds || !highlights) {
-        return false;
+        return fail(QStringLiteral("transcript_invalid_output"));
     }
     if (!buildTranscriptAtlas(clip, layout, speakerTitle, atlas)) {
         return false;
@@ -883,7 +896,7 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
                                               Atlas* atlas) const
 {
     if (!atlas || layout.lines.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("transcript_empty_layout"));
     }
     const int bodyPixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize)));
     const int titlePixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize * 0.62)));
@@ -892,7 +905,7 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
                   clip.transcriptOverlay.bold,
                   bodyPixelSize,
                   &bodyFace)) {
-        return false;
+        return fail(QStringLiteral("transcript_font_load_failed"));
     }
     FaceGuard titleFace;
     const bool hasTitle = !speakerTitle.trimmed().isEmpty() &&
@@ -915,7 +928,7 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
         const FT_UInt glyphIndex = FT_Get_Char_Index(face, codepoint);
         if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT) != 0 ||
             FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
-            return false;
+            return fail(QStringLiteral("transcript_glyph_render_failed"));
         }
         const FT_GlyphSlot slot = face->glyph;
         const FT_Bitmap& bitmap = slot->bitmap;
@@ -927,7 +940,7 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
             rowHeight = 0;
         }
         if (penY + height + kGlyphPadding >= kAtlasSize) {
-            return false;
+            return fail(QStringLiteral("transcript_atlas_full"));
         }
         for (int row = 0; row < height; ++row) {
             for (int col = 0; col < width; ++col) {
@@ -952,7 +965,9 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
     if (hasTitle) {
         for (uint codepoint : speakerTitle.toUcs4()) {
             if (!addGlyph(titleFace.face, codepoint, true, titlePixelSize)) {
-                return false;
+                return fail(m_lastFailureReason.isEmpty()
+                                ? QStringLiteral("transcript_add_title_glyph_failed")
+                                : m_lastFailureReason);
             }
         }
     }
@@ -960,7 +975,9 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
         for (const QString& word : line.words) {
             for (uint codepoint : word.toUcs4()) {
                 if (!addGlyph(bodyFace.face, codepoint, clip.transcriptOverlay.bold, bodyPixelSize)) {
-                    return false;
+                    return fail(m_lastFailureReason.isEmpty()
+                                    ? QStringLiteral("transcript_add_body_glyph_failed")
+                                    : m_lastFailureReason);
                 }
             }
         }
@@ -982,7 +999,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
 {
     if (!glyphs || !backgrounds || !highlights ||
         !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty() || atlas.key.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("transcript_layout_invalid_input"));
     }
     const int bodyPixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize)));
     const int titlePixelSize = qMax(1, static_cast<int>(std::round(clip.transcriptOverlay.fontPointSize * 0.62)));
@@ -991,7 +1008,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
                   clip.transcriptOverlay.bold,
                   bodyPixelSize,
                   &bodyFace)) {
-        return false;
+        return fail(QStringLiteral("transcript_layout_font_load_failed"));
     }
     FaceGuard titleFace;
     const bool hasTitle = !speakerTitle.trimmed().isEmpty() &&
@@ -1005,7 +1022,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
     };
     const QRectF textBounds = outputRect.adjusted(18.0, 14.0, -18.0, -14.0);
     if (textBounds.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("transcript_text_bounds_empty"));
     }
     if (clip.transcriptOverlay.showBackground) {
         QColor backgroundColor = clip.transcriptOverlay.backgroundColor.isValid()
@@ -1109,7 +1126,8 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         for (int wordIndex = 0; wordIndex < line.words.size(); ++wordIndex) {
             const QString& word = line.words.at(wordIndex);
             const qreal wordWidth = measureText(bodyFace.face, word) * docScale;
-            const bool active = wordIndex == line.activeWord;
+            const bool active = clip.transcriptOverlay.highlightCurrentWord &&
+                                wordIndex == line.activeWord;
             if (active) {
                 const qreal padX = 0.18 * clip.transcriptOverlay.fontPointSize * docScale;
                 const qreal padY = 0.02 * clip.transcriptOverlay.fontPointSize * docScale;
@@ -1145,19 +1163,19 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         cursorY += bodyLineHeight;
     }
 
-    return !glyphs->isEmpty();
+    return !glyphs->isEmpty() ? true : fail(QStringLiteral("transcript_empty_glyph_layout"));
 }
 
 bool VulkanTextRenderer::ensureAtlasUploaded(VkCommandBuffer commandBuffer, const Atlas& atlas)
 {
     if (!m_atlasResources || atlas.key.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("text_atlas_invalid"));
     }
     if (m_uploadedAtlasKey == atlas.key) {
         return true;
     }
     if (!m_atlasResources->uploadImageTexture(commandBuffer, atlas.image)) {
-        return false;
+        return fail(QStringLiteral("text_atlas_upload_failed"));
     }
     m_uploadedAtlasKey = atlas.key;
     return true;
@@ -1321,12 +1339,15 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
                                           const QRectF& outputTargetRect,
                                           const render_detail::SpeakerLabelOverlaySpec& spec)
 {
+    m_lastFailureReason.clear();
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !swapSize.isValid() || !outputSize.isValid()) {
-        return false;
+        return fail(QStringLiteral("speaker_draw_invalid_state"));
     }
     const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec);
     if (!layout || !ensureAtlasUploaded(commandBuffer, layout->atlas)) {
-        return false;
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("speaker_draw_atlas_unavailable")
+                        : m_lastFailureReason);
     }
 
     const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
@@ -1371,11 +1392,22 @@ bool VulkanTextRenderer::prepareSpeakerLabelAtlas(VkCommandBuffer commandBuffer,
                                                   const QSize& outputSize,
                                                   const render_detail::SpeakerLabelOverlaySpec& spec)
 {
+    m_lastFailureReason.clear();
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !outputSize.isValid()) {
-        return false;
+        return fail(QStringLiteral("speaker_prepare_invalid_state"));
     }
     const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec);
-    return layout && ensureAtlasUploaded(commandBuffer, layout->atlas);
+    if (!layout) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("speaker_layout_failed")
+                        : m_lastFailureReason);
+    }
+    if (!ensureAtlasUploaded(commandBuffer, layout->atlas)) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("speaker_atlas_upload_failed")
+                        : m_lastFailureReason);
+    }
+    return true;
 }
 
 bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
@@ -1387,14 +1419,17 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                                const QRectF& outputRect,
                                                const QString& speakerTitle)
 {
+    m_lastFailureReason.clear();
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !swapSize.isValid() ||
         !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("transcript_draw_invalid_state"));
     }
     const TranscriptLayoutCache* cachedLayout =
         transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
     if (!cachedLayout || !ensureAtlasUploaded(commandBuffer, cachedLayout->atlas)) {
-        return false;
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("transcript_draw_atlas_unavailable")
+                        : m_lastFailureReason);
     }
 
     const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
@@ -1435,11 +1470,22 @@ bool VulkanTextRenderer::prepareTranscriptOverlayAtlas(VkCommandBuffer commandBu
                                                        const QRectF& outputRect,
                                                        const QString& speakerTitle)
 {
+    m_lastFailureReason.clear();
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !outputSize.isValid() ||
         layout.lines.isEmpty() || outputRect.isEmpty()) {
-        return false;
+        return fail(QStringLiteral("transcript_prepare_invalid_state"));
     }
     const TranscriptLayoutCache* cachedLayout =
         transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
-    return cachedLayout && ensureAtlasUploaded(commandBuffer, cachedLayout->atlas);
+    if (!cachedLayout) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("transcript_layout_failed")
+                        : m_lastFailureReason);
+    }
+    if (!ensureAtlasUploaded(commandBuffer, cachedLayout->atlas)) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("transcript_atlas_upload_failed")
+                        : m_lastFailureReason);
+    }
+    return true;
 }

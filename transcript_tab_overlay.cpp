@@ -45,6 +45,9 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
                                             m_widgets.transcriptShadowEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
                                                   m_widgets.transcriptShowSpeakerTitleCheckBox->isChecked();
+        clip.transcriptOverlay.highlightCurrentWord =
+            !m_widgets.transcriptHighlightCurrentWordCheckBox ||
+            m_widgets.transcriptHighlightCurrentWordCheckBox->isChecked();
         clip.transcriptOverlay.maxLines = m_widgets.transcriptMaxLinesSpin
             ? m_widgets.transcriptMaxLinesSpin->value()
             : 2;
@@ -226,6 +229,7 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     QSignalBlocker backgroundCornerRadiusBlock(m_widgets.transcriptBackgroundCornerRadiusSpin);
     QSignalBlocker shadowBlock(m_widgets.transcriptShadowEnabledCheckBox);
     QSignalBlocker titleBlock(m_widgets.transcriptShowSpeakerTitleCheckBox);
+    QSignalBlocker highlightCurrentWordBlock(m_widgets.transcriptHighlightCurrentWordCheckBox);
     QSignalBlocker maxLinesBlock(m_widgets.transcriptMaxLinesSpin);
     QSignalBlocker maxCharsBlock(m_widgets.transcriptMaxCharsSpin);
     QSignalBlocker autoScrollBlock(m_widgets.transcriptAutoScrollCheckBox);
@@ -265,6 +269,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         m_widgets.transcriptShowSpeakerTitleCheckBox->setChecked(clip.transcriptOverlay.showSpeakerTitle);
+    }
+    if (m_widgets.transcriptHighlightCurrentWordCheckBox) {
+        m_widgets.transcriptHighlightCurrentWordCheckBox->setChecked(clip.transcriptOverlay.highlightCurrentWord);
     }
     if (m_widgets.transcriptMaxLinesSpin) {
         m_widgets.transcriptMaxLinesSpin->setValue(clip.transcriptOverlay.maxLines);

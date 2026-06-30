@@ -1012,6 +1012,7 @@ void EditorWindow::createTranscriptTab()
             m_inspectorPane->transcriptHighlightColorButton(),
             m_inspectorPane->transcriptShadowEnabledCheckBox(),
             m_inspectorPane->transcriptShowSpeakerTitleCheckBox(),
+            m_inspectorPane->transcriptHighlightCurrentWordCheckBox(),
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
             m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,
             m_transcriptOverlayXSpin, m_transcriptOverlayYSpin,

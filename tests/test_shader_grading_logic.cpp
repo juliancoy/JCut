@@ -180,6 +180,9 @@ void TestShaderGradingLogic::testVulkanMaskComputeUsesDescriptorRings()
              "Direct preview mask compute must not keep one mutable descriptor set for all passes.");
     QVERIFY2(!exportText.contains(singleMutableSetMember),
              "Vulkan export mask compute must not keep one mutable descriptor set for all passes.");
+    QVERIFY2(directText.contains(QStringLiteral("convertToFormat(QImage::Format_RGBA8888)")) &&
+                 !directText.contains(QStringLiteral("Format_RGBA8888_Premultiplied")),
+             "Direct Vulkan media upload must preserve straight RGBA so grading runs before premultiplication.");
 
     QVERIFY2(directHeaderText.contains(QStringLiteral("kMaskComputeDescriptorSetCount = 128")),
              "Direct preview must keep enough mask compute descriptor sets for one recorded command buffer.");

@@ -1280,7 +1280,7 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QI
     if (!m_initialized || !commandBuffer || image.isNull()) {
         return false;
     }
-    const QImage rgbaImage = image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    const QImage rgbaImage = image.convertToFormat(QImage::Format_RGBA8888);
     if (rgbaImage.isNull() || rgbaImage.width() <= 0 || rgbaImage.height() <= 0) {
         return false;
     }

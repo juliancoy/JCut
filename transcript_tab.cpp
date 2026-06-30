@@ -771,6 +771,10 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptShowSpeakerTitleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    if (m_widgets.transcriptHighlightCurrentWordCheckBox) {
+        connect(m_widgets.transcriptHighlightCurrentWordCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
     if (m_widgets.transcriptMaxLinesSpin) {
         connect(m_widgets.transcriptMaxLinesSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);

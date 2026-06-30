@@ -66,16 +66,24 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
     const qreal scale = qBound<qreal>(0.1, clip.effectScale, 8.0);
     const qreal speed = qBound<qreal>(-8.0, clip.effectSpeed, 8.0);
 
-    if (clip.effectPreset == ClipEffectPreset::NewsLogoTicker) {
+    if (clip.effectPreset == ClipEffectPreset::NewsLogoTicker ||
+        clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground) {
         const qreal rowH = outputRect.height() / static_cast<qreal>(count);
-        const qreal tileH = std::max<qreal>(2.0, rowH * 0.78 * scale);
+        const qreal baseCoverage =
+            clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ? 1.08 : 0.78;
+        const qreal baseSpacing =
+            clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ? 1.02 : 1.35;
+        const qreal tileH = std::max<qreal>(2.0, rowH * baseCoverage * scale);
         const qreal tileW = std::max<qreal>(2.0, tileH * aspect);
-        const qreal spacing = tileW * 1.35;
+        const qreal spacing = tileW * baseSpacing;
         for (int row = 0; row < count; ++row) {
             const qreal direction = (clip.effectAlternateDirection && (row % 2)) ? -1.0 : 1.0;
-            const qreal phase = std::fmod((timelineFrame * speed * direction * rowH * 0.08) +
-                                              (row * spacing * 0.37),
-                                          spacing);
+            qreal phase = std::fmod((timelineFrame * speed * direction * rowH * 0.08) +
+                                        (row * spacing * 0.37),
+                                    spacing);
+            if (clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground && phase < 0.0) {
+                phase += spacing;
+            }
             const qreal y = outputRect.top() + (row + 0.5) * rowH - tileH * 0.5;
             for (qreal x = outputRect.left() - spacing + phase;
                  x < outputRect.right() + spacing;

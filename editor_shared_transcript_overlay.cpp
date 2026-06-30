@@ -459,7 +459,8 @@ TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section
 QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
                               const QColor& textColor,
                               const QColor& highlightTextColor,
-                              const QColor& highlightFillColor) {
+                              const QColor& highlightFillColor,
+                              bool highlightCurrentWord) {
     if (layout.lines.isEmpty()) {
         return QString();
     }
@@ -472,7 +473,7 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
         htmlWords.reserve(line.words.size());
         for (int wordIndex = 0; wordIndex < line.words.size(); ++wordIndex) {
             QString wordHtml = line.words.at(wordIndex).toHtmlEscaped();
-            if (wordIndex == line.activeWord) {
+            if (highlightCurrentWord && wordIndex == line.activeWord) {
                 wordHtml = QStringLiteral(
                                "<span style=\"background:%1;color:%2;border-radius:0.28em;padding:0.02em 0.18em;\">%3</span>")
                                .arg(highlightFillColor.name(QColor::HexRgb),

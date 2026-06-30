@@ -9,6 +9,7 @@ QString transcriptOverlayStyleCacheMaterial(const TimelineClip& clip)
         QString::number(overlay.backgroundCornerRadius, 'f', 2) + QLatin1Char('|') +
         QString::number(overlay.showShadow ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.showSpeakerTitle ? 1 : 0) + QLatin1Char('|') +
+        QString::number(overlay.highlightCurrentWord ? 1 : 0) + QLatin1Char('|') +
         overlay.fontFamily + QLatin1Char('|') +
         QString::number(overlay.fontPointSize) + QLatin1Char('|') +
         QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +

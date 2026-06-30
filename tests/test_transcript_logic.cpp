@@ -108,6 +108,7 @@ private slots:
     void testTranscriptOverlaySpeakerLookupReturnsActiveRange();
     void testTranscriptSpeakerTitleUsesOverlayWordPadding();
     void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
+    void testTranscriptOverlayHtmlCanDisableCurrentWordHighlight();
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
     void testTranscriptOverlayManualTranslationUsesNormalizedOffsets();
@@ -985,6 +986,25 @@ void TestTranscriptLogic::testTranscriptOverlayHtmlUsesQtRichTextRgbColors() {
     QVERIFY(!html.contains(QStringLiteral("#fffff2a8")));
 }
 
+void TestTranscriptLogic::testTranscriptOverlayHtmlCanDisableCurrentWordHighlight() {
+    TranscriptOverlayLayout layout;
+    TranscriptOverlayLine line;
+    line.words = {QStringLiteral("hello"), QStringLiteral("world")};
+    line.activeWord = 1;
+    layout.lines.push_back(line);
+
+    const QString html = transcriptOverlayHtml(layout,
+                                               QColor(QStringLiteral("#ffffffff")),
+                                               QColor(QStringLiteral("#ff181818")),
+                                               QColor(QStringLiteral("#fffff2a8")),
+                                               false);
+
+    QVERIFY(!html.contains(QStringLiteral("background:")));
+    QVERIFY(!html.contains(QStringLiteral("#181818")));
+    QVERIFY(!html.contains(QStringLiteral("#fff2a8")));
+    QVERIFY(html.contains(QStringLiteral("world")));
+}
+
 void TestTranscriptLogic::testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -1145,6 +1165,11 @@ void TestTranscriptLogic::testTranscriptOverlayStyleCacheMaterialIncludesTransfo
     relaidOut.transcriptOverlay.maxCharsPerLine = 42;
     QVERIFY2(transcriptOverlayStyleCacheMaterial(relaidOut) != baseMaterial,
              "Transcript overlay cache material must change when line layout limits change.");
+
+    TimelineClip highlightToggled = clip;
+    highlightToggled.transcriptOverlay.highlightCurrentWord = !clip.transcriptOverlay.highlightCurrentWord;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(highlightToggled) != baseMaterial,
+             "Transcript overlay cache material must change when current-word highlighting changes.");
 }
 
 void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry() {
@@ -1158,8 +1183,14 @@ void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGe
     source.transcriptOverlay.boxHeight = 1.0;
     source.transcriptOverlay.maxCharsPerLine = 1;
     source.transcriptOverlay.fontPointSize = 8;
+    source.transcriptOverlay.highlightCurrentWord = false;
 
     const QJsonObject json = clipToJson(source);
+    QCOMPARE(json.value(QStringLiteral("transcriptOverlay"))
+                 .toObject()
+                 .value(QStringLiteral("highlightCurrentWord"))
+                 .toBool(true),
+             false);
     TimelineClip loaded = clipFromJson(json);
 
     QCOMPARE(loaded.transcriptOverlay.boxWidth,
@@ -1170,6 +1201,7 @@ void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGe
              TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine);
     QCOMPARE(loaded.transcriptOverlay.fontPointSize,
              TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize);
+    QCOMPARE(loaded.transcriptOverlay.highlightCurrentWord, false);
 }
 
 void TestTranscriptLogic::testSpeakerFramingEnabledKeyframesOverrideGlobalFallback() {

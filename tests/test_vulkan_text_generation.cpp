@@ -9,6 +9,7 @@ private slots:
     void speakerLabelGeneratesGlyphAtlasAndSeparateCards();
     void speakerLabelStyleControlsAffectLayout();
     void transcriptOverlayGeneratesBackgroundHighlightAndGlyphs();
+    void transcriptOverlayCanDisableCurrentWordHighlight();
     void transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled();
     void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
     void transcriptOverlayLayoutsRemainReadableAcrossPreviewSizes();
@@ -139,6 +140,25 @@ void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndG
     QVERIFY(rectsContainedIn(debug.backgrounds, QRectF(QPointF(0, 0), QSizeF(outputSize))));
     QVERIFY(rectsContainedIn(debug.highlights, outputRect));
     QVERIFY(rectsContainedIn(debug.glyphRects, outputRect.adjusted(-8.0, -8.0, 8.0, 8.0)));
+}
+
+void TestVulkanTextGeneration::transcriptOverlayCanDisableCurrentWordHighlight()
+{
+    VulkanTextRenderer renderer;
+    const QSize outputSize(1080, 1920);
+    const QRectF outputRect(80.0, 1320.0, 920.0, 260.0);
+    TimelineClip clip = transcriptClip();
+    clip.transcriptOverlay.highlightCurrentWord = false;
+    const VulkanTextLayoutDebug debug = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize,
+        clip,
+        transcriptLayout(2),
+        outputRect,
+        QStringLiteral("Council District 2"));
+
+    QVERIFY(debug.valid);
+    QCOMPARE(debug.highlightCount, 0);
+    QVERIFY(debug.highlights.isEmpty());
 }
 
 void TestVulkanTextGeneration::transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled()

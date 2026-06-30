@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 
 #include "../decoder_context.h"
+#include "../decoder_image_io.h"
 
 using namespace editor;
 
@@ -107,6 +108,7 @@ private slots:
     void initTestCase();
     void testGeneratedMediaColorPassthrough_data();
     void testGeneratedMediaColorPassthrough();
+    void testTransparentPngPreservesStraightRgb();
 };
 
 void TestMediaColorPassthrough::initTestCase()
@@ -259,6 +261,23 @@ void TestMediaColorPassthrough::testGeneratedMediaColorPassthrough()
                             .arg(kReferenceColor.blue())
                             .arg(delta)
                             .arg(tolerance)));
+}
+
+void TestMediaColorPassthrough::testTransparentPngPreservesStraightRgb()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("transparent_color.png"));
+
+    QImage image(2, 1, QImage::Format_RGBA8888);
+    image.setPixelColor(0, 0, QColor(240, 80, 32, 0));
+    image.setPixelColor(1, 0, QColor(24, 200, 128, 96));
+    QVERIFY2(image.save(path), qPrintable(QStringLiteral("Failed to write %1").arg(path)));
+
+    const QImage decoded = loadSingleImageFile(path).convertToFormat(QImage::Format_RGBA8888);
+    QVERIFY(!decoded.isNull());
+    QCOMPARE(decoded.pixelColor(0, 0), QColor(240, 80, 32, 0));
+    QCOMPARE(decoded.pixelColor(1, 0), QColor(24, 200, 128, 96));
 }
 
 QTEST_MAIN(TestMediaColorPassthrough)

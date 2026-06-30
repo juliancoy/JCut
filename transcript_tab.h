@@ -44,6 +44,7 @@ public:
         QPushButton* transcriptHighlightColorButton = nullptr;
         QCheckBox* transcriptShadowEnabledCheckBox = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
+        QCheckBox* transcriptHighlightCurrentWordCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;
         QSpinBox* transcriptMaxCharsSpin = nullptr;
         QCheckBox* transcriptAutoScrollCheckBox = nullptr;

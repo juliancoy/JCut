@@ -279,6 +279,14 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
     QVERIFY2(playback.contains(QStringLiteral("m_lastTimelineAdvanceTickMs = nowMs()")) &&
                  playback.contains(QStringLiteral("m_timelineAdvanceCarrySamples = 0.0")),
              "active clock/speed changes must reset transport timer continuity");
+    const QString playbackDebug = readSourceFile(QStringLiteral("playback_debug.h"));
+    QVERIFY2(playbackDebug.contains(QStringLiteral("QElapsedTimer")) &&
+                 playbackDebug.contains(QStringLiteral("timer.elapsed()")) &&
+                 !playbackDebug.contains(QStringLiteral("currentMSecsSinceEpoch")),
+             "playback transport time must use a monotonic elapsed timer, not wall clock time");
+    QVERIFY2(playback.contains(QStringLiteral("sub_sample_tick")) &&
+                 !playback.contains(QStringLiteral("llround(speed * static_cast<qreal>(kSamplesPerFrame)")),
+             "sub-sample playback timer ticks must not manufacture a full frame advance");
     QVERIFY2(playback.contains(QStringLiteral(
                  "reconcileActivePlaybackAudioState(activePlaybackReconfigured)")),
              "active runtime changes must request stream realignment");
