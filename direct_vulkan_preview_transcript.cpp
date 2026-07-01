@@ -22,6 +22,7 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
                                                  const TimelineClip& effectiveClip,
                                                  int64_t samplePosition,
                                                  const VulkanPreviewClipFrameStatus* status,
+                                                 TranscriptOverlayCollectionStats* stats,
                                                  QString* skipReason)
 {
     PreparedTranscriptOverlay prepared;
@@ -38,8 +39,10 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
         loadTranscriptRuntimeDocument(transcriptPath);
     const QVector<TranscriptSection>& sections =
         runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
+    const bool usePresentedFrame =
+        status && status->hasFrame && status->presentedSourceFrame >= 0;
     const int64_t sourceFrame =
-        status && status->hasFrame && status->presentedSourceFrame >= 0
+        usePresentedFrame
             ? transcriptFrameForClipSourceFrame(effectiveClip, status->presentedSourceFrame)
             : transcriptFrameForClipAtTimelineSample(effectiveClip,
                                                      samplePosition,
@@ -93,6 +96,17 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
     prepared.bounds = bounds;
     prepared.speakerTitle = speakerTitle;
     prepared.ready = true;
+    if (stats) {
+        stats->lastPreparedClipId = effectiveClip.id;
+        stats->lastPreparedTranscriptPath = transcriptPath;
+        stats->lastPreparedTimingSource =
+            usePresentedFrame ? QStringLiteral("presented_media_source_frame")
+                              : QStringLiteral("transport_timeline_sample");
+        stats->lastPreparedTimelineSample = samplePosition;
+        stats->lastPreparedTranscriptFrame = sourceFrame;
+        stats->lastPreparedPresentedMediaSourceFrame =
+            usePresentedFrame ? status->presentedSourceFrame : -1;
+    }
     return prepared;
 }
 
@@ -153,6 +167,7 @@ PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInte
                                    effectiveClip,
                                    state->currentSample,
                                    statusDrawable ? status : nullptr,
+                                   &localStats,
                                    &skipReason);
         if (prepared.ready) {
             overlays.insert(clip.id, prepared);

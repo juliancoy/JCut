@@ -618,6 +618,31 @@ QWidget *InspectorPane::buildEffectsTab()
     m_maskForegroundLayerCheck = new QCheckBox(QStringLiteral("SAM mask is foreground layer"), page);
     m_maskForegroundLayerCheck->setToolTip(QStringLiteral("Draw masked person pixels as a later Vulkan pass."));
     maskLayerSection.body->addWidget(m_maskForegroundLayerCheck);
+    m_maskRepeatEnabledCheck = new QCheckBox(QStringLiteral("Repeat masked source"), page);
+    m_maskRepeatEnabledCheck->setToolTip(
+        QStringLiteral("Repeat the source image through the processed SAM mask channel."));
+    maskLayerSection.body->addWidget(m_maskRepeatEnabledCheck);
+    auto *maskRepeatForm = new QFormLayout;
+    maskRepeatForm->setContentsMargins(0, 0, 0, 0);
+    maskRepeatForm->setSpacing(6);
+    auto makeRepeatDeltaSpin = [page]() {
+        auto *spin = new QDoubleSpinBox(page);
+        spin->setRange(-100000.0, 100000.0);
+        spin->setDecimals(2);
+        spin->setSingleStep(10.0);
+        spin->setSuffix(QStringLiteral(" px"));
+        spin->setKeyboardTracking(false);
+        return spin;
+    };
+    m_maskRepeatDeltaXSpin = makeRepeatDeltaSpin();
+    m_maskRepeatDeltaXSpin->setValue(160.0);
+    m_maskRepeatDeltaXSpin->setToolTip(QStringLiteral("Screen-space X offset between masked repeats."));
+    m_maskRepeatDeltaYSpin = makeRepeatDeltaSpin();
+    m_maskRepeatDeltaYSpin->setValue(0.0);
+    m_maskRepeatDeltaYSpin->setToolTip(QStringLiteral("Screen-space Y offset between masked repeats."));
+    maskRepeatForm->addRow(QStringLiteral("Repeat X"), m_maskRepeatDeltaXSpin);
+    maskRepeatForm->addRow(QStringLiteral("Repeat Y"), m_maskRepeatDeltaYSpin);
+    maskLayerSection.body->addLayout(maskRepeatForm);
     layout->addWidget(maskLayerSection.container);
 
     auto presetSection = createDisclosureSection(page, QStringLiteral("Image Presets"), true);
@@ -658,14 +683,29 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectAlternateDirectionCheck = new QCheckBox(QStringLiteral("Alternate row direction"), page);
     m_effectAlternateDirectionCheck->setChecked(true);
     presetForm->addRow(QString(), m_effectAlternateDirectionCheck);
+
+    m_tilingPatternCombo = new QComboBox(page);
+    m_tilingPatternCombo->addItem(QStringLiteral("Grid"), static_cast<int>(ClipTilingPattern::Grid));
+    m_tilingPatternCombo->addItem(QStringLiteral("Encircle"), static_cast<int>(ClipTilingPattern::Encircle));
+    m_tilingPatternCombo->addItem(QStringLiteral("Spiral XY"), static_cast<int>(ClipTilingPattern::SpiralXY));
+    m_tilingPatternCombo->addItem(QStringLiteral("Spiral XZ"), static_cast<int>(ClipTilingPattern::SpiralXZ));
+    m_tilingPatternCombo->addItem(QStringLiteral("Spiral YZ"), static_cast<int>(ClipTilingPattern::SpiralYZ));
+    m_tilingPatternCombo->addItem(QStringLiteral("Diamond"), static_cast<int>(ClipTilingPattern::Diamond));
+    presetForm->addRow(QStringLiteral("Tiling Pattern"), m_tilingPatternCombo);
+
+    m_tilingSpacingSpin = new QDoubleSpinBox(page);
+    m_tilingSpacingSpin->setRange(0.1, 8.0);
+    m_tilingSpacingSpin->setDecimals(2);
+    m_tilingSpacingSpin->setSingleStep(0.1);
+    m_tilingSpacingSpin->setValue(1.0);
+    m_tilingSpacingSpin->setToolTip(QStringLiteral("Spacing multiplier between repeated source images."));
+    presetForm->addRow(QStringLiteral("Tiling Spacing"), m_tilingSpacingSpin);
+
+    m_tilingWrapCheck = new QCheckBox(QStringLiteral("Wrap across bounds"), page);
+    m_tilingWrapCheck->setChecked(true);
+    presetForm->addRow(QString(), m_tilingWrapCheck);
     presetSection.body->addLayout(presetForm);
     layout->addWidget(presetSection.container);
-
-    auto titleSection = createDisclosureSection(page, QStringLiteral("Title Presets"), true);
-    m_titleFlyInPresetButton = new QPushButton(QStringLiteral("News lower-third fly in"), page);
-    m_titleFlyInPresetButton->setToolTip(QStringLiteral("Creates fly-in, hold, and fly-out title keyframes."));
-    titleSection.body->addWidget(m_titleFlyInPresetButton);
-    layout->addWidget(titleSection.container);
 
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(
@@ -1235,6 +1275,9 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_mirrorHorizontalCheckBox = new QCheckBox(QStringLiteral("Mirror Horizontal"), page);
     m_mirrorVerticalCheckBox = new QCheckBox(QStringLiteral("Mirror Vertical"), page);
     m_lockVideoScaleCheckBox = new QCheckBox(QStringLiteral("Lock Scale"), page);
+    m_sourceTransformLockCheckBox = new QCheckBox(QStringLiteral("Lock To Source Transform"), page);
+    m_sourceTransformLockCheckBox->setToolTip(
+        QStringLiteral("Use the linked source clip's transform for this child clip."));
     m_keyframeSpaceCheckBox = new QCheckBox(QStringLiteral("Clip-Relative Frames"), page);
     m_keyframeSkipAwareTimingCheckBox = new QCheckBox(QStringLiteral("Skip Aware Timing"), page);
     m_addVideoKeyframeButton = new QPushButton(QStringLiteral("Add Keyframe"), page);
@@ -1244,6 +1287,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_videoInterpolationCombo->addItem(QStringLiteral("Step"));
     m_videoInterpolationCombo->addItem(QStringLiteral("Linear"));
     m_lockVideoScaleCheckBox->setChecked(false);
+    m_sourceTransformLockCheckBox->setChecked(false);
     m_keyframeSpaceCheckBox->setChecked(true);
     m_keyframeSkipAwareTimingCheckBox->setChecked(true);
 
@@ -1275,13 +1319,15 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_keyframesFollowCurrentCheckBox->setChecked(true);
 
     m_videoKeyframeTable = new QTableWidget(page);
-    m_videoKeyframeTable->setColumnCount(7);
+    m_videoKeyframeTable->setColumnCount(9);
     m_videoKeyframeTable->setHorizontalHeaderLabels({QStringLiteral("Frame"),
                                                      QStringLiteral("X"),
                                                      QStringLiteral("Y"),
                                                      QStringLiteral("Rot"),
                                                      QStringLiteral("Scale X"),
                                                      QStringLiteral("Scale Y"),
+                                                     QStringLiteral("Repeat X"),
+                                                     QStringLiteral("Repeat Y"),
                                                      QStringLiteral("Interp")});
     m_videoKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_videoKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1295,6 +1341,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     layout->addWidget(m_keyframesInspectorDetailsLabel);
     layout->addLayout(form);
     layout->addWidget(m_lockVideoScaleCheckBox);
+    layout->addWidget(m_sourceTransformLockCheckBox);
     layout->addWidget(m_keyframeSpaceCheckBox);
     layout->addWidget(m_keyframeSkipAwareTimingCheckBox);
     layout->addWidget(m_keyframesAutoScrollCheckBox);
@@ -1787,7 +1834,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerExportLongSectionsButton->setMinimumHeight(30);
     m_speakerExportLongSectionsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     m_speakerExportLongSectionsButton->setEnabled(false);
-    m_speakerCreateTitleClipsButton = new QPushButton(QStringLiteral("Create News Titles"), page);
+    m_speakerCreateTitleClipsButton = new QPushButton(QStringLiteral("News lower-third fly in"), page);
     m_speakerCreateTitleClipsButton->setObjectName(QStringLiteral("speakers.create_news_title_clips"));
     m_speakerCreateTitleClipsButton->setMinimumHeight(30);
     m_speakerCreateTitleClipsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -2354,9 +2401,21 @@ QWidget *InspectorPane::buildSpeakersTab()
     assignmentControlsLayout->addWidget(m_speakerApplyTrackToAllMatchingSectionsCheckBox);
     assignmentControlsLayout->addWidget(m_speakerSectionMinimumWordsSpin);
     assignmentControlsLayout->addStretch(1);
-    assignmentControlsLayout->addWidget(m_speakerCreateTitleClipsButton);
     assignmentControlsLayout->addWidget(m_speakerExportLongSectionsButton);
     speakerAssignmentsLayout->addWidget(assignmentControlsGroup);
+
+    auto *speakerTitlesGroup = new QGroupBox(QStringLiteral("Speaker Titles"), speakerAssignmentsPage);
+    auto *speakerTitlesLayout = new QVBoxLayout(speakerTitlesGroup);
+    speakerTitlesLayout->setContentsMargins(8, 6, 8, 6);
+    speakerTitlesLayout->setSpacing(6);
+    auto *speakerTitlesHelp = new QLabel(
+        QStringLiteral("Create fly-in lower-third title clips from transcript speaker changes."),
+        speakerTitlesGroup);
+    styleSectionHelp(speakerTitlesHelp);
+    speakerTitlesLayout->addWidget(speakerTitlesHelp);
+    speakerTitlesLayout->addWidget(m_speakerCreateTitleClipsButton);
+    speakerAssignmentsLayout->addWidget(speakerTitlesGroup);
+
     speakerAssignmentsLayout->addWidget(m_speakersTable, 1);
     speakerAssignmentsLayout->addWidget(m_speakerSectionsTable, 1);
 

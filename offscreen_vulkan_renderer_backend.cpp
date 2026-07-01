@@ -52,6 +52,21 @@ QJsonArray rectDiagnosticArray(const QVector<QRectF> &rects) {
   return array;
 }
 
+VkRect2D scissorFromRect(const QRectF& rect, const QSize& outputSize) {
+  const int outputWidth = qMax(1, outputSize.width());
+  const int outputHeight = qMax(1, outputSize.height());
+  const int left = qBound(0, static_cast<int>(std::floor(rect.left())), outputWidth);
+  const int top = qBound(0, static_cast<int>(std::floor(rect.top())), outputHeight);
+  const int right = qBound(left, static_cast<int>(std::ceil(rect.right())), outputWidth);
+  const int bottom = qBound(top, static_cast<int>(std::ceil(rect.bottom())), outputHeight);
+  VkRect2D scissor{};
+  scissor.offset = {left, top};
+  scissor.extent = {
+      static_cast<uint32_t>(qMax(0, right - left)),
+      static_cast<uint32_t>(qMax(0, bottom - top))};
+  return scissor;
+}
+
 QRectF faceTargetRectFromTransformDiagnostics(const QJsonObject &diagnostics) {
   const QJsonObject target =
       diagnostics.value(QStringLiteral("target_box_norm")).toObject();
@@ -2041,6 +2056,7 @@ public:
     QSize sourceSize;
     bool preferHardwareDirect = false;
     bool maskTextureEnabled = false;
+    bool maskClipSource = false;
     bool maskShowOnly = false;
     bool maskGradeEnabled = false;
     bool maskForegroundLayerEnabled = false;
@@ -2067,6 +2083,8 @@ public:
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
     QVector<VulkanEffectPipelinePlan::DrawPass> presetDraws;
+    bool presetScissorEnabled = false;
+    QRectF presetScissorRect;
   };
 
   struct TranscriptTextInput {
@@ -2926,6 +2944,10 @@ public:
           continue;
         }
         if (!layer.presetDraws.isEmpty()) {
+          if (layer.presetScissorEnabled) {
+            const VkRect2D presetScissor = scissorFromRect(layer.presetScissorRect, m_outputSize);
+            vkCmdSetScissor(m_commandBuffer, 0, 1, &presetScissor);
+          }
           for (const VulkanEffectPipelinePlan::DrawPass& drawPass : layer.presetDraws) {
             float presetMvp[16];
             vulkanMvpForOutputRect(
@@ -2933,6 +2955,9 @@ public:
                 m_outputSize,
                 drawPass.rotationDegrees,
                 presetMvp);
+            const float drawMode = layer.maskClipSource
+                                       ? kVulkanEffectModeMaskGrade
+                                       : drawPass.shaderMode;
             drawLayerWithMvp(presetMvp,
                              layer.brightness,
                              layer.contrast,
@@ -2941,9 +2966,15 @@ public:
                              layer.shadows,
                              layer.midtones,
                              layer.highlights,
-                             drawPass.shaderMode);
+                             drawMode);
+          }
+          if (layer.presetScissorEnabled) {
+            vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
           }
         } else {
+          const float drawMode = layer.maskClipSource
+                                     ? kVulkanEffectModeMaskGrade
+                                     : layer.shadows[3];
           drawLayer(layer.brightness,
                     layer.contrast,
                     layer.saturation,
@@ -2951,7 +2982,7 @@ public:
                     layer.shadows,
                     layer.midtones,
                     layer.highlights,
-                    layer.shadows[3]);
+                    drawMode);
         }
         if (layer.maskTextureEnabled && layer.maskGradeEnabled) {
           float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -4128,9 +4159,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
       layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
     }
+    const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
     const bool gpuMaskEnabled =
         clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-        (clip.maskShowOnly || clip.maskGradeEnabled || clip.maskForegroundLayerEnabled);
+        (generatedMaskMatte || clip.maskShowOnly || clip.maskGradeEnabled ||
+         clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
     if (gpuMaskEnabled) {
       const QImage mask = rawClipMaskImage(clip, localFrame);
       const QImage maskRgba = rgbaMaskImageForUpload(mask);
@@ -4138,6 +4171,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskImage = maskRgba;
         layer.maskSourceSize = maskRgba.size();
         layer.maskTextureEnabled = true;
+        layer.maskClipSource = generatedMaskMatte;
         layer.maskShowOnly = clip.maskShowOnly;
         layer.maskGradeEnabled = clip.maskGradeEnabled;
         layer.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
@@ -4186,8 +4220,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     QJsonObject transformDiagnostics;
     const TimelineClip::TransformKeyframe transform =
-        evaluateClipRenderTransformAtPosition(
+        evaluateClipRenderTransformWithSourceLockAtPosition(
             clip,
+            request.clips,
             static_cast<qreal>(timelineFrame),
             request.renderSyncMarkers,
             request.outputSize,
@@ -4195,12 +4230,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QSize sourceSize = clip.sourceFrameSize.isValid()
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
-    const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
-        clip,
-        QRectF(QPointF(0.0, 0.0), QSizeF(request.outputSize)),
-        sourceSize,
-        timelineFrame);
-    layer.presetDraws = effectPlan.generatedDraws;
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
     QPointF exportVideoTranslation(transform.translationX, transform.translationY);
     PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
@@ -4209,6 +4238,21 @@ QImage OffscreenVulkanRenderer::renderFrame(
         exportVideoTranslation,
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY));
+    const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
+    const QRectF effectBounds =
+        (clip.effectPreset == ClipEffectPreset::SourceTile || clip.maskRepeatEnabled)
+            ? layerGeometry.bounds.intersected(outputRect)
+            : outputRect;
+    const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
+        clip,
+        effectBounds,
+        sourceSize,
+        timelineFrame);
+    layer.presetDraws = effectPlan.generatedDraws;
+    if (clip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
+      layer.presetScissorEnabled = true;
+      layer.presetScissorRect = effectBounds;
+    }
     if (exportFaceTransformDiagnostics && clip.speakerFramingEnabled) {
       transformDiagnostics.insert(QStringLiteral("clip_id"), clip.id);
       transformDiagnostics.insert(QStringLiteral("clip_label"), clip.label);
@@ -4255,7 +4299,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
       const BackgroundFillEffect fillEffect = request.backgroundFillEffect;
-      const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
       const QRectF sourceRectNorm(
           (layerGeometry.bounds.left() - outputRect.left()) / qMax<qreal>(1.0, outputRect.width()),
           (layerGeometry.bounds.top() - outputRect.top()) / qMax<qreal>(1.0, outputRect.height()),

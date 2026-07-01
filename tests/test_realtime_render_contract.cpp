@@ -55,6 +55,7 @@ private slots:
     void exportFrameTimingNamesOutputTimeAndTimelineDomains();
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
+    void childTransformLockUsesSourceTransformWhenEnabled();
     void exportLoopPassesFractionalPositionToRenderer();
 };
 
@@ -138,6 +139,44 @@ void TestRealtimeRenderContract::renderTransformsInterpolateAtOutputFpsPositions
              "render transforms must evaluate at fractional output-frame positions");
     QVERIFY2(std::abs(atHalfFrame.translationY - 10.0) < 0.000001,
              "fractional render transform evaluation prevents visible half-frame stepping");
+}
+
+void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnabled()
+{
+    TimelineClip source = makeMappedClip(30.0);
+    source.id = QStringLiteral("source");
+    source.baseTranslationX = 100.0;
+    source.baseTranslationY = 25.0;
+    source.baseRotation = 7.5;
+    source.baseScaleX = 1.5;
+    source.baseScaleY = 1.25;
+
+    TimelineClip child = makeMappedClip(30.0);
+    child.id = QStringLiteral("child");
+    child.linkedSourceClipId = source.id;
+    child.baseTranslationX = -200.0;
+    child.baseTranslationY = -75.0;
+    child.baseRotation = -12.0;
+    child.baseScaleX = 0.5;
+    child.baseScaleY = 0.5;
+
+    const QVector<TimelineClip> clips{source, child};
+    const TimelineClip::TransformKeyframe unlocked =
+        evaluateClipRenderTransformWithSourceLockAtPosition(
+            child, clips, 10.0, {}, QSize(1920, 1080));
+    QCOMPARE(unlocked.translationX, child.baseTranslationX);
+    QCOMPARE(unlocked.translationY, child.baseTranslationY);
+
+    child.sourceTransformLocked = true;
+    const QVector<TimelineClip> lockedClips{source, child};
+    const TimelineClip::TransformKeyframe locked =
+        evaluateClipRenderTransformWithSourceLockAtPosition(
+            child, lockedClips, 10.0, {}, QSize(1920, 1080));
+    QCOMPARE(locked.translationX, source.baseTranslationX);
+    QCOMPARE(locked.translationY, source.baseTranslationY);
+    QCOMPARE(locked.rotation, source.baseRotation);
+    QCOMPARE(locked.scaleX, source.baseScaleX);
+    QCOMPARE(locked.scaleY, source.baseScaleY);
 }
 
 void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()

@@ -699,6 +699,17 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                 keyframe.scaleY = 1.0;
                 return transformWithTransientOverride(state, clipId, keyframe);
             }
+            if (clip.sourceTransformLocked && !clip.linkedSourceClipId.trimmed().isEmpty()) {
+                return transformWithTransientOverride(
+                    state,
+                    clipId,
+                    evaluateClipRenderTransformWithSourceLockAtPosition(
+                        clip,
+                        state->clips,
+                        state->currentFramePosition,
+                        state->renderSyncMarkers,
+                        state->outputSize));
+            }
             const VulkanPreviewFacestreamOverlay* selectedFaceOverlay = nullptr;
             for (const VulkanPreviewFacestreamOverlay& overlay : state->facedetectionsOverlays) {
                 if (overlay.clipId != clip.id ||
@@ -742,8 +753,9 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                             0.0,
                             state->outputSize)));
             }
-            return transformWithTransientOverride(state, clipId, evaluateClipRenderTransformAtPosition(
+            return transformWithTransientOverride(state, clipId, evaluateClipRenderTransformWithSourceLockAtPosition(
                 clip,
+                state->clips,
                 state->currentFramePosition,
                 state->renderSyncMarkers,
                 state->outputSize));

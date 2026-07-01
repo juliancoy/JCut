@@ -1266,13 +1266,18 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                 continue;
             }
             const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-            const bool exactBuffered = m_playbackPipeline->isFrameBuffered(clip.id, localFrame);
+            const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
+            const int64_t requestFrame = staticImageClip ? 0 : localFrame;
+            const bool exactBuffered = m_playbackPipeline->isFrameBuffered(clip.id, requestFrame) ||
+                                       (staticImageClip &&
+                                        !m_cache->getCachedFrame(clip.id, requestFrame).isNull());
             const bool displayableBuffered =
-                !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
+                !m_playbackPipeline->getPresentationFrame(clip.id, requestFrame).isNull() ||
+                (staticImageClip && !m_cache->getBestCachedFrame(clip.id, requestFrame).isNull());
             ++visibleAttemptCount;
             ++m_visibleRequestAttempts;
             m_lastVisibleRequestClipId = clip.id;
-            m_lastVisibleRequestFrame = localFrame;
+            m_lastVisibleRequestFrame = requestFrame;
             m_lastVisibleRequestCached = exactBuffered;
             m_lastVisibleRequestExactCached = exactBuffered;
             m_lastVisibleRequestDisplayableCached = displayableBuffered;
@@ -1341,24 +1346,26 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             continue;
         }
 
+        const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t requestFrame = staticImageClip ? 0 : localFrame;
         const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;
         const bool displayableCached = m_cache->hasDisplayableFrameForPreview(
             clip.id,
-            localFrame,
+            requestFrame,
             m_interaction.playing,
             true,
             requireDirectVulkanPayload);
         const bool exactCached = m_cache->hasExactFrameForPreview(
             clip.id,
-            localFrame,
+            requestFrame,
             m_interaction.playing,
             true,
             requireDirectVulkanPayload);
-        const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
+        const bool pending = m_cache->isVisibleRequestPending(clip.id, requestFrame);
         const bool pendingNearby = m_cache->isNearbyVisibleRequestPending(
-            clip.id, localFrame, editor::debugSupersedeSlackFrames());
-        const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
+            clip.id, requestFrame, editor::debugSupersedeSlackFrames());
+        const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, requestFrame, 2000);
         const int backlog = m_cache->pendingVisibleRequestCount();
         ++visibleAttemptCount;
         m_lastVisibleRequestClipId = clip.id;
@@ -1399,8 +1406,8 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         visibleRequestReadyCount += displayableCached || exactCached ? 1 : 0;
         visibleRequestUnavailableCount += (!displayableCached && !exactCached) ? 1 : 0;
         const QString requestedClipId = clip.id;
-        const int64_t requestedFrame = localFrame;
-        m_cache->requestFrame(clip.id, localFrame, [this, requestedClipId, requestedFrame](FrameHandle frame) {
+        const int64_t requestedFrame = requestFrame;
+        m_cache->requestFrame(clip.id, requestFrame, [this, requestedClipId, requestedFrame](FrameHandle frame) {
                 ++m_visibleRequestCallbacks;
                 const bool nullFrame = frame.isNull();
                 if (nullFrame) {
@@ -1463,7 +1470,9 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
                                       m_bypassGrading)) {
             continue;
         }
-        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t localFrame = clip.mediaType == ClipMediaType::Image
+            ? 0
+            : sourceFrameForSample(clip, m_interaction.currentSample);
         if (frame == localFrame) {
             return true;
         }
@@ -1603,8 +1612,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
         status.gradingBypassed = m_bypassGrading;
         status.correctionsEnabled = m_correctionsEnabled;
-        status.transform = evaluateClipRenderTransformAtPosition(
+        status.transform = evaluateClipRenderTransformWithSourceLockAtPosition(
             clip,
+            m_interaction.clips,
             m_interaction.currentFramePosition,
             m_interaction.renderSyncMarkers,
             m_interaction.outputSize);
@@ -1678,9 +1688,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             status.presentedSourceFrame = selectedFrame.frameNumber();
             m_lastPresentedFrameByClip.insert(clip.id, selectedFrame);
             status.frameSize = selectedFrame.size();
+            const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
             const bool gpuMaskEnabled =
                 clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-                (clip.maskShowOnly || clip.maskGradeEnabled || clip.maskForegroundLayerEnabled);
+                (generatedMaskMatte || clip.maskShowOnly || clip.maskGradeEnabled ||
+                 clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
             const bool maskFrameMatchesPresentedFrame =
                 staticImageClip ||
                 status.exact ||
@@ -1690,6 +1702,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 if (!mask.isNull()) {
                     status.maskImage = mask;
                     status.maskTextureEnabled = true;
+                    status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
                     status.maskShowOnly = clip.maskShowOnly;
                     status.maskGradeEnabled = clip.maskGradeEnabled;

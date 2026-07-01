@@ -78,6 +78,8 @@ QJsonObject transformKeyframeDiagnosticObject(const TimelineClip::TransformKeyfr
         {QStringLiteral("rotation"), transform.rotation},
         {QStringLiteral("scale_x"), transform.scaleX},
         {QStringLiteral("scale_y"), transform.scaleY},
+        {QStringLiteral("mask_repeat_delta_x"), transform.maskRepeatDeltaX},
+        {QStringLiteral("mask_repeat_delta_y"), transform.maskRepeatDeltaY},
         {QStringLiteral("linear_interpolation"), transform.linearInterpolation}
     };
 }
@@ -1790,6 +1792,10 @@ TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const Timeline
             state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
             state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
             state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
+            state.maskRepeatDeltaX =
+                previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
+            state.maskRepeatDeltaY =
+                previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
             state.linearInterpolation = current.linearInterpolation;
             return state;
         }
@@ -1808,6 +1814,8 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip&
     effective.rotation += clip.baseRotation;
     effective.scaleX = sanitizeScaleValue(clip.baseScaleX * effective.scaleX);
     effective.scaleY = sanitizeScaleValue(clip.baseScaleY * effective.scaleY);
+    effective.maskRepeatDeltaX += clip.maskRepeatDeltaX;
+    effective.maskRepeatDeltaY += clip.maskRepeatDeltaY;
     return effective;
 }
 
@@ -1819,6 +1827,8 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
         state.rotation = clip.baseRotation;
         state.scaleX = sanitizeScaleValue(clip.baseScaleX);
         state.scaleY = sanitizeScaleValue(clip.baseScaleY);
+        state.maskRepeatDeltaX = clip.maskRepeatDeltaX;
+        state.maskRepeatDeltaY = clip.maskRepeatDeltaY;
         return state;
     }
 
@@ -1848,6 +1858,10 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
                     state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
                     state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
                     state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
+                    state.maskRepeatDeltaX =
+                        previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
+                    state.maskRepeatDeltaY =
+                        previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
                     state.linearInterpolation = current.linearInterpolation;
                 }
                 break;
@@ -1864,6 +1878,8 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
     state.rotation += clip.baseRotation;
     state.scaleX = sanitizeScaleValue(clip.baseScaleX * state.scaleX);
     state.scaleY = sanitizeScaleValue(clip.baseScaleY * state.scaleY);
+    state.maskRepeatDeltaX += clip.maskRepeatDeltaX;
+    state.maskRepeatDeltaY += clip.maskRepeatDeltaY;
     return state;
 }
 
@@ -2550,6 +2566,8 @@ TimelineClip::TransformKeyframe clipBaseTransformOnly(const TimelineClip& clip) 
     base.rotation = clip.baseRotation;
     base.scaleX = sanitizeScaleValue(clip.baseScaleX);
     base.scaleY = sanitizeScaleValue(clip.baseScaleY);
+    base.maskRepeatDeltaX = clip.maskRepeatDeltaX;
+    base.maskRepeatDeltaY = clip.maskRepeatDeltaY;
     return base;
 }
 
@@ -2605,6 +2623,71 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
                                transformKeyframeDiagnosticObject(finalTransform));
     }
     return finalTransform;
+}
+
+TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosition(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const QSize& outputSize,
+    QJsonObject* diagnosticsOut)
+{
+    if (!clip.sourceTransformLocked || clip.linkedSourceClipId.trimmed().isEmpty()) {
+        return evaluateClipRenderTransformAtPosition(
+            clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+    }
+
+    QSet<QString> visited;
+    visited.insert(clip.id);
+    const TimelineClip* source = nullptr;
+    QString sourceId = clip.linkedSourceClipId.trimmed();
+    while (!sourceId.isEmpty()) {
+        if (visited.contains(sourceId)) {
+            if (diagnosticsOut) {
+                diagnosticsOut->insert(QStringLiteral("source_transform_lock"),
+                                       QStringLiteral("cycle_fallback"));
+            }
+            return evaluateClipRenderTransformAtPosition(
+                clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+        }
+        visited.insert(sourceId);
+
+        source = nullptr;
+        for (const TimelineClip& candidate : timelineClips) {
+            if (candidate.id == sourceId) {
+                source = &candidate;
+                break;
+            }
+        }
+        if (!source) {
+            if (diagnosticsOut) {
+                diagnosticsOut->insert(QStringLiteral("source_transform_lock"),
+                                       QStringLiteral("missing_source_fallback"));
+                diagnosticsOut->insert(QStringLiteral("source_transform_locked_source_id"), sourceId);
+            }
+            return evaluateClipRenderTransformAtPosition(
+                clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+        }
+        if (!source->sourceTransformLocked || source->linkedSourceClipId.trimmed().isEmpty()) {
+            break;
+        }
+        sourceId = source->linkedSourceClipId.trimmed();
+    }
+
+    TimelineClip::TransformKeyframe sourceTransform =
+        evaluateClipRenderTransformAtPosition(*source, timelineFramePosition, markers, outputSize, diagnosticsOut);
+    sourceTransform.frame = qBound<int64_t>(
+        0,
+        static_cast<int64_t>(std::floor(timelineFramePosition)) - clip.startFrame,
+        qMax<int64_t>(0, clip.durationFrames - 1));
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("source_transform_lock"), QStringLiteral("source_transform"));
+        diagnosticsOut->insert(QStringLiteral("source_transform_locked_source_id"), source->id);
+        diagnosticsOut->insert(QStringLiteral("final_render_transform"),
+                               transformKeyframeDiagnosticObject(sourceTransform));
+    }
+    return sourceTransform;
 }
 
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {

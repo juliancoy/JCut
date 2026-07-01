@@ -29,7 +29,7 @@ Each clip with a SAM mask should be expressible as a paired mask/matte clip:
 - Same `filePath`, media type, source FPS, source duration, source-in, playback rate, start frame, and duration as the original.
 - Same transform timing unless the user explicitly detaches it.
 - `maskEnabled = true` and `maskFramesDir` copied from the source.
-- `maskShowOnly` or equivalent matte rendering enabled when the clip is intended to act as a mask layer.
+- Generated mask matte clips render the source image clipped by the mask. `maskShowOnly` remains a manual diagnostic view for ordinary mask inspection.
 - `maskForegroundLayerEnabled` remains useful for the existing immediate foreground pass, but the generated mask clip is the long-term timeline representation.
 
 This enables stacks such as:
@@ -71,7 +71,7 @@ Existing transcript overlay speaker-title logic is useful for live overlay rende
 ## Implementation Notes
 
 - Persist clip role and source-link metadata before building complex UI. That keeps project files forward-compatible.
-- Use `makeSamMaskMatteClip` as the construction contract for generated SAM matte clips: same media/timing as source, visual-only, linked back to the source clip, and `maskShowOnly` enabled.
+- Use `makeSamMaskMatteClip` as the construction contract for generated SAM matte clips: same media/timing as source, visual-only, linked back to the source clip, and rendered as the original source clipped by the mask.
 - Use the timeline context menu's Generated Clips commands to create/update SAM mask mattes and create alternating motion background synth clips.
 - Use the timeline context menu's Transcript command to create/update transcript-derived speaker title clips.
 - Keep generated clip timing deterministic and based on the source clip, not wall clock.

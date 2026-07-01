@@ -60,6 +60,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* gradingAction = nullptr;
     QAction* resetGradingAction = nullptr;
     QAction* scaleToFillAction = nullptr;
+    QAction* sourceTransformLockAction = nullptr;
     QAction* propertiesAction = nullptr;
     QAction* refreshMetadataAction = nullptr;
     QAction* detectAction = nullptr;
@@ -143,6 +144,13 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         scaleToFillAction->setEnabled(
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
+            !m_clips[clipIndex].locked);
+        sourceTransformLockAction = menu.addAction(QStringLiteral("Lock Transform To Source"));
+        sourceTransformLockAction->setCheckable(true);
+        sourceTransformLockAction->setChecked(m_clips[clipIndex].sourceTransformLocked);
+        sourceTransformLockAction->setEnabled(
+            clipHasVisuals(m_clips[clipIndex]) &&
+            !m_clips[clipIndex].linkedSourceClipId.trimmed().isEmpty() &&
             !m_clips[clipIndex].locked);
         QMenu* generatedMenu = menu.addMenu(QStringLiteral("Generated Clips"));
         generateSamMaskMatteAction =
@@ -504,6 +512,15 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         if (scaleToFillRequested && clipIndex >= 0) {
             scaleToFillRequested(m_clips[clipIndex].id);
         }
+        return;
+    }
+
+    if (selected == sourceTransformLockAction && clipIndex >= 0) {
+        TimelineClip& clip = m_clips[clipIndex];
+        clip.sourceTransformLocked =
+            sourceTransformLockAction->isChecked() && !clip.linkedSourceClipId.trimmed().isEmpty();
+        if (clipsChanged) clipsChanged();
+        update();
         return;
     }
 

@@ -623,6 +623,17 @@ void TestDirectVulkanHandoffPipelineContract::
                               " status->presentedSourceFrame)")),
            "live Vulkan transcript subtitles must time against the presented "
            "video frame when one is available");
+  const QString presenterSource =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(!presenterSource.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
+  QVERIFY2(presenterSource.contains(QStringLiteral("last_transcript_timing_source")) &&
+               presenterSource.contains(QStringLiteral("last_transcript_timeline_sample")) &&
+               presenterSource.contains(QStringLiteral("last_transcript_frame")) &&
+               presenterSource.contains(QStringLiteral(
+                   "last_transcript_presented_media_source_frame")),
+           "direct Vulkan preview diagnostics must name transcript timing "
+           "domains explicitly");
   QVERIFY2(!backend.contains(QStringLiteral("renderTranscriptOverlay(")),
            "direct Vulkan preview must not retain a CPU-rendered transcript "
            "overlay path");
@@ -1530,8 +1541,9 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!exportRenderer.isEmpty(),
            "offscreen_vulkan_renderer_backend.cpp must be readable");
   QVERIFY2(exportRenderer.contains(QStringLiteral(
-               "evaluateClipRenderTransformAtPosition(\n"
+               "evaluateClipRenderTransformWithSourceLockAtPosition(\n"
                "            clip,\n"
+               "            request.clips,\n"
                "            static_cast<qreal>(timelineFrame),\n"
                "            request.renderSyncMarkers,\n"
                "            request.outputSize,\n"
@@ -1547,8 +1559,9 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   QVERIFY2(!preview.isEmpty(), "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(preview.contains(QStringLiteral(
-               "evaluateClipRenderTransformAtPosition(\n"
+               "evaluateClipRenderTransformWithSourceLockAtPosition(\n"
                "            clip,\n"
+               "            m_interaction.clips,\n"
                "            m_interaction.currentFramePosition,\n"
                "            m_interaction.renderSyncMarkers,\n"
                "            m_interaction.outputSize)")),

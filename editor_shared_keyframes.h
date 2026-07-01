@@ -62,6 +62,13 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
                                                                       const QVector<RenderSyncMarker>& markers,
                                                                       const QSize& outputSize = QSize(),
                                                                       QJsonObject* diagnosticsOut = nullptr);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosition(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const QSize& outputSize = QSize(),
+    QJsonObject* diagnosticsOut = nullptr);
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 qreal evaluateClipOpacityAtFrame(const TimelineClip& clip, int64_t timelineFrame);

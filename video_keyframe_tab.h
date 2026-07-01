@@ -33,6 +33,7 @@ public:
         QCheckBox* mirrorHorizontalCheckBox = nullptr;
         QCheckBox* mirrorVerticalCheckBox = nullptr;
         QCheckBox* lockVideoScaleCheckBox = nullptr;
+        QCheckBox* sourceTransformLockCheckBox = nullptr;
         QCheckBox* keyframeSpaceCheckBox = nullptr;
         QCheckBox* keyframeSkipAwareTimingCheckBox = nullptr;
         QCheckBox* keyframesAutoScrollCheckBox = nullptr;
@@ -80,6 +81,7 @@ private slots:
     void onMirrorHorizontalToggled(bool checked);
     void onMirrorVerticalToggled(bool checked);
     void onLockScaleToggled(bool checked);
+    void onSourceTransformLockToggled(bool checked);
     void onKeyframeSpaceToggled(bool checked);
     void onSkipAwareTimingToggled(bool checked);
     void onAutoScrollToggled(bool checked);
@@ -104,6 +106,8 @@ private:
         double rotation = 0.0;
         double scaleX = 1.0;
         double scaleY = 1.0;
+        double maskRepeatDeltaX = 0.0;
+        double maskRepeatDeltaY = 0.0;
         bool linearInterpolation = true;
     };
 

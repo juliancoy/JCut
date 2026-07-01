@@ -1922,6 +1922,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             stats->transcriptCandidateCount = transcriptCollectionStats.candidateCount;
             stats->transcriptPreparedCount = transcriptCollectionStats.preparedCount;
             stats->lastTranscriptSkipReason = transcriptCollectionStats.lastSkipReason;
+            stats->lastTranscriptClipId = transcriptCollectionStats.lastPreparedClipId;
+            stats->lastTranscriptPath = transcriptCollectionStats.lastPreparedTranscriptPath;
+            stats->lastTranscriptTimingSource = transcriptCollectionStats.lastPreparedTimingSource;
+            stats->lastTranscriptTimelineSample = transcriptCollectionStats.lastPreparedTimelineSample;
+            stats->lastTranscriptFrame = transcriptCollectionStats.lastPreparedTranscriptFrame;
+            stats->lastTranscriptPresentedMediaSourceFrame =
+                transcriptCollectionStats.lastPreparedPresentedMediaSourceFrame;
         }
         if (m_playbackStatusOverlayResources &&
             m_playbackStatusOverlayResources->isReady() &&
@@ -2446,25 +2453,43 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             stats->lastUnsupportedEffect = QStringLiteral("curve_lut_upload_failed");
                         }
                     }
+                    if (maskReady && status->maskClipSource) {
+                        basePush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
+                        basePush.midtones[3] = 0.0f;
+                    }
+                    const QRectF effectBounds =
+                        (clip.effectPreset == ClipEffectPreset::SourceTile || clip.maskRepeatEnabled)
+                            ? transformedBounds.intersected(compositeRect)
+                            : compositeRect;
                     const render_detail::VulkanEffectPipelinePlan effectPlan =
                         render_detail::vulkanEffectPipelinePlan(
                             clip,
-                            compositeRect,
+                            effectBounds,
                             frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                             state->currentFramePosition);
                     if (effectPlan.usesGeneratedDraws()) {
+                        const VkRect2D generatedScissor =
+                            clip.effectPreset == ClipEffectPreset::SourceTile
+                                ? scissorFromQRect(effectBounds, swapSize)
+                                : scissor;
                         for (const render_detail::VulkanEffectPipelinePlan::DrawPass& effectDraw :
                              effectPlan.generatedDraws) {
                             VulkanPipeline::Push effectPush = basePush;
                             effectPush.opacity *= effectDraw.opacityMultiplier;
-                            effectPush.shadows[3] = effectDraw.shaderMode;
+                            if (!status || !status->maskClipSource) {
+                                effectPush.shadows[3] = effectDraw.shaderMode;
+                            }
                             render_detail::vulkanMvpForOutputRectMaybeFlippedY(
                                 effectDraw.outputRect,
                                 swapSize,
                                 effectDraw.rotationDegrees,
                                 status && status->sampledFrameNeedsYFlip,
                                 effectPush.mvp);
-                            drawPush(effectPush);
+                            m_pipeline->bindAndDraw(cb,
+                                                     viewport,
+                                                     generatedScissor,
+                                                     handoffResult.descriptorSet,
+                                                     effectPush);
                         }
                     } else {
                         drawPush(basePush);

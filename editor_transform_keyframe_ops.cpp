@@ -111,6 +111,10 @@ TimelineClip::TransformKeyframe interpolateStoredTransformKeyframe(
     midpoint.rotation = earlier.rotation + ((later.rotation - earlier.rotation) * t);
     midpoint.scaleX = earlier.scaleX + ((later.scaleX - earlier.scaleX) * t);
     midpoint.scaleY = earlier.scaleY + ((later.scaleY - earlier.scaleY) * t);
+    midpoint.maskRepeatDeltaX =
+        earlier.maskRepeatDeltaX + ((later.maskRepeatDeltaX - earlier.maskRepeatDeltaX) * t);
+    midpoint.maskRepeatDeltaY =
+        earlier.maskRepeatDeltaY + ((later.maskRepeatDeltaY - earlier.maskRepeatDeltaY) * t);
     midpoint.linearInterpolation = later.linearInterpolation;
     return midpoint;
 }

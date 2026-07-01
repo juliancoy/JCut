@@ -77,6 +77,7 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.linkedSourceClipId = sourceId;
     maskClip.generatedFromMaskId = maskId;
     maskClip.syncLockedToSource = true;
+    maskClip.sourceTransformLocked = false;
     maskClip.label = sourceClip.label.trimmed().isEmpty()
                          ? QStringLiteral("SAM Mask Matte")
                          : QStringLiteral("%1 Mask Matte").arg(sourceClip.label.trimmed());
@@ -90,7 +91,7 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.audioStreamIndex = -1;
     maskClip.maskEnabled = sourceClip.maskEnabled && !maskId.isEmpty();
     maskClip.maskFramesDir = maskId;
-    maskClip.maskShowOnly = true;
+    maskClip.maskShowOnly = false;
     maskClip.maskForegroundLayerEnabled = false;
     maskClip.effectPreset = ClipEffectPreset::None;
     return maskClip;
@@ -105,6 +106,7 @@ TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip,
     effectClip.linkedSourceClipId = sourceId;
     effectClip.generatedFromMaskId.clear();
     effectClip.syncLockedToSource = false;
+    effectClip.sourceTransformLocked = false;
     effectClip.label = sourceClip.label.trimmed().isEmpty()
                            ? QStringLiteral("Alternating Motion Background")
                            : QStringLiteral("%1 Motion Background").arg(sourceClip.label.trimmed());
@@ -138,6 +140,7 @@ TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex
     effectClip.linkedSourceClipId = sourceId;
     effectClip.generatedFromMaskId.clear();
     effectClip.syncLockedToSource = false;
+    effectClip.sourceTransformLocked = false;
     effectClip.label = sourceClip.label.trimmed().isEmpty()
                            ? QStringLiteral("Source Tiling")
                            : QStringLiteral("%1 Tiling").arg(sourceClip.label.trimmed());
@@ -159,6 +162,9 @@ TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex
     effectClip.effectSpeed = 0.0;
     effectClip.effectScale = qBound<qreal>(0.1, sourceClip.effectScale, 8.0);
     effectClip.effectAlternateDirection = false;
+    effectClip.tilingPattern = ClipTilingPattern::Grid;
+    effectClip.tilingSpacing = 1.0;
+    effectClip.tilingWrap = true;
     return effectClip;
 }
 
@@ -235,6 +241,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             titleClip.clipRole = ClipRole::SpeakerTitle;
             titleClip.linkedSourceClipId = sourceClip.id.trimmed();
             titleClip.syncLockedToSource = true;
+            titleClip.sourceTransformLocked = false;
             titleClip.mediaType = ClipMediaType::Title;
             titleClip.label = QStringLiteral("Speaker: %1").arg(title);
             titleClip.startFrame = startFrame;

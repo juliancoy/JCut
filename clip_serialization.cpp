@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QFileInfo>
 #include <QJsonArray> 
+#include <QImageReader>
 
 namespace editor
 {
@@ -74,6 +75,53 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         return ClipEffectPreset::SourceTile;
     }
     return ClipEffectPreset::None;
+}
+
+QString tilingPatternToJson(ClipTilingPattern pattern)
+{
+    switch (pattern) {
+    case ClipTilingPattern::Encircle:
+        return QStringLiteral("encircle");
+    case ClipTilingPattern::SpiralXY:
+        return QStringLiteral("spiral");
+    case ClipTilingPattern::SpiralXZ:
+        return QStringLiteral("spiral_xz");
+    case ClipTilingPattern::SpiralYZ:
+        return QStringLiteral("spiral_yz");
+    case ClipTilingPattern::Diamond:
+        return QStringLiteral("diamond");
+    case ClipTilingPattern::Grid:
+    default:
+        return QStringLiteral("grid");
+    }
+}
+
+ClipTilingPattern tilingPatternFromJson(const QString& value)
+{
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("encircle") ||
+        normalized == QStringLiteral("orbit") ||
+        normalized == QStringLiteral("ring")) {
+        return ClipTilingPattern::Encircle;
+    }
+    if (normalized == QStringLiteral("spiral") ||
+        normalized == QStringLiteral("spiral_xy") ||
+        normalized == QStringLiteral("xy_spiral")) {
+        return ClipTilingPattern::SpiralXY;
+    }
+    if (normalized == QStringLiteral("spiral_xz") ||
+        normalized == QStringLiteral("xz_spiral")) {
+        return ClipTilingPattern::SpiralXZ;
+    }
+    if (normalized == QStringLiteral("spiral_yz") ||
+        normalized == QStringLiteral("yz_spiral")) {
+        return ClipTilingPattern::SpiralYZ;
+    }
+    if (normalized == QStringLiteral("diamond") ||
+        normalized == QStringLiteral("rhombus")) {
+        return ClipTilingPattern::Diamond;
+    }
+    return ClipTilingPattern::Grid;
 }
 
 QString clipRoleToJson(ClipRole role)
@@ -167,6 +215,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("linkedSourceClipId")] = clip.linkedSourceClipId;
         obj[QStringLiteral("generatedFromMaskId")] = clip.generatedFromMaskId;
         obj[QStringLiteral("syncLockedToSource")] = clip.syncLockedToSource;
+        obj[QStringLiteral("sourceTransformLocked")] = clip.sourceTransformLocked;
         obj[QStringLiteral("filePath")] = clip.filePath;
         obj[QStringLiteral("proxyPath")] = clip.proxyPath;
         obj[QStringLiteral("useProxy")] = clip.useProxy;
@@ -239,6 +288,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("rotation")] = keyframe.rotation;
             keyframeObj[QStringLiteral("scaleX")] = keyframe.scaleX;
             keyframeObj[QStringLiteral("scaleY")] = keyframe.scaleY;
+            keyframeObj[QStringLiteral("maskRepeatDeltaX")] = keyframe.maskRepeatDeltaX;
+            keyframeObj[QStringLiteral("maskRepeatDeltaY")] = keyframe.maskRepeatDeltaY;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
             keyframes.push_back(keyframeObj);
         }
@@ -424,11 +475,17 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskDropShadowOffsetY")] = clip.maskDropShadowOffsetY;
         obj[QStringLiteral("maskDropShadowOpacity")] = clip.maskDropShadowOpacity;
         obj[QStringLiteral("maskForegroundLayerEnabled")] = clip.maskForegroundLayerEnabled;
+        obj[QStringLiteral("maskRepeatEnabled")] = clip.maskRepeatEnabled;
+        obj[QStringLiteral("maskRepeatDeltaX")] = clip.maskRepeatDeltaX;
+        obj[QStringLiteral("maskRepeatDeltaY")] = clip.maskRepeatDeltaY;
         obj[QStringLiteral("effectPreset")] = effectPresetToJson(clip.effectPreset);
         obj[QStringLiteral("effectRows")] = clip.effectRows;
         obj[QStringLiteral("effectSpeed")] = clip.effectSpeed;
         obj[QStringLiteral("effectScale")] = clip.effectScale;
         obj[QStringLiteral("effectAlternateDirection")] = clip.effectAlternateDirection;
+        obj[QStringLiteral("tilingPattern")] = tilingPatternToJson(clip.tilingPattern);
+        obj[QStringLiteral("tilingSpacing")] = clip.tilingSpacing;
+        obj[QStringLiteral("tilingWrap")] = clip.tilingWrap;
         QJsonArray correctionPolygons;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
             if (polygon.pointsNormalized.size() < 3) {
@@ -461,6 +518,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.linkedSourceClipId = obj.value(QStringLiteral("linkedSourceClipId")).toString().trimmed();
         clip.generatedFromMaskId = obj.value(QStringLiteral("generatedFromMaskId")).toString().trimmed();
         clip.syncLockedToSource = obj.value(QStringLiteral("syncLockedToSource")).toBool(false);
+        clip.sourceTransformLocked = obj.value(QStringLiteral("sourceTransformLocked")).toBool(false);
         clip.filePath = obj.value(QStringLiteral("filePath")).toString();
         clip.proxyPath = obj.value(QStringLiteral("proxyPath")).toString();
         clip.useProxy = obj.value(QStringLiteral("useProxy")).toBool(true);
@@ -563,9 +621,18 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             !clip.filePath.isEmpty() &&
             clip.mediaType != ClipMediaType::Audio &&
             clip.mediaType != ClipMediaType::Title) {
-            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
-            if (probe.frameSize.isValid()) {
-                clip.sourceFrameSize = probe.frameSize;
+            if (clip.mediaType == ClipMediaType::Image) {
+                QImageReader reader(clip.filePath);
+                const QSize imageSize = reader.size();
+                if (imageSize.isValid()) {
+                    clip.sourceFrameSize = imageSize;
+                }
+            }
+            if (!clip.sourceFrameSize.isValid()) {
+                const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
+                if (probe.frameSize.isValid()) {
+                    clip.sourceFrameSize = probe.frameSize;
+                }
             }
         }
         if (clip.sourceDurationFrames <= 0)
@@ -648,6 +715,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.rotation = keyframeObj.value(QStringLiteral("rotation")).toDouble(0.0);
             keyframe.scaleX = keyframeObj.value(QStringLiteral("scaleX")).toDouble(1.0);
             keyframe.scaleY = keyframeObj.value(QStringLiteral("scaleY")).toDouble(1.0);
+            keyframe.maskRepeatDeltaX = keyframeObj.value(QStringLiteral("maskRepeatDeltaX")).toDouble(0.0);
+            keyframe.maskRepeatDeltaY = keyframeObj.value(QStringLiteral("maskRepeatDeltaY")).toDouble(0.0);
             if (keyframeObj.contains(QStringLiteral("linearInterpolation"))) {
                 keyframe.linearInterpolation =
                     keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
@@ -855,6 +924,11 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskDropShadowOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDropShadowOpacity")).toDouble(0.45), 1.0);
         clip.maskForegroundLayerEnabled =
             obj.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(false);
+        clip.maskRepeatEnabled = obj.value(QStringLiteral("maskRepeatEnabled")).toBool(false);
+        clip.maskRepeatDeltaX =
+            qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaX")).toDouble(160.0), 100000.0);
+        clip.maskRepeatDeltaY =
+            qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaY")).toDouble(0.0), 100000.0);
         clip.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
         clip.effectRows = qBound(1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
@@ -864,6 +938,14 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             qBound<qreal>(0.1, obj.value(QStringLiteral("effectScale")).toDouble(1.0), 8.0);
         clip.effectAlternateDirection =
             obj.value(QStringLiteral("effectAlternateDirection")).toBool(true);
+        clip.tilingPattern =
+            tilingPatternFromJson(obj.value(QStringLiteral("tilingPattern")).toString(QStringLiteral("grid")));
+        clip.tilingSpacing =
+            qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
+        clip.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            clip.maskShowOnly = false;
+        }
         const QJsonArray correctionPolygons = obj.value(QStringLiteral("correctionPolygons")).toArray();
         for (const QJsonValue& polygonValue : correctionPolygons) {
             if (!polygonValue.isObject()) {

@@ -24,9 +24,11 @@ private slots:
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
     void effectPipelinePassesThroughWhenPresetIsOff();
     void effectPipelineUsesGeneratedDrawsForTiling();
+    void generatedDrawMvpKeepsVulkanYDownOrientation();
     void tickerPresetProducesAlternatingRowsAcrossOutput();
     void alternatingMotionBackgroundCoversOutputWithMovingRows();
     void sourceTilingPresetCoversOutputWithGrid();
+    void sourceTilingPresetSupportsGeometricPatterns();
     void orbitPresetProducesRequestedCopiesAroundCenter();
     void freezePatternProducesHeldGridCopies();
     void stepRepeatProducesSequencedCopies();
@@ -50,11 +52,17 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.effectSpeed = 1.75;
     clip.effectScale = 0.85;
     clip.effectAlternateDirection = true;
+    clip.tilingPattern = ClipTilingPattern::SpiralXY;
+    clip.tilingSpacing = 1.4;
+    clip.tilingWrap = false;
 
     const QJsonObject json = editor::clipToJson(clip);
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), QStringLiteral("news_logo_ticker"));
     QCOMPARE(json.value(QStringLiteral("effectRows")).toInt(), 32);
+    QCOMPARE(json.value(QStringLiteral("tilingPattern")).toString(), QStringLiteral("spiral"));
+    QVERIFY(std::abs(json.value(QStringLiteral("tilingSpacing")).toDouble() - 1.4) < 0.000001);
+    QCOMPARE(json.value(QStringLiteral("tilingWrap")).toBool(), false);
 
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.maskForegroundLayerEnabled, true);
@@ -63,6 +71,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(loaded.effectSpeed - 1.75) < 0.000001);
     QVERIFY(std::abs(loaded.effectScale - 0.85) < 0.000001);
     QCOMPARE(loaded.effectAlternateDirection, true);
+    QCOMPARE(loaded.tilingPattern, ClipTilingPattern::SpiralXY);
+    QVERIFY(std::abs(loaded.tilingSpacing - 1.4) < 0.000001);
+    QCOMPARE(loaded.tilingWrap, false);
 }
 
 void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
@@ -90,10 +101,12 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     clip.linkedSourceClipId = QStringLiteral("source");
     clip.generatedFromMaskId = QStringLiteral("/tmp/source_sam3_person_binary_masks");
     clip.syncLockedToSource = true;
+    clip.sourceTransformLocked = true;
     clip.filePath = QStringLiteral("source.mp4");
     clip.mediaType = ClipMediaType::Video;
     clip.maskEnabled = true;
     clip.maskFramesDir = clip.generatedFromMaskId;
+    clip.maskShowOnly = true;
     clip.effectPreset = ClipEffectPreset::AlternatingMotionBackground;
 
     const QJsonObject json = editor::clipToJson(clip);
@@ -102,6 +115,7 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     QCOMPARE(json.value(QStringLiteral("generatedFromMaskId")).toString(),
              QStringLiteral("/tmp/source_sam3_person_binary_masks"));
     QCOMPARE(json.value(QStringLiteral("syncLockedToSource")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("sourceTransformLocked")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(),
              QStringLiteral("alternating_motion_background"));
 
@@ -110,7 +124,13 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     QCOMPARE(loaded.linkedSourceClipId, QStringLiteral("source"));
     QCOMPARE(loaded.generatedFromMaskId, QStringLiteral("/tmp/source_sam3_person_binary_masks"));
     QCOMPARE(loaded.syncLockedToSource, true);
+    QCOMPARE(loaded.sourceTransformLocked, true);
+    QVERIFY(!loaded.maskShowOnly);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::AlternatingMotionBackground);
+
+    QJsonObject legacyJson = json;
+    legacyJson.remove(QStringLiteral("sourceTransformLocked"));
+    QVERIFY(!editor::clipFromJson(legacyJson).sourceTransformLocked);
 }
 
 void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
@@ -161,7 +181,7 @@ void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
     QVERIFY(!matte.audioLinkedToVideo);
     QVERIFY(matte.maskEnabled);
     QCOMPARE(matte.maskFramesDir, source.maskFramesDir);
-    QVERIFY(matte.maskShowOnly);
+    QVERIFY(!matte.maskShowOnly);
     QVERIFY(!matte.maskForegroundLayerEnabled);
     QCOMPARE(matte.effectPreset, ClipEffectPreset::None);
 }
@@ -327,6 +347,35 @@ void TestEffectPresets::effectPipelineUsesGeneratedDrawsForTiling()
     QCOMPARE(plan.generatedDrawRects().constFirst(), plan.generatedDraws.constFirst().outputRect);
 }
 
+void TestEffectPresets::generatedDrawMvpKeepsVulkanYDownOrientation()
+{
+    float mvp[16]{};
+    render_detail::vulkanMvpForOutputRectMaybeFlippedY(
+        QRectF(0.0, 0.0, 100.0, 50.0),
+        QSize(100, 100),
+        0.0,
+        false,
+        mvp);
+
+    auto transformedY = [&mvp](float x, float y) {
+        return (mvp[1] * x) + (mvp[5] * y) + mvp[13];
+    };
+
+    const float topY = transformedY(-1.0f, -1.0f);
+    const float bottomY = transformedY(-1.0f, 1.0f);
+    QVERIFY2(topY < bottomY, "Generated draw MVP must map source top above source bottom in Vulkan coordinates.");
+
+    render_detail::vulkanMvpForOutputRectMaybeFlippedY(
+        QRectF(0.0, 0.0, 100.0, 50.0),
+        QSize(100, 100),
+        0.0,
+        true,
+        mvp);
+    const float flippedTopY = transformedY(-1.0f, -1.0f);
+    const float flippedBottomY = transformedY(-1.0f, 1.0f);
+    QVERIFY(flippedTopY > flippedBottomY);
+}
+
 void TestEffectPresets::tickerPresetProducesAlternatingRowsAcrossOutput()
 {
     TimelineClip clip;
@@ -447,6 +496,70 @@ void TestEffectPresets::sourceTilingPresetCoversOutputWithGrid()
         render_detail::vulkanPresetEffectRects(clip, output, QSize(200, 100), 10.0);
     QVERIFY(!moved.isEmpty());
     QVERIFY(moved.constFirst().topLeft() != rects.constFirst().topLeft());
+}
+
+void TestEffectPresets::sourceTilingPresetSupportsGeometricPatterns()
+{
+    TimelineClip clip;
+    clip.clipRole = ClipRole::EffectSynth;
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    clip.effectRows = 9;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 1.0;
+    clip.tilingSpacing = 1.2;
+
+    const QRectF output(0.0, 0.0, 900.0, 900.0);
+    clip.tilingPattern = ClipTilingPattern::Encircle;
+    QVector<QRectF> rects =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    QCOMPARE(rects.size(), clip.effectRows);
+    const QPointF center = output.center();
+    qreal minDistance = std::numeric_limits<qreal>::max();
+    qreal maxDistance = 0.0;
+    for (const QRectF& rect : rects) {
+        const qreal distance = std::hypot(rect.center().x() - center.x(), rect.center().y() - center.y());
+        minDistance = std::min(minDistance, distance);
+        maxDistance = std::max(maxDistance, distance);
+    }
+    QVERIFY(std::abs(maxDistance - minDistance) < 0.001);
+
+    clip.tilingPattern = ClipTilingPattern::SpiralXY;
+    rects = render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    QCOMPARE(rects.size(), clip.effectRows);
+    minDistance = std::numeric_limits<qreal>::max();
+    maxDistance = 0.0;
+    for (const QRectF& rect : rects) {
+        const qreal distance = std::hypot(rect.center().x() - center.x(), rect.center().y() - center.y());
+        minDistance = std::min(minDistance, distance);
+        maxDistance = std::max(maxDistance, distance);
+    }
+    QVERIFY(minDistance < 0.001);
+    QVERIFY(maxDistance > output.width() * 0.25);
+
+    clip.tilingPattern = ClipTilingPattern::SpiralXZ;
+    const QVector<QRectF> xzRects =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    QCOMPARE(xzRects.size(), clip.effectRows);
+    QVERIFY(xzRects.constFirst().height() != xzRects.constLast().height());
+
+    clip.tilingPattern = ClipTilingPattern::SpiralYZ;
+    const QVector<QRectF> yzRects =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    QCOMPARE(yzRects.size(), clip.effectRows);
+    QVERIFY(yzRects.constFirst().width() != yzRects.constLast().width());
+    QVERIFY(std::abs(yzRects.constFirst().center().x() - yzRects.constLast().center().x()) > output.width() * 0.4);
+
+    clip.tilingPattern = ClipTilingPattern::Diamond;
+    rects = render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    QCOMPARE(rects.size(), clip.effectRows);
+    bool hasHorizontalPoint = false;
+    bool hasVerticalPoint = false;
+    for (const QRectF& rect : rects) {
+        hasHorizontalPoint = hasHorizontalPoint || std::abs(rect.center().y() - center.y()) < 0.001;
+        hasVerticalPoint = hasVerticalPoint || std::abs(rect.center().x() - center.x()) < 0.001;
+    }
+    QVERIFY(hasHorizontalPoint);
+    QVERIFY(hasVerticalPoint);
 }
 
 void TestEffectPresets::orbitPresetProducesRequestedCopiesAroundCenter()

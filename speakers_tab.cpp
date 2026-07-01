@@ -1290,26 +1290,26 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("News lower-third fly in"),
                                  QStringLiteral("Select a clip with a transcript first."));
         return;
     }
     if (!activeCutMutable()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("News lower-third fly in"),
                                  QStringLiteral("Create a transcript cut before generating speaker title clips."));
         return;
     }
     const QString transcriptPath = m_transcriptSession.transcriptPath().trimmed();
     if (transcriptPath.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Create News Titles"),
+                             QStringLiteral("News lower-third fly in"),
                              QStringLiteral("No loaded transcript is available for the selected clip."));
         return;
     }
     if (!m_speakerDeps.replaceSpeakerTitleClips) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Create News Titles"),
+                             QStringLiteral("News lower-third fly in"),
                              QStringLiteral("Timeline title clip placement is unavailable."));
         return;
     }
@@ -1322,7 +1322,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
         0);
     if (titleClips.isEmpty()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("News lower-third fly in"),
                                  QStringLiteral("No speaker changes were found in the selected transcript range."));
         return;
     }
@@ -1331,8 +1331,8 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
         m_speakerDeps.replaceSpeakerTitleClips(clip->id, titleClips);
     if (!result.changed) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Create News Titles"),
-                             QStringLiteral("No title clips were added to the timeline."));
+                             QStringLiteral("News lower-third fly in"),
+                             QStringLiteral("No speaker title clips were added to the timeline."));
         return;
     }
     if (!result.firstInsertedClipId.isEmpty() && m_speakerDeps.selectClipById) {

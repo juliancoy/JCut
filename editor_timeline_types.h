@@ -46,6 +46,15 @@ enum class ClipEffectPreset {
     SourceTile,
 };
 
+enum class ClipTilingPattern {
+    Grid,
+    Encircle,
+    SpiralXY,
+    SpiralXZ,
+    SpiralYZ,
+    Diamond,
+};
+
 enum class ClipRole {
     Media,
     MaskMatte,
@@ -67,6 +76,8 @@ struct TimelineClip {
         qreal scaleX = 1.0;
         qreal scaleY = 1.0;
         bool linearInterpolation = true;
+        qreal maskRepeatDeltaX = 0.0;
+        qreal maskRepeatDeltaY = 0.0;
     };
 
     struct GradingKeyframe {
@@ -186,6 +197,7 @@ struct TimelineClip {
     QString linkedSourceClipId;
     QString generatedFromMaskId;
     bool syncLockedToSource = false;
+    bool sourceTransformLocked = false;
     QString filePath;
     QString proxyPath;
     bool useProxy = true;
@@ -278,11 +290,17 @@ struct TimelineClip {
     qreal maskDropShadowOffsetY = 4.0;
     qreal maskDropShadowOpacity = 0.45;
     bool maskForegroundLayerEnabled = false;
+    bool maskRepeatEnabled = false;
+    qreal maskRepeatDeltaX = 160.0;
+    qreal maskRepeatDeltaY = 0.0;
     ClipEffectPreset effectPreset = ClipEffectPreset::None;
     int effectRows = 32;
     qreal effectSpeed = 1.0;
     qreal effectScale = 1.0;
     bool effectAlternateDirection = true;
+    ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
+    qreal tilingSpacing = 1.0;
+    bool tilingWrap = true;
     QVector<CorrectionPolygon> correctionPolygons;
 };
 

@@ -71,6 +71,12 @@ struct DirectVulkanPreviewStats {
     int transcriptPreparedCount = 0;
     int transcriptDrawnCount = 0;
     QString lastTranscriptSkipReason;
+    QString lastTranscriptClipId;
+    QString lastTranscriptPath;
+    QString lastTranscriptTimingSource;
+    int64_t lastTranscriptTimelineSample = -1;
+    int64_t lastTranscriptFrame = -1;
+    int64_t lastTranscriptPresentedMediaSourceFrame = -1;
     QString lastTextPrepFailureReason;
     QString lastTextDrawFailureReason;
     editor::PlaybackStageMetric textPrepStageMetric;

@@ -66,6 +66,7 @@ public:
     QCheckBox *mirrorHorizontalCheckBox() const { return m_mirrorHorizontalCheckBox; }
     QCheckBox *mirrorVerticalCheckBox() const { return m_mirrorVerticalCheckBox; }
     QCheckBox *lockVideoScaleCheckBox() const { return m_lockVideoScaleCheckBox; }
+    QCheckBox *sourceTransformLockCheckBox() const { return m_sourceTransformLockCheckBox; }
     QCheckBox *keyframeSpaceCheckBox() const { return m_keyframeSpaceCheckBox; }
     QCheckBox *keyframeSkipAwareTimingCheckBox() const { return m_keyframeSkipAwareTimingCheckBox; }
 
@@ -205,12 +206,17 @@ public:
     QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
     QCheckBox *maskForegroundLayerCheck() const { return m_maskForegroundLayerCheck; }
+    QCheckBox *maskRepeatEnabledCheck() const { return m_maskRepeatEnabledCheck; }
+    QDoubleSpinBox *maskRepeatDeltaXSpin() const { return m_maskRepeatDeltaXSpin; }
+    QDoubleSpinBox *maskRepeatDeltaYSpin() const { return m_maskRepeatDeltaYSpin; }
     QComboBox *effectPresetCombo() const { return m_effectPresetCombo; }
     QSpinBox *effectRowsSpin() const { return m_effectRowsSpin; }
     QDoubleSpinBox *effectSpeedSpin() const { return m_effectSpeedSpin; }
     QDoubleSpinBox *effectScaleSpin() const { return m_effectScaleSpin; }
     QCheckBox *effectAlternateDirectionCheck() const { return m_effectAlternateDirectionCheck; }
-    QPushButton *titleFlyInPresetButton() const { return m_titleFlyInPresetButton; }
+    QComboBox *tilingPatternCombo() const { return m_tilingPatternCombo; }
+    QDoubleSpinBox *tilingSpacingSpin() const { return m_tilingSpacingSpin; }
+    QCheckBox *tilingWrapCheck() const { return m_tilingWrapCheck; }
     QLabel *maskClipLabel() const { return m_maskClipLabel; }
     QCheckBox *maskEnabledCheck() const { return m_maskEnabledCheck; }
     QLineEdit *maskFramesDirEdit() const { return m_maskFramesDirEdit; }
@@ -521,12 +527,17 @@ private:
     QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
     QCheckBox *m_maskForegroundLayerCheck = nullptr;
+    QCheckBox *m_maskRepeatEnabledCheck = nullptr;
+    QDoubleSpinBox *m_maskRepeatDeltaXSpin = nullptr;
+    QDoubleSpinBox *m_maskRepeatDeltaYSpin = nullptr;
     QComboBox *m_effectPresetCombo = nullptr;
     QSpinBox *m_effectRowsSpin = nullptr;
     QDoubleSpinBox *m_effectSpeedSpin = nullptr;
     QDoubleSpinBox *m_effectScaleSpin = nullptr;
     QCheckBox *m_effectAlternateDirectionCheck = nullptr;
-    QPushButton *m_titleFlyInPresetButton = nullptr;
+    QComboBox *m_tilingPatternCombo = nullptr;
+    QDoubleSpinBox *m_tilingSpacingSpin = nullptr;
+    QCheckBox *m_tilingWrapCheck = nullptr;
     QLabel *m_maskClipLabel = nullptr;
     QCheckBox *m_maskEnabledCheck = nullptr;
     QLineEdit *m_maskFramesDirEdit = nullptr;
@@ -583,6 +594,7 @@ private:
     QCheckBox *m_mirrorHorizontalCheckBox = nullptr;
     QCheckBox *m_mirrorVerticalCheckBox = nullptr;
     QCheckBox *m_lockVideoScaleCheckBox = nullptr;
+    QCheckBox *m_sourceTransformLockCheckBox = nullptr;
     QCheckBox *m_keyframeSpaceCheckBox = nullptr;
     QCheckBox *m_keyframeSkipAwareTimingCheckBox = nullptr;
     QPushButton *m_addVideoKeyframeButton = nullptr;

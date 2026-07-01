@@ -25,6 +25,12 @@ struct TranscriptOverlayCollectionStats {
     int candidateCount = 0;
     int preparedCount = 0;
     QString lastSkipReason;
+    QString lastPreparedClipId;
+    QString lastPreparedTranscriptPath;
+    QString lastPreparedTimingSource;
+    int64_t lastPreparedTimelineSample = -1;
+    int64_t lastPreparedTranscriptFrame = -1;
+    int64_t lastPreparedPresentedMediaSourceFrame = -1;
 };
 
 PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInteractionState* state,

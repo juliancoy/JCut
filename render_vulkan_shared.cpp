@@ -1,6 +1,7 @@
 #include "render_vulkan_shared.h"
 
 #include "editor_shared_effects.h"
+#include "editor_shared_keyframes.h"
 
 #include <QMatrix4x4>
 #include <QVector>
@@ -64,7 +65,9 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   qreal timelineFrame)
 {
     VulkanEffectPipelinePlan plan;
-    if (clip.effectPreset == ClipEffectPreset::None || outputRect.isEmpty()) {
+    const bool maskedRepeatEnabled =
+        clip.maskRepeatEnabled && clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty();
+    if ((clip.effectPreset == ClipEffectPreset::None && !maskedRepeatEnabled) || outputRect.isEmpty()) {
         return plan;
     }
 
@@ -127,24 +130,94 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
             }
         }
     } else if (clip.effectPreset == ClipEffectPreset::SourceTile) {
-        const int columns = qBound(1, count, 96);
-        const qreal baseTileW = outputRect.width() / static_cast<qreal>(columns);
+        constexpr qreal kTwoPi = 6.28318530717958647692;
+        const qreal spacing = qBound<qreal>(0.1, clip.tilingSpacing, 8.0);
+        const qreal minDimension = std::max<qreal>(1.0, std::min(outputRect.width(), outputRect.height()));
+        const qreal baseTileW = outputRect.width() / static_cast<qreal>(qBound(1, count, 96));
         const qreal tileW = std::max<qreal>(2.0, baseTileW * scale);
         const qreal tileH = std::max<qreal>(2.0, tileW / std::max<qreal>(0.001, aspect));
-        const qreal phaseX = std::fmod(timelineFrame * speed * tileW * 0.015, tileW);
-        const qreal phaseY = std::fmod(timelineFrame * speed * tileH * 0.006, tileH);
-        const qreal normalizedPhaseX = phaseX < 0.0 ? phaseX + tileW : phaseX;
-        const qreal normalizedPhaseY = phaseY < 0.0 ? phaseY + tileH : phaseY;
-        int row = 0;
-        for (qreal y = outputRect.top() - tileH + normalizedPhaseY;
-             y < outputRect.bottom() + tileH;
-             y += tileH, ++row) {
-            const qreal rowOffset =
-                (clip.effectAlternateDirection && (row % 2)) ? tileW * 0.5 : 0.0;
-            for (qreal x = outputRect.left() - tileW + normalizedPhaseX - rowOffset;
-                 x < outputRect.right() + tileW;
-                 x += tileW) {
-                addDraw(QRectF(x, y, tileW, tileH));
+        const qreal stepX = std::max<qreal>(1.0, tileW * spacing);
+        const qreal stepY = std::max<qreal>(1.0, tileH * spacing);
+        const qreal phaseX = std::fmod(timelineFrame * speed * tileW * 0.015, stepX);
+        const qreal phaseY = std::fmod(timelineFrame * speed * tileH * 0.006, stepY);
+        const qreal normalizedPhaseX = phaseX < 0.0 ? phaseX + stepX : phaseX;
+        const qreal normalizedPhaseY = phaseY < 0.0 ? phaseY + stepY : phaseY;
+
+        if (clip.tilingPattern == ClipTilingPattern::Encircle) {
+            const QPointF center = outputRect.center();
+            const qreal radius = minDimension * 0.34 * spacing;
+            const qreal phase = timelineFrame * speed * 0.018;
+            for (int i = 0; i < count; ++i) {
+                const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
+                const QPointF p(center.x() + std::cos(angle) * radius,
+                                center.y() + std::sin(angle) * radius);
+                addDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+            }
+        } else if (clip.tilingPattern == ClipTilingPattern::SpiralXY ||
+                   clip.tilingPattern == ClipTilingPattern::SpiralXZ ||
+                   clip.tilingPattern == ClipTilingPattern::SpiralYZ) {
+            const QPointF center = outputRect.center();
+            const qreal maxRadius = minDimension * 0.46 * spacing;
+            const qreal phase = timelineFrame * speed * 0.014;
+            for (int i = 0; i < count; ++i) {
+                const qreal t = count <= 1 ? 0.0 : static_cast<qreal>(i) / static_cast<qreal>(count - 1);
+                const qreal angle = phase + (kTwoPi * 1.61803398875 * static_cast<qreal>(i));
+                const qreal radius = maxRadius * t;
+                const qreal u = std::cos(angle) * radius;
+                const qreal v = std::sin(angle) * radius;
+                qreal x = center.x() + u;
+                qreal y = center.y() + v;
+                qreal sizeMultiplier = 1.0;
+                if (clip.tilingPattern == ClipTilingPattern::SpiralXZ) {
+                    y = center.y() + ((t - 0.5) * outputRect.height() * 0.68);
+                    sizeMultiplier = qBound<qreal>(0.45, 0.76 + (v / std::max<qreal>(1.0, maxRadius)) * 0.34, 1.18);
+                } else if (clip.tilingPattern == ClipTilingPattern::SpiralYZ) {
+                    x = center.x() + ((t - 0.5) * outputRect.width() * 0.68);
+                    y = center.y() + u;
+                    sizeMultiplier = qBound<qreal>(0.45, 0.76 + (v / std::max<qreal>(1.0, maxRadius)) * 0.34, 1.18);
+                }
+                const qreal drawW = tileW * sizeMultiplier;
+                const qreal drawH = tileH * sizeMultiplier;
+                addDraw(QRectF(x - drawW * 0.5, y - drawH * 0.5, drawW, drawH));
+            }
+        } else if (clip.tilingPattern == ClipTilingPattern::Diamond) {
+            const QPointF center = outputRect.center();
+            const int rings = qBound(1, static_cast<int>(std::ceil(std::sqrt(static_cast<qreal>(count)))), 10);
+            int emitted = 0;
+            addDraw(QRectF(center.x() - tileW * 0.5, center.y() - tileH * 0.5, tileW, tileH));
+            ++emitted;
+            for (int ring = 1; ring <= rings && emitted < count; ++ring) {
+                const qreal dx = stepX * static_cast<qreal>(ring);
+                const qreal dy = stepY * static_cast<qreal>(ring);
+                const QVector<QPointF> points{
+                    QPointF(center.x(), center.y() - dy),
+                    QPointF(center.x() + dx, center.y()),
+                    QPointF(center.x(), center.y() + dy),
+                    QPointF(center.x() - dx, center.y())};
+                for (const QPointF& p : points) {
+                    addDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+                    if (++emitted >= count) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            const int columns = qBound(1, count, 96);
+            const qreal startY = clip.tilingWrap ? outputRect.top() - tileH + normalizedPhaseY : outputRect.top();
+            const qreal endY = clip.tilingWrap ? outputRect.bottom() + tileH : outputRect.bottom() - tileH + 1.0;
+            int row = 0;
+            for (qreal y = startY; y < endY; y += stepY, ++row) {
+                const qreal rowOffset =
+                    (clip.effectAlternateDirection && (row % 2)) ? stepX * 0.5 : 0.0;
+                const qreal startX = clip.tilingWrap
+                    ? outputRect.left() - tileW + normalizedPhaseX - rowOffset
+                    : outputRect.left() - rowOffset;
+                const qreal endX = clip.tilingWrap
+                    ? outputRect.right() + tileW
+                    : outputRect.left() + (columns * stepX);
+                for (qreal x = startX; x < endX; x += stepX) {
+                    addDraw(QRectF(x, y, tileW, tileH));
+                }
             }
         }
     } else if (clip.effectPreset == ClipEffectPreset::PersonOrbit) {
@@ -203,6 +276,23 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         }
     }
 
+    if (maskedRepeatEnabled) {
+        const TimelineClip::TransformKeyframe transform =
+            evaluateClipTransformAtPosition(clip, timelineFrame);
+        const qreal repeatX = qBound<qreal>(-100000.0, transform.maskRepeatDeltaX, 100000.0);
+        const qreal repeatY = qBound<qreal>(-100000.0, transform.maskRepeatDeltaY, 100000.0);
+        const bool hasRepeatStep = !qFuzzyIsNull(repeatX) || !qFuzzyIsNull(repeatY);
+        const int repeatCount = hasRepeatStep ? count : 1;
+        const qreal centerIndex = (static_cast<qreal>(repeatCount) - 1.0) * 0.5;
+        for (int i = 0; i < repeatCount; ++i) {
+            const qreal offsetIndex = static_cast<qreal>(i) - centerIndex;
+            VulkanEffectPipelinePlan::DrawPass pass;
+            pass.outputRect = outputRect.translated(repeatX * offsetIndex, repeatY * offsetIndex);
+            pass.shaderMode = kVulkanEffectModeMaskGrade;
+            draws.push_back(pass);
+        }
+    }
+
     if (!draws.isEmpty()) {
         plan.mode = VulkanEffectPipelinePlan::Mode::GeneratedDraws;
     }
@@ -231,24 +321,29 @@ void vulkanMvpForOutputRectMaybeFlippedY(const QRectF& rect,
                                          bool flipY,
                                          float outMvp[16])
 {
-    QMatrix4x4 projection;
-    projection.ortho(0.0f,
-                     static_cast<float>(std::max(1, outputSize.width())),
-                     static_cast<float>(std::max(1, outputSize.height())),
-                     0.0f,
-                     -1.0f,
-                     1.0f);
-    QMatrix4x4 model;
-    model.translate(static_cast<float>(rect.center().x()), static_cast<float>(rect.center().y()), 0.0f);
-    model.rotate(static_cast<float>(rotationDegrees), 0.0f, 0.0f, 1.0f);
-    model.scale(static_cast<float>(rect.width()),
-                static_cast<float>(rect.height()) * (flipY ? -1.0f : 1.0f),
-                1.0f);
-    QMatrix4x4 shaderQuadToOpenGlQuad;
-    shaderQuadToOpenGlQuad.scale(0.5f, 0.5f, 1.0f);
-    const QMatrix4x4 mvp = projection * model * shaderQuadToOpenGlQuad;
-    const float* data = mvp.constData();
-    std::copy(data, data + 16, outMvp);
+    const float fullW = static_cast<float>(std::max(1, outputSize.width()));
+    const float fullH = static_cast<float>(std::max(1, outputSize.height()));
+    const float halfW = static_cast<float>(std::max<qreal>(1.0, rect.width())) * 0.5f;
+    const float halfH = static_cast<float>(std::max<qreal>(1.0, rect.height())) * 0.5f;
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    const float radians = static_cast<float>(rotationDegrees * kPi / 180.0);
+    const float cosTheta = std::cos(radians);
+    const float sinTheta = std::sin(radians);
+    const float scaleY = flipY ? -1.0f : 1.0f;
+    const float m21 = -sinTheta * scaleY;
+    const float m22 = cosTheta * scaleY;
+    const float dx = static_cast<float>(rect.center().x());
+    const float dy = static_cast<float>(rect.center().y());
+    const float m[16] = {
+        (2.0f * cosTheta * halfW) / fullW, (2.0f * sinTheta * halfW) / fullH, 0.f, 0.f,
+        (2.0f * m21 * halfH) / fullW, (2.0f * m22 * halfH) / fullH, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f,
+        (2.0f * dx / fullW) - 1.0f,
+        (2.0f * dy / fullH) - 1.0f,
+        0.f,
+        1.f
+    };
+    std::copy(std::begin(m), std::end(m), outMvp);
 }
 
 void vulkanMvpForExportVideoLayer(const QRectF& fittedRect,

@@ -23,12 +23,17 @@ public:
         QDoubleSpinBox* maskFeatherGammaSpin = nullptr;
         QCheckBox* maskFeatherEnabledCheck = nullptr;
         QCheckBox* maskForegroundLayerCheck = nullptr;
+        QCheckBox* maskRepeatEnabledCheck = nullptr;
+        QDoubleSpinBox* maskRepeatDeltaXSpin = nullptr;
+        QDoubleSpinBox* maskRepeatDeltaYSpin = nullptr;
         QComboBox* effectPresetCombo = nullptr;
         QSpinBox* effectRowsSpin = nullptr;
         QDoubleSpinBox* effectSpeedSpin = nullptr;
         QDoubleSpinBox* effectScaleSpin = nullptr;
         QCheckBox* effectAlternateDirectionCheck = nullptr;
-        QPushButton* titleFlyInPresetButton = nullptr;
+        QComboBox* tilingPatternCombo = nullptr;
+        QDoubleSpinBox* tilingSpacingSpin = nullptr;
+        QCheckBox* tilingWrapCheck = nullptr;
         QPushButton* applyButton = nullptr;
     };
 
@@ -52,7 +57,6 @@ public:
     void refresh();
     void applyMaskFeather(bool pushHistory = false);
     void applyEffectPreset(bool pushHistory = false);
-    void applyNewsTitlePreset();
 
 signals:
     void effectsApplied();
@@ -65,7 +69,6 @@ private slots:
     void onEditingFinished();
     void onEffectPresetChanged(int index);
     void onEffectControlChanged();
-    void onTitleFlyInPresetClicked();
 
 private:
     Widgets m_widgets;

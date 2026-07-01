@@ -76,6 +76,10 @@ void VideoKeyframeTab::wire()
         connect(m_widgets.lockVideoScaleCheckBox, &QCheckBox::toggled,
                 this, &VideoKeyframeTab::onLockScaleToggled);
     }
+    if (m_widgets.sourceTransformLockCheckBox) {
+        connect(m_widgets.sourceTransformLockCheckBox, &QCheckBox::toggled,
+                this, &VideoKeyframeTab::onSourceTransformLockToggled);
+    }
     if (m_widgets.keyframeSpaceCheckBox) {
         connect(m_widgets.keyframeSpaceCheckBox, &QCheckBox::toggled,
                 this, &VideoKeyframeTab::onKeyframeSpaceToggled);
@@ -157,6 +161,8 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::keyframeForInspecto
         displayed.rotation = keyframe.rotation;
         displayed.scaleX = keyframe.scaleX;
         displayed.scaleY = keyframe.scaleY;
+        displayed.maskRepeatDeltaX = keyframe.maskRepeatDeltaX;
+        displayed.maskRepeatDeltaY = keyframe.maskRepeatDeltaY;
         displayed.linearInterpolation = keyframe.linearInterpolation;
         return displayed;
     }
@@ -168,6 +174,8 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::keyframeForInspecto
     displayed.rotation = clip.baseRotation + keyframe.rotation;
     displayed.scaleX = sanitizeScaleValue(clip.baseScaleX) * sanitizeScaleValue(keyframe.scaleX);
     displayed.scaleY = sanitizeScaleValue(clip.baseScaleY) * sanitizeScaleValue(keyframe.scaleY);
+    displayed.maskRepeatDeltaX = clip.maskRepeatDeltaX + keyframe.maskRepeatDeltaX;
+    displayed.maskRepeatDeltaY = clip.maskRepeatDeltaY + keyframe.maskRepeatDeltaY;
     displayed.linearInterpolation = keyframe.linearInterpolation;
     return displayed;
 }
@@ -183,6 +191,8 @@ TimelineClip::TransformKeyframe VideoKeyframeTab::keyframeFromInspectorDisplay(
         stored.rotation = displayed.rotation;
         stored.scaleX = displayed.scaleX;
         stored.scaleY = displayed.scaleY;
+        stored.maskRepeatDeltaX = displayed.maskRepeatDeltaX;
+        stored.maskRepeatDeltaY = displayed.maskRepeatDeltaY;
         stored.linearInterpolation = displayed.linearInterpolation;
         return stored;
     }
@@ -194,6 +204,8 @@ TimelineClip::TransformKeyframe VideoKeyframeTab::keyframeFromInspectorDisplay(
     stored.rotation = displayed.rotation - clip.baseRotation;
     stored.scaleX = sanitizeScaleValue(displayed.scaleX / sanitizeScaleValue(clip.baseScaleX));
     stored.scaleY = sanitizeScaleValue(displayed.scaleY / sanitizeScaleValue(clip.baseScaleY));
+    stored.maskRepeatDeltaX = displayed.maskRepeatDeltaX - clip.maskRepeatDeltaX;
+    stored.maskRepeatDeltaY = displayed.maskRepeatDeltaY - clip.maskRepeatDeltaY;
     stored.linearInterpolation = displayed.linearInterpolation;
     return stored;
 }
@@ -287,6 +299,8 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::evaluateDisplayedTr
     result.rotation = evaluated.rotation;
     result.scaleX = evaluated.scaleX;
     result.scaleY = evaluated.scaleY;
+    result.maskRepeatDeltaX = evaluated.maskRepeatDeltaX;
+    result.maskRepeatDeltaY = evaluated.maskRepeatDeltaY;
     result.linearInterpolation = evaluated.linearInterpolation;
     return result;
 }
@@ -353,6 +367,8 @@ void VideoKeyframeTab::populateTable(const TimelineClip& clip)
             QString::number(displayedFrame.rotation, 'f', 3),
             QString::number(displayedFrame.scaleX, 'f', 3),
             QString::number(displayedFrame.scaleY, 'f', 3),
+            QString::number(displayedFrame.maskRepeatDeltaX, 'f', 3),
+            QString::number(displayedFrame.maskRepeatDeltaY, 'f', 3),
             videoInterpolationLabel(displayedFrame.linearInterpolation)};
 
         for (int column = 0; column < rowValues.size(); ++column) {
@@ -387,6 +403,7 @@ void VideoKeyframeTab::refresh()
     QSignalBlocker interpBlocker(m_widgets.videoInterpolationCombo);
     QSignalBlocker mirrorHBlocker(m_widgets.mirrorHorizontalCheckBox);
     QSignalBlocker mirrorVBlocker(m_widgets.mirrorVerticalCheckBox);
+    QSignalBlocker sourceLockBlocker(m_widgets.sourceTransformLockCheckBox);
     QSignalBlocker skipAwareBlocker(m_widgets.keyframeSkipAwareTimingCheckBox);
 
     m_widgets.videoKeyframeTable->clearContents();
@@ -406,6 +423,10 @@ void VideoKeyframeTab::refresh()
         m_widgets.mirrorVerticalCheckBox->setChecked(false);
         if (m_widgets.keyframeSkipAwareTimingCheckBox) {
             m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(false);
+        }
+        if (m_widgets.sourceTransformLockCheckBox) {
+            m_widgets.sourceTransformLockCheckBox->setChecked(false);
+            m_widgets.sourceTransformLockCheckBox->setEnabled(false);
         }
         m_selectedKeyframeFrame = -1;
         m_selectedKeyframeFrames.clear();
@@ -452,6 +473,11 @@ void VideoKeyframeTab::refresh()
     m_widgets.videoInterpolationCombo->setCurrentIndex(displayed.linearInterpolation ? 1 : 0);
     if (m_widgets.keyframeSkipAwareTimingCheckBox) {
         m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(clip->transformSkipAwareTiming);
+    }
+    if (m_widgets.sourceTransformLockCheckBox) {
+        const bool hasLinkedSource = !clip->linkedSourceClipId.trimmed().isEmpty();
+        m_widgets.sourceTransformLockCheckBox->setEnabled(hasLinkedSource);
+        m_widgets.sourceTransformLockCheckBox->setChecked(hasLinkedSource && clip->sourceTransformLocked);
     }
 
     editor::restoreSelectionByFrameRole(m_widgets.videoKeyframeTable, m_selectedKeyframeFrames);
@@ -502,6 +528,8 @@ void VideoKeyframeTab::applyKeyframeFromInspector(bool pushHistory)
         keyframe.rotation = stored.rotation;
         keyframe.scaleX = stored.scaleX;
         keyframe.scaleY = stored.scaleY;
+        keyframe.maskRepeatDeltaX = stored.maskRepeatDeltaX;
+        keyframe.maskRepeatDeltaY = stored.maskRepeatDeltaY;
         keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() == 1;
         normalizeClipTransformKeyframes(clip);
     });
@@ -539,6 +567,10 @@ void VideoKeyframeTab::upsertKeyframeAtPlayhead()
         displayed.scaleY = inspectorScaleWithMirror(
             m_widgets.videoScaleYSpin->value(),
             m_widgets.mirrorVerticalCheckBox && m_widgets.mirrorVerticalCheckBox->isChecked());
+        const TimelineClip::TransformKeyframe evaluated =
+            evaluateClipTransformAtFrame(editableClip, editableClip.startFrame + keyframeFrame);
+        displayed.maskRepeatDeltaX = evaluated.maskRepeatDeltaX;
+        displayed.maskRepeatDeltaY = evaluated.maskRepeatDeltaY;
         TimelineClip::TransformKeyframe keyframe = keyframeFromInspectorDisplay(editableClip, displayed);
         keyframe.frame = keyframeFrame;
         keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() == 1;
@@ -888,6 +920,26 @@ void VideoKeyframeTab::onLockScaleToggled(bool checked)
     m_deps.scheduleSaveState();
 }
 
+void VideoKeyframeTab::onSourceTransformLockToggled(bool checked)
+{
+    if (m_updating) return;
+    const QString clipId = m_deps.getSelectedClipId();
+    if (clipId.isEmpty()) {
+        return;
+    }
+    const bool updated = m_deps.updateClipById(clipId, [checked](TimelineClip& clip) {
+        clip.sourceTransformLocked = checked && !clip.linkedSourceClipId.trimmed().isEmpty();
+    });
+    if (!updated) {
+        return;
+    }
+    m_deps.setPreviewTimelineClips();
+    refresh();
+    m_deps.refreshInspector();
+    m_deps.scheduleSaveState();
+    m_deps.pushHistorySnapshot();
+}
+
 void VideoKeyframeTab::onKeyframeSpaceToggled(bool checked)
 {
     Q_UNUSED(checked);
@@ -998,7 +1050,11 @@ void VideoKeyframeTab::onTableItemChanged(QTableWidgetItem* changedItem)
     if (!ok) { refresh(); return; }
     displayed.scaleY = tableText(5).toDouble(&ok);
     if (!ok) { refresh(); return; }
-    if (!parseVideoInterpolationText(tableText(6), &displayed.linearInterpolation)) {
+    displayed.maskRepeatDeltaX = tableText(6).toDouble(&ok);
+    if (!ok) { refresh(); return; }
+    displayed.maskRepeatDeltaY = tableText(7).toDouble(&ok);
+    if (!ok) { refresh(); return; }
+    if (!parseVideoInterpolationText(tableText(8), &displayed.linearInterpolation)) {
         refresh();
         return;
     }

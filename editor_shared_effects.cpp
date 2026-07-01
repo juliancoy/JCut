@@ -722,6 +722,7 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
                       : original;
     QImage output(base.size(), QImage::Format_ARGB32_Premultiplied);
     output.fill(Qt::transparent);
+    const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
 
     if (clip.maskDropShadowEnabled && clip.maskDropShadowOpacity > 0.0) {
         QImage shadowMask = clip.maskDropShadowRadius > 0.0
@@ -776,6 +777,18 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
     QPainter painter(&output);
     painter.drawImage(0, 0, base);
     painter.end();
+    if (generatedMaskMatte) {
+        for (int y = 0; y < output.height(); ++y) {
+            const uchar* maskRow = mask.constScanLine(y);
+            QRgb* dstRow = reinterpret_cast<QRgb*>(output.scanLine(y));
+            for (int x = 0; x < output.width(); ++x) {
+                dstRow[x] = qRgba(qRed(dstRow[x]),
+                                  qGreen(dstRow[x]),
+                                  qBlue(dstRow[x]),
+                                  qBound(0, qRound(qAlpha(dstRow[x]) * (maskRow[x] / 255.0)), 255));
+            }
+        }
+    }
     return output;
 }
 
