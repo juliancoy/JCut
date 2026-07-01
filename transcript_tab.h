@@ -254,6 +254,7 @@ private:
     void insertGapRows(QVector<TranscriptRow>* rows) const;
     void insertWordAtRow(int row, bool above);
     void expandSelectedRow(int row);
+    bool restoreWordToOriginalState(int wordId);
     void applyTranscriptRowState(QTableWidgetItem* startItem,
                                  QTableWidgetItem* endItem,
                                  QTableWidgetItem* speakerItem,

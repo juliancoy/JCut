@@ -629,12 +629,16 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectPresetCombo->addItem(QStringLiteral("Logo ticker rows"), static_cast<int>(ClipEffectPreset::NewsLogoTicker));
     m_effectPresetCombo->addItem(QStringLiteral("Encircle person"), static_cast<int>(ClipEffectPreset::PersonOrbit));
     m_effectPresetCombo->addItem(QStringLiteral("Alternating motion background"), static_cast<int>(ClipEffectPreset::AlternatingMotionBackground));
+    m_effectPresetCombo->addItem(QStringLiteral("Freeze pattern"), static_cast<int>(ClipEffectPreset::FreezePattern));
+    m_effectPresetCombo->addItem(QStringLiteral("Step repeater"), static_cast<int>(ClipEffectPreset::StepRepeat));
+    m_effectPresetCombo->addItem(QStringLiteral("Directional trim ticker"), static_cast<int>(ClipEffectPreset::DirectionalTrimTicker));
+    m_effectPresetCombo->addItem(QStringLiteral("Source image tiling"), static_cast<int>(ClipEffectPreset::SourceTile));
     presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
 
     m_effectRowsSpin = new QSpinBox(page);
     m_effectRowsSpin->setRange(1, 96);
     m_effectRowsSpin->setValue(32);
-    m_effectRowsSpin->setToolTip(QStringLiteral("Ticker rows or orbit copies."));
+    m_effectRowsSpin->setToolTip(QStringLiteral("Rows, copies, or repeat steps."));
     presetForm->addRow(QStringLiteral("Copies"), m_effectRowsSpin);
 
     m_effectSpeedSpin = new QDoubleSpinBox(page);
@@ -1783,6 +1787,13 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerExportLongSectionsButton->setMinimumHeight(30);
     m_speakerExportLongSectionsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     m_speakerExportLongSectionsButton->setEnabled(false);
+    m_speakerCreateTitleClipsButton = new QPushButton(QStringLiteral("Create News Titles"), page);
+    m_speakerCreateTitleClipsButton->setObjectName(QStringLiteral("speakers.create_news_title_clips"));
+    m_speakerCreateTitleClipsButton->setMinimumHeight(30);
+    m_speakerCreateTitleClipsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    m_speakerCreateTitleClipsButton->setEnabled(false);
+    m_speakerCreateTitleClipsButton->setToolTip(
+        QStringLiteral("Create or refresh fly-in lower-third title clips from transcript speaker changes."));
     m_speakerShowCurrentSpeakerNameCheckBox =
         new QCheckBox(QStringLiteral("Show Current Speaker Name at Bottom"), page);
     m_speakerShowCurrentSpeakerNameCheckBox->setChecked(false);
@@ -1895,8 +1906,7 @@ QWidget *InspectorPane::buildSpeakersTab()
          QStringLiteral("Transcript")});
     m_speakerSectionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakerSectionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_speakerSectionsTable->setEditTriggers(QAbstractItemView::DoubleClicked |
-                                            QAbstractItemView::EditKeyPressed);
+    m_speakerSectionsTable->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_speakerSectionsTable->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     m_speakerSectionsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_speakerSectionsTable->setMinimumHeight(0);
@@ -2344,6 +2354,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     assignmentControlsLayout->addWidget(m_speakerApplyTrackToAllMatchingSectionsCheckBox);
     assignmentControlsLayout->addWidget(m_speakerSectionMinimumWordsSpin);
     assignmentControlsLayout->addStretch(1);
+    assignmentControlsLayout->addWidget(m_speakerCreateTitleClipsButton);
     assignmentControlsLayout->addWidget(m_speakerExportLongSectionsButton);
     speakerAssignmentsLayout->addWidget(assignmentControlsGroup);
     speakerAssignmentsLayout->addWidget(m_speakersTable, 1);

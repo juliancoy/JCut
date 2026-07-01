@@ -2446,19 +2446,22 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             stats->lastUnsupportedEffect = QStringLiteral("curve_lut_upload_failed");
                         }
                     }
-                    const QVector<QRectF> effectRects =
-                        render_detail::vulkanPresetEffectRects(
+                    const render_detail::VulkanEffectPipelinePlan effectPlan =
+                        render_detail::vulkanEffectPipelinePlan(
                             clip,
                             compositeRect,
                             frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                             state->currentFramePosition);
-                    if (!effectRects.isEmpty()) {
-                        for (const QRectF& effectRect : effectRects) {
+                    if (effectPlan.usesGeneratedDraws()) {
+                        for (const render_detail::VulkanEffectPipelinePlan::DrawPass& effectDraw :
+                             effectPlan.generatedDraws) {
                             VulkanPipeline::Push effectPush = basePush;
+                            effectPush.opacity *= effectDraw.opacityMultiplier;
+                            effectPush.shadows[3] = effectDraw.shaderMode;
                             render_detail::vulkanMvpForOutputRectMaybeFlippedY(
-                                effectRect,
+                                effectDraw.outputRect,
                                 swapSize,
-                                0.0,
+                                effectDraw.rotationDegrees,
                                 status && status->sampledFrameNeedsYFlip,
                                 effectPush.mvp);
                             drawPush(effectPush);

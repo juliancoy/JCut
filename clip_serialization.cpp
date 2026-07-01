@@ -19,6 +19,14 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("person_orbit");
     case ClipEffectPreset::AlternatingMotionBackground:
         return QStringLiteral("alternating_motion_background");
+    case ClipEffectPreset::FreezePattern:
+        return QStringLiteral("freeze_pattern");
+    case ClipEffectPreset::StepRepeat:
+        return QStringLiteral("step_repeat");
+    case ClipEffectPreset::DirectionalTrimTicker:
+        return QStringLiteral("directional_trim_ticker");
+    case ClipEffectPreset::SourceTile:
+        return QStringLiteral("source_tile");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -43,6 +51,27 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("motion_background") ||
         normalized == QStringLiteral("background_tiler")) {
         return ClipEffectPreset::AlternatingMotionBackground;
+    }
+    if (normalized == QStringLiteral("freeze_pattern") ||
+        normalized == QStringLiteral("freeze") ||
+        normalized == QStringLiteral("stutter_freeze")) {
+        return ClipEffectPreset::FreezePattern;
+    }
+    if (normalized == QStringLiteral("step_repeat") ||
+        normalized == QStringLiteral("repeater") ||
+        normalized == QStringLiteral("video_arpeggiator")) {
+        return ClipEffectPreset::StepRepeat;
+    }
+    if (normalized == QStringLiteral("directional_trim_ticker") ||
+        normalized == QStringLiteral("trim_ticker") ||
+        normalized == QStringLiteral("directional_ticker")) {
+        return ClipEffectPreset::DirectionalTrimTicker;
+    }
+    if (normalized == QStringLiteral("source_tile") ||
+        normalized == QStringLiteral("source_tiling") ||
+        normalized == QStringLiteral("image_tile") ||
+        normalized == QStringLiteral("tiled_source")) {
+        return ClipEffectPreset::SourceTile;
     }
     return ClipEffectPreset::None;
 }

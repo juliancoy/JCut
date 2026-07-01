@@ -4,6 +4,7 @@
 
 TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip);
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex);
+TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex);
 QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
     const TimelineClip& sourceClip,
     const QString& transcriptPath,

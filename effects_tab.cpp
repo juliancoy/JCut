@@ -249,7 +249,9 @@ void EffectsTab::refresh()
         m_widgets.effectAlternateDirectionCheck->setEnabled(
             imagePresetCapable &&
             (clip->effectPreset == ClipEffectPreset::NewsLogoTicker ||
-             clip->effectPreset == ClipEffectPreset::AlternatingMotionBackground));
+             clip->effectPreset == ClipEffectPreset::AlternatingMotionBackground ||
+             clip->effectPreset == ClipEffectPreset::DirectionalTrimTicker ||
+             clip->effectPreset == ClipEffectPreset::SourceTile));
     }
     if (m_widgets.titleFlyInPresetButton) {
         m_widgets.titleFlyInPresetButton->setEnabled(clip->mediaType == ClipMediaType::Title);

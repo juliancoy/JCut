@@ -7,6 +7,7 @@
 #include "facedetections_artifact_utils.h"
 #include "facedetections_debug.h"
 #include "decoder_context.h"
+#include "editor_shared_media.h"
 #include "editor_shared_transcript.h"
 #include "editor_shared_keyframes.h"
 #include "json_io_utils.h"
@@ -120,6 +121,61 @@ QJsonArray objectKeysJson(const QJsonObject& object)
         keys.push_back(key);
     }
     return keys;
+}
+
+QString speakerSectionKey(const QString& speakerId, int64_t startFrame, int64_t endFrame)
+{
+    return QStringLiteral("%1|%2|%3")
+        .arg(speakerId.trimmed())
+        .arg(startFrame)
+        .arg(endFrame);
+}
+
+struct SpeakerSectionKeyframeRow {
+    QString clipId;
+    QString clipLabel;
+    QString type;
+    QString frameText;
+    QString trackText;
+    QString detail;
+    int64_t localFrame = -1;
+    int64_t timelineFrame = -1;
+};
+
+QString clipDisplayLabel(const TimelineClip& clip)
+{
+    const QString label = clip.label.trimmed();
+    if (!label.isEmpty()) {
+        return label;
+    }
+    const QString fileName = QFileInfo(clip.filePath).fileName();
+    return fileName.isEmpty() ? clip.id.trimmed() : fileName;
+}
+
+int64_t clipSourceFrameForLocalFrame(const TimelineClip& clip, int64_t localFrame)
+{
+    const qreal playbackRate = qMax<qreal>(0.001, clip.playbackRate);
+    return qMax<int64_t>(0, clip.sourceInFrame) + qRound64(static_cast<qreal>(localFrame) * playbackRate);
+}
+
+bool clipCanMapSpeakerSection(const TimelineClip& clip, const TimelineClip* selectedClip)
+{
+    if (!selectedClip) {
+        return true;
+    }
+    if (clip.id == selectedClip->id ||
+        clip.linkedSourceClipId == selectedClip->id ||
+        selectedClip->linkedSourceClipId == clip.id) {
+        return true;
+    }
+    const QString clipPath = clip.filePath.trimmed();
+    const QString selectedPath = selectedClip->filePath.trimmed();
+    return !clipPath.isEmpty() && clipPath == selectedPath;
+}
+
+bool sourceFrameInSection(int64_t sourceFrame, int64_t sectionStartFrame, int64_t sectionEndFrame)
+{
+    return sourceFrame >= sectionStartFrame && sourceFrame <= sectionEndFrame;
 }
 
 QJsonObject fileStatusJson(const QString& path)
@@ -1043,6 +1099,9 @@ void SpeakersTab::showNoTranscriptState(const TimelineClip* clip, const QString&
     if (m_widgets.speakersInspectorDetailsLabel) {
         m_widgets.speakersInspectorDetailsLabel->setText(message);
     }
+    if (m_widgets.speakerCreateTitleClipsButton) {
+        m_widgets.speakerCreateTitleClipsButton->setEnabled(false);
+    }
 
     setTableMessage(m_widgets.speakersTable, 7, message);
     setTableMessage(m_widgets.speakerSectionsTable, SpeakerSectionColumnCount, message);
@@ -1224,6 +1283,67 @@ bool SpeakersTab::rebuildProcessedFaceDetectionsForSelectedClip(bool interactive
         m_speakerDeps.refreshPreview();
     }
     return true;
+}
+
+void SpeakersTab::onSpeakerCreateTitleClipsClicked()
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("Select a clip with a transcript first."));
+        return;
+    }
+    if (!activeCutMutable()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("Create a transcript cut before generating speaker title clips."));
+        return;
+    }
+    const QString transcriptPath = m_transcriptSession.transcriptPath().trimmed();
+    if (transcriptPath.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Create News Titles"),
+                             QStringLiteral("No loaded transcript is available for the selected clip."));
+        return;
+    }
+    if (!m_speakerDeps.replaceSpeakerTitleClips) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Create News Titles"),
+                             QStringLiteral("Timeline title clip placement is unavailable."));
+        return;
+    }
+
+    const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
+    const QVector<TimelineClip> titleClips = makeSpeakerTitleClipsForTranscriptIntroductions(
+        *clip,
+        transcriptPath,
+        sections,
+        0);
+    if (titleClips.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Create News Titles"),
+                                 QStringLiteral("No speaker changes were found in the selected transcript range."));
+        return;
+    }
+
+    const GeneratedClipPlacementResult result =
+        m_speakerDeps.replaceSpeakerTitleClips(clip->id, titleClips);
+    if (!result.changed) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Create News Titles"),
+                             QStringLiteral("No title clips were added to the timeline."));
+        return;
+    }
+    if (!result.firstInsertedClipId.isEmpty() && m_speakerDeps.selectClipById) {
+        m_speakerDeps.selectClipById(result.firstInsertedClipId);
+    }
+    if (m_widgets.speakersInspectorDetailsLabel) {
+        m_widgets.speakersInspectorDetailsLabel->setText(
+            QStringLiteral("Created %1 speaker title clips. Removed %2 stale title clips.")
+                .arg(result.insertedCount)
+                .arg(result.removedCount));
+    }
 }
 
 
@@ -1655,6 +1775,43 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     }
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    const QVector<TimelineClip> timelineClips =
+        m_speakerDeps.getTimelineClips ? m_speakerDeps.getTimelineClips() : QVector<TimelineClip>{};
+    auto keyframeSignatureForClip = [](const TimelineClip& timelineClip) {
+        QStringList parts;
+        parts << timelineClip.id
+              << QString::number(timelineClip.startFrame)
+              << QString::number(timelineClip.sourceInFrame)
+              << QString::number(timelineClip.durationFrames)
+              << QString::number(timelineClip.playbackRate, 'g', 8);
+        auto appendFrames = [&parts](const auto& keyframes, const QString& prefix) {
+            parts << QStringLiteral("%1:%2").arg(prefix).arg(keyframes.size());
+            for (const auto& keyframe : keyframes) {
+                parts << QString::number(keyframe.frame);
+            }
+        };
+        appendFrames(timelineClip.transformKeyframes, QStringLiteral("tx"));
+        appendFrames(timelineClip.speakerFramingEnabledKeyframes, QStringLiteral("sfe"));
+        appendFrames(timelineClip.speakerFramingKeyframes, QStringLiteral("sf"));
+        appendFrames(timelineClip.speakerFramingTargetKeyframes, QStringLiteral("sft"));
+        appendFrames(timelineClip.gradingKeyframes, QStringLiteral("gr"));
+        appendFrames(timelineClip.opacityKeyframes, QStringLiteral("op"));
+        appendFrames(timelineClip.titleKeyframes, QStringLiteral("tt"));
+        parts << QStringLiteral("cp:%1").arg(timelineClip.correctionPolygons.size());
+        for (const TimelineClip::CorrectionPolygon& polygon : timelineClip.correctionPolygons) {
+            parts << QString::number(polygon.startFrame)
+                  << QString::number(polygon.endFrame)
+                  << QString::number(polygon.enabled ? 1 : 0);
+        }
+        return parts.join(QLatin1Char(','));
+    };
+    QStringList keyframeSignatureParts;
+    keyframeSignatureParts.reserve(timelineClips.size());
+    for (const TimelineClip& timelineClip : timelineClips) {
+        if (clipCanMapSpeakerSection(timelineClip, clip)) {
+            keyframeSignatureParts << keyframeSignatureForClip(timelineClip);
+        }
+    }
     const QFileInfo transcriptInfo(m_transcriptSession.transcriptPath());
     const qint64 artifactRevisionMs =
         facedetectionsArtifactRevisionMsForTranscript(m_transcriptSession.transcriptPath());
@@ -1666,7 +1823,10 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         QLatin1Char('|') +
         QString::number(m_transcriptDocumentRevision) + QLatin1Char('|') +
         QString::number(artifactRevisionMs) + QLatin1Char('|') +
-        QString::number(minimumWords);
+        QString::number(minimumWords) + QLatin1Char('|') +
+        QStringList(m_expandedSpeakerSectionKeys.cbegin(), m_expandedSpeakerSectionKeys.cend()).join(QLatin1Char(',')) +
+        QLatin1Char('|') +
+        keyframeSignatureParts.join(QLatin1Char(';'));
 
     QString selectedSectionSpeakerId;
     int64_t selectedSectionStartTimelineFrame = -1;
@@ -1838,10 +1998,144 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     }
     flushCurrentRow();
 
+    auto collectSectionKeyframes =
+        [clip, &timelineClips](const SpeakerSectionRow& section) {
+            QVector<SpeakerSectionKeyframeRow> keyframeRows;
+            auto appendRow = [&keyframeRows](const TimelineClip& timelineClip,
+                                             const QString& type,
+                                             int64_t localFrame,
+                                             const QString& detail) {
+                SpeakerSectionKeyframeRow row;
+                row.clipId = timelineClip.id;
+                row.clipLabel = clipDisplayLabel(timelineClip);
+                row.type = type;
+                row.localFrame = localFrame;
+                row.timelineFrame = timelineClip.startFrame + localFrame;
+                row.frameText = QStringLiteral("src %1 | clip %2 | tl %3")
+                                    .arg(clipSourceFrameForLocalFrame(timelineClip, localFrame))
+                                    .arg(localFrame)
+                                    .arg(row.timelineFrame);
+                row.trackText = QStringLiteral("Track %1").arg(timelineClip.trackIndex + 1);
+                row.detail = detail;
+                keyframeRows.push_back(row);
+            };
+            auto transformDetail = [](const TimelineClip::TransformKeyframe& keyframe) {
+                return QStringLiteral("x %1, y %2, rot %3, scale %4/%5%6")
+                    .arg(keyframe.translationX, 0, 'f', 3)
+                    .arg(keyframe.translationY, 0, 'f', 3)
+                    .arg(keyframe.rotation, 0, 'f', 1)
+                    .arg(keyframe.scaleX, 0, 'f', 3)
+                    .arg(keyframe.scaleY, 0, 'f', 3)
+                    .arg(keyframe.title.trimmed().isEmpty()
+                             ? QString()
+                             : QStringLiteral(" - %1").arg(keyframe.title.trimmed()));
+            };
+            for (const TimelineClip& timelineClip : timelineClips) {
+                if (!clipCanMapSpeakerSection(timelineClip, clip)) {
+                    continue;
+                }
+                auto localFrameIsInSection = [&timelineClip, &section](int64_t localFrame) {
+                    return sourceFrameInSection(clipSourceFrameForLocalFrame(timelineClip, localFrame),
+                                                section.startTimelineFrame,
+                                                section.endTimelineFrame);
+                };
+                for (const TimelineClip::TransformKeyframe& keyframe : timelineClip.transformKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip, QStringLiteral("Transform"), keyframe.frame, transformDetail(keyframe));
+                    }
+                }
+                for (const TimelineClip::TransformKeyframe& keyframe : timelineClip.speakerFramingKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip, QStringLiteral("Speaker Framing"), keyframe.frame, transformDetail(keyframe));
+                    }
+                }
+                for (const TimelineClip::TransformKeyframe& keyframe : timelineClip.speakerFramingTargetKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip, QStringLiteral("Speaker Target"), keyframe.frame, transformDetail(keyframe));
+                    }
+                }
+                for (const TimelineClip::BoolKeyframe& keyframe : timelineClip.speakerFramingEnabledKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip,
+                                  QStringLiteral("Speaker Framing Enabled"),
+                                  keyframe.frame,
+                                  keyframe.enabled ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+                    }
+                }
+                for (const TimelineClip::GradingKeyframe& keyframe : timelineClip.gradingKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip,
+                                  QStringLiteral("Grading"),
+                                  keyframe.frame,
+                                  QStringLiteral("bright %1, contrast %2, sat %3, opacity %4")
+                                      .arg(keyframe.brightness, 0, 'f', 3)
+                                      .arg(keyframe.contrast, 0, 'f', 3)
+                                      .arg(keyframe.saturation, 0, 'f', 3)
+                                      .arg(keyframe.opacity, 0, 'f', 3));
+                    }
+                }
+                for (const TimelineClip::OpacityKeyframe& keyframe : timelineClip.opacityKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip,
+                                  QStringLiteral("Opacity"),
+                                  keyframe.frame,
+                                  QStringLiteral("opacity %1").arg(keyframe.opacity, 0, 'f', 3));
+                    }
+                }
+                for (const TimelineClip::TitleKeyframe& keyframe : timelineClip.titleKeyframes) {
+                    if (localFrameIsInSection(keyframe.frame)) {
+                        appendRow(timelineClip,
+                                  QStringLiteral("Title"),
+                                  keyframe.frame,
+                                  QStringLiteral("\"%1\" x %2, y %3, size %4, opacity %5")
+                                      .arg(keyframe.text.simplified().left(80))
+                                      .arg(keyframe.translationX, 0, 'f', 3)
+                                      .arg(keyframe.translationY, 0, 'f', 3)
+                                      .arg(keyframe.fontSize, 0, 'f', 1)
+                                      .arg(keyframe.opacity, 0, 'f', 3));
+                    }
+                }
+                for (const TimelineClip::CorrectionPolygon& polygon : timelineClip.correctionPolygons) {
+                    const int64_t startFrame = qMax<int64_t>(0, polygon.startFrame);
+                    const int64_t endFrame = polygon.endFrame >= 0 ? polygon.endFrame : startFrame;
+                    const int64_t sourceStart = clipSourceFrameForLocalFrame(timelineClip, startFrame);
+                    const int64_t sourceEnd = clipSourceFrameForLocalFrame(timelineClip, endFrame);
+                    if (sourceStart <= section.endTimelineFrame && sourceEnd >= section.startTimelineFrame) {
+                        appendRow(timelineClip,
+                                  QStringLiteral("Correction Polygon"),
+                                  startFrame,
+                                  QStringLiteral("%1 points, %2, local %3-%4")
+                                      .arg(polygon.pointsNormalized.size())
+                                      .arg(polygon.enabled ? QStringLiteral("enabled") : QStringLiteral("disabled"))
+                                      .arg(startFrame)
+                                      .arg(endFrame));
+                    }
+                }
+            }
+            std::sort(keyframeRows.begin(), keyframeRows.end(), [](const auto& a, const auto& b) {
+                if (a.timelineFrame != b.timelineFrame) {
+                    return a.timelineFrame < b.timelineFrame;
+                }
+                if (a.clipLabel != b.clipLabel) {
+                    return a.clipLabel < b.clipLabel;
+                }
+                return a.type < b.type;
+            });
+            return keyframeRows;
+        };
+
+    int visualRowCount = rows.size();
+    for (const SpeakerSectionRow& section : rows) {
+        if (m_expandedSpeakerSectionKeys.contains(
+                speakerSectionKey(section.speakerId, section.startTimelineFrame, section.endTimelineFrame))) {
+            visualRowCount += qMax(1, collectSectionKeyframes(section).size());
+        }
+    }
+
     QSignalBlocker blocker(m_widgets.speakerSectionsTable);
     m_widgets.speakerSectionsTable->clearSpans();
     m_widgets.speakerSectionsTable->clearContents();
-    m_widgets.speakerSectionsTable->setRowCount(rows.size());
+    m_widgets.speakerSectionsTable->setRowCount(visualRowCount);
     std::unique_ptr<editor::DecoderContext> avatarDecoder;
     QHash<int64_t, QImage> avatarFrameImageCache;
     if (clip && !streamByTrackId.isEmpty() &&
@@ -1855,8 +2149,12 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         }
     }
     int avatarIconWidth = 40;
-    for (int row = 0; row < rows.size(); ++row) {
-        const SpeakerSectionRow& section = rows.at(row);
+    int visualRow = 0;
+    for (int sectionIndex = 0; sectionIndex < rows.size(); ++sectionIndex) {
+        const SpeakerSectionRow& section = rows.at(sectionIndex);
+        const QString sectionKey =
+            speakerSectionKey(section.speakerId, section.startTimelineFrame, section.endTimelineFrame);
+        const bool expanded = m_expandedSpeakerSectionKeys.contains(sectionKey);
         const QString rangeText =
             section.startTimelineFrame >= 0 && section.endTimelineFrame >= 0
                 ? QStringLiteral("%1-%2").arg(section.startTimelineFrame).arg(section.endTimelineFrame)
@@ -1865,7 +2163,9 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         if (section.wordCount > section.snippetWords.size()) {
             snippet += QStringLiteral(" ...");
         }
-        auto* indexItem = new QTableWidgetItem(QString::number(row + 1));
+        auto* indexItem =
+            new QTableWidgetItem(QStringLiteral("%1 %2").arg(expanded ? QStringLiteral("v") : QStringLiteral(">"))
+                                                        .arg(sectionIndex + 1));
         auto* speakerItem = new QTableWidgetItem(section.displayLabel);
         auto* rangeItem = new QTableWidgetItem(rangeText);
         const QJsonObject sectionAssignment = clip
@@ -1918,49 +2218,112 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
                                     wordsItem,
                                     snippetItem},
                                    section.speakerId);
-        avatarItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
-        avatarItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
-        avatarItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
-        avatarItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
-        avatarItem->setData(SpeakerSectionTrackIdRole, avatarTrackId);
-        speakerItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
-        speakerItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
-        speakerItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
-        speakerItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
-        speakerItem->setData(SpeakerSectionTrackIdRole, avatarTrackId);
+        auto applySectionItemData = [&](QTableWidgetItem* item) {
+            if (!item) {
+                return;
+            }
+            item->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
+            item->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
+            item->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
+            item->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
+            item->setData(SpeakerSectionTrackIdRole, avatarTrackId);
+            item->setData(SpeakerSectionRowTypeRole, 0);
+            item->setData(SpeakerSectionKeyRole, sectionKey);
+            item->setData(SpeakerSectionOrdinalRole, sectionIndex + 1);
+        };
+        applySectionItemData(avatarItem);
+        applySectionItemData(indexItem);
+        applySectionItemData(speakerItem);
+        applySectionItemData(rangeItem);
+        applySectionItemData(trackItem);
+        applySectionItemData(rotationItem);
+        applySectionItemData(wordsItem);
+        applySectionItemData(snippetItem);
         speakerItem->setToolTip(QStringLiteral("Speaker ID: %1\nAssigned track(s): %2")
                                     .arg(section.speakerId,
                                          trackLabels.isEmpty() ? QStringLiteral("-") : trackLabels.join(QStringLiteral(", "))));
         indexItem->setFlags(indexItem->flags() & ~Qt::ItemIsEditable);
+        indexItem->setToolTip(QStringLiteral("Click to expand or collapse keyframes for this speaker section."));
         speakerItem->setFlags(speakerItem->flags() & ~Qt::ItemIsEditable);
         rangeItem->setFlags(rangeItem->flags() & ~Qt::ItemIsEditable);
         trackItem->setFlags(trackItem->flags() & ~Qt::ItemIsEditable);
-        trackItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
-        trackItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
-        trackItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
-        trackItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
-        trackItem->setData(SpeakerSectionTrackIdRole, avatarTrackId);
         trackItem->setToolTip(
             trackLabels.isEmpty()
                 ? QStringLiteral("No continuity track is mapped to this contiguous section row.")
                 : QStringLiteral("Continuity tracks mapped to this contiguous section row: %1")
                       .arg(trackLabels.join(QStringLiteral(", "))));
-        rotationItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
-        rotationItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
-        rotationItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
-        rotationItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
-        rotationItem->setData(SpeakerSectionTrackIdRole, avatarTrackId);
         rotationItem->setData(SpeakerSectionRotationRole, sectionRotation);
         wordsItem->setFlags(wordsItem->flags() & ~Qt::ItemIsEditable);
         snippetItem->setFlags(snippetItem->flags() & ~Qt::ItemIsEditable);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionAvatarColumn, avatarItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionIndexColumn, indexItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionSpeakerColumn, speakerItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionRangeColumn, rangeItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTrackColumn, trackItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionRotationColumn, rotationItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionWordsColumn, wordsItem);
-        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTranscriptColumn, snippetItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionAvatarColumn, avatarItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionIndexColumn, indexItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionSpeakerColumn, speakerItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRangeColumn, rangeItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTrackColumn, trackItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRotationColumn, rotationItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionWordsColumn, wordsItem);
+        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTranscriptColumn, snippetItem);
+        ++visualRow;
+
+        if (!expanded) {
+            continue;
+        }
+        QVector<SpeakerSectionKeyframeRow> keyframes = collectSectionKeyframes(section);
+        if (keyframes.isEmpty()) {
+            keyframes.push_back(SpeakerSectionKeyframeRow{
+                QString(),
+                QStringLiteral("-"),
+                QStringLiteral("Keyframes"),
+                QStringLiteral("-"),
+                QStringLiteral("-"),
+                QStringLiteral("No keyframes overlap this speaker section."),
+                -1,
+                -1});
+        }
+        for (const SpeakerSectionKeyframeRow& keyframeRow : keyframes) {
+            auto* detailAvatarItem = new QTableWidgetItem();
+            auto* detailIndexItem = new QTableWidgetItem(QStringLiteral("  KF"));
+            auto* detailClipItem = new QTableWidgetItem(keyframeRow.clipLabel);
+            auto* detailFrameItem = new QTableWidgetItem(keyframeRow.frameText);
+            auto* detailTypeItem = new QTableWidgetItem(keyframeRow.type);
+            auto* detailTimelineItem =
+                new QTableWidgetItem(keyframeRow.timelineFrame >= 0
+                                         ? QString::number(keyframeRow.timelineFrame)
+                                         : QStringLiteral("-"));
+            auto* detailTrackItem = new QTableWidgetItem(keyframeRow.trackText);
+            auto* detailTextItem = new QTableWidgetItem(keyframeRow.detail);
+            const QList<QTableWidgetItem*> detailItems{
+                detailAvatarItem,
+                detailIndexItem,
+                detailClipItem,
+                detailFrameItem,
+                detailTypeItem,
+                detailTimelineItem,
+                detailTrackItem,
+                detailTextItem};
+            for (QTableWidgetItem* item : detailItems) {
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                item->setData(SpeakerSectionRowTypeRole, 1);
+                item->setData(SpeakerSectionKeyRole, sectionKey);
+                item->setData(SpeakerSectionKeyframeClipIdRole, keyframeRow.clipId);
+                item->setData(SpeakerSectionKeyframeLocalFrameRole,
+                              QVariant::fromValue<qlonglong>(keyframeRow.localFrame));
+                item->setBackground(QColor(QStringLiteral("#101820")));
+                item->setForeground(QColor(QStringLiteral("#b9c7d6")));
+            }
+            detailIndexItem->setTextAlignment(Qt::AlignCenter);
+            detailTimelineItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            detailTextItem->setToolTip(keyframeRow.detail);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionAvatarColumn, detailAvatarItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionIndexColumn, detailIndexItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionSpeakerColumn, detailClipItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRangeColumn, detailFrameItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTrackColumn, detailTypeItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRotationColumn, detailTimelineItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionWordsColumn, detailTrackItem);
+            m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTranscriptColumn, detailTextItem);
+            ++visualRow;
+        }
     }
     m_widgets.speakerSectionsTable->setIconSize(QSize(avatarIconWidth, 40));
     m_widgets.speakerSectionsTable->resizeColumnToContents(SpeakerSectionAvatarColumn);
@@ -1969,14 +2332,20 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     m_lastSpeakerSectionsTableRefreshSkippedReason.clear();
     if (!rows.isEmpty()) {
         int rowToSelect = 0;
-        if (!selectedSectionSpeakerId.isEmpty()) {
-            for (int row = 0; row < rows.size(); ++row) {
-                const SpeakerSectionRow& section = rows.at(row);
-                if (section.speakerId == selectedSectionSpeakerId &&
-                    section.startTimelineFrame == selectedSectionStartTimelineFrame) {
-                    rowToSelect = row;
-                    break;
-                }
+        for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
+            QTableWidgetItem* speakerItem =
+                m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
+            if (!speakerItem || speakerItem->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+                continue;
+            }
+            if (selectedSectionSpeakerId.isEmpty()) {
+                rowToSelect = row;
+                break;
+            }
+            if (speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed() == selectedSectionSpeakerId &&
+                speakerItem->data(SpeakerSectionStartFrameRole).toLongLong() == selectedSectionStartTimelineFrame) {
+                rowToSelect = row;
+                break;
             }
         }
         m_widgets.speakerSectionsTable->setCurrentCell(rowToSelect, SpeakerSectionSpeakerColumn);
@@ -3108,6 +3477,10 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRunAutoTrackButton->setEnabled(canRunClipActions);
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate Continuity Tracks"));
     }
+    if (m_widgets.speakerCreateTitleClipsButton) {
+        m_widgets.speakerCreateTitleClipsButton->setEnabled(
+            canRunClipActions && static_cast<bool>(m_speakerDeps.replaceSpeakerTitleClips));
+    }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);
     }
@@ -3511,6 +3884,10 @@ void SpeakersTab::updateSpeakerTrackingStatusLabelFast()
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canRunClipActions);
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate Continuity Tracks"));
+    }
+    if (m_widgets.speakerCreateTitleClipsButton) {
+        m_widgets.speakerCreateTitleClipsButton->setEnabled(
+            canRunClipActions && static_cast<bool>(m_speakerDeps.replaceSpeakerTitleClips));
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);

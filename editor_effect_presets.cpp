@@ -4,6 +4,67 @@
 
 #include <QUuid>
 
+namespace {
+
+bool clipRangesOverlap(const TimelineClip& a, const TimelineClip& b)
+{
+    const int64_t aStart = a.startFrame;
+    const int64_t aEnd = a.startFrame + qMax<int64_t>(1, a.durationFrames);
+    const int64_t bStart = b.startFrame;
+    const int64_t bEnd = b.startFrame + qMax<int64_t>(1, b.durationFrames);
+    return aStart < bEnd && bStart < aEnd;
+}
+
+bool clipIdExists(const QVector<TimelineClip>& clips, const QString& id)
+{
+    for (const TimelineClip& clip : clips) {
+        if (clip.id == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool trackNameStartsWith(const QVector<TimelineTrack>& tracks, int trackIndex, const QString& prefix)
+{
+    return trackIndex >= 0 &&
+           trackIndex < tracks.size() &&
+           tracks.at(trackIndex).name.trimmed().startsWith(prefix, Qt::CaseInsensitive);
+}
+
+QString nextGeneratedTrackName(const QVector<TimelineTrack>& tracks, const QString& baseName)
+{
+    int count = 0;
+    for (const TimelineTrack& track : tracks) {
+        if (track.name.trimmed().startsWith(baseName, Qt::CaseInsensitive)) {
+            ++count;
+        }
+    }
+    return count <= 0 ? baseName : QStringLiteral("%1 %2").arg(baseName).arg(count + 1);
+}
+
+bool wouldClipConflictWithTrack(const QVector<TimelineClip>& clips, const TimelineClip& clip, int trackIndex)
+{
+    for (const TimelineClip& existing : clips) {
+        if (existing.trackIndex == trackIndex && clipRangesOverlap(existing, clip)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int appendGeneratedTrack(QVector<TimelineTrack>& tracks, const QString& trackBaseName)
+{
+    TimelineTrack track;
+    track.name = nextGeneratedTrackName(tracks, trackBaseName);
+    track.audioEnabled = false;
+    track.audioWaveformVisible = false;
+    tracks.push_back(track);
+    return tracks.size() - 1;
+}
+
+} // namespace
+
 TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
 {
     TimelineClip maskClip = sourceClip;
@@ -65,6 +126,39 @@ TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip,
     effectClip.effectSpeed = qBound<qreal>(-8.0, sourceClip.effectSpeed, 8.0);
     effectClip.effectScale = qBound<qreal>(0.1, sourceClip.effectScale, 8.0);
     effectClip.effectAlternateDirection = true;
+    return effectClip;
+}
+
+TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex)
+{
+    TimelineClip effectClip = sourceClip;
+    const QString sourceId = sourceClip.id.trimmed();
+    effectClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    effectClip.clipRole = ClipRole::EffectSynth;
+    effectClip.linkedSourceClipId = sourceId;
+    effectClip.generatedFromMaskId.clear();
+    effectClip.syncLockedToSource = false;
+    effectClip.label = sourceClip.label.trimmed().isEmpty()
+                           ? QStringLiteral("Source Tiling")
+                           : QStringLiteral("%1 Tiling").arg(sourceClip.label.trimmed());
+    effectClip.trackIndex = qMax(0, trackIndex);
+    effectClip.hasAudio = false;
+    effectClip.audioEnabled = false;
+    effectClip.audioLinkedToVideo = false;
+    effectClip.audioBusId.clear();
+    effectClip.audioSourcePath.clear();
+    effectClip.audioSourceOriginalPath.clear();
+    effectClip.audioSourceStatus = QStringLiteral("generated");
+    effectClip.audioStreamIndex = -1;
+    effectClip.maskEnabled = false;
+    effectClip.maskFramesDir.clear();
+    effectClip.maskShowOnly = false;
+    effectClip.maskForegroundLayerEnabled = false;
+    effectClip.effectPreset = ClipEffectPreset::SourceTile;
+    effectClip.effectRows = qBound(1, sourceClip.effectRows == 32 ? 6 : sourceClip.effectRows, 96);
+    effectClip.effectSpeed = 0.0;
+    effectClip.effectScale = qBound<qreal>(0.1, sourceClip.effectScale, 8.0);
+    effectClip.effectAlternateDirection = false;
     return effectClip;
 }
 
@@ -215,4 +309,63 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip)
 
     clip.titleKeyframes = {before, arrived, hold, after};
     return true;
+}
+
+GeneratedClipPlacementResult replaceGeneratedClipsForSource(
+    QVector<TimelineClip>& timelineClips,
+    QVector<TimelineTrack>& timelineTracks,
+    const QString& sourceClipId,
+    ClipRole generatedRole,
+    QVector<TimelineClip> generatedClips,
+    const QString& trackBaseName)
+{
+    GeneratedClipPlacementResult result;
+    const QString sourceId = sourceClipId.trimmed();
+    const QString baseName = trackBaseName.trimmed().isEmpty()
+                                 ? QStringLiteral("Generated")
+                                 : trackBaseName.trimmed();
+
+    for (int i = timelineClips.size() - 1; i >= 0; --i) {
+        if (timelineClips.at(i).clipRole == generatedRole &&
+            timelineClips.at(i).linkedSourceClipId == sourceId) {
+            timelineClips.removeAt(i);
+            ++result.removedCount;
+        }
+    }
+
+    for (TimelineClip clip : generatedClips) {
+        if (clip.id.trimmed().isEmpty() || clipIdExists(timelineClips, clip.id)) {
+            clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+        clip.clipRole = generatedRole;
+        clip.linkedSourceClipId = sourceId;
+
+        int targetTrack = -1;
+        for (int trackIndex = 0; trackIndex < timelineTracks.size(); ++trackIndex) {
+            if (!trackNameStartsWith(timelineTracks, trackIndex, baseName)) {
+                continue;
+            }
+            clip.trackIndex = trackIndex;
+            if (!wouldClipConflictWithTrack(timelineClips, clip, trackIndex)) {
+                targetTrack = trackIndex;
+                break;
+            }
+        }
+        if (targetTrack < 0) {
+            targetTrack = appendGeneratedTrack(timelineTracks, baseName);
+        }
+
+        clip.trackIndex = targetTrack;
+        if (clip.durationFrames <= 0) {
+            clip.durationFrames = 1;
+        }
+        timelineClips.push_back(clip);
+        if (result.firstInsertedClipId.isEmpty()) {
+            result.firstInsertedClipId = clip.id;
+        }
+        ++result.insertedCount;
+    }
+
+    result.changed = result.removedCount > 0 || result.insertedCount > 0;
+    return result;
 }

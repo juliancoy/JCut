@@ -1864,14 +1864,20 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* addAbove = nullptr;
     QAction* addBelow = nullptr;
     QAction* expandAction = nullptr;
+    QAction* restoreAction = nullptr;
     QAction* skipAction = nullptr;
     QAction* deleteAction = nullptr;
     const bool rowSkipped = sourceItem->data(Qt::UserRole + 7).toBool();
+    const int wordId = sourceItem->data(Qt::UserRole + 16).toInt();
+    const int originalSegmentIndex = sourceItem->data(Qt::UserRole + 13).toInt();
+    const int originalWordIndex = sourceItem->data(Qt::UserRole + 14).toInt();
     if (activeCutMutable()) {
         addAbove = menu.addAction(QStringLiteral("Add Word Above"));
         addBelow = menu.addAction(QStringLiteral("Add Word Below"));
         menu.addSeparator();
         expandAction = menu.addAction(QStringLiteral("Expand Word Timing"));
+        restoreAction = menu.addAction(QStringLiteral("Restore Word to Original"));
+        restoreAction->setEnabled(wordId >= 0 && originalSegmentIndex >= 0 && originalWordIndex >= 0);
         skipAction = menu.addAction(rowSkipped ? QStringLiteral("Unskip Word")
                                                : QStringLiteral("Skip Word"));
         menu.addSeparator();
@@ -1892,6 +1898,8 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
         insertWordAtRow(row, false);
     } else if (chosen == expandAction) {
         expandSelectedRow(row);
+    } else if (chosen == restoreAction) {
+        restoreWordToOriginalState(wordId);
     } else if (chosen == skipAction) {
         setSelectedRowsSkipped(!rowSkipped);
     } else if (chosen == deleteAction) {
@@ -2086,6 +2094,75 @@ void TranscriptTab::expandSelectedRow(int row)
     emit transcriptDocumentChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});
+}
+
+bool TranscriptTab::restoreWordToOriginalState(int wordId)
+{
+    if (m_updating || wordId < 0 || m_transcriptSession.transcriptPath().isEmpty() ||
+        !m_transcriptSession.hasObjectDocument() || !activeCutMutable()) {
+        return false;
+    }
+
+    TranscriptDocumentWord* word = transcriptWordById(wordId);
+    if (!word || word->originalSegmentIndex < 0 || word->originalWordIndex < 0) {
+        return false;
+    }
+
+    const QString originalPath = originalTranscriptPathForClip(m_transcriptSession.clipFilePath());
+    QJsonDocument originalDoc;
+    if (originalPath.isEmpty() ||
+        !loadTranscriptJsonCached(originalPath, &originalDoc) ||
+        !originalDoc.isObject()) {
+        return false;
+    }
+
+    const QJsonArray segments = originalDoc.object().value(QStringLiteral("segments")).toArray();
+    if (word->originalSegmentIndex >= segments.size()) {
+        return false;
+    }
+    const QJsonObject segmentObject = segments.at(word->originalSegmentIndex).toObject();
+    const QJsonArray words = segmentObject.value(QStringLiteral("words")).toArray();
+    if (word->originalWordIndex >= words.size()) {
+        return false;
+    }
+    const QJsonObject originalWord = words.at(word->originalWordIndex).toObject();
+    const QString originalText =
+        originalWord.value(QStringLiteral("word"))
+            .toString(originalWord.value(QStringLiteral("text")).toString());
+    const double originalStart = originalWord.value(QStringLiteral("start")).toDouble(0.0);
+    const double originalEnd = qMax(originalStart,
+                                    originalWord.value(QStringLiteral("end")).toDouble(originalStart));
+    QString originalSpeaker = originalWord.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
+    if (originalSpeaker.isEmpty()) {
+        originalSpeaker = segmentObject.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
+    }
+    const bool originalSkipped = originalWord.value(QString(kTranscriptWordSkippedKey)).toBool(false);
+
+    const bool changed =
+        word->text != originalText ||
+        !qFuzzyCompare(word->startSeconds + 1.0, originalStart + 1.0) ||
+        !qFuzzyCompare(word->endSeconds + 1.0, originalEnd + 1.0) ||
+        word->speaker.trimmed() != originalSpeaker ||
+        word->skipped != originalSkipped ||
+        !word->editTags.isEmpty();
+    if (!changed) {
+        return false;
+    }
+
+    word->text = originalText;
+    word->startSeconds = originalStart;
+    word->endSeconds = originalEnd;
+    word->speaker = originalSpeaker;
+    word->skipped = originalSkipped;
+    word->editTags.clear();
+
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    saveLoadedTranscriptDocument();
+    refresh();
+    emit transcriptDocumentChanged();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
+    return true;
 }
 
 bool TranscriptTab::eventFilter(QObject* watched, QEvent* event)

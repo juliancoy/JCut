@@ -14,6 +14,7 @@
 #include <functional>
 
 #include "editor_action_result.h"
+#include "editor_effect_presets.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
 #include "speaker_section_export_item.h"
@@ -51,6 +52,7 @@ public:
         QCheckBox* speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
         QSpinBox* speakerSectionMinimumWordsSpin = nullptr;
         QPushButton* speakerExportLongSectionsButton = nullptr;
+        QPushButton* speakerCreateTitleClipsButton = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
         QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
@@ -107,7 +109,9 @@ public:
 
     struct Dependencies : public TableTabBase::Dependencies {
         std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
+        std::function<QVector<TimelineClip>()> getTimelineClips;
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
+        std::function<GeneratedClipPlacementResult(const QString&, const QVector<TimelineClip>&)> replaceSpeakerTitleClips;
         std::function<bool(const QString&)> selectClipById;
         std::function<QSize()> getOutputSize;
         std::function<void()> refreshPreview;
@@ -188,6 +192,7 @@ private slots:
     void onSpeakersTableContextMenuRequested(const QPoint& pos);
     void onSpeakerSectionsTableContextMenuRequested(const QPoint& pos);
     void onSpeakerExportLongSectionsClicked();
+    void onSpeakerCreateTitleClipsClicked();
     void onSpeakerPreviousSentenceClicked();
     void onSpeakerNextSentenceClicked();
     void onSpeakerNextSectionClicked();
@@ -232,7 +237,12 @@ private:
         SpeakerSectionTrackIdsRole,
         SpeakerSectionTrackIdRole,
         SpeakerSectionStreamIdRole,
-        SpeakerSectionRotationRole
+        SpeakerSectionRotationRole,
+        SpeakerSectionRowTypeRole,
+        SpeakerSectionKeyRole,
+        SpeakerSectionOrdinalRole,
+        SpeakerSectionKeyframeClipIdRole,
+        SpeakerSectionKeyframeLocalFrameRole
     };
 
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
@@ -330,6 +340,9 @@ private:
                                                     const QString& speakerId) const;
     void showSpeakerAvatarHoverPreview(const QString& speakerId, const QPoint& globalPos);
     void hideSpeakerAvatarHoverPreview();
+    QString speakerSectionKeyframePreviewTooltipHtml(const QString& clipId, int64_t localFrame) const;
+    void showSpeakerSectionKeyframeHoverPreview(int row, const QPoint& globalPos);
+    void hideSpeakerSectionKeyframeHoverPreview();
     bool selectedClipHasFaceDetectionsSidecars() const;
     bool clipSupportsTranscript(const TimelineClip& clip) const;
     bool activeCutMutable() const;
@@ -354,6 +367,7 @@ private:
     void refreshVisibleSpeakerSectionAssignments(const QString& speakerId,
                                                  int64_t onlyStartFrame = -1,
                                                  int64_t onlyEndFrame = -1);
+    void openSpeakerSectionOptionsForRow(int row);
     int speakerSectionMinimumWords() const;
     void syncSpeakerSectionMinimumWordsControl(const TimelineClip& clip);
     QSet<int> previewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
@@ -397,6 +411,7 @@ private:
                                             int trackId,
                                             int row = -1);
     bool saveSpeakerSectionRotation(int row, qreal rotation);
+    bool saveSpeakerSectionOptions(int row, const QJsonObject& options);
     bool saveSelectedSpeakerSectionRotationFromControls();
     qreal selectedSpeakerSectionRotation() const;
     void seekToSpeakerFirstWord(const QString& speakerId);
@@ -510,6 +525,7 @@ private:
     int64_t m_lastPlaybackSpeakerPanelSourceFrame = -1;
     QString m_lastPlaybackSpeakerPanelSpeakerId;
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
+    QSet<QString> m_expandedSpeakerSectionKeys;
     qint64 m_lastSpeakersTableRefreshDurationMs = 0;
     qint64 m_maxSpeakersTableRefreshDurationMs = 0;
     qint64 m_lastSpeakerSectionsTableRefreshDurationMs = 0;

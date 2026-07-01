@@ -24,6 +24,31 @@ inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
 QByteArray vulkanIdentityCurveLutRgbaBytes();
+
+struct VulkanEffectPipelinePlan {
+    enum class Mode {
+        PassThrough,
+        GeneratedDraws,
+    };
+
+    struct DrawPass {
+        QRectF outputRect;
+        qreal rotationDegrees = 0.0;
+        float opacityMultiplier = 1.0f;
+        float shaderMode = kVulkanEffectModeNormal;
+    };
+
+    Mode mode = Mode::PassThrough;
+    QVector<DrawPass> generatedDraws;
+
+    bool usesGeneratedDraws() const { return mode == Mode::GeneratedDraws && !generatedDraws.isEmpty(); }
+    QVector<QRectF> generatedDrawRects() const;
+};
+
+VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
+                                                  const QRectF& outputRect,
+                                                  const QSize& textureSize,
+                                                  qreal timelineFrame);
 QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         const QRectF& outputRect,
                                         const QSize& textureSize,

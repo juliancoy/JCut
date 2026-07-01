@@ -40,6 +40,10 @@ enum class ClipEffectPreset {
     NewsLogoTicker,
     PersonOrbit,
     AlternatingMotionBackground,
+    FreezePattern,
+    StepRepeat,
+    DirectionalTrimTicker,
+    SourceTile,
 };
 
 enum class ClipRole {

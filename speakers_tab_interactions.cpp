@@ -1580,6 +1580,9 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     if (!speakerItem) {
         return;
     }
+    if (speakerItem->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+        return;
+    }
     const QString speakerId = speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
     const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
     const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
@@ -1633,6 +1636,8 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     }
 
     QMenu menu(m_widgets.speakerSectionsTable);
+    QAction* optionsAction = menu.addAction(QStringLiteral("Options"));
+    menu.addSeparator();
     QAction* skipAction = menu.addAction(QStringLiteral("Skip Section"));
     QAction* unskipAction = menu.addAction(QStringLiteral("Unskip Section"));
     menu.addSeparator();
@@ -1649,6 +1654,10 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     if (!chosen) {
         return;
     }
+    if (chosen == optionsAction) {
+        openSpeakerSectionOptionsForRow(row);
+        return;
+    }
     if (chosen == exportAction) {
         if (m_speakerDeps.exportSpeakerSectionVideo) {
             const QString snippet = m_widgets.speakerSectionsTable->item(row, SpeakerSectionTranscriptColumn)
@@ -1661,7 +1670,9 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
                 endFrame,
                 snippet,
                 speakerDisplayName,
-                row + 1);
+                speakerItem->data(SpeakerSectionOrdinalRole).toInt() > 0
+                    ? speakerItem->data(SpeakerSectionOrdinalRole).toInt()
+                    : row + 1);
         }
         return;
     }

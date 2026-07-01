@@ -73,6 +73,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* deleteFaceDetectionsAction = nullptr;
     QAction* generateSamMaskMatteAction = nullptr;
     QAction* createMotionBackgroundAction = nullptr;
+    QAction* createSourceTilingAction = nullptr;
     QAction* generateSpeakerTitleClipsAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
@@ -145,7 +146,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             !m_clips[clipIndex].locked);
         QMenu* generatedMenu = menu.addMenu(QStringLiteral("Generated Clips"));
         generateSamMaskMatteAction =
-            generatedMenu->addAction(QStringLiteral("Create/Update SAM Mask Matte"));
+            generatedMenu->addAction(QStringLiteral("Bring Mask Into New Virtual Track"));
+        generateSamMaskMatteAction->setToolTip(
+            QStringLiteral("Create a separate mask-matte clip on its own track so its Z order can be adjusted."));
         generateSamMaskMatteAction->setEnabled(
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].maskEnabled &&
@@ -153,6 +156,14 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         createMotionBackgroundAction =
             generatedMenu->addAction(QStringLiteral("Create Alternating Motion Background"));
         createMotionBackgroundAction->setEnabled(
+            clipHasVisuals(m_clips[clipIndex]) &&
+            m_clips[clipIndex].mediaType != ClipMediaType::Title &&
+            !m_clips[clipIndex].filePath.trimmed().isEmpty());
+        createSourceTilingAction =
+            generatedMenu->addAction(QStringLiteral("Create Tiled Source Clip"));
+        createSourceTilingAction->setToolTip(
+            QStringLiteral("Create a new virtual track with repeated tiles of this visual source."));
+        createSourceTilingAction->setEnabled(
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].filePath.trimmed().isEmpty());
@@ -553,6 +564,31 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         m_clips.push_back(clip);
         return clip.id;
     };
+    auto placeGeneratedClipOnNewTrack =
+        [&](TimelineClip clip, const QString& trackBaseName, int preferredTrack) {
+            auto clipIdExists = [this](const QString& id) {
+                for (const TimelineClip& existingClip : m_clips) {
+                    if (existingClip.id == id) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            if (clip.id.trimmed().isEmpty() || clipIdExists(clip.id)) {
+                clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            }
+
+            const int targetTrack = qBound(0, preferredTrack, trackCount());
+            insertTrackAt(targetTrack);
+            m_tracks[targetTrack].name = nextGeneratedTrackName(trackBaseName);
+            m_tracks[targetTrack].audioEnabled = false;
+            m_tracks[targetTrack].audioWaveformVisible = false;
+
+            clip.trackIndex = targetTrack;
+            normalizeClipTiming(clip);
+            m_clips.push_back(clip);
+            return clip.id;
+        };
     auto finishGeneratedClipMutation = [this](const QString& primarySelection) {
         normalizeTrackIndices();
         sortClips();
@@ -571,7 +607,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             removeGeneratedClipsForSource(source.id, ClipRole::MaskMatte);
             TimelineClip matte = makeSamMaskMatteClip(source);
             const QString matteId =
-                placeGeneratedClip(matte, QStringLiteral("SAM Masks"), source.trackIndex + 1);
+                placeGeneratedClipOnNewTrack(matte, QStringLiteral("Mask Mattes"), source.trackIndex);
             finishGeneratedClipMutation(matteId);
         }
         return;
@@ -583,6 +619,17 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             TimelineClip synth = makeAlternatingMotionBackgroundClip(source, source.trackIndex + 1);
             const QString synthId =
                 placeGeneratedClip(synth, QStringLiteral("Effect Synths"), source.trackIndex + 1);
+            finishGeneratedClipMutation(synthId);
+        }
+        return;
+    }
+
+    if (selected == createSourceTilingAction) {
+        if (clipIndex >= 0) {
+            const TimelineClip source = m_clips[clipIndex];
+            TimelineClip synth = makeSourceTilingClip(source, source.trackIndex + 1);
+            const QString synthId =
+                placeGeneratedClipOnNewTrack(synth, QStringLiteral("Tiled Sources"), source.trackIndex + 1);
             finishGeneratedClipMutation(synthId);
         }
         return;

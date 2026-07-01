@@ -16,14 +16,23 @@ class TestEffectPresets : public QObject {
 
 private slots:
     void clipSerializationPersistsEffectPresetState();
+    void clipSerializationPersistsArpeggiatorEffectPresets();
     void clipSerializationPersistsGeneratedClipRoleState();
     void samMaskMatteFactoryKeepsSourceTimingLocked();
     void alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip();
+    void sourceTilingFactoryCreatesVisualOnlySynthClip();
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
+    void effectPipelinePassesThroughWhenPresetIsOff();
+    void effectPipelineUsesGeneratedDrawsForTiling();
     void tickerPresetProducesAlternatingRowsAcrossOutput();
     void alternatingMotionBackgroundCoversOutputWithMovingRows();
+    void sourceTilingPresetCoversOutputWithGrid();
     void orbitPresetProducesRequestedCopiesAroundCenter();
+    void freezePatternProducesHeldGridCopies();
+    void stepRepeatProducesSequencedCopies();
+    void directionalTrimTickerAnimatesWidthAndDirection();
     void newsLowerThirdPresetBuildsFlyInHoldFlyOutKeyframes();
+    void generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConflicts();
 };
 
 void TestEffectPresets::clipSerializationPersistsEffectPresetState()
@@ -54,6 +63,23 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(loaded.effectSpeed - 1.75) < 0.000001);
     QVERIFY(std::abs(loaded.effectScale - 0.85) < 0.000001);
     QCOMPARE(loaded.effectAlternateDirection, true);
+}
+
+void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
+{
+    auto roundTripPreset = [](ClipEffectPreset preset, const QString& expectedJson) {
+        TimelineClip clip;
+        clip.id = expectedJson;
+        clip.effectPreset = preset;
+        const QJsonObject json = editor::clipToJson(clip);
+        QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), expectedJson);
+        QCOMPARE(editor::clipFromJson(json).effectPreset, preset);
+    };
+
+    roundTripPreset(ClipEffectPreset::FreezePattern, QStringLiteral("freeze_pattern"));
+    roundTripPreset(ClipEffectPreset::StepRepeat, QStringLiteral("step_repeat"));
+    roundTripPreset(ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("directional_trim_ticker"));
+    roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
 }
 
 void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
@@ -174,6 +200,41 @@ void TestEffectPresets::alternatingMotionBackgroundFactoryCreatesVisualOnlySynth
     QVERIFY(synth.effectAlternateDirection);
 }
 
+void TestEffectPresets::sourceTilingFactoryCreatesVisualOnlySynthClip()
+{
+    TimelineClip source;
+    source.id = QStringLiteral("still-01");
+    source.filePath = QStringLiteral("/media/still-01.png");
+    source.label = QStringLiteral("Still 01");
+    source.mediaType = ClipMediaType::Image;
+    source.sourceInFrame = 0;
+    source.startFrame = 240;
+    source.durationFrames = 180;
+    source.trackIndex = 2;
+    source.hasAudio = true;
+    source.audioEnabled = true;
+    source.maskEnabled = true;
+    source.maskFramesDir = QStringLiteral("/tmp/masks");
+
+    const TimelineClip synth = makeSourceTilingClip(source, 4);
+    QVERIFY(!synth.id.isEmpty());
+    QVERIFY(synth.id != source.id);
+    QCOMPARE(synth.clipRole, ClipRole::EffectSynth);
+    QCOMPARE(synth.linkedSourceClipId, source.id);
+    QCOMPARE(synth.filePath, source.filePath);
+    QCOMPARE(synth.startFrame, source.startFrame);
+    QCOMPARE(synth.durationFrames, source.durationFrames);
+    QCOMPARE(synth.trackIndex, 4);
+    QVERIFY(!synth.hasAudio);
+    QVERIFY(!synth.audioEnabled);
+    QVERIFY(!synth.maskEnabled);
+    QVERIFY(synth.maskFramesDir.isEmpty());
+    QCOMPARE(synth.effectPreset, ClipEffectPreset::SourceTile);
+    QCOMPARE(synth.effectRows, 6);
+    QCOMPARE(synth.effectSpeed, 0.0);
+    QVERIFY(!synth.effectAlternateDirection);
+}
+
 void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
 {
     QTemporaryDir dir;
@@ -226,6 +287,44 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     QCOMPARE(titles.at(1).titleKeyframes.constFirst().text, QStringLiteral("John Roe - Producer"));
     QCOMPARE(titles.at(2).startFrame, int64_t(1070));
     QCOMPARE(titles.at(2).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe - Director"));
+}
+
+void TestEffectPresets::effectPipelinePassesThroughWhenPresetIsOff()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::None;
+
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip,
+            QRectF(0.0, 0.0, 800.0, 450.0),
+            QSize(200, 100),
+            10.0);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::PassThrough);
+    QVERIFY(!plan.usesGeneratedDraws());
+    QVERIFY(plan.generatedDraws.isEmpty());
+    QVERIFY(plan.generatedDrawRects().isEmpty());
+}
+
+void TestEffectPresets::effectPipelineUsesGeneratedDrawsForTiling()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    clip.effectRows = 4;
+
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip,
+            QRectF(0.0, 0.0, 800.0, 450.0),
+            QSize(200, 100),
+            10.0);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+    QVERIFY(plan.usesGeneratedDraws());
+    QVERIFY(!plan.generatedDraws.isEmpty());
+    QCOMPARE(plan.generatedDrawRects().size(), plan.generatedDraws.size());
+    QCOMPARE(plan.generatedDrawRects().constFirst(), plan.generatedDraws.constFirst().outputRect);
 }
 
 void TestEffectPresets::tickerPresetProducesAlternatingRowsAcrossOutput()
@@ -310,6 +409,46 @@ void TestEffectPresets::alternatingMotionBackgroundCoversOutputWithMovingRows()
     QVERIFY((row0Frame30.x() - row0Frame0.x()) * (row1Frame30.x() - row1Frame0.x()) < 0.0);
 }
 
+void TestEffectPresets::sourceTilingPresetCoversOutputWithGrid()
+{
+    TimelineClip clip;
+    clip.clipRole = ClipRole::EffectSynth;
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    clip.effectRows = 4;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 1.0;
+    clip.effectAlternateDirection = false;
+
+    const QRectF output(0.0, 0.0, 800.0, 400.0);
+    const QVector<QRectF> rects =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(200, 100), 0.0);
+
+    QVERIFY(rects.size() >= 12);
+    QCOMPARE(rects.constFirst().width(), output.width() / clip.effectRows);
+    QCOMPARE(rects.constFirst().height(), rects.constFirst().width() / 2.0);
+
+    bool coversLeft = false;
+    bool coversRight = false;
+    bool coversTop = false;
+    bool coversBottom = false;
+    for (const QRectF& rect : rects) {
+        coversLeft = coversLeft || rect.left() <= output.left();
+        coversRight = coversRight || rect.right() >= output.right();
+        coversTop = coversTop || rect.top() <= output.top();
+        coversBottom = coversBottom || rect.bottom() >= output.bottom();
+    }
+    QVERIFY(coversLeft);
+    QVERIFY(coversRight);
+    QVERIFY(coversTop);
+    QVERIFY(coversBottom);
+
+    clip.effectSpeed = 1.0;
+    const QVector<QRectF> moved =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(200, 100), 10.0);
+    QVERIFY(!moved.isEmpty());
+    QVERIFY(moved.constFirst().topLeft() != rects.constFirst().topLeft());
+}
+
 void TestEffectPresets::orbitPresetProducesRequestedCopiesAroundCenter()
 {
     TimelineClip clip;
@@ -337,6 +476,91 @@ void TestEffectPresets::orbitPresetProducesRequestedCopiesAroundCenter()
     QVERIFY(maxDistance > minDistance);
 }
 
+void TestEffectPresets::freezePatternProducesHeldGridCopies()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::FreezePattern;
+    clip.effectRows = 9;
+    clip.effectSpeed = 1.0;
+    clip.effectScale = 1.0;
+
+    const QRectF output(0.0, 0.0, 900.0, 900.0);
+    const QVector<QRectF> frame0 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    const QVector<QRectF> frame3 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 3.0);
+    const QVector<QRectF> frame16 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 16.0);
+
+    QCOMPARE(frame0.size(), 9);
+    QCOMPARE(frame3.size(), 9);
+    QCOMPARE(frame16.size(), 9);
+    QCOMPARE(frame0.constFirst(), frame3.constFirst());
+    QVERIFY(frame16.constFirst() != frame0.constFirst());
+}
+
+void TestEffectPresets::stepRepeatProducesSequencedCopies()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::StepRepeat;
+    clip.effectRows = 6;
+    clip.effectSpeed = 1.0;
+    clip.effectScale = 1.0;
+
+    const QRectF output(0.0, 0.0, 600.0, 400.0);
+    const QVector<QRectF> frame0 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(120, 60), 0.0);
+    const QVector<QRectF> frame12 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(120, 60), 12.0);
+
+    QCOMPARE(frame0.size(), 6);
+    QCOMPARE(frame12.size(), 6);
+    QVERIFY(frame0.constFirst().x() != frame12.constFirst().x());
+
+    clip.effectSpeed = -1.0;
+    const QVector<QRectF> reverse =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(120, 60), 0.0);
+    QCOMPARE(reverse.size(), 6);
+    QVERIFY(reverse.constFirst().x() > frame0.constFirst().x());
+}
+
+void TestEffectPresets::directionalTrimTickerAnimatesWidthAndDirection()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::DirectionalTrimTicker;
+    clip.effectRows = 4;
+    clip.effectSpeed = 1.0;
+    clip.effectScale = 1.0;
+    clip.effectAlternateDirection = true;
+
+    const QRectF output(0.0, 0.0, 800.0, 400.0);
+    const QVector<QRectF> frame0 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 0.0);
+    const QVector<QRectF> frame10 =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 10.0);
+
+    QVERIFY(frame0.size() > clip.effectRows);
+    QVERIFY(frame10.size() > clip.effectRows);
+    QVERIFY(frame10.constFirst().width() != frame0.constFirst().width());
+
+    clip.effectAlternateDirection = false;
+    clip.effectSpeed = 1.0;
+    const QVector<QRectF> forward =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 1.0);
+    clip.effectSpeed = -1.0;
+    const QVector<QRectF> reverse =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 1.0);
+    QVERIFY(forward.size() > clip.effectRows);
+    QVERIFY(reverse.size() > clip.effectRows);
+    QVERIFY(forward.constFirst().x() != reverse.constFirst().x());
+
+    clip.effectAlternateDirection = true;
+    clip.effectSpeed = 1.0;
+    const QVector<QRectF> alternating =
+        render_detail::vulkanPresetEffectRects(clip, output, QSize(100, 100), 1.0);
+    QVERIFY(alternating.size() > clip.effectRows);
+}
+
 void TestEffectPresets::newsLowerThirdPresetBuildsFlyInHoldFlyOutKeyframes()
 {
     TimelineClip clip;
@@ -358,6 +582,91 @@ void TestEffectPresets::newsLowerThirdPresetBuildsFlyInHoldFlyOutKeyframes()
     QCOMPARE(clip.titleKeyframes.at(2).opacity, 1.0);
     QCOMPARE(clip.titleKeyframes.at(3).opacity, 0.0);
     QVERIFY(clip.titleKeyframes.at(1).windowEnabled);
+}
+
+void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConflicts()
+{
+    QVector<TimelineTrack> tracks;
+    TimelineTrack mediaTrack;
+    mediaTrack.name = QStringLiteral("Track 1");
+    tracks.push_back(mediaTrack);
+    TimelineTrack titleTrack;
+    titleTrack.name = QStringLiteral("Speaker Titles");
+    titleTrack.audioEnabled = false;
+    tracks.push_back(titleTrack);
+
+    TimelineClip source;
+    source.id = QStringLiteral("source");
+    source.trackIndex = 0;
+    source.startFrame = 0;
+    source.durationFrames = 300;
+
+    TimelineClip stale;
+    stale.id = QStringLiteral("old-title");
+    stale.clipRole = ClipRole::SpeakerTitle;
+    stale.linkedSourceClipId = source.id;
+    stale.mediaType = ClipMediaType::Title;
+    stale.trackIndex = 1;
+    stale.startFrame = 10;
+    stale.durationFrames = 90;
+
+    TimelineClip unrelated = stale;
+    unrelated.id = QStringLiteral("other-source-title");
+    unrelated.linkedSourceClipId = QStringLiteral("other-source");
+    unrelated.startFrame = 200;
+
+    QVector<TimelineClip> clips{source, stale, unrelated};
+
+    TimelineClip titleA;
+    titleA.id = QStringLiteral("title-a");
+    titleA.clipRole = ClipRole::SpeakerTitle;
+    titleA.linkedSourceClipId = source.id;
+    titleA.mediaType = ClipMediaType::Title;
+    titleA.startFrame = 20;
+    titleA.durationFrames = 90;
+
+    TimelineClip titleB = titleA;
+    titleB.id = QStringLiteral("title-b");
+    titleB.startFrame = 50;
+
+    const GeneratedClipPlacementResult result = replaceGeneratedClipsForSource(
+        clips,
+        tracks,
+        source.id,
+        ClipRole::SpeakerTitle,
+        QVector<TimelineClip>{titleA, titleB},
+        QStringLiteral("Speaker Titles"));
+
+    QVERIFY(result.changed);
+    QCOMPARE(result.removedCount, 1);
+    QCOMPARE(result.insertedCount, 2);
+    QCOMPARE(result.firstInsertedClipId, QStringLiteral("title-a"));
+    QCOMPARE(tracks.size(), 3);
+    QCOMPARE(tracks.at(1).name, QStringLiteral("Speaker Titles"));
+    QCOMPARE(tracks.at(2).name, QStringLiteral("Speaker Titles 2"));
+
+    int sourceTitleCount = 0;
+    int titleATrack = -1;
+    int titleBTrack = -1;
+    bool keptUnrelated = false;
+    for (const TimelineClip& clip : clips) {
+        QVERIFY(clip.id != QStringLiteral("old-title"));
+        if (clip.id == QStringLiteral("other-source-title")) {
+            keptUnrelated = true;
+        }
+        if (clip.clipRole == ClipRole::SpeakerTitle && clip.linkedSourceClipId == source.id) {
+            ++sourceTitleCount;
+            if (clip.id == QStringLiteral("title-a")) {
+                titleATrack = clip.trackIndex;
+            } else if (clip.id == QStringLiteral("title-b")) {
+                titleBTrack = clip.trackIndex;
+            }
+        }
+    }
+    QCOMPARE(sourceTitleCount, 2);
+    QVERIFY(keptUnrelated);
+    QCOMPARE(titleATrack, 1);
+    QCOMPARE(titleBTrack, 2);
 }
 
 QTEST_MAIN(TestEffectPresets)

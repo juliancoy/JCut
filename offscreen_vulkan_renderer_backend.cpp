@@ -2066,7 +2066,7 @@ public:
     float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
-    QVector<QRectF> presetRects;
+    QVector<VulkanEffectPipelinePlan::DrawPass> presetDraws;
   };
 
   struct TranscriptTextInput {
@@ -2925,19 +2925,23 @@ public:
                     kVulkanEffectModeMaskOnly);
           continue;
         }
-        if (!layer.presetRects.isEmpty()) {
-          for (const QRectF& rect : layer.presetRects) {
+        if (!layer.presetDraws.isEmpty()) {
+          for (const VulkanEffectPipelinePlan::DrawPass& drawPass : layer.presetDraws) {
             float presetMvp[16];
-            vulkanMvpForOutputRect(rect, m_outputSize, 0.0, presetMvp);
+            vulkanMvpForOutputRect(
+                drawPass.outputRect,
+                m_outputSize,
+                drawPass.rotationDegrees,
+                presetMvp);
             drawLayerWithMvp(presetMvp,
                              layer.brightness,
                              layer.contrast,
                              layer.saturation,
-                             layer.opacity,
+                             layer.opacity * drawPass.opacityMultiplier,
                              layer.shadows,
                              layer.midtones,
                              layer.highlights,
-                             layer.shadows[3]);
+                             drawPass.shaderMode);
           }
         } else {
           drawLayer(layer.brightness,
@@ -4191,11 +4195,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QSize sourceSize = clip.sourceFrameSize.isValid()
         ? clip.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
-    layer.presetRects = vulkanPresetEffectRects(
+    const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
         clip,
         QRectF(QPointF(0.0, 0.0), QSizeF(request.outputSize)),
         sourceSize,
         timelineFrame);
+    layer.presetDraws = effectPlan.generatedDraws;
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
     QPointF exportVideoTranslation(transform.translationX, transform.translationY);
     PreviewClipGeometry layerGeometry = PreviewViewTransform::clipGeometry(
@@ -4317,7 +4322,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layers.push_back(layer);
     if (layer.maskTextureEnabled && layer.maskForegroundLayerEnabled) {
       OffscreenVulkanRendererPrivate::LayerInput foregroundLayer = layer;
-      foregroundLayer.presetRects.clear();
+      foregroundLayer.presetDraws.clear();
       foregroundLayer.maskShowOnly = true;
       foregroundLayer.maskGradeEnabled = false;
       foregroundLayer.opacity = 1.0f;

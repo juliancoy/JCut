@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -93,6 +94,12 @@ void SpeakersTab::wire()
                 this,
                 &SpeakersTab::onSpeakerExportLongSectionsClicked);
     }
+    if (m_widgets.speakerCreateTitleClipsButton) {
+        connect(m_widgets.speakerCreateTitleClipsButton,
+                &QPushButton::clicked,
+                this,
+                &SpeakersTab::onSpeakerCreateTitleClipsClicked);
+    }
     if (m_widgets.speakerSectionMinimumWordsSpin) {
         connect(m_widgets.speakerSectionMinimumWordsSpin,
                 qOverload<int>(&QSpinBox::valueChanged),
@@ -137,6 +144,12 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerSectionsTable) {
         m_widgets.speakerSectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_widgets.speakerSectionsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+        m_widgets.speakerSectionsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        m_widgets.speakerSectionsTable->setMaximumHeight(360);
+        m_widgets.speakerSectionsTable->setMouseTracking(true);
+        m_widgets.speakerSectionsTable->viewport()->setMouseTracking(true);
+        m_widgets.speakerSectionsTable->viewport()->installEventFilter(this);
         m_widgets.speakerSectionsTable->setItemDelegate(
             new SpeakerSectionItemDelegate(m_widgets.speakerSectionsTable));
         connect(m_widgets.speakerSectionsTable,
@@ -154,6 +167,10 @@ void SpeakersTab::wire()
                         m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
                     if (!speakerItem) {
                         m_sectionSelectionTiming.finishSkipped(QStringLiteral("missing_speaker_item"));
+                        return;
+                    }
+                    if (speakerItem->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+                        m_sectionSelectionTiming.finishSkipped(QStringLiteral("keyframe_detail_row"));
                         return;
                     }
                     const QString speakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
@@ -233,6 +250,48 @@ void SpeakersTab::wire()
                 &QWidget::customContextMenuRequested,
                 this,
                 &SpeakersTab::onSpeakerSectionsTableContextMenuRequested);
+        connect(m_widgets.speakerSectionsTable,
+                &QTableWidget::cellClicked,
+                this,
+                [this](int row, int column) {
+                    if (column != SpeakerSectionIndexColumn || row < 0) {
+                        return;
+                    }
+                    QTableWidgetItem* item =
+                        m_widgets.speakerSectionsTable->item(row, SpeakerSectionIndexColumn);
+                    if (!item || item->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+                        return;
+                    }
+                    const QString sectionKey = item->data(SpeakerSectionKeyRole).toString().trimmed();
+                    if (sectionKey.isEmpty()) {
+                        return;
+                    }
+                    if (m_expandedSpeakerSectionKeys.contains(sectionKey)) {
+                        m_expandedSpeakerSectionKeys.remove(sectionKey);
+                    } else {
+                        m_expandedSpeakerSectionKeys.insert(sectionKey);
+                    }
+                    m_speakerSectionsTableRefreshSignature.clear();
+                    if (m_transcriptSession.hasObjectDocument()) {
+                        refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
+                    }
+                });
+        connect(m_widgets.speakerSectionsTable,
+                &QTableWidget::cellDoubleClicked,
+                this,
+                [this](int row, int column) {
+                    if (column == SpeakerSectionIndexColumn) {
+                        return;
+                    }
+                    QTableWidgetItem* item =
+                        m_widgets.speakerSectionsTable
+                            ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
+                            : nullptr;
+                    if (!item || item->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+                        return;
+                    }
+                    openSpeakerSectionOptionsForRow(row);
+                });
     }
     if (m_widgets.speakerFaceDetectionsTable) {
         m_widgets.speakerFaceDetectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -607,6 +666,40 @@ void SpeakersTab::wire()
 
 bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event &&
+        m_widgets.speakerSectionsTable &&
+        watched == m_widgets.speakerSectionsTable->viewport()) {
+        switch (event->type()) {
+        case QEvent::MouseMove: {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            const QTableWidgetItem* item = m_widgets.speakerSectionsTable->itemAt(mouseEvent->pos());
+            if (item && item->data(SpeakerSectionRowTypeRole).toInt(0) == 1) {
+                showSpeakerSectionKeyframeHoverPreview(
+                    item->row(),
+                    m_widgets.speakerSectionsTable->viewport()->mapToGlobal(mouseEvent->pos()));
+            } else {
+                hideSpeakerSectionKeyframeHoverPreview();
+            }
+            break;
+        }
+        case QEvent::ToolTip: {
+            auto* helpEvent = static_cast<QHelpEvent*>(event);
+            const QTableWidgetItem* item = m_widgets.speakerSectionsTable->itemAt(helpEvent->pos());
+            if (item && item->data(SpeakerSectionRowTypeRole).toInt(0) == 1) {
+                showSpeakerSectionKeyframeHoverPreview(item->row(), helpEvent->globalPos());
+                return true;
+            }
+            break;
+        }
+        case QEvent::Leave:
+        case QEvent::Hide:
+            hideSpeakerSectionKeyframeHoverPreview();
+            break;
+        default:
+            break;
+        }
+    }
+
     if (event && event->type() == QEvent::KeyPress &&
         m_widgets.speakerFramingEnabledKeyframeTable &&
         (watched == m_widgets.speakerFramingEnabledKeyframeTable ||

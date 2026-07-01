@@ -48,16 +48,38 @@ QByteArray vulkanIdentityCurveLutRgbaBytes()
     return vulkanCurveLutRgbaBytes(grade);
 }
 
-QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
-                                        const QRectF& outputRect,
-                                        const QSize& textureSize,
-                                        qreal timelineFrame)
+QVector<QRectF> VulkanEffectPipelinePlan::generatedDrawRects() const
 {
     QVector<QRectF> rects;
+    rects.reserve(generatedDraws.size());
+    for (const DrawPass& pass : generatedDraws) {
+        rects.push_back(pass.outputRect);
+    }
+    return rects;
+}
+
+VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
+                                                  const QRectF& outputRect,
+                                                  const QSize& textureSize,
+                                                  qreal timelineFrame)
+{
+    VulkanEffectPipelinePlan plan;
     if (clip.effectPreset == ClipEffectPreset::None || outputRect.isEmpty()) {
-        return rects;
+        return plan;
     }
 
+    QVector<VulkanEffectPipelinePlan::DrawPass>& draws = plan.generatedDraws;
+    const TimelineClip::GradingKeyframe grade =
+        evaluateClipGradingAtFrame(clip, qRound64(timelineFrame));
+    const float generatedShaderMode = gradingUsesCurveLut(grade)
+                                          ? kVulkanEffectModeCurve
+                                          : kVulkanEffectModeNormal;
+    auto addDraw = [&draws, generatedShaderMode](const QRectF& rect) {
+        VulkanEffectPipelinePlan::DrawPass pass;
+        pass.outputRect = rect;
+        pass.shaderMode = generatedShaderMode;
+        draws.push_back(pass);
+    };
     const int count = qBound(1, clip.effectRows, 96);
     const qreal aspect = textureSize.height() > 0
         ? static_cast<qreal>(std::max(1, textureSize.width())) /
@@ -67,28 +89,62 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
     const qreal speed = qBound<qreal>(-8.0, clip.effectSpeed, 8.0);
 
     if (clip.effectPreset == ClipEffectPreset::NewsLogoTicker ||
-        clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground) {
+        clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ||
+        clip.effectPreset == ClipEffectPreset::DirectionalTrimTicker) {
         const qreal rowH = outputRect.height() / static_cast<qreal>(count);
-        const qreal baseCoverage =
-            clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ? 1.08 : 0.78;
-        const qreal baseSpacing =
-            clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ? 1.02 : 1.35;
+        qreal baseCoverage = 0.78;
+        qreal baseSpacing = 1.35;
+        qreal phaseScale = 0.08;
+        if (clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground) {
+            baseCoverage = 1.08;
+            baseSpacing = 1.02;
+        } else if (clip.effectPreset == ClipEffectPreset::DirectionalTrimTicker) {
+            baseCoverage = 0.92;
+            baseSpacing = 0.74;
+            phaseScale = 0.18;
+        }
         const qreal tileH = std::max<qreal>(2.0, rowH * baseCoverage * scale);
-        const qreal tileW = std::max<qreal>(2.0, tileH * aspect);
+        const qreal trimPulse = clip.effectPreset == ClipEffectPreset::DirectionalTrimTicker
+            ? 0.58 + 0.42 * std::abs(std::sin(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) * 0.12))
+            : 1.0;
+        const qreal tileW = std::max<qreal>(2.0, tileH * aspect * trimPulse);
         const qreal spacing = tileW * baseSpacing;
         for (int row = 0; row < count; ++row) {
             const qreal direction = (clip.effectAlternateDirection && (row % 2)) ? -1.0 : 1.0;
-            qreal phase = std::fmod((timelineFrame * speed * direction * rowH * 0.08) +
+            qreal phase = std::fmod((timelineFrame * speed * direction * rowH * phaseScale) +
                                         (row * spacing * 0.37),
                                     spacing);
-            if (clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground && phase < 0.0) {
+            if ((clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ||
+                 clip.effectPreset == ClipEffectPreset::DirectionalTrimTicker) &&
+                phase < 0.0) {
                 phase += spacing;
             }
             const qreal y = outputRect.top() + (row + 0.5) * rowH - tileH * 0.5;
             for (qreal x = outputRect.left() - spacing + phase;
                  x < outputRect.right() + spacing;
                  x += spacing) {
-                rects.push_back(QRectF(x, y, tileW, tileH));
+                addDraw(QRectF(x, y, tileW, tileH));
+            }
+        }
+    } else if (clip.effectPreset == ClipEffectPreset::SourceTile) {
+        const int columns = qBound(1, count, 96);
+        const qreal baseTileW = outputRect.width() / static_cast<qreal>(columns);
+        const qreal tileW = std::max<qreal>(2.0, baseTileW * scale);
+        const qreal tileH = std::max<qreal>(2.0, tileW / std::max<qreal>(0.001, aspect));
+        const qreal phaseX = std::fmod(timelineFrame * speed * tileW * 0.015, tileW);
+        const qreal phaseY = std::fmod(timelineFrame * speed * tileH * 0.006, tileH);
+        const qreal normalizedPhaseX = phaseX < 0.0 ? phaseX + tileW : phaseX;
+        const qreal normalizedPhaseY = phaseY < 0.0 ? phaseY + tileH : phaseY;
+        int row = 0;
+        for (qreal y = outputRect.top() - tileH + normalizedPhaseY;
+             y < outputRect.bottom() + tileH;
+             y += tileH, ++row) {
+            const qreal rowOffset =
+                (clip.effectAlternateDirection && (row % 2)) ? tileW * 0.5 : 0.0;
+            for (qreal x = outputRect.left() - tileW + normalizedPhaseX - rowOffset;
+                 x < outputRect.right() + tileW;
+                 x += tileW) {
+                addDraw(QRectF(x, y, tileW, tileH));
             }
         }
     } else if (clip.effectPreset == ClipEffectPreset::PersonOrbit) {
@@ -105,11 +161,60 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
             const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
             const QPointF p(center.x() + std::cos(angle) * rx,
                             center.y() + std::sin(angle) * ry);
-            rects.push_back(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+            addDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+        }
+    } else if (clip.effectPreset == ClipEffectPreset::FreezePattern) {
+        const int columns = qBound(1, static_cast<int>(std::ceil(std::sqrt(static_cast<qreal>(count)))), 12);
+        const int rows = qBound(1, static_cast<int>(std::ceil(static_cast<qreal>(count) / columns)), 12);
+        const qreal cellW = outputRect.width() / static_cast<qreal>(columns);
+        const qreal cellH = outputRect.height() / static_cast<qreal>(rows);
+        const qreal tileH = std::max<qreal>(2.0, cellH * 0.86 * scale);
+        const qreal tileW = std::max<qreal>(2.0, std::min(cellW * 0.92, tileH * aspect));
+        const int activeStep = static_cast<int>(std::floor(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) / 8.0));
+        for (int i = 0; i < count; ++i) {
+            const int column = i % columns;
+            const int row = i / columns;
+            if (row >= rows) {
+                break;
+            }
+            const qreal holdJitter = static_cast<qreal>((activeStep + i * 3) % 5 - 2) * std::min(cellW, cellH) * 0.025;
+            const qreal x = outputRect.left() + (column + 0.5) * cellW - tileW * 0.5 + holdJitter;
+            const qreal y = outputRect.top() + (row + 0.5) * cellH - tileH * 0.5 - holdJitter;
+            addDraw(QRectF(x, y, tileW, tileH));
+        }
+    } else if (clip.effectPreset == ClipEffectPreset::StepRepeat) {
+        const qreal tileH = std::max<qreal>(
+            4.0,
+            std::min(outputRect.width(), outputRect.height()) *
+                qBound<qreal>(0.03, 0.12 * scale, 0.75));
+        const qreal tileW = std::max<qreal>(4.0, tileH * aspect);
+        const qreal stepX = outputRect.width() / static_cast<qreal>(count + 1);
+        const qreal stepY = outputRect.height() * 0.18;
+        const int snappedStep = static_cast<int>(std::floor(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) / 6.0));
+        const qreal direction = speed < 0.0 ? -1.0 : 1.0;
+        for (int i = 0; i < count; ++i) {
+            const int sequenced = (snappedStep + i) % count;
+            const qreal x = direction > 0.0
+                ? outputRect.left() + (sequenced + 1) * stepX - tileW * 0.5
+                : outputRect.right() - (sequenced + 1) * stepX - tileW * 0.5;
+            const qreal y = outputRect.center().y() - tileH * 0.5 +
+                            std::sin(static_cast<qreal>(i) * 1.57079632679) * stepY;
+            addDraw(QRectF(x, y, tileW, tileH));
         }
     }
 
-    return rects;
+    if (!draws.isEmpty()) {
+        plan.mode = VulkanEffectPipelinePlan::Mode::GeneratedDraws;
+    }
+    return plan;
+}
+
+QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
+                                        const QRectF& outputRect,
+                                        const QSize& textureSize,
+                                        qreal timelineFrame)
+{
+    return vulkanEffectPipelinePlan(clip, outputRect, textureSize, timelineFrame).generatedDrawRects();
 }
 
 void vulkanMvpForOutputRect(const QRectF& rect,

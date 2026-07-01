@@ -1197,6 +1197,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerApplyTrackToAllMatchingSectionsCheckBox(),
             m_inspectorPane->speakerSectionMinimumWordsSpin(),
             m_inspectorPane->speakerExportLongSectionsButton(),
+            m_inspectorPane->speakerCreateTitleClipsButton(),
             m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox(),
             m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox(),
             m_inspectorPane->speakerSectionsTable(),
@@ -1259,8 +1260,45 @@ void EditorWindow::createSpeakersTab()
             [this]() -> QVector<RenderSyncMarker> {
                 return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{};
             },
+            [this]() -> QVector<TimelineClip> {
+                return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{};
+            },
             [this](const QString& clipId, const std::function<void(TimelineClip&)>& updater) -> bool {
                 return m_timeline && m_timeline->updateClipById(clipId, updater);
+            },
+            [this](const QString& sourceClipId, const QVector<TimelineClip>& titleClips) -> GeneratedClipPlacementResult {
+                if (!m_timeline) {
+                    return {};
+                }
+                pushHistorySnapshot();
+                QVector<TimelineClip> clips = m_timeline->clips();
+                QVector<TimelineTrack> tracks = m_timeline->tracks();
+                GeneratedClipPlacementResult result = replaceGeneratedClipsForSource(
+                    clips,
+                    tracks,
+                    sourceClipId,
+                    ClipRole::SpeakerTitle,
+                    titleClips,
+                    QStringLiteral("Speaker Titles"));
+                if (!result.changed) {
+                    return result;
+                }
+                m_timeline->setTracks(tracks);
+                m_timeline->setClips(clips);
+                if (!result.firstInsertedClipId.isEmpty()) {
+                    m_timeline->setSelectedClipId(result.firstInsertedClipId);
+                }
+                if (m_preview) {
+                    m_preview->setTimelineTracks(m_timeline->tracks());
+                    m_preview->setTimelineClips(m_timeline->clips());
+                    m_preview->asWidget()->update();
+                }
+                if (m_audioEngine) {
+                    m_audioEngine->setTimelineTracks(m_timeline->tracks());
+                    m_audioEngine->setTimelineClips(m_timeline->clips());
+                }
+                scheduleSaveState();
+                return result;
             },
             [this](const QString& clipId) -> bool {
                 if (!m_timeline || clipId.trimmed().isEmpty()) {
