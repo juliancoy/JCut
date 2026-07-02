@@ -113,6 +113,53 @@ void AudioRingBuffer::clear() {
 
 AudioEngine::~AudioEngine() { shutdown(); }
 
+QString AudioEngine::speechFilterFadeModeToString(SpeechFilterFadeMode mode) {
+  switch (mode) {
+  case SpeechFilterFadeMode::JumpCut:
+    return QStringLiteral("jumpCut");
+  case SpeechFilterFadeMode::Fade:
+    return QStringLiteral("fade");
+  case SpeechFilterFadeMode::SmoothStep:
+    return QStringLiteral("smoothStep");
+  case SpeechFilterFadeMode::SmootherStep:
+    return QStringLiteral("smootherStep");
+  }
+  return QStringLiteral("fade");
+}
+
+QString AudioEngine::speechFilterFadeModeLabel(SpeechFilterFadeMode mode) {
+  switch (mode) {
+  case SpeechFilterFadeMode::JumpCut:
+    return QStringLiteral("Jump Cut");
+  case SpeechFilterFadeMode::Fade:
+    return QStringLiteral("Fade");
+  case SpeechFilterFadeMode::SmoothStep:
+    return QStringLiteral("Smooth Step");
+  case SpeechFilterFadeMode::SmootherStep:
+    return QStringLiteral("Smoother Step");
+  }
+  return QStringLiteral("Fade");
+}
+
+AudioEngine::SpeechFilterFadeMode
+AudioEngine::speechFilterFadeModeFromString(
+    const QString &value, SpeechFilterFadeMode fallback) {
+  const QString normalized = value.trimmed();
+  if (normalized == QStringLiteral("jumpCut")) {
+    return SpeechFilterFadeMode::JumpCut;
+  }
+  if (normalized == QStringLiteral("fade")) {
+    return SpeechFilterFadeMode::Fade;
+  }
+  if (normalized == QStringLiteral("smoothStep")) {
+    return SpeechFilterFadeMode::SmoothStep;
+  }
+  if (normalized == QStringLiteral("smootherStep")) {
+    return SpeechFilterFadeMode::SmootherStep;
+  }
+  return fallback;
+}
+
 void AudioEngine::setTimelineClips(const QVector<TimelineClip> &clips) {
   bool queueChanged = false;
   {
@@ -162,6 +209,15 @@ void AudioEngine::setRenderSyncMarkers(
 
 void AudioEngine::setSpeechFilterFadeSamples(int samples) {
   m_speechFilterFadeSamples.store(qMax(0, samples), std::memory_order_release);
+}
+
+void AudioEngine::setSpeechFilterFadeMode(SpeechFilterFadeMode mode) {
+  m_speechFilterFadeMode.store(static_cast<int>(mode), std::memory_order_release);
+}
+
+void AudioEngine::setSpeechFilterCurveStrength(qreal strength) {
+  m_speechFilterCurveStrength.store(qBound<qreal>(0.25, strength, 4.0),
+                                    std::memory_order_release);
 }
 
 void AudioEngine::setSpeechFilterRangeCrossfadeEnabled(bool enabled) {
@@ -2029,7 +2085,8 @@ void AudioEngine::prioritizeDecodesNearSampleLocked(int64_t focusSample) {
 
 AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     int64_t samplePos, const QVector<SpeechSampleRange> &ranges,
-    int fadeSamples, bool crossfadeEnabled) const {
+    int fadeSamples, SpeechFilterFadeMode fadeMode, qreal curveStrength,
+    bool crossfadeEnabled) const {
   SpeechRangeBlend blend;
   if (ranges.isEmpty()) {
     return blend;
@@ -2054,9 +2111,33 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     return blend;
   }
 
-  if (fadeSamples <= 0) {
+  if (fadeMode == SpeechFilterFadeMode::JumpCut || fadeSamples <= 0) {
     return blend;
   }
+
+  const qreal boundedCurveStrength = qBound<qreal>(0.25, curveStrength, 4.0);
+  const auto shaped = [fadeMode, boundedCurveStrength](float t) {
+    t = qBound(0.0f, t, 1.0f);
+    float value = t;
+    switch (fadeMode) {
+    case SpeechFilterFadeMode::SmoothStep:
+      value = t * t * (3.0f - 2.0f * t);
+      break;
+    case SpeechFilterFadeMode::SmootherStep:
+      value = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+      break;
+    case SpeechFilterFadeMode::JumpCut:
+    case SpeechFilterFadeMode::Fade:
+      value = t;
+      break;
+    }
+    if (fadeMode == SpeechFilterFadeMode::SmoothStep ||
+        fadeMode == SpeechFilterFadeMode::SmootherStep) {
+      value = std::pow(qBound(0.0f, value, 1.0f),
+                       static_cast<float>(boundedCurveStrength));
+    }
+    return qBound(0.0f, value, 1.0f);
+  };
 
   if (!crossfadeEnabled) {
     const int64_t samplesFromStart = samplePos - currentStart;
@@ -2064,12 +2145,12 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
 
     float gain = 1.0f;
     if (samplesFromStart < fadeSamples) {
-      gain = qMin(gain, static_cast<float>(samplesFromStart) /
-                            static_cast<float>(fadeSamples));
+      gain = qMin(gain, shaped(static_cast<float>(samplesFromStart) /
+                               static_cast<float>(fadeSamples)));
     }
     if (samplesToEnd < fadeSamples) {
-      gain = qMin(gain, static_cast<float>(samplesToEnd) /
-                            static_cast<float>(fadeSamples));
+      gain = qMin(gain, shaped(static_cast<float>(samplesToEnd) /
+                               static_cast<float>(fadeSamples)));
     }
     blend.primaryGain = qBound(0.0f, gain, 1.0f);
     return blend;
@@ -2091,8 +2172,14 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     if (offsetFromStart >= 0 && offsetFromStart < crossWindow) {
       const float t = (static_cast<float>(offsetFromStart) + 0.5f) /
                       static_cast<float>(crossWindow);
-      blend.primaryGain = std::sin(t * kHalfPi);
-      blend.secondaryGain = std::cos(t * kHalfPi);
+      if (fadeMode == SpeechFilterFadeMode::Fade) {
+        blend.primaryGain = std::sin(t * kHalfPi);
+        blend.secondaryGain = std::cos(t * kHalfPi);
+      } else {
+        const float s = shaped(t);
+        blend.primaryGain = s;
+        blend.secondaryGain = 1.0f - s;
+      }
       blend.secondaryTimelineSample =
           (prevEndExclusive - crossWindow) + offsetFromStart;
       return blend;
@@ -2112,8 +2199,14 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     if (offsetFromWindowStart >= 0 && offsetFromWindowStart < crossWindow) {
       const float t = (static_cast<float>(offsetFromWindowStart) + 0.5f) /
                       static_cast<float>(crossWindow);
-      blend.primaryGain = std::cos(t * kHalfPi);
-      blend.secondaryGain = std::sin(t * kHalfPi);
+      if (fadeMode == SpeechFilterFadeMode::Fade) {
+        blend.primaryGain = std::cos(t * kHalfPi);
+        blend.secondaryGain = std::sin(t * kHalfPi);
+      } else {
+        const float s = shaped(t);
+        blend.primaryGain = 1.0f - s;
+        blend.secondaryGain = s;
+      }
       blend.secondaryTimelineSample = nextStart + offsetFromWindowStart;
       return blend;
     }
@@ -3327,6 +3420,9 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         const SpeechRangeBlend blend = calculateSpeechRangeBlend(
             timelineSamplePos, *speechSampleRanges,
             m_speechFilterFadeSamples.load(std::memory_order_acquire),
+            static_cast<SpeechFilterFadeMode>(
+                m_speechFilterFadeMode.load(std::memory_order_acquire)),
+            m_speechFilterCurveStrength.load(std::memory_order_acquire),
             m_speechFilterRangeCrossfadeEnabled.load(
                 std::memory_order_acquire));
         primarySpeechGain = blend.primaryGain;

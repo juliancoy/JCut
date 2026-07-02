@@ -641,6 +641,143 @@ void PlaybackFramePipeline::cancelDecoderBeforeThrottled(const QString& playback
                           playbackPath);
 }
 
+void PlaybackFramePipeline::scheduleSingleFrame(const ClipInfo& info,
+                                                const std::function<void()>& onFrameReady) {
+    if (!info.isSingleFrame || !m_active.load() || !m_decoder || info.playbackPath.isEmpty()) {
+        return;
+    }
+
+    constexpr int64_t kSingleFrameNumber = 0;
+    const QString key = requestKey(info.clip.id, kSingleFrameNumber);
+    if (isFrameBuffered(info.clip.id, kSingleFrameNumber)) {
+        return;
+    }
+
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        if (m_pendingVisibleRequests.contains(key) || m_pendingPrefetchRequests.contains(key)) {
+            return;
+        }
+        m_pendingVisibleRequests.insert(key);
+        m_latestVisibleTargets.insert(info.clip.id, kSingleFrameNumber);
+    }
+
+    QPointer<PlaybackFramePipeline> self(this);
+    const qint64 requestedAt = playbackPipelineTraceMs();
+    const qint64 requestedAtWallMs = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker diagnosticsLock(&m_decodeDiagnosticsMutex);
+        ++m_decodeDiagnostics.visibleDispatched;
+        m_decodeDiagnostics.lastVisibleClipId = info.clip.id;
+        m_decodeDiagnostics.lastVisibleFrame = kSingleFrameNumber;
+        m_decodeDiagnostics.lastVisibleOutcome = QStringLiteral("dispatched");
+        recordFrameTraceEvent(QStringLiteral("dispatch"),
+                              info.clip.id,
+                              kSingleFrameNumber,
+                              QStringLiteral("single_frame"));
+    }
+
+    m_decoder->requestFrame(
+        info.playbackPath,
+        kSingleFrameNumber,
+        100,
+        30000,
+        DecodeRequestKind::Visible,
+        [self,
+         clipId = info.clip.id,
+         key,
+         requestedAt,
+         requestedAtWallMs,
+         onFrameReady](FrameHandle frame) {
+            if (!self) {
+                return;
+            }
+            const qint64 decoderCallbackAtMs = QDateTime::currentMSecsSinceEpoch();
+            QMetaObject::invokeMethod(
+                self,
+                [self,
+                 clipId,
+                 key,
+                 requestedAt,
+                 requestedAtWallMs,
+                 decoderCallbackAtMs,
+                 onFrameReady,
+                 frame]() {
+                    if (!self) {
+                        return;
+                    }
+                    {
+                        QMutexLocker pendingLock(&self->m_pendingMutex);
+                        self->m_pendingVisibleRequests.remove(key);
+                        self->m_latestVisibleTargets.remove(clipId);
+                    }
+
+                    if (!frame.isNull()) {
+                        QMutexLocker lock(&self->m_clipsMutex);
+                        auto it = self->m_buffers.find(clipId);
+                        if (it != self->m_buffers.end() && it.value()) {
+                            it.value()->insert(0, frame);
+                        }
+                    }
+
+                    {
+                        QMutexLocker diagnosticsLock(&self->m_decodeDiagnosticsMutex);
+                        auto& diagnostics = self->m_decodeDiagnostics;
+                        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                        ++diagnostics.visibleCompleted;
+                        diagnostics.lastVisibleClipId = clipId;
+                        diagnostics.lastVisibleFrame = 0;
+                        diagnostics.lastVisiblePayload = framePayloadForDiagnostics(frame);
+                        diagnostics.lastVisibleWaitMs =
+                            requestedAtWallMs > 0 ? nowMs - requestedAtWallMs : -1;
+                        diagnostics.maxVisibleWaitMs =
+                            qMax(diagnostics.maxVisibleWaitMs,
+                                 diagnostics.lastVisibleWaitMs);
+                        diagnostics.lastVisibleQtDeliveryDelayMs =
+                            decoderCallbackAtMs > 0 ? nowMs - decoderCallbackAtMs : -1;
+                        diagnostics.maxVisibleQtDeliveryDelayMs =
+                            qMax(diagnostics.maxVisibleQtDeliveryDelayMs,
+                                 diagnostics.lastVisibleQtDeliveryDelayMs);
+                        diagnostics.lastCompletedAtMs = nowMs;
+                        const qint64 waitMs =
+                            requestedAtWallMs > 0 ? nowMs - requestedAtWallMs : -1;
+                        if (frame.isNull()) {
+                            ++diagnostics.visibleNullCompleted;
+                            diagnostics.lastVisibleOutcome = QStringLiteral("null");
+                            self->recordFrameTraceEvent(QStringLiteral("null"),
+                                                        clipId,
+                                                        0,
+                                                        QStringLiteral("single_frame waitMs=%1").arg(waitMs),
+                                                        waitMs);
+                        } else {
+                            ++diagnostics.visibleBufferedCompleted;
+                            diagnostics.lastVisibleOutcome = QStringLiteral("buffered");
+                            self->recordFrameTraceEvent(QStringLiteral("buffered"),
+                                                        clipId,
+                                                        0,
+                                                        QStringLiteral("single_frame waitMs=%1").arg(waitMs),
+                                                        waitMs);
+                        }
+                    }
+
+                    if (debugCacheWarnOnlyEnabled() &&
+                        (frame.isNull() || playbackPipelineTraceMs() - requestedAt > 33)) {
+                        qDebug().noquote()
+                            << QStringLiteral("[CACHE][WARN] %1 PlaybackFramePipeline::single-frame-complete | clip=%2 null=%3 waitMs=%4")
+                                   .arg(playbackPipelineTraceMs(), 6)
+                                   .arg(clipId)
+                                   .arg(frame.isNull() ? 1 : 0)
+                                   .arg(playbackPipelineTraceMs() - requestedAt);
+                    }
+
+                    if (onFrameReady) {
+                        onFrameReady();
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+}
+
 void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                                    int64_t samplePosition,
                                                    int64_t canonicalFrame,
@@ -650,7 +787,11 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
     const int configuredPlaybackWindowAhead = isSequenceClip
                                                   ? debugPlaybackWindowAhead()
                                                   : debugFileVideoPlaybackWindowAhead();
-    if (info.isSingleFrame || !m_active.load() || configuredPlaybackWindowAhead < 0) {
+    if (info.isSingleFrame) {
+        scheduleSingleFrame(info, onFrameReady);
+        return;
+    }
+    if (!m_active.load() || configuredPlaybackWindowAhead < 0) {
         return;
     }
     if (!m_decoder) {

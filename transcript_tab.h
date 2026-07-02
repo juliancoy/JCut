@@ -63,6 +63,7 @@ public:
         QSpinBox* transcriptPostpendMsSpin = nullptr;
         QSpinBox* transcriptOffsetMsSpin = nullptr;
         QCheckBox* speechFilterEnabledCheckBox = nullptr;
+        QComboBox* speechFilterFadeModeCombo = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
         QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;
         QLineEdit* transcriptSearchFilterLineEdit = nullptr;
@@ -136,6 +137,7 @@ private slots:
     void onPostpendMsChanged(int value);
     void onOffsetMsChanged(int value);
     void onSpeechFilterEnabledToggled(bool enabled);
+    void onSpeechFilterFadeModeChanged(int index);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);
     void onTranscriptScriptVersionContextMenu(const QPoint& pos);

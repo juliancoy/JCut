@@ -48,6 +48,20 @@ class AudioEngine {
   friend class TestAudioMixPolicy;
 
 public:
+  enum class SpeechFilterFadeMode {
+    JumpCut = 0,
+    Fade = 1,
+    SmoothStep = 2,
+    SmootherStep = 3,
+  };
+
+  static QString speechFilterFadeModeToString(SpeechFilterFadeMode mode);
+  static QString speechFilterFadeModeLabel(SpeechFilterFadeMode mode);
+  static SpeechFilterFadeMode
+  speechFilterFadeModeFromString(const QString &value,
+                                 SpeechFilterFadeMode fallback =
+                                     SpeechFilterFadeMode::Fade);
+
   AudioEngine() = default;
   ~AudioEngine();
 
@@ -60,6 +74,10 @@ public:
   void setRenderSyncMarkers(const QVector<RenderSyncMarker> &markers);
 
   void setSpeechFilterFadeSamples(int samples);
+
+  void setSpeechFilterFadeMode(SpeechFilterFadeMode mode);
+
+  void setSpeechFilterCurveStrength(qreal strength);
 
   void setSpeechFilterRangeCrossfadeEnabled(bool enabled);
 
@@ -318,7 +336,10 @@ private:
   SpeechRangeBlend
   calculateSpeechRangeBlend(int64_t samplePos,
                             const QVector<SpeechSampleRange> &ranges,
-                            int fadeSamples, bool crossfadeEnabled) const;
+                            int fadeSamples,
+                            SpeechFilterFadeMode fadeMode,
+                            qreal curveStrength,
+                            bool crossfadeEnabled) const;
 
   float calculateClipCrossfadeGain(int64_t samplePos, const TimelineClip &clip,
                                    int64_t clipStartSample,
@@ -525,6 +546,9 @@ private:
   static constexpr qint64 kAudioInitBackoffMs = 10000;
   static constexpr qint64 kAudioInitWarningThrottleMs = 10000;
   std::atomic<int> m_speechFilterFadeSamples{m_defaultFadeSamples};
+  std::atomic<int> m_speechFilterFadeMode{
+      static_cast<int>(SpeechFilterFadeMode::Fade)};
+  std::atomic<qreal> m_speechFilterCurveStrength{1.0};
   std::atomic<bool> m_speechFilterRangeCrossfadeEnabled{false};
   std::atomic<bool> m_transcriptNormalizeEnabled{false};
   std::atomic<bool> m_amplifyEnabled{false};

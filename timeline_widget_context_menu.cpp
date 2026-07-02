@@ -162,15 +162,17 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             m_clips[clipIndex].maskEnabled &&
             !m_clips[clipIndex].maskFramesDir.trimmed().isEmpty());
         createMotionBackgroundAction =
-            generatedMenu->addAction(QStringLiteral("Create Alternating Motion Background"));
+            generatedMenu->addAction(QStringLiteral("Create Alternating Motion Background Track"));
+        createMotionBackgroundAction->setToolTip(
+            QStringLiteral("Create a normal track with the alternating motion background effect applied to the track."));
         createMotionBackgroundAction->setEnabled(
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].filePath.trimmed().isEmpty());
         createSourceTilingAction =
-            generatedMenu->addAction(QStringLiteral("Create Tiled Source Clip"));
+            generatedMenu->addAction(QStringLiteral("Create Tiled Source Track"));
         createSourceTilingAction->setToolTip(
-            QStringLiteral("Create a new virtual track with repeated tiles of this visual source."));
+            QStringLiteral("Create a normal track with source tiling applied to the track."));
         createSourceTilingAction->setEnabled(
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
@@ -617,6 +619,65 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         }
         update();
     };
+    auto removeEmptyGeneratedEffectTracks = [this]() {
+        for (int trackIndex = m_tracks.size() - 1; trackIndex >= 0; --trackIndex) {
+            const QString name = m_tracks.at(trackIndex).name.trimmed();
+            if (!name.startsWith(QStringLiteral("Effect Synths"), Qt::CaseInsensitive) &&
+                !name.startsWith(QStringLiteral("Tiled Sources"), Qt::CaseInsensitive)) {
+                continue;
+            }
+            bool hasClip = false;
+            for (const TimelineClip& clip : m_clips) {
+                if (clip.trackIndex == trackIndex) {
+                    hasClip = true;
+                    break;
+                }
+            }
+            if (!hasClip) {
+                deleteTrack(trackIndex);
+            }
+        }
+    };
+    auto createEffectTrack = [&](const TimelineClip& source,
+                                 const QString& trackName,
+                                 ClipEffectPreset preset,
+                                 int defaultRows,
+                                 qreal defaultSpeed,
+                                 bool alternate) {
+        removeGeneratedClipsForSource(source.id, ClipRole::EffectSynth);
+        removeEmptyGeneratedEffectTracks();
+        int sourceTrackIndex = source.trackIndex;
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.id == source.id) {
+                sourceTrackIndex = clip.trackIndex;
+                break;
+            }
+        }
+        const int targetTrack = qBound(0, sourceTrackIndex + 1, trackCount());
+        insertTrackAt(targetTrack);
+        TimelineTrack& track = m_tracks[targetTrack];
+        track.name = nextGeneratedTrackName(trackName);
+        track.audioEnabled = false;
+        track.audioWaveformVisible = false;
+        track.effectPreset = preset;
+        track.effectRows = qBound(1, source.effectRows == 32 ? defaultRows : source.effectRows, 96);
+        track.effectSpeed = qBound<qreal>(-8.0, source.effectSpeed == 1.0 ? defaultSpeed : source.effectSpeed, 8.0);
+        track.effectScale = qBound<qreal>(0.1, source.effectScale, 8.0);
+        track.effectAlternateDirection = alternate;
+        track.tilingPattern = ClipTilingPattern::Grid;
+        track.tilingSpacing = 1.0;
+        track.tilingWrap = true;
+        setSelectedClipId(QString());
+        setSelectedTrackIndex(targetTrack);
+        normalizeTrackIndices();
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        if (trackLayoutChanged) {
+            trackLayoutChanged();
+        }
+        update();
+    };
 
     if (selected == generateSamMaskMatteAction) {
         if (clipIndex >= 0) {
@@ -633,10 +694,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == createMotionBackgroundAction) {
         if (clipIndex >= 0) {
             const TimelineClip source = m_clips[clipIndex];
-            TimelineClip synth = makeAlternatingMotionBackgroundClip(source, source.trackIndex + 1);
-            const QString synthId =
-                placeGeneratedClip(synth, QStringLiteral("Effect Synths"), source.trackIndex + 1);
-            finishGeneratedClipMutation(synthId);
+            createEffectTrack(source,
+                              QStringLiteral("Motion Background"),
+                              ClipEffectPreset::AlternatingMotionBackground,
+                              8,
+                              1.0,
+                              true);
         }
         return;
     }
@@ -644,10 +707,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == createSourceTilingAction) {
         if (clipIndex >= 0) {
             const TimelineClip source = m_clips[clipIndex];
-            TimelineClip synth = makeSourceTilingClip(source, source.trackIndex + 1);
-            const QString synthId =
-                placeGeneratedClipOnNewTrack(synth, QStringLiteral("Tiled Sources"), source.trackIndex + 1);
-            finishGeneratedClipMutation(synthId);
+            createEffectTrack(source,
+                              QStringLiteral("Tiled Sources"),
+                              ClipEffectPreset::SourceTile,
+                              6,
+                              0.0,
+                              false);
         }
         return;
     }

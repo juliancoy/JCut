@@ -125,6 +125,18 @@ filtered playback ranges. The system clock still drives playback; the range
 mapping only changes which timeline spans are visited. The delta-accumulation
 model applies unchanged — only the `effectivePlaybackRanges` set differs.
 
+Speech-filter boundary transitions are gain shaping inside the mapped speech
+ranges; they must not change the filtered timeline mapping or audio duration.
+The supported modes are:
+
+- `Jump Cut`: no fade or crossfade gain shaping.
+- `Fade`: linear fades to silence, or equal-power boundary crossfades when
+  boundary crossfade is enabled.
+- `Smooth Step`: smoothstep gain shaping (`3t^2 - 2t^3`) for fades or boundary
+  crossfades.
+- `Smoother Step`: smootherstep gain shaping (`6t^5 - 15t^4 + 10t^3`) for fades
+  or boundary crossfades.
+
 ## Conversion Paths
 
 - System clock -> timeline time:

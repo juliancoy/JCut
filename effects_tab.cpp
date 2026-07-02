@@ -153,6 +153,10 @@ void EffectsTab::refresh()
     }
 
     const TimelineClip* clip = m_deps.getSelectedClip();
+    const int selectedTrackIndex =
+        clip ? clip->trackIndex : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
+    const TimelineTrack* selectedTrack =
+        m_deps.getTrackByIndex ? m_deps.getTrackByIndex(selectedTrackIndex) : nullptr;
     m_updating = true;
 
     QSignalBlocker featherBlock(m_widgets.maskFeatherSpin);
@@ -195,7 +199,10 @@ void EffectsTab::refresh()
         m_widgets.tilingWrapCheck ? std::make_unique<QSignalBlocker>(m_widgets.tilingWrapCheck) : nullptr;
 
     if (!clip || !m_deps.clipHasVisuals(*clip)) {
-        m_widgets.effectsPathLabel->setText(QStringLiteral("No visual clip selected"));
+        m_widgets.effectsPathLabel->setText(
+            selectedTrack
+                ? QStringLiteral("Track effects\n%1").arg(selectedTrack->name)
+                : QStringLiteral("No visual clip selected"));
         m_widgets.effectsPathLabel->setToolTip(QString());
         m_widgets.maskFeatherSpin->setValue(0.0);
         if (m_widgets.maskFeatherEnabledCheck) {
@@ -218,26 +225,58 @@ void EffectsTab::refresh()
             m_widgets.maskRepeatDeltaYSpin->setEnabled(false);
         }
         if (m_widgets.effectPresetCombo) {
-            m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(m_widgets.effectPresetCombo, ClipEffectPreset::None));
-            m_widgets.effectPresetCombo->setEnabled(false);
+            m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
+                m_widgets.effectPresetCombo,
+                selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None));
+            m_widgets.effectPresetCombo->setEnabled(selectedTrack != nullptr);
+        }
+        const ClipEffectPreset trackPreset =
+            selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None;
+        const bool trackEffectActive = selectedTrack && trackPreset != ClipEffectPreset::None;
+        if (m_widgets.effectRowsSpin) {
+            m_widgets.effectRowsSpin->setValue(selectedTrack ? selectedTrack->effectRows : 32);
+            m_widgets.effectRowsSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.effectSpeedSpin) {
+            m_widgets.effectSpeedSpin->setValue(selectedTrack ? selectedTrack->effectSpeed : 1.0);
+            m_widgets.effectSpeedSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.effectScaleSpin) {
+            m_widgets.effectScaleSpin->setValue(selectedTrack ? selectedTrack->effectScale : 1.0);
+            m_widgets.effectScaleSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.effectAlternateDirectionCheck) {
+            m_widgets.effectAlternateDirectionCheck->setChecked(!selectedTrack || selectedTrack->effectAlternateDirection);
+            m_widgets.effectAlternateDirectionCheck->setEnabled(
+                selectedTrack &&
+                (trackPreset == ClipEffectPreset::NewsLogoTicker ||
+                 trackPreset == ClipEffectPreset::AlternatingMotionBackground ||
+                 trackPreset == ClipEffectPreset::DirectionalTrimTicker ||
+                 trackPreset == ClipEffectPreset::SourceTile));
         }
         if (m_widgets.tilingPatternCombo) {
-            m_widgets.tilingPatternCombo->setCurrentIndex(comboIndexForTilingPattern(m_widgets.tilingPatternCombo, ClipTilingPattern::Grid));
-            m_widgets.tilingPatternCombo->setEnabled(false);
+            m_widgets.tilingPatternCombo->setCurrentIndex(comboIndexForTilingPattern(
+                m_widgets.tilingPatternCombo,
+                selectedTrack ? selectedTrack->tilingPattern : ClipTilingPattern::Grid));
+            m_widgets.tilingPatternCombo->setEnabled(
+                selectedTrack && trackPreset == ClipEffectPreset::SourceTile);
         }
         if (m_widgets.tilingSpacingSpin) {
-            m_widgets.tilingSpacingSpin->setValue(1.0);
-            m_widgets.tilingSpacingSpin->setEnabled(false);
+            m_widgets.tilingSpacingSpin->setValue(selectedTrack ? selectedTrack->tilingSpacing : 1.0);
+            m_widgets.tilingSpacingSpin->setEnabled(
+                selectedTrack && trackPreset == ClipEffectPreset::SourceTile);
         }
         if (m_widgets.tilingWrapCheck) {
-            m_widgets.tilingWrapCheck->setChecked(true);
-            m_widgets.tilingWrapCheck->setEnabled(false);
+            m_widgets.tilingWrapCheck->setChecked(!selectedTrack || selectedTrack->tilingWrap);
+            m_widgets.tilingWrapCheck->setEnabled(
+                selectedTrack && trackPreset == ClipEffectPreset::SourceTile);
         }
         m_updating = false;
         return;
     }
 
     const bool hasAlpha = m_deps.clipHasAlpha(*clip);
+    const TimelineTrack* track = selectedTrack;
     const QString nativePath = QDir::toNativeSeparators(m_deps.getClipFilePath(*clip));
     const QString sourceLabel = QStringLiteral("%1 | %2%3")
                                     .arg(clipMediaTypeLabel(clip->mediaType),
@@ -266,29 +305,33 @@ void EffectsTab::refresh()
         m_widgets.maskRepeatDeltaYSpin->setValue(clip->maskRepeatDeltaY);
     }
     if (m_widgets.effectPresetCombo) {
-        m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(m_widgets.effectPresetCombo, clip->effectPreset));
+        m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
+            m_widgets.effectPresetCombo,
+            track ? track->effectPreset : ClipEffectPreset::None));
     }
     if (m_widgets.effectRowsSpin) {
-        m_widgets.effectRowsSpin->setValue(clip->effectRows);
+        m_widgets.effectRowsSpin->setValue(track ? track->effectRows : 32);
     }
     if (m_widgets.effectSpeedSpin) {
-        m_widgets.effectSpeedSpin->setValue(clip->effectSpeed);
+        m_widgets.effectSpeedSpin->setValue(track ? track->effectSpeed : 1.0);
     }
     if (m_widgets.effectScaleSpin) {
-        m_widgets.effectScaleSpin->setValue(clip->effectScale);
+        m_widgets.effectScaleSpin->setValue(track ? track->effectScale : 1.0);
     }
     if (m_widgets.effectAlternateDirectionCheck) {
-        m_widgets.effectAlternateDirectionCheck->setChecked(clip->effectAlternateDirection);
+        m_widgets.effectAlternateDirectionCheck->setChecked(!track || track->effectAlternateDirection);
     }
     if (m_widgets.tilingPatternCombo) {
         m_widgets.tilingPatternCombo->setCurrentIndex(
-            comboIndexForTilingPattern(m_widgets.tilingPatternCombo, clip->tilingPattern));
+            comboIndexForTilingPattern(
+                m_widgets.tilingPatternCombo,
+                track ? track->tilingPattern : ClipTilingPattern::Grid));
     }
     if (m_widgets.tilingSpacingSpin) {
-        m_widgets.tilingSpacingSpin->setValue(clip->tilingSpacing);
+        m_widgets.tilingSpacingSpin->setValue(track ? track->tilingSpacing : 1.0);
     }
     if (m_widgets.tilingWrapCheck) {
-        m_widgets.tilingWrapCheck->setChecked(clip->tilingWrap);
+        m_widgets.tilingWrapCheck->setChecked(!track || track->tilingWrap);
     }
 
     // Disable mask feather controls if clip doesn't have alpha
@@ -349,7 +392,8 @@ void EffectsTab::refresh()
     }
     const bool imagePresetCapable = clip->mediaType == ClipMediaType::Image ||
                                     clip->mediaType == ClipMediaType::Video;
-    const bool imagePresetActive = clip->effectPreset != ClipEffectPreset::None;
+    const ClipEffectPreset trackPreset = track ? track->effectPreset : ClipEffectPreset::None;
+    const bool imagePresetActive = trackPreset != ClipEffectPreset::None;
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
     }
@@ -365,12 +409,12 @@ void EffectsTab::refresh()
     if (m_widgets.effectAlternateDirectionCheck) {
         m_widgets.effectAlternateDirectionCheck->setEnabled(
             imagePresetCapable &&
-            (clip->effectPreset == ClipEffectPreset::NewsLogoTicker ||
-             clip->effectPreset == ClipEffectPreset::AlternatingMotionBackground ||
-             clip->effectPreset == ClipEffectPreset::DirectionalTrimTicker ||
-             clip->effectPreset == ClipEffectPreset::SourceTile));
+            (trackPreset == ClipEffectPreset::NewsLogoTicker ||
+             trackPreset == ClipEffectPreset::AlternatingMotionBackground ||
+             trackPreset == ClipEffectPreset::DirectionalTrimTicker ||
+             trackPreset == ClipEffectPreset::SourceTile));
     }
-    const bool sourceTileActive = imagePresetCapable && clip->effectPreset == ClipEffectPreset::SourceTile;
+    const bool sourceTileActive = imagePresetCapable && trackPreset == ClipEffectPreset::SourceTile;
     if (m_widgets.tilingPatternCombo) {
         m_widgets.tilingPatternCombo->setEnabled(sourceTileActive);
     }
@@ -412,7 +456,9 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     if (m_updating) return;
 
     const TimelineClip* selectedClip = m_deps.getSelectedClip();
-    if (!selectedClip || !m_deps.clipHasVisuals(*selectedClip)) return;
+    const int targetTrackIndex =
+        selectedClip ? selectedClip->trackIndex : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
+    if (!m_deps.updateTrackByIndex || targetTrackIndex < 0) return;
 
     const ClipEffectPreset preset = presetFromCombo(m_widgets.effectPresetCombo);
     const int rows = m_widgets.effectRowsSpin ? m_widgets.effectRowsSpin->value() : 32;
@@ -432,20 +478,25 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     const double maskRepeatDeltaY =
         m_widgets.maskRepeatDeltaYSpin ? m_widgets.maskRepeatDeltaYSpin->value() : 0.0;
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
-        clip.maskForegroundLayerEnabled = foreground;
-        clip.maskRepeatEnabled = maskRepeatEnabled;
-        clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
-        clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
-        clip.effectPreset = preset;
-        clip.effectRows = qBound(1, rows, 96);
-        clip.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
-        clip.effectScale = qBound<qreal>(0.1, scale, 8.0);
-        clip.effectAlternateDirection = alternate;
-        clip.tilingPattern = tilingPattern;
-        clip.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
-        clip.tilingWrap = tilingWrap;
-    });
+    bool updated = false;
+    if (selectedClip && m_deps.clipHasVisuals(*selectedClip)) {
+        updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
+            clip.maskForegroundLayerEnabled = foreground;
+            clip.maskRepeatEnabled = maskRepeatEnabled;
+            clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
+            clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
+        });
+    }
+    updated = m_deps.updateTrackByIndex(targetTrackIndex, [=](TimelineTrack& track) {
+        track.effectPreset = preset;
+        track.effectRows = qBound(1, rows, 96);
+        track.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
+        track.effectScale = qBound<qreal>(0.1, scale, 8.0);
+        track.effectAlternateDirection = alternate;
+        track.tilingPattern = tilingPattern;
+        track.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
+        track.tilingWrap = tilingWrap;
+    }) || updated;
 
     if (!updated) return;
 

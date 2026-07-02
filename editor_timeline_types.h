@@ -314,4 +314,12 @@ struct TimelineTrack {
     bool audioMuted = false;
     bool audioSolo = false;
     bool audioWaveformVisible = true;
+    ClipEffectPreset effectPreset = ClipEffectPreset::None;
+    int effectRows = 32;
+    qreal effectSpeed = 1.0;
+    qreal effectScale = 1.0;
+    bool effectAlternateDirection = true;
+    ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
+    qreal tilingSpacing = 1.0;
+    bool tilingWrap = true;
 };

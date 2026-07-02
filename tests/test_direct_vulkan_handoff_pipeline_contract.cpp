@@ -38,6 +38,8 @@ private slots:
   void trackAssignmentDoesNotCreateFaceBoxKeyframes();
   void maskMorphControlsUseWideSliderInputs();
   void startupRestoresSpeechFilterRouting();
+  void speechFilterNoneModePersistsAsPassThroughState();
+  void speechFilterFadeParametersOnlyShowWhenRelevant();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -881,6 +883,23 @@ void TestDirectVulkanHandoffPipelineContract::
           playbackPipeline.contains(QStringLiteral("decoderKeepFromFrame")),
       "active playback visible request cancellation must live in "
       "PlaybackFramePipeline");
+  QVERIFY2(playbackPipeline.contains(QStringLiteral("scheduleSingleFrame")) &&
+               playbackPipeline.contains(QStringLiteral("info.isSingleFrame")) &&
+               playbackPipeline.contains(QStringLiteral("m_decoder->requestFrame")) &&
+               playbackPipeline.contains(QStringLiteral("it.value()->insert(0, frame)")),
+           "PlaybackFramePipeline must schedule static images into its own "
+           "buffer so still images and generated image effects remain drawable "
+           "during active playback");
+  QVERIFY2(surface.contains(QStringLiteral(
+               "const int64_t localFrame = clip.mediaType == ClipMediaType::Image\n"
+               "            ? 0\n"
+               "            : sourceFrameForSample(clip, targetSample);")) &&
+               surface.contains(QStringLiteral(
+                   "const int64_t localFrame = clip.mediaType == ClipMediaType::Image\n"
+                   "                ? 0\n"
+                   "                : sourceFrameForSample(clip, samplePosition);")),
+           "direct-Vulkan playback readiness probes must normalize still images "
+           "to frame 0 instead of testing the moving timeline source frame");
   QVERIFY2(cacheRequests.contains(
                QStringLiteral("previewMaxPlaybackStaleFrameDelta(sourceFps")) &&
                cacheRequests.contains(
@@ -1903,12 +1922,12 @@ void TestDirectVulkanHandoffPipelineContract::
 
   QVERIFY2(transcriptHeader.contains(QStringLiteral("syncSpeechFilterControlsFromWidgets")) &&
                transcriptSource.contains(QStringLiteral("void TranscriptTab::syncSpeechFilterControlsFromWidgets()")) &&
-               transcriptSource.contains(QStringLiteral("m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked()")),
+               transcriptSource.contains(QStringLiteral("m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo)")),
            "TranscriptTab must expose an explicit way to synchronize its "
            "speech-filter model from restored widgets when signals are blocked");
 
   const qsizetype restoreIndex =
-      editor.indexOf(QStringLiteral("m_speechFilterEnabled = speechFilterEnabled"));
+      editor.indexOf(QStringLiteral("m_speechFilterEnabled = speechFilterEnabled;"));
   const qsizetype syncIndex =
       editor.indexOf(QStringLiteral("m_transcriptTab->syncSpeechFilterControlsFromWidgets()"),
                      restoreIndex);
@@ -1919,10 +1938,77 @@ void TestDirectVulkanHandoffPipelineContract::
                      invalidateIndex);
   QVERIFY2(restoreIndex >= 0 && syncIndex > restoreIndex,
            "startup state restore must synchronize TranscriptTab after the "
-           "speech-filter checkbox is restored with signal blockers");
+           "speech-filter mode dropdown is restored with signal blockers");
   QVERIFY2(invalidateIndex > syncIndex && playbackRangesIndex > invalidateIndex,
            "startup state restore must invalidate playback range caches before "
            "computing deferred speech-filter playback ranges");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speechFilterNoneModePersistsAsPassThroughState() {
+  const QString editor = readSourceFile(QStringLiteral("editor.cpp"));
+  const QString projectState = readSourceFile(QStringLiteral("project_state.cpp"));
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
+  const QString bindings = readSourceFile(QStringLiteral("editor_inspector_bindings.cpp"));
+  QVERIFY2(!editor.isEmpty(), "editor.cpp must be readable");
+  QVERIFY2(!projectState.isEmpty(), "project_state.cpp must be readable");
+  QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
+  QVERIFY2(!bindings.isEmpty(), "editor_inspector_bindings.cpp must be readable");
+
+  QVERIFY2(!projectState.contains(QStringLiteral("root[QStringLiteral(\"speechFilterEnabled\")]")) &&
+               projectState.contains(QStringLiteral("root[QStringLiteral(\"speechFilterFadeMode\")]")) &&
+               projectState.contains(QStringLiteral("? AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode)")) &&
+               projectState.contains(QStringLiteral(": QStringLiteral(\"none\")")),
+           "project state must persist pass-through speech filtering as the "
+           "None dropdown mode instead of a separate enable flag");
+
+  QVERIFY2(editor.contains(QStringLiteral("legacySpeechFilterEnabled")) &&
+               editor.contains(QStringLiteral("speechFilterFadeModeValue != QStringLiteral(\"none\")")) &&
+               editor.contains(QStringLiteral("AudioEngine::speechFilterFadeModeFromString(")) &&
+               editor.contains(QStringLiteral(": QStringLiteral(\"none\")")),
+           "state restore must read None from speechFilterFadeMode while "
+           "retaining the legacy speechFilterEnabled fallback");
+  QVERIFY2(inspector.contains(QStringLiteral("QStringLiteral(\"None\"), QStringLiteral(\"none\")")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::JumpCut")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::Fade")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::SmoothStep")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::SmootherStep")),
+           "the speech-filter combo must include None plus the four supported "
+           "transition modes");
+  QVERIFY2(bindings.contains(QStringLiteral("m_speechFilterEnabled = mode != QStringLiteral(\"none\")")) &&
+               bindings.contains(QStringLiteral("if (m_speechFilterEnabled)")) &&
+               bindings.contains(QStringLiteral("speechFilterFadeModeFromString(mode)")),
+           "changing the speech-filter combo must derive pass-through versus "
+           "active filtering from the selected mode");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speechFilterFadeParametersOnlyShowWhenRelevant() {
+  const QString bindings = readSourceFile(QStringLiteral("editor_inspector_bindings.cpp"));
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
+  QVERIFY2(!bindings.isEmpty(), "editor_inspector_bindings.cpp must be readable");
+  QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
+
+  QVERIFY2(bindings.contains(QStringLiteral("void EditorWindow::refreshSpeechFilterFadeParameterVisibility()")) &&
+               bindings.contains(QStringLiteral("m_speechFilterEnabled &&")) &&
+               bindings.contains(QStringLiteral("m_speechFilterFadeMode != AudioEngine::SpeechFilterFadeMode::JumpCut")) &&
+               bindings.contains(QStringLiteral("m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmoothStep")) &&
+               bindings.contains(QStringLiteral("m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmootherStep")) &&
+               bindings.contains(QStringLiteral("m_speechFilterFadeSamplesSpin")) &&
+               bindings.contains(QStringLiteral("m_speechFilterCurveStrengthSpin")) &&
+               bindings.contains(QStringLiteral("m_speechFilterRangeCrossfadeCheckBox")) &&
+               bindings.contains(QStringLiteral("rowLabel->setVisible(showFadeParameters)")) &&
+               bindings.contains(QStringLiteral("rowLabel->setVisible(showCurveParameters)")),
+           "fade length and boundary crossfade controls must be hidden unless "
+           "speech filtering is enabled and the selected mode uses fade parameters; "
+           "curve strength must only appear for smooth-step modes");
+  QVERIFY2(inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Speech Filter\"), m_speechFilterFadeModeCombo)")) &&
+               inspector.contains(QStringLiteral("m_speechFilterFadeModeCombo->addItem(QStringLiteral(\"None\"), QStringLiteral(\"none\"))")) &&
+               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Fade Length\"), m_speechFilterFadeSamplesSpin)")) &&
+               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Curve Strength\"), m_speechFilterCurveStrengthSpin)")) &&
+               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Transition\"), m_speechFilterRangeCrossfadeCheckBox)")),
+           "speech-filter controls must expose the mode dropdown and relevant "
+           "fade-only parameters as rows");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

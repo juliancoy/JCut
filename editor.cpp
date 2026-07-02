@@ -473,6 +473,8 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
                 : QVector<ExportRangeSegment>{});
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+        m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+        m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
         m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
         m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -1229,11 +1231,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             ? root.value(QStringLiteral("debugDeterministicPipeline"))
                   .toBool(editor::debugDeterministicPipelineEnabled())
             : false;
-    const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
+    const bool legacySpeechFilterEnabled =
+        root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(150);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(70);
     const int transcriptOffsetMs = root.value(QStringLiteral("transcriptOffsetMs")).toInt(0);
     const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(300);
+    const qreal speechFilterCurveStrength =
+        qBound<qreal>(0.25,
+                      root.value(QStringLiteral("speechFilterCurveStrength")).toDouble(1.0),
+                      4.0);
+    const bool hasSpeechFilterFadeMode =
+        root.contains(QStringLiteral("speechFilterFadeMode"));
+    const QString speechFilterFadeModeValue =
+        root.value(QStringLiteral("speechFilterFadeMode")).toString();
     const bool speechFilterRangeCrossfade =
         root.value(QStringLiteral("speechFilterRangeCrossfade")).toBool(false);
     const bool transcriptUnifiedEditColors =
@@ -1469,6 +1480,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.audioMuted = obj.value(QStringLiteral("audioMuted")).toBool(false);
         track.audioSolo = obj.value(QStringLiteral("audioSolo")).toBool(false);
         track.audioWaveformVisible = obj.value(QStringLiteral("audioWaveformVisible")).toBool(true);
+        track.effectPreset =
+            effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
+        track.effectRows = qBound(1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
+        track.effectSpeed =
+            qBound<qreal>(-8.0, obj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
+        track.effectScale =
+            qBound<qreal>(0.1, obj.value(QStringLiteral("effectScale")).toDouble(1.0), 8.0);
+        track.effectAlternateDirection =
+            obj.value(QStringLiteral("effectAlternateDirection")).toBool(true);
+        track.tilingPattern =
+            tilingPatternFromJson(obj.value(QStringLiteral("tilingPattern")).toString(QStringLiteral("grid")));
+        track.tilingSpacing =
+            qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
+        track.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
         loadedTracks.push_back(track);
     }
     markStartup(QStringLiteral("apply_state.tracks_parse.end"),
@@ -1795,9 +1820,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_preferencesFeatureAudioDynamicsToolsCheckBox);
         m_preferencesFeatureAudioDynamicsToolsCheckBox->setChecked(m_featureAudioDynamicsTools);
     }
-    m_speechFilterEnabled = speechFilterEnabled;
-    if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(m_speechFilterEnabled); }
-
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
     m_transcriptOffsetMs = qBound(-10000, transcriptOffsetMs, 10000);
@@ -1806,16 +1828,42 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_transcriptPrependMs, m_transcriptPostpendMs, m_transcriptOffsetMs);
     }
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);
+    const AudioEngine::SpeechFilterFadeMode legacyFallback =
+        m_speechFilterFadeSamples <= 0
+            ? AudioEngine::SpeechFilterFadeMode::JumpCut
+            : AudioEngine::SpeechFilterFadeMode::Fade;
+    m_speechFilterEnabled = hasSpeechFilterFadeMode
+        ? speechFilterFadeModeValue != QStringLiteral("none")
+        : legacySpeechFilterEnabled;
+    m_speechFilterFadeMode = AudioEngine::speechFilterFadeModeFromString(
+        speechFilterFadeModeValue, legacyFallback);
+    m_speechFilterCurveStrength = speechFilterCurveStrength;
     m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
     
     if (m_transcriptPrependMsSpin) { QSignalBlocker block(m_transcriptPrependMsSpin); m_transcriptPrependMsSpin->setValue(m_transcriptPrependMs); }
     if (m_transcriptPostpendMsSpin) { QSignalBlocker block(m_transcriptPostpendMsSpin); m_transcriptPostpendMsSpin->setValue(m_transcriptPostpendMs); }
     if (m_transcriptOffsetMsSpin) { QSignalBlocker block(m_transcriptOffsetMsSpin); m_transcriptOffsetMsSpin->setValue(m_transcriptOffsetMs); }
+    if (m_speechFilterFadeModeCombo) {
+        QSignalBlocker block(m_speechFilterFadeModeCombo);
+        const QString restoredMode =
+            m_speechFilterEnabled
+                ? AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode)
+                : QStringLiteral("none");
+        const int index = m_speechFilterFadeModeCombo->findData(restoredMode);
+        if (index >= 0) {
+            m_speechFilterFadeModeCombo->setCurrentIndex(index);
+        }
+    }
     if (m_speechFilterFadeSamplesSpin) { QSignalBlocker block(m_speechFilterFadeSamplesSpin); m_speechFilterFadeSamplesSpin->setValue(m_speechFilterFadeSamples); }
+    if (m_speechFilterCurveStrengthSpin) {
+        QSignalBlocker block(m_speechFilterCurveStrengthSpin);
+        m_speechFilterCurveStrengthSpin->setValue(m_speechFilterCurveStrength);
+    }
     if (m_speechFilterRangeCrossfadeCheckBox) {
         QSignalBlocker block(m_speechFilterRangeCrossfadeCheckBox);
         m_speechFilterRangeCrossfadeCheckBox->setChecked(m_speechFilterRangeCrossfade);
     }
+    refreshSpeechFilterFadeParameterVisibility();
     if (m_transcriptTab) {
         m_transcriptTab->syncSpeechFilterControlsFromWidgets();
     }

@@ -9,8 +9,6 @@
 namespace editor
 {
 
-namespace {
-
 QString effectPresetToJson(ClipEffectPreset preset)
 {
     switch (preset) {
@@ -123,6 +121,8 @@ ClipTilingPattern tilingPatternFromJson(const QString& value)
     }
     return ClipTilingPattern::Grid;
 }
+
+namespace {
 
 QString clipRoleToJson(ClipRole role)
 {

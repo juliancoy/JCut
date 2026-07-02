@@ -465,7 +465,8 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
         m_widgets.transcriptFollowCurrentWordCheckBox &&
         m_widgets.transcriptFollowCurrentWordCheckBox->isChecked();
     const QString speechFilterState =
-        (m_widgets.speechFilterEnabledCheckBox && m_widgets.speechFilterEnabledCheckBox->isChecked())
+        (m_widgets.speechFilterFadeModeCombo &&
+         m_widgets.speechFilterFadeModeCombo->currentData().toString() != QStringLiteral("none"))
             ? QStringLiteral("Speech Filter: On")
             : QStringLiteral("Speech Filter: Off");
     const int speakerCount = [&segments]() {

@@ -227,6 +227,11 @@ QString transcriptExportSpeakerDisplayName(const QJsonObject& profiles, const QS
     return name.isEmpty() ? trimmedSpeakerId : name;
 }
 
+bool speechFilterEnabledFromModeCombo(const QComboBox* combo)
+{
+    return combo && combo->currentData().toString() != QStringLiteral("none");
+}
+
 QString defaultTranscriptExportPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
@@ -839,9 +844,9 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptOffsetMsSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOffsetMsChanged);
     }
-    if (m_widgets.speechFilterEnabledCheckBox) {
-        connect(m_widgets.speechFilterEnabledCheckBox, &QCheckBox::toggled,
-                this, &TranscriptTab::onSpeechFilterEnabledToggled);
+    if (m_widgets.speechFilterFadeModeCombo) {
+        connect(m_widgets.speechFilterFadeModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &TranscriptTab::onSpeechFilterFadeModeChanged);
     }
     if (m_widgets.speechFilterFadeSamplesSpin) {
         connect(m_widgets.speechFilterFadeSamplesSpin, qOverload<int>(&QSpinBox::valueChanged),
@@ -1012,9 +1017,7 @@ void TranscriptTab::syncSpeechFilterControlsFromWidgets()
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
-    if (m_widgets.speechFilterEnabledCheckBox) {
-        m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked();
-    }
+    m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo);
 }
 
 void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
@@ -1827,9 +1830,10 @@ void TranscriptTab::onOffsetMsChanged(int value)
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
-void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
+void TranscriptTab::onSpeechFilterFadeModeChanged(int index)
 {
-    m_speechFilterEnabled = enabled;
+    Q_UNUSED(index);
+    m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo);
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});

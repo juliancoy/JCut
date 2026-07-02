@@ -88,6 +88,8 @@ private:
     void cancelDecoderBeforeThrottled(const QString& playbackPath,
                                       int64_t keepFromFrame,
                                       qint64 nowMs);
+    void scheduleSingleFrame(const ClipInfo& info,
+                             const std::function<void()>& onFrameReady);
     void schedulePlaybackWindow(const ClipInfo& info,
                                 int64_t samplePosition,
                                 int64_t canonicalFrame,

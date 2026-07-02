@@ -2457,19 +2457,23 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         basePush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
                         basePush.midtones[3] = 0.0f;
                     }
+                    const TimelineClip effectClip =
+                        clipWithTrackEffectSettings(clip, state->tracks);
                     const QRectF effectBounds =
-                        (clip.effectPreset == ClipEffectPreset::SourceTile || clip.maskRepeatEnabled)
+                        (effectClip.effectPreset == ClipEffectPreset::SourceTile || effectClip.maskRepeatEnabled)
                             ? transformedBounds.intersected(compositeRect)
                             : compositeRect;
                     const render_detail::VulkanEffectPipelinePlan effectPlan =
                         render_detail::vulkanEffectPipelinePlan(
-                            clip,
+                            effectClip,
                             effectBounds,
                             frameSize.isValid() ? frameSize : clip.sourceFrameSize,
-                            state->currentFramePosition);
+                            state->currentFramePosition,
+                            render_detail::clipEffectPlaybackFramePosition(
+                                effectClip, state->clips, state->currentFramePosition));
                     if (effectPlan.usesGeneratedDraws()) {
                         const VkRect2D generatedScissor =
-                            clip.effectPreset == ClipEffectPreset::SourceTile
+                            effectClip.effectPreset == ClipEffectPreset::SourceTile
                                 ? scissorFromQRect(effectBounds, swapSize)
                                 : scissor;
                         for (const render_detail::VulkanEffectPipelinePlan::DrawPass& effectDraw :

@@ -1926,7 +1926,9 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }
-        const int64_t localFrame = sourceFrameForSample(clip, targetSample);
+        const int64_t localFrame = clip.mediaType == ClipMediaType::Image
+            ? 0
+            : sourceFrameForSample(clip, targetSample);
         const bool targetDisplayable =
             !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
         if (!targetDisplayable) {
@@ -1962,7 +1964,9 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
                                           m_bypassGrading)) {
                 continue;
             }
-            const int64_t localFrame = sourceFrameForSample(clip, samplePosition);
+            const int64_t localFrame = clip.mediaType == ClipMediaType::Image
+                ? 0
+                : sourceFrameForSample(clip, samplePosition);
             if (m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
                 return false;
             }
@@ -1986,7 +1990,9 @@ bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
             continue;
         }
 
-        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t localFrame = clip.mediaType == ClipMediaType::Image
+            ? 0
+            : sourceFrameForSample(clip, m_interaction.currentSample);
         if (m_playbackPipeline &&
             !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
             continue;

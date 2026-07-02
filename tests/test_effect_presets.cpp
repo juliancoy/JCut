@@ -2,6 +2,7 @@
 
 #include "../clip_serialization.h"
 #include "../editor_effect_presets.h"
+#include "../editor_shared_effects.h"
 #include "../render_vulkan_shared.h"
 
 #include <algorithm>
@@ -17,6 +18,7 @@ class TestEffectPresets : public QObject {
 private slots:
     void clipSerializationPersistsEffectPresetState();
     void clipSerializationPersistsArpeggiatorEffectPresets();
+    void trackEffectSettingsOverlayOntoClipForRenderPipeline();
     void clipSerializationPersistsGeneratedClipRoleState();
     void samMaskMatteFactoryKeepsSourceTimingLocked();
     void alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip();
@@ -24,6 +26,8 @@ private slots:
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
     void effectPipelinePassesThroughWhenPresetIsOff();
     void effectPipelineUsesGeneratedDrawsForTiling();
+    void maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets();
+    void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void generatedDrawMvpKeepsVulkanYDownOrientation();
     void tickerPresetProducesAlternatingRowsAcrossOutput();
     void alternatingMotionBackgroundCoversOutputWithMovingRows();
@@ -47,6 +51,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskEnabled = true;
     clip.maskFramesDir = QStringLiteral("/tmp/masks");
     clip.maskForegroundLayerEnabled = true;
+    clip.maskRepeatEnabled = true;
+    clip.maskRepeatDeltaX = 120.0;
+    clip.maskRepeatDeltaY = -15.0;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
     clip.effectRows = 32;
     clip.effectSpeed = 1.75;
@@ -58,6 +65,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
 
     const QJsonObject json = editor::clipToJson(clip);
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaX")).toDouble() - 120.0) < 0.000001);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaY")).toDouble() + 15.0) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), QStringLiteral("news_logo_ticker"));
     QCOMPARE(json.value(QStringLiteral("effectRows")).toInt(), 32);
     QCOMPARE(json.value(QStringLiteral("tilingPattern")).toString(), QStringLiteral("spiral"));
@@ -66,6 +76,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
 
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.maskForegroundLayerEnabled, true);
+    QCOMPARE(loaded.maskRepeatEnabled, true);
+    QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
+    QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::NewsLogoTicker);
     QCOMPARE(loaded.effectRows, 32);
     QVERIFY(std::abs(loaded.effectSpeed - 1.75) < 0.000001);
@@ -91,6 +104,36 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::StepRepeat, QStringLiteral("step_repeat"));
     roundTripPreset(ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("directional_trim_ticker"));
     roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
+}
+
+void TestEffectPresets::trackEffectSettingsOverlayOntoClipForRenderPipeline()
+{
+    TimelineClip clip;
+    clip.trackIndex = 1;
+    clip.effectPreset = ClipEffectPreset::None;
+    clip.effectRows = 3;
+
+    QVector<TimelineTrack> tracks(2);
+    tracks[1].effectPreset = ClipEffectPreset::SourceTile;
+    tracks[1].effectRows = 7;
+    tracks[1].effectSpeed = 0.25;
+    tracks[1].effectScale = 1.5;
+    tracks[1].effectAlternateDirection = false;
+    tracks[1].tilingPattern = ClipTilingPattern::Diamond;
+    tracks[1].tilingSpacing = 1.25;
+    tracks[1].tilingWrap = false;
+
+    const TimelineClip effective = clipWithTrackEffectSettings(clip, tracks);
+    QCOMPARE(effective.effectPreset, ClipEffectPreset::SourceTile);
+    QCOMPARE(effective.effectRows, 7);
+    QVERIFY(std::abs(effective.effectSpeed - 0.25) < 0.000001);
+    QVERIFY(std::abs(effective.effectScale - 1.5) < 0.000001);
+    QCOMPARE(effective.effectAlternateDirection, false);
+    QCOMPARE(effective.tilingPattern, ClipTilingPattern::Diamond);
+    QVERIFY(std::abs(effective.tilingSpacing - 1.25) < 0.000001);
+    QCOMPARE(effective.tilingWrap, false);
+    QCOMPARE(clip.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(clip.effectRows, 3);
 }
 
 void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
@@ -345,6 +388,94 @@ void TestEffectPresets::effectPipelineUsesGeneratedDrawsForTiling()
     QVERIFY(!plan.generatedDraws.isEmpty());
     QCOMPARE(plan.generatedDrawRects().size(), plan.generatedDraws.size());
     QCOMPARE(plan.generatedDrawRects().constFirst(), plan.generatedDraws.constFirst().outputRect);
+}
+
+void TestEffectPresets::maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets()
+{
+    TimelineClip clip;
+    clip.maskEnabled = true;
+    clip.maskFramesDir = QStringLiteral("/tmp/masks");
+    clip.maskRepeatEnabled = true;
+    clip.maskRepeatDeltaX = 100.0;
+    clip.maskRepeatDeltaY = 20.0;
+    clip.effectPreset = ClipEffectPreset::None;
+    clip.effectRows = 3;
+    clip.durationFrames = 20;
+    TimelineClip::TransformKeyframe first;
+    first.frame = 0;
+    first.maskRepeatDeltaX = 0.0;
+    first.maskRepeatDeltaY = 0.0;
+    TimelineClip::TransformKeyframe second;
+    second.frame = 10;
+    second.maskRepeatDeltaX = 100.0;
+    second.maskRepeatDeltaY = 20.0;
+    clip.transformKeyframes = {first, second};
+
+    const QRectF seedRect(200.0, 100.0, 80.0, 40.0);
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip,
+            seedRect,
+            QSize(200, 100),
+            5.0);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+    QCOMPARE(plan.generatedDraws.size(), 3);
+    for (const render_detail::VulkanEffectPipelinePlan::DrawPass& pass : plan.generatedDraws) {
+        QCOMPARE(pass.shaderMode, render_detail::kVulkanEffectModeMaskGrade);
+    }
+    QCOMPARE(plan.generatedDraws.at(0).outputRect, seedRect.translated(-150.0, -30.0));
+    QCOMPARE(plan.generatedDraws.at(1).outputRect, seedRect);
+    QCOMPARE(plan.generatedDraws.at(2).outputRect, seedRect.translated(150.0, 30.0));
+}
+
+void TestEffectPresets::temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps()
+{
+    TimelineClip first;
+    first.id = QStringLiteral("segment-a");
+    first.filePath = QStringLiteral("/tmp/source.png");
+    first.trackIndex = 2;
+    first.startFrame = 0;
+    first.durationFrames = 30;
+    first.effectPreset = ClipEffectPreset::NewsLogoTicker;
+    first.effectRows = 4;
+    first.effectSpeed = 1.0;
+
+    TimelineClip second = first;
+    second.id = QStringLiteral("segment-b");
+    second.startFrame = 100;
+    const QVector<TimelineClip> clips{first, second};
+    const QRectF output(0.0, 0.0, 800.0, 450.0);
+    const QSize sourceSize(200, 100);
+
+    const qreal secondPlayFrame =
+        render_detail::clipEffectPlaybackFramePosition(second, clips, 100.0);
+    QCOMPARE(secondPlayFrame, 30.0);
+
+    const QVector<QRectF> contiguousRects =
+        render_detail::vulkanEffectPipelinePlan(
+            second,
+            output,
+            sourceSize,
+            100.0,
+            secondPlayFrame).generatedDrawRects();
+    const QVector<QRectF> expectedRects =
+        render_detail::vulkanEffectPipelinePlan(
+            first,
+            output,
+            sourceSize,
+            30.0,
+            30.0).generatedDrawRects();
+    const QVector<QRectF> wallTimeRects =
+        render_detail::vulkanEffectPipelinePlan(
+            second,
+            output,
+            sourceSize,
+            100.0,
+            100.0).generatedDrawRects();
+
+    QCOMPARE(contiguousRects, expectedRects);
+    QVERIFY(contiguousRects != wallTimeRects);
 }
 
 void TestEffectPresets::generatedDrawMvpKeepsVulkanYDownOrientation()

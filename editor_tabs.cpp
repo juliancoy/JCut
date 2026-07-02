@@ -1023,7 +1023,7 @@ void EditorWindow::createTranscriptTab()
             m_transcriptBoldCheckBox, m_transcriptItalicCheckBox,
             m_transcriptPrependMsSpin, m_transcriptPostpendMsSpin,
             m_inspectorPane->transcriptOffsetMsSpin(),
-            m_speechFilterEnabledCheckBox, m_speechFilterFadeSamplesSpin,
+            m_speechFilterFadeModeCombo, m_speechFilterFadeSamplesSpin,
             m_inspectorPane->transcriptUnifiedEditModeCheckBox(),
             m_inspectorPane->transcriptSearchFilterLineEdit(),
             m_inspectorPane->transcriptSpeakerFilterCombo(),
@@ -1086,6 +1086,8 @@ void EditorWindow::createTranscriptTab()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+            m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -1117,6 +1119,8 @@ void EditorWindow::createTranscriptTab()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+            m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -1176,6 +1180,8 @@ void EditorWindow::createSpeakersTab()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+            m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -1417,6 +1423,8 @@ void EditorWindow::createSpeakersTab()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+            m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -1539,9 +1547,19 @@ void EditorWindow::createEffectsTab()
             nullptr},
         EffectsTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return m_timeline ? m_timeline->selectedTrackIndex() : -1; },
+            [this](int trackIndex) -> const TimelineTrack* {
+                if (!m_timeline || trackIndex < 0 || trackIndex >= m_timeline->tracks().size()) {
+                    return nullptr;
+                }
+                return &m_timeline->tracks().at(trackIndex);
+            },
             [this](const TimelineClip& clip) { return clip.filePath; },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
                 return m_timeline->updateClipById(id, updater);
+            },
+            [this](int trackIndex, const std::function<void(TimelineTrack&)>& updater) {
+                return m_timeline && m_timeline->updateTrackByIndex(trackIndex, updater);
             },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Effects")); },

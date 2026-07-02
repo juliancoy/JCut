@@ -907,11 +907,15 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
     root[QStringLiteral("historyMaxEntries")] = m_historyMaxEntries;
     root[QStringLiteral("historyMaxMegabytes")] = m_historyMaxMegabytes;
-    root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
     root[QStringLiteral("transcriptOffsetMs")] = m_transcriptOffsetMs;
+    root[QStringLiteral("speechFilterFadeMode")] =
+        m_speechFilterEnabled
+            ? AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode)
+            : QStringLiteral("none");
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
+    root[QStringLiteral("speechFilterCurveStrength")] = m_speechFilterCurveStrength;
     root[QStringLiteral("speechFilterRangeCrossfade")] = m_speechFilterRangeCrossfade;
     root[QStringLiteral("transcriptUnifiedEditColors")] =
         m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()
@@ -1108,6 +1112,14 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("audioMuted")] = track.audioMuted;
             trackObj[QStringLiteral("audioSolo")] = track.audioSolo;
             trackObj[QStringLiteral("audioWaveformVisible")] = track.audioWaveformVisible;
+            trackObj[QStringLiteral("effectPreset")] = effectPresetToJson(track.effectPreset);
+            trackObj[QStringLiteral("effectRows")] = track.effectRows;
+            trackObj[QStringLiteral("effectSpeed")] = track.effectSpeed;
+            trackObj[QStringLiteral("effectScale")] = track.effectScale;
+            trackObj[QStringLiteral("effectAlternateDirection")] = track.effectAlternateDirection;
+            trackObj[QStringLiteral("tilingPattern")] = tilingPatternToJson(track.tilingPattern);
+            trackObj[QStringLiteral("tilingSpacing")] = track.tilingSpacing;
+            trackObj[QStringLiteral("tilingWrap")] = track.tilingWrap;
             tracks.push_back(trackObj);
         }
     }

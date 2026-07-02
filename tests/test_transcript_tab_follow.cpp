@@ -123,6 +123,20 @@ bool tableHasOutsideCutRow(const QTableWidget& table)
     return false;
 }
 
+QComboBox* defaultSpeechFilterModeCombo()
+{
+    static QComboBox combo;
+    if (combo.count() == 0) {
+        combo.addItem(QStringLiteral("None"), QStringLiteral("none"));
+        combo.addItem(QStringLiteral("Jump Cut"), QStringLiteral("jumpCut"));
+        combo.addItem(QStringLiteral("Fade"), QStringLiteral("fade"));
+        combo.addItem(QStringLiteral("Smooth Step"), QStringLiteral("smoothStep"));
+        combo.addItem(QStringLiteral("Smoother Step"), QStringLiteral("smootherStep"));
+    }
+    combo.setCurrentIndex(0);
+    return &combo;
+}
+
 TranscriptTab::Widgets makeTranscriptWidgets(QLineEdit* clipLabel,
                                              QLabel* detailsLabel,
                                              QTableWidget* table,
@@ -132,14 +146,15 @@ TranscriptTab::Widgets makeTranscriptWidgets(QLineEdit* clipLabel,
                                              QCheckBox* speechEnabled,
                                              QSpinBox* speechFade)
 {
-    TranscriptTab::Widgets widgets;
+    Q_UNUSED(speechEnabled);
+    TranscriptTab::Widgets widgets{};
     widgets.transcriptInspectorClipLabel = clipLabel;
     widgets.transcriptInspectorDetailsLabel = detailsLabel;
     widgets.transcriptTable = table;
     widgets.transcriptFollowCurrentWordCheckBox = follow;
     widgets.transcriptPrependMsSpin = prependSpin;
     widgets.transcriptPostpendMsSpin = postpendSpin;
-    widgets.speechFilterEnabledCheckBox = speechEnabled;
+    widgets.speechFilterFadeModeCombo = defaultSpeechFilterModeCombo();
     widgets.speechFilterFadeSamplesSpin = speechFade;
     return widgets;
 }
@@ -170,6 +185,7 @@ private slots:
     void testTranscriptTableUsesStableRowGeometryForMouseActivation();
     void testOverlayTransformEditsUpdatePreviewImmediately();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
+    void testSpeechFilterNoneModeDisablesSpeechFilter();
 };
 
 void TestTranscriptTabFollow::testContinuousAlignmentAcrossFrames() {
@@ -878,7 +894,7 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
     int saveCount = 0;
     int historyCount = 0;
 
-    TranscriptTab::Widgets widgets;
+    TranscriptTab::Widgets widgets{};
     widgets.transcriptInspectorClipLabel = &clipLabel;
     widgets.transcriptInspectorDetailsLabel = &detailsLabel;
     widgets.transcriptTable = &table;
@@ -996,6 +1012,56 @@ void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersi
     QVERIFY(QMetaObject::invokeMethod(&tab, "onTranscriptDeleteVersion", Qt::DirectConnection));
     QVERIFY(!QFileInfo::exists(createdPath));
     QCOMPARE(scriptVersions.currentData().toString(), editablePath);
+}
+
+void TestTranscriptTabFollow::testSpeechFilterNoneModeDisablesSpeechFilter()
+{
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    QCheckBox follow;
+    QSpinBox prependSpin;
+    QSpinBox postpendSpin;
+    QCheckBox speechEnabled;
+    QSpinBox speechFade;
+    QComboBox speechMode;
+    speechMode.addItem(QStringLiteral("None"), QStringLiteral("none"));
+    speechMode.addItem(QStringLiteral("Jump Cut"), QStringLiteral("jumpCut"));
+    speechMode.addItem(QStringLiteral("Fade"), QStringLiteral("fade"));
+    speechMode.addItem(QStringLiteral("Smooth Step"), QStringLiteral("smoothStep"));
+    speechMode.addItem(QStringLiteral("Smoother Step"), QStringLiteral("smootherStep"));
+    speechMode.setCurrentIndex(0);
+
+    TranscriptTab::Widgets widgets = makeTranscriptWidgets(
+        &clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin,
+        &speechEnabled, &speechFade);
+    widgets.speechFilterFadeModeCombo = &speechMode;
+
+    int saveCount = 0;
+    TranscriptTab tab(
+        widgets,
+        TranscriptTab::Dependencies{
+            []() -> const TimelineClip* { return nullptr; },
+            {},
+            [&saveCount]() { ++saveCount; },
+            {},
+            {},
+            {},
+            {},
+            {}});
+    tab.wire();
+    tab.syncSpeechFilterControlsFromWidgets();
+    QVERIFY(!tab.speechFilterEnabled());
+
+    speechMode.setCurrentIndex(3);
+    QVERIFY(tab.speechFilterEnabled());
+
+    speechMode.setCurrentIndex(1);
+    QVERIFY(tab.speechFilterEnabled());
+
+    speechMode.setCurrentIndex(0);
+    QVERIFY(!tab.speechFilterEnabled());
+    QVERIFY(saveCount > 0);
 }
 
 QTEST_MAIN(TestTranscriptTabFollow)

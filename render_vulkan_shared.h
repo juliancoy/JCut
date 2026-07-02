@@ -48,11 +48,15 @@ struct VulkanEffectPipelinePlan {
 VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QRectF& outputRect,
                                                   const QSize& textureSize,
-                                                  qreal timelineFrame);
+                                                  qreal timelineFrame,
+                                                  qreal effectFrame = -1.0);
 QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         const QRectF& outputRect,
                                         const QSize& textureSize,
                                         qreal timelineFrame);
+qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
+                                      const QVector<TimelineClip>& timelineClips,
+                                      qreal timelineFramePosition);
 
 void vulkanMvpForOutputRect(const QRectF& rect,
                             const QSize& outputSize,

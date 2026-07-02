@@ -40,3 +40,5 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
                                                                 const QVector<TimelineTrack>& tracks,
                                                                 qreal timelineFramePosition,
                                                                 const QVector<RenderSyncMarker>& markers);
+bool trackHasEffectPreset(const TimelineTrack& track);
+TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);

@@ -4239,17 +4239,20 @@ QImage OffscreenVulkanRenderer::renderFrame(
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY));
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
+    const TimelineClip effectClip =
+        clipWithTrackEffectSettings(clip, request.tracks);
     const QRectF effectBounds =
-        (clip.effectPreset == ClipEffectPreset::SourceTile || clip.maskRepeatEnabled)
+        (effectClip.effectPreset == ClipEffectPreset::SourceTile || effectClip.maskRepeatEnabled)
             ? layerGeometry.bounds.intersected(outputRect)
             : outputRect;
     const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
-        clip,
+        effectClip,
         effectBounds,
         sourceSize,
-        timelineFrame);
+        timelineFrame,
+        clipEffectPlaybackFramePosition(effectClip, request.clips, timelineFrame));
     layer.presetDraws = effectPlan.generatedDraws;
-    if (clip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
+    if (effectClip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
       layer.presetScissorEnabled = true;
       layer.presetScissorRect = effectBounds;
     }

@@ -1,4 +1,5 @@
 #include "inspector_pane.h"
+#include "audio_engine.h"
 #include "editor_shared.h"
 #include "debug_controls.h"
 #include "grading_histogram_widget.h"
@@ -1589,11 +1590,12 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     auto *speechForm = new QFormLayout;
     speechForm->setSpacing(4);
-    m_speechFilterEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Speech Filter"), settingsContainer);
     m_transcriptPrependMsSpin = new QSpinBox(settingsContainer);
     m_transcriptPostpendMsSpin = new QSpinBox(settingsContainer);
     m_transcriptOffsetMsSpin = new QSpinBox(settingsContainer);
+    m_speechFilterFadeModeCombo = new QComboBox(settingsContainer);
     m_speechFilterFadeSamplesSpin = new QSpinBox(settingsContainer);
+    m_speechFilterCurveStrengthSpin = new QDoubleSpinBox(settingsContainer);
     m_speechFilterRangeCrossfadeCheckBox =
         new QCheckBox(QStringLiteral("Boundary Crossfade"), settingsContainer);
     m_playbackClockSourceCombo = new QComboBox(settingsContainer);
@@ -1628,21 +1630,44 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptOffsetMsSpin->setToolTip(
         QStringLiteral("Signed timing offset applied to transcript word windows. Positive values display later; negative values display earlier."));
 
+    m_speechFilterFadeModeCombo->addItem(QStringLiteral("None"), QStringLiteral("none"));
+    m_speechFilterFadeModeCombo->addItem(
+        AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::JumpCut),
+        AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::JumpCut));
+    m_speechFilterFadeModeCombo->addItem(
+        AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::Fade),
+        AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::Fade));
+    m_speechFilterFadeModeCombo->addItem(
+        AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::SmoothStep),
+        AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::SmoothStep));
+    m_speechFilterFadeModeCombo->addItem(
+        AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::SmootherStep),
+        AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::SmootherStep));
+    m_speechFilterFadeModeCombo->setCurrentIndex(0);
+    m_speechFilterFadeModeCombo->setToolTip(
+        QStringLiteral("Speech filter mode; None leaves playback unchanged."));
     m_speechFilterFadeSamplesSpin->setRange(0, 5000);
     m_speechFilterFadeSamplesSpin->setValue(300);
     m_speechFilterFadeSamplesSpin->setSuffix(QStringLiteral(" samples"));
     m_speechFilterFadeSamplesSpin->setToolTip(
         QStringLiteral("Fade/crossfade window at speech range boundaries (0 = no transition)."));
+    m_speechFilterCurveStrengthSpin->setRange(0.25, 4.0);
+    m_speechFilterCurveStrengthSpin->setDecimals(2);
+    m_speechFilterCurveStrengthSpin->setSingleStep(0.05);
+    m_speechFilterCurveStrengthSpin->setValue(1.0);
+    m_speechFilterCurveStrengthSpin->setToolTip(
+        QStringLiteral("Curve exponent applied to Smooth Step and Smoother Step transitions."));
     m_speechFilterRangeCrossfadeCheckBox->setChecked(false);
     m_speechFilterRangeCrossfadeCheckBox->setToolTip(
         QStringLiteral("Blend adjacent speech ranges instead of fading to silence. "
                        "Does not change audio duration."));
 
-    speechForm->addRow(QStringLiteral("Speech Filter"), m_speechFilterEnabledCheckBox);
+    speechForm->addRow(QStringLiteral("Speech Filter"), m_speechFilterFadeModeCombo);
     speechForm->addRow(QStringLiteral("Time Offset"), m_transcriptOffsetMsSpin);
     speechForm->addRow(QStringLiteral("Prepend Time"), m_transcriptPrependMsSpin);
     speechForm->addRow(QStringLiteral("Postpend Time"), m_transcriptPostpendMsSpin);
     speechForm->addRow(QStringLiteral("Fade Length"), m_speechFilterFadeSamplesSpin);
+    speechForm->addRow(QStringLiteral("Curve Strength"), m_speechFilterCurveStrengthSpin);
     speechForm->addRow(QStringLiteral("Transition"), m_speechFilterRangeCrossfadeCheckBox);
     speechForm->addRow(QStringLiteral("Clock Source"), m_playbackClockSourceCombo);
     speechForm->addRow(QStringLiteral("Audio Warp"), m_playbackAudioWarpModeCombo);

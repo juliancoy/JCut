@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QColorDialog>
 #include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QLineEdit>
 #include <QList>
 #include <QMessageBox>
@@ -249,8 +250,9 @@ void EditorWindow::bindInspectorWidgets()
     m_transcriptPrependMsSpin = m_inspectorPane->transcriptPrependMsSpin();
     m_transcriptPostpendMsSpin = m_inspectorPane->transcriptPostpendMsSpin();
     m_transcriptOffsetMsSpin = m_inspectorPane->transcriptOffsetMsSpin();
-    m_speechFilterEnabledCheckBox = m_inspectorPane->speechFilterEnabledCheckBox();
+    m_speechFilterFadeModeCombo = m_inspectorPane->speechFilterFadeModeCombo();
     m_speechFilterFadeSamplesSpin = m_inspectorPane->speechFilterFadeSamplesSpin();
+    m_speechFilterCurveStrengthSpin = m_inspectorPane->speechFilterCurveStrengthSpin();
     m_speechFilterRangeCrossfadeCheckBox = m_inspectorPane->speechFilterRangeCrossfadeCheckBox();
     m_playbackClockSourceCombo = m_inspectorPane->playbackClockSourceCombo();
     m_playbackAudioWarpModeCombo = m_inspectorPane->playbackAudioWarpModeCombo();
@@ -383,6 +385,8 @@ void EditorWindow::setupSpeechFilterControls()
                     ? effectiveTranscriptNormalizeRanges()
                     : QVector<ExportRangeSegment>{});
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+            m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
@@ -395,11 +399,36 @@ void EditorWindow::setupSpeechFilterControls()
         if (pushHistory) pushHistorySnapshot();
     };
 
+    refreshSpeechFilterFadeParameterVisibility();
+    if (m_speechFilterFadeModeCombo) {
+        connect(m_speechFilterFadeModeCombo, &QComboBox::currentIndexChanged, this,
+                [this, refreshSpeechFilterRouting](int index) {
+                    if (index < 0 || !m_speechFilterFadeModeCombo) {
+                        return;
+                    }
+                    const QString mode = m_speechFilterFadeModeCombo->itemData(index).toString();
+                    m_speechFilterEnabled = mode != QStringLiteral("none");
+                    if (m_speechFilterEnabled) {
+                        m_speechFilterFadeMode =
+                            AudioEngine::speechFilterFadeModeFromString(mode);
+                    }
+                    refreshSpeechFilterFadeParameterVisibility();
+                    refreshSpeechFilterRouting(true);
+                });
+    }
+
     connect(m_speechFilterRangeCrossfadeCheckBox, &QCheckBox::toggled, this,
             [this, refreshSpeechFilterRouting](bool checked) {
                 m_speechFilterRangeCrossfade = checked;
                 refreshSpeechFilterRouting(true);
             });
+    if (m_speechFilterCurveStrengthSpin) {
+        connect(m_speechFilterCurveStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, refreshSpeechFilterRouting](double value) {
+                    m_speechFilterCurveStrength = qBound<qreal>(0.25, value, 4.0);
+                    refreshSpeechFilterRouting(true);
+                });
+    }
     if (m_playbackClockSourceCombo) {
         connect(m_playbackClockSourceCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
             if (index < 0) {
@@ -1216,5 +1245,49 @@ void EditorWindow::setupPreviewControls()
     if (m_inspectorPane->restartDecodersButton()) {
         connect(m_inspectorPane->restartDecodersButton(), &QPushButton::clicked,
                 this, &EditorWindow::onRestartDecodersRequested);
+    }
+}
+
+void EditorWindow::refreshSpeechFilterFadeParameterVisibility()
+{
+    const bool showFadeParameters =
+        m_speechFilterEnabled &&
+        m_speechFilterFadeMode != AudioEngine::SpeechFilterFadeMode::JumpCut;
+    const bool showCurveParameters =
+        m_speechFilterEnabled &&
+        (m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmoothStep ||
+         m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmootherStep);
+    const QList<QWidget*> widgets{
+        m_speechFilterFadeSamplesSpin,
+        m_speechFilterRangeCrossfadeCheckBox,
+    };
+    for (QWidget* widget : widgets) {
+        if (!widget) {
+            continue;
+        }
+        widget->setVisible(showFadeParameters);
+        if (QWidget* parent = widget->parentWidget()) {
+            const auto forms = parent->findChildren<QFormLayout*>();
+            for (QFormLayout* form : forms) {
+                if (QWidget* rowLabel = form->labelForField(widget)) {
+                    rowLabel->setVisible(showFadeParameters);
+                }
+            }
+        }
+    }
+    const QList<QWidget*> curveWidgets{m_speechFilterCurveStrengthSpin};
+    for (QWidget* widget : curveWidgets) {
+        if (!widget) {
+            continue;
+        }
+        widget->setVisible(showCurveParameters);
+        if (QWidget* parent = widget->parentWidget()) {
+            const auto forms = parent->findChildren<QFormLayout*>();
+            for (QFormLayout* form : forms) {
+                if (QWidget* rowLabel = form->labelForField(widget)) {
+                    rowLabel->setVisible(showCurveParameters);
+                }
+            }
+        }
     }
 }

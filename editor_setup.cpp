@@ -520,6 +520,8 @@ void EditorWindow::setupAudioEngine()
 {
     m_audioEngine = std::make_unique<AudioEngine>();
     m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+    m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
+    m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
     m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
     m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
     m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());

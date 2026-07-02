@@ -14,6 +14,7 @@ private slots:
   void testStarvedClipDoesNotBlockReadyClip();
   void testOnlyStarvedClipBlocksChunk();
   void testSpeechFilterRangesAreDerivedFromExportRanges();
+  void testSpeechFilterFadeModesShapeBoundaryGain();
   void testSpliceSecondaryTapStopsAtClipEnd();
   void testTrackGainMuteAndSoloAffectMix();
 
@@ -156,6 +157,34 @@ void TestAudioMixPolicy::testSpeechFilterRangesAreDerivedFromExportRanges() {
     QVERIFY2(std::abs(sample) < 0.000001f,
              qPrintable(QStringLiteral("expected speech-filtered gap silence, got %1").arg(sample)));
   }
+}
+
+void TestAudioMixPolicy::testSpeechFilterFadeModesShapeBoundaryGain() {
+  AudioEngine engine;
+  QVector<AudioEngine::SpeechSampleRange> ranges{
+      AudioEngine::SpeechSampleRange{0, 1000},
+  };
+
+  const auto jump = engine.calculateSpeechRangeBlend(
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::JumpCut, 1.0, false);
+  QCOMPARE(jump.primaryGain, 1.0f);
+
+  const auto linear = engine.calculateSpeechRangeBlend(
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::Fade, 1.0, false);
+  QCOMPARE(linear.primaryGain, 0.25f);
+
+  const auto smooth = engine.calculateSpeechRangeBlend(
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 1.0, false);
+  QCOMPARE(smooth.primaryGain, 0.15625f);
+
+  const auto strongerSmooth = engine.calculateSpeechRangeBlend(
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 2.0, false);
+  QVERIFY(strongerSmooth.primaryGain < smooth.primaryGain);
+
+  const auto smoother = engine.calculateSpeechRangeBlend(
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmootherStep, 1.0, false);
+  QVERIFY(smoother.primaryGain > 0.1035f);
+  QVERIFY(smoother.primaryGain < 0.1036f);
 }
 
 void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {

@@ -40,8 +40,11 @@ public:
     struct Dependencies
     {
         std::function<const TimelineClip*()> getSelectedClip;
+        std::function<int()> getSelectedTrackIndex;
+        std::function<const TimelineTrack*(int)> getTrackByIndex;
         std::function<QString(const TimelineClip&)> getClipFilePath;
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
+        std::function<bool(int, const std::function<void(TimelineTrack&)>&)> updateTrackByIndex;
         std::function<void()> setPreviewTimelineClips;
         std::function<void()> refreshInspector;
         std::function<void()> scheduleSaveState;

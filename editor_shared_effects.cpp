@@ -19,6 +19,33 @@
 #include <algorithm>
 #include <cmath>
 
+bool trackHasEffectPreset(const TimelineTrack& track)
+{
+    return track.effectPreset != ClipEffectPreset::None;
+}
+
+TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector<TimelineTrack>& tracks)
+{
+    if (clip.trackIndex < 0 || clip.trackIndex >= tracks.size()) {
+        return clip;
+    }
+    const TimelineTrack& track = tracks.at(clip.trackIndex);
+    if (!trackHasEffectPreset(track)) {
+        return clip;
+    }
+
+    TimelineClip effective = clip;
+    effective.effectPreset = track.effectPreset;
+    effective.effectRows = qBound(1, track.effectRows, 96);
+    effective.effectSpeed = qBound<qreal>(-8.0, track.effectSpeed, 8.0);
+    effective.effectScale = qBound<qreal>(0.1, track.effectScale, 8.0);
+    effective.effectAlternateDirection = track.effectAlternateDirection;
+    effective.tilingPattern = track.tilingPattern;
+    effective.tilingSpacing = qBound<qreal>(0.1, track.tilingSpacing, 8.0);
+    effective.tilingWrap = track.tilingWrap;
+    return effective;
+}
+
 namespace {
 int clampChannel(int value) {
     return qBound(0, value, 255);

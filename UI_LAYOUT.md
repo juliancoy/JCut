@@ -604,7 +604,7 @@ The inspector tab order is fixed by `buildPane()` and decorated by
                - `Visibility` -> `Show Lines Not In Active Cut`
              - Label `Speech Filter`
              - Speech filter form:
-               - `Speech Filter` -> `Enable Speech Filter`
+               - `Speech Filter` combo: `None`, `Jump Cut`, `Fade`, `Smooth Step`, `Smoother Step`.
                - `Prepend Time` spin.
                - `Postpend Time` spin.
                - `Fade Length` spin.

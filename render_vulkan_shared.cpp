@@ -10,6 +10,33 @@
 #include <cmath>
 
 namespace render_detail {
+namespace {
+
+QString effectClockContinuityKey(const TimelineClip& clip)
+{
+    const QString linkedSourceId = clip.linkedSourceClipId.trimmed();
+    if (!linkedSourceId.isEmpty()) {
+        return QStringLiteral("linked:") + linkedSourceId;
+    }
+    const QString path = clip.filePath.trimmed();
+    if (!path.isEmpty()) {
+        return QStringLiteral("file:") + path;
+    }
+    const QString proxyPath = clip.proxyPath.trimmed();
+    if (!proxyPath.isEmpty()) {
+        return QStringLiteral("proxy:") + proxyPath;
+    }
+    return QStringLiteral("clip:") + clip.id;
+}
+
+bool clipSharesEffectClock(const TimelineClip& a, const TimelineClip& b)
+{
+    return a.trackIndex == b.trackIndex &&
+           a.effectPreset == b.effectPreset &&
+           effectClockContinuityKey(a) == effectClockContinuityKey(b);
+}
+
+} // namespace
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade)
 {
@@ -62,9 +89,11 @@ QVector<QRectF> VulkanEffectPipelinePlan::generatedDrawRects() const
 VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QRectF& outputRect,
                                                   const QSize& textureSize,
-                                                  qreal timelineFrame)
+                                                  qreal timelineFrame,
+                                                  qreal effectFrame)
 {
     VulkanEffectPipelinePlan plan;
+    const qreal temporalFrame = effectFrame >= 0.0 ? effectFrame : timelineFrame;
     const bool maskedRepeatEnabled =
         clip.maskRepeatEnabled && clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty();
     if ((clip.effectPreset == ClipEffectPreset::None && !maskedRepeatEnabled) || outputRect.isEmpty()) {
@@ -108,13 +137,13 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         }
         const qreal tileH = std::max<qreal>(2.0, rowH * baseCoverage * scale);
         const qreal trimPulse = clip.effectPreset == ClipEffectPreset::DirectionalTrimTicker
-            ? 0.58 + 0.42 * std::abs(std::sin(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) * 0.12))
+            ? 0.58 + 0.42 * std::abs(std::sin(temporalFrame * std::max<qreal>(0.1, std::abs(speed)) * 0.12))
             : 1.0;
         const qreal tileW = std::max<qreal>(2.0, tileH * aspect * trimPulse);
         const qreal spacing = tileW * baseSpacing;
         for (int row = 0; row < count; ++row) {
             const qreal direction = (clip.effectAlternateDirection && (row % 2)) ? -1.0 : 1.0;
-            qreal phase = std::fmod((timelineFrame * speed * direction * rowH * phaseScale) +
+            qreal phase = std::fmod((temporalFrame * speed * direction * rowH * phaseScale) +
                                         (row * spacing * 0.37),
                                     spacing);
             if ((clip.effectPreset == ClipEffectPreset::AlternatingMotionBackground ||
@@ -138,15 +167,15 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         const qreal tileH = std::max<qreal>(2.0, tileW / std::max<qreal>(0.001, aspect));
         const qreal stepX = std::max<qreal>(1.0, tileW * spacing);
         const qreal stepY = std::max<qreal>(1.0, tileH * spacing);
-        const qreal phaseX = std::fmod(timelineFrame * speed * tileW * 0.015, stepX);
-        const qreal phaseY = std::fmod(timelineFrame * speed * tileH * 0.006, stepY);
+        const qreal phaseX = std::fmod(temporalFrame * speed * tileW * 0.015, stepX);
+        const qreal phaseY = std::fmod(temporalFrame * speed * tileH * 0.006, stepY);
         const qreal normalizedPhaseX = phaseX < 0.0 ? phaseX + stepX : phaseX;
         const qreal normalizedPhaseY = phaseY < 0.0 ? phaseY + stepY : phaseY;
 
         if (clip.tilingPattern == ClipTilingPattern::Encircle) {
             const QPointF center = outputRect.center();
             const qreal radius = minDimension * 0.34 * spacing;
-            const qreal phase = timelineFrame * speed * 0.018;
+            const qreal phase = temporalFrame * speed * 0.018;
             for (int i = 0; i < count; ++i) {
                 const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
                 const QPointF p(center.x() + std::cos(angle) * radius,
@@ -158,7 +187,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                    clip.tilingPattern == ClipTilingPattern::SpiralYZ) {
             const QPointF center = outputRect.center();
             const qreal maxRadius = minDimension * 0.46 * spacing;
-            const qreal phase = timelineFrame * speed * 0.014;
+            const qreal phase = temporalFrame * speed * 0.014;
             for (int i = 0; i < count; ++i) {
                 const qreal t = count <= 1 ? 0.0 : static_cast<qreal>(i) / static_cast<qreal>(count - 1);
                 const qreal angle = phase + (kTwoPi * 1.61803398875 * static_cast<qreal>(i));
@@ -229,7 +258,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         const QPointF center = outputRect.center();
         const qreal rx = outputRect.width() * 0.28;
         const qreal ry = outputRect.height() * 0.24;
-        const qreal phase = timelineFrame * speed * 0.025;
+        const qreal phase = temporalFrame * speed * 0.025;
         for (int i = 0; i < count; ++i) {
             const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
             const QPointF p(center.x() + std::cos(angle) * rx,
@@ -243,7 +272,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         const qreal cellH = outputRect.height() / static_cast<qreal>(rows);
         const qreal tileH = std::max<qreal>(2.0, cellH * 0.86 * scale);
         const qreal tileW = std::max<qreal>(2.0, std::min(cellW * 0.92, tileH * aspect));
-        const int activeStep = static_cast<int>(std::floor(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) / 8.0));
+        const int activeStep = static_cast<int>(std::floor(temporalFrame * std::max<qreal>(0.1, std::abs(speed)) / 8.0));
         for (int i = 0; i < count; ++i) {
             const int column = i % columns;
             const int row = i / columns;
@@ -263,7 +292,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         const qreal tileW = std::max<qreal>(4.0, tileH * aspect);
         const qreal stepX = outputRect.width() / static_cast<qreal>(count + 1);
         const qreal stepY = outputRect.height() * 0.18;
-        const int snappedStep = static_cast<int>(std::floor(timelineFrame * std::max<qreal>(0.1, std::abs(speed)) / 6.0));
+        const int snappedStep = static_cast<int>(std::floor(temporalFrame * std::max<qreal>(0.1, std::abs(speed)) / 6.0));
         const qreal direction = speed < 0.0 ? -1.0 : 1.0;
         for (int i = 0; i < count; ++i) {
             const int sequenced = (snappedStep + i) % count;
@@ -305,6 +334,47 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         qreal timelineFrame)
 {
     return vulkanEffectPipelinePlan(clip, outputRect, textureSize, timelineFrame).generatedDrawRects();
+}
+
+qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
+                                      const QVector<TimelineClip>& timelineClips,
+                                      qreal timelineFramePosition)
+{
+    const qreal localFrame =
+        qBound<qreal>(0.0,
+                      timelineFramePosition - static_cast<qreal>(clip.startFrame),
+                      static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1)));
+    if (timelineClips.isEmpty() || clip.id.trimmed().isEmpty()) {
+        return localFrame;
+    }
+
+    QVector<const TimelineClip*> matchingClips;
+    matchingClips.reserve(timelineClips.size());
+    for (const TimelineClip& candidate : timelineClips) {
+        if (candidate.id.trimmed().isEmpty() || !clipSharesEffectClock(clip, candidate)) {
+            continue;
+        }
+        matchingClips.push_back(&candidate);
+    }
+    std::sort(matchingClips.begin(),
+              matchingClips.end(),
+              [](const TimelineClip* a, const TimelineClip* b) {
+                  if (a->startFrame == b->startFrame) {
+                      return a->id < b->id;
+                  }
+                  return a->startFrame < b->startFrame;
+              });
+
+    qreal elapsed = 0.0;
+    for (const TimelineClip* candidate : matchingClips) {
+        if (candidate->id == clip.id) {
+            return elapsed + localFrame;
+        }
+        if (candidate->startFrame < clip.startFrame) {
+            elapsed += static_cast<qreal>(qMax<int64_t>(0, candidate->durationFrames));
+        }
+    }
+    return localFrame;
 }
 
 void vulkanMvpForOutputRect(const QRectF& rect,

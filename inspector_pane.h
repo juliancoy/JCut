@@ -429,11 +429,12 @@ public:
     QDoubleSpinBox *backgroundFillEdgePowerSpin() const { return m_backgroundFillEdgePowerSpin; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
-    QCheckBox *speechFilterEnabledCheckBox() const { return m_speechFilterEnabledCheckBox; }
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
     QSpinBox *transcriptPostpendMsSpin() const { return m_transcriptPostpendMsSpin; }
     QSpinBox *transcriptOffsetMsSpin() const { return m_transcriptOffsetMsSpin; }
+    QComboBox *speechFilterFadeModeCombo() const { return m_speechFilterFadeModeCombo; }
     QSpinBox *speechFilterFadeSamplesSpin() const { return m_speechFilterFadeSamplesSpin; }
+    QDoubleSpinBox *speechFilterCurveStrengthSpin() const { return m_speechFilterCurveStrengthSpin; }
     QCheckBox *speechFilterRangeCrossfadeCheckBox() const { return m_speechFilterRangeCrossfadeCheckBox; }
     QComboBox *playbackClockSourceCombo() const { return m_playbackClockSourceCombo; }
     QComboBox *playbackAudioWarpModeCombo() const { return m_playbackAudioWarpModeCombo; }
@@ -878,11 +879,12 @@ private:
     QCheckBox *m_backgroundFillEdgeProgressiveCheckBox = nullptr;
     QDoubleSpinBox *m_backgroundFillEdgePowerSpin = nullptr;
 
-    QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QSpinBox *m_transcriptOffsetMsSpin = nullptr;
+    QComboBox *m_speechFilterFadeModeCombo = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
+    QDoubleSpinBox *m_speechFilterCurveStrengthSpin = nullptr;
     QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
