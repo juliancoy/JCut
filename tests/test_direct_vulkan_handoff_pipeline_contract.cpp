@@ -459,9 +459,12 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!source.isEmpty(), "vulkan_preview_surface.cpp must be readable");
 
   QVERIFY2(source.contains(QStringLiteral(
-               "const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;")),
-           "direct Vulkan preview must keep hardware/GPU payloads required "
-           "for video while allowing still-image CPU uploads");
+               "clip.mediaType != ClipMediaType::Image && visibleDecodeRequiresDirectVulkanPayload()")),
+           "direct Vulkan preview must make the hardware/GPU visible-request "
+           "requirement conditional on runtime CPU-upload fallback capability");
+  QVERIFY2(source.contains(QStringLiteral("visibleCpuUploadFallbackEnabled()")) &&
+               source.contains(QStringLiteral("visibleDecodeRequiresDirectVulkanPayload()")),
+           "direct Vulkan preview must expose the runtime visible payload policy");
   QVERIFY2(
       source.contains(QStringLiteral("requireDirectVulkanPayload);")),
       "visible frame payload policy must be passed into frame requests");
@@ -1786,7 +1789,7 @@ void TestDirectVulkanHandoffPipelineContract::
   const QString renderDecode = readSourceFile(QStringLiteral("render_decode.cpp"));
   QVERIFY2(!renderDecode.isEmpty(), "render_decode.cpp must be readable");
   QVERIFY2(renderDecode.contains(QStringLiteral("sharedHwDevicesForDecoderContexts")) &&
-               renderDecode.contains(QStringLiteral("new editor::DecoderContext(path, sharedHwDevices)")),
+               renderDecode.contains(QStringLiteral("new editor::DecoderContext(path, sharedHwDevices")),
            "blocking export decode fallback must borrow the export AsyncDecoder "
            "hardware-device pool instead of creating private CUDA contexts for "
            "each batch section");

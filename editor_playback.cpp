@@ -120,7 +120,7 @@ void EditorWindow::advanceFrame()
         const int64_t nextFrame =
             qBound<int64_t>(0,
                             static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
-                            m_timeline->totalFrames());
+                            lastPlayableFrame());
         m_preview->preparePlaybackAdvance(nextFrame);
     }
     setCurrentPlaybackSample(nextSample, false, true);
@@ -419,17 +419,40 @@ int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
 {
     if (!m_timeline) return 0;
 
+    const int64_t lastFrame = lastPlayableFrame();
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
     if (ranges.isEmpty()) {
         const int64_t nextFrame = currentFrame + 1;
-        return qMin<int64_t>(m_timeline->totalFrames(), nextFrame);
+        return qMin<int64_t>(lastFrame, nextFrame);
     }
 
     for (const ExportRangeSegment &range : ranges) {
-        if (currentFrame < range.startFrame) return range.startFrame;
-        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) return currentFrame + 1;
+        if (currentFrame < range.startFrame) return qMin<int64_t>(lastFrame, range.startFrame);
+        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
+            return qMin<int64_t>(lastFrame, currentFrame + 1);
+        }
     }
-    return qMin<int64_t>(m_timeline->totalFrames(), ranges.constLast().endFrame);
+    return qMin<int64_t>(lastFrame, ranges.constLast().endFrame);
+}
+
+int64_t EditorWindow::lastPlayableFrame() const
+{
+    if (!m_timeline) {
+        return 0;
+    }
+    int64_t lastFrame = 0;
+    for (const TimelineClip& clip : m_timeline->clips()) {
+        if (clip.durationFrames <= 0) {
+            continue;
+        }
+        lastFrame = qMax<int64_t>(lastFrame, clip.startFrame + clip.durationFrames - 1);
+    }
+    return lastFrame;
+}
+
+int64_t EditorWindow::playableTimelineEndSampleExclusive() const
+{
+    return frameToSamples(lastPlayableFrame() + 1);
 }
 
 int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
@@ -443,7 +466,7 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
     if (!m_timeline) {
         return qMax<int64_t>(0, currentSample + qMax<int64_t>(0, deltaSamples));
     }
-    const int64_t totalSamples = frameToSamples(m_timeline->totalFrames());
+    const int64_t totalSamples = playableTimelineEndSampleExclusive();
     if (deltaSamples <= 0) {
         return qBound<int64_t>(0, currentSample, totalSamples);
     }
@@ -519,21 +542,21 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
 int64_t EditorWindow::stepForwardFrame(int64_t currentFrame) const
 {
     if (!m_timeline) return 0;
-    const int64_t totalFrames = m_timeline->totalFrames();
+    const int64_t lastFrame = lastPlayableFrame();
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
     if (ranges.isEmpty()) {
-        return qMin<int64_t>(totalFrames, currentFrame + 1);
+        return qMin<int64_t>(lastFrame, currentFrame + 1);
     }
 
     for (const ExportRangeSegment& range : ranges) {
         if (currentFrame < range.startFrame) {
-            return range.startFrame;
+            return qMin<int64_t>(lastFrame, range.startFrame);
         }
         if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
-            return currentFrame + 1;
+            return qMin<int64_t>(lastFrame, currentFrame + 1);
         }
     }
-    return totalFrames;
+    return lastFrame;
 }
 
 int64_t EditorWindow::stepBackwardFrame(int64_t currentFrame) const
@@ -639,9 +662,11 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
                                       ? QStringLiteral("during_playback")
                                       : QStringLiteral("seek_or_idle"));
     const qint64 tickNowMs = nowMs();
-    const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
+    const int64_t boundedSample =
+        qBound<int64_t>(0, samplePosition, frameToSamples(lastPlayableFrame()));
     const qreal framePosition = samplesToFramePosition(boundedSample);
-    const int64_t bounded = qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), m_timeline->totalFrames());
+    const int64_t bounded =
+        qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), lastPlayableFrame());
     if (!duringPlayback &&
         boundedSample == m_transportTimelineSample &&
         m_timeline &&
@@ -1302,11 +1327,11 @@ void EditorWindow::setPlaybackActive(bool playing)
             }
         }
         playbackStartSample =
-            qBound<int64_t>(0, playbackStartSample, frameToSamples(m_timeline->totalFrames()));
+            qBound<int64_t>(0, playbackStartSample, frameToSamples(lastPlayableFrame()));
         const int64_t playbackStartFrame = qBound<int64_t>(
             0,
             static_cast<int64_t>(std::floor(samplesToFramePosition(playbackStartSample))),
-            m_timeline->totalFrames());
+            lastPlayableFrame());
         m_transportTimelineSample = playbackStartSample;
         m_playbackSessionStartWallMs = m_lastTimelineAdvanceTickMs;
         m_playbackSessionStartTimelineSample = playbackStartSample;

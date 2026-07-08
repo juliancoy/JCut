@@ -83,10 +83,14 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
                                QStringLiteral("candidate transcript scans are kept out of playback profiling snapshots")}}
                         : currentSpeakerLabelDebugForState(&m_interaction));
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
-    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
-    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"),
+                    visibleDecodeRequiresDirectVulkanPayload());
+    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"),
+                    visibleCpuUploadFallbackEnabled());
     snapshot.insert(QStringLiteral("vulkan_visible_zero_copy_contract"),
-                    QStringLiteral("visible video frames require hardware/external Vulkan payloads; CPU image upload is rejected on the direct-Vulkan visible path"));
+                    visibleDecodeRequiresDirectVulkanPayload()
+                        ? QStringLiteral("visible video frames require hardware/external Vulkan payloads; CPU image upload is rejected on the direct-Vulkan visible path")
+                        : QStringLiteral("visible video frames may use CPU-image upload when hardware/external Vulkan payloads are unavailable"));
     snapshot.insert(QStringLiteral("vulkan_text_overlay_cpu_rasterization_enabled"), false);
     snapshot.insert(QStringLiteral("vulkan_text_overlay_qt_painter_enabled"), false);
     snapshot.insert(QStringLiteral("vulkan_speaker_label_gpu_text_enabled"), true);
@@ -311,8 +315,10 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
                     m_interaction.temporalDebugOverlayText);
     snapshot.insert(QStringLiteral("vulkan_decode_preference"),
                     editor::decodePreferenceToString(editor::debugDecodePreference()));
-    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
-    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"), true);
+    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"),
+                    visibleDecodeRequiresDirectVulkanPayload());
+    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"),
+                    visibleCpuUploadFallbackEnabled());
     snapshot.insert(QStringLiteral("vulkan_text_overlay_cpu_rasterization_enabled"), false);
     snapshot.insert(QStringLiteral("vulkan_text_overlay_qt_painter_enabled"), false);
     snapshot.insert(QStringLiteral("vulkan_speaker_label_gpu_text_enabled"), true);

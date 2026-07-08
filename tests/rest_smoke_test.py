@@ -628,6 +628,54 @@ def main() -> int:
             if not seek_result.get("ok"):
                 raise TestFailure(f"failed to seek deterministic playback start: {seek_result}")
 
+            state = wait_for_request_json(
+                "/state",
+                timeout=5.0,
+                description="state for playhead clamp regression",
+                request_timeout=5.0,
+            )
+            timeline = state.get("timeline", [])
+            clip_ends = [
+                int(clip.get("startFrame", 0)) + int(clip.get("durationFrames", 0)) - 1
+                for clip in timeline
+                if int(clip.get("durationFrames", 0)) > 0
+            ]
+            if clip_ends:
+                last_content_frame = max(clip_ends)
+                beyond_content_frame = last_content_frame + 30
+                clamp_seek = wait_for_request_json(
+                    "/playhead",
+                    timeout=5.0,
+                    method="POST",
+                    payload={"frame": beyond_content_frame},
+                    description="playhead clamp past content end",
+                    request_timeout=5.0,
+                )
+                if not clamp_seek.get("ok"):
+                    raise TestFailure(f"failed to seek beyond content end: {clamp_seek}")
+                clamped_playhead = wait_for_request_json(
+                    "/playhead",
+                    timeout=5.0,
+                    description="playhead after clamp past content end",
+                    request_timeout=5.0,
+                )
+                clamped_frame = int(clamped_playhead.get("current_frame", -1))
+                if clamped_frame != last_content_frame:
+                    raise TestFailure(
+                        "playhead did not clamp to the last content frame: "
+                        f"requested={beyond_content_frame} expected={last_content_frame} actual={clamped_frame}"
+                    )
+                seek_result = wait_for_request_json(
+                    "/playhead",
+                    timeout=5.0,
+                    method="POST",
+                    payload={"frame": 0},
+                    description="deterministic playhead reset after clamp regression",
+                    request_timeout=5.0,
+                )
+                if not seek_result.get("ok"):
+                    raise TestFailure(f"failed to reset deterministic playback start: {seek_result}")
+
         diagnostics.phase = "click_play"
         click_result = wait_for_request_json(
             "/click-item",

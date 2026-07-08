@@ -40,7 +40,7 @@ inline bool previewFrameIsTooStaleForPlayback(const FrameHandle& frame,
     if (frameNumber < 0) {
         return false;
     }
-    return frameNumber + qMax<int64_t>(0, maxFrameDelta) < targetFrame;
+    return std::llabs(frameNumber - targetFrame) > qMax<int64_t>(0, maxFrameDelta);
 }
 
 struct PreviewFrameSelectionRequest {

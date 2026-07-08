@@ -270,7 +270,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("sourceTransformLocked")] = clip.sourceTransformLocked;
         obj[QStringLiteral("filePath")] = clip.filePath;
         obj[QStringLiteral("proxyPath")] = clip.proxyPath;
-        obj[QStringLiteral("useProxy")] = clip.useProxy;
+        obj[QStringLiteral("useProxy")] = clip.mediaType == ClipMediaType::Video && clip.useProxy;
         obj[QStringLiteral("label")] = clip.label;
         obj[QStringLiteral("mediaType")] = clipMediaTypeToString(clip.mediaType);
         obj[QStringLiteral("sourceKind")] = mediaSourceKindToString(clip.sourceKind);
@@ -661,6 +661,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             if (probe.frameSize.isValid()) {
                 clip.sourceFrameSize = probe.frameSize;
             }
+        }
+        if (clip.mediaType != ClipMediaType::Video) {
+            clip.useProxy = false;
         }
         if (!clip.filePath.isEmpty() &&
             clip.mediaType != ClipMediaType::Image &&

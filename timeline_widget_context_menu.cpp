@@ -187,7 +187,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         QMenu* proxyMenu = menu.addMenu(QStringLiteral("Proxy"));
         useProxyAction = proxyMenu->addAction(QStringLiteral("Use Proxy"));
         useProxyAction->setCheckable(true);
-        useProxyAction->setChecked(m_clips[clipIndex].useProxy);
+        useProxyAction->setChecked(canProxy && m_clips[clipIndex].useProxy);
         useProxyAction->setEnabled(canProxy);
         proxyMenu->addSeparator();
         createProxyAction = proxyMenu->addAction(

@@ -300,15 +300,18 @@ void TestStandardPreviewPresentationPipeline::heldFrameBeatsOlderApproximatePlay
 void TestStandardPreviewPresentationPipeline::stalePlaybackFramePredicateBoundsApproximatePresentation()
 {
     const QString path = QStringLiteral("/tmp/stale.mp4");
+    const int64_t maxDelta = previewMaxPlaybackStaleFrameDelta(60.0);
     const FrameHandle nearFrame = makeHardwareFrame(100, path);
     const FrameHandle staleFrame = makeHardwareFrame(100, path);
+    const FrameHandle futureStaleFrame = makeHardwareFrame(100 + maxDelta + 1, path);
     QVERIFY(!nearFrame.isNull());
     QVERIFY(!staleFrame.isNull());
+    QVERIFY(!futureStaleFrame.isNull());
 
-    const int64_t maxDelta = previewMaxPlaybackStaleFrameDelta(60.0);
     QCOMPARE(maxDelta, static_cast<int64_t>(5));
     QVERIFY(!previewFrameIsTooStaleForPlayback(nearFrame, 100 + maxDelta, maxDelta));
     QVERIFY(previewFrameIsTooStaleForPlayback(staleFrame, 101 + maxDelta, maxDelta));
+    QVERIFY(previewFrameIsTooStaleForPlayback(futureStaleFrame, 100, maxDelta));
 }
 
 QTEST_MAIN(TestStandardPreviewPresentationPipeline)

@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QTemporaryFile>
+#include <atomic>
 #include "../async_decoder.h"
 
 using namespace editor;
@@ -20,6 +21,7 @@ void TestAsyncDecoder::testInitialization() {
     AsyncDecoder decoder;
     QVERIFY(decoder.initialize());
     QVERIFY(decoder.workerCount() > 0);
+    decoder.shutdown();
 }
 
 void TestAsyncDecoder::testVideoInfo() {
@@ -29,6 +31,7 @@ void TestAsyncDecoder::testVideoInfo() {
     // Test with non-existent file
     VideoStreamInfo info = decoder.getVideoInfo("/nonexistent/file.mp4");
     QVERIFY(!info.isValid);
+    decoder.shutdown();
 }
 
 void TestAsyncDecoder::testInvalidFile() {
@@ -44,11 +47,10 @@ void TestAsyncDecoder::testInvalidFile() {
             receivedFrame = frame;
         });
     
-    // Wait for callback
-    QTest::qWait(500);
-    
+    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled, 1000);
     QVERIFY(callbackCalled);
     QVERIFY(receivedFrame.isNull());
+    decoder.shutdown();
 }
 
 void TestAsyncDecoder::testRequestFrame() {
@@ -64,6 +66,8 @@ void TestAsyncDecoder::testRequestFrame() {
     
     QVERIFY(seqId > 0);
     QVERIFY(decoder.pendingRequestCount() >= 0);
+    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled, 1000);
+    decoder.shutdown();
 }
 
 void TestAsyncDecoder::testCancelRequests() {
@@ -83,24 +87,26 @@ void TestAsyncDecoder::testCancelRequests() {
     
     // Queue should be cleared or processing
     QVERIFY(decoder.pendingRequestCount() >= 0);
+    decoder.shutdown();
 }
 
 void TestAsyncDecoder::testMultipleRequests() {
     AsyncDecoder decoder;
     decoder.initialize();
     
-    int callbackCount = 0;
+    std::atomic<int> callbackCount{0};
     
     // Request multiple frames with different priorities
     decoder.requestFrame("/tmp/test1.mp4", 0, 100, 1000,
-        [&callbackCount](FrameHandle frame) { callbackCount++; });
+        [&callbackCount](FrameHandle frame) { callbackCount.fetch_add(1); });
     decoder.requestFrame("/tmp/test2.mp4", 0, 50, 1000,
-        [&callbackCount](FrameHandle frame) { callbackCount++; });
+        [&callbackCount](FrameHandle frame) { callbackCount.fetch_add(1); });
     decoder.requestFrame("/tmp/test3.mp4", 0, 10, 1000,
-        [&callbackCount](FrameHandle frame) { callbackCount++; });
+        [&callbackCount](FrameHandle frame) { callbackCount.fetch_add(1); });
 
-    QTest::qWait(500);
-    QCOMPARE(callbackCount, 3);
+    QTRY_COMPARE_WITH_TIMEOUT(callbackCount.load(), 3, 1000);
+    QCOMPARE(callbackCount.load(), 3);
+    decoder.shutdown();
 }
 
 QTEST_MAIN(TestAsyncDecoder)

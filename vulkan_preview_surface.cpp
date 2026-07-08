@@ -528,6 +528,16 @@ int VulkanPreviewSurface::effectivePlaybackLookaheadFrames() const
                            : m_playbackTuning.sourceLookaheadFrames;
 }
 
+bool VulkanPreviewSurface::visibleCpuUploadFallbackEnabled() const
+{
+    return m_presenter && m_presenter->isActive();
+}
+
+bool VulkanPreviewSurface::visibleDecodeRequiresDirectVulkanPayload() const
+{
+    return !visibleCpuUploadFallbackEnabled();
+}
+
 void VulkanPreviewSurface::invalidateTranscriptOverlayCache(const QString& clipFilePath)
 {
     if (clipFilePath.trimmed().isEmpty()) {
@@ -1402,7 +1412,8 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
         const int64_t localFrame = sourceFrameForSample(clip, visualSample);
         const int64_t requestFrame = staticImageClip ? 0 : localFrame;
-        const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;
+        const bool requireDirectVulkanPayload =
+            clip.mediaType != ClipMediaType::Image && visibleDecodeRequiresDirectVulkanPayload();
         const PlaybackFrameCrossfade frameCrossfade =
             playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
                                                   m_interaction.playbackTiming);

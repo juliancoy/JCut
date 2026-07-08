@@ -21,9 +21,29 @@ struct BenchmarkTarget {
     QString sourcePath;
 };
 
+QString resolveStateMediaPath(const QString& path, const QString& mediaRoot) {
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty() || !QFileInfo(trimmed).isRelative()) {
+        return path;
+    }
+    const QString basePath = mediaRoot.trimmed().isEmpty() ? QDir::currentPath() : mediaRoot;
+    return QFileInfo(QDir(basePath).filePath(trimmed)).absoluteFilePath();
+}
+
+void resolveBenchmarkClipPaths(TimelineClip* clip, const QString& mediaRoot) {
+    if (!clip) {
+        return;
+    }
+    clip->filePath = resolveStateMediaPath(clip->filePath, mediaRoot);
+    clip->proxyPath = resolveStateMediaPath(clip->proxyPath, mediaRoot);
+    clip->audioSourcePath = resolveStateMediaPath(clip->audioSourcePath, mediaRoot);
+    clip->audioSourceOriginalPath = resolveStateMediaPath(clip->audioSourceOriginalPath, mediaRoot);
+}
+
 QHash<QString, BenchmarkTarget> collectBenchmarkTargets(const QJsonObject& state) {
     QHash<QString, BenchmarkTarget> targetsByDecodePath;
     const QJsonArray timeline = state.value(QStringLiteral("timeline")).toArray();
+    const QString mediaRoot = state.value(QStringLiteral("mediaRoot")).toString();
     for (const QJsonValue& value : timeline) {
         if (!value.isObject()) {
             continue;
@@ -32,12 +52,16 @@ QHash<QString, BenchmarkTarget> collectBenchmarkTargets(const QJsonObject& state
         if (clip.filePath.isEmpty()) {
             continue;
         }
-        const QString decodePath = interactivePreviewMediaPathForClip(clip);
+        TimelineClip resolvedClip = clip;
+        resolveBenchmarkClipPaths(&resolvedClip, mediaRoot);
+        const QString decodePath = interactivePreviewMediaPathForClip(resolvedClip);
         const QString dedupeKey = decodePath.isEmpty() ? clip.filePath : decodePath;
         if (dedupeKey.isEmpty() || targetsByDecodePath.contains(dedupeKey)) {
             continue;
         }
-        targetsByDecodePath.insert(dedupeKey, BenchmarkTarget{clip, decodePath, clip.filePath});
+        targetsByDecodePath.insert(
+            dedupeKey,
+            BenchmarkTarget{resolvedClip, decodePath, resolvedClip.filePath});
     }
     return targetsByDecodePath;
 }

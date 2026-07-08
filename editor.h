@@ -228,6 +228,8 @@ private:
     void invalidatePlaybackRangeCaches();
     void scheduleTranscriptNormalizeRangeRefresh(int delayMs = 0);
     void startTranscriptNormalizeRangeRefresh();
+    int64_t lastPlayableFrame() const;
+    int64_t playableTimelineEndSampleExclusive() const;
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
     int64_t nextPlaybackSample(int64_t currentSample,
                                int64_t deltaSamples,

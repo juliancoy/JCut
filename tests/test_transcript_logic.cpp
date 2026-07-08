@@ -117,6 +117,7 @@ private slots:
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
     void testTranscriptOverlayStyleCacheMaterialIncludesTransformFields();
     void testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry();
+    void testNonVideoClipsDoNotPersistProxyEnabled();
     void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
     void testSpeakerFramingRuntimeSpeakerDescendsFromTranscript();
     void testSpeakerFramingGapHoldPersistsTranscriptSpeaker();
@@ -1372,6 +1373,29 @@ void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGe
     QCOMPARE(loaded.transcriptOverlay.shadowOpacity, 1.0);
     QCOMPARE(loaded.transcriptOverlay.textOutlineWidth, 24.0);
     QCOMPARE(loaded.transcriptOverlay.textOutlineOpacity, 0.0);
+}
+
+void TestTranscriptLogic::testNonVideoClipsDoNotPersistProxyEnabled() {
+    TimelineClip title;
+    title.id = QStringLiteral("title-1");
+    title.label = QStringLiteral("Title");
+    title.mediaType = ClipMediaType::Title;
+    title.useProxy = true;
+    title.proxyPath = QStringLiteral("/tmp/title.proxy");
+    title.durationFrames = 120;
+
+    const QJsonObject titleJson = clipToJson(title);
+    QCOMPARE(titleJson.value(QStringLiteral("useProxy")).toBool(true), false);
+    const TimelineClip loadedTitle = clipFromJson(titleJson);
+    QCOMPARE(loadedTitle.useProxy, false);
+
+    TimelineClip video = title;
+    video.id = QStringLiteral("video-1");
+    video.filePath = QStringLiteral("/tmp/video.mp4");
+    video.mediaType = ClipMediaType::Video;
+    video.useProxy = true;
+    const QJsonObject videoJson = clipToJson(video);
+    QCOMPARE(videoJson.value(QStringLiteral("useProxy")).toBool(false), true);
 }
 
 void TestTranscriptLogic::testSpeakerFramingEnabledKeyframesOverrideGlobalFallback() {

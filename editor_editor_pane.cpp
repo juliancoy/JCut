@@ -64,7 +64,7 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
         setCurrentFrame(stepForwardFrame(m_timeline->currentFrame()));
     });
     connect(pane, &EditorPane::endClicked, this, [this]() {
-        setCurrentFrame(m_timeline ? m_timeline->totalFrames() : 0);
+        setCurrentFrame(m_timeline ? lastPlayableFrame() : 0);
     });
     connect(pane, &EditorPane::seekValueChanged, this, [this](int value) {
         if (m_ignoreSeekSignal) return;
@@ -505,7 +505,7 @@ void EditorWindow::addFileToTimeline(const QString &filePath, int64_t startFrame
 
 void EditorWindow::syncSliderRange()
 {
-    const int64_t maxFrame = m_timeline->totalFrames();
+    const int64_t maxFrame = lastPlayableFrame();
     m_seekSlider->setRange(0, static_cast<int>(qMin<int64_t>(maxFrame, INT_MAX)));
 }
 

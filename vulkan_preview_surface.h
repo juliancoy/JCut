@@ -167,6 +167,8 @@ private:
     bool hasPlaybackLookaheadBuffered(int futureFrames) const;
     bool currentPlaybackFrameReadyForStart() const;
     int effectivePlaybackLookaheadFrames() const;
+    bool visibleCpuUploadFallbackEnabled() const;
+    bool visibleDecodeRequiresDirectVulkanPayload() const;
     void registerVisibleClips();
     void requestFramesForCurrentPosition();
     void refreshVulkanFrameStatuses();
