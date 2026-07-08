@@ -424,7 +424,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             const qint64 heartbeatMs = m_lastMainThreadHeartbeatMs.load();
             const qint64 playheadMs = m_lastPlayheadAdvanceMs.load();
             const qint64 playheadAgeMs = playheadMs > 0 ? now - playheadMs : -1;
-            const bool playbackTimerActive = m_fastPlaybackActive.load();
+            const bool playbackTimerActive = m_playbackTimer.isActive();
             const bool playbackStalled = playbackTimerActive &&
                                          playheadAgeMs > 500;
             return QJsonObject{

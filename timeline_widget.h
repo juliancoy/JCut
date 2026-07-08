@@ -126,6 +126,8 @@ public:
     std::function<void(const QString&)> createProxyRequested;
     std::function<void(const QString&)> continueProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;
+    std::function<bool()> proxyPlaybackEnabled;
+    std::function<void(bool)> proxyPlaybackEnabledChanged;
     std::function<void(const QString&)> generateFaceDetectionsRequested;
     std::function<void(const QString&)> deleteFaceDetectionsRequested;
     std::function<void(const QString&)> detectRequested;

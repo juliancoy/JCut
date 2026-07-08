@@ -184,10 +184,11 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                                               ? m_clips[clipIndex].proxyPath
                                               : playbackProxyPathForClip(proxyDetectionClip);
         const bool canProxy = m_clips[clipIndex].mediaType == ClipMediaType::Video;
+        const bool proxyPlaybackIsEnabled = proxyPlaybackEnabled ? proxyPlaybackEnabled() : false;
         QMenu* proxyMenu = menu.addMenu(QStringLiteral("Proxy"));
         useProxyAction = proxyMenu->addAction(QStringLiteral("Use Proxy"));
         useProxyAction->setCheckable(true);
-        useProxyAction->setChecked(canProxy && m_clips[clipIndex].useProxy);
+        useProxyAction->setChecked(canProxy && m_clips[clipIndex].useProxy && proxyPlaybackIsEnabled);
         useProxyAction->setEnabled(canProxy);
         proxyMenu->addSeparator();
         createProxyAction = proxyMenu->addAction(
@@ -673,6 +674,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == useProxyAction) {
         if (clipIndex >= 0) {
             m_clips[clipIndex].useProxy = useProxyAction->isChecked();
+            if (useProxyAction->isChecked() && proxyPlaybackEnabledChanged) {
+                proxyPlaybackEnabledChanged(true);
+            }
             if (clipsChanged) {
                 clipsChanged();
             }

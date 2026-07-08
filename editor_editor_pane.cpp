@@ -259,6 +259,17 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
     m_timeline->continueProxyRequested = [this](const QString &clipId) { continueProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
+    m_timeline->proxyPlaybackEnabled = [this]() {
+        return m_renderUseProxiesCheckBox && m_renderUseProxiesCheckBox->isChecked();
+    };
+    m_timeline->proxyPlaybackEnabledChanged = [this](bool enabled) {
+        if (!m_renderUseProxiesCheckBox) {
+            return;
+        }
+        if (m_renderUseProxiesCheckBox->isChecked() != enabled) {
+            m_renderUseProxiesCheckBox->setChecked(enabled);
+        }
+    };
     m_timeline->generateFaceDetectionsRequested = [this](const QString& clipId) {
         if (!m_timeline || !m_speakersTab) {
             return;

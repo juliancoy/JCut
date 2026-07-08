@@ -39,6 +39,7 @@ private slots:
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
+    void testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeEnd();
 };
 
 void TestPlaybackPolicy::testClockSourceRoundTrip() {
@@ -386,15 +387,15 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
     QVERIFY2(playback.contains(QStringLiteral("m_audioEngine->seek(currentFrame)")),
              "already-running audio must seek to the transport playhead when "
              "runtime playback policy changes");
-    QVERIFY2(playback.contains(QStringLiteral("const int64_t playbackStartFrame")) &&
+    QVERIFY2(playback.contains(QStringLiteral("int64_t playbackStartFrame")) &&
                  playback.contains(QStringLiteral("m_audioEngine->start(playbackStartFrame)")) &&
                  playback.contains(QStringLiteral("m_audioEngine->warmPlaybackAudio(\n                    playbackStartFrame")),
              "playback start must use one transport-derived start frame for audio "
              "warmup and stream start");
     QVERIFY2(playback.contains(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) &&
                  playback.indexOf(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) <
-                     playback.indexOf(QStringLiteral("const int64_t playbackStartFrame")) &&
-                 playback.indexOf(QStringLiteral("const int64_t playbackStartFrame")) <
+                     playback.indexOf(QStringLiteral("int64_t playbackStartFrame")) &&
+                 playback.indexOf(QStringLiteral("int64_t playbackStartFrame")) <
                      playback.indexOf(QStringLiteral("m_audioEngine->start(playbackStartFrame)")),
              "playback start must resolve export/speech ranges before deriving "
              "the shared audio/video start frame");
@@ -454,6 +455,37 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
     QVERIFY2(!playback.contains(QStringLiteral("PlaybackClockInput{")),
              "PlaybackClockInput must use named field assignment so adding "
              "clock fields cannot silently shift audio/current-frame values");
+}
+
+void TestPlaybackPolicy::testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeEnd()
+{
+    const QString playback = readSourceFile(QStringLiteral("editor_playback.cpp"));
+    QVERIFY2(!playback.isEmpty(), "editor_playback.cpp must be readable");
+
+    const qsizetype start = playback.indexOf(QStringLiteral("void EditorWindow::setPlaybackActive"));
+    QVERIFY2(start >= 0, "setPlaybackActive must be readable");
+    const qsizetype advance = playback.indexOf(QStringLiteral("advanceFrame();"), start);
+    const qsizetype guard = playback.indexOf(QStringLiteral("if (!playbackActive())"), advance);
+    const qsizetype timerStart = playback.indexOf(QStringLiteral("m_playbackTimer.start();"), advance);
+    QVERIFY2(advance >= 0 && guard > advance && timerStart > guard,
+             "playback start must exit if initial advanceFrame() stops at range_end "
+             "before arming the timer");
+    QVERIFY2(playback.contains(QStringLiteral("playbackStartFrame >= lastPlayableFrame()")) &&
+                 playback.contains(QStringLiteral("playbackStartSample = ranges.isEmpty()\n                ? 0")),
+             "pressing Play from the last visible frame must restart at the first "
+             "playable frame instead of arming a stalled end-of-range timer");
+    QVERIFY2(playback.contains(QStringLiteral("playing == playbackActive() && (playing || !m_playbackTimer.isActive())")),
+             "stopping playback must still stop an active timer even if the "
+             "fast playback flag is already false");
+    QVERIFY2(playback.contains(QStringLiteral("!m_preview->preparePlaybackAdvance(nextFrame)")) &&
+                 playback.contains(QStringLiteral("video_frame_not_ready")) &&
+                 playback.contains(QStringLiteral("m_timelineAdvanceCarrySamples = 0.0")),
+             "playback must hold the transport when the preview cannot prepare "
+             "the next video frame instead of advancing into a missing-frame state");
+    const QString setup = readSourceFile(QStringLiteral("editor_setup.cpp"));
+    QVERIFY2(setup.contains(QStringLiteral("const bool playbackTimerActive = m_playbackTimer.isActive()")),
+             "REST /health must report the actual playback QTimer state, not "
+             "the fast playback flag");
 }
 
 QTEST_MAIN(TestPlaybackPolicy)

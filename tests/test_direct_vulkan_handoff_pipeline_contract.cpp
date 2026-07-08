@@ -24,7 +24,11 @@ private slots:
   void visibleDecodePriorityUsesTimelineDomain();
   void schedulingDiagnosticsExposeRequiredFields();
   void streamTimingDiagnosticsExposeClockDomains();
+  void streamTimingDiagnosticsUseEffectiveProxyState();
+  void timelineUseProxyMenuControlsEffectiveProxyState();
   void pipelineDiagnosticsDefaultToCompactSnapshot();
+  void latestPresentedFrameImageExposesCpuPresentedFrame();
+  void playbackReadinessRequiresExactFrames();
   void pitchPreservingAudioUsesExplicitSidecarGate();
   void noProxyHardwarePathIsPrimaryAndHoldsLateFrames();
   void overlayWorkerKeepsNewestCoalescedRequest();
@@ -1200,6 +1204,64 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
+    latestPresentedFrameImageExposesCpuPresentedFrame() {
+  const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+
+  const QString signature =
+      QStringLiteral("QImage VulkanPreviewSurface::latestPresentedFrameImageForClip");
+  const qsizetype start = surface.indexOf(signature);
+  QVERIFY2(start >= 0,
+           "Vulkan preview must implement latestPresentedFrameImageForClip");
+  const qsizetype end =
+      surface.indexOf(QStringLiteral("QVector<PreviewSurface::PipelineStageSnapshot> "
+                                     "VulkanPreviewSurface::livePipelineSnapshots"),
+                      start);
+  QVERIFY2(end > start,
+           "latestPresentedFrameImageForClip must be isolated before live pipeline snapshots");
+
+  const QString body = surface.mid(start, end - start);
+  QVERIFY2(body.contains(QStringLiteral("m_lastPresentedFrameByClip.value(clipId)")),
+           "grading and diagnostics must read the actual last presented clip frame");
+  QVERIFY2(body.contains(QStringLiteral("frame.hasCpuImage()")),
+           "latest presented image must only expose materialized CPU-backed frames");
+  QVERIFY2(body.contains(QStringLiteral("return frame.cpuImage()")),
+           "latest presented image must return the presented CPU frame image");
+  QVERIFY2(!body.contains(QStringLiteral("Q_UNUSED(clipId)")),
+           "latest presented image must not be an empty stub");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    playbackReadinessRequiresExactFrames() {
+  const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+
+  const QString prepareSignature =
+      QStringLiteral("bool VulkanPreviewSurface::preparePlaybackAdvanceSample");
+  const qsizetype prepareStart = surface.indexOf(prepareSignature);
+  const qsizetype lookaheadStart =
+      surface.indexOf(QStringLiteral("bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered"),
+                      prepareStart);
+  QVERIFY2(prepareStart >= 0 && lookaheadStart > prepareStart,
+           "preparePlaybackAdvanceSample must precede lookahead readiness");
+  const QString prepareBody = surface.mid(prepareStart, lookaheadStart - prepareStart);
+  QVERIFY2(prepareBody.contains(QStringLiteral("m_playbackPipeline->getFrame(clip.id, localFrame)")),
+           "playback advance readiness must require the exact target frame, "
+           "not a stale presentation fallback");
+  QVERIFY2(!prepareBody.contains(QStringLiteral("getPresentationFrame(clip.id, localFrame)")),
+           "playback advance readiness must not accept approximate presentation frames");
+
+  const qsizetype currentStart =
+      surface.indexOf(QStringLiteral("bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart"),
+                      lookaheadStart);
+  QVERIFY2(currentStart > lookaheadStart,
+           "current playback readiness must be present after lookahead readiness");
+  const QString lookaheadBody = surface.mid(lookaheadStart, currentStart - lookaheadStart);
+  QVERIFY2(lookaheadBody.contains(QStringLiteral("m_playbackPipeline->getFrame(clip.id, localFrame)")),
+           "playback lookahead readiness must require exact buffered frames");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
     streamTimingDiagnosticsExposeClockDomains() {
   const QString routes =
       readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
@@ -1240,6 +1302,73 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(playback.contains(QStringLiteral("m_playbackSessionStartWallMs")) &&
                playback.contains(QStringLiteral("m_playbackSessionStartTimelineSample")),
            "playback start must latch a wall/sample anchor for stream timing");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    streamTimingDiagnosticsUseEffectiveProxyState() {
+  const QString editorProfiling =
+      readSourceFile(QStringLiteral("editor_profiling.cpp"));
+  QVERIFY2(!editorProfiling.isEmpty(),
+           "editor_profiling.cpp must be readable");
+  QVERIFY2(editorProfiling.contains(QStringLiteral("effectivePreviewClip")) &&
+               editorProfiling.contains(
+                   QStringLiteral("effectivePreviewClip.useProxy = false")) &&
+               editorProfiling.contains(
+                   QStringLiteral("effectivePreviewClip.proxyPath.clear()")),
+           "stream timing diagnostics must resolve playback_media_path from "
+           "the same effective proxy state as preview playback");
+  QVERIFY2(editorProfiling.contains(
+               QStringLiteral("\"configured_playback_media_path\"")) &&
+               editorProfiling.contains(
+                   QStringLiteral("\"configured_proxy_media_path\"")) &&
+               editorProfiling.contains(
+                   QStringLiteral("\"effective_proxy_enabled\"")),
+           "stream timing diagnostics must expose configured proxy state "
+           "separately from the effective preview playback path");
+
+  const QString editorTabs = readSourceFile(QStringLiteral("editor_tabs.cpp"));
+  QVERIFY2(!editorTabs.isEmpty(), "editor_tabs.cpp must be readable");
+  QVERIFY2(editorTabs.contains(QStringLiteral("effectivePreviewClip")) &&
+               editorTabs.contains(
+                   QStringLiteral("m_renderUseProxiesCheckBox")) &&
+               editorTabs.contains(
+                   QStringLiteral("effectivePreviewClip.useProxy = false")),
+           "the properties tab must report proxy usage from the effective "
+           "preview path, not only the clip's configured proxy flag");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    timelineUseProxyMenuControlsEffectiveProxyState() {
+  const QString header = readSourceFile(QStringLiteral("timeline_widget.h"));
+  QVERIFY2(!header.isEmpty(), "timeline_widget.h must be readable");
+  QVERIFY2(header.contains(QStringLiteral("proxyPlaybackEnabled")) &&
+               header.contains(QStringLiteral("proxyPlaybackEnabledChanged")),
+           "timeline proxy menu must be wired to the global effective proxy "
+           "playback switch");
+
+  const QString menu =
+      readSourceFile(QStringLiteral("timeline_widget_context_menu.cpp"));
+  QVERIFY2(!menu.isEmpty(),
+           "timeline_widget_context_menu.cpp must be readable");
+  QVERIFY2(menu.contains(QStringLiteral("proxyPlaybackIsEnabled")) &&
+               menu.contains(QStringLiteral(
+                   "m_clips[clipIndex].useProxy && proxyPlaybackIsEnabled")),
+           "the Use Proxy menu checkmark must reflect effective proxy use, "
+           "not only the per-clip eligibility flag");
+  QVERIFY2(menu.contains(QStringLiteral("if (useProxyAction->isChecked()")) &&
+               menu.contains(QStringLiteral("proxyPlaybackEnabledChanged(true)")),
+           "selecting Use Proxy on must enable the global proxy playback "
+           "switch without turning it off for other clips when one clip is "
+           "disabled");
+
+  const QString editorPane =
+      readSourceFile(QStringLiteral("editor_editor_pane.cpp"));
+  QVERIFY2(!editorPane.isEmpty(), "editor_editor_pane.cpp must be readable");
+  QVERIFY2(editorPane.contains(QStringLiteral("m_timeline->proxyPlaybackEnabled")) &&
+               editorPane.contains(
+                   QStringLiteral("m_renderUseProxiesCheckBox->setChecked(enabled)")),
+           "editor wiring must map the timeline proxy menu to the shared "
+           "preview/export proxy checkbox");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

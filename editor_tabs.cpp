@@ -998,7 +998,14 @@ void EditorWindow::createProfileTab()
         ProfileTab::Dependencies{
             [this]() { return profilingSnapshot(); },
             [this](TimelineClip* clipOut) { return profileBenchmarkClip(clipOut); },
-            [this](const TimelineClip& clip) { return playbackMediaPathForClip(clip); },
+            [this](const TimelineClip& clip) {
+                TimelineClip effectivePreviewClip = clip;
+                if (!(m_renderUseProxiesCheckBox && m_renderUseProxiesCheckBox->isChecked())) {
+                    effectivePreviewClip.useProxy = false;
+                    effectivePreviewClip.proxyPath.clear();
+                }
+                return playbackMediaPathForClip(effectivePreviewClip);
+            },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("System")); },
             [this]() { scheduleSaveState(); }});
     m_profileTab->wire();
@@ -1986,7 +1993,14 @@ void EditorWindow::createPropertiesTab()
             [this]() -> int { return m_timeline ? m_timeline->selectedTrackIndex() : -1; },
             [this]() -> QVector<TimelineClip> { return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{}; },
             [this](const TimelineClip& clip) { return playbackProxyPathForClip(clip); },
-            [this](const TimelineClip& clip) { return playbackMediaPathForClip(clip); },
+            [this](const TimelineClip& clip) {
+                TimelineClip effectivePreviewClip = clip;
+                if (!(m_renderUseProxiesCheckBox && m_renderUseProxiesCheckBox->isChecked())) {
+                    effectivePreviewClip.useProxy = false;
+                    effectivePreviewClip.proxyPath.clear();
+                }
+                return playbackMediaPathForClip(effectivePreviewClip);
+            },
             [this](const TimelineClip& clip, const MediaProbeResult* knownProbe) { return clipFileInfoSummary(clip.filePath, knownProbe); },
             [this](const QString& path) { return clipFileInfoSummary(path); },
             [this](const TimelineClip& clip) { return defaultProxyOutputPath(clip); }});

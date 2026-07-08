@@ -4,6 +4,7 @@
 #include "playback_debug.h"
 
 #include <QDateTime>
+#include <QFileInfo>
 #include <QSet>
 #include <limits>
 #include <algorithm>
@@ -379,6 +380,21 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
                 }
             }
 
+            const bool renderUseProxyMedia =
+                m_renderUseProxiesCheckBox && m_renderUseProxiesCheckBox->isChecked();
+            TimelineClip effectivePreviewClip = clip;
+            if (!renderUseProxyMedia) {
+                effectivePreviewClip.useProxy = false;
+                effectivePreviewClip.proxyPath.clear();
+            }
+            const QString configuredProxyPath = playbackProxyPathForClip(clip);
+            const QString configuredPlaybackMediaPath = playbackMediaPathForClip(clip);
+            const QString effectivePlaybackMediaPath = playbackMediaPathForClip(effectivePreviewClip);
+            const bool effectiveProxyEnabled =
+                !configuredProxyPath.isEmpty() &&
+                QFileInfo(effectivePlaybackMediaPath).absoluteFilePath() ==
+                    QFileInfo(configuredProxyPath).absoluteFilePath();
+
             QJsonArray roles;
             if (clipHasVisuals(clip)) {
                 roles.push_back(QStringLiteral("video"));
@@ -394,7 +410,13 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
                 {QStringLiteral("clip_id"), clip.id},
                 {QStringLiteral("label"), clip.label},
                 {QStringLiteral("file_path"), clip.filePath},
-                {QStringLiteral("playback_media_path"), playbackMediaPathForClip(clip)},
+                {QStringLiteral("playback_media_path"), effectivePlaybackMediaPath},
+                {QStringLiteral("configured_playback_media_path"), configuredPlaybackMediaPath},
+                {QStringLiteral("configured_proxy_media_path"), configuredProxyPath},
+                {QStringLiteral("render_use_proxy_media"), renderUseProxyMedia},
+                {QStringLiteral("clip_use_proxy"), clip.useProxy},
+                {QStringLiteral("proxy_available"), !configuredProxyPath.isEmpty()},
+                {QStringLiteral("effective_proxy_enabled"), effectiveProxyEnabled},
                 {QStringLiteral("playback_audio_path"), playbackAudioPathForClip(clip)},
                 {QStringLiteral("track_index"), clip.trackIndex},
                 {QStringLiteral("roles"), roles},

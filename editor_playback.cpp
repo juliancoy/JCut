@@ -121,7 +121,17 @@ void EditorWindow::advanceFrame()
             qBound<int64_t>(0,
                             static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
                             lastPlayableFrame());
-        m_preview->preparePlaybackAdvance(nextFrame);
+        if (!m_preview->preparePlaybackAdvance(nextFrame)) {
+            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                          0,
+                                          0,
+                                          1,
+                                          QStringLiteral("source_unavailable"),
+                                          QStringLiteral("video_frame_not_ready"));
+            m_timelineAdvanceCarrySamples = 0.0;
+            updatePlaybackStatusOverlay();
+            return;
+        }
     }
     setCurrentPlaybackSample(nextSample, false, true);
     updateAudioDriftRetime();
@@ -1287,7 +1297,7 @@ void EditorWindow::updatePlaybackTimerInterval()
 
 void EditorWindow::setPlaybackActive(bool playing)
 {
-    if (playing == playbackActive()) {
+    if (playing == playbackActive() && (playing || !m_playbackTimer.isActive())) {
         updateTransportLabels();
         return;
     }
@@ -1328,10 +1338,19 @@ void EditorWindow::setPlaybackActive(bool playing)
         }
         playbackStartSample =
             qBound<int64_t>(0, playbackStartSample, frameToSamples(lastPlayableFrame()));
-        const int64_t playbackStartFrame = qBound<int64_t>(
+        int64_t playbackStartFrame = qBound<int64_t>(
             0,
             static_cast<int64_t>(std::floor(samplesToFramePosition(playbackStartSample))),
             lastPlayableFrame());
+        if (!m_playbackLoopEnabled && playbackStartFrame >= lastPlayableFrame()) {
+            playbackStartSample = ranges.isEmpty()
+                ? 0
+                : frameToSamples(qMax<int64_t>(0, ranges.constFirst().startFrame));
+            playbackStartFrame = qBound<int64_t>(
+                0,
+                static_cast<int64_t>(std::floor(samplesToFramePosition(playbackStartSample))),
+                lastPlayableFrame());
+        }
         m_transportTimelineSample = playbackStartSample;
         m_playbackSessionStartWallMs = m_lastTimelineAdvanceTickMs;
         m_playbackSessionStartTimelineSample = playbackStartSample;
@@ -1435,6 +1454,9 @@ void EditorWindow::setPlaybackActive(bool playing)
         }
         m_fastPlaybackActive.store(true);
         advanceFrame();
+        if (!playbackActive()) {
+            return;
+        }
         if (!m_startupReadinessFirstPlaybackTick.exchange(true)) {
             startupReadinessMark(QStringLiteral("playback.first_tick"));
         }

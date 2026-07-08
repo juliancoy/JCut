@@ -2196,7 +2196,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             ? 0
             : sourceFrameForSample(clip, targetSample);
         const bool targetDisplayable =
-            !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
+            !m_playbackPipeline->getFrame(clip.id, localFrame).isNull();
         if (!targetDisplayable) {
             if (targetIsCurrentPresentationSample) {
                 ready = false;
@@ -2236,7 +2236,7 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
             const int64_t localFrame = clip.mediaType == ClipMediaType::Image
                 ? 0
                 : sourceFrameForSample(clip, visualSample);
-            if (m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
+            if (m_playbackPipeline->getFrame(clip.id, localFrame).isNull()) {
                 return false;
             }
         }
@@ -2267,7 +2267,7 @@ bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
             ? 0
             : sourceFrameForSample(clip, visualSample);
         if (m_playbackPipeline &&
-            !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
+            !m_playbackPipeline->getFrame(clip.id, localFrame).isNull()) {
             continue;
         }
 
@@ -2342,8 +2342,15 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
 
 QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& clipId) const
 {
-    Q_UNUSED(clipId);
-    return QImage();
+    if (clipId.isEmpty()) {
+        return QImage();
+    }
+
+    const editor::FrameHandle frame = m_lastPresentedFrameByClip.value(clipId);
+    if (!frame.hasCpuImage()) {
+        return QImage();
+    }
+    return frame.cpuImage();
 }
 
 QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelineSnapshots() const
