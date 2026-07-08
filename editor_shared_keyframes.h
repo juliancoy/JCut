@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared_core.h"
+#include "transform_skip_aware_timing.h"
 
 #include <QJsonObject>
 
@@ -13,6 +14,9 @@ void normalizeClipTitleKeyframes(TimelineClip& clip);
 TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip,
+                                                                qreal timelineFramePosition,
+                                                                const PlaybackTimingContext& timing);
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
                                                                   int64_t timelineFrame,
                                                                   const QSize& outputSize = QSize());
@@ -62,11 +66,25 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
                                                                       const QVector<RenderSyncMarker>& markers,
                                                                       const QSize& outputSize = QSize(),
                                                                       QJsonObject* diagnosticsOut = nullptr);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
+                                                                      qreal timelineFramePosition,
+                                                                      const QVector<RenderSyncMarker>& markers,
+                                                                      const PlaybackTimingContext& timing,
+                                                                      const QSize& outputSize = QSize(),
+                                                                      QJsonObject* diagnosticsOut = nullptr);
 TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosition(
     const TimelineClip& clip,
     const QVector<TimelineClip>& timelineClips,
     qreal timelineFramePosition,
     const QVector<RenderSyncMarker>& markers,
+    const QSize& outputSize = QSize(),
+    QJsonObject* diagnosticsOut = nullptr);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosition(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const PlaybackTimingContext& timing,
     const QSize& outputSize = QSize(),
     QJsonObject* diagnosticsOut = nullptr);
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);

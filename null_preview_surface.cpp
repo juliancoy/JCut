@@ -1,5 +1,7 @@
 #include "null_preview_surface.h"
 
+#include "background_fill_effect.h"
+
 #include <QFontMetrics>
 #include <QJsonArray>
 #include <QPainter>
@@ -56,6 +58,7 @@ void NullPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips) { 
 void NullPreviewSurface::setTimelineTracks(const QVector<TimelineTrack>& tracks) { m_tracks = tracks; requestRepaint(); }
 void NullPreviewSurface::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) { m_markers = markers; }
 void NullPreviewSurface::setExportRanges(const QVector<ExportRangeSegment>& ranges) { m_exportRanges = ranges; }
+void NullPreviewSurface::setPlaybackTimingContext(const PlaybackTimingContext& timing) { m_playbackTiming = timing; }
 void NullPreviewSurface::setUseProxyMedia(bool useProxyMedia) { m_useProxyMedia = useProxyMedia; }
 void NullPreviewSurface::invalidateTranscriptOverlayCache(const QString&) {}
 void NullPreviewSurface::beginBulkUpdate() { ++m_bulkUpdateDepth; }

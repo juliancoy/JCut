@@ -176,6 +176,16 @@ SpeakerProfile speakerProfileFromJson(const QString& speakerId, const QJsonObjec
     if (profile.avatarPath.isEmpty()) {
         profile.avatarPath = profileObj.value(QStringLiteral("avatarPath")).toString().trimmed();
     }
+    profile.logoPath = profileObj.value(QStringLiteral("logo_path")).toString().trimmed();
+    if (profile.logoPath.isEmpty()) {
+        profile.logoPath = profileObj.value(QStringLiteral("logoPath")).toString().trimmed();
+    }
+    if (profile.logoPath.isEmpty()) {
+        profile.logoPath = profileObj.value(QStringLiteral("logo")).toString().trimmed();
+    }
+    profile.primaryColor = QColor(profileObj.value(QStringLiteral("primary_color")).toString().trimmed());
+    profile.secondaryColor = QColor(profileObj.value(QStringLiteral("secondary_color")).toString().trimmed());
+    profile.accentColor = QColor(profileObj.value(QStringLiteral("accent_color")).toString().trimmed());
     return profile;
 }
 
@@ -186,6 +196,7 @@ QJsonObject speakerProfileToJson(const SpeakerProfile& profile, const QJsonObjec
     const QString organization = profile.organization.trimmed();
     const QString description = profile.description.trimmed();
     const QString avatarPath = profile.avatarPath.trimmed();
+    const QString logoPath = profile.logoPath.trimmed();
 
     if (!name.isEmpty()) {
         out[QStringLiteral("name")] = name;
@@ -199,6 +210,18 @@ QJsonObject speakerProfileToJson(const SpeakerProfile& profile, const QJsonObjec
     }
     if (!avatarPath.isEmpty()) {
         out[QStringLiteral("avatar_path")] = avatarPath;
+    }
+    if (!logoPath.isEmpty()) {
+        out[QStringLiteral("logo_path")] = logoPath;
+    }
+    if (profile.primaryColor.isValid()) {
+        out[QStringLiteral("primary_color")] = profile.primaryColor.name(QColor::HexRgb);
+    }
+    if (profile.secondaryColor.isValid()) {
+        out[QStringLiteral("secondary_color")] = profile.secondaryColor.name(QColor::HexRgb);
+    }
+    if (profile.accentColor.isValid()) {
+        out[QStringLiteral("accent_color")] = profile.accentColor.name(QColor::HexRgb);
     }
     return out;
 }

@@ -9,6 +9,7 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
@@ -100,6 +101,12 @@ void SpeakersTab::wire()
                 this,
                 &SpeakersTab::onSpeakerCreateTitleClipsClicked);
     }
+    if (m_widgets.speakerOverlayCreateTitleClipsButton) {
+        connect(m_widgets.speakerOverlayCreateTitleClipsButton,
+                &QPushButton::clicked,
+                this,
+                &SpeakersTab::onSpeakerCreateTitleClipsClicked);
+    }
     if (m_widgets.speakerSectionMinimumWordsSpin) {
         connect(m_widgets.speakerSectionMinimumWordsSpin,
                 qOverload<int>(&QSpinBox::valueChanged),
@@ -147,6 +154,10 @@ void SpeakersTab::wire()
         m_widgets.speakerSectionsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
         m_widgets.speakerSectionsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         m_widgets.speakerSectionsTable->setMaximumHeight(360);
+        m_widgets.speakerSectionsTable->setEditTriggers(
+            QAbstractItemView::DoubleClicked |
+            QAbstractItemView::EditKeyPressed |
+            QAbstractItemView::SelectedClicked);
         m_widgets.speakerSectionsTable->setMouseTracking(true);
         m_widgets.speakerSectionsTable->viewport()->setMouseTracking(true);
         m_widgets.speakerSectionsTable->viewport()->installEventFilter(this);
@@ -275,22 +286,6 @@ void SpeakersTab::wire()
                     if (m_transcriptSession.hasObjectDocument()) {
                         refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
                     }
-                });
-        connect(m_widgets.speakerSectionsTable,
-                &QTableWidget::cellDoubleClicked,
-                this,
-                [this](int row, int column) {
-                    if (column == SpeakerSectionIndexColumn) {
-                        return;
-                    }
-                    QTableWidgetItem* item =
-                        m_widgets.speakerSectionsTable
-                            ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
-                            : nullptr;
-                    if (!item || item->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
-                        return;
-                    }
-                    openSpeakerSectionOptionsForRow(row);
                 });
     }
     if (m_widgets.speakerFaceDetectionsTable) {
@@ -558,6 +553,46 @@ void SpeakersTab::wire()
             }
         });
     }
+    auto connectSelectedSpeakerProfileEdit =
+        [this](QLineEdit* edit, const QString& fieldKey, const QString& tooltip, bool validateColor) {
+            if (!edit) {
+                return;
+            }
+            edit->setToolTip(tooltip);
+            connect(edit, &QLineEdit::editingFinished, this, [this, edit, fieldKey, validateColor]() {
+                if (m_updating || !activeCutMutable() || !edit) {
+                    return;
+                }
+                QString value = edit->text().trimmed();
+                if (validateColor && !value.isEmpty()) {
+                    const QColor color(value);
+                    if (!color.isValid()) {
+                        updateSelectedSpeakerPanel();
+                        return;
+                    }
+                    value = color.name(QColor::HexRgb);
+                }
+                if (!saveSelectedSpeakerProfileField(fieldKey, value)) {
+                    updateSelectedSpeakerPanel();
+                }
+            });
+        };
+    connectSelectedSpeakerProfileEdit(m_widgets.selectedSpeakerLogoPathEdit,
+                                      QString(kTranscriptSpeakerLogoPathKey),
+                                      QStringLiteral("Logo image path used inside generated speaking-time titles."),
+                                      false);
+    connectSelectedSpeakerProfileEdit(m_widgets.selectedSpeakerPrimaryColorEdit,
+                                      QString(kTranscriptSpeakerPrimaryColorKey),
+                                      QStringLiteral("Primary title color, usually used for speaker title text."),
+                                      true);
+    connectSelectedSpeakerProfileEdit(m_widgets.selectedSpeakerSecondaryColorEdit,
+                                      QString(kTranscriptSpeakerSecondaryColorKey),
+                                      QStringLiteral("Secondary title color, usually used for the title backing plate."),
+                                      true);
+    connectSelectedSpeakerProfileEdit(m_widgets.selectedSpeakerAccentColorEdit,
+                                      QString(kTranscriptSpeakerAccentColorKey),
+                                      QStringLiteral("Accent title color, usually used for borders and highlights."),
+                                      true);
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
             QStringLiteral("Mine transcript text for speaker profile names only; organizations stay in the Organization field."));

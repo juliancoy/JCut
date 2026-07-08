@@ -30,12 +30,14 @@ public:
     // process-wide AVBufferRef*. When provided, initHardwareAccel() borrows a
     // reference instead of calling av_hwdevice_ctx_create().
     explicit DecoderContext(const QString& path,
-                            const QHash<int, AVBufferRef*>* sharedHwDevices = nullptr);
+                            const QHash<int, AVBufferRef*>* sharedHwDevices = nullptr,
+                            bool forceSoftwareDecode = false);
     ~DecoderContext();
 
     bool initialize();
     void shutdown();
     void setAllowHardwareFrameMaterialization(bool allow);
+    void setPreferHardwareFrames(bool prefer);
 
     FrameHandle decodeFrame(int64_t frameNumber);
     QVector<FrameHandle> decodeThroughFrame(int64_t targetFrame);
@@ -97,7 +99,9 @@ private:
     bool m_loggedSourceFormat = false;
     bool m_reportedAlphaMismatch = false;
     bool m_allowHardwareFrameMaterialization = false;
+    bool m_preferHardwareFrames = false;
     bool m_loggedAlphaProbe = false;
+    bool m_forceSoftwareDecode = false;
 
     // Optional pointer into AsyncDecoder's shared device map (not owned).
     const QHash<int, AVBufferRef*>* m_sharedHwDevices = nullptr;

@@ -1,5 +1,7 @@
 #include <QtTest/QtTest>
 
+#include "../editor_document_render_bridge.h"
+#include "../editor_shared_render_sync.h"
 #include "../standalone_preview_renderer.h"
 
 #include <QTemporaryDir>
@@ -11,6 +13,7 @@ class TestImGuiStandaloneRender : public QObject {
 
 private slots:
     void testRenderPreviewFrameDecodesImageClip();
+    void testLegacyClipWithoutMediaKindIsVisual();
 };
 
 void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
@@ -60,6 +63,26 @@ void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
         result.image.bytes[offset + 1] > 0 ||
         result.image.bytes[offset + 2] > 0;
     QVERIFY(nonBlack);
+}
+
+void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    document.clips.push_back({1, 1, "clip", 0, 30, true, "/tmp/example.mp4"});
+
+    const jcut::render::TimelineRenderData timelineData =
+        jcut::render::buildTimelineRenderData(document);
+
+    QCOMPARE(timelineData.clips.size(), 1);
+    QCOMPARE(timelineData.clips.front().mediaType, ClipMediaType::Video);
+    QVERIFY(timelineData.clips.front().videoEnabled);
+    QVERIFY(timelineData.clips.front().sourceDurationFrames > 0);
+
+    const RenderFrameClock clock = renderFrameClockForTimelinePosition(12.0);
+    const ClipFrameMapping mapping =
+        clipFrameMappingForClock(timelineData.clips.front(), clock, {});
+    QVERIFY(mapping.sourceFrame > 0);
 }
 
 QTEST_MAIN(TestImGuiStandaloneRender)

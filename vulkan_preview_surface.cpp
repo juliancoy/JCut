@@ -1,4 +1,5 @@
 #include "vulkan_preview_surface.h"
+#include "background_fill_effect.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
@@ -468,6 +469,13 @@ void VulkanPreviewSurface::setExportRanges(const QVector<ExportRangeSegment>& ra
     if (m_cache) {
         m_cache->setExportRanges(ranges);
     }
+}
+
+void VulkanPreviewSurface::setPlaybackTimingContext(const PlaybackTimingContext& timing)
+{
+    m_interaction.playbackTiming = timing;
+    requestFramesForCurrentPosition();
+    requestNativeUpdate();
 }
 
 void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
@@ -1195,17 +1203,26 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     if (m_bulkUpdating) {
         return;
     }
+    const qreal visualFramePosition =
+        playbackVisualTimelineFramePosition(m_interaction.currentFramePosition,
+                                            m_interaction.playbackTiming);
+    const int64_t visualSample = framePositionToSamples(visualFramePosition);
 
     int activeDecodableClipCount = 0;
     bool hasActiveDecodableClip = false;
     for (const TimelineClip& clip : m_interaction.clips) {
+        if (clip.clipRole == ClipRole::MaskMatte &&
+            clip.locked &&
+            clip.sourceTransformLocked) {
+            continue;
+        }
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (visualClipActiveAtSample(clip,
                                      m_interaction.tracks,
-                                     m_interaction.currentSample,
-                                     m_interaction.currentFramePosition,
+                                     visualSample,
+                                     visualFramePosition,
                                      m_bypassGrading)) {
             hasActiveDecodableClip = true;
             ++activeDecodableClipCount;
@@ -1260,14 +1277,32 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             }
             if (!visualClipActiveAtSample(clip,
                                           m_interaction.tracks,
-                                          m_interaction.currentSample,
-                                          m_interaction.currentFramePosition,
+                                          visualSample,
+                                          visualFramePosition,
                                           m_bypassGrading)) {
                 continue;
             }
-            const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+            const int64_t localFrame = sourceFrameForSample(clip, visualSample);
             const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
             const int64_t requestFrame = staticImageClip ? 0 : localFrame;
+            const PlaybackFrameCrossfade frameCrossfade =
+                playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                                      m_interaction.playbackTiming);
+            if (frameCrossfade.active) {
+                const int64_t secondaryTimelineFrame =
+                    qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame);
+                const int64_t secondarySample = frameToSamples(secondaryTimelineFrame);
+                if (visualClipActiveAtSample(clip,
+                                             m_interaction.tracks,
+                                             secondarySample,
+                                             static_cast<qreal>(secondaryTimelineFrame),
+                                             m_bypassGrading)) {
+                    const int64_t secondaryFrame = staticImageClip
+                        ? 0
+                        : sourceFrameForSample(clip, secondarySample);
+                    readyCount += m_playbackPipeline->isFrameBuffered(clip.id, secondaryFrame) ? 1 : 0;
+                }
+            }
             const bool exactBuffered = m_playbackPipeline->isFrameBuffered(clip.id, requestFrame) ||
                                        (staticImageClip &&
                                         !m_cache->getCachedFrame(clip.id, requestFrame).isNull());
@@ -1296,7 +1331,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             if (requestWindow) {
                 ++m_visibleRequestDispatched;
                 m_playbackPipeline->requestFramesForSample(
-                    m_interaction.currentSample,
+                    visualSample,
                     [this]() {
                         if (!m_pipelineOwner) {
                             return;
@@ -1308,6 +1343,24 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                             },
                             Qt::QueuedConnection);
                     });
+                const PlaybackFrameCrossfade frameCrossfade =
+                    playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                                          m_interaction.playbackTiming);
+                if (frameCrossfade.active) {
+                    m_playbackPipeline->requestFramesForSample(
+                        frameToSamples(qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame)),
+                        [this]() {
+                            if (!m_pipelineOwner) {
+                                return;
+                            }
+                            QMetaObject::invokeMethod(
+                                m_pipelineOwner.get(),
+                                [this]() {
+                                    queueFrameStatusRefresh(false);
+                                },
+                                Qt::QueuedConnection);
+                        });
+                }
             } else {
                 ++m_visibleRequestBlocked;
                 m_lastVisibleRequestDecision = QStringLiteral("playback_pipeline_displayable_backlog");
@@ -1340,16 +1393,63 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
         if (!visualClipActiveAtSample(clip,
                                       m_interaction.tracks,
-                                      m_interaction.currentSample,
-                                      m_interaction.currentFramePosition,
+                                      visualSample,
+                                      visualFramePosition,
                                       m_bypassGrading)) {
             continue;
         }
 
         const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
-        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t localFrame = sourceFrameForSample(clip, visualSample);
         const int64_t requestFrame = staticImageClip ? 0 : localFrame;
         const bool requireDirectVulkanPayload = clip.mediaType != ClipMediaType::Image;
+        const PlaybackFrameCrossfade frameCrossfade =
+            playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                                  m_interaction.playbackTiming);
+        if (frameCrossfade.active) {
+            const int64_t secondaryTimelineFrame =
+                qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame);
+            const int64_t secondarySample = frameToSamples(secondaryTimelineFrame);
+            if (visualClipActiveAtSample(clip,
+                                         m_interaction.tracks,
+                                         secondarySample,
+                                         static_cast<qreal>(secondaryTimelineFrame),
+                                         m_bypassGrading)) {
+                const int64_t secondaryFrame = staticImageClip
+                    ? 0
+                    : sourceFrameForSample(clip, secondarySample);
+                const bool secondaryDisplayableCached =
+                    m_cache->hasDisplayableFrameForPreview(clip.id,
+                                                           secondaryFrame,
+                                                           m_interaction.playing,
+                                                           true,
+                                                           requireDirectVulkanPayload);
+                if (!secondaryDisplayableCached &&
+                    !m_cache->isVisibleRequestPending(clip.id, secondaryFrame)) {
+                    const QString secondaryClipId = clip.id;
+                    m_cache->requestFrame(
+                        clip.id,
+                        secondaryFrame,
+                        [this, secondaryClipId, secondaryFrame](FrameHandle frame) {
+                            Q_UNUSED(frame);
+                            if (!m_pipelineOwner) {
+                                return;
+                            }
+                            QMetaObject::invokeMethod(
+                                m_pipelineOwner.get(),
+                                [this, secondaryClipId, secondaryFrame]() {
+                                    if (m_interaction.playing &&
+                                        !loadedFrameAffectsCurrentView(secondaryClipId, secondaryFrame)) {
+                                        return;
+                                    }
+                                    queueFrameStatusRefresh(false);
+                                },
+                                Qt::QueuedConnection);
+                        },
+                        requireDirectVulkanPayload);
+                }
+            }
+        }
         const bool displayableCached = m_cache->hasDisplayableFrameForPreview(
             clip.id,
             requestFrame,
@@ -1458,6 +1558,10 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
     }
 
     const int lookaheadFrames = qMax(0, effectivePlaybackLookaheadFrames());
+    const qreal visualFramePosition =
+        playbackVisualTimelineFramePosition(m_interaction.currentFramePosition,
+                                            m_interaction.playbackTiming);
+    const int64_t visualSample = framePositionToSamples(visualFramePosition);
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.id != clipId ||
             !directVulkanPreviewSupportsClip(clip)) {
@@ -1465,16 +1569,36 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
         }
         if (!visualClipActiveAtSample(clip,
                                       m_interaction.tracks,
-                                      m_interaction.currentSample,
-                                      m_interaction.currentFramePosition,
+                                      visualSample,
+                                      visualFramePosition,
                                       m_bypassGrading)) {
             continue;
         }
         const int64_t localFrame = clip.mediaType == ClipMediaType::Image
             ? 0
-            : sourceFrameForSample(clip, m_interaction.currentSample);
+            : sourceFrameForSample(clip, visualSample);
         if (frame == localFrame) {
             return true;
+        }
+        const PlaybackFrameCrossfade frameCrossfade =
+            playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                                  m_interaction.playbackTiming);
+        if (frameCrossfade.active) {
+            const int64_t secondaryTimelineFrame =
+                qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame);
+            const int64_t secondarySample = frameToSamples(secondaryTimelineFrame);
+            if (visualClipActiveAtSample(clip,
+                                         m_interaction.tracks,
+                                         secondarySample,
+                                         static_cast<qreal>(secondaryTimelineFrame),
+                                         m_bypassGrading)) {
+                const int64_t secondaryFrame = clip.mediaType == ClipMediaType::Image
+                    ? 0
+                    : sourceFrameForSample(clip, secondarySample);
+                if (frame == secondaryFrame) {
+                    return true;
+                }
+            }
         }
         if (m_interaction.playing &&
             frame > localFrame &&
@@ -1532,6 +1656,25 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     QElapsedTimer refreshTimer;
     refreshTimer.start();
     QVector<VulkanPreviewClipFrameStatus> statuses;
+    const qreal visualFramePosition =
+        playbackVisualTimelineFramePosition(m_interaction.currentFramePosition,
+                                            m_interaction.playbackTiming);
+    const qreal transformFramePosition = m_interaction.currentFramePosition;
+    const int64_t visualSample = framePositionToSamples(visualFramePosition);
+    QSet<QString> maskMarkerSourceIds;
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (clip.clipRole == ClipRole::MaskMatte &&
+            clip.locked &&
+            clip.sourceTransformLocked &&
+            clip.startFrame <= visualFramePosition &&
+            visualFramePosition < clip.startFrame + clip.durationFrames) {
+            const QString sourceId = clip.linkedSourceClipId.trimmed();
+            if (!sourceId.isEmpty()) {
+                maskMarkerSourceIds.insert(sourceId);
+            }
+        }
+    }
+    QHash<QString, VulkanPreviewClipFrameStatus> maskForegroundStatusBySourceId;
     int exactCount = 0;
     int approxCount = 0;
     int missingCount = 0;
@@ -1541,20 +1684,43 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     qint64 correctionsUnavailableCount = 0;
 
     for (const TimelineClip& clip : m_interaction.clips) {
+        if (clip.clipRole == ClipRole::MaskMatte &&
+            clip.locked &&
+            clip.sourceTransformLocked) {
+            continue;
+        }
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,
                                       m_interaction.tracks,
-                                      m_interaction.currentSample,
-                                      m_interaction.currentFramePosition,
+                                      visualSample,
+                                      visualFramePosition,
                                       m_bypassGrading)) {
             continue;
         }
 
-        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t localFrame = sourceFrameForSample(clip, visualSample);
         const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
         const int64_t requestFrame = staticImageClip ? 0 : localFrame;
+        const PlaybackFrameCrossfade frameCrossfade =
+            playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                                  m_interaction.playbackTiming);
+        const int64_t secondaryTimelineFrame =
+            frameCrossfade.active ? qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame) : -1;
+        const int64_t secondarySample =
+            secondaryTimelineFrame >= 0 ? frameToSamples(secondaryTimelineFrame) : -1;
+        const bool secondaryClipActive =
+            frameCrossfade.active &&
+            secondarySample >= 0 &&
+            visualClipActiveAtSample(clip,
+                                     m_interaction.tracks,
+                                     secondarySample,
+                                     static_cast<qreal>(secondaryTimelineFrame),
+                                     m_bypassGrading);
+        const int64_t secondaryRequestFrame = secondaryClipActive
+            ? (staticImageClip ? 0 : sourceFrameForSample(clip, secondarySample))
+            : -1;
         const int64_t baseMaxStaleFrameDelta =
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
         const int64_t maxStaleFrameDelta =
@@ -1608,6 +1774,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.frameSelection = frameSelection.selection;
         status.staleFrameRejected = selectedTooStale;
         status.requestedSourceFrame = requestFrame;
+        status.visualTimelineFramePosition = visualFramePosition;
         status.active = true;
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
         status.gradingBypassed = m_bypassGrading;
@@ -1615,11 +1782,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.transform = evaluateClipRenderTransformWithSourceLockAtPosition(
             clip,
             m_interaction.clips,
-            m_interaction.currentFramePosition,
+            transformFramePosition,
             m_interaction.renderSyncMarkers,
+            m_interaction.playbackTiming,
             m_interaction.outputSize);
         status.speakerFramingEnabled =
-            evaluateClipSpeakerFramingEnabledAtPosition(clip, m_interaction.currentFramePosition);
+            evaluateClipSpeakerFramingEnabledAtPosition(clip, transformFramePosition);
         status.speakerFramingDynamic = status.speakerFramingEnabled && clip.speakerFramingKeyframes.isEmpty();
         status.speakerFramingKeyframeCount = clip.speakerFramingKeyframes.size();
         status.speakerFramingTargetKeyframeCount = clip.speakerFramingTargetKeyframes.size();
@@ -1630,12 +1798,16 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.speakerFramingCenterSmoothingStrength = clip.speakerFramingCenterSmoothingStrength;
         status.speakerFramingZoomSmoothingStrength = clip.speakerFramingZoomSmoothingStrength;
         const TimelineClip::TransformKeyframe framingTarget =
-            evaluateClipSpeakerFramingTargetAtPosition(clip, m_interaction.currentFramePosition);
+            evaluateClipSpeakerFramingTargetAtPosition(clip, transformFramePosition);
         status.speakerFramingTargetX = framingTarget.translationX;
         status.speakerFramingTargetY = framingTarget.translationY;
         status.speakerFramingTargetBox = framingTarget.scaleX;
         EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-            clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
+            clip,
+            m_interaction.tracks,
+            visualFramePosition,
+            m_interaction.renderSyncMarkers,
+            m_interaction.playbackTiming);
         if (m_bypassGrading) {
             effects.grading = TimelineClip::GradingKeyframe{};
         }
@@ -1693,12 +1865,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
                 (generatedMaskMatte || clip.maskShowOnly || clip.maskGradeEnabled ||
                  clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
-            const bool maskFrameMatchesPresentedFrame =
-                staticImageClip ||
-                status.exact ||
-                status.presentedSourceFrame == requestFrame;
-            if (gpuMaskEnabled && maskFrameMatchesPresentedFrame) {
-                const QImage mask = rawClipMaskImage(clip, requestFrame);
+            const int64_t maskSourceFrame =
+                staticImageClip ? 0 : qMax<int64_t>(0, status.presentedSourceFrame);
+            if (gpuMaskEnabled && maskSourceFrame >= 0) {
+                const QImage mask = rawClipMaskImage(clip, maskSourceFrame);
                 if (!mask.isNull()) {
                     status.maskImage = mask;
                     status.maskTextureEnabled = true;
@@ -1731,6 +1901,36 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             approxCount += status.exact ? 0 : 1;
             hardwareCount += status.hardwareFrame ? 1 : 0;
             cpuCount += status.cpuImage ? 1 : 0;
+            if (secondaryClipActive && secondaryRequestFrame >= 0) {
+                FrameHandle secondaryFrame = usePlaybackPipeline
+                    ? m_playbackPipeline->getPresentationFrame(clip.id, secondaryRequestFrame)
+                    : m_cache->getBestCachedFrame(clip.id, secondaryRequestFrame);
+                if (!staticImageClip &&
+                    m_interaction.playing &&
+                    editor::previewFrameIsTooStaleForPlayback(
+                        secondaryFrame, secondaryRequestFrame, maxHeldFrameDelta)) {
+                    secondaryFrame = FrameHandle();
+                }
+                const bool secondaryDrawable =
+                    !secondaryFrame.isNull() &&
+                    (secondaryFrame.hasHardwareFrame() ||
+                     secondaryFrame.hasGpuTexture() ||
+                     secondaryFrame.hasCpuImage());
+                if (secondaryDrawable) {
+                    status.frameCrossfadeActive = true;
+                    status.frameCrossfadeTimelineFrame = secondaryTimelineFrame;
+                    status.frameCrossfadeRequestedSourceFrame = secondaryRequestFrame;
+                    status.frameCrossfadePresentedSourceFrame = secondaryFrame.frameNumber();
+                    status.frameCrossfadeOpacity =
+                        qBound(0.0f, frameCrossfade.secondaryOpacity, 1.0f);
+                    status.frameCrossfadeFrame = secondaryFrame;
+                    status.frameCrossfadeFrameSize = secondaryFrame.size();
+                    maxFrameLag = qMax(
+                        maxFrameLag,
+                        qAbs(status.frameCrossfadeRequestedSourceFrame -
+                             status.frameCrossfadePresentedSourceFrame));
+                }
+            }
         } else {
             if (!m_cache) {
                 status.missingReason = QStringLiteral("cache_unavailable");
@@ -1746,7 +1946,55 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             status.decodePath = QStringLiteral("missing");
             ++missingCount;
         }
+        if (status.maskTextureEnabled &&
+            status.maskForegroundLayerEnabled &&
+            maskMarkerSourceIds.contains(clip.id)) {
+            VulkanPreviewClipFrameStatus foregroundStatus = status;
+            foregroundStatus.maskClipSource = true;
+            foregroundStatus.maskShowOnly = false;
+            foregroundStatus.maskForegroundLayerEnabled = false;
+            foregroundStatus.maskOpacity = 1.0;
+            maskForegroundStatusBySourceId.insert(clip.id, foregroundStatus);
+            status.maskForegroundLayerEnabled = false;
+            status.maskGradeEnabled = false;
+        }
         statuses.push_back(status);
+    }
+
+    if (!maskForegroundStatusBySourceId.isEmpty()) {
+        QHash<QString, VulkanPreviewClipFrameStatus> statusByClipId;
+        for (const VulkanPreviewClipFrameStatus& status : std::as_const(statuses)) {
+            statusByClipId.insert(status.clipId, status);
+        }
+        QVector<VulkanPreviewClipFrameStatus> orderedStatuses;
+        orderedStatuses.reserve(statuses.size() + maskForegroundStatusBySourceId.size());
+        QSet<QString> emittedClipIds;
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (clip.clipRole == ClipRole::MaskMatte &&
+                clip.locked &&
+                clip.sourceTransformLocked) {
+                const QString sourceId = clip.linkedSourceClipId.trimmed();
+                if (maskForegroundStatusBySourceId.contains(sourceId) &&
+                    clip.startFrame <= visualFramePosition &&
+                    visualFramePosition < clip.startFrame + clip.durationFrames) {
+                    VulkanPreviewClipFrameStatus markerStatus = maskForegroundStatusBySourceId.value(sourceId);
+                    markerStatus.clipId = clip.id;
+                    markerStatus.label = clip.label;
+                    orderedStatuses.push_back(markerStatus);
+                }
+                continue;
+            }
+            if (statusByClipId.contains(clip.id)) {
+                orderedStatuses.push_back(statusByClipId.value(clip.id));
+                emittedClipIds.insert(clip.id);
+            }
+        }
+        for (const VulkanPreviewClipFrameStatus& status : std::as_const(statuses)) {
+            if (!emittedClipIds.contains(status.clipId)) {
+                orderedStatuses.push_back(status);
+            }
+        }
+        statuses = orderedStatuses;
     }
 
     editor::accumulatePlaybackStageMetric(&m_cacheLookupStageMetric,
@@ -1885,6 +2133,13 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     m_lastFrameStatusRefreshMs = refreshTimer.elapsed();
     m_maxFrameStatusRefreshMs = qMax(m_maxFrameStatusRefreshMs, m_lastFrameStatusRefreshMs);
     ++m_frameStatusRefreshCount;
+    if (!m_interaction.playing &&
+        missingCount > 0 &&
+        !statuses.isEmpty() &&
+        m_cache &&
+        m_cache->pendingVisibleRequestCount() == 0) {
+        queueFrameStatusRefresh(true);
+    }
     if (m_interaction.playing && m_lastFrameStatusRefreshMs >= 16) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - m_lastFrameStatusRefreshWarnAtMs >= 1000) {
@@ -1953,20 +2208,23 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
     for (int offset = 0; offset <= futureFrames; ++offset) {
         const int64_t samplePosition = m_interaction.currentSample + frameToSamples(offset);
         const qreal framePosition = samplesToFramePosition(samplePosition);
+        const qreal visualFramePosition =
+            playbackVisualTimelineFramePosition(framePosition, m_interaction.playbackTiming);
+        const int64_t visualSample = framePositionToSamples(visualFramePosition);
         for (const TimelineClip& clip : m_interaction.clips) {
             if (!directVulkanPreviewSupportsClip(clip)) {
                 continue;
             }
             if (!visualClipActiveAtSample(clip,
                                           m_interaction.tracks,
-                                          samplePosition,
-                                          framePosition,
+                                          visualSample,
+                                          visualFramePosition,
                                           m_bypassGrading)) {
                 continue;
             }
             const int64_t localFrame = clip.mediaType == ClipMediaType::Image
                 ? 0
-                : sourceFrameForSample(clip, samplePosition);
+                : sourceFrameForSample(clip, visualSample);
             if (m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
                 return false;
             }
@@ -1978,21 +2236,25 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
 
 bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
 {
+    const qreal visualFramePosition =
+        playbackVisualTimelineFramePosition(m_interaction.currentFramePosition,
+                                            m_interaction.playbackTiming);
+    const int64_t visualSample = framePositionToSamples(visualFramePosition);
     for (const TimelineClip& clip : m_interaction.clips) {
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
         if (!visualClipActiveAtSample(clip,
                                       m_interaction.tracks,
-                                      m_interaction.currentSample,
-                                      m_interaction.currentFramePosition,
+                                      visualSample,
+                                      visualFramePosition,
                                       m_bypassGrading)) {
             continue;
         }
 
         const int64_t localFrame = clip.mediaType == ClipMediaType::Image
             ? 0
-            : sourceFrameForSample(clip, m_interaction.currentSample);
+            : sourceFrameForSample(clip, visualSample);
         if (m_playbackPipeline &&
             !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
             continue;

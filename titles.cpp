@@ -35,6 +35,10 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
     result.bold = kf.bold;
     result.italic = kf.italic;
     result.color = kf.color;
+    result.logoPath = kf.logoPath;
+    result.textMaterialStyle = kf.textMaterialStyle;
+    result.textPatternImagePath = kf.textPatternImagePath;
+    result.textPatternScale = kf.textPatternScale;
     result.dropShadowEnabled = kf.dropShadowEnabled;
     result.dropShadowColor = kf.dropShadowColor;
     result.dropShadowOpacity = kf.dropShadowOpacity;
@@ -44,11 +48,24 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
     result.windowColor = kf.windowColor;
     result.windowOpacity = kf.windowOpacity;
     result.windowPadding = kf.windowPadding;
+    result.windowWidth = kf.windowWidth;
     result.windowFrameEnabled = kf.windowFrameEnabled;
     result.windowFrameColor = kf.windowFrameColor;
     result.windowFrameOpacity = kf.windowFrameOpacity;
     result.windowFrameWidth = kf.windowFrameWidth;
     result.windowFrameGap = kf.windowFrameGap;
+    result.windowFrameMaterialStyle = kf.windowFrameMaterialStyle;
+    result.windowFramePatternImagePath = kf.windowFramePatternImagePath;
+    result.windowFramePatternScale = kf.windowFramePatternScale;
+    result.vulkan3DEnabled = kf.vulkan3DEnabled;
+    result.vulkan3DExtrudeEnabled = kf.vulkan3DExtrudeEnabled;
+    result.vulkan3DExtrudeDepth = kf.vulkan3DExtrudeDepth;
+    result.vulkan3DBevelScale = kf.vulkan3DBevelScale;
+    result.vulkan3DYawDegrees = kf.vulkan3DYawDegrees;
+    result.vulkan3DPitchDegrees = kf.vulkan3DPitchDegrees;
+    result.vulkan3DRollDegrees = kf.vulkan3DRollDegrees;
+    result.vulkan3DDepth = kf.vulkan3DDepth;
+    result.vulkan3DScale = kf.vulkan3DScale;
     result.valid = true;
 
     // Linear interpolation of numeric properties between keyframes.
@@ -66,6 +83,18 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
             result.y = kf.translationY + (next.translationY - kf.translationY) * t;
             result.fontSize = kf.fontSize + (next.fontSize - kf.fontSize) * t;
             result.opacity = kf.opacity + (next.opacity - kf.opacity) * t;
+            result.windowWidth = kf.windowWidth + (next.windowWidth - kf.windowWidth) * t;
+            result.vulkan3DEnabled = kf.vulkan3DEnabled || next.vulkan3DEnabled;
+            result.vulkan3DExtrudeEnabled = kf.vulkan3DExtrudeEnabled || next.vulkan3DExtrudeEnabled;
+            result.vulkan3DExtrudeDepth = kf.vulkan3DExtrudeDepth + (next.vulkan3DExtrudeDepth - kf.vulkan3DExtrudeDepth) * t;
+            result.vulkan3DBevelScale = kf.vulkan3DBevelScale + (next.vulkan3DBevelScale - kf.vulkan3DBevelScale) * t;
+            result.vulkan3DYawDegrees = kf.vulkan3DYawDegrees + (next.vulkan3DYawDegrees - kf.vulkan3DYawDegrees) * t;
+            result.vulkan3DPitchDegrees = kf.vulkan3DPitchDegrees + (next.vulkan3DPitchDegrees - kf.vulkan3DPitchDegrees) * t;
+            result.vulkan3DRollDegrees = kf.vulkan3DRollDegrees + (next.vulkan3DRollDegrees - kf.vulkan3DRollDegrees) * t;
+            result.vulkan3DDepth = kf.vulkan3DDepth + (next.vulkan3DDepth - kf.vulkan3DDepth) * t;
+            result.vulkan3DScale = kf.vulkan3DScale + (next.vulkan3DScale - kf.vulkan3DScale) * t;
+            result.textPatternScale = kf.textPatternScale + (next.textPatternScale - kf.textPatternScale) * t;
+            result.windowFramePatternScale = kf.windowFramePatternScale + (next.windowFramePatternScale - kf.windowFramePatternScale) * t;
             // Text, font, bold, italic, color are NOT interpolated — they step at the keyframe
         }
     }

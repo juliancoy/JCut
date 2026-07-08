@@ -1,7 +1,10 @@
 #include "render_vulkan_shared.h"
 
+#include "background_fill_effect.h"
 #include "editor_shared_effects.h"
 #include "editor_shared_keyframes.h"
+#include "transform_skip_aware_timing.h"
+#include "vulkan_effect_synth.h"
 
 #include <QMatrix4x4>
 #include <QVector>
@@ -303,11 +306,21 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                             std::sin(static_cast<qreal>(i) * 1.57079632679) * stepY;
             addDraw(QRectF(x, y, tileW, tileH));
         }
+    } else if (clip.effectPreset == ClipEffectPreset::Vulkan3DSynth) {
+        draws += vulkanSynth3DDrawPasses(VulkanSynth3DParams{
+            .outputRect = outputRect,
+            .sourceAspect = aspect,
+            .copyCount = count,
+            .scale = scale,
+            .speed = speed,
+            .timelineFrame = temporalFrame,
+            .alternateHandedness = clip.effectAlternateDirection,
+        });
     }
 
     if (maskedRepeatEnabled) {
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipTransformAtPosition(clip, timelineFrame);
+            evaluateClipTransformAtPosition(clip, static_cast<qreal>(clip.startFrame) + temporalFrame);
         const qreal repeatX = qBound<qreal>(-100000.0, transform.maskRepeatDeltaX, 100000.0);
         const qreal repeatY = qBound<qreal>(-100000.0, transform.maskRepeatDeltaY, 100000.0);
         const bool hasRepeatStep = !qFuzzyIsNull(repeatX) || !qFuzzyIsNull(repeatY);
@@ -338,12 +351,26 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
 
 qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
                                       const QVector<TimelineClip>& timelineClips,
-                                      qreal timelineFramePosition)
+                                      qreal timelineFramePosition,
+                                      const QVector<TimelineTrack>& tracks)
+{
+    return clipEffectPlaybackFramePosition(
+        clip, timelineClips, timelineFramePosition, activePlaybackTimingContext(), tracks);
+}
+
+qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
+                                      const QVector<TimelineClip>& timelineClips,
+                                      qreal timelineFramePosition,
+                                      const PlaybackTimingContext& timing,
+                                      const QVector<TimelineTrack>& tracks)
 {
     const qreal localFrame =
-        qBound<qreal>(0.0,
-                      timelineFramePosition - static_cast<qreal>(clip.startFrame),
-                      static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1)));
+        clip.effectSkipAwareTiming
+            ? clipPlaybackFramePositionForTimelineFrame(clip, timelineFramePosition, timing)
+            : qBound<qreal>(
+                  0.0,
+                  timelineFramePosition - static_cast<qreal>(clip.startFrame),
+                  static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1)));
     if (timelineClips.isEmpty() || clip.id.trimmed().isEmpty()) {
         return localFrame;
     }
@@ -351,7 +378,10 @@ qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
     QVector<const TimelineClip*> matchingClips;
     matchingClips.reserve(timelineClips.size());
     for (const TimelineClip& candidate : timelineClips) {
-        if (candidate.id.trimmed().isEmpty() || !clipSharesEffectClock(clip, candidate)) {
+        const TimelineClip effectiveCandidate =
+            tracks.isEmpty() ? candidate : clipWithTrackEffectSettings(candidate, tracks);
+        if (effectiveCandidate.id.trimmed().isEmpty() ||
+            !clipSharesEffectClock(clip, effectiveCandidate)) {
             continue;
         }
         matchingClips.push_back(&candidate);
@@ -371,7 +401,9 @@ qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
             return elapsed + localFrame;
         }
         if (candidate->startFrame < clip.startFrame) {
-            elapsed += static_cast<qreal>(qMax<int64_t>(0, candidate->durationFrames));
+            elapsed += candidate->effectSkipAwareTiming
+                           ? clipPlaybackDurationFrames(*candidate, timing)
+                           : static_cast<qreal>(qMax<int64_t>(0, candidate->durationFrames));
         }
     }
     return localFrame;
@@ -522,17 +554,22 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
     state.contrast = std::clamp(baseEffects.contrast, 0.0f, 4.0f);
     state.saturation = std::clamp(baseEffects.saturation * saturation, 0.0f, 3.0f);
     if (effect == BackgroundFillEffect::EdgeStretch ||
+        effect == BackgroundFillEffect::ProgressiveEdgeStretch ||
         effect == BackgroundFillEffect::Mirror) {
+        const bool progressive = progressiveEdge ||
+            effect == BackgroundFillEffect::ProgressiveEdgeStretch;
         state.shadows[0] = static_cast<float>(sourceRectNorm.left());
         state.shadows[1] = static_cast<float>(sourceRectNorm.top());
         state.shadows[2] = static_cast<float>(sourceRectNorm.right());
         state.shadows[3] = static_cast<float>(sourceRectNorm.bottom());
         state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
-        state.midtones[1] = progressiveEdge ? 1.0f : 0.0f;
+        state.midtones[1] = progressive ? 1.0f : 0.0f;
         state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
         state.highlights[3] = effect == BackgroundFillEffect::Mirror
             ? kVulkanEffectModeBackgroundMirror
-            : kVulkanEffectModeBackgroundEdgeStretch;
+            : (progressive
+                ? kVulkanEffectModeBackgroundProgressiveEdgeStretch
+                : kVulkanEffectModeBackgroundEdgeStretch);
         return state;
     }
     state.highlights[3] = kVulkanEffectModeBackgroundBlur;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "render_internal.h"
 #include "render.h"
 #include "render_contract_types.h"
 
@@ -23,6 +24,7 @@ struct PreviewFrameResultCore {
     std::string effectiveRenderBackend;
     std::string message;
     core::ImageBuffer image;
+    render_detail::OffscreenVulkanFrame vulkanFrame;
 };
 
 using RenderProgressCoreCallback = std::function<bool(const RenderProgressCore&)>;
@@ -36,6 +38,8 @@ RenderResultCore renderTimelineToFileCore(const RenderRequestCore& request,
 
 PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
                                               const TimelineRenderData& timelineData,
-                                              std::int64_t timelineFrame);
+                                              std::int64_t timelineFrame,
+                                              bool forceSoftwareDecode = false,
+                                              bool readbackToCpuImage = true);
 
 } // namespace jcut::render

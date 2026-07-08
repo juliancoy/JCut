@@ -9,6 +9,7 @@ private slots:
     void speakerLabelGeneratesGlyphAtlasAndSeparateCards();
     void speakerLabelStyleControlsAffectLayout();
     void transcriptOverlayGeneratesBackgroundHighlightAndGlyphs();
+    void transcriptOverlayStyleControlsAffectGlyphPasses();
     void transcriptOverlayCanDisableCurrentWordHighlight();
     void transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled();
     void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
@@ -28,6 +29,24 @@ bool rectsContainedIn(const QVector<QRectF>& rects, const QRectF& bounds)
         }
     }
     return true;
+}
+
+bool colorsContainApprox(const QVector<QColor>& colors,
+                         int red,
+                         int green,
+                         int blue,
+                         int alpha,
+                         int tolerance = 2)
+{
+    for (const QColor& color : colors) {
+        if (color.red() == red &&
+            color.green() == green &&
+            color.blue() == blue &&
+            std::abs(color.alpha() - alpha) <= tolerance) {
+            return true;
+        }
+    }
+    return false;
 }
 
 render_detail::SpeakerLabelOverlaySpec speakerSpec()
@@ -124,9 +143,10 @@ void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndG
     VulkanTextRenderer renderer;
     const QSize outputSize(1080, 1920);
     const QRectF outputRect(80.0, 1320.0, 920.0, 260.0);
+    const TimelineClip clip = transcriptClip();
     const VulkanTextLayoutDebug debug = renderer.buildTranscriptOverlayLayoutForTesting(
         outputSize,
-        transcriptClip(),
+        clip,
         transcriptLayout(2),
         outputRect,
         QStringLiteral("Council District 2"));
@@ -140,6 +160,51 @@ void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndG
     QVERIFY(rectsContainedIn(debug.backgrounds, QRectF(QPointF(0, 0), QSizeF(outputSize))));
     QVERIFY(rectsContainedIn(debug.highlights, outputRect));
     QVERIFY(rectsContainedIn(debug.glyphRects, outputRect.adjusted(-8.0, -8.0, 8.0, 8.0)));
+}
+
+void TestVulkanTextGeneration::transcriptOverlayStyleControlsAffectGlyphPasses()
+{
+    VulkanTextRenderer renderer;
+    const QSize outputSize(1080, 1920);
+    const QRectF outputRect(80.0, 1320.0, 920.0, 260.0);
+    TimelineClip clip = transcriptClip();
+    clip.transcriptOverlay.showSpeakerTitle = false;
+    clip.transcriptOverlay.showShadow = true;
+    clip.transcriptOverlay.shadowColor = QColor(7, 11, 13);
+    clip.transcriptOverlay.shadowOpacity = 0.42;
+
+    const VulkanTextLayoutDebug shadowed = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize,
+        clip,
+        transcriptLayout(-1),
+        outputRect,
+        QString());
+    QVERIFY2(shadowed.valid, "shadowed transcript layout should be generated");
+    QVERIFY(colorsContainApprox(shadowed.glyphColors, 7, 11, 13, 107));
+
+    clip.transcriptOverlay.showShadow = false;
+    const VulkanTextLayoutDebug unshadowed = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize,
+        clip,
+        transcriptLayout(-1),
+        outputRect,
+        QString());
+    QVERIFY2(unshadowed.valid, "transcript layout should survive disabled shadows");
+    QVERIFY(unshadowed.glyphDrawCount < shadowed.glyphDrawCount);
+
+    clip.transcriptOverlay.textOutlineEnabled = true;
+    clip.transcriptOverlay.textOutlineWidth = 2.0;
+    clip.transcriptOverlay.textOutlineColor = QColor(3, 5, 9);
+    clip.transcriptOverlay.textOutlineOpacity = 0.75;
+    const VulkanTextLayoutDebug dilated = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize,
+        clip,
+        transcriptLayout(-1),
+        outputRect,
+        QString());
+    QVERIFY2(dilated.valid, "dilated transcript layout should be generated");
+    QVERIFY(dilated.glyphDrawCount > unshadowed.glyphDrawCount);
+    QVERIFY(colorsContainApprox(dilated.glyphColors, 3, 5, 9, 191));
 }
 
 void TestVulkanTextGeneration::transcriptOverlayCanDisableCurrentWordHighlight()

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "background_fill_effect.h"
+#include "background_fill_effect_fwd.h"
 #include "editor_shared.h"
+#include "playback_timing_context.h"
 
 #include <QByteArray>
 #include <QMatrix4x4>
@@ -17,9 +18,11 @@ inline constexpr float kVulkanEffectModeNormal = 0.0f;
 inline constexpr float kVulkanEffectModeCurve = 1.0f;
 inline constexpr float kVulkanEffectModeMaskGrade = 2.0f;
 inline constexpr float kVulkanEffectModeMaskOnly = 3.0f;
+inline constexpr float kVulkanEffectModeSynth3D = 4.0f;
 inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
-inline constexpr float kVulkanEffectModeBackgroundMirror = -3.0f;
+inline constexpr float kVulkanEffectModeBackgroundProgressiveEdgeStretch = -3.0f;
+inline constexpr float kVulkanEffectModeBackgroundMirror = -4.0f;
 inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
@@ -36,6 +39,7 @@ struct VulkanEffectPipelinePlan {
         qreal rotationDegrees = 0.0;
         float opacityMultiplier = 1.0f;
         float shaderMode = kVulkanEffectModeNormal;
+        qreal depthSortKey = 0.0;
     };
 
     Mode mode = Mode::PassThrough;
@@ -56,7 +60,13 @@ QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         qreal timelineFrame);
 qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
                                       const QVector<TimelineClip>& timelineClips,
-                                      qreal timelineFramePosition);
+                                      qreal timelineFramePosition,
+                                      const QVector<TimelineTrack>& tracks = {});
+qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
+                                      const QVector<TimelineClip>& timelineClips,
+                                      qreal timelineFramePosition,
+                                      const PlaybackTimingContext& timing,
+                                      const QVector<TimelineTrack>& tracks = {});
 
 void vulkanMvpForOutputRect(const QRectF& rect,
                             const QSize& outputSize,

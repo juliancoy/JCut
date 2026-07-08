@@ -1,14 +1,18 @@
 #include "vulkan_text_renderer.h"
 
 #include "preview_view_transform.h"
+#include "titles.h"
 #include "transcript_overlay_cache_key.h"
 #include "vulkan_clear_helpers.h"
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QImage>
+#include <QMatrix4x4>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QVulkanFunctions>
+#include <QVector3D>
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +30,7 @@ using jcut::vulkan::clearRectFromQRect;
 
 constexpr int kAtlasSize = 2048;
 constexpr int kGlyphPadding = 2;
-constexpr uint32_t kTextPushSize = 96;
+constexpr uint32_t kTextPushSize = sizeof(VulkanTextPipeline::Push);
 
 struct FreeTypeLibrary {
     FT_Library library = nullptr;
@@ -286,6 +290,108 @@ void blendAtlasPixel(render_detail::OverlayImage* image, int x, int y, unsigned 
         std::max<int>(static_cast<unsigned char>(image->rgbaPremultiplied[index + 3]), alpha));
 }
 
+QImage defaultPatternTile(const QColor& base, int size)
+{
+    QImage image(size, size, QImage::Format_RGBA8888);
+    const QColor hi = base.isValid() ? base.lighter(145) : QColor(Qt::white);
+    const QColor lo = base.isValid() ? base.darker(165) : QColor(80, 160, 220);
+    for (int y = 0; y < size; ++y) {
+        auto* row = image.scanLine(y);
+        for (int x = 0; x < size; ++x) {
+            const bool stripe = ((x + y) / qMax(2, size / 10)) % 2 == 0;
+            const bool dot = ((x / qMax(2, size / 8)) + (y / qMax(2, size / 8))) % 3 == 0;
+            QColor c = stripe ? hi : lo;
+            if (dot) {
+                c = c.lighter(128);
+            }
+            row[x * 4 + 0] = static_cast<uchar>(c.red());
+            row[x * 4 + 1] = static_cast<uchar>(c.green());
+            row[x * 4 + 2] = static_cast<uchar>(c.blue());
+            row[x * 4 + 3] = 255;
+        }
+    }
+    return image;
+}
+
+QRectF packPatternTile(render_detail::OverlayImage* atlas,
+                       const QString& imagePath,
+                       const QColor& fallbackColor,
+                       int slot)
+{
+    if (!atlas || atlas->width <= 0 || atlas->height <= 0 ||
+        atlas->rgbaPremultiplied.size() < atlas->width * atlas->height * 4) {
+        return QRectF(0.0, 0.0, 1.0 / kAtlasSize, 1.0 / kAtlasSize);
+    }
+    constexpr int kPatternSize = 192;
+    constexpr int kPatternGap = 12;
+    const int x0 = atlas->width - kPatternSize - kPatternGap;
+    const int y0 = atlas->height - ((slot + 1) * (kPatternSize + kPatternGap));
+    if (x0 < 0 || y0 < 0) {
+        return QRectF(0.0, 0.0, 1.0 / kAtlasSize, 1.0 / kAtlasSize);
+    }
+    QImage source;
+    if (!imagePath.trimmed().isEmpty()) {
+        source.load(imagePath.trimmed());
+    }
+    if (source.isNull()) {
+        source = defaultPatternTile(fallbackColor, kPatternSize);
+    }
+    QImage tile = source.convertToFormat(QImage::Format_RGBA8888)
+        .scaled(kPatternSize, kPatternSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    for (int y = 0; y < tile.height(); ++y) {
+        const uchar* src = tile.constScanLine(y);
+        for (int x = 0; x < tile.width(); ++x) {
+            const int dstIndex = (((y0 + y) * atlas->width) + (x0 + x)) * 4;
+            atlas->rgbaPremultiplied[dstIndex + 0] = static_cast<char>(src[x * 4 + 0]);
+            atlas->rgbaPremultiplied[dstIndex + 1] = static_cast<char>(src[x * 4 + 1]);
+            atlas->rgbaPremultiplied[dstIndex + 2] = static_cast<char>(src[x * 4 + 2]);
+            atlas->rgbaPremultiplied[dstIndex + 3] = static_cast<char>(src[x * 4 + 3]);
+        }
+    }
+    return QRectF(static_cast<qreal>(x0) / atlas->width,
+                  static_cast<qreal>(y0) / atlas->height,
+                  static_cast<qreal>(kPatternSize) / atlas->width,
+                  static_cast<qreal>(kPatternSize) / atlas->height);
+}
+
+QRectF packLogoTile(render_detail::OverlayImage* atlas, const QString& imagePath)
+{
+    if (!atlas || imagePath.trimmed().isEmpty() || atlas->width <= 0 || atlas->height <= 0 ||
+        atlas->rgbaPremultiplied.size() < atlas->width * atlas->height * 4) {
+        return {};
+    }
+    constexpr int kLogoSize = 160;
+    constexpr int kPatternSize = 192;
+    constexpr int kPatternGap = 12;
+    const int x0 = atlas->width - kLogoSize - kPatternGap;
+    const int y0 = atlas->height - (2 * (kPatternSize + kPatternGap)) - kLogoSize - kPatternGap;
+    if (x0 < 0 || y0 < 0) {
+        return {};
+    }
+    QImage source(imagePath.trimmed());
+    if (source.isNull()) {
+        return {};
+    }
+    QImage tile = source.convertToFormat(QImage::Format_RGBA8888)
+        .scaled(kLogoSize, kLogoSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const int dx = x0 + ((kLogoSize - tile.width()) / 2);
+    const int dy = y0 + ((kLogoSize - tile.height()) / 2);
+    for (int y = 0; y < tile.height(); ++y) {
+        const uchar* src = tile.constScanLine(y);
+        for (int x = 0; x < tile.width(); ++x) {
+            const int dstIndex = (((dy + y) * atlas->width) + (dx + x)) * 4;
+            atlas->rgbaPremultiplied[dstIndex + 0] = static_cast<char>(src[x * 4 + 0]);
+            atlas->rgbaPremultiplied[dstIndex + 1] = static_cast<char>(src[x * 4 + 1]);
+            atlas->rgbaPremultiplied[dstIndex + 2] = static_cast<char>(src[x * 4 + 2]);
+            atlas->rgbaPremultiplied[dstIndex + 3] = static_cast<char>(src[x * 4 + 3]);
+        }
+    }
+    return QRectF(static_cast<qreal>(x0) / atlas->width,
+                  static_cast<qreal>(y0) / atlas->height,
+                  static_cast<qreal>(kLogoSize) / atlas->width,
+                  static_cast<qreal>(kLogoSize) / atlas->height);
+}
+
 VkClearValue clearValueForColor(const QColor& color)
 {
     VkClearValue value{};
@@ -294,6 +400,69 @@ VkClearValue clearValueForColor(const QColor& color)
     value.color.float32[2] = static_cast<float>(color.blueF() * color.alphaF());
     value.color.float32[3] = static_cast<float>(color.alphaF());
     return value;
+}
+
+QColor colorWithOpacity(QColor color, qreal opacity)
+{
+    if (!color.isValid()) {
+        color = QColor(Qt::black);
+    }
+    color.setAlphaF(qBound<qreal>(0.0, opacity, 1.0));
+    return color;
+}
+
+int materialStyleId(TitleMaterialStyle style)
+{
+    switch (style) {
+    case TitleMaterialStyle::Neon:
+        return 1;
+    case TitleMaterialStyle::DiagonalStripes:
+        return 2;
+    case TitleMaterialStyle::Grid:
+        return 3;
+    case TitleMaterialStyle::ImagePattern:
+        return 4;
+    case TitleMaterialStyle::Solid:
+    default:
+        return 0;
+    }
+}
+
+QVector<QPointF> dilationOffsets(qreal radius)
+{
+    QVector<QPointF> offsets;
+    const int rings = qBound(0, static_cast<int>(std::ceil(radius)), 24);
+    if (rings <= 0) {
+        return offsets;
+    }
+
+    constexpr qreal kPi = 3.14159265358979323846;
+    constexpr int kSamplesPerRing = 16;
+    offsets.reserve(rings * kSamplesPerRing);
+    auto containsOffset = [&offsets](const QPointF& candidate) {
+        for (const QPointF& offset : offsets) {
+            if (qFuzzyCompare(offset.x() + 1.0, candidate.x() + 1.0) &&
+                qFuzzyCompare(offset.y() + 1.0, candidate.y() + 1.0)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int ring = 1; ring <= rings; ++ring) {
+        const qreal ringRadius = qMin<qreal>(radius, ring);
+        for (int sample = 0; sample < kSamplesPerRing; ++sample) {
+            const qreal angle = (2.0 * kPi * sample) / kSamplesPerRing;
+            QPointF offset(std::round(std::cos(angle) * ringRadius),
+                           std::round(std::sin(angle) * ringRadius));
+            if ((qFuzzyIsNull(offset.x()) && qFuzzyIsNull(offset.y())) ||
+                containsOffset(offset)) {
+                continue;
+            }
+            offsets.push_back(offset);
+        }
+    }
+    return offsets;
 }
 
 void mvpForScreenRect(const QRectF& rect, const QSize& swapSize, float outMvp[16])
@@ -314,6 +483,56 @@ void mvpForScreenRect(const QRectF& rect, const QSize& swapSize, float outMvp[16
         1.f
     };
     std::copy(std::begin(m), std::end(m), outMvp);
+}
+
+void mvpForTitle3DRect(const QRectF& rect,
+                       const QPointF& titleCenter,
+                       const QSize& swapSize,
+                       const EvaluatedTitle& title,
+                       float outMvp[16])
+{
+    const qreal w = qMax<qreal>(1.0, swapSize.width());
+    const qreal h = qMax<qreal>(1.0, swapSize.height());
+    const qreal aspect = w / h;
+    const float cameraDistance = 5.2f;
+    const float fovDegrees = 43.0f;
+    const qreal halfViewH = std::tan((fovDegrees * M_PI / 180.0) * 0.5) * cameraDistance;
+    const qreal halfViewW = halfViewH * aspect;
+    auto screenToWorld = [&](const QPointF& point) {
+        const qreal ndcX = (2.0 * point.x() / w) - 1.0;
+        const qreal ndcY = (2.0 * point.y() / h) - 1.0;
+        return QVector3D(static_cast<float>(ndcX * halfViewW),
+                         static_cast<float>(ndcY * halfViewH),
+                         0.0f);
+    };
+    const QVector3D centerWorld = screenToWorld(titleCenter);
+    const QPointF localCenter = rect.center() - titleCenter;
+    const QVector3D localWorld(static_cast<float>((localCenter.x() / w) * 2.0 * halfViewW),
+                               static_cast<float>((localCenter.y() / h) * 2.0 * halfViewH),
+                               0.0f);
+    const qreal titleScale = qBound<qreal>(0.05, title.vulkan3DScale, 4.0);
+    const QVector3D halfSize(static_cast<float>((rect.width() / w) * halfViewW * titleScale),
+                             static_cast<float>((rect.height() / h) * halfViewH * titleScale),
+                             1.0f);
+
+    QMatrix4x4 projection;
+    projection.perspective(fovDegrees, static_cast<float>(aspect), 0.1f, 32.0f);
+    QMatrix4x4 view;
+    view.lookAt(QVector3D(0.0f, 0.0f, cameraDistance),
+                QVector3D(0.0f, 0.0f, 0.0f),
+                QVector3D(0.0f, 1.0f, 0.0f));
+    QMatrix4x4 model;
+    model.translate(centerWorld);
+    model.rotate(static_cast<float>(title.vulkan3DYawDegrees), 0.0f, 1.0f, 0.0f);
+    model.rotate(static_cast<float>(title.vulkan3DPitchDegrees), 1.0f, 0.0f, 0.0f);
+    model.rotate(static_cast<float>(title.vulkan3DRollDegrees), 0.0f, 0.0f, 1.0f);
+    model.translate(localWorld.x(),
+                    localWorld.y(),
+                    static_cast<float>(qBound<qreal>(-3.0, title.vulkan3DDepth, 3.0)));
+    model.scale(halfSize);
+
+    const QMatrix4x4 mvp = projection * view * model;
+    std::copy(mvp.constData(), mvp.constData() + 16, outMvp);
 }
 
 } // namespace
@@ -578,6 +797,7 @@ void VulkanTextRenderer::destroy()
     m_uploadedAtlasKey.clear();
     m_speakerLayoutCache = SpeakerLayoutCache{};
     m_transcriptLayoutCache = TranscriptLayoutCache{};
+    m_titleLayoutCache = TitleLayoutCache{};
     m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_funcs = nullptr;
@@ -660,6 +880,212 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting
         debug.glyphColors.push_back(glyph.color);
     }
     return debug;
+}
+
+bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
+                                                  const EvaluatedTitle& title,
+                                                  Atlas* atlas,
+                                                  QVector<LaidOutGlyph>* glyphs,
+                                                  QVector<TranscriptBackground>* backgrounds,
+                                                  QPointF* center) const
+{
+    if (!atlas || !glyphs || !backgrounds || !center || !outputSize.isValid() ||
+        !title.valid || title.text.trimmed().isEmpty()) {
+        return fail(QStringLiteral("title_invalid_input"));
+    }
+
+    const int pixelSize = qBound(8, static_cast<int>(std::round(title.fontSize)), 220);
+    FaceGuard face;
+    if (!loadFace(title.fontFamily, title.bold, pixelSize, &face)) {
+        return fail(QStringLiteral("title_font_load_failed"));
+    }
+
+    QStringList lines = title.text.split(QLatin1Char('\n'));
+    lines.erase(std::remove_if(lines.begin(), lines.end(), [](const QString& line) {
+        return line.trimmed().isEmpty();
+    }), lines.end());
+    if (lines.isEmpty()) {
+        return fail(QStringLiteral("title_empty_lines"));
+    }
+
+    atlas->image.width = kAtlasSize;
+    atlas->image.height = kAtlasSize;
+    atlas->image.rgbaPremultiplied = QByteArray(kAtlasSize * kAtlasSize * 4, char(0));
+    blendAtlasPixel(&atlas->image, 0, 0, 255);
+    atlas->solidUv = QRectF(0.0, 0.0, 1.0 / kAtlasSize, 1.0 / kAtlasSize);
+    atlas->textPatternUv = packPatternTile(&atlas->image,
+                                           title.textPatternImagePath,
+                                           title.color,
+                                           0);
+    atlas->framePatternUv = packPatternTile(&atlas->image,
+                                            title.windowFramePatternImagePath,
+                                            title.windowFrameColor,
+                                            1);
+    atlas->logoUv = packLogoTile(&atlas->image, title.logoPath);
+    int penX = kGlyphPadding;
+    int penY = kGlyphPadding;
+    int rowHeight = 0;
+
+    auto addGlyph = [&](uint codepoint) -> bool {
+        const QString key = glyphKey(codepoint, title.bold, pixelSize);
+        if (atlas->glyphs.contains(key)) {
+            return true;
+        }
+        const FT_UInt glyphIndex = FT_Get_Char_Index(face.face, codepoint);
+        if (FT_Load_Glyph(face.face, glyphIndex, FT_LOAD_DEFAULT) != 0 ||
+            FT_Render_Glyph(face.face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
+            return fail(QStringLiteral("title_glyph_render_failed"));
+        }
+        const FT_GlyphSlot slot = face.face->glyph;
+        const FT_Bitmap& bitmap = slot->bitmap;
+        const int width = static_cast<int>(bitmap.width);
+        const int height = static_cast<int>(bitmap.rows);
+        if (penX + width + kGlyphPadding >= kAtlasSize) {
+            penX = kGlyphPadding;
+            penY += rowHeight + kGlyphPadding;
+            rowHeight = 0;
+        }
+        if (penY + height + kGlyphPadding >= kAtlasSize) {
+            return fail(QStringLiteral("title_atlas_full"));
+        }
+        for (int row = 0; row < height; ++row) {
+            for (int col = 0; col < width; ++col) {
+                const unsigned char alpha = bitmap.buffer[row * bitmap.pitch + col];
+                blendAtlasPixel(&atlas->image, penX + col, penY + row, alpha);
+            }
+        }
+        Glyph glyph;
+        glyph.uv = QRectF(static_cast<qreal>(penX) / kAtlasSize,
+                          static_cast<qreal>(penY) / kAtlasSize,
+                          static_cast<qreal>(width) / kAtlasSize,
+                          static_cast<qreal>(height) / kAtlasSize);
+        glyph.size = QSize(width, height);
+        glyph.bearing = QPointF(slot->bitmap_left, slot->bitmap_top);
+        glyph.advance = static_cast<qreal>(slot->advance.x) / 64.0;
+        atlas->glyphs.insert(key, glyph);
+        penX += width + kGlyphPadding;
+        rowHeight = std::max(rowHeight, height);
+        return true;
+    };
+    for (const QString& line : lines) {
+        for (uint codepoint : line.toUcs4()) {
+            if (!addGlyph(codepoint)) {
+                return false;
+            }
+        }
+    }
+
+    const qreal lineHeight = static_cast<qreal>(face.face->size->metrics.height) / 64.0;
+    const qreal ascender = static_cast<qreal>(face.face->size->metrics.ascender) / 64.0;
+    const qreal lineGap = qMax<qreal>(2.0, pixelSize * 0.08);
+    qreal contentWidth = 0.0;
+    for (const QString& line : lines) {
+        contentWidth = qMax(contentWidth, measureText(face.face, line));
+    }
+    if (title.windowWidth > 0.0) {
+        contentWidth = qMax(contentWidth, title.windowWidth - (qMax<qreal>(0.0, title.windowPadding) * 2.0));
+    }
+    const qreal contentHeight = lines.size() * lineHeight + qMax(0, lines.size() - 1) * lineGap;
+    *center = QPointF((outputSize.width() - 1) * 0.5 + title.x,
+                      (outputSize.height() - 1) * 0.5 + title.y);
+    const qreal padding = qMax<qreal>(0.0, title.windowPadding);
+    const QRectF contentRect(center->x() - contentWidth * 0.5,
+                             center->y() - contentHeight * 0.5,
+                             contentWidth,
+                             contentHeight);
+    if (title.windowEnabled && title.windowOpacity > 0.0) {
+        QColor bg = title.windowColor.isValid() ? title.windowColor : QColor(Qt::black);
+        bg.setAlphaF(qBound<qreal>(0.0, title.windowOpacity * title.opacity, 1.0));
+        backgrounds->push_back(TranscriptBackground{
+            contentRect.adjusted(-padding, -padding, padding, padding),
+            atlas->solidUv,
+            bg,
+            qMax<qreal>(0.0, padding * 0.45),
+            0,
+            1.0,
+            atlas->solidUv});
+    }
+    if (title.windowFrameEnabled && title.windowFrameOpacity > 0.0 && title.windowFrameWidth > 0.0) {
+        QColor frame = title.windowFrameColor.isValid() ? title.windowFrameColor : QColor(Qt::white);
+        frame.setAlphaF(qBound<qreal>(0.0, title.windowFrameOpacity * title.opacity, 1.0));
+        const QRectF outer = contentRect.adjusted(-padding - title.windowFrameGap,
+                                                  -padding - title.windowFrameGap,
+                                                  padding + title.windowFrameGap,
+                                                  padding + title.windowFrameGap);
+        const qreal fw = qMax<qreal>(1.0, title.windowFrameWidth);
+        const int material = materialStyleId(title.windowFrameMaterialStyle);
+        const qreal patternScale = qBound<qreal>(0.10, title.windowFramePatternScale, 8.0);
+        backgrounds->push_back(TranscriptBackground{QRectF(outer.left(), outer.top(), outer.width(), fw), atlas->solidUv, frame, 0.0, material, patternScale, atlas->framePatternUv});
+        backgrounds->push_back(TranscriptBackground{QRectF(outer.left(), outer.bottom() - fw, outer.width(), fw), atlas->solidUv, frame, 0.0, material, patternScale, atlas->framePatternUv});
+        backgrounds->push_back(TranscriptBackground{QRectF(outer.left(), outer.top(), fw, outer.height()), atlas->solidUv, frame, 0.0, material, patternScale, atlas->framePatternUv});
+        backgrounds->push_back(TranscriptBackground{QRectF(outer.right() - fw, outer.top(), fw, outer.height()), atlas->solidUv, frame, 0.0, material, patternScale, atlas->framePatternUv});
+    }
+    if (!atlas->logoUv.isEmpty()) {
+        const qreal logoSize = qBound<qreal>(34.0, pixelSize * 1.35, 140.0);
+        const QRectF logoRect(contentRect.left() - padding - logoSize - qMax<qreal>(8.0, padding * 0.45),
+                              center->y() - logoSize * 0.5,
+                              logoSize,
+                              logoSize);
+        QColor logoTint(Qt::white);
+        logoTint.setAlphaF(qBound<qreal>(0.0, title.opacity, 1.0));
+        backgrounds->push_back(TranscriptBackground{logoRect, atlas->logoUv, logoTint, logoSize * 0.12, 5, 1.0, atlas->logoUv});
+    }
+
+    qreal y = contentRect.top();
+    for (const QString& line : lines) {
+        qreal cursor = center->x() - measureText(face.face, line) * 0.5;
+        const qreal baseline = y + ascender;
+        FT_UInt previous = 0;
+        for (uint codepoint : line.toUcs4()) {
+            const FT_UInt glyphIndex = FT_Get_Char_Index(face.face, codepoint);
+            if (FT_HAS_KERNING(face.face) && previous && glyphIndex) {
+                FT_Vector delta{};
+                FT_Get_Kerning(face.face, previous, glyphIndex, FT_KERNING_DEFAULT, &delta);
+                cursor += static_cast<qreal>(delta.x) / 64.0;
+            }
+            const Glyph glyph = atlas->glyphs.value(glyphKey(codepoint, title.bold, pixelSize));
+            const QRectF glyphRect(cursor + glyph.bearing.x(),
+                                   baseline - glyph.bearing.y(),
+                                   glyph.size.width(),
+                                   glyph.size.height());
+            if (!glyphRect.isEmpty()) {
+                if (title.dropShadowEnabled && title.dropShadowOpacity > 0.0) {
+                    QColor shadow = title.dropShadowColor.isValid() ? title.dropShadowColor : QColor(Qt::black);
+                    shadow.setAlphaF(qBound<qreal>(0.0, title.dropShadowOpacity * title.opacity, 1.0));
+                    glyphs->push_back(LaidOutGlyph{
+                        glyphRect.translated(title.dropShadowOffsetX, title.dropShadowOffsetY),
+                        glyph.uv,
+                        shadow,
+                        0,
+                        1.0,
+                        atlas->solidUv});
+                }
+                QColor color = title.color.isValid() ? title.color : QColor(Qt::white);
+                color.setAlphaF(qBound<qreal>(0.0, color.alphaF() * title.opacity, 1.0));
+                glyphs->push_back(LaidOutGlyph{
+                    glyphRect,
+                    glyph.uv,
+                    color,
+                    materialStyleId(title.textMaterialStyle),
+                    qBound<qreal>(0.10, title.textPatternScale, 8.0),
+                    atlas->textPatternUv});
+            }
+            cursor += glyph.advance;
+            previous = glyphIndex;
+        }
+        y += lineHeight + lineGap;
+    }
+
+    const QString keyMaterial =
+        QStringLiteral("title-vktext-v1|") + title.fontFamily + QLatin1Char('|') +
+        QString::number(pixelSize) + QLatin1Char('|') +
+        QString::number(title.bold ? 1 : 0) + QLatin1Char('|') +
+        title.text + QLatin1Char('|') +
+        title.logoPath + QLatin1Char('|') +
+        title.textPatternImagePath + QLatin1Char('|') +
+        title.windowFramePatternImagePath;
+    atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
+    return !glyphs->isEmpty() || !backgrounds->isEmpty();
 }
 
 bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
@@ -1031,6 +1457,7 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         backgroundColor.setAlphaF(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0));
         backgrounds->push_back(TranscriptBackground{
             outputRect,
+            atlas.solidUv,
             backgroundColor,
             qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0)});
     }
@@ -1058,7 +1485,15 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
     const qreal docScale = qMin(contentWidth > textBounds.width() ? textBounds.width() / contentWidth : 1.0,
                                 contentHeight > textBounds.height() ? textBounds.height() / contentHeight : 1.0);
     qreal cursorY = textBounds.top();
-    const qreal shadowOffset = 5.0 * docScale;
+    const QColor shadowColor = colorWithOpacity(clip.transcriptOverlay.shadowColor,
+                                                clip.transcriptOverlay.shadowOpacity);
+    const qreal shadowOffsetX = clip.transcriptOverlay.shadowOffsetX * docScale;
+    const qreal shadowOffsetY = clip.transcriptOverlay.shadowOffsetY * docScale;
+    const QColor outlineColor = colorWithOpacity(clip.transcriptOverlay.textOutlineColor,
+                                                 clip.transcriptOverlay.textOutlineOpacity);
+    const QVector<QPointF> outlineOffsets = clip.transcriptOverlay.textOutlineEnabled
+        ? dilationOffsets(qMax<qreal>(0.0, clip.transcriptOverlay.textOutlineWidth) * docScale)
+        : QVector<QPointF>{};
 
     auto emitRun = [&](FT_Face face,
                        const QString& text,
@@ -1093,10 +1528,29 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         }
     };
 
+    auto emitDilatedRun = [&](FT_Face face,
+                              const QString& text,
+                              qreal x,
+                              qreal baseline,
+                              bool bold,
+                              int pixelSize) {
+        if (outlineOffsets.isEmpty()) {
+            return;
+        }
+        for (const QPointF& offset : outlineOffsets) {
+            emitRun(face,
+                    text,
+                    x + offset.x(),
+                    baseline + offset.y(),
+                    bold,
+                    pixelSize,
+                    outlineColor);
+        }
+    };
+
     const QColor textColor = clip.transcriptOverlay.textColor.isValid()
         ? clip.transcriptOverlay.textColor
         : QColor(Qt::white);
-    const QColor shadowColor(0, 0, 0, 200);
     const QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
         ? clip.transcriptOverlay.highlightColor
         : QColor(QStringLiteral("#fff2a8"));
@@ -1108,8 +1562,15 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         const qreal x = textBounds.left() + qMax<qreal>(0.0, (textBounds.width() - (titleWidth * docScale)) / 2.0);
         const qreal baseline = cursorY + ascender(titleFace.face) * docScale;
         if (clip.transcriptOverlay.showShadow) {
-            emitRun(titleFace.face, speakerTitle, x + shadowOffset, baseline + shadowOffset, true, titlePixelSize, shadowColor);
+            emitRun(titleFace.face,
+                    speakerTitle,
+                    x + shadowOffsetX,
+                    baseline + shadowOffsetY,
+                    true,
+                    titlePixelSize,
+                    shadowColor);
         }
+        emitDilatedRun(titleFace.face, speakerTitle, x, baseline, true, titlePixelSize);
         emitRun(titleFace.face, speakerTitle, x, baseline, true, titlePixelSize, textColor);
         cursorY += (lineHeight(titleFace.face) + titleGap) * docScale;
     }
@@ -1142,12 +1603,18 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
             if (clip.transcriptOverlay.showShadow && !active) {
                 emitRun(bodyFace.face,
                         word,
-                        cursorX + shadowOffset,
-                        baseline + shadowOffset,
+                        cursorX + shadowOffsetX,
+                        baseline + shadowOffsetY,
                         clip.transcriptOverlay.bold,
                         bodyPixelSize,
                         shadowColor);
             }
+            emitDilatedRun(bodyFace.face,
+                           word,
+                           cursorX,
+                           baseline,
+                           clip.transcriptOverlay.bold,
+                           bodyPixelSize);
             emitRun(bodyFace.face,
                     word,
                     cursorX,
@@ -1252,6 +1719,68 @@ const VulkanTextRenderer::TranscriptLayoutCache* VulkanTextRenderer::transcriptO
     return &m_transcriptLayoutCache;
 }
 
+const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayout(
+    const QSize& outputSize,
+    const EvaluatedTitle& title) const
+{
+    const QString layoutMaterial =
+        QStringLiteral("title-layout-v1|") +
+        QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
+        title.text + QLatin1Char('|') +
+        title.fontFamily + QLatin1Char('|') +
+        QString::number(title.fontSize, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.x, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.y, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.opacity, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.bold ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(title.color.rgba())) + QLatin1Char('|') +
+        title.logoPath + QLatin1Char('|') +
+        title.textPatternImagePath + QLatin1Char('|') +
+        QString::number(static_cast<int>(title.textMaterialStyle)) + QLatin1Char('|') +
+        QString::number(title.textPatternScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.windowEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(title.windowColor.rgba())) + QLatin1Char('|') +
+        QString::number(title.windowOpacity, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.windowPadding, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.windowFrameEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(title.windowFrameColor.rgba())) + QLatin1Char('|') +
+        QString::number(title.windowFrameOpacity, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.windowFrameWidth, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.windowFrameGap, 'f', 3) + QLatin1Char('|') +
+        title.windowFramePatternImagePath + QLatin1Char('|') +
+        QString::number(static_cast<int>(title.windowFrameMaterialStyle)) + QLatin1Char('|') +
+        QString::number(title.windowFramePatternScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.vulkan3DExtrudeEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(title.vulkan3DExtrudeDepth, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.vulkan3DBevelScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.dropShadowEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(title.dropShadowColor.rgba())) + QLatin1Char('|') +
+        QString::number(title.dropShadowOpacity, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.dropShadowOffsetX, 'f', 3) + QLatin1Char('|') +
+        QString::number(title.dropShadowOffsetY, 'f', 3);
+    const QString layoutKey =
+        QString::fromLatin1(QCryptographicHash::hash(layoutMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
+    if (m_titleLayoutCache.valid && m_titleLayoutCache.layoutKey == layoutKey) {
+        return &m_titleLayoutCache;
+    }
+
+    TitleLayoutCache rebuilt;
+    rebuilt.layoutKey = layoutKey;
+    rebuilt.valid = buildTitleAtlasAndLayout(outputSize,
+                                             title,
+                                             &rebuilt.atlas,
+                                             &rebuilt.glyphs,
+                                             &rebuilt.backgrounds,
+                                             &rebuilt.center);
+    rebuilt.atlasKey = rebuilt.atlas.key;
+    if (!rebuilt.valid) {
+        m_titleLayoutCache = TitleLayoutCache{};
+        return nullptr;
+    }
+    m_titleLayoutCache = rebuilt;
+    return &m_titleLayoutCache;
+}
+
 void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
                                    const QSize& swapSize,
                                    const QRectF& rect,
@@ -1283,6 +1812,60 @@ void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
     push.color[1] = static_cast<float>(color.greenF());
     push.color[2] = static_cast<float>(color.blueF());
     push.color[3] = static_cast<float>(color.alphaF());
+    push.material[0] = 0.0f;
+    push.material[1] = 1.0f;
+    push.material[2] = 0.0f;
+    push.material[3] = 0.0f;
+    push.patternRect[0] = static_cast<float>(uv.x());
+    push.patternRect[1] = static_cast<float>(uv.y());
+    push.patternRect[2] = static_cast<float>(uv.width());
+    push.patternRect[3] = static_cast<float>(uv.height());
+    m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
+}
+
+void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
+                                          const QSize& swapSize,
+                                          const float mvp[16],
+                                          const QRectF& uv,
+                                          const QColor& color,
+                                          int materialStyle,
+                                          qreal patternScale,
+                                          const QRectF& patternUv)
+{
+    if (!isReady() || !color.isValid() || color.alpha() <= 0 || !mvp) {
+        return;
+    }
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(std::max(1, swapSize.width()));
+    viewport.height = static_cast<float>(std::max(1, swapSize.height()));
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                      static_cast<uint32_t>(std::max(1, swapSize.height()))};
+
+    VulkanTextPipeline::Push push{};
+    std::copy(mvp, mvp + 16, push.mvp);
+    push.uvRect[0] = static_cast<float>(uv.x());
+    push.uvRect[1] = static_cast<float>(uv.y());
+    push.uvRect[2] = static_cast<float>(uv.width());
+    push.uvRect[3] = static_cast<float>(uv.height());
+    push.color[0] = static_cast<float>(color.redF());
+    push.color[1] = static_cast<float>(color.greenF());
+    push.color[2] = static_cast<float>(color.blueF());
+    push.color[3] = static_cast<float>(color.alphaF());
+    push.material[0] = static_cast<float>(qBound(0, materialStyle, 4));
+    push.material[1] = static_cast<float>(qBound<qreal>(0.10, patternScale, 8.0));
+    push.material[2] = 0.0f;
+    push.material[3] = 0.0f;
+    const QRectF pattern = patternUv.isEmpty() ? uv : patternUv;
+    push.patternRect[0] = static_cast<float>(pattern.x());
+    push.patternRect[1] = static_cast<float>(pattern.y());
+    push.patternRect[2] = static_cast<float>(pattern.width());
+    push.patternRect[3] = static_cast<float>(pattern.height());
     m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
 }
 
@@ -1486,6 +2069,116 @@ bool VulkanTextRenderer::prepareTranscriptOverlayAtlas(VkCommandBuffer commandBu
         return fail(m_lastFailureReason.isEmpty()
                         ? QStringLiteral("transcript_atlas_upload_failed")
                         : m_lastFailureReason);
+    }
+    return true;
+}
+
+bool VulkanTextRenderer::prepareTitleOverlayAtlas(VkCommandBuffer commandBuffer,
+                                                  const QSize& outputSize,
+                                                  const EvaluatedTitle& title)
+{
+    m_lastFailureReason.clear();
+    if (!isReady() || commandBuffer == VK_NULL_HANDLE || !outputSize.isValid() ||
+        !title.valid || title.text.trimmed().isEmpty()) {
+        return fail(QStringLiteral("title_prepare_invalid_state"));
+    }
+    const TitleLayoutCache* layout = titleOverlayLayout(outputSize, title);
+    if (!layout) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("title_layout_failed")
+                        : m_lastFailureReason);
+    }
+    if (!ensureAtlasUploaded(commandBuffer, layout->atlas)) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("title_atlas_upload_failed")
+                        : m_lastFailureReason);
+    }
+    return true;
+}
+
+bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
+                                            const QSize& swapSize,
+                                            const QSize& outputSize,
+                                            const QRectF& outputTargetRect,
+                                            const EvaluatedTitle& title)
+{
+    m_lastFailureReason.clear();
+    if (!isReady() || commandBuffer == VK_NULL_HANDLE || !swapSize.isValid() ||
+        !outputSize.isValid() || outputTargetRect.isEmpty() || !title.valid ||
+        title.text.trimmed().isEmpty() || title.opacity <= 0.001) {
+        return fail(QStringLiteral("title_draw_invalid_state"));
+    }
+    const TitleLayoutCache* layout = titleOverlayLayout(outputSize, title);
+    if (!layout || !ensureAtlasUploaded(commandBuffer, layout->atlas)) {
+        return fail(m_lastFailureReason.isEmpty()
+                        ? QStringLiteral("title_draw_atlas_unavailable")
+                        : m_lastFailureReason);
+    }
+
+    const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
+    const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
+    auto mapPoint = [&](const QPointF& point) {
+        return QPointF(outputTargetRect.left() + point.x() * scaleX,
+                       outputTargetRect.top() + point.y() * scaleY);
+    };
+    auto mapRect = [&](const QRectF& rect) {
+        return QRectF(outputTargetRect.left() + rect.left() * scaleX,
+                      outputTargetRect.top() + rect.top() * scaleY,
+                      rect.width() * scaleX,
+                      rect.height() * scaleY);
+    };
+
+    const QPointF mappedCenter = mapPoint(layout->center);
+    for (const TranscriptBackground& background : layout->backgrounds) {
+        float mvp[16];
+        mvpForTitle3DRect(mapRect(background.rect), mappedCenter, swapSize, title, mvp);
+        drawGlyphWithMvp(commandBuffer,
+                         swapSize,
+                         mvp,
+                         background.uv.isEmpty() ? layout->atlas.solidUv : background.uv,
+                         background.color,
+                         background.materialStyle,
+                         background.patternScale,
+                         background.patternUv);
+    }
+    if (title.vulkan3DExtrudeEnabled && title.vulkan3DExtrudeDepth > 0.001) {
+        const int layers = qBound(1, static_cast<int>(std::ceil(title.vulkan3DExtrudeDepth * 24.0)), 12);
+        const qreal step = qBound<qreal>(0.6, title.vulkan3DExtrudeDepth * 8.0, 4.5);
+        for (int layer = layers; layer >= 1; --layer) {
+            const qreal k = static_cast<qreal>(layer);
+            for (const LaidOutGlyph& glyph : layout->glyphs) {
+                QColor side = glyph.color;
+                side.setRedF(qBound<qreal>(0.0, side.redF() * 0.30, 1.0));
+                side.setGreenF(qBound<qreal>(0.0, side.greenF() * 0.36, 1.0));
+                side.setBlueF(qBound<qreal>(0.0, side.blueF() * 0.46, 1.0));
+                side.setAlphaF(qBound<qreal>(0.0,
+                                             side.alphaF() * (0.20 + title.vulkan3DBevelScale * 0.22),
+                                             0.72));
+                const QRectF extrudedRect = mapRect(glyph.rect.translated(step * k, step * k * 0.58));
+                float mvp[16];
+                mvpForTitle3DRect(extrudedRect, mappedCenter, swapSize, title, mvp);
+                drawGlyphWithMvp(commandBuffer,
+                                 swapSize,
+                                 mvp,
+                                 glyph.uv,
+                                 side,
+                                 0,
+                                 1.0,
+                                 layout->atlas.solidUv);
+            }
+        }
+    }
+    for (const LaidOutGlyph& glyph : layout->glyphs) {
+        float mvp[16];
+        mvpForTitle3DRect(mapRect(glyph.rect), mappedCenter, swapSize, title, mvp);
+        drawGlyphWithMvp(commandBuffer,
+                         swapSize,
+                         mvp,
+                         glyph.uv,
+                         glyph.color,
+                         glyph.materialStyle,
+                         glyph.patternScale,
+                         glyph.patternUv);
     }
     return true;
 }

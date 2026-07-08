@@ -2463,6 +2463,15 @@ void SpeakersTab::openSpeakerSectionOptionsForRow(int row)
         return spin;
     };
 
+    auto* sectionLayout = new QFormLayout;
+    sectionLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    auto* rotationSpin = makeSpin(-180.0, 180.0, sectionRotation, 0.1);
+    rotationSpin->setSuffix(QStringLiteral(" deg"));
+    rotationSpin->setToolTip(
+        QStringLiteral("Rotates the selected speaker section around the mapped face box."));
+    sectionLayout->addRow(QStringLiteral("Rotation"), rotationSpin);
+    rootLayout->addLayout(sectionLayout);
+
     auto* gradingEnabled = new QCheckBox(QStringLiteral("Add Grading Keyframes"), &dialog);
     gradingEnabled->setChecked(grading.value(QStringLiteral("enabled")).toBool(false));
     gradingEnabled->setToolTip(
@@ -2547,6 +2556,16 @@ void SpeakersTab::openSpeakerSectionOptionsForRow(int row)
     nextOptions[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
     nextOptions[QStringLiteral("grading")] = nextGrading;
     nextOptions[QStringLiteral("mask")] = nextMask;
+
+    const qreal nextRotation = qBound<qreal>(-180.0, rotationSpin->value(), 180.0);
+    if (!qFuzzyCompare(sectionRotation + 1.0, nextRotation + 1.0) &&
+        !saveSpeakerSectionRotation(row, nextRotation)) {
+        QMessageBox::warning(
+            m_widgets.speakerSectionsTable,
+            QStringLiteral("Section Options"),
+            QStringLiteral("Failed to save section rotation."));
+        return;
+    }
 
     if (!saveSpeakerSectionOptions(row, nextOptions)) {
         QMessageBox::warning(

@@ -227,11 +227,6 @@ QString transcriptExportSpeakerDisplayName(const QJsonObject& profiles, const QS
     return name.isEmpty() ? trimmedSpeakerId : name;
 }
 
-bool speechFilterEnabledFromModeCombo(const QComboBox* combo)
-{
-    return combo && combo->currentData().toString() != QStringLiteral("none");
-}
-
 QString defaultTranscriptExportPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
@@ -763,13 +758,39 @@ void TranscriptTab::wire()
     }
     for (QPushButton* button : {m_widgets.transcriptTextColorButton,
                                 m_widgets.transcriptBackgroundColorButton,
-                                m_widgets.transcriptHighlightColorButton}) {
+                                m_widgets.transcriptHighlightColorButton,
+                                m_widgets.transcriptShadowColorButton,
+                                m_widgets.transcriptOutlineColorButton}) {
         if (button) {
             connect(button, &QPushButton::clicked, this, &TranscriptTab::onOverlayColorButtonClicked);
         }
     }
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         connect(m_widgets.transcriptShadowEnabledCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptShadowOpacitySpin) {
+        connect(m_widgets.transcriptShadowOpacitySpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptShadowOffsetXSpin) {
+        connect(m_widgets.transcriptShadowOffsetXSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptShadowOffsetYSpin) {
+        connect(m_widgets.transcriptShadowOffsetYSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptOutlineEnabledCheckBox) {
+        connect(m_widgets.transcriptOutlineEnabledCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptOutlineWidthSpin) {
+        connect(m_widgets.transcriptOutlineWidthSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptOutlineOpacitySpin) {
+        connect(m_widgets.transcriptOutlineOpacitySpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
@@ -1017,7 +1038,8 @@ void TranscriptTab::syncSpeechFilterControlsFromWidgets()
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
-    m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo);
+    m_speechFilterEnabled = m_widgets.speechFilterFadeModeCombo &&
+        m_widgets.speechFilterFadeModeCombo->currentData().toString() != QStringLiteral("none");
 }
 
 void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
@@ -1357,24 +1379,31 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
             refresh();
             return;
         }
+        const double offsetSeconds = transcriptOffsetMs() / 1000.0;
+        const double prependSeconds = transcriptPrependMs() / 1000.0;
+        const double postpendSeconds = transcriptPostpendMs() / 1000.0;
+        const double rawSeconds =
+            item->column() == kTranscriptColSourceStart
+                ? qMax(0.0, seconds - offsetSeconds + prependSeconds)
+                : qMax(0.0, seconds - offsetSeconds - postpendSeconds);
         if (item->column() == kTranscriptColSourceStart) {
             const double currentEnd = word->endSeconds;
             const double currentStart = word->startSeconds;
-            if (!qFuzzyCompare(currentStart + 1.0, qMin(seconds, currentEnd) + 1.0)) {
+            if (!qFuzzyCompare(currentStart + 1.0, qMin(rawSeconds, currentEnd) + 1.0)) {
                 if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
                     word->editTags.push_back(QString(kTranscriptEditTimingTag));
                 }
             }
-            word->startSeconds = qMin(seconds, currentEnd);
+            word->startSeconds = qMin(rawSeconds, currentEnd);
         } else {
             const double currentStart = word->startSeconds;
             const double currentEnd = word->endSeconds;
-            if (!qFuzzyCompare(currentEnd + 1.0, qMax(seconds, currentStart) + 1.0)) {
+            if (!qFuzzyCompare(currentEnd + 1.0, qMax(rawSeconds, currentStart) + 1.0)) {
                 if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
                     word->editTags.push_back(QString(kTranscriptEditTimingTag));
                 }
             }
-            word->endSeconds = qMax(seconds, currentStart);
+            word->endSeconds = qMax(rawSeconds, currentStart);
         }
     } else if (item->column() == kTranscriptColText) {
         if (word->text != item->text()) {
@@ -1833,7 +1862,8 @@ void TranscriptTab::onOffsetMsChanged(int value)
 void TranscriptTab::onSpeechFilterFadeModeChanged(int index)
 {
     Q_UNUSED(index);
-    m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo);
+    m_speechFilterEnabled = m_widgets.speechFilterFadeModeCombo &&
+        m_widgets.speechFilterFadeModeCombo->currentData().toString() != QStringLiteral("none");
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});

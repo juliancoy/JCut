@@ -318,7 +318,14 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
     if (m_timeline) {
         const QVector<TimelineClip> clips = m_timeline->clips();
         const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+        int generatedTimingFollowerCount = 0;
         for (const TimelineClip& clip : clips) {
+            if (clip.clipRole == ClipRole::MaskMatte &&
+                clip.locked &&
+                clip.sourceTransformLocked) {
+                ++generatedTimingFollowerCount;
+                continue;
+            }
             const int64_t clipStartSample = clipTimelineStartSamples(clip);
             const int64_t clipDurationSamples = clipTimelineDurationSamples(clip);
             const int64_t clipEndSample = clipStartSample + clipDurationSamples;
@@ -427,6 +434,12 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
                      : QJsonValue()}
             });
         }
+        streams.prepend(QJsonObject{
+            {QStringLiteral("diagnostic"), QStringLiteral("generated_timing_followers_skipped")},
+            {QStringLiteral("count"), generatedTimingFollowerCount},
+            {QStringLiteral("reason"),
+             QStringLiteral("Locked source-transform mask mattes are virtual foreground markers, not independent A/V streams.")}
+        });
     }
 
     QJsonObject audio;
@@ -743,10 +756,16 @@ QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
             QStringLiteral("disabled"),
             QStringLiteral("varispeed"),
             QStringLiteral("time_stretch"),
-            QStringLiteral("time-stretch")
+            QStringLiteral("time-stretch"),
+            QStringLiteral("rubber_band"),
+            QStringLiteral("rubber-band"),
+            QStringLiteral("rubberband"),
+            QStringLiteral("rubber_band_100"),
+            QStringLiteral("rubberband_100"),
+            QStringLiteral("rubber-band-100")
         };
         if (!validValues.contains(raw)) {
-            error = QStringLiteral("audio_warp_mode must be one of: disabled, varispeed, time_stretch");
+            error = QStringLiteral("audio_warp_mode must be one of: disabled, varispeed, time_stretch, rubber_band");
             return QJsonObject{
                 {QStringLiteral("ok"), false},
                 {QStringLiteral("error"), error}

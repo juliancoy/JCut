@@ -214,7 +214,11 @@ void MaskTab::refresh()
         setSpin(m_widgets.erodeSpin, clip->maskErode);
         setSpin(m_widgets.blurSpin, clip->maskBlur);
         setCheck(m_widgets.invertCheck, clip->maskInvert);
-        setCheck(m_widgets.showOnlyCheck, clip->maskShowOnly);
+        const bool showOnlyAvailable = !clip->maskForegroundLayerEnabled;
+        setCheck(m_widgets.showOnlyCheck, showOnlyAvailable && clip->maskShowOnly);
+        if (m_widgets.showOnlyCheck) {
+            m_widgets.showOnlyCheck->setEnabled(showOnlyAvailable);
+        }
         setSpin(m_widgets.opacitySpin, clip->maskOpacity);
         setCheck(m_widgets.gradeEnabledCheck, clip->maskGradeEnabled);
         setSpin(m_widgets.gradeBrightnessSpin, clip->maskGradeBrightness);
@@ -269,7 +273,10 @@ void MaskTab::apply(bool pushHistory)
         clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
         clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
         clip.maskInvert = m_widgets.invertCheck && m_widgets.invertCheck->isChecked();
-        clip.maskShowOnly = m_widgets.showOnlyCheck && m_widgets.showOnlyCheck->isChecked();
+        clip.maskShowOnly =
+            !clip.maskForegroundLayerEnabled &&
+            m_widgets.showOnlyCheck &&
+            m_widgets.showOnlyCheck->isChecked();
         clip.maskOpacity = m_widgets.opacitySpin ? m_widgets.opacitySpin->value() : 1.0;
         clip.maskGradeEnabled = m_widgets.gradeEnabledCheck && m_widgets.gradeEnabledCheck->isChecked();
         clip.maskGradeBrightness = m_widgets.gradeBrightnessSpin ? m_widgets.gradeBrightnessSpin->value() : 0.0;
@@ -320,6 +327,9 @@ void MaskTab::setControlsEnabled(bool enabled)
         if (widget) {
             widget->setEnabled(enabled);
         }
+    }
+    if (enabled && m_widgets.showOnlyCheck) {
+        m_widgets.showOnlyCheck->setEnabled(true);
     }
 }
 

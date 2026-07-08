@@ -2,7 +2,11 @@
 
 #include "timeline_fps.h"
 
+#include <QHash>
 #include <QUuid>
+
+#include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -53,6 +57,31 @@ bool wouldClipConflictWithTrack(const QVector<TimelineClip>& clips, const Timeli
     return false;
 }
 
+bool transformKeyframesEqual(const QVector<TimelineClip::TransformKeyframe>& a,
+                             const QVector<TimelineClip::TransformKeyframe>& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (int i = 0; i < a.size(); ++i) {
+        const TimelineClip::TransformKeyframe& left = a.at(i);
+        const TimelineClip::TransformKeyframe& right = b.at(i);
+        if (left.frame != right.frame ||
+            left.title != right.title ||
+            left.translationX != right.translationX ||
+            left.translationY != right.translationY ||
+            left.rotation != right.rotation ||
+            left.scaleX != right.scaleX ||
+            left.scaleY != right.scaleY ||
+            left.linearInterpolation != right.linearInterpolation ||
+            left.maskRepeatDeltaX != right.maskRepeatDeltaX ||
+            left.maskRepeatDeltaY != right.maskRepeatDeltaY) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int appendGeneratedTrack(QVector<TimelineTrack>& tracks, const QString& trackBaseName)
 {
     TimelineTrack track;
@@ -64,6 +93,56 @@ int appendGeneratedTrack(QVector<TimelineTrack>& tracks, const QString& trackBas
 }
 
 } // namespace
+
+QVector<EffectPresetUiOption> effectPresetUiOptions()
+{
+    return {
+        {QStringLiteral("Off"), ClipEffectPreset::None},
+        {QStringLiteral("Logo ticker rows"), ClipEffectPreset::NewsLogoTicker},
+        {QStringLiteral("Encircle person"), ClipEffectPreset::PersonOrbit},
+        {QStringLiteral("Alternating motion background"), ClipEffectPreset::AlternatingMotionBackground},
+        {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern},
+        {QStringLiteral("Step repeater"), ClipEffectPreset::StepRepeat},
+        {QStringLiteral("Directional trim ticker"), ClipEffectPreset::DirectionalTrimTicker},
+        {QStringLiteral("Source image tiling"), ClipEffectPreset::SourceTile},
+        {QStringLiteral("Vulkan 3D Synth"), ClipEffectPreset::Vulkan3DSynth},
+    };
+}
+
+QVector<TilingPatternUiOption> tilingPatternUiOptions()
+{
+    return {
+        {QStringLiteral("Grid"), ClipTilingPattern::Grid},
+        {QStringLiteral("Encircle"), ClipTilingPattern::Encircle},
+        {QStringLiteral("Spiral XY"), ClipTilingPattern::SpiralXY},
+        {QStringLiteral("Spiral XZ"), ClipTilingPattern::SpiralXZ},
+        {QStringLiteral("Spiral YZ"), ClipTilingPattern::SpiralYZ},
+        {QStringLiteral("Diamond"), ClipTilingPattern::Diamond},
+    };
+}
+
+bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::NewsLogoTicker:
+    case ClipEffectPreset::AlternatingMotionBackground:
+    case ClipEffectPreset::DirectionalTrimTicker:
+    case ClipEffectPreset::SourceTile:
+    case ClipEffectPreset::Vulkan3DSynth:
+        return true;
+    case ClipEffectPreset::None:
+    case ClipEffectPreset::PersonOrbit:
+    case ClipEffectPreset::FreezePattern:
+    case ClipEffectPreset::StepRepeat:
+    default:
+        return false;
+    }
+}
+
+bool effectPresetUsesTilingControls(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::SourceTile;
+}
 
 TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
 {
@@ -77,10 +156,12 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.linkedSourceClipId = sourceId;
     maskClip.generatedFromMaskId = maskId;
     maskClip.syncLockedToSource = true;
-    maskClip.sourceTransformLocked = false;
+    maskClip.sourceTransformLocked = true;
     maskClip.label = sourceClip.label.trimmed().isEmpty()
                          ? QStringLiteral("SAM Mask Matte")
                          : QStringLiteral("%1 Mask Matte").arg(sourceClip.label.trimmed());
+    maskClip.locked = true;
+    maskClip.videoEnabled = true;
     maskClip.hasAudio = false;
     maskClip.audioEnabled = false;
     maskClip.audioLinkedToVideo = false;
@@ -95,6 +176,113 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.maskForegroundLayerEnabled = false;
     maskClip.effectPreset = ClipEffectPreset::None;
     return maskClip;
+}
+
+bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
+{
+    QHash<QString, int> sourceIndexById;
+    for (int i = 0; i < clips.size(); ++i) {
+        const QString id = clips.at(i).id.trimmed();
+        if (!id.isEmpty() && clips.at(i).clipRole != ClipRole::MaskMatte) {
+            sourceIndexById.insert(id, i);
+        }
+    }
+
+    bool changed = false;
+    auto assignIfChanged = [&changed](auto& field, const auto& value) {
+        if (field == value) {
+            return;
+        }
+        field = value;
+        changed = true;
+    };
+
+    for (TimelineClip& clip : clips) {
+        if (clip.clipRole != ClipRole::MaskMatte) {
+            continue;
+        }
+
+        const QString sourceId = clip.linkedSourceClipId.trimmed();
+        assignIfChanged(clip.syncLockedToSource, true);
+        assignIfChanged(clip.sourceTransformLocked, true);
+        assignIfChanged(clip.locked, true);
+        assignIfChanged(clip.videoEnabled, true);
+        assignIfChanged(clip.hasAudio, false);
+        assignIfChanged(clip.audioEnabled, false);
+        assignIfChanged(clip.audioLinkedToVideo, false);
+        assignIfChanged(clip.audioBusId, QString());
+        assignIfChanged(clip.audioSourcePath, QString());
+        assignIfChanged(clip.audioSourceOriginalPath, QString());
+        assignIfChanged(clip.audioSourceStatus, QStringLiteral("generated"));
+        assignIfChanged(clip.audioStreamIndex, -1);
+        assignIfChanged(clip.maskShowOnly, false);
+        assignIfChanged(clip.maskForegroundLayerEnabled, false);
+        assignIfChanged(clip.effectPreset, ClipEffectPreset::None);
+
+        if (!sourceIndexById.contains(sourceId)) {
+            continue;
+        }
+
+        TimelineClip& source = clips[sourceIndexById.value(sourceId)];
+        assignIfChanged(source.maskForegroundLayerEnabled, true);
+        assignIfChanged(source.maskShowOnly, false);
+
+        assignIfChanged(clip.filePath, source.filePath);
+        assignIfChanged(clip.proxyPath, source.proxyPath);
+        assignIfChanged(clip.useProxy, source.useProxy);
+        assignIfChanged(clip.mediaType, source.mediaType);
+        assignIfChanged(clip.sourceKind, source.sourceKind);
+        assignIfChanged(clip.sourceFps, source.sourceFps);
+        assignIfChanged(clip.sourceDurationFrames, source.sourceDurationFrames);
+        assignIfChanged(clip.sourceFrameSize, source.sourceFrameSize);
+        assignIfChanged(clip.sourceInFrame, source.sourceInFrame);
+        assignIfChanged(clip.sourceInSubframeSamples, source.sourceInSubframeSamples);
+        assignIfChanged(clip.startFrame, source.startFrame);
+        assignIfChanged(clip.startSubframeSamples, source.startSubframeSamples);
+        assignIfChanged(clip.durationFrames, source.durationFrames);
+        assignIfChanged(clip.durationSubframeSamples, source.durationSubframeSamples);
+        assignIfChanged(clip.playbackRate, source.playbackRate);
+        assignIfChanged(clip.baseTranslationX, source.baseTranslationX);
+        assignIfChanged(clip.baseTranslationY, source.baseTranslationY);
+        assignIfChanged(clip.baseRotation, source.baseRotation);
+        assignIfChanged(clip.baseScaleX, source.baseScaleX);
+        assignIfChanged(clip.baseScaleY, source.baseScaleY);
+        assignIfChanged(clip.transformSkipAwareTiming, source.transformSkipAwareTiming);
+        assignIfChanged(clip.effectSkipAwareTiming, source.effectSkipAwareTiming);
+        if (!transformKeyframesEqual(clip.transformKeyframes, source.transformKeyframes)) {
+            clip.transformKeyframes = source.transformKeyframes;
+            changed = true;
+        }
+        assignIfChanged(clip.maskEnabled, source.maskEnabled && !source.maskFramesDir.trimmed().isEmpty());
+        assignIfChanged(clip.maskFramesDir, source.maskFramesDir);
+        assignIfChanged(clip.generatedFromMaskId, source.maskFramesDir.trimmed());
+        assignIfChanged(clip.maskFeather, source.maskFeather);
+        assignIfChanged(clip.maskFeatherGamma, source.maskFeatherGamma);
+        assignIfChanged(clip.maskDilate, source.maskDilate);
+        assignIfChanged(clip.maskErode, source.maskErode);
+        assignIfChanged(clip.maskBlur, source.maskBlur);
+        assignIfChanged(clip.maskInvert, source.maskInvert);
+        assignIfChanged(clip.maskOpacity, source.maskOpacity);
+        assignIfChanged(clip.maskGradeEnabled, source.maskGradeEnabled);
+        assignIfChanged(clip.maskGradeBrightness, source.maskGradeBrightness);
+        assignIfChanged(clip.maskGradeContrast, source.maskGradeContrast);
+        assignIfChanged(clip.maskGradeSaturation, source.maskGradeSaturation);
+        assignIfChanged(clip.maskGradeCurvePointsR, source.maskGradeCurvePointsR);
+        assignIfChanged(clip.maskGradeCurvePointsG, source.maskGradeCurvePointsG);
+        assignIfChanged(clip.maskGradeCurvePointsB, source.maskGradeCurvePointsB);
+        assignIfChanged(clip.maskGradeCurvePointsLuma, source.maskGradeCurvePointsLuma);
+        assignIfChanged(clip.maskGradeCurveSmoothingEnabled, source.maskGradeCurveSmoothingEnabled);
+        assignIfChanged(clip.maskDropShadowEnabled, source.maskDropShadowEnabled);
+        assignIfChanged(clip.maskDropShadowRadius, source.maskDropShadowRadius);
+        assignIfChanged(clip.maskDropShadowOffsetX, source.maskDropShadowOffsetX);
+        assignIfChanged(clip.maskDropShadowOffsetY, source.maskDropShadowOffsetY);
+        assignIfChanged(clip.maskDropShadowOpacity, source.maskDropShadowOpacity);
+        assignIfChanged(clip.maskRepeatEnabled, source.maskRepeatEnabled);
+        assignIfChanged(clip.maskRepeatDeltaX, source.maskRepeatDeltaX);
+        assignIfChanged(clip.maskRepeatDeltaY, source.maskRepeatDeltaY);
+    }
+
+    return changed;
 }
 
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex)
@@ -173,14 +361,34 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
     const QString& transcriptPath,
     const QVector<TranscriptSection>& sections,
     int trackIndex,
-    int64_t titleDurationFrames)
+    int64_t titleDurationFrames,
+    int64_t titleStartDelayFrames)
+{
+    SpeakerTitleFlyInSettings settings;
+    settings.titleDurationFrames = titleDurationFrames;
+    settings.titleStartDelayFrames = titleStartDelayFrames;
+    return makeSpeakerTitleClipsForTranscriptIntroductions(
+        sourceClip,
+        transcriptPath,
+        sections,
+        trackIndex,
+        settings);
+}
+
+QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
+    const TimelineClip& sourceClip,
+    const QString& transcriptPath,
+    const QVector<TranscriptSection>& sections,
+    int trackIndex,
+    const SpeakerTitleFlyInSettings& settings)
 {
     QVector<TimelineClip> clips;
     if (sections.isEmpty() || sourceClip.durationFrames <= 0) {
         return clips;
     }
 
-    const int64_t boundedDuration = qMax<int64_t>(kTimelineFps, titleDurationFrames);
+    const int64_t boundedDuration = qMax<int64_t>(kTimelineFps, settings.titleDurationFrames);
+    const int64_t startDelay = qMax<int64_t>(0, settings.titleStartDelayFrames);
     const int64_t sourceStart = sourceClip.sourceInFrame;
     const int64_t sourceEndExclusive =
         sourceStart + qMax<int64_t>(1, qRound64(sourceClip.durationFrames * qMax<qreal>(0.001, sourceClip.playbackRate)));
@@ -206,7 +414,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
                 qMax<qreal>(0.001, sourceClip.playbackRate);
             const int64_t startFrame =
                 qBound<int64_t>(sourceClip.startFrame,
-                                sourceClip.startFrame + qRound64(localTimelineFrames),
+                                sourceClip.startFrame + qRound64(localTimelineFrames) + startDelay,
                                 qMax<int64_t>(sourceClip.startFrame, clipTimelineEnd - 1));
             const int64_t duration = qMin<int64_t>(boundedDuration, qMax<int64_t>(1, clipTimelineEnd - startFrame));
             const int64_t titleLookupFrame = qMax<int64_t>(
@@ -235,6 +443,11 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             if (title.isEmpty()) {
                 title = speakerId;
             }
+            const SpeakerProfile speakerProfile = transcriptSpeakerProfileForSourceFrame(
+                transcriptPath,
+                sections,
+                titleLookupFrame,
+                TranscriptOverlayTiming{0, 0});
 
             TimelineClip titleClip;
             titleClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -254,17 +467,44 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             titleClip.color = QColor(QStringLiteral("#255f85"));
 
             TimelineClip::TitleKeyframe base;
-            base.text = title;
+            base.text = title.simplified();
             base.translationY = 0.68;
-            base.fontSize = 48.0;
+            base.fontSize = qBound<qreal>(12.0, settings.titleFontSize, 220.0);
+            base.color = QColor(QStringLiteral("#f7fbff"));
+            if (speakerProfile.primaryColor.isValid()) {
+                base.color = speakerProfile.primaryColor;
+            }
+            base.logoPath = speakerProfile.logoPath;
+            base.textMaterialStyle = settings.titleTextMaterialStyle;
+            base.textPatternImagePath = settings.titleTextPatternImagePath;
+            base.textPatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
             base.windowEnabled = true;
-            base.windowOpacity = 0.62;
+            base.windowColor = QColor(QStringLiteral("#07111d"));
+            if (speakerProfile.secondaryColor.isValid()) {
+                base.windowColor = speakerProfile.secondaryColor;
+            }
+            base.windowOpacity = 0.72;
             base.windowPadding = 24.0;
+            base.windowWidth = qMax<qreal>(0.0, settings.titleBoxWidth);
             base.windowFrameEnabled = true;
+            base.windowFrameColor = QColor(QStringLiteral("#56c7ff"));
+            if (speakerProfile.accentColor.isValid()) {
+                base.windowFrameColor = speakerProfile.accentColor;
+            }
             base.windowFrameOpacity = 0.85;
             base.windowFrameWidth = 2.0;
+            base.windowFrameMaterialStyle = settings.titleBorderMaterialStyle;
+            base.windowFramePatternImagePath = settings.titleBorderPatternImagePath;
+            base.windowFramePatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
+            base.dropShadowEnabled = true;
+            base.dropShadowOpacity = 0.82;
+            base.dropShadowOffsetX = 3.0;
+            base.dropShadowOffsetY = 5.0;
+            base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
+            base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
+            base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
             titleClip.titleKeyframes = {base};
-            applyNewsLowerThirdFlyInPreset(titleClip);
+            applyNewsLowerThirdFlyInPreset(titleClip, settings);
             clips.push_back(titleClip);
         }
     }
@@ -272,16 +512,50 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
     return clips;
 }
 
-bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip)
+int applySpeakerTitleFlyInsToSourceClip(TimelineClip& sourceClip,
+                                        const QString& transcriptPath,
+                                        const QVector<TranscriptSection>& sections,
+                                        const SpeakerTitleFlyInSettings& settings)
+{
+    QVector<TimelineClip> titleClips = makeSpeakerTitleClipsForTranscriptIntroductions(
+        sourceClip,
+        transcriptPath,
+        sections,
+        sourceClip.trackIndex,
+        settings);
+
+    QVector<TimelineClip::TitleKeyframe> sourceKeyframes;
+    for (const TimelineClip& titleClip : titleClips) {
+        const int64_t titleStartLocalFrame =
+            qMax<int64_t>(0, titleClip.startFrame - sourceClip.startFrame);
+        for (TimelineClip::TitleKeyframe keyframe : titleClip.titleKeyframes) {
+            keyframe.frame = qBound<int64_t>(
+                0,
+                titleStartLocalFrame + qMax<int64_t>(0, keyframe.frame),
+                qMax<int64_t>(0, sourceClip.durationFrames - 1));
+            sourceKeyframes.push_back(keyframe);
+        }
+    }
+
+    std::sort(sourceKeyframes.begin(),
+              sourceKeyframes.end(),
+              [](const TimelineClip::TitleKeyframe& a, const TimelineClip::TitleKeyframe& b) {
+                  return a.frame < b.frame;
+              });
+    sourceClip.titleKeyframes = sourceKeyframes;
+    return titleClips.size();
+}
+
+bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInSettings& settings)
 {
     if (clip.mediaType != ClipMediaType::Title) {
         return false;
     }
 
-    const int64_t duration = qMax<int64_t>(static_cast<int64_t>(kTimelineFps * 3), clip.durationFrames);
-    const int64_t inEnd = qMin<int64_t>(duration - 1, qRound64(kTimelineFps * 0.35));
+    const int64_t duration = qMax<int64_t>(static_cast<int64_t>(kTimelineFps), clip.durationFrames);
+    const int64_t inEnd = qMin<int64_t>(duration - 1, qMax<int64_t>(1, settings.flyInFrames));
     const int64_t holdEnd =
-        qMin<int64_t>(duration - 1, qMax<int64_t>(inEnd + 1, duration - qRound64(kTimelineFps * 0.45)));
+        qMin<int64_t>(duration - 1, qMax<int64_t>(inEnd + 1, duration - qMax<int64_t>(1, settings.flyOutFrames)));
     const int64_t outEnd = duration - 1;
 
     TimelineClip::TitleKeyframe base =
@@ -289,21 +563,161 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip)
     if (base.text.trimmed().isEmpty()) {
         base.text = clip.label.trimmed().isEmpty() ? QStringLiteral("Speaker Name") : clip.label;
     }
-    base.translationY = qBound<qreal>(-0.95, base.translationY == 0.0 ? 0.68 : base.translationY, 0.95);
+    constexpr qreal kDefaultLowerThirdX = 0.0;
+    constexpr qreal kDefaultLowerThirdY = 112.0;
+    constexpr qreal kOffscreenX = 520.0;
+    constexpr qreal kVerticalFlyOffset = 190.0;
+    if (std::abs(base.translationY) < 4.0) {
+        base.translationY = kDefaultLowerThirdY;
+    }
     base.windowEnabled = true;
     base.windowOpacity = qMax<qreal>(base.windowOpacity, 0.55);
     base.windowPadding = qMax<qreal>(base.windowPadding, 22.0);
+    base.windowFrameEnabled = true;
+    base.windowFrameOpacity = qMax<qreal>(base.windowFrameOpacity, 0.78);
+    base.windowFrameWidth = qMax<qreal>(base.windowFrameWidth, 2.0);
     base.dropShadowEnabled = true;
+    base.dropShadowOpacity = qMax<qreal>(base.dropShadowOpacity, 0.72);
+    base.textMaterialStyle = settings.titleTextMaterialStyle;
+    base.textPatternImagePath = settings.titleTextPatternImagePath;
+    base.textPatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
+    base.windowFrameMaterialStyle = settings.titleBorderMaterialStyle;
+    base.windowFramePatternImagePath = settings.titleBorderPatternImagePath;
+    base.windowFramePatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
+    base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
+    base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
+    base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
     base.linearInterpolation = true;
+
+    if (settings.style == SpeakerTitleFlyInStyle::WrapAroundSpeaker) {
+        base.translationY = std::abs(base.translationY) < 4.0 ? kDefaultLowerThirdY : base.translationY;
+        base.windowPadding = qMin<qreal>(base.windowPadding, 14.0);
+        const int64_t flyFrames = qBound<int64_t>(4, settings.flyInFrames, qMax<int64_t>(4, duration - 1));
+        const int64_t arriveFrame = qBound<int64_t>(flyFrames + 1, flyFrames + qMax<int64_t>(2, flyFrames / 5), duration - 1);
+        const int64_t holdFrame =
+            qMin<int64_t>(duration - 1, qMax<int64_t>(arriveFrame + 1, duration - qMax<int64_t>(1, settings.flyOutFrames)));
+        const int64_t outFrame = duration - 1;
+        const qreal radius = qBound<qreal>(0.24, settings.wrapRadius, 1.80);
+        const qreal depth = qBound<qreal>(0.0, settings.wrapDepth, 1.0);
+        const qreal baseFontSize = base.fontSize;
+        const qreal orbitFontSize = qMin<qreal>(baseFontSize, 30.0);
+        const QString orbitText = base.text.simplified();
+        const qreal startAngle = settings.wrapStartAngleDegrees * M_PI / 180.0;
+        const qreal endAngle = settings.wrapEndAngleDegrees * M_PI / 180.0;
+        const qreal pitch = qBound<qreal>(-80.0, settings.wrapPitchDegrees, 80.0) * M_PI / 180.0;
+        const qreal roll = settings.wrapRollDegrees * M_PI / 180.0;
+        const qreal cosPitch = std::cos(pitch);
+        const qreal sinPitch = std::sin(pitch);
+        const qreal cosRoll = std::cos(roll);
+        const qreal sinRoll = std::sin(roll);
+
+        auto smoothStep = [](qreal t) {
+            const qreal x = qBound<qreal>(0.0, t, 1.0);
+            return x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+        };
+
+        auto orbitKeyframe = [&](qreal frameT) {
+            TimelineClip::TitleKeyframe keyframe = base;
+            keyframe.text = orbitText;
+            keyframe.windowPadding = qMin<qreal>(keyframe.windowPadding, 10.0);
+            keyframe.frame = qBound<int64_t>(
+                0,
+                static_cast<int64_t>(qRound64(frameT * static_cast<qreal>(flyFrames))),
+                duration - 1);
+            const qreal t = smoothStep(frameT);
+            const qreal angle = startAngle + (endAngle - startAngle) * t;
+            const qreal angleDegrees = angle * 180.0 / M_PI;
+            qreal x = std::sin(angle) * radius;
+            qreal y = 0.0;
+            qreal z = -std::cos(angle);
+            const qreal pitchedY = y * cosPitch - z * sinPitch;
+            const qreal pitchedZ = y * sinPitch + z * cosPitch;
+            y = pitchedY;
+            z = pitchedZ;
+            const qreal rolledX = x * cosRoll - y * sinRoll;
+            const qreal rolledY = x * sinRoll + y * cosRoll;
+            x = rolledX;
+            y = rolledY;
+
+            const qreal depthScale = qBound<qreal>(0.48, 1.0 + z * depth * 0.26, 1.22);
+            const bool behindMask = z < -0.42 && std::abs(x) < radius * 0.42;
+            const qreal visibility = behindMask
+                ? qBound<qreal>(0.0, 0.12 - depth * 0.12, 0.12)
+                : qBound<qreal>(0.18, 0.72 + z * depth * 0.28, 1.0);
+
+            keyframe.translationX = qBound<qreal>(-620.0, x * 360.0, 620.0);
+            keyframe.translationY = qBound<qreal>(-220.0, y * 160.0 - z * 34.0, 220.0);
+            keyframe.fontSize = orbitFontSize * depthScale;
+            keyframe.opacity = visibility;
+            keyframe.vulkan3DEnabled = true;
+            keyframe.vulkan3DYawDegrees = qBound<qreal>(-62.0, -angleDegrees * 0.52, 62.0);
+            keyframe.vulkan3DPitchDegrees = settings.wrapPitchDegrees;
+            keyframe.vulkan3DRollDegrees = settings.wrapRollDegrees;
+            keyframe.vulkan3DDepth = z * depth;
+            keyframe.vulkan3DScale = depthScale;
+            if (behindMask) {
+                keyframe.windowOpacity = 0.0;
+                keyframe.windowFrameOpacity = 0.0;
+                keyframe.dropShadowOpacity = 0.0;
+            } else {
+                keyframe.windowOpacity = base.windowOpacity * qBound<qreal>(0.38, visibility, 1.0);
+                keyframe.windowFrameOpacity = base.windowFrameOpacity * qBound<qreal>(0.42, visibility, 1.0);
+                keyframe.dropShadowOpacity = base.dropShadowOpacity * qBound<qreal>(0.35, visibility, 1.0);
+            }
+            return keyframe;
+        };
+
+        QVector<TimelineClip::TitleKeyframe> keyframes;
+        constexpr int kOrbitSamples = 19;
+        keyframes.reserve(kOrbitSamples + 3);
+        for (int sample = 0; sample < kOrbitSamples; ++sample) {
+            const qreal t = static_cast<qreal>(sample) / static_cast<qreal>(kOrbitSamples - 1);
+            keyframes.push_back(orbitKeyframe(t));
+        }
+        keyframes.first().opacity = 0.0;
+        keyframes.first().windowOpacity = 0.0;
+        keyframes.first().windowFrameOpacity = 0.0;
+        keyframes.first().dropShadowOpacity = 0.0;
+
+        TimelineClip::TitleKeyframe arrived = base;
+        arrived.frame = arriveFrame;
+        arrived.translationX = kDefaultLowerThirdX;
+        arrived.opacity = 1.0;
+        arrived.vulkan3DEnabled = false;
+        arrived.vulkan3DYawDegrees = 0.0;
+        arrived.vulkan3DPitchDegrees = 0.0;
+        arrived.vulkan3DRollDegrees = 0.0;
+        arrived.vulkan3DDepth = 0.0;
+        arrived.vulkan3DScale = 1.0;
+
+        TimelineClip::TitleKeyframe hold = arrived;
+        hold.frame = holdFrame;
+
+        TimelineClip::TitleKeyframe after = arrived;
+        after.frame = outFrame;
+        after.translationX = kOffscreenX;
+        after.translationY = base.translationY - 0.06;
+        after.fontSize = baseFontSize * 0.92;
+        after.opacity = 0.0;
+
+        keyframes.push_back(arrived);
+        keyframes.push_back(hold);
+        keyframes.push_back(after);
+        std::sort(keyframes.begin(), keyframes.end(), [](const TimelineClip::TitleKeyframe& a,
+                                                         const TimelineClip::TitleKeyframe& b) {
+            return a.frame < b.frame;
+        });
+        clip.titleKeyframes = keyframes;
+        return true;
+    }
 
     TimelineClip::TitleKeyframe before = base;
     before.frame = 0;
-    before.translationX = -1.28;
     before.opacity = 0.0;
 
     TimelineClip::TitleKeyframe arrived = base;
     arrived.frame = inEnd;
-    arrived.translationX = -0.34;
+    arrived.translationX = kDefaultLowerThirdX;
     arrived.opacity = 1.0;
 
     TimelineClip::TitleKeyframe hold = arrived;
@@ -311,8 +725,35 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip)
 
     TimelineClip::TitleKeyframe after = arrived;
     after.frame = outEnd;
-    after.translationX = 1.28;
     after.opacity = 0.0;
+
+    switch (settings.style) {
+    case SpeakerTitleFlyInStyle::SlideFromRight:
+        before.translationX = kOffscreenX;
+        before.translationY = arrived.translationY;
+        after.translationX = -kOffscreenX;
+        after.translationY = arrived.translationY;
+        break;
+    case SpeakerTitleFlyInStyle::RiseFromBottom:
+        before.translationX = arrived.translationX;
+        before.translationY = arrived.translationY + kVerticalFlyOffset;
+        after.translationX = arrived.translationX;
+        after.translationY = arrived.translationY + kVerticalFlyOffset * 0.65;
+        break;
+    case SpeakerTitleFlyInStyle::DropFromTop:
+        before.translationX = arrived.translationX;
+        before.translationY = arrived.translationY - kVerticalFlyOffset;
+        after.translationX = arrived.translationX;
+        after.translationY = arrived.translationY + kVerticalFlyOffset * 0.65;
+        break;
+    case SpeakerTitleFlyInStyle::SlideFromLeft:
+    default:
+        before.translationX = -kOffscreenX;
+        before.translationY = arrived.translationY;
+        after.translationX = kOffscreenX;
+        after.translationY = arrived.translationY;
+        break;
+    }
 
     clip.titleKeyframes = {before, arrived, hold, after};
     return true;

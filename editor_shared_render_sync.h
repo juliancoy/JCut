@@ -11,6 +11,8 @@ QString playbackClockSourceLabel(PlaybackClockSource source);
 QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode);
 PlaybackAudioWarpMode playbackAudioWarpModeFromString(const QString& value);
 QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode);
+bool playbackAudioWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode);
+bool playbackAudioWarpModeForcesUnityTimeStretch(PlaybackAudioWarpMode mode);
 qreal normalizedPlaybackSpeed(qreal speed);
 PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, PlaybackAudioWarpMode mode);
 qreal effectivePlaybackAudioWarpRate(qreal playbackSpeed, PlaybackAudioWarpMode mode);

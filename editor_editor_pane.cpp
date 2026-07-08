@@ -133,7 +133,9 @@ void EditorWindow::connectTimelineSignals()
         m_preview->setClipCount(m_timeline->clips().size());
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
-        m_preview->setExportRanges(effectivePlaybackRanges());
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+        m_preview->setExportRanges(ranges);
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
         m_preview->endBulkUpdate();

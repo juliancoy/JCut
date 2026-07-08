@@ -47,6 +47,7 @@ public:
     void setTimelineTracks(const QVector<TimelineTrack>& tracks) override;
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) override;
     void setExportRanges(const QVector<ExportRangeSegment>& ranges) override;
+    void setPlaybackTimingContext(const PlaybackTimingContext& timing) override;
     void setUseProxyMedia(bool useProxyMedia) override;
     void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString()) override;
     void beginBulkUpdate() override;

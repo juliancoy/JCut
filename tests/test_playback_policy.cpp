@@ -2,6 +2,7 @@
 
 #include "../editor_shared.h"
 #include "../playback_clock_coordinator.h"
+#include "../playback_timing_context.h"
 
 #include <QFile>
 
@@ -35,6 +36,8 @@ private slots:
     void testAudioFeedbackProjectionUsesSpeechRangeAnchor();
     void testSystemClockDecisionCarriesTransportSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
+    void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
+    void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
 };
 
@@ -60,8 +63,12 @@ void TestPlaybackPolicy::testAudioWarpRoundTrip() {
              PlaybackAudioWarpMode::Varispeed);
     QCOMPARE(playbackAudioWarpModeFromString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::TimeStretch)),
              PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(playbackAudioWarpModeFromString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::RubberBand)),
+             PlaybackAudioWarpMode::RubberBand);
     QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("time-stretch")),
              PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("rubberband_100")),
+             PlaybackAudioWarpMode::RubberBand);
     QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("invalid")),
              PlaybackAudioWarpMode::Disabled);
 }
@@ -71,6 +78,7 @@ void TestPlaybackPolicy::testEffectiveWarpRate() {
     QCOMPARE(effectivePlaybackAudioWarpRate(0.05, PlaybackAudioWarpMode::Varispeed), 0.1);
     QCOMPARE(effectivePlaybackAudioWarpRate(4.0, PlaybackAudioWarpMode::TimeStretch), 3.0);
     QCOMPARE(effectivePlaybackAudioWarpRate(1.5, PlaybackAudioWarpMode::Varispeed), 1.5);
+    QCOMPARE(effectivePlaybackAudioWarpRate(1.0, PlaybackAudioWarpMode::RubberBand), 1.0);
 }
 
 void TestPlaybackPolicy::testNormalizedAudioWarpMode() {
@@ -88,6 +96,85 @@ void TestPlaybackPolicy::testNormalizedAudioWarpMode() {
              PlaybackAudioWarpMode::TimeStretch);
     QCOMPARE(normalizedPlaybackAudioWarpMode(1.5, PlaybackAudioWarpMode::Varispeed),
              PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(1.0, PlaybackAudioWarpMode::RubberBand),
+             PlaybackAudioWarpMode::RubberBand);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(1.5, PlaybackAudioWarpMode::RubberBand),
+             PlaybackAudioWarpMode::RubberBand);
+}
+
+void TestPlaybackPolicy::testFrameCrossfadeMapsOutgoingTailToIncomingHead()
+{
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{10, 19},
+        ExportRangeSegment{40, 49},
+    };
+    timing.frameCrossfadeEnabled = true;
+    timing.frameCrossfadeFrames = 4;
+
+    PlaybackFrameCrossfade before = playbackFrameCrossfadeAtTimelineFrame(15.0, timing);
+    QVERIFY(!before.active);
+
+    PlaybackFrameCrossfade first = playbackFrameCrossfadeAtTimelineFrame(16.0, timing);
+    QVERIFY(first.active);
+    QCOMPARE(first.secondaryTimelineFrame, int64_t(40));
+    QVERIFY(first.secondaryOpacity > 0.0f);
+    QVERIFY(first.secondaryOpacity < 0.1f);
+
+    PlaybackFrameCrossfade last = playbackFrameCrossfadeAtTimelineFrame(19.0, timing);
+    QVERIFY(last.active);
+    QCOMPARE(last.secondaryTimelineFrame, int64_t(43));
+    QVERIFY(last.secondaryOpacity > 0.49f);
+    QVERIFY(last.secondaryOpacity < 0.51f);
+
+    PlaybackFrameCrossfade gap = playbackFrameCrossfadeAtTimelineFrame(30.0, timing);
+    QVERIFY(!gap.active);
+
+    PlaybackFrameCrossfade incoming = playbackFrameCrossfadeAtTimelineFrame(40.0, timing);
+    QVERIFY(incoming.active);
+    QCOMPARE(incoming.secondaryTimelineFrame, int64_t(16));
+    QVERIFY(incoming.secondaryOpacity > 0.49f);
+    QVERIFY(incoming.secondaryOpacity < 0.51f);
+
+    PlaybackFrameCrossfade incomingEnd = playbackFrameCrossfadeAtTimelineFrame(43.0, timing);
+    QVERIFY(incomingEnd.active);
+    QCOMPARE(incomingEnd.secondaryTimelineFrame, int64_t(19));
+    QVERIFY(incomingEnd.secondaryOpacity < 0.1f);
+
+    PlaybackFrameCrossfade after = playbackFrameCrossfadeAtTimelineFrame(44.0, timing);
+    QVERIFY(!after.active);
+}
+
+void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap()
+{
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{10, 19},
+        ExportRangeSegment{40, 49},
+    };
+    timing.frameTransitionMode = PlaybackFrameTransitionMode::SmoothStepSpeedThrough;
+    timing.frameCrossfadeFrames = 4;
+
+    QCOMPARE(playbackVisualTimelineFramePosition(15.0, timing), 15.0);
+
+    const qreal first = playbackVisualTimelineFramePosition(16.0, timing);
+    QVERIFY(first > 19.0);
+    QVERIFY(first < 21.0);
+
+    const qreal last = playbackVisualTimelineFramePosition(19.0, timing);
+    QVERIFY(last > 29.0);
+    QVERIFY(last < 30.0);
+
+    QCOMPARE(playbackVisualTimelineFramePosition(30.0, timing), last);
+
+    const qreal incoming = playbackVisualTimelineFramePosition(40.0, timing);
+    QCOMPARE(incoming, last);
+
+    const qreal incomingEnd = playbackVisualTimelineFramePosition(43.0, timing);
+    QVERIFY(incomingEnd > 38.0);
+    QVERIFY(incomingEnd < 40.0);
+
+    QCOMPARE(playbackVisualTimelineFramePosition(44.0, timing), 44.0);
 }
 
 void TestPlaybackPolicy::testSystemClockSourcePolicy() {
@@ -112,6 +199,12 @@ void TestPlaybackPolicy::testPitchPreservingAudioGatePolicy() {
     QVERIFY(pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::TimeStretch,
                                                     1.5,
                                                     true));
+    QVERIFY(pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::RubberBand,
+                                                    1.0,
+                                                    true));
+    QVERIFY(!pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::RubberBand,
+                                                     1.0,
+                                                     false));
 
 }
 

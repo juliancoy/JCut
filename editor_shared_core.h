@@ -64,6 +64,10 @@ struct SpeakerProfile {
     QString organization;
     QString description;
     QString avatarPath;
+    QString logoPath;
+    QColor primaryColor;
+    QColor secondaryColor;
+    QColor accentColor;
 };
 
 struct TranscriptOverlayLine {

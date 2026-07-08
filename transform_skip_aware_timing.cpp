@@ -1,5 +1,9 @@
 #include "transform_skip_aware_timing.h"
 
+#include "editor_timeline_types.h"
+
+#include "editor_shared_transcript.h"
+
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -181,6 +185,37 @@ QVector<ExportRangeSegment> activeTransformTimelineRanges() {
     QMutexLocker locker(&transformTimelineRangesMutex());
     return transformTimelineRangesStorage();
 }
+
+qreal baseClipLocalFramePosition(const TimelineClip& clip, qreal timelineFramePosition) {
+    return qBound<qreal>(
+        0.0,
+        timelineFramePosition - static_cast<qreal>(clip.startFrame),
+        static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1)));
+}
+
+qreal transcriptPlaybackDurationForClipSpan(const TimelineClip& clip,
+                                            qreal startLocalFrame,
+                                            qreal endLocalFrame,
+                                            qreal localFrame) {
+    const QVector<TranscriptSpeechRange> ranges = loadTranscriptSpeechRanges(
+        activeTranscriptPathForClip(clip));
+    if (ranges.isEmpty()) {
+        return qMax<qreal>(0.0, localFrame - startLocalFrame);
+    }
+
+    const qreal clipStartSourceFrame = static_cast<qreal>(clip.sourceInFrame);
+    const qreal clipEndSourceFrame =
+        clipStartSourceFrame + qMax<qreal>(1.0, static_cast<qreal>(clip.durationFrames));
+    const qreal startSourceFrame = clipStartSourceFrame + qMax<qreal>(0.0, startLocalFrame);
+    const qreal frameSourceFrame =
+        clipStartSourceFrame + qBound<qreal>(startLocalFrame, localFrame, endLocalFrame);
+
+    const qreal effectiveStart =
+        effectiveDurationBeforeFrame(ranges, clipStartSourceFrame, clipEndSourceFrame, startSourceFrame);
+    const qreal effectiveLocal =
+        effectiveDurationBeforeFrame(ranges, clipStartSourceFrame, clipEndSourceFrame, frameSourceFrame);
+    return qMax<qreal>(0.0, effectiveLocal - effectiveStart);
+}
 }  // namespace
 
 void setTransformSkipAwareTimelineRanges(const QVector<ExportRangeSegment>& ranges) {
@@ -210,10 +245,81 @@ void setTransformSkipAwareTimelineRanges(const QVector<ExportRangeSegment>& rang
     transformTimelineRangesStorage() = merged;
 }
 
+PlaybackTimingContext activePlaybackTimingContext() {
+    PlaybackTimingContext timing;
+    timing.playbackRanges = activeTransformTimelineRanges();
+    return timing;
+}
+
+qreal clipPlaybackFramePositionForTimelineFrame(const TimelineClip& clip,
+                                                qreal timelineFramePosition) {
+    return clipPlaybackFramePositionForTimelineFrame(clip, timelineFramePosition, activePlaybackTimingContext());
+}
+
+qreal clipPlaybackFramePositionForTimelineFrame(const TimelineClip& clip,
+                                                qreal timelineFramePosition,
+                                                const PlaybackTimingContext& timing) {
+    const qreal boundedTimelineFrame =
+        qBound<qreal>(static_cast<qreal>(clip.startFrame),
+                      timelineFramePosition,
+                      static_cast<qreal>(clip.startFrame) +
+                          qMax<qreal>(0.0, static_cast<qreal>(clip.durationFrames)));
+    const qreal localFrame = baseClipLocalFramePosition(clip, timelineFramePosition);
+
+    const QVector<ExportRangeSegment>& timelineRanges = timing.playbackRanges;
+    if (!timelineRanges.isEmpty()) {
+        const qreal effectiveStart =
+            effectiveTimelineDurationBeforeFrame(timelineRanges, static_cast<qreal>(clip.startFrame));
+        const qreal effectiveLocal =
+            effectiveTimelineDurationBeforeFrame(timelineRanges, boundedTimelineFrame);
+        return qMax<qreal>(0.0, effectiveLocal - effectiveStart);
+    }
+
+    if (clip.transformSkipAwareTiming && !clip.filePath.isEmpty()) {
+        return transcriptPlaybackDurationForClipSpan(clip, 0.0, static_cast<qreal>(clip.durationFrames), localFrame);
+    }
+
+    return localFrame;
+}
+
+qreal clipPlaybackDurationFrames(const TimelineClip& clip) {
+    return clipPlaybackDurationFrames(clip, activePlaybackTimingContext());
+}
+
+qreal clipPlaybackDurationFrames(const TimelineClip& clip,
+                                 const PlaybackTimingContext& timing) {
+    const qreal duration = qMax<qreal>(0.0, static_cast<qreal>(clip.durationFrames));
+    const QVector<ExportRangeSegment>& timelineRanges = timing.playbackRanges;
+    if (!timelineRanges.isEmpty()) {
+        const qreal startTimelineFrame = static_cast<qreal>(clip.startFrame);
+        const qreal endTimelineFrame = startTimelineFrame + duration;
+        const qreal effectiveStart =
+            effectiveTimelineDurationBeforeFrame(timelineRanges, startTimelineFrame);
+        const qreal effectiveEnd =
+            effectiveTimelineDurationBeforeFrame(timelineRanges, endTimelineFrame);
+        return qMax<qreal>(0.0, effectiveEnd - effectiveStart);
+    }
+
+    if (clip.transformSkipAwareTiming && !clip.filePath.isEmpty()) {
+        return transcriptPlaybackDurationForClipSpan(clip, 0.0, duration, duration);
+    }
+
+    return duration;
+}
+
 qreal interpolationFactorForTransformFrames(const TimelineClip& clip,
                                             qreal startLocalFrame,
                                             qreal endLocalFrame,
                                             qreal localFrame) {
+    return interpolationFactorForTransformFrames(
+        clip, startLocalFrame, endLocalFrame, localFrame, activePlaybackTimingContext());
+}
+
+qreal interpolationFactorForTransformFrames(const TimelineClip& clip,
+                                            qreal startLocalFrame,
+                                            qreal endLocalFrame,
+                                            qreal localFrame,
+                                            const PlaybackTimingContext& timing) {
     if (endLocalFrame <= startLocalFrame) {
         return 0.0;
     }
@@ -224,7 +330,7 @@ qreal interpolationFactorForTransformFrames(const TimelineClip& clip,
         return baseT;
     }
 
-    const QVector<ExportRangeSegment> timelineRanges = activeTransformTimelineRanges();
+    const QVector<ExportRangeSegment>& timelineRanges = timing.playbackRanges;
     if (!timelineRanges.isEmpty()) {
         const qreal startTimelineFrame = static_cast<qreal>(clip.startFrame) + qMax<qreal>(0.0, startLocalFrame);
         const qreal endTimelineFrame = static_cast<qreal>(clip.startFrame) + qMax<qreal>(0.0, endLocalFrame);

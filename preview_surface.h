@@ -1,7 +1,8 @@
 #pragma once
 
-#include "background_fill_effect.h"
+#include "background_fill_effect_fwd.h"
 #include "loiacono/spectrum_settings_dialog.h"
+#include "playback_timing_context.h"
 
 #include <QColor>
 #include <QImage>
@@ -88,6 +89,7 @@ public:
     virtual void setTimelineTracks(const QVector<TimelineTrack>& tracks) = 0;
     virtual void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) = 0;
     virtual void setExportRanges(const QVector<ExportRangeSegment>& ranges) = 0;
+    virtual void setPlaybackTimingContext(const PlaybackTimingContext& timing) = 0;
     virtual void setUseProxyMedia(bool useProxyMedia) = 0;
     virtual void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString()) = 0;
     virtual void beginBulkUpdate() = 0;

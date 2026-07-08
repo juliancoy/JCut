@@ -1,5 +1,7 @@
 #include "render_qt_compat.h"
 
+#include "background_fill_effect.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>

@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "auto_sync_plan.h"
 #include "processing_job_manifest.h"
 #include <QApplication>
 #include <QDialog>
@@ -223,6 +224,23 @@ bool parseSyncAction(const QString& value, RenderSyncAction* actionOut) {
         return true;
     }
     return false;
+}
+
+QString syncAudioPathForClip(const TimelineClip& clip) {
+    if (!clip.audioSourcePath.trimmed().isEmpty()) {
+        const QFileInfo audioInfo(clip.audioSourcePath);
+        if (audioInfo.exists() && audioInfo.isFile()) {
+            return audioInfo.absoluteFilePath();
+        }
+    }
+    const QString mediaPath = playbackMediaPathForClip(clip);
+    const QFileInfo mediaInfo(mediaPath);
+    return mediaInfo.exists() && mediaInfo.isFile() ? mediaInfo.absoluteFilePath() : QString();
+}
+
+double syncDetectionConfidence(const QJsonObject& root) {
+    const QJsonObject metadata = root.value(QStringLiteral("metadata")).toObject();
+    return metadata.value(QStringLiteral("confidence")).toDouble(0.0);
 }
 
 struct ShellRunResult {
@@ -1580,72 +1598,40 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
     }
 
     QVector<TimelineClip> clips = m_timeline->clips();
-    QVector<const TimelineClip*> selected;
-    selected.reserve(selectedClipIds.size());
-    for (const TimelineClip& clip : clips) {
-        if (selectedClipIds.contains(clip.id)) {
-            selected.push_back(&clip);
-        }
-    }
-    if (selected.isEmpty()) {
+    if (selectedClipIds.isEmpty()) {
         return;
     }
 
-    QVector<TimelineClip> visualClips;
-    QVector<TimelineClip> audioClips;
-    for (const TimelineClip* clip : selected) {
-        if (!clip) {
-            continue;
-        }
-        if (clipHasVisuals(*clip)) {
-            visualClips.push_back(*clip);
-        }
-        if (clip->hasAudio || clip->mediaType == ClipMediaType::Audio) {
-            audioClips.push_back(*clip);
-        }
-    }
+    const AutoSyncSelectionPlan syncPlan = buildAutoSyncSelectionPlan(
+        clips,
+        selectedClipIds,
+        [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+        [](const TimelineClip& clip) { return syncAudioPathForClip(clip); },
+        [](const TimelineClip& clip) { return playbackMediaPathForClip(clip); });
 
-    if (visualClips.isEmpty() || audioClips.isEmpty()) {
+    if (!syncPlan.ok &&
+        syncPlan.message == QStringLiteral("Select at least one clip with audio to use as the sync anchor.")) {
         QMessageBox::information(this,
                                  QStringLiteral("Sync"),
-                                 QStringLiteral("Select clips containing both a visual source and an audio source."));
+                                 syncPlan.message);
         return;
     }
-
-    QString audioAnchorId;
-    for (const TimelineClip& clip : audioClips) {
-        if (!clipHasVisuals(clip)) {
-            audioAnchorId = clip.id;
-            break;
-        }
-    }
-    if (audioAnchorId.isEmpty() && !audioClips.isEmpty()) {
-        audioAnchorId = audioClips.constFirst().id;
-    }
-    if (audioAnchorId.isEmpty()) {
-        return;
-    }
-
-    TimelineClip audioAnchorClip;
-    bool foundAudioAnchor = false;
-    for (const TimelineClip& clip : clips) {
-        if (clip.id == audioAnchorId) {
-            audioAnchorClip = clip;
-            foundAudioAnchor = true;
-            break;
-        }
-    }
-    if (!foundAudioAnchor) {
-        return;
-    }
-
-    const QString audioPath = playbackMediaPathForClip(audioAnchorClip);
-    if (audioPath.isEmpty() || !QFileInfo::exists(audioPath)) {
+    if (!syncPlan.ok &&
+        syncPlan.message == QStringLiteral("Audio source is unavailable for sync detection.")) {
         QMessageBox::warning(this,
                              QStringLiteral("Sync Failed"),
-                             QStringLiteral("Audio source is unavailable for sync detection."));
+                             syncPlan.message);
         return;
     }
+    if (!syncPlan.ok) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Sync"),
+                                 syncPlan.message);
+        return;
+    }
+
+    const QVector<AutoSyncTargetPlan> syncTargets = syncPlan.targets;
+    const QSet<QString> syncMarkerClipIds = syncPlan.syncMarkerClipIds;
 
     QString dockerImage = qEnvironmentVariable("SYNCNET_DOCKER_IMAGE", QStringLiteral("syncnet-detector:latest")).trimmed();
     if (dockerImage.isEmpty()) {
@@ -1681,7 +1667,7 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
         commandPreview.push_back(QStringLiteral(
                                      "docker run --rm [mounts incl: local sync_detector.py + source/dest workspace] "
                                      "--entrypoint python %1 /workspace/sync_detector.py "
-                                     "--video ... --audio ... --fps %2 --interval-seconds %3 "
+                                     "--video ... --audio ... --mode audio|av --fps %2 --interval-seconds %3 "
                                      "--window-seconds %4 --backend %5 --progress")
                                      .arg(dockerImage)
                                      .arg(kTimelineFps)
@@ -1689,7 +1675,7 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
                                      .arg(windowArg)
                                      .arg(effectiveBackend));
     } else {
-        commandPreview.push_back(QStringLiteral("%1 %2 --video ... --audio ... --fps %3 --interval-seconds %4 --window-seconds %5 --backend %6 --progress")
+        commandPreview.push_back(QStringLiteral("%1 %2 --video ... --audio ... --mode audio|av --fps %3 --interval-seconds %4 --window-seconds %5 --backend %6 --progress")
                                      .arg(QFileInfo(pythonPath).fileName(),
                                           QFileInfo(scriptPath).fileName())
                                      .arg(kTimelineFps)
@@ -1716,12 +1702,6 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
         return;
     }
 
-    QSet<QString> visualClipIds;
-    visualClipIds.reserve(visualClips.size());
-    for (const TimelineClip& clip : visualClips) {
-        visualClipIds.insert(clip.id);
-    }
-
     auto* terminalDialog = new QDialog(this);
     terminalDialog->setAttribute(Qt::WA_DeleteOnClose);
     terminalDialog->setWindowTitle(QStringLiteral("Sync Terminal"));
@@ -1732,7 +1712,7 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
     auto* statusLabel = new QLabel(QStringLiteral("Running sync..."), terminalDialog);
     terminalLayout->addWidget(statusLabel);
     auto* progressBar = new QProgressBar(terminalDialog);
-    progressBar->setRange(0, visualClips.size());
+    progressBar->setRange(0, syncTargets.size());
     progressBar->setValue(0);
     terminalLayout->addWidget(progressBar);
     auto* output = new QPlainTextEdit(terminalDialog);
@@ -1782,10 +1762,8 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
                  terminalDialog,
                  initialClips,
                  initialMarkers,
-                 visualClips,
-                 visualClipIds,
-                 audioAnchorId,
-                 audioPath,
+                 syncTargets,
+                 syncMarkerClipIds,
                  useDockerRuntime,
                  scriptPath,
                  pythonPath,
@@ -1800,6 +1778,7 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
         struct ClipRecommendation {
             QString clipId;
             QString label;
+            QString mode;
             int videoOffsetFrames = 0;
             QVector<RenderSyncMarker> markers;
         };
@@ -1870,12 +1849,11 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
         QVector<RenderSyncMarker> nextMarkers = initialMarkers;
         nextMarkers.erase(std::remove_if(nextMarkers.begin(), nextMarkers.end(),
                                          [&](const RenderSyncMarker& marker) {
-                                             return visualClipIds.contains(marker.clipId);
+                                             return syncMarkerClipIds.contains(marker.clipId);
                                          }),
                           nextMarkers.end());
         QVector<ClipRecommendation> recommendations;
         int syncedCount = 0;
-        QStringList skippedLocked;
         QStringList failures;
 
         auto uiLog = [terminalDialog, appendOutput](const QString& line) {
@@ -1928,126 +1906,164 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
             }
         }
 
-        for (int i = 0; i < visualClips.size(); ++i) {
+        for (int i = 0; i < syncTargets.size(); ++i) {
             uiProgress(i);
             if (cancelFlag->load()) {
                 break;
             }
 
-            const TimelineClip visualClip = visualClips[i];
-            if (visualClip.locked) {
-                skippedLocked.push_back(visualClip.label);
+            const AutoSyncTargetPlan target = syncTargets[i];
+            const TimelineClip targetClip = target.clip;
+            const QString targetPath = target.mediaPath;
+            if (targetPath.isEmpty() || !QFileInfo::exists(targetPath)) {
+                failures.push_back(QStringLiteral("%1: missing sync source").arg(targetClip.label));
+                continue;
+            }
+            if (target.anchors.isEmpty()) {
+                failures.push_back(QStringLiteral("%1: no fixed audio anchor").arg(targetClip.label));
                 continue;
             }
 
-            const QString videoPath = playbackMediaPathForClip(visualClip);
-            if (videoPath.isEmpty() || !QFileInfo::exists(videoPath)) {
-                failures.push_back(QStringLiteral("%1: missing visual source").arg(visualClip.label));
-                continue;
-            }
+            const QString targetBackend =
+                target.mode == QStringLiteral("audio") ? QStringLiteral("avcorr") : effectiveBackend;
 
-            QString command;
-            if (useDockerRuntime) {
-                QString modelArg;
-                QVector<QPair<QString, QString>> mounts;
-                auto mountPath = [&mounts](const QString& hostFile, const QString& prefix) -> QString {
-                    const QFileInfo info(hostFile);
-                    const QString hostDir = info.absolutePath();
-                    for (const auto& existing : std::as_const(mounts)) {
-                        if (existing.first == hostDir) {
-                            return existing.second + QStringLiteral("/") + info.fileName();
-                        }
-                    }
-                    const QString target = QStringLiteral("/%1%2").arg(prefix).arg(mounts.size());
-                    mounts.push_back(qMakePair(hostDir, target));
-                    return target + QStringLiteral("/") + info.fileName();
-                };
-                const QString containerVideoPath = mountPath(videoPath, QStringLiteral("input"));
-                const QString containerAudioPath = mountPath(audioPath, QStringLiteral("input"));
-                if (!modelPath.isEmpty()) {
-                    const QString containerModelPath = mountPath(modelPath, QStringLiteral("model"));
-                    modelArg = QStringLiteral(" --syncnet-model %1 --syncnet-device %2")
-                                   .arg(shellQuote(containerModelPath),
-                                        shellQuote(modelDevice.isEmpty() ? QStringLiteral("auto") : modelDevice));
-                }
-                QString gpuArg;
-                if (qEnvironmentVariable("SYNCNET_DOCKER_GPU", QStringLiteral("1")).trimmed() != QStringLiteral("0")) {
-                    gpuArg = QStringLiteral(" --gpus all");
-                }
-                QString mountArgs;
-                for (const auto& mount : std::as_const(mounts)) {
-                    mountArgs += QStringLiteral(" -v %1:%2:ro").arg(shellQuote(mount.first), shellQuote(mount.second));
-                }
-                const QString workspaceHostDir = QDir::currentPath();
-                const QString scriptContainerPath = QStringLiteral("/workspace/sync_detector.py");
-                const QString workspaceContainerDir = QStringLiteral("/workspace-host");
-                mountArgs += QStringLiteral(" -v %1:%2:ro")
-                                 .arg(shellQuote(scriptPath),
-                                      shellQuote(scriptContainerPath));
-                mountArgs += QStringLiteral(" -v %1:%2:rw")
-                                 .arg(shellQuote(workspaceHostDir),
-                                      shellQuote(workspaceContainerDir));
-                command = QStringLiteral(
-                              "docker run --rm%1%2 -w %3 --entrypoint python %4 %5 "
-                              "--video %6 --audio %7 --fps %8 --interval-seconds %9 --window-seconds %10 --backend %11 --progress%12")
-                              .arg(gpuArg)
-                              .arg(mountArgs)
-                              .arg(shellQuote(workspaceContainerDir))
-                              .arg(shellQuote(dockerImage))
-                              .arg(shellQuote(scriptContainerPath))
-                              .arg(shellQuote(containerVideoPath))
-                              .arg(shellQuote(containerAudioPath))
-                              .arg(kTimelineFps)
-                              .arg(shellQuote(intervalArg))
-                              .arg(shellQuote(windowArg))
-                              .arg(shellQuote(effectiveBackend))
-                              .arg(modelArg);
-            } else {
-                command = QStringLiteral("%1 %2 --video %3 --audio %4 --fps %5 --interval-seconds %6 --window-seconds %7 --backend %8")
-                              .arg(shellQuote(pythonPath))
-                              .arg(shellQuote(scriptPath))
-                              .arg(shellQuote(videoPath))
-                              .arg(shellQuote(audioPath))
-                              .arg(kTimelineFps)
-                              .arg(shellQuote(intervalArg))
-                              .arg(shellQuote(windowArg))
-                              .arg(shellQuote(effectiveBackend));
-                command += QStringLiteral(" --progress");
-            }
-            if (!extraArgs.isEmpty()) {
-                command += QStringLiteral(" ");
-                command += extraArgs;
-            }
-
-            const ShellRunResult detectorRun = runShellCommandStreaming(command, cancelFlag.get(), uiLog, -1);
-            if (detectorRun.canceled || cancelFlag->load()) {
-                cancelFlag->store(true);
-                break;
-            }
-            const QString detectorOutput = detectorRun.output;
-            if (detectorRun.exitStatus != QProcess::NormalExit || detectorRun.exitCode != 0) {
-                failures.push_back(QStringLiteral("%1: detector failed (%2)")
-                                       .arg(visualClip.label,
-                                            detectorOutput.trimmed().isEmpty() ? detectorRun.errorString : detectorOutput.trimmed()));
-                continue;
-            }
-
-            const QString jsonPayload = extractJsonObject(detectorOutput);
-            QJsonParseError parseError;
-            const QJsonDocument json = QJsonDocument::fromJson(jsonPayload.toUtf8(), &parseError);
-            if (json.isNull() || !json.isObject()) {
-                failures.push_back(QStringLiteral("%1: invalid detector output").arg(visualClip.label));
-                continue;
-            }
-
-            const QJsonObject root = json.object();
-            const int videoOffsetFrames = root.value(QStringLiteral("videoOffsetFrames")).toInt(0);
-            int64_t appliedClipStartFrame = visualClip.startFrame;
-            for (TimelineClip& mutableClip : clips) {
-                if (mutableClip.id != visualClip.id) {
+            QJsonObject bestRoot;
+            AutoSyncAnchorPlan bestAnchor;
+            double bestConfidence = -1.0;
+            QStringList anchorFailures;
+            for (const AutoSyncAnchorPlan& anchor : target.anchors) {
+                if (anchor.audioPath.isEmpty() || !QFileInfo::exists(anchor.audioPath)) {
+                    anchorFailures.push_back(QStringLiteral("%1: missing anchor audio")
+                                                 .arg(anchor.clip.label));
                     continue;
                 }
-                if (mutableClip.id != audioAnchorId && videoOffsetFrames != 0) {
+
+                QString command;
+                if (useDockerRuntime) {
+                    QString modelArg;
+                    QVector<QPair<QString, QString>> mounts;
+                    auto mountPath = [&mounts](const QString& hostFile, const QString& prefix) -> QString {
+                        const QFileInfo info(hostFile);
+                        const QString hostDir = info.absolutePath();
+                        for (const auto& existing : std::as_const(mounts)) {
+                            if (existing.first == hostDir) {
+                                return existing.second + QStringLiteral("/") + info.fileName();
+                            }
+                        }
+                        const QString target = QStringLiteral("/%1%2").arg(prefix).arg(mounts.size());
+                        mounts.push_back(qMakePair(hostDir, target));
+                        return target + QStringLiteral("/") + info.fileName();
+                    };
+                    const QString containerVideoPath = mountPath(targetPath, QStringLiteral("input"));
+                    const QString containerAudioPath = mountPath(anchor.audioPath, QStringLiteral("input"));
+                    if (!modelPath.isEmpty()) {
+                        const QString containerModelPath = mountPath(modelPath, QStringLiteral("model"));
+                        modelArg = QStringLiteral(" --syncnet-model %1 --syncnet-device %2")
+                                       .arg(shellQuote(containerModelPath),
+                                            shellQuote(modelDevice.isEmpty() ? QStringLiteral("auto") : modelDevice));
+                    }
+                    QString gpuArg;
+                    if (qEnvironmentVariable("SYNCNET_DOCKER_GPU", QStringLiteral("1")).trimmed() != QStringLiteral("0")) {
+                        gpuArg = QStringLiteral(" --gpus all");
+                    }
+                    QString mountArgs;
+                    for (const auto& mount : std::as_const(mounts)) {
+                        mountArgs += QStringLiteral(" -v %1:%2:ro").arg(shellQuote(mount.first), shellQuote(mount.second));
+                    }
+                    const QString workspaceHostDir = QDir::currentPath();
+                    const QString scriptContainerPath = QStringLiteral("/workspace/sync_detector.py");
+                    const QString workspaceContainerDir = QStringLiteral("/workspace-host");
+                    mountArgs += QStringLiteral(" -v %1:%2:ro")
+                                     .arg(shellQuote(scriptPath),
+                                          shellQuote(scriptContainerPath));
+                    mountArgs += QStringLiteral(" -v %1:%2:rw")
+                                     .arg(shellQuote(workspaceHostDir),
+                                          shellQuote(workspaceContainerDir));
+                    command = QStringLiteral(
+                                  "docker run --rm%1%2 -w %3 --entrypoint python %4 %5 "
+                                  "--video %6 --audio %7 --mode %8 --fps %9 --interval-seconds %10 --window-seconds %11 --backend %12 --progress%13")
+                                  .arg(gpuArg)
+                                  .arg(mountArgs)
+                                  .arg(shellQuote(workspaceContainerDir))
+                                  .arg(shellQuote(dockerImage))
+                                  .arg(shellQuote(scriptContainerPath))
+                                  .arg(shellQuote(containerVideoPath))
+                                  .arg(shellQuote(containerAudioPath))
+                                  .arg(shellQuote(target.mode))
+                                  .arg(kTimelineFps)
+                                  .arg(shellQuote(intervalArg))
+                                  .arg(shellQuote(windowArg))
+                                  .arg(shellQuote(targetBackend))
+                                  .arg(modelArg);
+                } else {
+                    command = QStringLiteral("%1 %2 --video %3 --audio %4 --mode %5 --fps %6 --interval-seconds %7 --window-seconds %8 --backend %9")
+                                  .arg(shellQuote(pythonPath))
+                                  .arg(shellQuote(scriptPath))
+                                  .arg(shellQuote(targetPath))
+                                  .arg(shellQuote(anchor.audioPath))
+                                  .arg(shellQuote(target.mode))
+                                  .arg(kTimelineFps)
+                                  .arg(shellQuote(intervalArg))
+                                  .arg(shellQuote(windowArg))
+                                  .arg(shellQuote(targetBackend));
+                    command += QStringLiteral(" --progress");
+                }
+                if (!extraArgs.isEmpty()) {
+                    command += QStringLiteral(" ");
+                    command += extraArgs;
+                }
+
+                uiLog(QStringLiteral("Sync %1 against fixed anchor %2\n")
+                          .arg(targetClip.label, anchor.clip.label));
+                const ShellRunResult detectorRun = runShellCommandStreaming(command, cancelFlag.get(), uiLog, -1);
+                if (detectorRun.canceled || cancelFlag->load()) {
+                    cancelFlag->store(true);
+                    break;
+                }
+                const QString detectorOutput = detectorRun.output;
+                if (detectorRun.exitStatus != QProcess::NormalExit || detectorRun.exitCode != 0) {
+                    anchorFailures.push_back(QStringLiteral("%1: detector failed (%2)")
+                                                 .arg(anchor.clip.label,
+                                                      detectorOutput.trimmed().isEmpty() ? detectorRun.errorString : detectorOutput.trimmed()));
+                    continue;
+                }
+
+                const QString jsonPayload = extractJsonObject(detectorOutput);
+                QJsonParseError parseError;
+                const QJsonDocument json = QJsonDocument::fromJson(jsonPayload.toUtf8(), &parseError);
+                if (json.isNull() || !json.isObject()) {
+                    anchorFailures.push_back(QStringLiteral("%1: invalid detector output").arg(anchor.clip.label));
+                    continue;
+                }
+
+                const QJsonObject root = json.object();
+                const double confidence = syncDetectionConfidence(root);
+                if (confidence > bestConfidence) {
+                    bestConfidence = confidence;
+                    bestRoot = root;
+                    bestAnchor = anchor;
+                }
+            }
+            if (cancelFlag->load()) {
+                break;
+            }
+            if (bestRoot.isEmpty()) {
+                failures.push_back(QStringLiteral("%1: detector failed for all fixed anchors%2")
+                                       .arg(targetClip.label,
+                                            anchorFailures.isEmpty()
+                                                ? QString()
+                                                : QStringLiteral(" (%1)").arg(anchorFailures.join(QStringLiteral("; ")))));
+                continue;
+            }
+
+            const QJsonObject root = bestRoot;
+            const int videoOffsetFrames = root.value(QStringLiteral("videoOffsetFrames")).toInt(0);
+            int64_t appliedClipStartFrame = targetClip.startFrame;
+            for (TimelineClip& mutableClip : clips) {
+                if (mutableClip.id != targetClip.id) {
+                    continue;
+                }
+                if (videoOffsetFrames != 0) {
                     mutableClip.startFrame = qMax<int64_t>(0, mutableClip.startFrame + videoOffsetFrames);
                     normalizeClipTiming(mutableClip);
                 }
@@ -2056,41 +2072,47 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
             }
 
             ClipRecommendation recommendation;
-            recommendation.clipId = visualClip.id;
-            recommendation.label = visualClip.label;
+            recommendation.clipId = targetClip.id;
+            recommendation.label = targetClip.label;
+            recommendation.mode = target.mode;
             recommendation.videoOffsetFrames = videoOffsetFrames;
 
-            const QJsonArray markerArray = root.value(QStringLiteral("markers")).toArray();
-            for (const QJsonValue& markerValue : markerArray) {
-                if (!markerValue.isObject()) {
-                    continue;
-                }
-                const QJsonObject markerObj = markerValue.toObject();
-                RenderSyncMarker marker;
-                marker.clipId = visualClip.id;
-                marker.count = qMax(1, markerObj.value(QStringLiteral("count")).toInt(1));
-                if (!parseSyncAction(markerObj.value(QStringLiteral("action")).toString(), &marker.action)) {
-                    continue;
-                }
+            if (target.replaceRenderSyncMarkers) {
+                const QJsonArray markerArray = root.value(QStringLiteral("markers")).toArray();
+                for (const QJsonValue& markerValue : markerArray) {
+                    if (!markerValue.isObject()) {
+                        continue;
+                    }
+                    const QJsonObject markerObj = markerValue.toObject();
+                    RenderSyncMarker marker;
+                    marker.clipId = targetClip.id;
+                    marker.count = qMax(1, markerObj.value(QStringLiteral("count")).toInt(1));
+                    if (!parseSyncAction(markerObj.value(QStringLiteral("action")).toString(), &marker.action)) {
+                        continue;
+                    }
 
-                const QJsonValue timelineFrameValue = markerObj.value(QStringLiteral("timelineFrame"));
-                if (timelineFrameValue.isDouble()) {
-                    marker.frame = qMax<int64_t>(0, timelineFrameValue.toVariant().toLongLong());
-                } else {
-                    const int64_t localFrame = qMax<int64_t>(0, markerObj.value(QStringLiteral("frame")).toVariant().toLongLong());
-                    marker.frame = qMax<int64_t>(0, appliedClipStartFrame + localFrame);
+                    const QJsonValue timelineFrameValue = markerObj.value(QStringLiteral("timelineFrame"));
+                    if (timelineFrameValue.isDouble()) {
+                        marker.frame = qMax<int64_t>(0, timelineFrameValue.toVariant().toLongLong());
+                    } else {
+                        const int64_t localFrame = qMax<int64_t>(0, markerObj.value(QStringLiteral("frame")).toVariant().toLongLong());
+                        marker.frame = qMax<int64_t>(0, appliedClipStartFrame + localFrame);
+                    }
+                    recommendation.markers.push_back(marker);
+                    nextMarkers.push_back(marker);
                 }
-                recommendation.markers.push_back(marker);
-                nextMarkers.push_back(marker);
             }
             recommendations.push_back(recommendation);
-            uiLog(QStringLiteral("Recommendation for %1: shift %2 frame(s), new sync points: %3\n")
-                      .arg(visualClip.label,
+            uiLog(QStringLiteral("Recommendation for %1 [%2] anchored to %3: shift %4 frame(s), confidence %5, new sync points: %6\n")
+                      .arg(targetClip.label,
+                           target.mode,
+                           bestAnchor.clip.label,
                            QString::number(videoOffsetFrames),
+                           QString::number(bestConfidence, 'f', 3),
                            QString::number(recommendation.markers.size())));
             ++syncedCount;
         }
-        uiProgress(visualClips.size());
+        uiProgress(syncTargets.size());
 
         QMetaObject::invokeMethod(terminalDialog, [=, this]() {
             cancelButton->setEnabled(false);
@@ -2111,8 +2133,9 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
                 }
                 ++clipsWithAdjustments;
                 totalSuggestedMarkers += recommendation.markers.size();
-                QString line = QStringLiteral("%1: shift %2 frame(s), sync points %3")
+                QString line = QStringLiteral("%1 [%2]: shift %3 frame(s), sync points %4")
                                    .arg(recommendation.label,
+                                        recommendation.mode,
                                         QString::number(recommendation.videoOffsetFrames),
                                         QString::number(recommendation.markers.size()));
                 if (!recommendation.markers.isEmpty()) {
@@ -2149,9 +2172,6 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
             }
             if (!failures.isEmpty()) {
                 summary += QStringLiteral("\n\nFailures:\n- %1").arg(failures.join(QStringLiteral("\n- ")));
-            }
-            if (!skippedLocked.isEmpty()) {
-                summary += QStringLiteral("\n\nLocked clips skipped:\n- %1").arg(skippedLocked.join(QStringLiteral("\n- ")));
             }
             appendOutput(QStringLiteral("\n%1\n").arg(summary));
 
@@ -2201,7 +2221,7 @@ void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClip
                     const int unaffectedCount = nextMarkers.size() - totalSuggestedMarkers;
                     if (unaffectedCount > 0) {
                         for (const RenderSyncMarker& marker : nextMarkers) {
-                            if (!visualClipIds.contains(marker.clipId)) {
+                            if (!syncMarkerClipIds.contains(marker.clipId)) {
                                 filteredMarkers.push_back(marker);
                             }
                         }

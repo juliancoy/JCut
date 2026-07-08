@@ -38,8 +38,11 @@ private slots:
   void trackAssignmentDoesNotCreateFaceBoxKeyframes();
   void maskMorphControlsUseWideSliderInputs();
   void startupRestoresSpeechFilterRouting();
-  void speechFilterNoneModePersistsAsPassThroughState();
+  void speechFilterPassthroughModePersistsAsPassThroughState();
   void speechFilterFadeParametersOnlyShowWhenRelevant();
+  void effectsExposeSpeechFilterSynchronizedMotion();
+  void speechFilterFrameCrossfadeIsVisibleInDirectPreview();
+  void transcriptTimingEditsInvertDisplayPadding();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -625,6 +628,16 @@ void TestDirectVulkanHandoffPipelineContract::
                               " status->presentedSourceFrame)")),
            "live Vulkan transcript subtitles must time against the presented "
            "video frame when one is available");
+  const QString previewSurface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(!previewSurface.isEmpty(),
+           "vulkan_preview_surface.cpp must be readable");
+  QVERIFY2(previewSurface.contains(QStringLiteral("const int64_t maskSourceFrame")) &&
+               previewSurface.contains(QStringLiteral("qMax<int64_t>(0, status.presentedSourceFrame)")) &&
+               previewSurface.contains(QStringLiteral("rawClipMaskImage(clip, maskSourceFrame)")) &&
+               !previewSurface.contains(QStringLiteral("maskFrameMatchesPresentedFrame")),
+           "live Vulkan masks and mask grading must sample the mask for the "
+           "presented video frame, including playback lookahead/nearby frames");
   const QString presenterSource =
       readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
   QVERIFY2(!presenterSource.isEmpty(),
@@ -896,10 +909,10 @@ void TestDirectVulkanHandoffPipelineContract::
                "            : sourceFrameForSample(clip, targetSample);")) &&
                surface.contains(QStringLiteral(
                    "const int64_t localFrame = clip.mediaType == ClipMediaType::Image\n"
-                   "                ? 0\n"
-                   "                : sourceFrameForSample(clip, samplePosition);")),
+                   "            ? 0\n"
+                   "            : sourceFrameForSample(clip, visualSample);")),
            "direct-Vulkan playback readiness probes must normalize still images "
-           "to frame 0 instead of testing the moving timeline source frame");
+           "to frame 0 and test moving clips against the visual playback sample");
   QVERIFY2(cacheRequests.contains(
                QStringLiteral("previewMaxPlaybackStaleFrameDelta(sourceFps")) &&
                cacheRequests.contains(
@@ -951,6 +964,13 @@ void TestDirectVulkanHandoffPipelineContract::
           vulkanSurface.contains(QStringLiteral("exact_frame_already_cached")),
       "visible decode scheduling must keep requesting exact frames even when "
       "an approximate frame is displayable");
+  QVERIFY2(
+      vulkanSurface.contains(QStringLiteral("!m_interaction.playing")) &&
+          vulkanSurface.contains(QStringLiteral("missingCount > 0")) &&
+          vulkanSurface.contains(QStringLiteral("m_cache->pendingVisibleRequestCount() == 0")) &&
+          vulkanSurface.contains(QStringLiteral("queueFrameStatusRefresh(true)")),
+      "paused direct-Vulkan preview must retry visible decode when frame-status "
+      "refresh discovers an active clip has no drawable frame");
   QVERIFY2(
       vulkanSurface.contains(
           QStringLiteral("debugTemporalDebugOverlayEnabled()")) &&
@@ -1563,12 +1583,14 @@ void TestDirectVulkanHandoffPipelineContract::
                "evaluateClipRenderTransformWithSourceLockAtPosition(\n"
                "            clip,\n"
                "            request.clips,\n"
-               "            static_cast<qreal>(timelineFrame),\n"
+               "            transformClockTimelineFrame,\n"
                "            request.renderSyncMarkers,\n"
+               "            request.playbackTiming,\n"
                "            request.outputSize,\n"
                "            &transformDiagnostics)")),
-           "export must pass request.renderSyncMarkers into render transform "
-           "evaluation so speaker framing targets the same face box as preview");
+           "export must pass request.renderSyncMarkers and request.playbackTiming "
+           "into render transform evaluation so speaker framing targets the same "
+           "face box and transcript play time as preview");
   QVERIFY2(exportRenderer.contains(QStringLiteral(
                "exportFaceTransformDiagnostics")),
            "export must expose face-box/transform diagnostics from the same "
@@ -1581,11 +1603,12 @@ void TestDirectVulkanHandoffPipelineContract::
                "evaluateClipRenderTransformWithSourceLockAtPosition(\n"
                "            clip,\n"
                "            m_interaction.clips,\n"
-               "            m_interaction.currentFramePosition,\n"
+               "            transformFramePosition,\n"
                "            m_interaction.renderSyncMarkers,\n"
+               "            m_interaction.playbackTiming,\n"
                "            m_interaction.outputSize)")),
-           "preview must pass its interaction render sync markers into the same "
-           "render transform evaluation path");
+           "preview must pass its interaction render sync markers and playback "
+           "timing into the same render transform evaluation path");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -1922,12 +1945,12 @@ void TestDirectVulkanHandoffPipelineContract::
 
   QVERIFY2(transcriptHeader.contains(QStringLiteral("syncSpeechFilterControlsFromWidgets")) &&
                transcriptSource.contains(QStringLiteral("void TranscriptTab::syncSpeechFilterControlsFromWidgets()")) &&
-               transcriptSource.contains(QStringLiteral("m_speechFilterEnabled = speechFilterEnabledFromModeCombo(m_widgets.speechFilterFadeModeCombo)")),
+               transcriptSource.contains(QStringLiteral("currentData().toString() != QStringLiteral(\"none\")")),
            "TranscriptTab must expose an explicit way to synchronize its "
            "speech-filter model from restored widgets when signals are blocked");
 
   const qsizetype restoreIndex =
-      editor.indexOf(QStringLiteral("m_speechFilterEnabled = speechFilterEnabled;"));
+      editor.indexOf(QStringLiteral("m_speechFilterEnabled = hasSpeechFilterFadeMode"));
   const qsizetype syncIndex =
       editor.indexOf(QStringLiteral("m_transcriptTab->syncSpeechFilterControlsFromWidgets()"),
                      restoreIndex);
@@ -1945,7 +1968,7 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
-    speechFilterNoneModePersistsAsPassThroughState() {
+    speechFilterPassthroughModePersistsAsPassThroughState() {
   const QString editor = readSourceFile(QStringLiteral("editor.cpp"));
   const QString projectState = readSourceFile(QStringLiteral("project_state.cpp"));
   const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
@@ -1957,29 +1980,24 @@ void TestDirectVulkanHandoffPipelineContract::
 
   QVERIFY2(!projectState.contains(QStringLiteral("root[QStringLiteral(\"speechFilterEnabled\")]")) &&
                projectState.contains(QStringLiteral("root[QStringLiteral(\"speechFilterFadeMode\")]")) &&
-               projectState.contains(QStringLiteral("? AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode)")) &&
                projectState.contains(QStringLiteral(": QStringLiteral(\"none\")")),
-           "project state must persist pass-through speech filtering as the "
-           "None dropdown mode instead of a separate enable flag");
+           "project state must persist pass-through speech filtering as Passthrough");
 
   QVERIFY2(editor.contains(QStringLiteral("legacySpeechFilterEnabled")) &&
                editor.contains(QStringLiteral("speechFilterFadeModeValue != QStringLiteral(\"none\")")) &&
                editor.contains(QStringLiteral("AudioEngine::speechFilterFadeModeFromString(")) &&
                editor.contains(QStringLiteral(": QStringLiteral(\"none\")")),
-           "state restore must read None from speechFilterFadeMode while "
-           "retaining the legacy speechFilterEnabled fallback");
-  QVERIFY2(inspector.contains(QStringLiteral("QStringLiteral(\"None\"), QStringLiteral(\"none\")")) &&
+           "state restore must read Passthrough from speechFilterFadeMode");
+  QVERIFY2(inspector.contains(QStringLiteral("QStringLiteral(\"Passthrough\"), QStringLiteral(\"none\")")) &&
                inspector.contains(QStringLiteral("SpeechFilterFadeMode::JumpCut")) &&
                inspector.contains(QStringLiteral("SpeechFilterFadeMode::Fade")) &&
                inspector.contains(QStringLiteral("SpeechFilterFadeMode::SmoothStep")) &&
-               inspector.contains(QStringLiteral("SpeechFilterFadeMode::SmootherStep")),
-           "the speech-filter combo must include None plus the four supported "
-           "transition modes");
-  QVERIFY2(bindings.contains(QStringLiteral("m_speechFilterEnabled = mode != QStringLiteral(\"none\")")) &&
-               bindings.contains(QStringLiteral("if (m_speechFilterEnabled)")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::SmootherStep")) &&
+               inspector.contains(QStringLiteral("SpeechFilterFadeMode::Crossfade")),
+           "the speech-filter combo must include Passthrough and the supported transition modes");
+  QVERIFY2(bindings.contains(QStringLiteral("mode != QStringLiteral(\"none\")")) &&
                bindings.contains(QStringLiteral("speechFilterFadeModeFromString(mode)")),
-           "changing the speech-filter combo must derive pass-through versus "
-           "active filtering from the selected mode");
+           "changing the combo must derive pass-through from Passthrough");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -1996,19 +2014,150 @@ void TestDirectVulkanHandoffPipelineContract::
                bindings.contains(QStringLiteral("m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmootherStep")) &&
                bindings.contains(QStringLiteral("m_speechFilterFadeSamplesSpin")) &&
                bindings.contains(QStringLiteral("m_speechFilterCurveStrengthSpin")) &&
-               bindings.contains(QStringLiteral("m_speechFilterRangeCrossfadeCheckBox")) &&
                bindings.contains(QStringLiteral("rowLabel->setVisible(showFadeParameters)")) &&
                bindings.contains(QStringLiteral("rowLabel->setVisible(showCurveParameters)")),
-           "fade length and boundary crossfade controls must be hidden unless "
+           "fade length controls must be hidden unless "
            "speech filtering is enabled and the selected mode uses fade parameters; "
            "curve strength must only appear for smooth-step modes");
-  QVERIFY2(inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Speech Filter\"), m_speechFilterFadeModeCombo)")) &&
-               inspector.contains(QStringLiteral("m_speechFilterFadeModeCombo->addItem(QStringLiteral(\"None\"), QStringLiteral(\"none\"))")) &&
-               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Fade Length\"), m_speechFilterFadeSamplesSpin)")) &&
-               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Curve Strength\"), m_speechFilterCurveStrengthSpin)")) &&
-               inspector.contains(QStringLiteral("speechForm->addRow(QStringLiteral(\"Transition\"), m_speechFilterRangeCrossfadeCheckBox)")),
-           "speech-filter controls must expose the mode dropdown and relevant "
-           "fade-only parameters as rows");
+  QVERIFY2(bindings.contains(QStringLiteral("setPlaybackTimingContext(")) &&
+               bindings.contains(QStringLiteral("speechFilterPlaybackTimingContext(ranges)")),
+           "speech-filter transition controls must feed effective speech ranges "
+           "into the explicit preview playback timing context so visual animation "
+           "follows transcript play time without relying on global timing state");
+  QVERIFY2(inspector.contains(QStringLiteral("speechTimingForm->addRow(QStringLiteral(\"Mode\"), m_speechFilterFadeModeCombo)")) &&
+               inspector.contains(QStringLiteral("m_speechFilterFadeModeCombo->addItem(QStringLiteral(\"Passthrough\"), QStringLiteral(\"none\"))")) &&
+               inspector.contains(QStringLiteral("createDisclosureSection(settingsContainer, QStringLiteral(\"Speech Filter Audio\")")) &&
+               inspector.contains(QStringLiteral("audioTransitionForm->addRow(QStringLiteral(\"Audio Fade\"), m_speechFilterFadeSamplesSpin)")) &&
+               inspector.contains(QStringLiteral("audioTransitionForm->addRow(QStringLiteral(\"Curve Strength\"), m_speechFilterCurveStrengthSpin)")) &&
+               !inspector.contains(QStringLiteral("audioTransitionForm->addRow(QStringLiteral(\"Audio Transition\"), m_speechFilterRangeCrossfadeCheckBox)")) &&
+               inspector.contains(QStringLiteral("createDisclosureSection(settingsContainer, QStringLiteral(\"Frame Transition\")")) &&
+               inspector.contains(QStringLiteral("frameTransitionForm->addRow(QStringLiteral(\"Mode\"), m_speechFilterFrameTransitionModeCombo)")) &&
+               inspector.contains(QStringLiteral("PlaybackFrameTransitionMode::SmoothStepSpeedThrough")) &&
+               inspector.contains(QStringLiteral("PlaybackFrameTransitionMode::SmootherStepSpeedThrough")) &&
+               inspector.contains(QStringLiteral("frameTransitionForm->addRow(QStringLiteral(\"Length\"), m_speechFilterFrameCrossfadeFramesSpin)")),
+           "speech-filter controls must expose separate audio fade parameters "
+	           "and frame crossfade parameters as rows");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    effectsExposeSpeechFilterSynchronizedMotion() {
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane.cpp"));
+  const QString header = readSourceFile(QStringLiteral("inspector_pane.h"));
+  const QString effects = readSourceFile(QStringLiteral("effects_tab.cpp"));
+  const QString editorTabs = readSourceFile(QStringLiteral("editor_tabs.cpp"));
+  QVERIFY2(!inspector.isEmpty(), "inspector_pane.cpp must be readable");
+  QVERIFY2(!header.isEmpty(), "inspector_pane.h must be readable");
+  QVERIFY2(!effects.isEmpty(), "effects_tab.cpp must be readable");
+  QVERIFY2(!editorTabs.isEmpty(), "editor_tabs.cpp must be readable");
+
+  QVERIFY2(
+      inspector.contains(QStringLiteral("m_effectSpeechSyncCheck")) &&
+          inspector.contains(QStringLiteral("Synchronize motion with Speech Filter")) &&
+          inspector.contains(QStringLiteral("skipped gaps do not create visible jumps")),
+      "Effects tab must expose a clearly labelled speech-filter motion sync "
+      "control for moving synthesis patterns");
+  QVERIFY2(
+      header.contains(QStringLiteral("effectSpeechSyncCheck()")) &&
+          editorTabs.contains(QStringLiteral("m_inspectorPane->effectSpeechSyncCheck()")),
+      "EffectsTab widget wiring must include the speech-filter motion sync checkbox");
+  QVERIFY2(
+      effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck")) &&
+          effects.contains(QStringLiteral("clip->effectSkipAwareTiming")) &&
+          effects.contains(QStringLiteral("clip.effectSkipAwareTiming = speechSync")) &&
+          effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(false)")) &&
+          effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive)")) &&
+          effects.contains(QStringLiteral("preset != ClipEffectPreset::None")),
+      "Effects tab must round-trip the checkbox through the effect-specific "
+      "effectSkipAwareTiming render flag and only enable it for active "
+      "visual effect presets");
+
+  const QString window = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
+  const QString offscreen = readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString renderInternal = readSourceFile(QStringLiteral("render_internal.h"));
+  const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(!window.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(!exportSource.isEmpty(), "render_export.cpp must be readable");
+  QVERIFY2(!offscreen.isEmpty(), "offscreen_vulkan_renderer_backend.cpp must be readable");
+  QVERIFY2(!renderInternal.isEmpty(), "render_internal.h must be readable");
+  QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+  QVERIFY2(
+      window.contains(QStringLiteral("status ? status->visualTimelineFramePosition : state->currentFramePosition")) &&
+          window.contains(QStringLiteral("state->currentFramePosition")) &&
+          window.contains(QStringLiteral("clipEffectPlaybackFramePosition(")),
+      "direct preview must sample video from the visual speed-through frame "
+      "while driving generated effect motion from the raw speech-filter clock");
+  QVERIFY2(
+      surface.contains(QStringLiteral("const qreal transformFramePosition = m_interaction.currentFramePosition")) &&
+          surface.contains(QStringLiteral("transformFramePosition,\n            m_interaction.renderSyncMarkers")) &&
+          surface.contains(QStringLiteral("evaluateClipSpeakerFramingEnabledAtPosition(clip, transformFramePosition")) &&
+          surface.contains(QStringLiteral("evaluateClipSpeakerFramingTargetAtPosition(clip, transformFramePosition")),
+      "direct preview must evaluate zoom/transform and speaker framing from "
+      "the raw speech-filter clock so room framing remains stable across jumps");
+  QVERIFY2(
+      exportSource.contains(QStringLiteral("&frameExportFaceTransformDiagnostics")) &&
+          exportSource.contains(QStringLiteral("timelineFramePosition);")) &&
+          renderInternal.contains(QStringLiteral("generatedEffectClockTimelineFrame")) &&
+          renderInternal.contains(QStringLiteral("frame speed-through can move video across")) &&
+          offscreen.contains(QStringLiteral("generatedEffectClockTimelineFrame")) &&
+          offscreen.contains(QStringLiteral("const qreal transformClockTimelineFrame = generatedEffectClockTimelineFrame")) &&
+          offscreen.contains(QStringLiteral("transformClockTimelineFrame,\n            request.renderSyncMarkers")) &&
+          offscreen.contains(QStringLiteral("clipEffectPlaybackFramePosition(effectClip, request.clips, generatedEffectClockTimelineFrame")),
+      "export must carry a separate effect timeline frame so moving patterns "
+      "and transforms do not freeze or jump when visual sampling traverses a "
+      "speech-filter gap");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    speechFilterFrameCrossfadeIsVisibleInDirectPreview() {
+  const QString state = readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString window = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!state.isEmpty(), "preview_interaction_state.h must be readable");
+  QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+  QVERIFY2(!window.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
+
+  QVERIFY2(state.contains(QStringLiteral("frameCrossfadeActive")) &&
+               state.contains(QStringLiteral("frameCrossfadeFrame")) &&
+               state.contains(QStringLiteral("frameCrossfadeOpacity")),
+           "direct preview status must carry a secondary frame-crossfade image "
+           "and opacity separately from audio crossfade state");
+  QVERIFY2(surface.contains(QStringLiteral("playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition")) &&
+               surface.contains(QStringLiteral("playbackVisualTimelineFramePosition(m_interaction.currentFramePosition")) &&
+               surface.contains(QStringLiteral("requestFramesForSample(")) &&
+               surface.contains(QStringLiteral("status.frameCrossfadeActive = true")) &&
+               surface.contains(QStringLiteral("status.frameCrossfadeFrame = secondaryFrame")),
+           "Vulkan preview must request and attach the speech-filter frame "
+           "crossfade target while the playhead is in the outgoing tail");
+  QVERIFY2(window.contains(QStringLiteral("#frameCrossfade")) &&
+               window.contains(QStringLiteral("secondaryHandoffResult")) &&
+               window.contains(QStringLiteral("crossfadePush.opacity")) &&
+               window.contains(QStringLiteral("status->frameCrossfadeOpacity")),
+           "direct Vulkan preview must draw the secondary speech-filter frame "
+           "as a separate sampled image with opacity, not as an export-only blend");
+
+  const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
+  QVERIFY2(!exportSource.isEmpty(), "render_export.cpp must be readable");
+  QVERIFY2(exportSource.contains(QStringLiteral("playbackVisualTimelineFramePosition(timelineFramePosition")) &&
+               exportSource.contains(QStringLiteral("visualTimelineFramePosition")),
+           "export must render the smooth speed-through visual timeline frame, "
+           "not only the unwarped speech-filter playhead frame");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    transcriptTimingEditsInvertDisplayPadding() {
+  const QString transcript = readSourceFile(QStringLiteral("transcript_tab.cpp"));
+  QVERIFY2(!transcript.isEmpty(), "transcript_tab.cpp must be readable");
+
+  QVERIFY2(transcript.contains(QStringLiteral("const double offsetSeconds = transcriptOffsetMs() / 1000.0")) &&
+               transcript.contains(QStringLiteral("const double prependSeconds = transcriptPrependMs() / 1000.0")) &&
+               transcript.contains(QStringLiteral("const double postpendSeconds = transcriptPostpendMs() / 1000.0")) &&
+               transcript.contains(QStringLiteral("? qMax(0.0, seconds - offsetSeconds + prependSeconds)")) &&
+               transcript.contains(QStringLiteral(": qMax(0.0, seconds - offsetSeconds - postpendSeconds)")) &&
+               transcript.contains(QStringLiteral("word->startSeconds = qMin(rawSeconds, currentEnd)")) &&
+               transcript.contains(QStringLiteral("word->endSeconds = qMax(rawSeconds, currentStart)")),
+           "transcript source-time edits must invert displayed prepend/postpend "
+           "padding before saving raw word timing");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

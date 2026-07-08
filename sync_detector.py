@@ -33,6 +33,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--video", required=True, help="Path to video/visual media input.")
     parser.add_argument("--audio", required=True, help="Path to audio media input.")
+    parser.add_argument(
+        "--mode",
+        default="av",
+        choices=["av", "audio"],
+        help=(
+            "Sync algorithm to run. av compares visual motion from --video to --audio. "
+            "audio compares audio from --video to reference --audio."
+        ),
+    )
     parser.add_argument("--fps", type=float, default=TIMELINE_FPS, help="Timeline FPS.")
     parser.add_argument(
         "--interval-seconds",
@@ -44,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--window-seconds",
         type=float,
         default=10.0,
-        help="Analysis window duration in seconds (default 10s for 50% overlap at 5s cadence).",
+        help="Analysis window duration in seconds (default 10s for 50%% overlap at 5s cadence).",
     )
     parser.add_argument(
         "--backend",
@@ -319,27 +328,128 @@ def detect_avcorr(
     )
 
 
+def detect_audio_corr(
+    candidate_audio_path: str,
+    reference_audio_path: str,
+    fps: float,
+    interval_seconds: float,
+    window_seconds: float,
+    max_shift_seconds: float,
+    min_confidence: float,
+    args: argparse.Namespace,
+) -> DetectionResult:
+    reference = extract_audio_activity(reference_audio_path, fps, args)
+    candidate = extract_audio_activity(candidate_audio_path, fps, args)
+
+    n = min(len(reference), len(candidate))
+    if n < max(20, int(fps * 1.5)):
+        raise RuntimeError("not enough overlapping audio samples for sync detection")
+
+    reference = smooth(zscore(reference[:n]), width=5)
+    candidate = smooth(zscore(candidate[:n]), width=5)
+
+    max_lag = max(1, int(round(max_shift_seconds * fps)))
+    offset, confidence, best_lag = detect_lag(reference, candidate, max_lag, min_confidence)
+    # The editor applies videoOffsetFrames by adding it to the candidate clip
+    # start. Audio/audio correlation has the opposite sign from the AV helper.
+    offset = -offset
+
+    step = max(1, int(round(interval_seconds * fps)))
+    window = max(2, int(round(window_seconds * fps)))
+    if window <= step:
+        window = step * 2
+    window = max(window, int(round(fps * 2.0)))
+    if window % 2 != 0:
+        window += 1
+    half = window // 2
+
+    local_offsets: List[Tuple[int, int, float]] = []
+    if n > window:
+        total_centers = max(0, ((n - half) - half + step - 1) // step)
+        processed_centers = 0
+        last_log = time.monotonic()
+        for center in range(half, n - half, step):
+            seg_reference = reference[center - half : center + half]
+            seg_candidate = candidate[center - half : center + half]
+            try:
+                local_offset, local_confidence, _ = detect_lag(
+                    seg_reference,
+                    seg_candidate,
+                    max_lag,
+                    min_confidence,
+                )
+                local_offset = -local_offset
+            except Exception:
+                processed_centers += 1
+                continue
+            local_offsets.append((int(center), int(local_offset), float(local_confidence)))
+            processed_centers += 1
+            now = time.monotonic()
+            if now - last_log >= max(0.2, args.progress_interval_seconds):
+                if total_centers > 0:
+                    pct = min(100.0, (100.0 * processed_centers) / float(total_centers))
+                    log_progress(args, f"audio window analysis {pct:.1f}% ({processed_centers}/{total_centers})")
+                else:
+                    log_progress(args, f"audio window analysis processed={processed_centers}")
+                last_log = now
+
+    log_progress(
+        args,
+        f"audio lag={best_lag} offset={offset} confidence={confidence:.3f} local_samples={len(local_offsets)}",
+    )
+
+    return DetectionResult(
+        video_offset_frames=int(offset),
+        confidence=confidence,
+        lag_frames=best_lag,
+        backend="audio-corr",
+        local_offsets=local_offsets,
+    )
+
+
 def build_sync_markers(
     video_offset_frames: int,
     local_offsets: Sequence[Tuple[int, int, float]],
+    min_confidence: float,
+    global_confidence: float,
 ) -> List[Dict[str, Any]]:
     if not local_offsets:
+        return []
+    if float(global_confidence) < float(min_confidence):
         return []
 
     frames = [int(item[0]) for item in local_offsets]
     offsets = np.asarray([int(item[1]) for item in local_offsets], dtype=np.float32)
-    # Smooth noisy local estimates before converting to discrete events.
-    smooth_offsets = signal.medfilt(offsets, kernel_size=5)
+    confidences = np.asarray([float(item[2]) for item in local_offsets], dtype=np.float32)
+    # Smooth isolated local estimate noise without erasing short, real drift steps.
+    kernel_size = min(3, offsets.size if offsets.size % 2 == 1 else offsets.size - 1)
+    smooth_offsets = signal.medfilt(offsets, kernel_size=kernel_size) if kernel_size >= 3 else offsets
     smooth_offsets = np.rint(smooth_offsets).astype(np.int32)
+
+    reliable = confidences >= max(float(min_confidence), 0.20)
 
     baseline = int(video_offset_frames)
     residual = smooth_offsets - baseline
     residual[np.abs(residual) <= 1] = 0
 
+    stable_residual = np.zeros_like(residual)
+    run_start = 0
+    while run_start < residual.size:
+        run_value = int(residual[run_start]) if reliable[run_start] else 0
+        run_end = run_start + 1
+        while run_end < residual.size:
+            next_value = int(residual[run_end]) if reliable[run_end] else 0
+            if next_value != run_value:
+                break
+            run_end += 1
+        if run_value != 0 and (run_end - run_start) >= 3:
+            stable_residual[run_start:run_end] = run_value
+        run_start = run_end
+
     markers: List[Dict[str, Any]] = []
     previous = 0
     for idx, frame in enumerate(frames):
-        target = int(residual[idx])
+        target = int(stable_residual[idx])
         delta = target - previous
         if delta == 0:
             continue
@@ -380,6 +490,17 @@ def run_detection(args: argparse.Namespace) -> DetectionResult:
             f"syncnet backend selected (device={device}) but model inference is not yet integrated; "
             "use --backend avcorr for now"
         )
+    if args.mode == "audio":
+        return detect_audio_corr(
+            candidate_audio_path=args.video,
+            reference_audio_path=args.audio,
+            fps=args.fps,
+            interval_seconds=args.interval_seconds,
+            window_seconds=args.window_seconds,
+            max_shift_seconds=args.max_shift_seconds,
+            min_confidence=args.min_confidence,
+            args=args,
+        )
     return detect_avcorr(
         video_path=args.video,
         audio_path=args.audio,
@@ -417,6 +538,8 @@ def main() -> int:
     markers = build_sync_markers(
         video_offset_frames=video_offset_frames,
         local_offsets=result.local_offsets,
+        min_confidence=args.min_confidence,
+        global_confidence=result.confidence,
     )
 
     payload: Dict[str, Any] = {

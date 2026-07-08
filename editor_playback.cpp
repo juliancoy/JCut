@@ -25,7 +25,7 @@ bool shouldSkipBlockingAudioWarmup(PlaybackAudioWarpMode runtimeWarpMode,
                                    qreal effectiveWarpRate,
                                    bool needsPitchPreservingAudio)
 {
-    return runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+    return playbackAudioWarpModeUsesTimeStretch(runtimeWarpMode) &&
            !needsPitchPreservingAudio &&
            qAbs(effectiveWarpRate - 1.0) < 0.0001;
 }
@@ -133,6 +133,21 @@ void EditorWindow::advanceFrame()
 bool EditorWindow::speechFilterPlaybackEnabled() const
 {
     return m_speechFilterEnabled;
+}
+
+PlaybackTimingContext EditorWindow::speechFilterPlaybackTimingContext(
+    const QVector<ExportRangeSegment>& ranges) const
+{
+    PlaybackTimingContext context;
+    if (!speechFilterPlaybackEnabled()) {
+        return context;
+    }
+    context.playbackRanges = ranges;
+    context.frameTransitionMode = m_speechFilterFrameTransitionMode;
+    context.frameCrossfadeEnabled =
+        m_speechFilterFrameTransitionMode == PlaybackFrameTransitionMode::Crossfade;
+    context.frameCrossfadeFrames = qBound(0, m_speechFilterFrameCrossfadeFrames, 240);
+    return context;
 }
 
 int64_t EditorWindow::filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const
@@ -838,9 +853,9 @@ void EditorWindow::setPlaybackSpeed(qreal speed)
     PlaybackRuntimeConfig config = playbackRuntimeConfig();
     config.speed = speed;
     applyPlaybackRuntimeConfig(config);
-    if (qAbs(normalizedPlaybackSpeed(speed) - 1.0) >= 0.0001 &&
-        normalizedPlaybackAudioWarpMode(normalizedPlaybackSpeed(speed), config.audioWarpMode) ==
-            PlaybackAudioWarpMode::TimeStretch) {
+    if (pitchPreservingPlaybackRequiresAudioGate(config.audioWarpMode,
+                                                normalizedPlaybackSpeed(speed),
+                                                true)) {
         requestPlaybackAudioWarmup(wasPlaying);
     } else if (m_playbackAudioWarmupPending) {
         ++m_playbackAudioWarmupRequestId;
@@ -864,8 +879,7 @@ void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
     PlaybackRuntimeConfig config = playbackRuntimeConfig();
     config.audioWarpMode = mode;
     applyPlaybackRuntimeConfig(config);
-    if (qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
-        normalizedPlaybackAudioWarpMode(m_playbackSpeed, mode) == PlaybackAudioWarpMode::TimeStretch) {
+    if (pitchPreservingPlaybackRequiresAudioGate(mode, m_playbackSpeed, true)) {
         requestPlaybackAudioWarmup(wasPlaying);
     } else if (m_playbackAudioWarmupPending) {
         ++m_playbackAudioWarmupRequestId;
@@ -1390,6 +1404,7 @@ void EditorWindow::setPlaybackActive(bool playing)
             }
         }
         if (m_preview) {
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
             m_preview->setExportRanges(ranges);
             m_preview->setPlaybackState(true);
         }

@@ -24,6 +24,7 @@
 #include "transcript_document_session.h"
 
 class QLabel;
+class QWidget;
 class QListWidget;
 class QPushButton;
 class QLineEdit;
@@ -53,12 +54,38 @@ public:
         QSpinBox* speakerSectionMinimumWordsSpin = nullptr;
         QPushButton* speakerExportLongSectionsButton = nullptr;
         QPushButton* speakerCreateTitleClipsButton = nullptr;
+        QPushButton* speakerOverlayCreateTitleClipsButton = nullptr;
+        QComboBox* speakerOverlayFlyInStyleCombo = nullptr;
+        QDoubleSpinBox* speakerOverlayFlyInDelaySpin = nullptr;
+        QDoubleSpinBox* speakerOverlayFlyInDurationSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayFlyInTimeSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapRadiusSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapDepthSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapStartAngleSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapEndAngleSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapPitchSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayWrapRollSpin = nullptr;
+        QSpinBox* speakerOverlayTitleFontSizeSpin = nullptr;
+        QSpinBox* speakerOverlayTitleBoxWidthSpin = nullptr;
+        QComboBox* speakerOverlayTitleTextMaterialCombo = nullptr;
+        QComboBox* speakerOverlayTitleBorderMaterialCombo = nullptr;
+        QLineEdit* speakerOverlayTitleTextPatternPathEdit = nullptr;
+        QLineEdit* speakerOverlayTitleBorderPatternPathEdit = nullptr;
+        QDoubleSpinBox* speakerOverlayTitlePatternScaleSpin = nullptr;
+        QCheckBox* speakerOverlayTitleExtrudeCheckBox = nullptr;
+        QDoubleSpinBox* speakerOverlayTitleExtrudeDepthSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayTitleBevelScaleSpin = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
         QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
+        QWidget* selectedSpeakerPopup = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
         QLineEdit* selectedSpeakerNameEdit = nullptr;
         QLineEdit* selectedSpeakerOrganizationEdit = nullptr;
+        QLineEdit* selectedSpeakerLogoPathEdit = nullptr;
+        QLineEdit* selectedSpeakerPrimaryColorEdit = nullptr;
+        QLineEdit* selectedSpeakerSecondaryColorEdit = nullptr;
+        QLineEdit* selectedSpeakerAccentColorEdit = nullptr;
         QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
         QListWidget* speakerPlayheadFaceDetectionsList = nullptr;
         QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
@@ -190,6 +217,7 @@ private slots:
     void onSpeakersTableItemClicked(QTableWidgetItem* item);
     void onSpeakersSelectionChanged();
     void onSpeakersTableContextMenuRequested(const QPoint& pos);
+    void showSelectedSpeakerPopup(const QPoint& globalPos);
     void onSpeakerSectionsTableContextMenuRequested(const QPoint& pos);
     void onSpeakerExportLongSectionsClicked();
     void onSpeakerCreateTitleClipsClicked();

@@ -29,6 +29,7 @@ public:
     void setTimelineTracks(const QVector<TimelineTrack>& tracks) override;
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) override;
     void setExportRanges(const QVector<ExportRangeSegment>& ranges) override;
+    void setPlaybackTimingContext(const PlaybackTimingContext& timing) override;
     void setUseProxyMedia(bool useProxyMedia) override;
     void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString()) override;
     void beginBulkUpdate() override;
@@ -129,6 +130,7 @@ private:
     QVector<TimelineTrack> m_tracks;
     QVector<RenderSyncMarker> m_markers;
     QVector<ExportRangeSegment> m_exportRanges;
+    PlaybackTimingContext m_playbackTiming;
     QSize m_outputSize = QSize(1080, 1920);
     QColor m_backgroundColor = QColor(QStringLiteral("#11161c"));
     QString m_backendLabel = QStringLiteral("offscreen-placeholder");

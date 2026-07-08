@@ -6,6 +6,8 @@ layout(push_constant) uniform Push {
     mat4 u_mvp;
     vec4 u_uvRect;
     vec4 u_color;
+    vec4 u_material;
+    vec4 u_patternRect;
 } pc;
 
 void main() {

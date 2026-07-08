@@ -16,6 +16,7 @@
 #include <vulkan/vulkan.h>
 
 class QVulkanDeviceFunctions;
+struct EvaluatedTitle;
 
 struct VulkanTextLayoutDebug {
     bool valid = false;
@@ -40,6 +41,8 @@ public:
         float mvp[16]{};
         float uvRect[4]{};
         float color[4]{};
+        float material[4]{};
+        float patternRect[4]{};
     };
 
     ~VulkanTextPipeline();
@@ -110,6 +113,14 @@ public:
                                        const TranscriptOverlayLayout& layout,
                                        const QRectF& outputRect,
                                        const QString& speakerTitle);
+    bool drawTitleOverlay3D(VkCommandBuffer commandBuffer,
+                            const QSize& swapSize,
+                            const QSize& outputSize,
+                            const QRectF& outputTargetRect,
+                            const EvaluatedTitle& title);
+    bool prepareTitleOverlayAtlas(VkCommandBuffer commandBuffer,
+                                  const QSize& outputSize,
+                                  const EvaluatedTitle& title);
     VulkanTextLayoutDebug buildSpeakerLabelLayoutForTesting(
         const QSize& outputSize,
         const render_detail::SpeakerLabelOverlaySpec& spec) const;
@@ -131,11 +142,18 @@ private:
         QRectF rect;
         QRectF uv;
         QColor color;
+        int materialStyle = 0;
+        qreal patternScale = 1.0;
+        QRectF patternUv;
     };
     struct TranscriptBackground {
         QRectF rect;
+        QRectF uv;
         QColor color;
         qreal radius = 0.0;
+        int materialStyle = 0;
+        qreal patternScale = 1.0;
+        QRectF patternUv;
     };
     struct TranscriptHighlight {
         QRectF rect;
@@ -146,6 +164,9 @@ private:
         render_detail::OverlayImage image;
         QHash<QString, Glyph> glyphs;
         QRectF solidUv;
+        QRectF textPatternUv;
+        QRectF framePatternUv;
+        QRectF logoUv;
     };
     struct SpeakerLayoutCache {
         bool valid = false;
@@ -162,6 +183,15 @@ private:
         QVector<LaidOutGlyph> glyphs;
         QVector<TranscriptBackground> backgrounds;
         QVector<TranscriptHighlight> highlights;
+    };
+    struct TitleLayoutCache {
+        bool valid = false;
+        QString layoutKey;
+        QString atlasKey;
+        Atlas atlas;
+        QVector<LaidOutGlyph> glyphs;
+        QVector<TranscriptBackground> backgrounds;
+        QPointF center;
     };
 
     bool buildAtlasAndLayout(const QSize& outputSize,
@@ -191,6 +221,12 @@ private:
                                QVector<LaidOutGlyph>* glyphs,
                                QVector<TranscriptBackground>* backgrounds,
                                QVector<TranscriptHighlight>* highlights) const;
+    bool buildTitleAtlasAndLayout(const QSize& outputSize,
+                                  const EvaluatedTitle& title,
+                                  Atlas* atlas,
+                                  QVector<LaidOutGlyph>* glyphs,
+                                  QVector<TranscriptBackground>* backgrounds,
+                                  QPointF* center) const;
     const SpeakerLayoutCache* speakerLabelLayout(const QSize& outputSize,
                                                  const render_detail::SpeakerLabelOverlaySpec& spec) const;
     const TranscriptLayoutCache* transcriptOverlayLayout(const QSize& outputSize,
@@ -198,6 +234,8 @@ private:
                                                         const TranscriptOverlayLayout& layout,
                                                         const QRectF& outputRect,
                                                         const QString& speakerTitle) const;
+    const TitleLayoutCache* titleOverlayLayout(const QSize& outputSize,
+                                               const EvaluatedTitle& title) const;
     bool ensureAtlasUploaded(VkCommandBuffer commandBuffer, const Atlas& atlas);
     bool fail(const QString& reason) const;
     void drawGlyph(VkCommandBuffer commandBuffer,
@@ -211,6 +249,14 @@ private:
                               qreal radius,
                               const QRectF& uv,
                               const QColor& color);
+    void drawGlyphWithMvp(VkCommandBuffer commandBuffer,
+                          const QSize& swapSize,
+                          const float mvp[16],
+                          const QRectF& uv,
+                          const QColor& color,
+                          int materialStyle = 0,
+                          qreal patternScale = 1.0,
+                          const QRectF& patternUv = QRectF());
 
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
@@ -221,4 +267,5 @@ private:
     mutable QString m_lastFailureReason;
     mutable SpeakerLayoutCache m_speakerLayoutCache;
     mutable TranscriptLayoutCache m_transcriptLayoutCache;
+    mutable TitleLayoutCache m_titleLayoutCache;
 };

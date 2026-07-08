@@ -2,6 +2,7 @@
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
+#include "transform_skip_aware_timing.h"
 
 #include <QCache>
 #include <QDir>
@@ -192,22 +193,26 @@ qreal catmullRom(qreal p0, qreal p1, qreal p2, qreal p3, qreal t) {
 
 qreal effectTimelinePositionForClip(const TimelineClip& clip,
                                     qreal timelineFramePosition,
-                                    const QVector<RenderSyncMarker>& markers) {
-    if (!clip.transformSkipAwareTiming || markers.isEmpty()) {
-        return timelineFramePosition;
+                                    const QVector<RenderSyncMarker>& markers,
+                                    const PlaybackTimingContext& timing) {
+    qreal adjustedTimelineFramePosition = timelineFramePosition;
+
+    if (clip.effectSkipAwareTiming && !markers.isEmpty()) {
+        const qreal maxLocalFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
+        const qreal localTimelineFrame =
+            qBound<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxLocalFrame);
+        const int64_t steppedLocalTimelineFrame =
+            qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFrame)));
+        const qreal fractional = localTimelineFrame - static_cast<qreal>(steppedLocalTimelineFrame);
+        const int64_t adjustedLocalFrame =
+            adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
+        const qreal adjustedLocalFramePosition =
+            qBound<qreal>(0.0, static_cast<qreal>(adjustedLocalFrame) + fractional, maxLocalFrame);
+        adjustedTimelineFramePosition = static_cast<qreal>(clip.startFrame) + adjustedLocalFramePosition;
     }
 
-    const qreal maxLocalFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
-    const qreal localTimelineFrame =
-        qBound<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxLocalFrame);
-    const int64_t steppedLocalTimelineFrame =
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFrame)));
-    const qreal fractional = localTimelineFrame - static_cast<qreal>(steppedLocalTimelineFrame);
-    const int64_t adjustedLocalFrame =
-        adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
-    const qreal adjustedLocalFramePosition =
-        qBound<qreal>(0.0, static_cast<qreal>(adjustedLocalFrame) + fractional, maxLocalFrame);
-    return static_cast<qreal>(clip.startFrame) + adjustedLocalFramePosition;
+    return static_cast<qreal>(clip.startFrame) +
+           clipPlaybackFramePositionForTimelineFrame(clip, adjustedTimelineFramePosition, timing);
 }
 }  // namespace
 
@@ -403,8 +408,17 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
                                                                 const QVector<TimelineTrack>& tracks,
                                                                 qreal timelineFramePosition,
                                                                 const QVector<RenderSyncMarker>& markers) {
+    return evaluateEffectiveVisualEffectsAtPosition(
+        clip, tracks, timelineFramePosition, markers, activePlaybackTimingContext());
+}
+
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
+                                                                const QVector<TimelineTrack>& tracks,
+                                                                qreal timelineFramePosition,
+                                                                const QVector<RenderSyncMarker>& markers,
+                                                                const PlaybackTimingContext& timing) {
     const qreal adjustedTimelinePosition =
-        effectTimelinePositionForClip(clip, timelineFramePosition, markers);
+        effectTimelinePositionForClip(clip, timelineFramePosition, markers, timing);
     return evaluateEffectiveVisualEffectsAtPosition(clip, tracks, adjustedTimelinePosition);
 }
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade) {
@@ -736,8 +750,8 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
             const uchar* maskRow = mask.constScanLine(y);
             QRgb* dstRow = reinterpret_cast<QRgb*>(output.scanLine(y));
             for (int x = 0; x < output.width(); ++x) {
-                const int v = maskRow[x] >= 128 ? 255 : 0;
-                dstRow[x] = qRgba(v, v, v, 255);
+                const int v = maskRow[x];
+                dstRow[x] = qRgba(v, v, v, v);
             }
         }
         return output;

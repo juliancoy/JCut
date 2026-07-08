@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "background_fill_effect.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -254,6 +255,9 @@ void EditorWindow::bindInspectorWidgets()
     m_speechFilterFadeSamplesSpin = m_inspectorPane->speechFilterFadeSamplesSpin();
     m_speechFilterCurveStrengthSpin = m_inspectorPane->speechFilterCurveStrengthSpin();
     m_speechFilterRangeCrossfadeCheckBox = m_inspectorPane->speechFilterRangeCrossfadeCheckBox();
+    m_speechFilterFrameTransitionModeCombo = m_inspectorPane->speechFilterFrameTransitionModeCombo();
+    m_speechFilterFrameCrossfadeCheckBox = m_inspectorPane->speechFilterFrameCrossfadeCheckBox();
+    m_speechFilterFrameCrossfadeFramesSpin = m_inspectorPane->speechFilterFrameCrossfadeFramesSpin();
     m_playbackClockSourceCombo = m_inspectorPane->playbackClockSourceCombo();
     m_playbackAudioWarpModeCombo = m_inspectorPane->playbackAudioWarpModeCombo();
     m_aiStatusLabel = m_inspectorPane->aiStatusLabel();
@@ -375,9 +379,10 @@ void EditorWindow::setupSpeechFilterControls()
 {
     const auto refreshSpeechFilterRouting = [this](bool pushHistory = false) {
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
-        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_preview) {
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+            m_preview->setExportRanges(ranges);
+        }
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setTranscriptNormalizeRanges(
@@ -412,6 +417,7 @@ void EditorWindow::setupSpeechFilterControls()
                         m_speechFilterFadeMode =
                             AudioEngine::speechFilterFadeModeFromString(mode);
                     }
+                    m_speechFilterRangeCrossfade = false;
                     refreshSpeechFilterFadeParameterVisibility();
                     refreshSpeechFilterRouting(true);
                 });
@@ -422,6 +428,38 @@ void EditorWindow::setupSpeechFilterControls()
                 m_speechFilterRangeCrossfade = checked;
                 refreshSpeechFilterRouting(true);
             });
+    if (m_speechFilterFrameTransitionModeCombo) {
+        connect(m_speechFilterFrameTransitionModeCombo, &QComboBox::currentIndexChanged, this,
+                [this, refreshSpeechFilterRouting](int index) {
+                    if (index < 0 || !m_speechFilterFrameTransitionModeCombo) {
+                        return;
+                    }
+                    m_speechFilterFrameTransitionMode =
+                        playbackFrameTransitionModeFromString(
+                            m_speechFilterFrameTransitionModeCombo->itemData(index).toString());
+                    m_speechFilterFrameCrossfadeEnabled =
+                        m_speechFilterFrameTransitionMode == PlaybackFrameTransitionMode::Crossfade;
+                    refreshSpeechFilterFadeParameterVisibility();
+                    refreshSpeechFilterRouting(true);
+                });
+    }
+    if (m_speechFilterFrameCrossfadeCheckBox) {
+        connect(m_speechFilterFrameCrossfadeCheckBox, &QCheckBox::toggled, this,
+                [this, refreshSpeechFilterRouting](bool checked) {
+                    m_speechFilterFrameCrossfadeEnabled = checked;
+                    m_speechFilterFrameTransitionMode =
+                        checked ? PlaybackFrameTransitionMode::Crossfade
+                                : PlaybackFrameTransitionMode::Cut;
+                    refreshSpeechFilterRouting(true);
+                });
+    }
+    if (m_speechFilterFrameCrossfadeFramesSpin) {
+        connect(m_speechFilterFrameCrossfadeFramesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this, refreshSpeechFilterRouting](int value) {
+                    m_speechFilterFrameCrossfadeFrames = qBound(0, value, 240);
+                    refreshSpeechFilterRouting(true);
+                });
+    }
     if (m_speechFilterCurveStrengthSpin) {
         connect(m_speechFilterCurveStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, [this, refreshSpeechFilterRouting](double value) {
@@ -1143,15 +1181,27 @@ void EditorWindow::setupPreviewControls()
         connect(m_backgroundFillEffectCombo, &QComboBox::currentIndexChanged, this, [this]() {
             const BackgroundFillEffect effect =
                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
+            const bool progressive = effect == BackgroundFillEffect::ProgressiveEdgeStretch;
+            if (m_backgroundFillEdgeProgressiveCheckBox) {
+                QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
+                m_backgroundFillEdgeProgressiveCheckBox->setChecked(progressive);
+            }
+            if (m_backgroundFillEdgePowerSpin) {
+                m_backgroundFillEdgePowerSpin->setEnabled(progressive);
+            }
             if (m_preview) {
                 m_preview->setBackgroundFillEffect(effect);
+                m_preview->setBackgroundFillEdgeProgressive(progressive);
             }
             scheduleSaveState();
             pushHistorySnapshot();
         });
         if (m_preview) {
-            m_preview->setBackgroundFillEffect(
-                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()));
+            const BackgroundFillEffect effect =
+                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
+            m_preview->setBackgroundFillEffect(effect);
+            m_preview->setBackgroundFillEdgeProgressive(
+                effect == BackgroundFillEffect::ProgressiveEdgeStretch);
         }
     }
 
@@ -1212,8 +1262,20 @@ void EditorWindow::setupPreviewControls()
 
     if (m_backgroundFillEdgeProgressiveCheckBox) {
         connect(m_backgroundFillEdgeProgressiveCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_backgroundFillEffectCombo && checked) {
+                const int progressiveIndex = m_backgroundFillEffectCombo->findData(
+                    backgroundFillEffectToString(BackgroundFillEffect::ProgressiveEdgeStretch));
+                if (progressiveIndex >= 0 &&
+                    m_backgroundFillEffectCombo->currentIndex() != progressiveIndex) {
+                    QSignalBlocker block(m_backgroundFillEffectCombo);
+                    m_backgroundFillEffectCombo->setCurrentIndex(progressiveIndex);
+                }
+            }
             if (m_preview) {
                 m_preview->setBackgroundFillEdgeProgressive(checked);
+                if (checked) {
+                    m_preview->setBackgroundFillEffect(BackgroundFillEffect::ProgressiveEdgeStretch);
+                }
             }
             if (m_backgroundFillEdgePowerSpin) {
                 m_backgroundFillEdgePowerSpin->setEnabled(checked);
@@ -1222,10 +1284,19 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
         if (m_preview) {
-            m_preview->setBackgroundFillEdgeProgressive(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
+            const bool progressive =
+                m_backgroundFillEdgeProgressiveCheckBox->isChecked() ||
+                (m_backgroundFillEffectCombo &&
+                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()) ==
+                     BackgroundFillEffect::ProgressiveEdgeStretch);
+            m_preview->setBackgroundFillEdgeProgressive(progressive);
         }
         if (m_backgroundFillEdgePowerSpin) {
-            m_backgroundFillEdgePowerSpin->setEnabled(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
+            m_backgroundFillEdgePowerSpin->setEnabled(
+                m_backgroundFillEdgeProgressiveCheckBox->isChecked() ||
+                (m_backgroundFillEffectCombo &&
+                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()) ==
+                     BackgroundFillEffect::ProgressiveEdgeStretch));
         }
     }
 
@@ -1259,7 +1330,6 @@ void EditorWindow::refreshSpeechFilterFadeParameterVisibility()
          m_speechFilterFadeMode == AudioEngine::SpeechFilterFadeMode::SmootherStep);
     const QList<QWidget*> widgets{
         m_speechFilterFadeSamplesSpin,
-        m_speechFilterRangeCrossfadeCheckBox,
     };
     for (QWidget* widget : widgets) {
         if (!widget) {
@@ -1286,6 +1356,25 @@ void EditorWindow::refreshSpeechFilterFadeParameterVisibility()
             for (QFormLayout* form : forms) {
                 if (QWidget* rowLabel = form->labelForField(widget)) {
                     rowLabel->setVisible(showCurveParameters);
+                }
+            }
+        }
+    }
+    const bool showFrameParameters = m_speechFilterEnabled;
+    const QList<QWidget*> frameWidgets{
+        m_speechFilterFrameTransitionModeCombo,
+        m_speechFilterFrameCrossfadeFramesSpin,
+    };
+    for (QWidget* widget : frameWidgets) {
+        if (!widget) {
+            continue;
+        }
+        widget->setVisible(showFrameParameters);
+        if (QWidget* parent = widget->parentWidget()) {
+            const auto forms = parent->findChildren<QFormLayout*>();
+            for (QFormLayout* form : forms) {
+                if (QWidget* rowLabel = form->labelForField(widget)) {
+                    rowLabel->setVisible(showFrameParameters);
                 }
             }
         }

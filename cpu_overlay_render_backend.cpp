@@ -84,6 +84,52 @@ struct SpeakerLabelLine {
     bool name = false;
 };
 
+QColor colorWithOpacity(QColor color, qreal opacity)
+{
+    if (!color.isValid()) {
+        color = QColor(Qt::black);
+    }
+    color.setAlphaF(qBound<qreal>(0.0, opacity, 1.0));
+    return color;
+}
+
+QVector<QPointF> dilationOffsets(qreal radius)
+{
+    QVector<QPointF> offsets;
+    const int rings = qBound(0, static_cast<int>(std::ceil(radius)), 24);
+    if (rings <= 0) {
+        return offsets;
+    }
+
+    constexpr qreal kPi = 3.14159265358979323846;
+    constexpr int kSamplesPerRing = 16;
+    offsets.reserve(rings * kSamplesPerRing);
+    auto containsOffset = [&offsets](const QPointF& candidate) {
+        for (const QPointF& offset : offsets) {
+            if (qFuzzyCompare(offset.x() + 1.0, candidate.x() + 1.0) &&
+                qFuzzyCompare(offset.y() + 1.0, candidate.y() + 1.0)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int ring = 1; ring <= rings; ++ring) {
+        const qreal ringRadius = qMin<qreal>(radius, ring);
+        for (int sample = 0; sample < kSamplesPerRing; ++sample) {
+            const qreal angle = (2.0 * kPi * sample) / kSamplesPerRing;
+            const QPointF offset(std::round(std::cos(angle) * ringRadius),
+                                 std::round(std::sin(angle) * ringRadius));
+            if ((qFuzzyIsNull(offset.x()) && qFuzzyIsNull(offset.y())) ||
+                containsOffset(offset)) {
+                continue;
+            }
+            offsets.push_back(offset);
+        }
+    }
+    return offsets;
+}
+
 FtLibraryHolder& ftLibraryHolder()
 {
     static FtLibraryHolder holder;
@@ -581,7 +627,9 @@ OverlayImage renderTitleOverlayImageSoftware(const QSize& imageSize,
     const qreal centerY = (static_cast<qreal>(imageSize.height()) - 1.0) * 0.5 + title.y * scaleY;
     const TitleLayoutMetrics layoutMetrics = measureOverlayTitleLayout(title, fontScale);
     const QStringList lines = title.text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    const qreal maxWidth = layoutMetrics.width;
+    const qreal requestedWindowContentWidth =
+        title.windowWidth > 0.0 ? qMax<qreal>(0.0, title.windowWidth * fontScale - (title.windowPadding * fontScale * 2.0)) : 0.0;
+    const qreal maxWidth = qMax(layoutMetrics.width, requestedWindowContentWidth);
     const qreal totalHeight = layoutMetrics.height;
     const qreal topY = centerY - (totalHeight / 2.0);
     const qreal windowPaddingPx = qMax<qreal>(0.0, title.windowPadding * fontScale);
@@ -709,7 +757,8 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         const QColor textColor = clip.transcriptOverlay.textColor.isValid()
             ? clip.transcriptOverlay.textColor
             : QColor(Qt::white);
-        const QColor shadowColor(0, 0, 0, 200);
+        const QColor shadowColor = colorWithOpacity(clip.transcriptOverlay.shadowColor,
+                                                    clip.transcriptOverlay.shadowOpacity);
         const QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
             ? clip.transcriptOverlay.highlightColor
             : QColor(QStringLiteral("#fff2a8"));
@@ -747,13 +796,32 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         const qreal scaledContentHeight = contentHeight * docScale;
         qreal cursorY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledContentHeight) / 2.0);
 
-        const qreal shadowOffset = 5.0 * docScale;
+        const qreal shadowOffsetX = clip.transcriptOverlay.shadowOffsetX * docScale;
+        const qreal shadowOffsetY = clip.transcriptOverlay.shadowOffsetY * docScale;
+        const QColor outlineColor = colorWithOpacity(clip.transcriptOverlay.textOutlineColor,
+                                                     clip.transcriptOverlay.textOutlineOpacity);
+        const QVector<QPointF> outlineOffsets = clip.transcriptOverlay.textOutlineEnabled
+            ? dilationOffsets(qMax<qreal>(0.0, clip.transcriptOverlay.textOutlineWidth) * docScale)
+            : QVector<QPointF>{};
+        auto drawDilatedGlyphRun = [&](FT_Face face, qreal x, qreal baseline, const QString& text) {
+            for (const QPointF& offset : outlineOffsets) {
+                drawGlyphRun(&canvas, face, x + offset.x(), baseline + offset.y(), text, outlineColor);
+            }
+        };
 
         if (!speakerTitle.isEmpty() && titleFace) {
             const qreal titleWidth = speakerTitleWidth * docScale;
             const qreal titleX = textBounds.left() + qMax<qreal>(0.0, (textBounds.width() - titleWidth) / 2.0);
             const qreal titleBaseline = cursorY + (titleMetrics.ascender * docScale);
-            drawGlyphRun(&canvas, titleFace, titleX + shadowOffset, titleBaseline + shadowOffset, speakerTitle, shadowColor);
+            if (clip.transcriptOverlay.showShadow) {
+                drawGlyphRun(&canvas,
+                             titleFace,
+                             titleX + shadowOffsetX,
+                             titleBaseline + shadowOffsetY,
+                             speakerTitle,
+                             shadowColor);
+            }
+            drawDilatedGlyphRun(titleFace, titleX, titleBaseline, speakerTitle);
             drawGlyphRun(&canvas, titleFace, titleX, titleBaseline, speakerTitle, textColor);
             cursorY += (titleMetrics.lineHeight + titleGap) * docScale;
         }
@@ -786,9 +854,15 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                                             highlightFillColor);
                 }
                 const QColor glyphColor = active ? highlightTextColor : textColor;
-                if (!active) {
-                    drawGlyphRun(&canvas, bodyFace, cursorX + shadowOffset, baseline + shadowOffset, word, shadowColor);
+                if (clip.transcriptOverlay.showShadow && !active) {
+                    drawGlyphRun(&canvas,
+                                 bodyFace,
+                                 cursorX + shadowOffsetX,
+                                 baseline + shadowOffsetY,
+                                 word,
+                                 shadowColor);
                 }
+                drawDilatedGlyphRun(bodyFace, cursorX, baseline, word);
                 drawGlyphRun(&canvas, bodyFace, cursorX, baseline, word, glyphColor);
                 cursorX += wordWidth;
                 if (wordIndex + 1 < line.words.size()) {
@@ -871,6 +945,11 @@ TitleLayoutMetrics measureOverlayTitleLayout(const EvaluatedTitle& title, qreal 
     result.height = result.lineHeight * result.lineCount;
     for (const QString& line : lines) {
         result.width = qMax(result.width, measureTextWidth(face, line));
+    }
+    if (title.windowWidth > 0.0) {
+        result.width = qMax(result.width,
+                            title.windowWidth * qMax<qreal>(0.001, fontScale) -
+                                (qMax<qreal>(0.0, title.windowPadding) * qMax<qreal>(0.001, fontScale) * 2.0));
     }
     return result;
 }

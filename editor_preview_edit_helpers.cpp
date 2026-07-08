@@ -156,6 +156,7 @@ bool createPreviewKeyframeAtTimelineFrame(TimelineClip& clip, int64_t timelineFr
         keyframe.windowColor = evaluated.windowColor;
         keyframe.windowOpacity = evaluated.windowOpacity;
         keyframe.windowPadding = evaluated.windowPadding;
+        keyframe.windowWidth = evaluated.windowWidth;
         keyframe.windowFrameEnabled = evaluated.windowFrameEnabled;
         keyframe.windowFrameColor = evaluated.windowFrameColor;
         keyframe.windowFrameOpacity = evaluated.windowFrameOpacity;

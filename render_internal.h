@@ -121,7 +121,9 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       int64_t frameNumber,
                                       QHash<QString, editor::DecoderContext*>& decoders,
                                       editor::AsyncDecoder* asyncDecoder,
-                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache);
+                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                                      bool forceSoftwareDecode = false,
+                                      bool preferHardwareFrames = false);
 QString avErrToString(int errnum);
 QRect fitRect(const QSize& source, const QSize& bounds);
 QRectF fitRectF(const QSize& source, const QSize& bounds);
@@ -229,6 +231,7 @@ struct OffscreenRenderFrame {
 
 struct OffscreenRenderContext {
     const RenderRequest& request;
+    // Visual timeline frame used for decode, transforms, and video sampling.
     qreal timelineFrame = 0.0;
     QHash<QString, editor::DecoderContext*>& decoders;
     editor::AsyncDecoder* asyncDecoder = nullptr;
@@ -242,6 +245,12 @@ struct OffscreenRenderContext {
     QJsonArray* skippedClips = nullptr;
     QJsonObject* skippedReasonCounts = nullptr;
     QJsonObject* exportFaceTransformDiagnostics = nullptr;
+    // Optional raw transport clock for generated effect phase. This stays
+    // separate from timelineFrame so frame speed-through can move video across
+    // a speech-filter gap without freezing moving synthetic patterns.
+    qreal generatedEffectClockTimelineFrame = -1.0;
+    bool forceSoftwareDecode = false;
+    bool preferHardwareFrames = false;
 };
 
 class OffscreenRenderer {
@@ -288,7 +297,10 @@ public:
                                                   readbackMs,
                                                   skippedClips,
                                                   skippedReasonCounts,
-                                                  nullptr});
+                                                  nullptr,
+                                                  -1.0,
+                                                  false,
+                                                  false});
     }
     bool renderFrameToOutput(const RenderRequest& request,
                              qreal timelineFrame,
@@ -305,7 +317,10 @@ public:
                              qint64* readbackMs = nullptr,
                              QJsonArray* skippedClips = nullptr,
                              QJsonObject* skippedReasonCounts = nullptr,
-                             QJsonObject* exportFaceTransformDiagnostics = nullptr)
+                             QJsonObject* exportFaceTransformDiagnostics = nullptr,
+                             qreal generatedEffectClockTimelineFrame = -1.0,
+                             bool forceSoftwareDecode = false,
+                             bool preferHardwareFrames = false)
     {
         return renderFrameToOutput(OffscreenRenderContext{request,
                                                           timelineFrame,
@@ -320,7 +335,12 @@ public:
                                                           readbackMs,
                                                           skippedClips,
                                                           skippedReasonCounts,
-                                                          exportFaceTransformDiagnostics},
+                                                          exportFaceTransformDiagnostics,
+                                                          generatedEffectClockTimelineFrame >= 0.0
+                                                              ? generatedEffectClockTimelineFrame
+                                                              : timelineFrame,
+                                                          forceSoftwareDecode,
+                                                          preferHardwareFrames},
                                    output,
                                    readbackToCpuImage);
     }

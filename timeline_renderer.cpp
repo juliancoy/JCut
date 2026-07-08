@@ -247,6 +247,9 @@ void TimelineRenderer::paint(QPainter* painter) {
         }
 
         QColor clipFill = clip.color;
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            clipFill = QColor(QStringLiteral("#2f4056"));
+        }
         if (!visualsEnabled || !audioEnabled) {
             clipFill = clipFill.darker(160);
             clipFill.setAlpha(160);
@@ -320,6 +323,16 @@ void TimelineRenderer::paint(QPainter* painter) {
             barBottom -= (barHeight + 1);
         }
 
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            const QRect zBarRect(visibleClipRect.left() + 2,
+                                 visibleClipRect.top() + 2,
+                                 qMax(1, visibleClipRect.width() - 4),
+                                 qBound(3, visibleClipRect.height() / 8, 6));
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(QStringLiteral("#62d2ff")));
+            painter->drawRoundedRect(zBarRect, 2, 2);
+        }
+
         const QString transcriptPath = transcriptWorkingPathForClip(clip);
         const bool transcriptExists =
             !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
@@ -362,6 +375,8 @@ void TimelineRenderer::paint(QPainter* painter) {
             const QString titleText = clip.titleKeyframes.isEmpty()
                 ? QStringLiteral("Title") : clip.titleKeyframes.constFirst().text;
             clipTitle = QStringLiteral("T  %1").arg(titleText);
+        } else if (clip.clipRole == ClipRole::MaskMatte) {
+            clipTitle = QStringLiteral("Z  %1").arg(clip.label);
         } else if (audioOnly) {
             clipTitle = QStringLiteral("AUDIO  %1").arg(clip.label);
         } else {

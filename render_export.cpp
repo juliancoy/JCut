@@ -1074,8 +1074,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             qint64 frameCompositeMs = 0;
             qint64 frameReadbackMs = 0;
             qint64* frameReadbackMsPtr = &frameReadbackMs;
+            const qreal visualTimelineFramePosition =
+                playbackVisualTimelineFramePosition(timelineFramePosition, request.playbackTiming);
+            const PlaybackFrameCrossfade frameCrossfade =
+                playbackFrameCrossfadeAtTimelineFrame(timelineFramePosition, request.playbackTiming);
             const bool directGpuFrameReadback =
-                useGpuRenderer && !request.createVideoFromImageSequence;
+                useGpuRenderer && !request.createVideoFromImageSequence && !frameCrossfade.active;
             if (directGpuFrameReadback) {
                 frameReadbackMsPtr = nullptr;
             }
@@ -1084,7 +1088,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             QJsonObject frameExportFaceTransformDiagnostics;
             const bool renderedOk =
                 activeRenderer->renderFrameToOutput(request,
-                                                    timelineFramePosition,
+                                                    visualTimelineFramePosition,
                                                     decoders,
                                                     asyncDecoder.get(),
                                                     &asyncFrameCache,
@@ -1096,9 +1100,10 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                                     &frameTextureMs,
                                                     &frameCompositeMs,
                                                     frameReadbackMsPtr,
-                                                    &frameSkippedClips,
-                                                    &skippedReasonCounts,
-                                                    &frameExportFaceTransformDiagnostics);
+	                                                    &frameSkippedClips,
+	                                                    &skippedReasonCounts,
+	                                                    &frameExportFaceTransformDiagnostics,
+	                                                    timelineFramePosition);
             QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
             if (!frameExportFaceTransformDiagnostics.isEmpty()) {
@@ -1112,6 +1117,50 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             if ((!renderedOk || rendered.isNull()) && !directGpuFrameReadback) {
                 errorMessage = QStringLiteral("Failed to render Vulkan timeline frame %1.").arg(timelineFrame);
                 break;
+            }
+            if (frameCrossfade.active && !rendered.isNull()) {
+                RenderRequest secondaryRequest = request;
+                secondaryRequest.playbackTiming.frameCrossfadeEnabled = false;
+                render_detail::OffscreenRenderFrame secondaryFrame;
+                QJsonArray secondarySkippedClips;
+                QJsonObject secondaryFaceDiagnostics;
+                qint64 secondaryDecodeMs = 0;
+                qint64 secondaryTextureMs = 0;
+                qint64 secondaryCompositeMs = 0;
+                qint64 secondaryReadbackMs = 0;
+                const bool secondaryOk = activeRenderer->renderFrameToOutput(
+                    secondaryRequest,
+                    static_cast<qreal>(frameCrossfade.secondaryTimelineFrame),
+                    decoders,
+                    asyncDecoder.get(),
+                    &asyncFrameCache,
+                    orderedClips,
+                    &secondaryFrame,
+                    true,
+                    &clipStageStats,
+                    &secondaryDecodeMs,
+                    &secondaryTextureMs,
+                    &secondaryCompositeMs,
+                    &secondaryReadbackMs,
+	                    &secondarySkippedClips,
+	                    &skippedReasonCounts,
+	                    &secondaryFaceDiagnostics,
+	                    timelineFramePosition);
+                totalRenderDecodeStageMs += secondaryDecodeMs;
+                totalRenderTextureStageMs += secondaryTextureMs;
+                totalRenderCompositeStageMs += secondaryCompositeMs;
+                totalGpuReadbackMs += secondaryReadbackMs;
+                if (secondaryOk && !secondaryFrame.cpuImage.isNull()) {
+                    QImage blended = rendered.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    QImage incoming = secondaryFrame.cpuImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    QPainter painter(&blended);
+                    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+                    painter.setOpacity(qBound(0.0f, frameCrossfade.secondaryOpacity, 1.0f));
+                    painter.drawImage(QPoint(0, 0), incoming);
+                    painter.end();
+                    rendered = blended;
+                    renderedFrame.cpuImage = rendered;
+                }
             }
 
             // Save intermediate image files if requested

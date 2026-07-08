@@ -19,18 +19,32 @@ void TranscriptDocumentSession::assign(const QString& clipFilePath,
                                        const QString& transcriptPath,
                                        const QJsonDocument& document)
 {
-    assignLoadedTranscriptState(stateRef(), clipFilePath, transcriptPath, document);
+    m_clipFilePath = clipFilePath;
+    m_transcriptPath = transcriptPath;
+    m_document = document;
 }
 
 void TranscriptDocumentSession::clear()
 {
-    clearLoadedTranscriptState(stateRef());
+    m_transcriptPath.clear();
+    m_clipFilePath.clear();
+    m_document = QJsonDocument();
     m_saveController.clear();
 }
 
 bool TranscriptDocumentSession::mutateRoot(const std::function<bool(QJsonObject&)>& mutator)
 {
-    return mutateLoadedTranscriptRoot(stateRef(), mutator);
+    if (!m_document.isObject() || !mutator) {
+        return false;
+    }
+
+    QJsonObject root = m_document.object();
+    if (!mutator(root)) {
+        return false;
+    }
+
+    m_document.setObject(root);
+    return true;
 }
 
 void TranscriptDocumentSession::queueSave(bool synchronous, const SyncSaveFn& syncSave)

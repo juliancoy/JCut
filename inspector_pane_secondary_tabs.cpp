@@ -177,6 +177,9 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo = new QComboBox(page);
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Edge Stretch"),
                                          backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
+    m_backgroundFillEffectCombo->addItem(
+        QStringLiteral("Progressive Edge Stretch"),
+        backgroundFillEffectToString(BackgroundFillEffect::ProgressiveEdgeStretch));
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Mirror"),
                                          backgroundFillEffectToString(BackgroundFillEffect::Mirror));
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Blur Cover"),
@@ -216,7 +219,7 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEdgePixelsSlider = new QSlider(Qt::Horizontal, page);
     m_backgroundFillEdgePixelsSlider->setRange(1, 512);
     m_backgroundFillEdgePixelsSlider->setValue(1);
-    m_backgroundFillEdgePixelsSlider->setToolTip(QStringLiteral("Number of source-edge pixels used by edge stretch fill"));
+    m_backgroundFillEdgePixelsSlider->setToolTip(QStringLiteral("Number of source-edge pixels stretched into the fill area"));
     auto *edgePixelsValueLabel = new QLabel(QStringLiteral("1 px"), page);
     edgePixelsValueLabel->setMinimumWidth(48);
     edgePixelsValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -231,7 +234,7 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEdgeProgressiveCheckBox = new QCheckBox(QStringLiteral("Progressive Stretch"), page);
     m_backgroundFillEdgeProgressiveCheckBox->setToolTip(
         QStringLiteral("Use a curved transition through the selected edge pixel band"));
-    form->addRow(QStringLiteral("Edge Mode"), m_backgroundFillEdgeProgressiveCheckBox);
+    m_backgroundFillEdgeProgressiveCheckBox->hide();
 
     m_backgroundFillEdgePowerSpin = new QDoubleSpinBox(page);
     m_backgroundFillEdgePowerSpin->setRange(0.25, 8.0);

@@ -123,6 +123,8 @@ QString AudioEngine::speechFilterFadeModeToString(SpeechFilterFadeMode mode) {
     return QStringLiteral("smoothStep");
   case SpeechFilterFadeMode::SmootherStep:
     return QStringLiteral("smootherStep");
+  case SpeechFilterFadeMode::Crossfade:
+    return QStringLiteral("crossfade");
   }
   return QStringLiteral("fade");
 }
@@ -137,6 +139,8 @@ QString AudioEngine::speechFilterFadeModeLabel(SpeechFilterFadeMode mode) {
     return QStringLiteral("Smooth Step");
   case SpeechFilterFadeMode::SmootherStep:
     return QStringLiteral("Smoother Step");
+  case SpeechFilterFadeMode::Crossfade:
+    return QStringLiteral("Crossfade");
   }
   return QStringLiteral("Fade");
 }
@@ -156,6 +160,9 @@ AudioEngine::speechFilterFadeModeFromString(
   }
   if (normalized == QStringLiteral("smootherStep")) {
     return SpeechFilterFadeMode::SmootherStep;
+  }
+  if (normalized == QStringLiteral("crossfade")) {
+    return SpeechFilterFadeMode::Crossfade;
   }
   return fallback;
 }
@@ -231,9 +238,9 @@ void AudioEngine::setPlaybackWarpMode(PlaybackAudioWarpMode mode) {
   if (oldMode == newMode) {
     return;
   }
-  if (mode == PlaybackAudioWarpMode::TimeStretch &&
+  if (playbackWarpModeUsesTimeStretch(mode) &&
       pitchPreservingTimeStretchActive(
-          m_playbackRate.load(std::memory_order_acquire))) {
+          m_playbackRate.load(std::memory_order_acquire), mode)) {
     enqueueTimeStretchPrecomputeForScheduledPaths();
   }
 }
@@ -247,9 +254,10 @@ void AudioEngine::setPlaybackRate(qreal rate) {
   if (oldRateKey == newRateKey) {
     return;
   }
-  if (pitchPreservingTimeStretchActive(clampedRate) &&
-      static_cast<PlaybackAudioWarpMode>(m_playbackWarpMode.load(
-          std::memory_order_acquire)) == PlaybackAudioWarpMode::TimeStretch) {
+  const PlaybackAudioWarpMode mode = static_cast<PlaybackAudioWarpMode>(
+      m_playbackWarpMode.load(std::memory_order_acquire));
+  if (playbackWarpModeUsesTimeStretch(mode) &&
+      pitchPreservingTimeStretchActive(clampedRate, mode)) {
     enqueueTimeStretchPrecomputeForScheduledPaths();
   }
 }
@@ -664,14 +672,15 @@ bool AudioEngine::playbackAudioNeedsRetimingForFrame(int64_t startFrame) const {
         qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
     warpMode = static_cast<PlaybackAudioWarpMode>(
         m_playbackWarpMode.load(std::memory_order_acquire));
-    if (warpMode != PlaybackAudioWarpMode::TimeStretch ||
-        !pitchPreservingTimeStretchActive(playbackRate) ||
+    if (!playbackWarpModeUsesTimeStretch(warpMode) ||
+        !pitchPreservingTimeStretchActive(playbackRate, warpMode) ||
         audioReadyForTimelineSampleLocked(timelineSample)) {
       return false;
     }
   }
 
-  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(playbackRate);
+  const int sidecarSpeedKey =
+      precomputedTimeStretchSpeedKey(playbackRate, warpMode);
   if (sidecarSpeedKey <= 1) {
     return true;
   }
@@ -1308,8 +1317,10 @@ int AudioEngine::beginTimeStretchJobAttempt(const QString &path,
 AudioEngine::TimeStretchProgressSnapshot
 AudioEngine::timeStretchProgressSnapshot() const {
   TimeStretchProgressSnapshot snapshot;
+  const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+      m_playbackWarpMode.load(std::memory_order_acquire));
   const int speedKey = precomputedTimeStretchSpeedKey(
-      m_playbackRate.load(std::memory_order_acquire));
+      m_playbackRate.load(std::memory_order_acquire), warpMode);
 
   QVector<TimeStretchJobProgress> jobs;
   {
@@ -1400,8 +1411,14 @@ qreal AudioEngine::normalizedTimeStretchSpeed(qreal playbackRate) {
 }
 
 int AudioEngine::precomputedTimeStretchSpeedKey(qreal playbackRate) {
+  return precomputedTimeStretchSpeedKey(playbackRate,
+                                        PlaybackAudioWarpMode::TimeStretch);
+}
+
+int AudioEngine::precomputedTimeStretchSpeedKey(qreal playbackRate,
+                                                PlaybackAudioWarpMode mode) {
   const qreal speed = normalizedTimeStretchSpeed(playbackRate);
-  if (!pitchPreservingTimeStretchActive(speed)) {
+  if (!pitchPreservingTimeStretchActive(speed, mode)) {
     return 0;
   }
   const int engine = editor::rubberBandEnginePreference() ==
@@ -1451,7 +1468,29 @@ int AudioEngine::precomputedTimeStretchSpeedKey(qreal playbackRate) {
 }
 
 bool AudioEngine::pitchPreservingTimeStretchActive(qreal playbackRate) {
+  return pitchPreservingTimeStretchActive(playbackRate,
+                                          PlaybackAudioWarpMode::TimeStretch);
+}
+
+bool AudioEngine::pitchPreservingTimeStretchActive(qreal playbackRate,
+                                                   PlaybackAudioWarpMode mode) {
+  if (!playbackWarpModeUsesTimeStretch(mode)) {
+    return false;
+  }
+  if (playbackWarpModeForcesUnityTimeStretch(mode)) {
+    return true;
+  }
   return qAbs(normalizedTimeStretchSpeed(playbackRate) - 1.0) >= 0.0001;
+}
+
+bool AudioEngine::playbackWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode) {
+  return mode == PlaybackAudioWarpMode::TimeStretch ||
+         mode == PlaybackAudioWarpMode::RubberBand;
+}
+
+bool AudioEngine::playbackWarpModeForcesUnityTimeStretch(
+    PlaybackAudioWarpMode mode) {
+  return mode == PlaybackAudioWarpMode::RubberBand;
 }
 
 int AudioEngine::timeStretchRateKey(qreal playbackRate) {
@@ -1616,8 +1655,8 @@ bool AudioEngine::audioReadyForTimelineSampleLocked(
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
       m_playbackWarpMode.load(std::memory_order_acquire));
-  if (warpMode == PlaybackAudioWarpMode::TimeStretch &&
-      pitchPreservingTimeStretchActive(playbackRate)) {
+  if (playbackWarpModeUsesTimeStretch(warpMode) &&
+      pitchPreservingTimeStretchActive(playbackRate, warpMode)) {
     const auto pathIt = m_timeStretchAudioCache.constFind(audioPath);
     if (pathIt == m_timeStretchAudioCache.cend()) {
       return false;
@@ -1646,6 +1685,7 @@ bool AudioEngine::ensureTimeStretchAudioReadyForTimelineSample(
     int64_t timelineSample) {
   QString audioPath;
   qreal playbackRate = 1.0;
+  PlaybackAudioWarpMode warpMode = PlaybackAudioWarpMode::Disabled;
   int64_t sourceSample = 0;
   {
     std::lock_guard<std::mutex> lock(m_stateMutex);
@@ -1662,17 +1702,18 @@ bool AudioEngine::ensureTimeStretchAudioReadyForTimelineSample(
     }
     playbackRate =
         qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
-    const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+    warpMode = static_cast<PlaybackAudioWarpMode>(
         m_playbackWarpMode.load(std::memory_order_acquire));
-    if (warpMode != PlaybackAudioWarpMode::TimeStretch ||
-        !pitchPreservingTimeStretchActive(playbackRate)) {
+    if (!playbackWarpModeUsesTimeStretch(warpMode) ||
+        !pitchPreservingTimeStretchActive(playbackRate, warpMode)) {
       m_timeStretchReadinessState.store(TimeStretchReadinessNotNeeded,
                                         std::memory_order_release);
       return false;
     }
   }
 
-  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(playbackRate);
+  const int sidecarSpeedKey =
+      precomputedTimeStretchSpeedKey(playbackRate, warpMode);
   if (sidecarSpeedKey > 1 &&
       timeStretchJobRecentlyFailed(audioPath, sidecarSpeedKey)) {
     m_audioPlaybackBlocked.store(true, std::memory_order_release);
@@ -1688,7 +1729,7 @@ bool AudioEngine::ensureTimeStretchAudioReadyForTimelineSample(
                                     std::memory_order_release);
   const AudioClipCacheEntry entry = timeStretchCacheForPathCopy(
       audioPath, playbackRate, sourceSample,
-      sourceSample + qMax<int64_t>(1, kPlaybackWarmupFrames));
+      sourceSample + qMax<int64_t>(1, kPlaybackWarmupFrames), warpMode);
   if (entry.valid) {
     m_audioPlaybackBlocked.store(false, std::memory_order_release);
     m_pitchPreservingAudioBlocked.store(false, std::memory_order_release);
@@ -1723,8 +1764,8 @@ void AudioEngine::requestAudioForTimelineSampleLocked(int64_t timelineSample) {
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
       m_playbackWarpMode.load(std::memory_order_acquire));
-  if (warpMode == PlaybackAudioWarpMode::TimeStretch &&
-      pitchPreservingTimeStretchActive(playbackRate)) {
+  if (playbackWarpModeUsesTimeStretch(warpMode) &&
+      pitchPreservingTimeStretchActive(playbackRate, warpMode)) {
     enqueueTimeStretchPrecomputeForPathLocked(audioPath, 0, true);
     return;
   }
@@ -1878,13 +1919,14 @@ void AudioEngine::enqueueDecodePathLocked(const QString &audioPath,
 void AudioEngine::enqueueTimeStretchPrecomputeForScheduledPaths() {
   const qreal speed =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
-  if (!pitchPreservingTimeStretchActive(speed) ||
-      static_cast<PlaybackAudioWarpMode>(m_playbackWarpMode.load(
-          std::memory_order_acquire)) != PlaybackAudioWarpMode::TimeStretch) {
+  const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+      m_playbackWarpMode.load(std::memory_order_acquire));
+  if (!playbackWarpModeUsesTimeStretch(warpMode) ||
+      !pitchPreservingTimeStretchActive(speed, warpMode)) {
     return;
   }
 
-  const int speedKey = precomputedTimeStretchSpeedKey(speed);
+  const int speedKey = precomputedTimeStretchSpeedKey(speed, warpMode);
   QVector<QString> queuedPaths;
   QVector<QString> completedPaths;
   {
@@ -1916,8 +1958,10 @@ void AudioEngine::enqueueTimeStretchPrecomputeForScheduledPaths() {
 void AudioEngine::enqueueTimeStretchPrecomputeForPath(
     const QString &audioPath, int64_t sourceStartSample) {
   if (!audioPath.isEmpty()) {
+    const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+        m_playbackWarpMode.load(std::memory_order_acquire));
     const int speedKey = precomputedTimeStretchSpeedKey(
-        m_playbackRate.load(std::memory_order_acquire));
+        m_playbackRate.load(std::memory_order_acquire), warpMode);
     if (timeStretchJobRecentlyFailed(audioPath, speedKey)) {
       m_timeStretchPrecomputeBlocked.store(false, std::memory_order_release);
       m_audioPlaybackBlocked.store(true, std::memory_order_release);
@@ -2128,6 +2172,7 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
       break;
     case SpeechFilterFadeMode::JumpCut:
     case SpeechFilterFadeMode::Fade:
+    case SpeechFilterFadeMode::Crossfade:
       value = t;
       break;
     }
@@ -2139,7 +2184,9 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     return qBound(0.0f, value, 1.0f);
   };
 
-  if (!crossfadeEnabled) {
+  const bool useBoundaryCrossfade =
+      crossfadeEnabled || fadeMode == SpeechFilterFadeMode::Crossfade;
+  if (!useBoundaryCrossfade) {
     const int64_t samplesFromStart = samplePos - currentStart;
     const int64_t samplesToEnd = currentEndExclusive - samplePos;
 
@@ -2172,14 +2219,12 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     if (offsetFromStart >= 0 && offsetFromStart < crossWindow) {
       const float t = (static_cast<float>(offsetFromStart) + 0.5f) /
                       static_cast<float>(crossWindow);
-      if (fadeMode == SpeechFilterFadeMode::Fade) {
-        blend.primaryGain = std::sin(t * kHalfPi);
-        blend.secondaryGain = std::cos(t * kHalfPi);
-      } else {
-        const float s = shaped(t);
-        blend.primaryGain = s;
-        blend.secondaryGain = 1.0f - s;
-      }
+      const float s = (fadeMode == SpeechFilterFadeMode::Fade ||
+                       fadeMode == SpeechFilterFadeMode::Crossfade)
+                          ? t
+                          : shaped(t);
+      blend.primaryGain = std::sin(s * kHalfPi);
+      blend.secondaryGain = std::cos(s * kHalfPi);
       blend.secondaryTimelineSample =
           (prevEndExclusive - crossWindow) + offsetFromStart;
       return blend;
@@ -2199,14 +2244,12 @@ AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     if (offsetFromWindowStart >= 0 && offsetFromWindowStart < crossWindow) {
       const float t = (static_cast<float>(offsetFromWindowStart) + 0.5f) /
                       static_cast<float>(crossWindow);
-      if (fadeMode == SpeechFilterFadeMode::Fade) {
-        blend.primaryGain = std::cos(t * kHalfPi);
-        blend.secondaryGain = std::sin(t * kHalfPi);
-      } else {
-        const float s = shaped(t);
-        blend.primaryGain = 1.0f - s;
-        blend.secondaryGain = s;
-      }
+      const float s = (fadeMode == SpeechFilterFadeMode::Fade ||
+                       fadeMode == SpeechFilterFadeMode::Crossfade)
+                          ? t
+                          : shaped(t);
+      blend.primaryGain = std::cos(s * kHalfPi);
+      blend.secondaryGain = std::sin(s * kHalfPi);
       blend.secondaryTimelineSample = nextStart + offsetFromWindowStart;
       return blend;
     }
@@ -2488,10 +2531,11 @@ AudioEngine::clipCacheForPathCopy(const QString &path) const {
 AudioEngine::AudioClipCacheEntry
 AudioEngine::timeStretchCacheForPathCopy(const QString &path, qreal speed,
                                          int64_t sourceSample,
-                                         int64_t sourceEndSampleExclusive) {
+                                         int64_t sourceEndSampleExclusive,
+                                         PlaybackAudioWarpMode mode) {
   const int rateKey = timeStretchRateKey(speed);
-  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(speed);
-  if (!pitchPreservingTimeStretchActive(speed)) {
+  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(speed, mode);
+  if (!pitchPreservingTimeStretchActive(speed, mode)) {
     return {};
   }
   {
@@ -2659,11 +2703,12 @@ AudioEngine::readTimeStretchSidecarEntrySingleFlight(const QString &path,
 }
 
 AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
-    const QString &path, const AudioClipCacheEntry &decoded, qreal speed) {
+    const QString &path, const AudioClipCacheEntry &decoded, qreal speed,
+    PlaybackAudioWarpMode mode) {
   AudioClipCacheEntry warped;
-  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(speed);
+  const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(speed, mode);
   if (!decoded.valid || decoded.samples.isEmpty() ||
-      !pitchPreservingTimeStretchActive(speed)) {
+      !pitchPreservingTimeStretchActive(speed, mode)) {
     return warped;
   }
   if (sidecarSpeedKey > 1 && decoded.sourceStartSample == 0 &&
@@ -2874,17 +2919,19 @@ AudioEngine::buildPrecomputedTimeStretchEntries(
     const QString &path, const AudioClipCacheEntry &decoded,
     bool precomputeRequested) {
   QHash<int, AudioClipCacheEntry> warpedBySpeed;
+  const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+      m_playbackWarpMode.load(std::memory_order_acquire));
   if (!precomputeRequested &&
-      static_cast<PlaybackAudioWarpMode>(m_playbackWarpMode.load(
-          std::memory_order_acquire)) != PlaybackAudioWarpMode::TimeStretch) {
+      !playbackWarpModeUsesTimeStretch(warpMode)) {
     return warpedBySpeed;
   }
   const qreal speed =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
-  if (!pitchPreservingTimeStretchActive(speed)) {
+  if (!pitchPreservingTimeStretchActive(speed, warpMode)) {
     return warpedBySpeed;
   }
-  AudioClipCacheEntry warped = buildTimeStretchCacheEntry(path, decoded, speed);
+  AudioClipCacheEntry warped =
+      buildTimeStretchCacheEntry(path, decoded, speed, warpMode);
   if (warped.valid) {
     warpedBySpeed.insert(timeStretchRateKey(speed), std::move(warped));
   }
@@ -2938,6 +2985,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     QVector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
     qreal precomputedTimeStretchSpeed = 1.0;
     bool linearSourceMapping = false;
+    bool usingPrecomputedTimeStretch = false;
     bool starvedThisChunk = false;
     bool starvationEnqueued = false;
   };
@@ -2960,11 +3008,11 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
   };
   const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
       m_playbackWarpMode.load(std::memory_order_acquire));
+  const bool timeStretchActive =
+      playbackWarpModeUsesTimeStretch(warpMode) &&
+      pitchPreservingTimeStretchActive(clampedRate, warpMode);
   const qreal timeStretchSpeed =
-      warpMode == PlaybackAudioWarpMode::TimeStretch &&
-              pitchPreservingTimeStretchActive(clampedRate)
-          ? clampedRate
-          : 1.0;
+      timeStretchActive ? clampedRate : 1.0;
   auto storeBlockedMixDebug = [&](int reason) {
     m_lastMixPreparedClipCount.store(preparedClips.size(),
                                      std::memory_order_release);
@@ -2998,7 +3046,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
                                             std::memory_order_release);
     m_lastMixSilentReason.store(reason, std::memory_order_release);
     m_lastMixStarvedClipCount.store(0, std::memory_order_release);
-    m_pitchPreservingAudioBlocked.store(qAbs(timeStretchSpeed - 1.0) >= 0.0001,
+    m_pitchPreservingAudioBlocked.store(timeStretchActive,
                                         std::memory_order_release);
     m_audioPlaybackBlocked.store(true, std::memory_order_release);
   };
@@ -3029,10 +3077,11 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
             qMax<int64_t>(lookupTimelineSample, lookupEndTimelineSample - 1),
             context.renderSyncMarkers) +
         1;
-    if (qAbs(timeStretchSpeed - 1.0) >= 0.0001) {
+    if (timeStretchActive) {
       audio = timeStretchCacheForPathCopy(audioPath, timeStretchSpeed,
                                           lookupSourceSample,
-                                          lookupSourceEndSampleExclusive);
+                                          lookupSourceEndSampleExclusive,
+                                          warpMode);
       usingPrecomputedTimeStretch = audio.valid;
       if (!usingPrecomputedTimeStretch) {
         ++cacheMissCount;
@@ -3135,6 +3184,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         qMax<int64_t>(1, static_cast<int64_t>(clip.playbackRate * 1000.0));
     prepared.precomputedTimeStretchSpeed =
         usingPrecomputedTimeStretch ? timeStretchSpeed : 1.0;
+    prepared.usingPrecomputedTimeStretch = usingPrecomputedTimeStretch;
     prepared.linearSourceMapping = context.renderSyncMarkers.isEmpty();
     preparedClips.push_back(prepared);
 
@@ -3399,8 +3449,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
             std::memory_order_release);
         if (!prepared.starvationEnqueued) {
           prepared.starvationEnqueued = true;
-          if (pitchPreservingTimeStretchActive(
-                  prepared.precomputedTimeStretchSpeed)) {
+          if (prepared.usingPrecomputedTimeStretch) {
             enqueueTimeStretchPrecomputeForPath(
                 clipAudioPathForScheduling(clip), sourceFrame);
           } else {
@@ -3848,10 +3897,14 @@ void AudioEngine::decodeLoop() {
     }
 
     const QString decodePath = editor::audio::pathFromSourceKey(nextTask.key);
+    const PlaybackAudioWarpMode activeWarpMode =
+        static_cast<PlaybackAudioWarpMode>(
+            m_playbackWarpMode.load(std::memory_order_acquire));
     const int activeTimeStretchSpeedKey =
         nextTask.precomputeTimeStretch
             ? precomputedTimeStretchSpeedKey(
-                  m_playbackRate.load(std::memory_order_acquire))
+                  m_playbackRate.load(std::memory_order_acquire),
+                  activeWarpMode)
             : 0;
     if (nextTask.precomputeTimeStretch) {
       markTimeStretchJob(nextTask.key, activeTimeStretchSpeedKey,

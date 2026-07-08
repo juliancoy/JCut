@@ -129,6 +129,8 @@ Speech-filter boundary transitions are gain shaping inside the mapped speech
 ranges; they must not change the filtered timeline mapping or audio duration.
 The supported modes are:
 
+- `Passthrough`: no speech-filter range mapping; transcript gaps remain in
+  playback.
 - `Jump Cut`: no fade or crossfade gain shaping.
 - `Fade`: linear fades to silence, or equal-power boundary crossfades when
   boundary crossfade is enabled.
@@ -204,6 +206,52 @@ Key parameters (see `PlaybackDriftRetimeInput`):
 The correction is applied as a rate multiplier to the audio output, not as a
 clock override. The transport clock remains authoritative; the audio engine
 adjusts its output rate to track it. This is consistent with Invariant 3.
+
+### Media Alignment Workflow
+
+Runtime drift correction is not a substitute for aligning media. It only keeps
+the audio device and the transport clock together during playback. If a video
+clip, embedded camera audio, and an external audio recording disagree over the
+duration of the program, fix the media mapping explicitly.
+
+Professional alignment separates two cases:
+
+- **Offset:** audio is early or late by the same amount everywhere.
+- **Drift:** audio starts aligned but becomes increasingly early or late.
+
+Offset is corrected by moving the audio clip, adjusting `sourceIn`, or adding an
+initial sync marker. Drift is corrected by changing the rate mapping of one
+stream, usually by time-stretching the external audio or by applying a two-point
+sync mapping. Do not repair drift with repeated manual nudges unless the source
+material genuinely contains discontinuities.
+
+For a video file that contains embedded audio, the embedded audio is the primary
+reference for that video's media clock. The recommended workflow is:
+
+1. Align the external audio recording to the video's embedded audio near the
+   beginning of the program.
+2. Pick a second clear sync point near the end.
+3. Measure both streams at both points.
+4. Compute the rate ratio:
+
+   ```text
+   rate_ratio = (video_B_time - video_A_time) /
+                (audio_B_time - audio_A_time)
+   ```
+
+5. Apply that ratio to the drifting external audio stream or store an equivalent
+   two-point render-sync mapping.
+6. Disable or mute the embedded audio only after the external audio is proven to
+   match the video clock.
+
+Tiny recorder-clock differences are normal. A 50 ppm difference is only 50 ms
+over about 16.7 minutes, but larger mismatch usually means an FPS assumption,
+sample-rate interpretation, trim, or prior export changed one stream. Diagnose
+those causes before adding creative edits.
+
+Generated timeline followers, such as locked SAM mask matte clips, are not A/V
+streams. Timing diagnostics must exclude them from stream counts and drift
+analysis; they inherit timing from their linked source clip.
 
 ## Video
 

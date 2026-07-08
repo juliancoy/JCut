@@ -29,6 +29,7 @@ find_package(PkgConfig REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
+find_package(X11 REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test
              OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
 get_target_property(JCUT_QT_NETWORK_DISABLED_FEATURES Qt6::Network QT_DISABLED_PUBLIC_FEATURES)
@@ -460,6 +461,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/async_decoder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/auto_sync_plan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decode_trace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/detector_settings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder_context.cpp
@@ -606,6 +608,7 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/render_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_effect_synth.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
@@ -639,11 +642,6 @@ if(TARGET jcut_vulkan_shaders)
 endif()
 
 add_library(jcut_imgui_runtime STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core_json.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_project_io.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_contract_json.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_control_server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_export_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_preview_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_timeline_renderer.cpp
@@ -660,6 +658,7 @@ target_include_directories(jcut_imgui_runtime
 )
 target_link_libraries(jcut_imgui_runtime
     PUBLIC
+        jcut_editor_runtime
         PkgConfig::FFMPEG
         Threads::Threads
 )
@@ -685,18 +684,18 @@ add_executable(jcut_imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_opengl3.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
 target_include_directories(jcut_imgui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
+    ${X11_INCLUDE_DIR}
 )
 target_link_libraries(jcut_imgui PRIVATE
     jcut_imgui_runtime
-    OpenGL::GL
-    PkgConfig::GLFW
+    Vulkan::Vulkan
+    ${X11_LIBRARIES}
 )
 set_target_properties(jcut_imgui PROPERTIES
     AUTOMOC OFF
@@ -807,6 +806,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_effect_synth.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp

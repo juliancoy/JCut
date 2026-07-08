@@ -43,6 +43,14 @@ public:
         QPushButton* transcriptBackgroundColorButton = nullptr;
         QPushButton* transcriptHighlightColorButton = nullptr;
         QCheckBox* transcriptShadowEnabledCheckBox = nullptr;
+        QPushButton* transcriptShadowColorButton = nullptr;
+        QSpinBox* transcriptShadowOpacitySpin = nullptr;
+        QSpinBox* transcriptShadowOffsetXSpin = nullptr;
+        QSpinBox* transcriptShadowOffsetYSpin = nullptr;
+        QCheckBox* transcriptOutlineEnabledCheckBox = nullptr;
+        QPushButton* transcriptOutlineColorButton = nullptr;
+        QSpinBox* transcriptOutlineWidthSpin = nullptr;
+        QSpinBox* transcriptOutlineOpacitySpin = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QCheckBox* transcriptHighlightCurrentWordCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;
@@ -62,7 +70,6 @@ public:
         QSpinBox* transcriptPrependMsSpin = nullptr;
         QSpinBox* transcriptPostpendMsSpin = nullptr;
         QSpinBox* transcriptOffsetMsSpin = nullptr;
-        QCheckBox* speechFilterEnabledCheckBox = nullptr;
         QComboBox* speechFilterFadeModeCombo = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
         QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;
@@ -136,7 +143,6 @@ private slots:
     void onPrependMsChanged(int value);
     void onPostpendMsChanged(int value);
     void onOffsetMsChanged(int value);
-    void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeModeChanged(int index);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);

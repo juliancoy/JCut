@@ -127,7 +127,7 @@ QComboBox* defaultSpeechFilterModeCombo()
 {
     static QComboBox combo;
     if (combo.count() == 0) {
-        combo.addItem(QStringLiteral("None"), QStringLiteral("none"));
+        combo.addItem(QStringLiteral("Passthrough"), QStringLiteral("none"));
         combo.addItem(QStringLiteral("Jump Cut"), QStringLiteral("jumpCut"));
         combo.addItem(QStringLiteral("Fade"), QStringLiteral("fade"));
         combo.addItem(QStringLiteral("Smooth Step"), QStringLiteral("smoothStep"));
@@ -185,7 +185,7 @@ private slots:
     void testTranscriptTableUsesStableRowGeometryForMouseActivation();
     void testOverlayTransformEditsUpdatePreviewImmediately();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
-    void testSpeechFilterNoneModeDisablesSpeechFilter();
+    void testSpeechFilterPassthroughModeDisablesSpeechFilter();
 };
 
 void TestTranscriptTabFollow::testContinuousAlignmentAcrossFrames() {
@@ -1014,7 +1014,7 @@ void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersi
     QCOMPARE(scriptVersions.currentData().toString(), editablePath);
 }
 
-void TestTranscriptTabFollow::testSpeechFilterNoneModeDisablesSpeechFilter()
+void TestTranscriptTabFollow::testSpeechFilterPassthroughModeDisablesSpeechFilter()
 {
     QLineEdit clipLabel;
     QLabel detailsLabel;
@@ -1025,7 +1025,7 @@ void TestTranscriptTabFollow::testSpeechFilterNoneModeDisablesSpeechFilter()
     QCheckBox speechEnabled;
     QSpinBox speechFade;
     QComboBox speechMode;
-    speechMode.addItem(QStringLiteral("None"), QStringLiteral("none"));
+    speechMode.addItem(QStringLiteral("Passthrough"), QStringLiteral("none"));
     speechMode.addItem(QStringLiteral("Jump Cut"), QStringLiteral("jumpCut"));
     speechMode.addItem(QStringLiteral("Fade"), QStringLiteral("fade"));
     speechMode.addItem(QStringLiteral("Smooth Step"), QStringLiteral("smoothStep"));

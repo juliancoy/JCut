@@ -490,6 +490,79 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
     return false;
 }
 
+bool collectSectionRotationForSpeaker(const QJsonObject& transcriptRoot,
+                                      const TimelineClip& clip,
+                                      const QString& speakerId,
+                                      qreal mediaSourceFramePosition,
+                                      qreal* rotationDegreesOut)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty() || !rotationDegreesOut) {
+        return false;
+    }
+
+    const int64_t transcriptFrame =
+        transcriptFrameForMediaSourcePosition(clip, mediaSourceFramePosition);
+    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    for (const QJsonValue& value : sectionMap) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("speaker_id")).toString().trimmed() != trimmedSpeakerId) {
+            continue;
+        }
+        const int64_t startFrame = row.value(QStringLiteral("start_frame")).toInteger(-1);
+        const int64_t endFrame = row.value(QStringLiteral("end_frame")).toInteger(-1);
+        if (startFrame >= 0 && endFrame >= startFrame &&
+            (transcriptFrame < startFrame || transcriptFrame > endFrame)) {
+            continue;
+        }
+        if (sectionAssignmentWordCountForRuntime(transcriptRoot, row) <
+            qBound(0, clip.speakerSectionMinimumWords, 1000)) {
+            continue;
+        }
+        if (!row.contains(QStringLiteral("rotation"))) {
+            continue;
+        }
+        *rotationDegreesOut =
+            qBound<qreal>(-180.0, row.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
+        return true;
+    }
+    return false;
+}
+
+bool collectSectionRotationForClipAtSourcePosition(const QJsonObject& transcriptRoot,
+                                                  const TimelineClip& clip,
+                                                  qreal mediaSourceFramePosition,
+                                                  qreal* rotationDegreesOut)
+{
+    if (!rotationDegreesOut) {
+        return false;
+    }
+
+    const int64_t transcriptFrame =
+        transcriptFrameForMediaSourcePosition(clip, mediaSourceFramePosition);
+    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    for (const QJsonValue& value : sectionMap) {
+        const QJsonObject row = value.toObject();
+        const int64_t startFrame = row.value(QStringLiteral("start_frame")).toInteger(-1);
+        const int64_t endFrame = row.value(QStringLiteral("end_frame")).toInteger(-1);
+        if (startFrame >= 0 && endFrame >= startFrame &&
+            (transcriptFrame < startFrame || transcriptFrame > endFrame)) {
+            continue;
+        }
+        if (sectionAssignmentWordCountForRuntime(transcriptRoot, row) <
+            qBound(0, clip.speakerSectionMinimumWords, 1000)) {
+            continue;
+        }
+        if (!row.contains(QStringLiteral("rotation"))) {
+            continue;
+        }
+        *rotationDegreesOut =
+            qBound<qreal>(-180.0, row.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
+        return true;
+    }
+    return false;
+}
+
 QRectF fitRectForSourceInOutput(const QSize& source, const QSize& output) {
     const QSize safeOutput = output.isValid() ? output : QSize(1080, 1920);
     if (!source.isValid()) {
@@ -1820,6 +1893,12 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip&
 }
 
 TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip, qreal timelineFramePosition) {
+    return evaluateClipTransformAtPosition(clip, timelineFramePosition, activePlaybackTimingContext());
+}
+
+TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip,
+                                                                qreal timelineFramePosition,
+                                                                const PlaybackTimingContext& timing) {
     TimelineClip::TransformKeyframe state;
     if (clip.transformKeyframes.isEmpty()) {
         state.translationX = clip.baseTranslationX;
@@ -1850,7 +1929,8 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
                                                       clip,
                                                       static_cast<qreal>(previous.frame),
                                                       static_cast<qreal>(current.frame),
-                                                      localFrame),
+                                                      localFrame,
+                                                      timing),
                                                   1.0);
                     state.frame = qRound64(localFrame);
                     state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
@@ -2041,6 +2121,32 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
             {QStringLiteral("width"), fittedRect.width()},
             {QStringLiteral("height"), fittedRect.height()}
         });
+        diagnosticsOut->insert(QStringLiteral("speaker_framing_transform"),
+                               transformKeyframeDiagnosticObject(state));
+    }
+    return state;
+}
+
+TimelineClip::TransformKeyframe speakerFramingCenterRotationFallback(
+    const TimelineClip& clip,
+    qreal timelineFramePosition,
+    qreal rotationDegrees,
+    QJsonObject* diagnosticsOut = nullptr)
+{
+    TimelineClip::TransformKeyframe state;
+    const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
+    const qreal localFrame = qBound<qreal>(
+        0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
+    state.frame = static_cast<int64_t>(std::floor(localFrame));
+    state.translationX = 0.0;
+    state.translationY = 0.0;
+    state.rotation = qBound<qreal>(-180.0, rotationDegrees, 180.0);
+    state.scaleX = 1.0;
+    state.scaleY = 1.0;
+    state.linearInterpolation = true;
+    if (diagnosticsOut) {
+        diagnosticsOut->insert(QStringLiteral("sample_source"),
+                               QStringLiteral("section_rotation_center_fallback"));
         diagnosticsOut->insert(QStringLiteral("speaker_framing_transform"),
                                transformKeyframeDiagnosticObject(state));
     }
@@ -2245,8 +2351,22 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         QPointF location;
         qreal boxSize = -1.0;
         qreal sectionRotationDegrees = 0.0;
+        qreal sectionCenterFallbackRotationDegrees = 0.0;
+        bool hasSectionCenterFallbackRotation = false;
         bool hasSample = false;
         if (!activeSpeaker.isEmpty()) {
+            const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
+            QJsonDocument transcriptDoc;
+            if (!transcriptPath.trimmed().isEmpty() &&
+                loadTranscriptJsonCached(transcriptPath, &transcriptDoc) &&
+                collectSectionRotationForSpeaker(transcriptDoc.object(),
+                                                 clip,
+                                                 activeSpeaker,
+                                                 mediaSourceFrame,
+                                                 &sectionCenterFallbackRotationDegrees)) {
+                hasSectionCenterFallbackRotation = true;
+            }
+            bool matchedSectionAssignment = false;
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2255,7 +2375,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 &location,
                 &boxSize,
                 &sectionRotationDegrees,
-                ContinuityAssignmentMode::SectionOnly);
+                ContinuityAssignmentMode::SectionOnly,
+                &matchedSectionAssignment);
+            if (matchedSectionAssignment) {
+                sectionCenterFallbackRotationDegrees = sectionRotationDegrees;
+                hasSectionCenterFallbackRotation = true;
+            }
         }
         if (!hasSample) {
             hasSample =
@@ -2286,6 +2411,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 &location,
                 &boxSize,
                 &profileSpeaker);
+        }
+        if (!hasSample && hasSectionCenterFallbackRotation) {
+            return speakerFramingCenterRotationFallback(
+                clip,
+                static_cast<qreal>(timelineFrame),
+                sectionCenterFallbackRotationDegrees);
         }
         if (!hasSample || boxSize <= 0.0) {
             return state;
@@ -2408,6 +2539,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         QPointF location;
         qreal boxSize = -1.0;
         qreal sectionRotationDegrees = 0.0;
+        qreal sectionCenterFallbackRotationDegrees = 0.0;
+        bool hasSectionCenterFallbackRotation = false;
         QSet<int> diagnosticAssignedTrackIds;
         QSet<QString> diagnosticAssignedStreamIds;
         QString diagnosticAssignmentCacheToken;
@@ -2446,6 +2579,18 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         bool hasSample = false;
         QString sampleSource;
         if (!activeSpeaker.isEmpty()) {
+            const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(clip);
+            QJsonDocument transcriptDoc;
+            if (!transcriptPath.trimmed().isEmpty() &&
+                loadTranscriptJsonCached(transcriptPath, &transcriptDoc) &&
+                collectSectionRotationForSpeaker(transcriptDoc.object(),
+                                                 clip,
+                                                 activeSpeaker,
+                                                 mediaSourceFramePosition,
+                                                 &sectionCenterFallbackRotationDegrees)) {
+                hasSectionCenterFallbackRotation = true;
+            }
+            bool matchedSectionAssignment = false;
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2454,7 +2599,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 &location,
                 &boxSize,
                 &sectionRotationDegrees,
-                ContinuityAssignmentMode::SectionOnly);
+                ContinuityAssignmentMode::SectionOnly,
+                &matchedSectionAssignment);
+            if (matchedSectionAssignment) {
+                sectionCenterFallbackRotationDegrees = sectionRotationDegrees;
+                hasSectionCenterFallbackRotation = true;
+            }
             if (hasSample) {
                 sampleSource = QStringLiteral("section_assigned_continuity_track");
             }
@@ -2508,6 +2658,17 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             diagnosticsOut->insert(QStringLiteral("has_face_sample"), hasSample);
             diagnosticsOut->insert(QStringLiteral("sample_source"), sampleSource);
             diagnosticsOut->insert(QStringLiteral("applied_rotation_degrees"), sectionRotationDegrees);
+        }
+        if (!hasSample && hasSectionCenterFallbackRotation) {
+            if (diagnosticsOut) {
+                diagnosticsOut->insert(QStringLiteral("applied_rotation_degrees"),
+                                       sectionCenterFallbackRotationDegrees);
+            }
+            return speakerFramingCenterRotationFallback(
+                clip,
+                timelineFramePosition,
+                sectionCenterFallbackRotationDegrees,
+                diagnosticsOut);
         }
         if (!hasSample || boxSize <= 0.0) {
             return state;
@@ -2571,6 +2732,60 @@ TimelineClip::TransformKeyframe clipBaseTransformOnly(const TimelineClip& clip) 
     return base;
 }
 
+TimelineClip::TransformKeyframe evaluateTimelineSectionRotationAtPosition(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    QJsonObject* diagnosticsOut)
+{
+    TimelineClip::TransformKeyframe state;
+    state.scaleX = 1.0;
+    state.scaleY = 1.0;
+    if (clip.mediaType != ClipMediaType::Video ||
+        evaluateClipSpeakerFramingEnabledAtPosition(clip, timelineFramePosition)) {
+        return state;
+    }
+
+    for (const TimelineClip& transcriptClip : timelineClips) {
+        if (timelineFramePosition < static_cast<qreal>(transcriptClip.startFrame) ||
+            timelineFramePosition >=
+                static_cast<qreal>(transcriptClip.startFrame + transcriptClip.durationFrames)) {
+            continue;
+        }
+        const QString transcriptPath = transcriptPathForRuntimeSidecarForClip(transcriptClip);
+        QJsonDocument transcriptDoc;
+        if (transcriptPath.trimmed().isEmpty() ||
+            !loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {
+            continue;
+        }
+        qreal rotationDegrees = 0.0;
+        const qreal sourceFramePosition =
+            sourceFramePositionForClipAtTimelinePosition(transcriptClip,
+                                                         timelineFramePosition,
+                                                         markers);
+        if (!collectSectionRotationForClipAtSourcePosition(transcriptDoc.object(),
+                                                           transcriptClip,
+                                                           sourceFramePosition,
+                                                           &rotationDegrees)) {
+            continue;
+        }
+        if (diagnosticsOut) {
+            diagnosticsOut->insert(QStringLiteral("timeline_section_rotation_source_clip_id"),
+                                   transcriptClip.id);
+            diagnosticsOut->insert(QStringLiteral("timeline_section_rotation_transcript_path"),
+                                   transcriptPath);
+            diagnosticsOut->insert(QStringLiteral("timeline_section_rotation_degrees"),
+                                   rotationDegrees);
+        }
+        return speakerFramingCenterRotationFallback(
+            clip,
+            timelineFramePosition,
+            rotationDegrees);
+    }
+    return state;
+}
+
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
                                                                    int64_t timelineFrame,
                                                                    const QSize& outputSize) {
@@ -2602,6 +2817,16 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
                                                                       const QVector<RenderSyncMarker>& markers,
                                                                       const QSize& outputSize,
                                                                       QJsonObject* diagnosticsOut) {
+    return evaluateClipRenderTransformAtPosition(
+        clip, timelineFramePosition, markers, activePlaybackTimingContext(), outputSize, diagnosticsOut);
+}
+
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
+                                                                      qreal timelineFramePosition,
+                                                                      const QVector<RenderSyncMarker>& markers,
+                                                                      const PlaybackTimingContext& timing,
+                                                                      const QSize& outputSize,
+                                                                      QJsonObject* diagnosticsOut) {
     TimelineClip::TransformKeyframe finalTransform;
     if (evaluateClipSpeakerFramingEnabledAtPosition(clip, timelineFramePosition)) {
         finalTransform = composeClipTransforms(
@@ -2615,7 +2840,7 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const Time
         return finalTransform;
     }
     finalTransform = composeClipTransforms(
-        evaluateClipTransformAtPosition(clip, timelineFramePosition),
+        evaluateClipTransformAtPosition(clip, timelineFramePosition, timing),
         evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, markers, outputSize, diagnosticsOut));
     if (diagnosticsOut) {
         diagnosticsOut->insert(QStringLiteral("base_transform_source"), QStringLiteral("clip_keyframed_transform"));
@@ -2633,9 +2858,30 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
     const QSize& outputSize,
     QJsonObject* diagnosticsOut)
 {
+    return evaluateClipRenderTransformWithSourceLockAtPosition(
+        clip, timelineClips, timelineFramePosition, markers,
+        activePlaybackTimingContext(), outputSize, diagnosticsOut);
+}
+
+TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosition(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const PlaybackTimingContext& timing,
+    const QSize& outputSize,
+    QJsonObject* diagnosticsOut)
+{
+    auto applyTimelineSectionRotation = [&](const TimelineClip::TransformKeyframe& transform) {
+        return composeClipTransforms(
+            transform,
+            evaluateTimelineSectionRotationAtPosition(
+                clip, timelineClips, timelineFramePosition, markers, diagnosticsOut));
+    };
+
     if (!clip.sourceTransformLocked || clip.linkedSourceClipId.trimmed().isEmpty()) {
-        return evaluateClipRenderTransformAtPosition(
-            clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+        return applyTimelineSectionRotation(evaluateClipRenderTransformAtPosition(
+            clip, timelineFramePosition, markers, timing, outputSize, diagnosticsOut));
     }
 
     QSet<QString> visited;
@@ -2648,8 +2894,8 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
                 diagnosticsOut->insert(QStringLiteral("source_transform_lock"),
                                        QStringLiteral("cycle_fallback"));
             }
-            return evaluateClipRenderTransformAtPosition(
-                clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+            return applyTimelineSectionRotation(evaluateClipRenderTransformAtPosition(
+                clip, timelineFramePosition, markers, timing, outputSize, diagnosticsOut));
         }
         visited.insert(sourceId);
 
@@ -2666,8 +2912,8 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
                                        QStringLiteral("missing_source_fallback"));
                 diagnosticsOut->insert(QStringLiteral("source_transform_locked_source_id"), sourceId);
             }
-            return evaluateClipRenderTransformAtPosition(
-                clip, timelineFramePosition, markers, outputSize, diagnosticsOut);
+            return applyTimelineSectionRotation(evaluateClipRenderTransformAtPosition(
+                clip, timelineFramePosition, markers, timing, outputSize, diagnosticsOut));
         }
         if (!source->sourceTransformLocked || source->linkedSourceClipId.trimmed().isEmpty()) {
             break;
@@ -2676,7 +2922,8 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
     }
 
     TimelineClip::TransformKeyframe sourceTransform =
-        evaluateClipRenderTransformAtPosition(*source, timelineFramePosition, markers, outputSize, diagnosticsOut);
+        evaluateClipRenderTransformAtPosition(
+            *source, timelineFramePosition, markers, timing, outputSize, diagnosticsOut);
     sourceTransform.frame = qBound<int64_t>(
         0,
         static_cast<int64_t>(std::floor(timelineFramePosition)) - clip.startFrame,
@@ -2687,7 +2934,7 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
         diagnosticsOut->insert(QStringLiteral("final_render_transform"),
                                transformKeyframeDiagnosticObject(sourceTransform));
     }
-    return sourceTransform;
+    return applyTimelineSectionRotation(sourceTransform);
 }
 
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {

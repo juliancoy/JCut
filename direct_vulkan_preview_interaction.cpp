@@ -708,6 +708,7 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                         state->clips,
                         state->currentFramePosition,
                         state->renderSyncMarkers,
+                        state->playbackTiming,
                         state->outputSize));
             }
             const VulkanPreviewFacestreamOverlay* selectedFaceOverlay = nullptr;
@@ -758,6 +759,7 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                 state->clips,
                 state->currentFramePosition,
                 state->renderSyncMarkers,
+                state->playbackTiming,
                 state->outputSize));
         }
     }

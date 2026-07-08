@@ -139,7 +139,9 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       int64_t frameNumber,
                                       QHash<QString, editor::DecoderContext*>& decoders,
                                       editor::AsyncDecoder* asyncDecoder,
-                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache) {
+                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                                      bool forceSoftwareDecode,
+                                      bool preferHardwareFrames) {
     if (isImageSequencePath(path) && asyncDecoder && asyncFrameCache) {
         const RenderAsyncFrameKey cacheKey{path, frameNumber};
         auto cachedIt = asyncFrameCache->find(cacheKey);
@@ -196,8 +198,9 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
     auto it = decoders.find(path);
     if (it == decoders.end()) {
         const QHash<int, AVBufferRef*>* sharedHwDevices =
-            asyncDecoder ? asyncDecoder->sharedHwDevicesForDecoderContexts() : nullptr;
-        editor::DecoderContext* ctx = new editor::DecoderContext(path, sharedHwDevices);
+            (!forceSoftwareDecode && asyncDecoder) ? asyncDecoder->sharedHwDevicesForDecoderContexts() : nullptr;
+        editor::DecoderContext* ctx = new editor::DecoderContext(path, sharedHwDevices, forceSoftwareDecode);
+        ctx->setPreferHardwareFrames(preferHardwareFrames);
         if (!ctx->initialize()) {
             delete ctx;
             return editor::FrameHandle();

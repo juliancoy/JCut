@@ -19,6 +19,7 @@ set(EDITOR_TEST_TARGETS
     test_audio_time_stretch
     test_audio_time_stretch_cache
     test_audio_mix_policy
+    test_auto_sync_plan
     test_processing_job_manifest
     test_transform_skip_aware_timing
     test_preview_geometry
@@ -27,6 +28,7 @@ set(EDITOR_TEST_TARGETS
     test_media_color_passthrough
     test_grading_keyframes
     test_effect_presets
+    test_speaker_title_fly_in_video
     test_editor_runtime
     test_facedetections_time_mapping
     test_facedetections_tracking
@@ -52,7 +54,7 @@ set(EDITOR_TEST_TARGETS
 # gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
 function(_jcut_assign_tier_labels target_name)
     set(_labels "logic")
-    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
         list(APPEND _labels "decode")
     endif()
     if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
@@ -153,6 +155,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_vulkan_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_effect_synth.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp

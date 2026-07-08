@@ -1,4 +1,5 @@
 #include <execinfo.h>
+#include "background_fill_effect.h"
 #include "direct_vulkan_preview_backend.h"
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_config.h"
@@ -1822,6 +1823,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 continue;
             }
             activeHandoffClipIds.insert(status.clipId);
+            if (status.frameCrossfadeActive) {
+                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#frameCrossfade"));
+            }
         }
         pruneClipHandoffResources(activeHandoffClipIds);
         updateClipHandoffResourceStats();
@@ -1884,6 +1888,64 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     m_owner ? m_owner->stats() : nullptr);
             }
             frameHandoffResults.insert(status.clipId, handoffResult);
+            if (status.frameCrossfadeActive &&
+                !status.frameCrossfadeFrame.isNull()) {
+                const QString secondaryHandoffKey =
+                    status.clipId + QStringLiteral("#frameCrossfade");
+                ClipHandoffResources* secondaryHandoffResources =
+                    ensureClipHandoffResources(secondaryHandoffKey);
+                if (secondaryHandoffResources &&
+                    secondaryHandoffResources->resources &&
+                    secondaryHandoffResources->pipeline &&
+                    secondaryHandoffResources->resources->beginFrameUploads(
+                        swapchainImageIndex,
+                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
+                    VulkanPreviewClipFrameStatus secondaryStatus = status;
+                    secondaryStatus.frame = status.frameCrossfadeFrame;
+                    secondaryStatus.frameSize = status.frameCrossfadeFrameSize;
+                    secondaryStatus.requestedSourceFrame =
+                        status.frameCrossfadeRequestedSourceFrame;
+                    secondaryStatus.presentedSourceFrame =
+                        status.frameCrossfadePresentedSourceFrame;
+                    secondaryStatus.hasFrame = true;
+                    secondaryStatus.externalVulkanFrame = false;
+                    secondaryStatus.externalImage = VK_NULL_HANDLE;
+                    secondaryStatus.externalImageView = VK_NULL_HANDLE;
+                    secondaryStatus.externalImageMemory = VK_NULL_HANDLE;
+                    secondaryStatus.externalReadySemaphoreFd = -1;
+
+                    DirectVulkanFrameHandoffPipeline::Result secondaryResult;
+                    if (secondaryStatus.frame.hasCpuImage() &&
+                        !secondaryStatus.frame.hasHardwareFrame()) {
+                        secondaryResult.attempted = true;
+                        secondaryResult.sampledFrameReady =
+                            secondaryHandoffResources->resources->uploadImageTexture(
+                                cb, secondaryStatus.frame.cpuImage());
+                        secondaryResult.descriptorSet =
+                            secondaryResult.sampledFrameReady
+                                ? secondaryHandoffResources->resources->descriptorSet()
+                                : VK_NULL_HANDLE;
+                        secondaryResult.descriptorSetIndex = static_cast<int>(
+                            secondaryHandoffResources->resources->descriptorSetIndex());
+                        secondaryResult.descriptorSetCount = static_cast<int>(
+                            secondaryHandoffResources->resources->descriptorSetCount());
+                        secondaryResult.size = {
+                            secondaryStatus.frameSize.width(),
+                            secondaryStatus.frameSize.height()};
+                        secondaryResult.format = VK_FORMAT_R8G8B8A8_UNORM;
+                    } else {
+                        secondaryResult = secondaryHandoffResources->pipeline->record(
+                            cb,
+                            swapchainImageIndex,
+                            secondaryStatus,
+                            secondaryHandoffResources->resources.get(),
+                            m_owner ? m_owner->stats() : nullptr);
+                    }
+                    frameHandoffResults.insert(secondaryHandoffKey, secondaryResult);
+                    secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
+                }
+            }
             const QByteArray curveLut = curveLutRgbaBytes(status.grading);
             if (!curveLut.isEmpty()) {
                 const bool uploaded =
@@ -2278,6 +2340,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const VkClearRect rect = clearRectFromQRect(transformedBounds, swapSize);
             const DirectVulkanFrameHandoffPipeline::Result handoffResult =
                 status ? frameHandoffResults.value(status->clipId) : DirectVulkanFrameHandoffPipeline::Result{};
+            const DirectVulkanFrameHandoffPipeline::Result secondaryHandoffResult =
+                status && status->frameCrossfadeActive
+                    ? frameHandoffResults.value(status->clipId + QStringLiteral("#frameCrossfade"))
+                    : DirectVulkanFrameHandoffPipeline::Result{};
             const bool sampledFrameReady =
                 handoffResult.sampledFrameReady && handoffResult.descriptorSet != VK_NULL_HANDLE;
             const bool handoffAttempted = handoffResult.attempted;
@@ -2309,6 +2375,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         effectiveClipGeometry.bounds.height() / qMax<qreal>(1.0, compositeRect.height()));
                     const bool fullCanvasFill =
                         fillEffect == BackgroundFillEffect::EdgeStretch ||
+                        fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
                         fillEffect == BackgroundFillEffect::Mirror;
                     PreviewClipGeometry backgroundGeometry =
                         fullCanvasFill ? PreviewViewTransform::clipGeometry(
@@ -2456,6 +2523,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     if (maskReady && status->maskClipSource) {
                         basePush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
                         basePush.midtones[3] = 0.0f;
+                        if (status->maskGradeEnabled) {
+                            basePush.brightness = static_cast<float>(status->maskGradeBrightness);
+                            basePush.contrast = static_cast<float>(status->maskGradeContrast);
+                            basePush.saturation = static_cast<float>(status->maskGradeSaturation);
+                            basePush.opacity = 1.0f;
+                            if (maskCurveLutUploadResults.value(status->clipId, false)) {
+                                basePush.midtones[3] = render_detail::kVulkanMaskGradeUseSelectedCurveLut;
+                            } else if (status->maskCurveLutApplied) {
+                                if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                                    stats->lastUnsupportedEffect = QStringLiteral("mask_curve_lut_upload_failed");
+                                }
+                            }
+                        }
                     }
                     const TimelineClip effectClip =
                         clipWithTrackEffectSettings(clip, state->tracks);
@@ -2468,9 +2548,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             effectClip,
                             effectBounds,
                             frameSize.isValid() ? frameSize : clip.sourceFrameSize,
-                            state->currentFramePosition,
+                            status ? status->visualTimelineFramePosition : state->currentFramePosition,
                             render_detail::clipEffectPlaybackFramePosition(
-                                effectClip, state->clips, state->currentFramePosition));
+                                effectClip,
+                                state->clips,
+                                state->currentFramePosition,
+                                state->playbackTiming,
+                                state->tracks));
                     if (effectPlan.usesGeneratedDraws()) {
                         const VkRect2D generatedScissor =
                             effectClip.effectPreset == ClipEffectPreset::SourceTile
@@ -2498,7 +2582,21 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     } else {
                         drawPush(basePush);
                     }
-                    if (maskReady && status->maskGradeEnabled) {
+                    if (status && status->frameCrossfadeActive &&
+                        secondaryHandoffResult.sampledFrameReady &&
+                        secondaryHandoffResult.descriptorSet != VK_NULL_HANDLE) {
+                        VulkanPipeline::Push crossfadePush = basePush;
+                        crossfadePush.opacity *= qBound(
+                            0.0f, status->frameCrossfadeOpacity, 1.0f);
+                        m_pipeline->bindAndDraw(cb,
+                                                 viewport,
+                                                 scissor,
+                                                 secondaryHandoffResult.descriptorSet,
+                                                 crossfadePush);
+                    }
+                    if (maskReady && status->maskGradeEnabled &&
+                        !status->maskForegroundLayerEnabled &&
+                        !status->maskClipSource) {
                         VulkanPipeline::Push maskPush = push;
                         maskPush.brightness = static_cast<float>(status->maskGradeBrightness);
                         maskPush.contrast = static_cast<float>(status->maskGradeContrast);
@@ -2527,18 +2625,34 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     }
                     if (maskReady && status->maskForegroundLayerEnabled) {
                         VulkanPipeline::Push foregroundPush = push;
-                        foregroundPush.brightness = 0.0f;
-                        foregroundPush.contrast = 1.0f;
-                        foregroundPush.saturation = 1.0f;
+                        const bool applyMaskGradeToForeground = status->maskGradeEnabled;
+                        foregroundPush.brightness = applyMaskGradeToForeground
+                            ? static_cast<float>(status->maskGradeBrightness)
+                            : 0.0f;
+                        foregroundPush.contrast = applyMaskGradeToForeground
+                            ? static_cast<float>(status->maskGradeContrast)
+                            : 1.0f;
+                        foregroundPush.saturation = applyMaskGradeToForeground
+                            ? static_cast<float>(status->maskGradeSaturation)
+                            : 1.0f;
                         foregroundPush.opacity = 1.0f;
                         foregroundPush.shadows[0] = 0.0f;
                         foregroundPush.shadows[1] = 0.0f;
                         foregroundPush.shadows[2] = 0.0f;
-                        foregroundPush.shadows[3] = render_detail::kVulkanEffectModeMaskOnly;
+                        foregroundPush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
                         foregroundPush.midtones[0] = 0.0f;
                         foregroundPush.midtones[1] = 0.0f;
                         foregroundPush.midtones[2] = 0.0f;
                         foregroundPush.midtones[3] = 0.0f;
+                        if (applyMaskGradeToForeground) {
+                            if (maskCurveLutUploadResults.value(status->clipId, false)) {
+                                foregroundPush.midtones[3] = render_detail::kVulkanMaskGradeUseSelectedCurveLut;
+                            } else if (status->maskCurveLutApplied) {
+                                if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                                    stats->lastUnsupportedEffect = QStringLiteral("mask_curve_lut_upload_failed");
+                                }
+                            }
+                        }
                         foregroundPush.highlights[0] = 0.0f;
                         foregroundPush.highlights[1] = 0.0f;
                         foregroundPush.highlights[2] = 0.0f;

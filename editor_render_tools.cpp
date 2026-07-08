@@ -1,5 +1,6 @@
 #include "editor.h"
 
+#include "background_fill_effect.h"
 #include "export_vulkan_preview_widget.h"
 #include "speaker_export_harness.h"
 
@@ -805,6 +806,8 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     const bool notifyRenderCompletion =
         showCompletionMessage && !effectiveRequest.suppressCompletionDialog;
     effectiveRequest.correctionsEnabled = m_correctionsEnabled;
+    effectiveRequest.playbackTiming =
+        speechFilterPlaybackTimingContext(effectiveRequest.exportRanges);
     if (effectiveRequest.useProxyMedia)
     {
         for (TimelineClip &clip : effectiveRequest.clips)

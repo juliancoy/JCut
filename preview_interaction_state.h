@@ -1,7 +1,8 @@
 #pragma once
 
-#include "background_fill_effect.h"
+#include "background_fill_effect_fwd.h"
 #include "frame_handle.h"
+#include "playback_timing_context.h"
 #include "preview_surface.h"
 #include "editor_shared.h"
 
@@ -117,6 +118,14 @@ struct VulkanPreviewClipFrameStatus {
     QString missingReason;
     QString effectsPath;
     editor::FrameHandle frame;
+    qreal visualTimelineFramePosition = 0.0;
+    bool frameCrossfadeActive = false;
+    int64_t frameCrossfadeTimelineFrame = -1;
+    int64_t frameCrossfadeRequestedSourceFrame = -1;
+    int64_t frameCrossfadePresentedSourceFrame = -1;
+    float frameCrossfadeOpacity = 0.0f;
+    QSize frameCrossfadeFrameSize;
+    editor::FrameHandle frameCrossfadeFrame;
     bool externalVulkanFrame = false;
     bool sampledFramePregraded = false;
     bool sampledFrameNeedsYFlip = false;
@@ -151,7 +160,7 @@ struct PreviewInteractionState {
     qreal currentFramePosition = 0.0;
     QSize outputSize = QSize(1080, 1920);
     QColor backgroundColor = QColor(Qt::black);
-    BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
+    BackgroundFillEffect backgroundFillEffect{};
     qreal backgroundFillOpacity = 1.0;
     qreal backgroundFillBrightness = 0.0;
     qreal backgroundFillSaturation = 1.0;
@@ -167,6 +176,7 @@ struct PreviewInteractionState {
     QSet<int> selectedSpeakerAssignedFaceTrackIds;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
+    PlaybackTimingContext playbackTiming;
     QString selectedClipId;
     PreviewSurface::ViewMode viewMode = PreviewSurface::ViewMode::Video;
     PreviewSurface::AudioDynamicsSettings audioDynamics;

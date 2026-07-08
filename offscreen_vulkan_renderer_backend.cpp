@@ -1,5 +1,6 @@
 #include "offscreen_vulkan_renderer_backend.h"
 
+#include "background_fill_effect.h"
 #include "cpu_overlay_render_backend.h"
 #include "editor_shared_effects.h"
 #include "editor_shared_timing.h"
@@ -15,8 +16,10 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QImage>
 #include <QScopeGuard>
+#include <QSet>
 
 #if JCUT_HAS_CUDA_DRIVER
 extern "C" {
@@ -2096,6 +2099,7 @@ public:
 
   struct VulkanTextInputs {
     QVector<TranscriptTextInput> transcripts;
+    QVector<EvaluatedTitle> title3D;
     bool hasSpeakerLabel = false;
     SpeakerLabelOverlaySpec speakerLabel;
   };
@@ -2678,6 +2682,15 @@ public:
         }
       }
     }
+    QSet<int> preparedTitle3DIndices;
+    if (m_transcriptTextRenderer && m_transcriptTextRenderer->isReady()) {
+      for (int i = 0; i < textInputs.title3D.size(); ++i) {
+        if (m_transcriptTextRenderer->prepareTitleOverlayAtlas(
+                m_commandBuffer, m_outputSize, textInputs.title3D.at(i))) {
+          preparedTitle3DIndices.insert(i);
+        }
+      }
+    }
     const bool preparedSpeakerText =
         textInputs.hasSpeakerLabel && m_speakerTextRenderer &&
         m_speakerTextRenderer->isReady() &&
@@ -2984,7 +2997,7 @@ public:
                     layer.highlights,
                     drawMode);
         }
-        if (layer.maskTextureEnabled && layer.maskGradeEnabled) {
+        if (layer.maskTextureEnabled && layer.maskGradeEnabled && !layer.maskForegroundLayerEnabled) {
           float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
           float maskMidtones[4] = {0.0f, 0.0f, 0.0f,
                                    layer.maskCurveLutApplied
@@ -3004,7 +3017,7 @@ public:
       layerIndex += batchCount;
     }
 
-    if (!preparedTranscriptTextIndices.isEmpty() || preparedSpeakerText) {
+    if (!preparedTranscriptTextIndices.isEmpty() || !preparedTitle3DIndices.isEmpty() || preparedSpeakerText) {
       vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
                            VK_SUBPASS_CONTENTS_INLINE);
       const QRectF outputTargetRect(QPointF(0.0, 0.0), QSizeF(m_outputSize));
@@ -3016,6 +3029,14 @@ public:
         m_transcriptTextRenderer->drawTranscriptOverlay(
             m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
             text.clip, text.layout, text.outputRect, text.speakerTitle);
+      }
+      for (int i = 0; i < textInputs.title3D.size(); ++i) {
+        if (!preparedTitle3DIndices.contains(i)) {
+          continue;
+        }
+        m_transcriptTextRenderer->drawTitleOverlay3D(
+            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
+            textInputs.title3D.at(i));
       }
       if (preparedSpeakerText) {
         m_speakerTextRenderer->drawSpeakerLabel(
@@ -4009,6 +4030,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const OffscreenRenderContext &context) {
   const RenderRequest &request = context.request;
   const qreal timelineFrame = context.timelineFrame;
+  const qreal generatedEffectClockTimelineFrame =
+      context.generatedEffectClockTimelineFrame >= 0.0
+          ? context.generatedEffectClockTimelineFrame
+          : timelineFrame;
+  const qreal transformClockTimelineFrame = generatedEffectClockTimelineFrame;
   QHash<QString, editor::DecoderContext *> &decoders = context.decoders;
   editor::AsyncDecoder *asyncDecoder = context.asyncDecoder;
   QHash<RenderAsyncFrameKey, editor::FrameHandle> *asyncFrameCache =
@@ -4045,6 +4071,21 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
   layers.reserve((orderedClips.size() * 2) + 1);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayers;
+  QSet<QString> maskMarkerSourceIds;
+  for (const TimelineClip &clip : orderedClips) {
+    if (clip.clipRole == ClipRole::MaskMatte &&
+        clip.locked &&
+        clip.sourceTransformLocked &&
+        timelineFrame >= clip.startFrame &&
+        timelineFrame < clip.startFrame + clip.durationFrames) {
+      const QString sourceId = clip.linkedSourceClipId.trimmed();
+      if (!sourceId.isEmpty()) {
+        maskMarkerSourceIds.insert(sourceId);
+      }
+    }
+  }
+  QHash<QString, OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayerBySourceId;
+  QVector<QPair<int, QString>> pendingMaskMarkerInsertions;
   bool hasTranscriptCandidate = false;
   const QVector<TimelineClip> transcriptOverlayClips =
       sortedTranscriptOverlayClips(request.clips, request.tracks);
@@ -4068,6 +4109,21 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QRectF transcriptLayerBounds;
   OffscreenVulkanRendererPrivate::VulkanTextInputs textInputs;
   for (const TimelineClip &clip : orderedClips) {
+    if (clip.clipRole == ClipRole::MaskMatte &&
+        clip.locked &&
+        clip.sourceTransformLocked) {
+      const QString sourceId = clip.linkedSourceClipId.trimmed();
+      if (foregroundMaskLayerBySourceId.contains(sourceId) &&
+          timelineFrame >= clip.startFrame &&
+          timelineFrame < clip.startFrame + clip.durationFrames) {
+        layers.push_back(foregroundMaskLayerBySourceId.value(sourceId));
+      } else if (!sourceId.isEmpty() &&
+                 timelineFrame >= clip.startFrame &&
+                 timelineFrame < clip.startFrame + clip.durationFrames) {
+        pendingMaskMarkerInsertions.push_back(qMakePair(layers.size(), sourceId));
+      }
+      continue;
+    }
     if (timelineFrame < clip.startFrame ||
         timelineFrame >= clip.startFrame + clip.durationFrames) {
       continue;
@@ -4080,7 +4136,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
             ? EffectiveVisualEffects{}
             : evaluateEffectiveVisualEffectsAtPosition(
                   clip, request.tracks, static_cast<qreal>(timelineFrame),
-                  request.renderSyncMarkers);
+                  request.renderSyncMarkers,
+                  request.playbackTiming);
     if (!request.correctionsEnabled) {
       effects.correctionPolygons.clear();
     }
@@ -4089,13 +4146,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
       continue;
     }
     if (clip.mediaType == ClipMediaType::Title) {
-      if (gpuOutputOnly) {
-        qWarning().noquote()
-            << QStringLiteral(
-                   "[vulkan-compose] skipped CPU-raster title layer in GPU-only render pipeline at frame=%1")
-                   .arg(timelineFrame);
-        continue;
-      }
       if (clip.titleKeyframes.isEmpty()) {
         continue;
       }
@@ -4106,6 +4156,17 @@ QImage OffscreenVulkanRenderer::renderFrame(
       const EvaluatedTitle title = composeTitleWithOpacity(
           evaluatedTitle, static_cast<qreal>(grade.opacity));
       if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
+        continue;
+      }
+      if (title.vulkan3DEnabled) {
+        textInputs.title3D.push_back(title);
+        continue;
+      }
+      if (gpuOutputOnly) {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "[vulkan-compose] skipped CPU-raster title layer in GPU-only render pipeline at frame=%1")
+                   .arg(timelineFrame);
         continue;
       }
 
@@ -4130,7 +4191,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const int64_t localFrame = frameMapping.sourceFrame;
     const qint64 decodeStart = QDateTime::currentMSecsSinceEpoch();
     const editor::FrameHandle frame = decodeRenderFrame(
-        decodePath, localFrame, decoders, asyncDecoder, asyncFrameCache);
+        decodePath,
+        localFrame,
+        decoders,
+        asyncDecoder,
+        asyncFrameCache,
+        context.forceSoftwareDecode,
+        context.preferHardwareFrames);
     if (decodeMs) {
       *decodeMs += (QDateTime::currentMSecsSinceEpoch() - decodeStart);
     }
@@ -4223,8 +4290,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
         evaluateClipRenderTransformWithSourceLockAtPosition(
             clip,
             request.clips,
-            static_cast<qreal>(timelineFrame),
+            transformClockTimelineFrame,
             request.renderSyncMarkers,
+            request.playbackTiming,
             request.outputSize,
             &transformDiagnostics);
     const QSize sourceSize = clip.sourceFrameSize.isValid()
@@ -4250,7 +4318,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
         effectBounds,
         sourceSize,
         timelineFrame,
-        clipEffectPlaybackFramePosition(effectClip, request.clips, timelineFrame));
+        clipEffectPlaybackFramePosition(effectClip, request.clips, generatedEffectClockTimelineFrame,
+                                        request.playbackTiming,
+                                        request.tracks));
     layer.presetDraws = effectPlan.generatedDraws;
     if (effectClip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
       layer.presetScissorEnabled = true;
@@ -4260,6 +4330,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
       transformDiagnostics.insert(QStringLiteral("clip_id"), clip.id);
       transformDiagnostics.insert(QStringLiteral("clip_label"), clip.label);
       transformDiagnostics.insert(QStringLiteral("timeline_frame_position"), timelineFrame);
+      transformDiagnostics.insert(QStringLiteral("transform_clock_timeline_frame_position"),
+                                  transformClockTimelineFrame);
       transformDiagnostics.insert(QStringLiteral("timeline_sample"), static_cast<qint64>(frameClock.timelineSample));
       transformDiagnostics.insert(QStringLiteral("sync_clock_domain"), QStringLiteral("timeline_sample"));
       transformDiagnostics.insert(QStringLiteral("decode_source_frame"), static_cast<qint64>(localFrame));
@@ -4340,6 +4412,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
 
       const bool fullCanvasFill =
           fillEffect == BackgroundFillEffect::EdgeStretch ||
+          fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
           fillEffect == BackgroundFillEffect::Mirror;
       PreviewClipGeometry backgroundGeometry =
           fullCanvasFill ? PreviewViewTransform::clipGeometry(outputRect,
@@ -4368,16 +4441,71 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layers.push_back(layer);
     if (layer.maskTextureEnabled && layer.maskForegroundLayerEnabled) {
       OffscreenVulkanRendererPrivate::LayerInput foregroundLayer = layer;
+      const bool applyMaskGradeToForeground = foregroundLayer.maskGradeEnabled;
       foregroundLayer.presetDraws.clear();
-      foregroundLayer.maskShowOnly = true;
+      foregroundLayer.maskShowOnly = false;
       foregroundLayer.maskGradeEnabled = false;
       foregroundLayer.opacity = 1.0f;
-      foregroundLayer.brightness = 0.0f;
-      foregroundLayer.contrast = 1.0f;
-      foregroundLayer.saturation = 1.0f;
-      foregroundMaskLayers.push_back(foregroundLayer);
+      foregroundLayer.brightness =
+          applyMaskGradeToForeground ? layer.maskBrightness : 0.0f;
+      foregroundLayer.contrast =
+          applyMaskGradeToForeground ? layer.maskContrast : 1.0f;
+      foregroundLayer.saturation =
+          applyMaskGradeToForeground ? layer.maskSaturation : 1.0f;
+      foregroundLayer.shadows[0] = 0.0f;
+      foregroundLayer.shadows[1] = 0.0f;
+      foregroundLayer.shadows[2] = 0.0f;
+      foregroundLayer.shadows[3] = kVulkanEffectModeMaskGrade;
+      foregroundLayer.midtones[0] = 0.0f;
+      foregroundLayer.midtones[1] = 0.0f;
+      foregroundLayer.midtones[2] = 0.0f;
+      foregroundLayer.midtones[3] =
+          applyMaskGradeToForeground && layer.maskCurveLutApplied
+              ? kVulkanMaskGradeUseSelectedCurveLut
+              : 0.0f;
+      foregroundLayer.highlights[0] = 0.0f;
+      foregroundLayer.highlights[1] = 0.0f;
+      foregroundLayer.highlights[2] = 0.0f;
+      foregroundLayer.highlights[3] = 1.0f;
+      if (maskMarkerSourceIds.contains(clip.id)) {
+        foregroundMaskLayerBySourceId.insert(clip.id, foregroundLayer);
+      } else {
+        foregroundMaskLayers.push_back(foregroundLayer);
+      }
+    }
+    if (!clip.titleKeyframes.isEmpty()) {
+      const int64_t titleLocalFrame = qMax<int64_t>(
+          0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
+      const EvaluatedTitle evaluatedTitle =
+          evaluateTitleAtLocalFrame(clip, titleLocalFrame);
+      const EvaluatedTitle title = composeTitleWithOpacity(
+          evaluatedTitle, static_cast<qreal>(grade.opacity));
+      if (title.valid && !title.text.isEmpty() && title.opacity > 0.001) {
+        if (title.vulkan3DEnabled) {
+          textInputs.title3D.push_back(title);
+        } else if (!gpuOutputOnly) {
+        const OverlayImage titleImage = overlayRenderBackend().renderTitleOverlay(
+            request.outputSize, title, request.outputSize);
+        OffscreenVulkanRendererPrivate::LayerInput titleLayer;
+        titleLayer.overlayImage = titleImage;
+        titleLayer.sourceSize = QSize(titleImage.width, titleImage.height);
+        titleLayer.opacity = 1.0f;
+        layers.push_back(titleLayer);
+        }
+      }
     }
     ++visualLayersResolved;
+  }
+  std::sort(pendingMaskMarkerInsertions.begin(),
+            pendingMaskMarkerInsertions.end(),
+            [](const QPair<int, QString>& a, const QPair<int, QString>& b) {
+              return a.first > b.first;
+            });
+  for (const QPair<int, QString>& pending : std::as_const(pendingMaskMarkerInsertions)) {
+    if (foregroundMaskLayerBySourceId.contains(pending.second)) {
+      layers.insert(qBound(0, pending.first, layers.size()),
+                    foregroundMaskLayerBySourceId.value(pending.second));
+    }
   }
   layers += foregroundMaskLayers;
   if (hasTranscriptCandidate) {

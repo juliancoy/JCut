@@ -5,14 +5,21 @@
 #include "runtime_control_server.h"
 #include "standalone_export_renderer.h"
 #include "standalone_preview_renderer.h"
+#include "vulkan_detector_frame_handoff.h"
 
 #include "external/imgui/imgui.h"
-#include "external/imgui/backends/imgui_impl_glfw.h"
-#include "external/imgui/backends/imgui_impl_opengl3.h"
+#include "external/imgui/backends/imgui_impl_vulkan.h"
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#include <GL/gl.h>
+#define VK_USE_PLATFORM_XLIB_KHR
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_xlib.h>
+
+#ifdef None
+#undef None
+#endif
 
 #include <algorithm>
 #include <array>
@@ -22,6 +29,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -103,10 +111,12 @@ struct ShellState {
     std::uint64_t previewRequestGeneration = 0;
     std::uint64_t previewCompletedGeneration = 0;
     std::uint64_t previewUploadedGeneration = 0;
+    float previewPanX = 0.0f;
+    float previewPanY = 0.0f;
     jcut::EditorDocumentCore previewDocument;
     std::string previewRootDirectory;
     jcut::standalone_render::PreviewRenderResult previewResult;
-    GLuint previewTextureId = 0;
+    ImTextureID previewTextureId = 0;
     std::mutex exportMutex;
     std::condition_variable exportCondition;
     std::thread exportWorker;
@@ -411,6 +421,15 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"success", previewResult.success},
             {"message", previewResult.message},
             {"sourcePath", previewResult.sourcePath},
+            {"zeroCopyVulkan", {
+                {"ready", previewResult.vulkanFrame.valid},
+                {"presentedFrames", previewResult.vulkanFrame.valid ? previewCompletedGeneration : 0},
+                {"failures", 0},
+                {"failureReason", ""},
+                {"lastFrameValid", previewResult.vulkanFrame.valid},
+                {"lastFrameWidth", previewResult.vulkanFrame.size.width},
+                {"lastFrameHeight", previewResult.vulkanFrame.size.height}
+            }},
             {"image", {
                 {"valid", !previewResult.image.empty()},
                 {"width", previewResult.image.size.width},
@@ -687,50 +706,6 @@ bool documentIsDirty(const ShellState& shellState, const jcut::EditorDocumentCor
     return snapshotJson(snapshot) != shellState.lastSavedSnapshotJson;
 }
 
-void uploadPreviewTexture(ShellState* shellState)
-{
-    jcut::standalone_render::PreviewRenderResult previewResult;
-    std::uint64_t completedGeneration = 0;
-    {
-        std::lock_guard<std::mutex> lock(shellState->previewMutex);
-        if (shellState->previewCompletedGeneration == 0 ||
-            shellState->previewCompletedGeneration == shellState->previewUploadedGeneration) {
-            return;
-        }
-        previewResult = shellState->previewResult;
-        completedGeneration = shellState->previewCompletedGeneration;
-    }
-
-    if (!previewResult.image.empty()) {
-        if (shellState->previewTextureId == 0) {
-            glGenTextures(1, &shellState->previewTextureId);
-        }
-        glBindTexture(GL_TEXTURE_2D, shellState->previewTextureId);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, previewResult.image.strideBytes / 4);
-        glTexImage2D(GL_TEXTURE_2D,
-                     0,
-                     GL_RGBA8,
-                     previewResult.image.size.width,
-                     previewResult.image.size.height,
-                     0,
-                     GL_RGBA,
-                     GL_UNSIGNED_BYTE,
-                     previewResult.image.bytes.data());
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(shellState->previewMutex);
-        shellState->previewUploadedGeneration = completedGeneration;
-    }
-}
-
 void runPreviewWorker(ShellState* shellState)
 {
     for (;;) {
@@ -759,7 +734,8 @@ void runPreviewWorker(ShellState* shellState)
                         ? document.exportRequest.outputSize
                         : jcut::core::SizeI{1080, 1920},
                     document.transport.currentFrame,
-                    rootDirectory});
+                    rootDirectory,
+                    true});
 
         {
             std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -838,11 +814,6 @@ void clearTimelineDrag(ShellState* shellState)
     shellState->timelineDragTrackIndex = -1;
 }
 
-void glfwErrorCallback(int error, const char* description)
-{
-    std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
-}
-
 void applyShellStyle()
 {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -880,6 +851,789 @@ void applyShellStyle()
     colors[ImGuiCol_CheckMark] = ImVec4(0.91f, 0.53f, 0.24f, 1.0f);
     colors[ImGuiCol_SliderGrab] = ImVec4(0.91f, 0.53f, 0.24f, 0.9f);
     colors[ImGuiCol_SliderGrabActive] = ImVec4(0.99f, 0.64f, 0.30f, 1.0f);
+}
+
+VkClearValue makeVulkanClearValue()
+{
+    VkClearValue clearValue{};
+    clearValue.color.float32[0] = 0.05f;
+    clearValue.color.float32[1] = 0.06f;
+    clearValue.color.float32[2] = 0.07f;
+    clearValue.color.float32[3] = 1.0f;
+    return clearValue;
+}
+
+bool hasVulkanExtension(const std::vector<VkExtensionProperties>& properties, const char* name)
+{
+    return std::any_of(properties.begin(), properties.end(), [&](const VkExtensionProperties& ext) {
+        return std::strcmp(ext.extensionName, name) == 0;
+    });
+}
+
+void checkVulkanResult(VkResult err)
+{
+    if (err != VK_SUCCESS && err != VK_SUBOPTIMAL_KHR) {
+        std::fprintf(stderr, "jcut_imgui Vulkan backend error: %d\n", static_cast<int>(err));
+    }
+}
+
+ImGuiKey imguiKeyFromX11KeySym(KeySym keySym)
+{
+    switch (keySym) {
+    case XK_Tab: return ImGuiKey_Tab;
+    case XK_Left: return ImGuiKey_LeftArrow;
+    case XK_Right: return ImGuiKey_RightArrow;
+    case XK_Up: return ImGuiKey_UpArrow;
+    case XK_Down: return ImGuiKey_DownArrow;
+    case XK_Page_Up: return ImGuiKey_PageUp;
+    case XK_Page_Down: return ImGuiKey_PageDown;
+    case XK_Home: return ImGuiKey_Home;
+    case XK_End: return ImGuiKey_End;
+    case XK_Insert: return ImGuiKey_Insert;
+    case XK_Delete: return ImGuiKey_Delete;
+    case XK_BackSpace: return ImGuiKey_Backspace;
+    case XK_space: return ImGuiKey_Space;
+    case XK_Return: return ImGuiKey_Enter;
+    case XK_KP_Enter: return ImGuiKey_KeypadEnter;
+    case XK_Escape: return ImGuiKey_Escape;
+    case XK_apostrophe: return ImGuiKey_Apostrophe;
+    case XK_comma: return ImGuiKey_Comma;
+    case XK_minus: return ImGuiKey_Minus;
+    case XK_period: return ImGuiKey_Period;
+    case XK_slash: return ImGuiKey_Slash;
+    case XK_semicolon: return ImGuiKey_Semicolon;
+    case XK_equal: return ImGuiKey_Equal;
+    case XK_bracketleft: return ImGuiKey_LeftBracket;
+    case XK_backslash: return ImGuiKey_Backslash;
+    case XK_bracketright: return ImGuiKey_RightBracket;
+    case XK_grave: return ImGuiKey_GraveAccent;
+    case XK_Caps_Lock: return ImGuiKey_CapsLock;
+    case XK_Scroll_Lock: return ImGuiKey_ScrollLock;
+    case XK_Num_Lock: return ImGuiKey_NumLock;
+    case XK_Print: return ImGuiKey_PrintScreen;
+    case XK_Pause: return ImGuiKey_Pause;
+    case XK_KP_0: return ImGuiKey_Keypad0;
+    case XK_KP_1: return ImGuiKey_Keypad1;
+    case XK_KP_2: return ImGuiKey_Keypad2;
+    case XK_KP_3: return ImGuiKey_Keypad3;
+    case XK_KP_4: return ImGuiKey_Keypad4;
+    case XK_KP_5: return ImGuiKey_Keypad5;
+    case XK_KP_6: return ImGuiKey_Keypad6;
+    case XK_KP_7: return ImGuiKey_Keypad7;
+    case XK_KP_8: return ImGuiKey_Keypad8;
+    case XK_KP_9: return ImGuiKey_Keypad9;
+    case XK_KP_Decimal: return ImGuiKey_KeypadDecimal;
+    case XK_KP_Divide: return ImGuiKey_KeypadDivide;
+    case XK_KP_Multiply: return ImGuiKey_KeypadMultiply;
+    case XK_KP_Subtract: return ImGuiKey_KeypadSubtract;
+    case XK_KP_Add: return ImGuiKey_KeypadAdd;
+    case XK_KP_Equal: return ImGuiKey_KeypadEqual;
+    case XK_Control_L: return ImGuiKey_LeftCtrl;
+    case XK_Shift_L: return ImGuiKey_LeftShift;
+    case XK_Alt_L: return ImGuiKey_LeftAlt;
+    case XK_Super_L: return ImGuiKey_LeftSuper;
+    case XK_Control_R: return ImGuiKey_RightCtrl;
+    case XK_Shift_R: return ImGuiKey_RightShift;
+    case XK_Alt_R: return ImGuiKey_RightAlt;
+    case XK_Super_R: return ImGuiKey_RightSuper;
+    case XK_F1: return ImGuiKey_F1;
+    case XK_F2: return ImGuiKey_F2;
+    case XK_F3: return ImGuiKey_F3;
+    case XK_F4: return ImGuiKey_F4;
+    case XK_F5: return ImGuiKey_F5;
+    case XK_F6: return ImGuiKey_F6;
+    case XK_F7: return ImGuiKey_F7;
+    case XK_F8: return ImGuiKey_F8;
+    case XK_F9: return ImGuiKey_F9;
+    case XK_F10: return ImGuiKey_F10;
+    case XK_F11: return ImGuiKey_F11;
+    case XK_F12: return ImGuiKey_F12;
+    default:
+        break;
+    }
+    if (keySym >= XK_0 && keySym <= XK_9) {
+        return static_cast<ImGuiKey>(ImGuiKey_0 + (keySym - XK_0));
+    }
+    if (keySym >= XK_A && keySym <= XK_Z) {
+        return static_cast<ImGuiKey>(ImGuiKey_A + (keySym - XK_A));
+    }
+    if (keySym >= XK_a && keySym <= XK_z) {
+        return static_cast<ImGuiKey>(ImGuiKey_A + (keySym - XK_a));
+    }
+    return ImGuiKey_None;
+}
+
+struct X11Platform {
+    Display* display = nullptr;
+    int screen = 0;
+    Window window = 0;
+    Atom wmDeleteWindow = 0;
+    bool closeRequested = false;
+    int width = 1600;
+    int height = 960;
+    bool ctrlDown = false;
+    bool sDown = false;
+    bool rDown = false;
+    bool equalDown = false;
+    bool kpAddDown = false;
+    bool minusDown = false;
+    bool kpSubtractDown = false;
+    std::chrono::steady_clock::time_point lastFrameTime = std::chrono::steady_clock::now();
+
+    bool create(int initialWidth, int initialHeight, const char* title, std::string* error)
+    {
+        display = XOpenDisplay(nullptr);
+        if (!display) {
+            if (error) *error = "Failed to open X11 display.";
+            return false;
+        }
+        screen = DefaultScreen(display);
+        width = initialWidth;
+        height = initialHeight;
+
+        XSetWindowAttributes attrs{};
+        attrs.event_mask = ExposureMask |
+            StructureNotifyMask |
+            KeyPressMask |
+            KeyReleaseMask |
+            ButtonPressMask |
+            ButtonReleaseMask |
+            PointerMotionMask |
+            FocusChangeMask;
+        window = XCreateWindow(display,
+                               RootWindow(display, screen),
+                               0,
+                               0,
+                               static_cast<unsigned int>(width),
+                               static_cast<unsigned int>(height),
+                               0,
+                               CopyFromParent,
+                               InputOutput,
+                               CopyFromParent,
+                               CWEventMask,
+                               &attrs);
+        if (!window) {
+            if (error) *error = "Failed to create X11 window.";
+            shutdown();
+            return false;
+        }
+        XStoreName(display, window, title);
+        wmDeleteWindow = XInternAtom(display, "WM_DELETE_WINDOW", False);
+        XSetWMProtocols(display, window, &wmDeleteWindow, 1);
+        XMapWindow(display, window);
+        XFlush(display);
+        return true;
+    }
+
+    void updateKeyState(KeySym keySym, bool down)
+    {
+        if (keySym == XK_Control_L || keySym == XK_Control_R) ctrlDown = down;
+        if (keySym == XK_s || keySym == XK_S) sDown = down;
+        if (keySym == XK_r || keySym == XK_R) rDown = down;
+        if (keySym == XK_equal || keySym == XK_plus) equalDown = down;
+        if (keySym == XK_KP_Add) kpAddDown = down;
+        if (keySym == XK_minus || keySym == XK_underscore) minusDown = down;
+        if (keySym == XK_KP_Subtract) kpSubtractDown = down;
+    }
+
+    void updateModifiers(unsigned int state)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(ImGuiMod_Ctrl, (state & ControlMask) != 0 || ctrlDown);
+        io.AddKeyEvent(ImGuiMod_Shift, (state & ShiftMask) != 0);
+        io.AddKeyEvent(ImGuiMod_Alt, (state & Mod1Mask) != 0);
+        io.AddKeyEvent(ImGuiMod_Super, (state & Mod4Mask) != 0);
+    }
+
+    void pollEvents()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        while (display && XPending(display) > 0) {
+            XEvent event{};
+            XNextEvent(display, &event);
+            switch (event.type) {
+            case ClientMessage:
+                if (static_cast<Atom>(event.xclient.data.l[0]) == wmDeleteWindow) {
+                    closeRequested = true;
+                }
+                break;
+            case ConfigureNotify:
+                width = std::max(1, event.xconfigure.width);
+                height = std::max(1, event.xconfigure.height);
+                break;
+            case MotionNotify:
+                io.AddMousePosEvent(static_cast<float>(event.xmotion.x), static_cast<float>(event.xmotion.y));
+                break;
+            case ButtonPress:
+            case ButtonRelease: {
+                const bool down = event.type == ButtonPress;
+                const unsigned int button = event.xbutton.button;
+                if (button == Button1) io.AddMouseButtonEvent(0, down);
+                if (button == Button2) io.AddMouseButtonEvent(2, down);
+                if (button == Button3) io.AddMouseButtonEvent(1, down);
+                if (down && button == Button4) io.AddMouseWheelEvent(0.0f, 1.0f);
+                if (down && button == Button5) io.AddMouseWheelEvent(0.0f, -1.0f);
+                break;
+            }
+            case FocusIn:
+                io.AddFocusEvent(true);
+                break;
+            case FocusOut:
+                io.AddFocusEvent(false);
+                break;
+            case KeyPress:
+            case KeyRelease: {
+                const bool down = event.type == KeyPress;
+                KeySym keySym = NoSymbol;
+                char text[32]{};
+                const int textLength = XLookupString(&event.xkey, text, sizeof(text), &keySym, nullptr);
+                updateModifiers(event.xkey.state);
+                updateKeyState(keySym, down);
+                const ImGuiKey imguiKey = imguiKeyFromX11KeySym(keySym);
+                if (imguiKey != ImGuiKey_None) {
+                    io.AddKeyEvent(imguiKey, down);
+                }
+                if (down && textLength > 0) {
+                    io.AddInputCharactersUTF8(text);
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+
+    void newFrame()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.BackendPlatformName = "jcut_x11";
+        io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        const auto now = std::chrono::steady_clock::now();
+        io.DeltaTime = std::max(1.0f / 1000.0f,
+                                static_cast<float>(std::chrono::duration<double>(now - lastFrameTime).count()));
+        lastFrameTime = now;
+    }
+
+    bool shouldClose() const { return closeRequested; }
+    bool savePressed() const { return ctrlDown && sDown; }
+    bool reloadPressed() const { return ctrlDown && rDown; }
+    bool fontIncreasePressed() const { return ctrlDown && (equalDown || kpAddDown); }
+    bool fontDecreasePressed() const { return ctrlDown && (minusDown || kpSubtractDown); }
+
+    void shutdown()
+    {
+        if (display && window) {
+            XDestroyWindow(display, window);
+            window = 0;
+        }
+        if (display) {
+            XCloseDisplay(display);
+            display = nullptr;
+        }
+    }
+};
+
+struct VulkanShell {
+    X11Platform* platform = nullptr;
+    VkInstance instance = VK_NULL_HANDLE;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    uint32_t queueFamily = UINT32_MAX;
+    VkQueue queue = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkSampler previewSampler = VK_NULL_HANDLE;
+    ImGui_ImplVulkanH_Window windowData{};
+    uint32_t minImageCount = 2;
+    bool swapchainRebuild = false;
+    jcut::vulkan_detector::VulkanDetectorFrameHandoff previewHandoff;
+    VkDescriptorSet previewTextureSet = VK_NULL_HANDLE;
+    VkImageView boundPreviewView = VK_NULL_HANDLE;
+    VkImageLayout boundPreviewLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bool queueSupportsPresent(VkPhysicalDevice candidate, uint32_t family) const
+    {
+        VkBool32 supported = VK_FALSE;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, &supported) != VK_SUCCESS) {
+            return false;
+        }
+        return supported == VK_TRUE;
+    }
+
+    bool selectQueueFamily(VkPhysicalDevice candidate, uint32_t* familyOut) const
+    {
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        if (familyCount > 0) {
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+        }
+        for (uint32_t i = 0; i < familyCount; ++i) {
+            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && queueSupportsPresent(candidate, i)) {
+                *familyOut = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool createInstance(std::string* error)
+    {
+        uint32_t propertyCount = 0;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) != VK_SUCCESS) {
+            if (error) *error = "Failed to enumerate Vulkan instance extensions.";
+            return false;
+        }
+        std::vector<VkExtensionProperties> properties(propertyCount);
+        if (propertyCount > 0 &&
+            vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.data()) != VK_SUCCESS) {
+            if (error) *error = "Failed to read Vulkan instance extensions.";
+            return false;
+        }
+
+        if (!hasVulkanExtension(properties, VK_KHR_SURFACE_EXTENSION_NAME) ||
+            !hasVulkanExtension(properties, VK_KHR_XLIB_SURFACE_EXTENSION_NAME)) {
+            if (error) *error = "Required Vulkan Xlib surface extensions are unavailable.";
+            return false;
+        }
+
+        std::vector<const char*> extensions{
+            VK_KHR_SURFACE_EXTENSION_NAME,
+            VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+        };
+        if (hasVulkanExtension(properties, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
+            extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        }
+        VkInstanceCreateFlags flags = 0;
+#ifdef VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME
+        if (hasVulkanExtension(properties, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+            extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+            flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        }
+#endif
+
+        VkApplicationInfo appInfo{};
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        appInfo.pApplicationName = "jcut-imgui";
+        appInfo.apiVersion = VK_API_VERSION_1_1;
+
+        VkInstanceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        info.flags = flags;
+        info.pApplicationInfo = &appInfo;
+        info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        info.ppEnabledExtensionNames = extensions.data();
+        if (vkCreateInstance(&info, nullptr, &instance) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan instance.";
+            return false;
+        }
+        return true;
+    }
+
+    bool selectPhysicalDevice(std::string* error)
+    {
+        uint32_t count = 0;
+        if (vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) {
+            if (error) *error = "No Vulkan physical device available.";
+            return false;
+        }
+        std::vector<VkPhysicalDevice> devices(count);
+        if (vkEnumeratePhysicalDevices(instance, &count, devices.data()) != VK_SUCCESS) {
+            if (error) *error = "Failed to enumerate Vulkan physical devices.";
+            return false;
+        }
+        for (VkPhysicalDevice candidate : devices) {
+            uint32_t family = UINT32_MAX;
+            if (selectQueueFamily(candidate, &family)) {
+                physicalDevice = candidate;
+                queueFamily = family;
+                return true;
+            }
+        }
+        if (error) *error = "No Vulkan graphics queue can present to the X11 surface.";
+        return false;
+    }
+
+    bool createDevice(std::string* error)
+    {
+        uint32_t extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> properties(extensionCount);
+        if (extensionCount > 0) {
+            vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, properties.data());
+        }
+        auto optionalExtension = [&](const char* name, std::vector<const char*>* extensions) {
+            if (hasVulkanExtension(properties, name)) {
+                extensions->push_back(name);
+            }
+        };
+        if (!hasVulkanExtension(properties, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+            if (error) *error = "Vulkan swapchain extension is unavailable.";
+            return false;
+        }
+        std::vector<const char*> extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        optionalExtension(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, &extensions);
+#ifdef __linux__
+        optionalExtension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, &extensions);
+#endif
+        optionalExtension(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, &extensions);
+        optionalExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, &extensions);
+        optionalExtension(VK_KHR_MAINTENANCE1_EXTENSION_NAME, &extensions);
+        optionalExtension(VK_KHR_MAINTENANCE3_EXTENSION_NAME, &extensions);
+#ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+        optionalExtension(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, &extensions);
+#endif
+
+        const float priority = 1.0f;
+        VkDeviceQueueCreateInfo queueInfo{};
+        queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueInfo.queueFamilyIndex = queueFamily;
+        queueInfo.queueCount = 1;
+        queueInfo.pQueuePriorities = &priority;
+
+        VkDeviceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        info.queueCreateInfoCount = 1;
+        info.pQueueCreateInfos = &queueInfo;
+        info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        info.ppEnabledExtensionNames = extensions.data();
+        if (vkCreateDevice(physicalDevice, &info, nullptr, &device) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan device.";
+            return false;
+        }
+        vkGetDeviceQueue(device, queueFamily, 0, &queue);
+        return true;
+    }
+
+    bool createDescriptorPool(std::string* error)
+    {
+        const std::array<VkDescriptorPoolSize, 2> poolSizes{{
+            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE + 64},
+            {VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE + 16},
+        }};
+        VkDescriptorPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        info.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        info.pPoolSizes = poolSizes.data();
+        for (const VkDescriptorPoolSize& size : poolSizes) {
+            info.maxSets += size.descriptorCount;
+        }
+        if (vkCreateDescriptorPool(device, &info, nullptr, &descriptorPool) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan descriptor pool.";
+            return false;
+        }
+        return true;
+    }
+
+    bool createPreviewSampler(std::string* error)
+    {
+        VkSamplerCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = VK_FILTER_LINEAR;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxLod = 1.0f;
+        if (vkCreateSampler(device, &info, nullptr, &previewSampler) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan preview sampler.";
+            return false;
+        }
+        return true;
+    }
+
+    bool setupSwapchain(int width, int height, std::string* error)
+    {
+        windowData.Surface = surface;
+        const VkFormat formats[] = {
+            VK_FORMAT_B8G8R8A8_UNORM,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_FORMAT_B8G8R8_UNORM,
+            VK_FORMAT_R8G8B8_UNORM,
+        };
+        windowData.SurfaceFormat =
+            ImGui_ImplVulkanH_SelectSurfaceFormat(physicalDevice,
+                                                  surface,
+                                                  formats,
+                                                  IM_ARRAYSIZE(formats),
+                                                  VK_COLORSPACE_SRGB_NONLINEAR_KHR);
+        const VkPresentModeKHR presentModes[] = {VK_PRESENT_MODE_FIFO_KHR};
+        windowData.PresentMode =
+            ImGui_ImplVulkanH_SelectPresentMode(physicalDevice,
+                                                surface,
+                                                presentModes,
+                                                IM_ARRAYSIZE(presentModes));
+        ImGui_ImplVulkanH_CreateOrResizeWindow(instance,
+                                               physicalDevice,
+                                               device,
+                                               &windowData,
+                                               queueFamily,
+                                               nullptr,
+                                               width,
+                                               height,
+                                               minImageCount,
+                                               0);
+        windowData.ClearValue = makeVulkanClearValue();
+        if (windowData.RenderPass == VK_NULL_HANDLE) {
+            if (error) *error = "Failed to create Vulkan swapchain render pass.";
+            return false;
+        }
+        return true;
+    }
+
+    bool initialize(X11Platform* x11Platform, std::string* error)
+    {
+        platform = x11Platform;
+        if (!createInstance(error)) return false;
+        VkXlibSurfaceCreateInfoKHR surfaceInfo{};
+        surfaceInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        surfaceInfo.dpy = platform ? platform->display : nullptr;
+        surfaceInfo.window = platform ? platform->window : 0;
+        if (vkCreateXlibSurfaceKHR(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan Xlib window surface.";
+            return false;
+        }
+        if (!selectPhysicalDevice(error) ||
+            !createDevice(error) ||
+            !createDescriptorPool(error) ||
+            !createPreviewSampler(error)) {
+            return false;
+        }
+        if (!platform) {
+            if (error) *error = "X11 platform is unavailable.";
+            return false;
+        }
+        if (!setupSwapchain(std::max(1, platform->width), std::max(1, platform->height), error)) {
+            return false;
+        }
+
+        ImGui_ImplVulkan_InitInfo initInfo{};
+        initInfo.Instance = instance;
+        initInfo.PhysicalDevice = physicalDevice;
+        initInfo.Device = device;
+        initInfo.QueueFamily = queueFamily;
+        initInfo.Queue = queue;
+        initInfo.DescriptorPool = descriptorPool;
+        initInfo.MinImageCount = minImageCount;
+        initInfo.ImageCount = windowData.ImageCount;
+        initInfo.PipelineInfoMain.RenderPass = windowData.RenderPass;
+        initInfo.PipelineInfoMain.Subpass = 0;
+        initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        initInfo.CheckVkResultFn = checkVulkanResult;
+        if (!ImGui_ImplVulkan_Init(&initInfo)) {
+            if (error) *error = "Failed to initialize ImGui Vulkan backend.";
+            return false;
+        }
+        std::string handoffError;
+        if (!previewHandoff.initialize({physicalDevice, device, queue, queueFamily}, &handoffError)) {
+            if (error) *error = handoffError;
+            return false;
+        }
+        return true;
+    }
+
+    bool bindPreviewFrame(const render_detail::OffscreenVulkanFrame& frame, ImTextureID* textureOut)
+    {
+        if (!frame.valid) {
+            return false;
+        }
+        std::string error;
+        if (!previewHandoff.importOffscreenFrame(frame, &error)) {
+            std::fprintf(stderr, "Vulkan preview import failed: %s\n", error.c_str());
+            return false;
+        }
+        const jcut::vulkan_detector::VulkanExternalImage external = previewHandoff.externalImage();
+        if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
+            return false;
+        }
+        if (previewTextureSet == VK_NULL_HANDLE ||
+            boundPreviewView != external.imageView ||
+            boundPreviewLayout != external.imageLayout) {
+            if (previewTextureSet != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+                previewTextureSet = VK_NULL_HANDLE;
+            }
+            previewTextureSet =
+                ImGui_ImplVulkan_AddTexture(previewSampler, external.imageView, external.imageLayout);
+            boundPreviewView = external.imageView;
+            boundPreviewLayout = external.imageLayout;
+        }
+        if (textureOut) {
+            *textureOut = reinterpret_cast<ImTextureID>(previewTextureSet);
+        }
+        return previewTextureSet != VK_NULL_HANDLE;
+    }
+
+    void rebuildSwapchainIfNeeded()
+    {
+        if (!platform || platform->width <= 0 || platform->height <= 0) {
+            return;
+        }
+        if (swapchainRebuild ||
+            windowData.Width != static_cast<uint32_t>(platform->width) ||
+            windowData.Height != static_cast<uint32_t>(platform->height)) {
+            vkDeviceWaitIdle(device);
+            ImGui_ImplVulkan_SetMinImageCount(minImageCount);
+            ImGui_ImplVulkanH_CreateOrResizeWindow(instance,
+                                                   physicalDevice,
+                                                   device,
+                                                   &windowData,
+                                                   queueFamily,
+                                                   nullptr,
+                                                   platform->width,
+                                                   platform->height,
+                                                   minImageCount,
+                                                   0);
+            windowData.ClearValue = makeVulkanClearValue();
+            windowData.FrameIndex = 0;
+            swapchainRebuild = false;
+        }
+    }
+
+    void renderDrawData(ImDrawData* drawData)
+    {
+        ImGui_ImplVulkanH_Window* wd = &windowData;
+        VkSemaphore imageAcquiredSemaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+        VkSemaphore renderCompleteSemaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+        VkResult err = vkAcquireNextImageKHR(device,
+                                             wd->Swapchain,
+                                             UINT64_MAX,
+                                             imageAcquiredSemaphore,
+                                             VK_NULL_HANDLE,
+                                             &wd->FrameIndex);
+        if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
+            swapchainRebuild = true;
+        }
+        if (err == VK_ERROR_OUT_OF_DATE_KHR) {
+            return;
+        }
+        checkVulkanResult(err);
+
+        ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
+        vkWaitForFences(device, 1, &fd->Fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &fd->Fence);
+        vkResetCommandPool(device, fd->CommandPool, 0);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(fd->CommandBuffer, &beginInfo);
+
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = wd->RenderPass;
+        renderPassInfo.framebuffer = fd->Framebuffer;
+        renderPassInfo.renderArea.extent.width = wd->Width;
+        renderPassInfo.renderArea.extent.height = wd->Height;
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &wd->ClearValue;
+        vkCmdBeginRenderPass(fd->CommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        ImGui_ImplVulkan_RenderDrawData(drawData, fd->CommandBuffer);
+        vkCmdEndRenderPass(fd->CommandBuffer);
+        vkEndCommandBuffer(fd->CommandBuffer);
+
+        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &imageAcquiredSemaphore;
+        submitInfo.pWaitDstStageMask = &waitStage;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &fd->CommandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &renderCompleteSemaphore;
+        checkVulkanResult(vkQueueSubmit(queue, 1, &submitInfo, fd->Fence));
+    }
+
+    void present()
+    {
+        if (swapchainRebuild) {
+            return;
+        }
+        ImGui_ImplVulkanH_Window* wd = &windowData;
+        VkSemaphore renderCompleteSemaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &renderCompleteSemaphore;
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &wd->Swapchain;
+        presentInfo.pImageIndices = &wd->FrameIndex;
+        VkResult err = vkQueuePresentKHR(queue, &presentInfo);
+        if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
+            swapchainRebuild = true;
+        } else {
+            checkVulkanResult(err);
+        }
+        wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount;
+    }
+
+    void shutdown()
+    {
+        if (device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
+        }
+        if (previewTextureSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+            previewTextureSet = VK_NULL_HANDLE;
+        }
+        previewHandoff.release();
+        ImGui_ImplVulkan_Shutdown();
+        if (device != VK_NULL_HANDLE && windowData.Surface != VK_NULL_HANDLE) {
+            ImGui_ImplVulkanH_DestroyWindow(instance, device, &windowData, nullptr);
+        }
+        if (previewSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(device, previewSampler, nullptr);
+            previewSampler = VK_NULL_HANDLE;
+        }
+        if (descriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            descriptorPool = VK_NULL_HANDLE;
+        }
+        if (device != VK_NULL_HANDLE) {
+            vkDestroyDevice(device, nullptr);
+            device = VK_NULL_HANDLE;
+        }
+        if (surface != VK_NULL_HANDLE) {
+            vkDestroySurfaceKHR(instance, surface, nullptr);
+            surface = VK_NULL_HANDLE;
+        }
+        if (instance != VK_NULL_HANDLE) {
+            vkDestroyInstance(instance, nullptr);
+            instance = VK_NULL_HANDLE;
+        }
+    }
+};
+
+void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
+{
+    jcut::standalone_render::PreviewRenderResult previewResult;
+    std::uint64_t completedGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(shellState->previewMutex);
+        if (shellState->previewCompletedGeneration == 0 ||
+            shellState->previewCompletedGeneration == shellState->previewUploadedGeneration) {
+            return;
+        }
+        previewResult = shellState->previewResult;
+        completedGeneration = shellState->previewCompletedGeneration;
+    }
+
+    if (vulkanShell && previewResult.vulkanFrame.valid) {
+        ImTextureID texture = 0;
+        if (vulkanShell->bindPreviewFrame(previewResult.vulkanFrame, &texture)) {
+            shellState->previewTextureId = texture;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(shellState->previewMutex);
+        shellState->previewUploadedGeneration = completedGeneration;
+    }
 }
 
 void drawMenuBar(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
@@ -1002,26 +1756,78 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
         : (9.0f / 16.0f);
     const float paddedWidth = std::max(120.0f, canvasSize.x - 32.0f);
     const float paddedHeight = std::max(120.0f, canvasSize.y - 32.0f);
-    float frameWidth = paddedWidth;
-    float frameHeight = frameWidth / std::max(0.1f, targetAspect);
-    if (frameHeight > paddedHeight) {
-        frameHeight = paddedHeight;
-        frameWidth = frameHeight * targetAspect;
+    float fittedFrameWidth = paddedWidth;
+    float fittedFrameHeight = fittedFrameWidth / std::max(0.1f, targetAspect);
+    if (fittedFrameHeight > paddedHeight) {
+        fittedFrameHeight = paddedHeight;
+        fittedFrameWidth = fittedFrameHeight * targetAspect;
     }
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 canvasMax(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y);
+    const bool mouseInsideCanvas = ImGui::IsMouseHoveringRect(canvasPos, canvasMax);
+    float zoom = snapshot.transport.previewZoom;
+    const float oldZoom = zoom;
+    if (mouseInsideCanvas && std::abs(io.MouseWheel) > 0.001f) {
+        const float nextZoom = std::clamp(
+            zoom * std::pow(1.12f, io.MouseWheel),
+            0.5f,
+            3.0f);
+        if (std::abs(nextZoom - zoom) > 0.001f) {
+            const ImVec2 canvasCenter(
+                canvasPos.x + canvasSize.x * 0.5f,
+                canvasPos.y + canvasSize.y * 0.5f);
+            const ImVec2 mouseFromContentCenter(
+                io.MousePos.x - (canvasCenter.x + shellState->previewPanX),
+                io.MousePos.y - (canvasCenter.y + shellState->previewPanY));
+            const float scale = nextZoom / std::max(0.001f, zoom);
+            shellState->previewPanX -= mouseFromContentCenter.x * (scale - 1.0f);
+            shellState->previewPanY -= mouseFromContentCenter.y * (scale - 1.0f);
+            zoom = nextZoom;
+            applyCommand(shellState, jcut::SetPreviewZoomCommand{zoom});
+        }
+    }
+    if (mouseInsideCanvas &&
+        (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f) ||
+         ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f) ||
+         ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f))) {
+        shellState->previewPanX += io.MouseDelta.x;
+        shellState->previewPanY += io.MouseDelta.y;
+    }
+    if (mouseInsideCanvas && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        shellState->previewPanX = 0.0f;
+        shellState->previewPanY = 0.0f;
+        if (std::abs(zoom - 1.0f) > 0.001f) {
+            zoom = 1.0f;
+            applyCommand(shellState, jcut::SetPreviewZoomCommand{zoom});
+        }
+    }
+    if (std::abs(zoom - oldZoom) < 0.001f && zoom <= 1.001f) {
+        shellState->previewPanX *= 0.85f;
+        shellState->previewPanY *= 0.85f;
+        if (std::abs(shellState->previewPanX) < 0.25f) shellState->previewPanX = 0.0f;
+        if (std::abs(shellState->previewPanY) < 0.25f) shellState->previewPanY = 0.0f;
+    }
+    const float frameWidth = fittedFrameWidth * zoom;
+    const float frameHeight = fittedFrameHeight * zoom;
+    const float maxPanX = std::max(0.0f, (frameWidth - fittedFrameWidth) * 0.5f + 48.0f);
+    const float maxPanY = std::max(0.0f, (frameHeight - fittedFrameHeight) * 0.5f + 48.0f);
+    shellState->previewPanX = std::clamp(shellState->previewPanX, -maxPanX, maxPanX);
+    shellState->previewPanY = std::clamp(shellState->previewPanY, -maxPanY, maxPanY);
+
     const ImVec2 frameMin(
-        canvasPos.x + (canvasSize.x - frameWidth) * 0.5f,
-        canvasPos.y + (canvasSize.y - frameHeight) * 0.5f);
+        canvasPos.x + (canvasSize.x - frameWidth) * 0.5f + shellState->previewPanX,
+        canvasPos.y + (canvasSize.y - frameHeight) * 0.5f + shellState->previewPanY);
     const ImVec2 frameMax(frameMin.x + frameWidth, frameMin.y + frameHeight);
+    drawList->PushClipRect(canvasPos, canvasMax, true);
     drawList->AddRectFilled(frameMin, frameMax, IM_COL32(42, 46, 54, 255), 4.0f);
     if (shellState->previewTextureId != 0) {
-        drawList->AddImage(static_cast<ImTextureID>(static_cast<uintptr_t>(shellState->previewTextureId)),
+        drawList->AddImage(shellState->previewTextureId,
                            frameMin,
                            frameMax,
                            ImVec2(0.0f, 0.0f),
                            ImVec2(1.0f, 1.0f));
     }
     drawList->AddRect(frameMin, frameMax, IM_COL32(160, 110, 56, 255), 4.0f, 0, 2.0f);
-    const float zoom = snapshot.transport.previewZoom;
     const float inset = std::clamp(0.12f / std::max(0.5f, zoom), 0.04f, 0.18f);
     const ImVec2 safeMin(frameMin.x + frameWidth * inset, frameMin.y + frameHeight * 0.08f);
     const ImVec2 safeMax(frameMax.x - frameWidth * inset, frameMax.y - frameHeight * 0.08f);
@@ -1039,6 +1845,7 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     drawList->AddText(ImVec2(frameMin.x + 14.0f, frameMin.y + 34.0f),
                       IM_COL32(180, 188, 198, 255),
                       previewDetail.c_str());
+    drawList->PopClipRect();
 
     ImGui::Dummy(canvasSize);
     ImGui::Separator();
@@ -1558,30 +2365,30 @@ int main(int argc, char** argv)
     }
     loadUiPreferences(&shellState);
 
-    glfwSetErrorCallback(glfwErrorCallback);
-    if (!glfwInit()) {
+    X11Platform platform;
+    std::string platformError;
+    if (!platform.create(1600, 960, "JCut ImGui", &platformError)) {
+        std::fprintf(stderr, "%s\n", platformError.empty()
+            ? "failed to create X11 window"
+            : platformError.c_str());
         return 1;
     }
-
-    const char* glslVersion = "#version 130";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    GLFWwindow* window = glfwCreateWindow(1600, 960, "JCut ImGui", nullptr, nullptr);
-    if (!window) {
-        glfwTerminate();
-        return 1;
-    }
-
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
     loadUiFont(&shellState);
     applyShellStyle();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init(glslVersion);
+    VulkanShell vulkanShell;
+    std::string vulkanError;
+    if (!vulkanShell.initialize(&platform, &vulkanError)) {
+        std::fprintf(stderr, "%s\n", vulkanError.empty()
+            ? "failed to initialize Vulkan ImGui shell"
+            : vulkanError.c_str());
+        ImGui::DestroyContext();
+        platform.shutdown();
+        return 1;
+    }
     std::string controlServerError;
     const std::uint16_t controlPort = jcut::runtimeControlPortFromEnvironment(40130);
     if (shellState.controlServer.start(
@@ -1602,8 +2409,8 @@ int main(int argc, char** argv)
     requestPreviewRender(&shellState);
     auto previousTick = std::chrono::steady_clock::now();
 
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
+    while (!platform.shouldClose()) {
+        platform.pollEvents();
         const auto now = std::chrono::steady_clock::now();
         const std::chrono::duration<double> delta = now - previousTick;
         previousTick = now;
@@ -1618,18 +2425,12 @@ int main(int argc, char** argv)
         if (currentFrame != previousFrame) {
             requestPreviewRender(&shellState);
         }
-        uploadPreviewTexture(&shellState);
+        uploadPreviewTexture(&shellState, &vulkanShell);
 
-        const bool ctrlPressed = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
-            glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        const bool savePressed = ctrlPressed && glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
-        const bool reloadPressed = ctrlPressed && glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
-        const bool fontSizeIncreasePressed = ctrlPressed &&
-            (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS ||
-             glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS);
-        const bool fontSizeDecreasePressed = ctrlPressed &&
-            (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS ||
-             glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS);
+        const bool savePressed = platform.savePressed();
+        const bool reloadPressed = platform.reloadPressed();
+        const bool fontSizeIncreasePressed = platform.fontIncreasePressed();
+        const bool fontSizeDecreasePressed = platform.fontDecreasePressed();
         if (savePressed && !shellState.saveShortcutPressed) {
             saveCurrentDocument(&shellState);
         }
@@ -1657,8 +2458,9 @@ int main(int argc, char** argv)
             }
         }
 
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
+        vulkanShell.rebuildSwapchainIfNeeded();
+        ImGui_ImplVulkan_NewFrame();
+        platform.newFrame();
         ImGui::NewFrame();
 
         jcut::EditorDocumentCore snapshot;
@@ -1674,18 +2476,11 @@ int main(int argc, char** argv)
         drawStatusBar(shellState, snapshot);
 
         ImGui::Render();
-        int displayW = 0;
-        int displayH = 0;
-        glfwGetFramebufferSize(window, &displayW, &displayH);
-        glViewport(0, 0, displayW, displayH);
-        glClearColor(0.05f, 0.06f, 0.07f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        glfwSwapBuffers(window);
+        vulkanShell.renderDrawData(ImGui::GetDrawData());
+        vulkanShell.present();
     }
 
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    vulkanShell.shutdown();
     ImGui::DestroyContext();
     {
         std::lock_guard<std::mutex> lock(shellState.previewMutex);
@@ -1704,11 +2499,7 @@ int main(int argc, char** argv)
     if (shellState.exportWorker.joinable()) {
         shellState.exportWorker.join();
     }
-    if (shellState.previewTextureId != 0) {
-        glDeleteTextures(1, &shellState.previewTextureId);
-    }
     shellState.controlServer.stop();
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    platform.shutdown();
     return 0;
 }

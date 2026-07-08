@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "facedetections_artifact_utils.h"
+#include "editor_effect_presets.h"
 #include "history_tab.h"
 #include "mask_tab.h"
 #include "processing_job_docker.h"
@@ -173,6 +174,48 @@ void addManifestDir(QStringList* paths, QSet<QString>* seen, const QString& dirP
     while (it.hasNext()) {
         addManifestPath(paths, seen, it.next());
     }
+}
+
+const TimelineClip* sourceClipForSelectedMaskMatte(const TimelineWidget* timeline)
+{
+    if (!timeline) {
+        return nullptr;
+    }
+    const TimelineClip* selected = timeline->selectedClip();
+    if (!selected || selected->clipRole != ClipRole::MaskMatte) {
+        return selected;
+    }
+    const QString sourceId = selected->linkedSourceClipId.trimmed();
+    if (sourceId.isEmpty()) {
+        return selected;
+    }
+    for (const TimelineClip& clip : timeline->clips()) {
+        if (clip.id == sourceId) {
+            return &clip;
+        }
+    }
+    return selected;
+}
+
+QString sourceClipIdForSelectedMaskMatte(const TimelineWidget* timeline)
+{
+    const TimelineClip* clip = sourceClipForSelectedMaskMatte(timeline);
+    return clip ? clip->id : QString();
+}
+
+bool updateClipAndNormalizeMaskMattes(
+    TimelineWidget* timeline,
+    const QString& clipId,
+    const std::function<void(TimelineClip&)>& updater)
+{
+    if (!timeline || !timeline->updateClipById(clipId, updater)) {
+        return false;
+    }
+    QVector<TimelineClip> clips = timeline->clips();
+    if (normalizeSamMaskMatteClips(clips)) {
+        timeline->setClips(clips);
+    }
+    return true;
 }
 
 } // namespace
@@ -999,39 +1042,59 @@ void EditorWindow::createProjectsTab()
 
 void EditorWindow::createTranscriptTab()
 {
+    TranscriptTab::Widgets transcriptWidgets{};
+    transcriptWidgets.transcriptInspectorClipLabel = m_transcriptInspectorClipLabel;
+    transcriptWidgets.transcriptInspectorDetailsLabel = m_transcriptInspectorDetailsLabel;
+    transcriptWidgets.transcriptTable = m_transcriptTable;
+    transcriptWidgets.transcriptOverlayEnabledCheckBox = m_transcriptOverlayEnabledCheckBox;
+    transcriptWidgets.transcriptPlacementModeCombo = m_transcriptPlacementModeCombo;
+    transcriptWidgets.transcriptBackgroundVisibleCheckBox = m_inspectorPane->transcriptBackgroundVisibleCheckBox();
+    transcriptWidgets.transcriptBackgroundOpacitySpin = m_inspectorPane->transcriptBackgroundOpacitySpin();
+    transcriptWidgets.transcriptBackgroundCornerRadiusSpin = m_inspectorPane->transcriptBackgroundCornerRadiusSpin();
+    transcriptWidgets.transcriptTextColorButton = m_inspectorPane->transcriptTextColorButton();
+    transcriptWidgets.transcriptBackgroundColorButton = m_inspectorPane->transcriptBackgroundColorButton();
+    transcriptWidgets.transcriptHighlightColorButton = m_inspectorPane->transcriptHighlightColorButton();
+    transcriptWidgets.transcriptShadowEnabledCheckBox = m_inspectorPane->transcriptShadowEnabledCheckBox();
+    transcriptWidgets.transcriptShadowColorButton = m_inspectorPane->transcriptShadowColorButton();
+    transcriptWidgets.transcriptShadowOpacitySpin = m_inspectorPane->transcriptShadowOpacitySpin();
+    transcriptWidgets.transcriptShadowOffsetXSpin = m_inspectorPane->transcriptShadowOffsetXSpin();
+    transcriptWidgets.transcriptShadowOffsetYSpin = m_inspectorPane->transcriptShadowOffsetYSpin();
+    transcriptWidgets.transcriptOutlineEnabledCheckBox = m_inspectorPane->transcriptOutlineEnabledCheckBox();
+    transcriptWidgets.transcriptOutlineColorButton = m_inspectorPane->transcriptOutlineColorButton();
+    transcriptWidgets.transcriptOutlineWidthSpin = m_inspectorPane->transcriptOutlineWidthSpin();
+    transcriptWidgets.transcriptOutlineOpacitySpin = m_inspectorPane->transcriptOutlineOpacitySpin();
+    transcriptWidgets.transcriptShowSpeakerTitleCheckBox = m_inspectorPane->transcriptShowSpeakerTitleCheckBox();
+    transcriptWidgets.transcriptHighlightCurrentWordCheckBox = m_inspectorPane->transcriptHighlightCurrentWordCheckBox();
+    transcriptWidgets.transcriptMaxLinesSpin = m_transcriptMaxLinesSpin;
+    transcriptWidgets.transcriptMaxCharsSpin = m_transcriptMaxCharsSpin;
+    transcriptWidgets.transcriptAutoScrollCheckBox = m_transcriptAutoScrollCheckBox;
+    transcriptWidgets.transcriptFollowCurrentWordCheckBox = m_transcriptFollowCurrentWordCheckBox;
+    transcriptWidgets.transcriptOverlayXSpin = m_transcriptOverlayXSpin;
+    transcriptWidgets.transcriptOverlayYSpin = m_transcriptOverlayYSpin;
+    transcriptWidgets.transcriptCenterHorizontalButton = m_inspectorPane->transcriptCenterHorizontalButton();
+    transcriptWidgets.transcriptCenterVerticalButton = m_inspectorPane->transcriptCenterVerticalButton();
+    transcriptWidgets.transcriptOverlayWidthSpin = m_transcriptOverlayWidthSpin;
+    transcriptWidgets.transcriptOverlayHeightSpin = m_transcriptOverlayHeightSpin;
+    transcriptWidgets.transcriptFontFamilyCombo = m_transcriptFontFamilyCombo;
+    transcriptWidgets.transcriptFontSizeSpin = m_transcriptFontSizeSpin;
+    transcriptWidgets.transcriptBoldCheckBox = m_transcriptBoldCheckBox;
+    transcriptWidgets.transcriptItalicCheckBox = m_transcriptItalicCheckBox;
+    transcriptWidgets.transcriptPrependMsSpin = m_transcriptPrependMsSpin;
+    transcriptWidgets.transcriptPostpendMsSpin = m_transcriptPostpendMsSpin;
+    transcriptWidgets.transcriptOffsetMsSpin = m_inspectorPane->transcriptOffsetMsSpin();
+    transcriptWidgets.speechFilterFadeModeCombo = m_speechFilterFadeModeCombo;
+    transcriptWidgets.speechFilterFadeSamplesSpin = m_speechFilterFadeSamplesSpin;
+    transcriptWidgets.transcriptUnifiedEditModeCheckBox = m_inspectorPane->transcriptUnifiedEditModeCheckBox();
+    transcriptWidgets.transcriptSearchFilterLineEdit = m_inspectorPane->transcriptSearchFilterLineEdit();
+    transcriptWidgets.transcriptSpeakerFilterCombo = m_inspectorPane->transcriptSpeakerFilterCombo();
+    transcriptWidgets.transcriptScriptVersionCombo = m_inspectorPane->transcriptScriptVersionCombo();
+    transcriptWidgets.transcriptNewVersionButton = m_inspectorPane->transcriptNewVersionButton();
+    transcriptWidgets.transcriptDeleteVersionButton = m_inspectorPane->transcriptDeleteVersionButton();
+    transcriptWidgets.transcriptExportTextButton = m_inspectorPane->transcriptExportTextButton();
+    transcriptWidgets.transcriptShowExcludedLinesCheckBox = m_inspectorPane->transcriptShowExcludedLinesCheckBox();
+
     m_transcriptTab = std::make_unique<TranscriptTab>(
-        TranscriptTab::Widgets{
-            m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
-            m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
-            m_transcriptPlacementModeCombo,
-            m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
-            m_inspectorPane->transcriptBackgroundOpacitySpin(),
-            m_inspectorPane->transcriptBackgroundCornerRadiusSpin(),
-            m_inspectorPane->transcriptTextColorButton(),
-            m_inspectorPane->transcriptBackgroundColorButton(),
-            m_inspectorPane->transcriptHighlightColorButton(),
-            m_inspectorPane->transcriptShadowEnabledCheckBox(),
-            m_inspectorPane->transcriptShowSpeakerTitleCheckBox(),
-            m_inspectorPane->transcriptHighlightCurrentWordCheckBox(),
-            m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
-            m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,
-            m_transcriptOverlayXSpin, m_transcriptOverlayYSpin,
-            m_inspectorPane->transcriptCenterHorizontalButton(),
-            m_inspectorPane->transcriptCenterVerticalButton(),
-            m_transcriptOverlayWidthSpin, m_transcriptOverlayHeightSpin,
-            m_transcriptFontFamilyCombo, m_transcriptFontSizeSpin,
-            m_transcriptBoldCheckBox, m_transcriptItalicCheckBox,
-            m_transcriptPrependMsSpin, m_transcriptPostpendMsSpin,
-            m_inspectorPane->transcriptOffsetMsSpin(),
-            m_speechFilterFadeModeCombo, m_speechFilterFadeSamplesSpin,
-            m_inspectorPane->transcriptUnifiedEditModeCheckBox(),
-            m_inspectorPane->transcriptSearchFilterLineEdit(),
-            m_inspectorPane->transcriptSpeakerFilterCombo(),
-            m_inspectorPane->transcriptScriptVersionCombo(),
-            m_inspectorPane->transcriptNewVersionButton(),
-            m_inspectorPane->transcriptDeleteVersionButton(),
-            m_inspectorPane->transcriptExportTextButton(),
-            m_inspectorPane->transcriptShowExcludedLinesCheckBox()},
+        transcriptWidgets,
         TranscriptTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
@@ -1073,8 +1136,6 @@ void EditorWindow::createTranscriptTab()
         m_transcriptEngine.invalidateCache();
         invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) {
             if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
                 m_preview->invalidateTranscriptOverlayCache(clip->filePath);
@@ -1082,7 +1143,10 @@ void EditorWindow::createTranscriptTab()
                 m_preview->invalidateTranscriptOverlayCache();
             }
         }
-        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_preview) {
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+            m_preview->setExportRanges(ranges);
+        }
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
@@ -1113,9 +1177,10 @@ void EditorWindow::createTranscriptTab()
         m_transcriptEngine.invalidateCache();
         invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
-        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_preview) {
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+            m_preview->setExportRanges(ranges);
+        }
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
@@ -1167,14 +1232,13 @@ void EditorWindow::createSpeakersTab()
         m_transcriptEngine.invalidateCache();
         invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) {
             if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
                 m_preview->invalidateTranscriptOverlayCache(clip->filePath);
             } else {
                 m_preview->invalidateTranscriptOverlayCache();
             }
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
             m_preview->setExportRanges(ranges);
         }
         if (m_audioEngine) {
@@ -1204,12 +1268,38 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerSectionMinimumWordsSpin(),
             m_inspectorPane->speakerExportLongSectionsButton(),
             m_inspectorPane->speakerCreateTitleClipsButton(),
+            m_inspectorPane->speakerOverlayCreateTitleClipsButton(),
+            m_inspectorPane->speakerOverlayFlyInStyleCombo(),
+            m_inspectorPane->speakerOverlayFlyInDelaySpin(),
+            m_inspectorPane->speakerOverlayFlyInDurationSpin(),
+            m_inspectorPane->speakerOverlayFlyInTimeSpin(),
+            m_inspectorPane->speakerOverlayWrapRadiusSpin(),
+            m_inspectorPane->speakerOverlayWrapDepthSpin(),
+            m_inspectorPane->speakerOverlayWrapStartAngleSpin(),
+            m_inspectorPane->speakerOverlayWrapEndAngleSpin(),
+            m_inspectorPane->speakerOverlayWrapPitchSpin(),
+            m_inspectorPane->speakerOverlayWrapRollSpin(),
+            m_inspectorPane->speakerOverlayTitleFontSizeSpin(),
+            m_inspectorPane->speakerOverlayTitleBoxWidthSpin(),
+            m_inspectorPane->speakerOverlayTitleTextMaterialCombo(),
+            m_inspectorPane->speakerOverlayTitleBorderMaterialCombo(),
+            m_inspectorPane->speakerOverlayTitleTextPatternPathEdit(),
+            m_inspectorPane->speakerOverlayTitleBorderPatternPathEdit(),
+            m_inspectorPane->speakerOverlayTitlePatternScaleSpin(),
+            m_inspectorPane->speakerOverlayTitleExtrudeCheckBox(),
+            m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin(),
+            m_inspectorPane->speakerOverlayTitleBevelScaleSpin(),
             m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox(),
             m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox(),
             m_inspectorPane->speakerSectionsTable(),
+            m_inspectorPane->selectedSpeakerPopup(),
             m_inspectorPane->selectedSpeakerIdLabel(),
             m_inspectorPane->selectedSpeakerNameEdit(),
             m_inspectorPane->selectedSpeakerOrganizationEdit(),
+            m_inspectorPane->selectedSpeakerLogoPathEdit(),
+            m_inspectorPane->selectedSpeakerPrimaryColorEdit(),
+            m_inspectorPane->selectedSpeakerSecondaryColorEdit(),
+            m_inspectorPane->selectedSpeakerAccentColorEdit(),
             m_inspectorPane->selectedSpeakerFaceDetectionsList(),
             m_inspectorPane->speakerPlayheadFaceDetectionsList(),
             m_inspectorPane->speakerShowPlayheadFaceDetectionsCheckBox(),
@@ -1410,8 +1500,6 @@ void EditorWindow::createSpeakersTab()
         m_transcriptEngine.invalidateCache();
         invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) {
             if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
                 m_preview->invalidateTranscriptOverlayCache(clip->filePath);
@@ -1419,7 +1507,10 @@ void EditorWindow::createSpeakersTab()
                 m_preview->invalidateTranscriptOverlayCache();
             }
         }
-        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_preview) {
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+            m_preview->setExportRanges(ranges);
+        }
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
@@ -1541,6 +1632,7 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->effectSpeedSpin(),
             m_inspectorPane->effectScaleSpin(),
             m_inspectorPane->effectAlternateDirectionCheck(),
+            m_inspectorPane->effectSpeechSyncCheck(),
             m_inspectorPane->tilingPatternCombo(),
             m_inspectorPane->tilingSpacingSpin(),
             m_inspectorPane->tilingWrapCheck(),
@@ -1599,9 +1691,9 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskShadowOffsetYSpin(),
             m_inspectorPane->maskShadowOpacitySpin()},
         MaskTab::Dependencies{
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return sourceClipForSelectedMaskMatte(m_timeline); },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
-                return m_timeline->updateClipById(id, updater);
+                return updateClipAndNormalizeMaskMattes(m_timeline, id, updater);
             },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Masks")); },
@@ -1746,10 +1838,10 @@ void EditorWindow::createVideoKeyframeTab()
             m_keyframesFollowCurrentCheckBox, m_addVideoKeyframeButton, m_removeVideoKeyframeButton,
             m_flipHorizontalButton},
         VideoKeyframeTab::Dependencies{
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return sourceClipForSelectedMaskMatte(m_timeline); },
+            [this]() { return sourceClipForSelectedMaskMatte(m_timeline); },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
-                return m_timeline->updateClipById(id, updater);
+                return updateClipAndNormalizeMaskMattes(m_timeline, id, updater);
             },
             [this](const TimelineClip& clip) { return clip.filePath; },
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
@@ -1758,8 +1850,11 @@ void EditorWindow::createVideoKeyframeTab()
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Transform")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
-            [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
-            [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
+            [this]() -> int64_t {
+                const TimelineClip* clip = sourceClipForSelectedMaskMatte(m_timeline);
+                return clip ? clip->startFrame : 0;
+            },
+            [this]() -> QString { return sourceClipIdForSelectedMaskMatte(m_timeline); },
             [this](int64_t frame) { setCurrentFrame(frame); },
             {},
             {}});

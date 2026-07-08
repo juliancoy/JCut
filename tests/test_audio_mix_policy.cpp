@@ -185,6 +185,16 @@ void TestAudioMixPolicy::testSpeechFilterFadeModesShapeBoundaryGain() {
       25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmootherStep, 1.0, false);
   QVERIFY(smoother.primaryGain > 0.1035f);
   QVERIFY(smoother.primaryGain < 0.1036f);
+
+  QVector<AudioEngine::SpeechSampleRange> adjacentRanges{
+      AudioEngine::SpeechSampleRange{0, 1000},
+      AudioEngine::SpeechSampleRange{2000, 3000},
+  };
+  const auto crossfadeMode = engine.calculateSpeechRangeBlend(
+      950, adjacentRanges, 100, AudioEngine::SpeechFilterFadeMode::Crossfade, 1.0, false);
+  QVERIFY(crossfadeMode.primaryGain < 1.0f);
+  QVERIFY(crossfadeMode.secondaryGain > 0.0f);
+  QCOMPARE(crossfadeMode.secondaryTimelineSample, static_cast<int64_t>(2050));
 }
 
 void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {

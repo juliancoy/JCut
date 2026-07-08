@@ -1137,7 +1137,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     }
 
     std::string error;
-    if (!ensureVulkanReady(m_impl.get(), frame.physicalDevice, &error)) {
+    if (!ensureVulkanReady(m_impl.get(), VK_NULL_HANDLE, &error)) {
         markFailure(error);
         m_impl->updatePending = false;
         return false;

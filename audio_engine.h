@@ -53,6 +53,7 @@ public:
     Fade = 1,
     SmoothStep = 2,
     SmootherStep = 3,
+    Crossfade = 4,
   };
 
   static QString speechFilterFadeModeToString(SpeechFilterFadeMode mode);
@@ -183,8 +184,15 @@ private:
   static qreal normalizedTimeStretchSpeed(qreal playbackRate);
 
   static int precomputedTimeStretchSpeedKey(qreal playbackRate);
+  static int precomputedTimeStretchSpeedKey(qreal playbackRate,
+                                            PlaybackAudioWarpMode mode);
 
   static bool pitchPreservingTimeStretchActive(qreal playbackRate);
+  static bool pitchPreservingTimeStretchActive(qreal playbackRate,
+                                               PlaybackAudioWarpMode mode);
+
+  static bool playbackWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode);
+  static bool playbackWarpModeForcesUnityTimeStretch(PlaybackAudioWarpMode mode);
 
   static int timeStretchRateKey(qreal playbackRate);
 
@@ -358,7 +366,8 @@ private:
   AudioClipCacheEntry
   timeStretchCacheForPathCopy(const QString &path, qreal speed,
                               int64_t sourceSample,
-                              int64_t sourceEndSampleExclusive);
+                              int64_t sourceEndSampleExclusive,
+                              PlaybackAudioWarpMode mode);
 
   void insertTimeStretchSegmentsLocked(
       const QString &path, QHash<int, AudioClipCacheEntry> warpedBySpeed);
@@ -382,7 +391,8 @@ private:
 
   AudioClipCacheEntry
   buildTimeStretchCacheEntry(const QString &path,
-                             const AudioClipCacheEntry &decoded, qreal speed);
+                             const AudioClipCacheEntry &decoded, qreal speed,
+                             PlaybackAudioWarpMode mode);
 
   QHash<int, AudioClipCacheEntry>
   buildPrecomputedTimeStretchEntries(const QString &path,

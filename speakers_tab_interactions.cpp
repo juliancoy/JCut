@@ -41,6 +41,7 @@
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -174,6 +175,10 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     if (!m_widgets.selectedSpeakerIdLabel &&
         !m_widgets.selectedSpeakerNameEdit &&
         !m_widgets.selectedSpeakerOrganizationEdit &&
+        !m_widgets.selectedSpeakerLogoPathEdit &&
+        !m_widgets.selectedSpeakerPrimaryColorEdit &&
+        !m_widgets.selectedSpeakerSecondaryColorEdit &&
+        !m_widgets.selectedSpeakerAccentColorEdit &&
         !m_widgets.selectedSpeakerFaceDetectionsList &&
         !m_widgets.speakerPlayheadFaceDetectionsList) {
         return;
@@ -181,7 +186,10 @@ void SpeakersTab::updateSelectedSpeakerPanel()
 
     const QString speakerId = selectedSpeakerId();
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    auto setProfileEdits = [this](const QString& name, const QString& organization, bool enabled) {
+    auto setProfileEdits = [this](const QJsonObject& profile,
+                                  const QString& name,
+                                  const QString& organization,
+                                  bool enabled) {
         if (m_widgets.selectedSpeakerNameEdit) {
             QSignalBlocker blocker(m_widgets.selectedSpeakerNameEdit);
             m_widgets.selectedSpeakerNameEdit->setText(name);
@@ -192,6 +200,22 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.selectedSpeakerOrganizationEdit->setText(organization);
             m_widgets.selectedSpeakerOrganizationEdit->setEnabled(enabled);
         }
+        auto setLineEdit = [enabled](QLineEdit* edit, const QString& value) {
+            if (!edit) {
+                return;
+            }
+            QSignalBlocker blocker(edit);
+            edit->setText(value);
+            edit->setEnabled(enabled);
+        };
+        setLineEdit(m_widgets.selectedSpeakerLogoPathEdit,
+                    profile.value(QString(kTranscriptSpeakerLogoPathKey)).toString().trimmed());
+        setLineEdit(m_widgets.selectedSpeakerPrimaryColorEdit,
+                    profile.value(QString(kTranscriptSpeakerPrimaryColorKey)).toString().trimmed());
+        setLineEdit(m_widgets.selectedSpeakerSecondaryColorEdit,
+                    profile.value(QString(kTranscriptSpeakerSecondaryColorKey)).toString().trimmed());
+        setLineEdit(m_widgets.selectedSpeakerAccentColorEdit,
+                    profile.value(QString(kTranscriptSpeakerAccentColorKey)).toString().trimmed());
     };
     if (!clip || !m_transcriptSession.hasObjectDocument()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
@@ -206,7 +230,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.speakerCurrentSentenceLabel->setText(
                 QStringLiteral("Select a speaker to assign tracks and view sentence context."));
         }
-        setProfileEdits(QString(), QString(), false);
+        setProfileEdits(QJsonObject(), QString(), QString(), false);
         if (m_widgets.selectedSpeakerFaceDetectionsList) {
             m_widgets.selectedSpeakerFaceDetectionsList->clear();
         }
@@ -230,7 +254,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.speakerCurrentSentenceLabel->setText(
                 QStringLiteral("Select a speaker to assign tracks and view sentence context."));
         }
-        setProfileEdits(QString(), QString(), false);
+        setProfileEdits(QJsonObject(), QString(), QString(), false);
         if (m_widgets.selectedSpeakerFaceDetectionsList) {
             m_widgets.selectedSpeakerFaceDetectionsList->clear();
             auto* item = new QListWidgetItem(QStringLiteral("Select Speaker To View Assignments"));
@@ -250,7 +274,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     const QString displayName = speakerDisplayLabel(speakerId);
     const QString profileName = profile.value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
     const QString organization = profile.value(QStringLiteral("organization")).toString().trimmed();
-    setProfileEdits(profileName, organization, activeCutMutable());
+    setProfileEdits(profile, profileName, organization, activeCutMutable());
     if (m_widgets.selectedSpeakerIdLabel) {
         m_widgets.selectedSpeakerIdLabel->setText(displayName);
         if (displayName != speakerId) {
@@ -1463,6 +1487,8 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     }
 
     QMenu menu(m_widgets.speakersTable);
+    QAction* speakerInfoAction = menu.addAction(QStringLiteral("Speaker Info..."));
+    menu.addSeparator();
     QAction* skipAction = menu.addAction(QStringLiteral("Skip Speaker"));
     QAction* unskipAction = menu.addAction(QStringLiteral("Unskip Speaker"));
     menu.addSeparator();
@@ -1498,9 +1524,14 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     }
     exportVideoAction->setEnabled(m_speakerDeps.exportSpeakersVideo &&
                                   !selectedSpeakerIds.isEmpty());
+    speakerInfoAction->setEnabled(m_widgets.selectedSpeakerPopup != nullptr);
 
     QAction* chosen = menu.exec(m_widgets.speakersTable->viewport()->mapToGlobal(pos));
     if (!chosen) {
+        return;
+    }
+    if (chosen == speakerInfoAction) {
+        showSelectedSpeakerPopup(m_widgets.speakersTable->viewport()->mapToGlobal(pos));
         return;
     }
     if (chosen == exportVideoAction) {
@@ -1561,6 +1592,38 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     emit transcriptDocumentChanged();
     applySpeakerDocumentEffects(m_deps);
     refresh();
+}
+
+void SpeakersTab::showSelectedSpeakerPopup(const QPoint& globalPos)
+{
+    QWidget* popup = m_widgets.selectedSpeakerPopup;
+    if (!popup) {
+        return;
+    }
+
+    updateSpeakerTrackingStatusLabel();
+    updateSelectedSpeakerPanel();
+    popup->adjustSize();
+
+    QPoint popupPos = globalPos + QPoint(10, 10);
+    QSize popupSize = popup->sizeHint().expandedTo(QSize(320, 360));
+    popupSize.setWidth(qBound(320, popupSize.width(), 460));
+    if (QScreen* screen = QGuiApplication::screenAt(globalPos)) {
+        const QRect available = screen->availableGeometry();
+        popupSize.setHeight(qMin(popupSize.height(), qMax(360, available.height() - 40)));
+        if (popupPos.x() + popupSize.width() > available.right()) {
+            popupPos.setX(qMax(available.left(), available.right() - popupSize.width()));
+        }
+        if (popupPos.y() + popupSize.height() > available.bottom()) {
+            popupPos.setY(qMax(available.top(), available.bottom() - popupSize.height()));
+        }
+    }
+
+    popup->resize(popupSize);
+    popup->move(popupPos);
+    popup->show();
+    popup->raise();
+    popup->activateWindow();
 }
 
 void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
@@ -1636,7 +1699,7 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     }
 
     QMenu menu(m_widgets.speakerSectionsTable);
-    QAction* optionsAction = menu.addAction(QStringLiteral("Options"));
+    QAction* optionsAction = menu.addAction(QStringLiteral("Section Options..."));
     menu.addSeparator();
     QAction* skipAction = menu.addAction(QStringLiteral("Skip Section"));
     QAction* unskipAction = menu.addAction(QStringLiteral("Unskip Section"));

@@ -105,6 +105,7 @@ TimelineClip::TitleKeyframe interpolateStoredTitleKeyframe(
     midpoint.windowColor = earlier.windowColor;
     midpoint.windowOpacity = earlier.windowOpacity;
     midpoint.windowPadding = earlier.windowPadding;
+    midpoint.windowWidth = earlier.windowWidth + ((later.windowWidth - earlier.windowWidth) * t);
     midpoint.windowFrameEnabled = earlier.windowFrameEnabled;
     midpoint.windowFrameColor = earlier.windowFrameColor;
     midpoint.windowFrameOpacity = earlier.windowFrameOpacity;

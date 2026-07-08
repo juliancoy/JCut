@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "../editor_shared.h"
+#include "../editor_shared_effects.h"
 #include "../transform_skip_aware_timing.h"
 
 namespace {
@@ -68,6 +69,8 @@ private slots:
     }
 
     void testUsesGlobalTimelineRangesWhenProvided();
+    void testClipPlaybackFramePositionUsesGlobalTimelineRanges();
+    void testVisualEffectKeyframesUsePlaybackTime();
     void testFallsBackToTranscriptRangesWhenGlobalRangesEmpty();
     void testDisabledSkipAwareReturnsBaseInterpolation();
 };
@@ -89,6 +92,52 @@ void TestTransformSkipAwareTiming::testUsesGlobalTimelineRangesWhenProvided() {
     // local 25 (timeline 125) has accumulated effective 15/20 => 0.75
     const qreal tLate = interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0);
     QVERIFY(std::abs(tLate - 0.75) < 0.0001);
+}
+
+void TestTransformSkipAwareTiming::testClipPlaybackFramePositionUsesGlobalTimelineRanges() {
+    TimelineClip clip = makeClip(QStringLiteral("clip-play-time"), QStringLiteral("/tmp/nonexistent-play-time.wav"));
+    clip.startFrame = 100;
+    clip.durationFrames = 40;
+
+    setTransformSkipAwareTimelineRanges({
+        ExportRangeSegment{100, 109},
+        ExportRangeSegment{120, 129},
+    });
+
+    QCOMPARE(clipPlaybackFramePositionForTimelineFrame(clip, 100.0), 0.0);
+    QCOMPARE(clipPlaybackFramePositionForTimelineFrame(clip, 115.0), 10.0);
+    QCOMPARE(clipPlaybackFramePositionForTimelineFrame(clip, 120.0), 10.0);
+    QCOMPARE(clipPlaybackFramePositionForTimelineFrame(clip, 125.0), 15.0);
+    QCOMPARE(clipPlaybackDurationFrames(clip), 20.0);
+}
+
+void TestTransformSkipAwareTiming::testVisualEffectKeyframesUsePlaybackTime() {
+    TimelineClip clip = makeClip(QStringLiteral("clip-grade-play-time"), QStringLiteral("/tmp/nonexistent-grade.wav"));
+    clip.startFrame = 100;
+    clip.durationFrames = 40;
+    clip.brightness = 0.0;
+    TimelineClip::GradingKeyframe first;
+    first.frame = 0;
+    first.brightness = 0.0;
+    TimelineClip::GradingKeyframe second;
+    second.frame = 30;
+    second.brightness = 0.9;
+    second.linearInterpolation = true;
+    clip.gradingKeyframes = {first, second};
+
+    setTransformSkipAwareTimelineRanges({
+        ExportRangeSegment{100, 109},
+        ExportRangeSegment{120, 129},
+    });
+    const PlaybackTimingContext timing{{
+        ExportRangeSegment{100, 109},
+        ExportRangeSegment{120, 129},
+    }};
+    setTransformSkipAwareTimelineRanges({});
+
+    const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+        clip, {}, 120.0, {}, timing);
+    QVERIFY(std::abs(effects.grading.brightness - 0.3) < 0.0001);
 }
 
 void TestTransformSkipAwareTiming::testFallsBackToTranscriptRangesWhenGlobalRangesEmpty() {

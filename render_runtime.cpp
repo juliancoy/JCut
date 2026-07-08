@@ -1,5 +1,7 @@
 #include "render_runtime.h"
 
+#include "background_fill_effect.h"
+#include "decoder_context.h"
 #include "render.h"
 #include "render_backend.h"
 #include "render_internal.h"
@@ -9,6 +11,8 @@
 #include <QImage>
 #include <QSize>
 #include <QVector>
+
+#include <memory>
 
 namespace {
 
@@ -38,6 +42,66 @@ jcut::core::ImageBuffer toImageBuffer(const QImage& image)
     std::memcpy(buffer.bytes.data(), rgba.constBits(), static_cast<std::size_t>(byteCount));
     return buffer;
 }
+
+struct ThreadLocalPreviewRenderer {
+    ~ThreadLocalPreviewRenderer()
+    {
+        for (editor::DecoderContext* decoder : decoders) {
+            delete decoder;
+        }
+        asyncDecoder.shutdown();
+    }
+
+    bool ensureInitialized(RenderBackend requestedBackend,
+                           const QSize& outputSize,
+                           QString* errorOut)
+    {
+        if (renderer &&
+            backend == requestedBackend &&
+            initializedSize == outputSize) {
+            return true;
+        }
+
+        renderer.reset();
+        asyncFrameCache.clear();
+        for (editor::DecoderContext* decoder : decoders) {
+            delete decoder;
+        }
+        decoders.clear();
+        initializedSize = QSize();
+        backend = requestedBackend;
+
+        if (requestedBackend != RenderBackend::Vulkan) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("unsupported preview backend");
+            }
+            return false;
+        }
+
+        if (!asyncDecoder.initialize()) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("preview decoder initialization failed");
+            }
+            return false;
+        }
+
+        renderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
+        if (!renderer->initialize(outputSize, errorOut)) {
+            renderer.reset();
+            return false;
+        }
+
+        initializedSize = outputSize;
+        return true;
+    }
+
+    RenderBackend backend = RenderBackend::Vulkan;
+    QSize initializedSize;
+    std::unique_ptr<render_detail::OffscreenRenderer> renderer;
+    QHash<QString, editor::DecoderContext*> decoders;
+    editor::AsyncDecoder asyncDecoder;
+    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
+};
 
 } // namespace
 
@@ -95,7 +159,9 @@ RenderResultCore renderTimelineToFileCore(const RenderRequestCore& request,
 
 PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
                                               const TimelineRenderData& timelineData,
-                                              std::int64_t timelineFrame)
+                                              std::int64_t timelineFrame,
+                                              bool forceSoftwareDecode,
+                                              bool readbackToCpuImage)
 {
     PreviewFrameResultCore result;
     const RenderBackend requestedBackend = desiredPreviewBackendFromEnvironment();
@@ -112,42 +178,48 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
     }
 
     const RenderRequest qtRequest = toQtRenderRequest(request, timelineData);
-    QHash<QString, editor::DecoderContext*> decoders;
-    editor::AsyncDecoder asyncDecoder;
-    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
     QString gpuInitializationError;
-    std::unique_ptr<render_detail::OffscreenRenderer> activeRenderer;
-
-    if (requestedBackend == RenderBackend::Vulkan) {
-        activeRenderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
-        result.effectiveRenderBackend = "vulkan";
-    } else {
-        result.message = "unsupported preview backend";
-        return result;
-    }
-
-    const bool gpuInitialized = activeRenderer &&
-        activeRenderer->initialize(qtRequest.outputSize, &gpuInitializationError);
-    const bool useGpuRenderer = gpuInitialized;
-    if (!useGpuRenderer) {
+    thread_local ThreadLocalPreviewRenderer previewRenderer;
+    if (!previewRenderer.ensureInitialized(requestedBackend,
+                                           qtRequest.outputSize,
+                                           &gpuInitializationError)) {
         result.message = gpuInitializationError.isEmpty()
             ? "vulkan preview renderer initialization failed"
             : gpuInitializationError.toStdString();
         return result;
     }
-    result.effectiveRenderBackend = activeRenderer->backendId().toStdString();
+    result.effectiveRenderBackend = previewRenderer.renderer->backendId().toStdString();
 
     render_detail::OffscreenRenderFrame previewFrame;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    qint64* readbackMsPtr = readbackToCpuImage ? &readbackMs : nullptr;
     const bool renderedOk =
-        activeRenderer->renderFrameToOutput(qtRequest,
-                                            static_cast<qreal>(timelineFrame),
-                                            decoders,
-                                            &asyncDecoder,
-                                            &asyncFrameCache,
-                                            toQVector(timelineData.clips),
-                                            &previewFrame,
-                                            true);
-    if (!renderedOk || previewFrame.cpuImage.isNull()) {
+        previewRenderer.renderer->renderFrameToOutput(qtRequest,
+                                                      static_cast<qreal>(timelineFrame),
+                                                      previewRenderer.decoders,
+                                                      &previewRenderer.asyncDecoder,
+                                                      &previewRenderer.asyncFrameCache,
+                                                      toQVector(timelineData.clips),
+                                                      &previewFrame,
+                                                      readbackToCpuImage,
+                                                      nullptr,
+                                                      &decodeMs,
+                                                      &textureMs,
+                                                      &compositeMs,
+                                                      readbackMsPtr,
+                                                      nullptr,
+                                                      nullptr,
+                                                      nullptr,
+                                                      -1.0,
+                                                      forceSoftwareDecode,
+                                                      !readbackToCpuImage);
+    const bool hasRequestedOutput = readbackToCpuImage
+        ? !previewFrame.cpuImage.isNull()
+        : previewFrame.vulkanFrame.valid;
+    if (!renderedOk || !hasRequestedOutput) {
         result.message = "failed to render preview frame with Vulkan renderer";
         return result;
     }
@@ -155,6 +227,7 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
     result.success = true;
     result.usedGpu = true;
     result.image = toImageBuffer(previewFrame.cpuImage);
+    result.vulkanFrame = previewFrame.vulkanFrame;
     return result;
 }
 

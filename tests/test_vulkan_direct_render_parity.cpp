@@ -1,4 +1,5 @@
 #include "../vulkan_pipeline.h"
+#include "../background_fill_effect.h"
 #include "../render_vulkan_shared.h"
 #include "../preview_view_transform.h"
 
@@ -72,13 +73,13 @@ private slots:
         baseState.saturation = 0.7f;
         const render_detail::VulkanDrawEffectState edgeState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f, sourceRect);
+                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, false, 2.5f, sourceRect);
         QCOMPARE(edgeState.opacity, 0.8f);
         QVERIFY(qAbs(edgeState.brightness - 0.1f) < 0.0001f);
         QCOMPARE(edgeState.contrast, 1.3f);
         QVERIFY(qAbs(edgeState.saturation - 1.05f) < 0.0001f);
         QCOMPARE(edgeState.midtones[0], 24.0f);
-        QCOMPARE(edgeState.midtones[1], 1.0f);
+        QCOMPARE(edgeState.midtones[1], 0.0f);
         QCOMPARE(edgeState.midtones[2], 2.5f);
         QCOMPARE(edgeState.shadows[0], 0.25f);
         QCOMPARE(edgeState.shadows[1], 0.0f);
@@ -87,6 +88,24 @@ private slots:
         QVERIFY2(edgeState.highlights[3] < -1.5f,
                  "Edge-stretch background fill must signal row-wise edge sampling.");
 
+        const render_detail::VulkanDrawEffectState progressiveEdgeState =
+            render_detail::vulkanBackgroundFillEffectState(
+                BackgroundFillEffect::ProgressiveEdgeStretch,
+                baseState,
+                0.8f,
+                -0.02f,
+                1.5f,
+                24,
+                false,
+                2.5f,
+                sourceRect);
+        QCOMPARE(progressiveEdgeState.midtones[0], 24.0f);
+        QCOMPARE(progressiveEdgeState.midtones[1], 1.0f);
+        QCOMPARE(progressiveEdgeState.midtones[2], 2.5f);
+        QVERIFY2(progressiveEdgeState.highlights[3] < -2.5f &&
+                     progressiveEdgeState.highlights[3] > -3.5f,
+                 "Progressive edge stretch must have its own background fill mode signal.");
+
         const render_detail::VulkanDrawEffectState mirrorState =
             render_detail::vulkanBackgroundFillEffectState(
                 BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f, sourceRect);
@@ -94,7 +113,7 @@ private slots:
         QCOMPARE(mirrorState.shadows[1], 0.0f);
         QCOMPARE(mirrorState.shadows[2], 0.75f);
         QCOMPARE(mirrorState.shadows[3], 1.0f);
-        QVERIFY2(mirrorState.highlights[3] < -2.5f,
+        QVERIFY2(mirrorState.highlights[3] < -3.5f,
                  "Mirror background fill must signal reflected source sampling.");
 
         const render_detail::VulkanDrawEffectState blurState =
@@ -248,6 +267,8 @@ private slots:
                  "Direct Vulkan presenter must use the output background fill edge curve.");
         QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::EdgeStretch")),
                  "Direct Vulkan presenter must default through the edge-stretch background path.");
+        QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch")),
+                 "Direct Vulkan presenter must draw progressive edge stretch across the full canvas.");
         QVERIFY2(source.contains(QStringLiteral("fillEffect == BackgroundFillEffect::Mirror")),
                  "Direct Vulkan presenter must draw mirror fill across the full canvas.");
         QVERIFY2(source.contains(QStringLiteral("backgroundPush.highlights[3] = backgroundEffects.highlights[3]")),

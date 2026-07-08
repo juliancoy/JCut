@@ -74,8 +74,10 @@ double streamDurationSeconds(const AVFormatContext* formatCtx, const AVStream* s
 } // namespace
 
 DecoderContext::DecoderContext(const QString& path,
-                               const QHash<int, AVBufferRef*>* sharedHwDevices)
+                               const QHash<int, AVBufferRef*>* sharedHwDevices,
+                               bool forceSoftwareDecode)
     : m_path(path)
+    , m_forceSoftwareDecode(forceSoftwareDecode)
     , m_sharedHwDevices(sharedHwDevices) {}
 
 DecoderContext::~DecoderContext() {
@@ -84,6 +86,10 @@ DecoderContext::~DecoderContext() {
 
 void DecoderContext::setAllowHardwareFrameMaterialization(bool allow) {
     m_allowHardwareFrameMaterialization = allow;
+}
+
+void DecoderContext::setPreferHardwareFrames(bool prefer) {
+    m_preferHardwareFrames = prefer;
 }
 
 void DecoderContext::shutdown() {
@@ -379,9 +385,11 @@ bool DecoderContext::initCodec() {
     const bool allowHeadlessHardwareDecode =
         qEnvironmentVariableIntValue("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE") == 1;
     const DecodePreference decodePreference = debugDecodePreference();
+    const bool forceSoftwareDecode = m_forceSoftwareDecode;
     const bool zeroCopyPreferred =
-        decodePreference == DecodePreference::Auto ||
-        decodePreference == DecodePreference::HardwareZeroCopy;
+        !forceSoftwareDecode &&
+        (decodePreference == DecodePreference::Auto ||
+         decodePreference == DecodePreference::HardwareZeroCopy);
     const bool zeroCopySupported =
         zeroCopyPreferred &&
         (!headlessOffscreen || allowHeadlessHardwareDecode) &&
@@ -389,6 +397,7 @@ bool DecoderContext::initCodec() {
         (decodePreference == DecodePreference::HardwareZeroCopy ||
          zeroCopyInteropSupportedForCurrentBuild());
     const bool allowHardware =
+        !forceSoftwareDecode &&
         decodePreference != DecodePreference::Software &&
         (!headlessOffscreen || allowHeadlessHardwareDecode) &&
         !m_streamHasAlphaTag;
@@ -844,7 +853,8 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
     const DecodePreference decodePreference = debugDecodePreference();
     if (avFrame->format == m_hwPixFmt &&
         m_hwPixFmt != AV_PIX_FMT_NONE &&
-        (decodePreference == DecodePreference::HardwareZeroCopy ||
+        (m_preferHardwareFrames ||
+         decodePreference == DecodePreference::HardwareZeroCopy ||
          decodePreference == DecodePreference::Auto) &&
         avFrame->hw_frames_ctx) {
         auto* framesContext = reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);

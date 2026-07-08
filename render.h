@@ -1,7 +1,8 @@
 #pragma once
 
-#include "background_fill_effect.h"
+#include "background_fill_effect_fwd.h"
 #include "editor_shared.h"
+#include "playback_timing_context.h"
 #include "timeline_fps.h"
 
 #include <QImage>
@@ -72,7 +73,7 @@ struct RenderRequest {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
-    BackgroundFillEffect backgroundFillEffect = kDefaultBackgroundFillEffect;
+    BackgroundFillEffect backgroundFillEffect{};
     qreal backgroundFillOpacity = 1.0;
     qreal backgroundFillBrightness = 0.0;
     qreal backgroundFillSaturation = 1.0;
@@ -101,6 +102,7 @@ struct RenderRequest {
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
+    PlaybackTimingContext playbackTiming;
     int64_t exportStartFrame = 0;
     int64_t exportEndFrame = 0;
 };

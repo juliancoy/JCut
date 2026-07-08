@@ -79,6 +79,14 @@ public:
     QPushButton *transcriptBackgroundColorButton() const { return m_transcriptBackgroundColorButton; }
     QPushButton *transcriptHighlightColorButton() const { return m_transcriptHighlightColorButton; }
     QCheckBox *transcriptShadowEnabledCheckBox() const { return m_transcriptShadowEnabledCheckBox; }
+    QPushButton *transcriptShadowColorButton() const { return m_transcriptShadowColorButton; }
+    QSpinBox *transcriptShadowOpacitySpin() const { return m_transcriptShadowOpacitySpin; }
+    QSpinBox *transcriptShadowOffsetXSpin() const { return m_transcriptShadowOffsetXSpin; }
+    QSpinBox *transcriptShadowOffsetYSpin() const { return m_transcriptShadowOffsetYSpin; }
+    QCheckBox *transcriptOutlineEnabledCheckBox() const { return m_transcriptOutlineEnabledCheckBox; }
+    QPushButton *transcriptOutlineColorButton() const { return m_transcriptOutlineColorButton; }
+    QSpinBox *transcriptOutlineWidthSpin() const { return m_transcriptOutlineWidthSpin; }
+    QSpinBox *transcriptOutlineOpacitySpin() const { return m_transcriptOutlineOpacitySpin; }
     QCheckBox *transcriptShowSpeakerTitleCheckBox() const { return m_transcriptShowSpeakerTitleCheckBox; }
     QCheckBox *transcriptHighlightCurrentWordCheckBox() const { return m_transcriptHighlightCurrentWordCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
@@ -112,6 +120,27 @@ public:
     QSpinBox *speakerSectionMinimumWordsSpin() const { return m_speakerSectionMinimumWordsSpin; }
     QPushButton *speakerExportLongSectionsButton() const { return m_speakerExportLongSectionsButton; }
     QPushButton *speakerCreateTitleClipsButton() const { return m_speakerCreateTitleClipsButton; }
+    QPushButton *speakerOverlayCreateTitleClipsButton() const { return m_speakerOverlayCreateTitleClipsButton; }
+    QComboBox *speakerOverlayFlyInStyleCombo() const { return m_speakerOverlayFlyInStyleCombo; }
+    QDoubleSpinBox *speakerOverlayFlyInDelaySpin() const { return m_speakerOverlayFlyInDelaySpin; }
+    QDoubleSpinBox *speakerOverlayFlyInDurationSpin() const { return m_speakerOverlayFlyInDurationSpin; }
+    QDoubleSpinBox *speakerOverlayFlyInTimeSpin() const { return m_speakerOverlayFlyInTimeSpin; }
+    QDoubleSpinBox *speakerOverlayWrapRadiusSpin() const { return m_speakerOverlayWrapRadiusSpin; }
+    QDoubleSpinBox *speakerOverlayWrapDepthSpin() const { return m_speakerOverlayWrapDepthSpin; }
+    QDoubleSpinBox *speakerOverlayWrapStartAngleSpin() const { return m_speakerOverlayWrapStartAngleSpin; }
+    QDoubleSpinBox *speakerOverlayWrapEndAngleSpin() const { return m_speakerOverlayWrapEndAngleSpin; }
+    QDoubleSpinBox *speakerOverlayWrapPitchSpin() const { return m_speakerOverlayWrapPitchSpin; }
+    QDoubleSpinBox *speakerOverlayWrapRollSpin() const { return m_speakerOverlayWrapRollSpin; }
+    QSpinBox *speakerOverlayTitleFontSizeSpin() const { return m_speakerOverlayTitleFontSizeSpin; }
+    QSpinBox *speakerOverlayTitleBoxWidthSpin() const { return m_speakerOverlayTitleBoxWidthSpin; }
+    QComboBox *speakerOverlayTitleTextMaterialCombo() const { return m_speakerOverlayTitleTextMaterialCombo; }
+    QComboBox *speakerOverlayTitleBorderMaterialCombo() const { return m_speakerOverlayTitleBorderMaterialCombo; }
+    QLineEdit *speakerOverlayTitleTextPatternPathEdit() const { return m_speakerOverlayTitleTextPatternPathEdit; }
+    QLineEdit *speakerOverlayTitleBorderPatternPathEdit() const { return m_speakerOverlayTitleBorderPatternPathEdit; }
+    QDoubleSpinBox *speakerOverlayTitlePatternScaleSpin() const { return m_speakerOverlayTitlePatternScaleSpin; }
+    QCheckBox *speakerOverlayTitleExtrudeCheckBox() const { return m_speakerOverlayTitleExtrudeCheckBox; }
+    QDoubleSpinBox *speakerOverlayTitleExtrudeDepthSpin() const { return m_speakerOverlayTitleExtrudeDepthSpin; }
+    QDoubleSpinBox *speakerOverlayTitleBevelScaleSpin() const { return m_speakerOverlayTitleBevelScaleSpin; }
     QCheckBox *speakerShowCurrentSpeakerNameCheckBox() const { return m_speakerShowCurrentSpeakerNameCheckBox; }
     QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
     QSpinBox *speakerCurrentSpeakerNameTextSizeSpin() const { return m_speakerCurrentSpeakerNameTextSizeSpin; }
@@ -130,9 +159,14 @@ public:
     QPushButton *speakerCurrentSpeakerShadowColorButton() const { return m_speakerCurrentSpeakerShadowColorButton; }
     QSpinBox *speakerCurrentSpeakerShadowOpacitySpin() const { return m_speakerCurrentSpeakerShadowOpacitySpin; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
+    QWidget *selectedSpeakerPopup() const { return m_selectedSpeakerPopup; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QLineEdit *selectedSpeakerNameEdit() const { return m_selectedSpeakerNameEdit; }
     QLineEdit *selectedSpeakerOrganizationEdit() const { return m_selectedSpeakerOrganizationEdit; }
+    QLineEdit *selectedSpeakerLogoPathEdit() const { return m_selectedSpeakerLogoPathEdit; }
+    QLineEdit *selectedSpeakerPrimaryColorEdit() const { return m_selectedSpeakerPrimaryColorEdit; }
+    QLineEdit *selectedSpeakerSecondaryColorEdit() const { return m_selectedSpeakerSecondaryColorEdit; }
+    QLineEdit *selectedSpeakerAccentColorEdit() const { return m_selectedSpeakerAccentColorEdit; }
     QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
     QListWidget *speakerPlayheadFaceDetectionsList() const { return m_speakerPlayheadFaceDetectionsList; }
     QCheckBox *speakerShowPlayheadFaceDetectionsCheckBox() const { return m_speakerShowPlayheadFaceDetectionsCheckBox; }
@@ -214,6 +248,7 @@ public:
     QDoubleSpinBox *effectSpeedSpin() const { return m_effectSpeedSpin; }
     QDoubleSpinBox *effectScaleSpin() const { return m_effectScaleSpin; }
     QCheckBox *effectAlternateDirectionCheck() const { return m_effectAlternateDirectionCheck; }
+    QCheckBox *effectSpeechSyncCheck() const { return m_effectSpeechSyncCheck; }
     QComboBox *tilingPatternCombo() const { return m_tilingPatternCombo; }
     QDoubleSpinBox *tilingSpacingSpin() const { return m_tilingSpacingSpin; }
     QCheckBox *tilingWrapCheck() const { return m_tilingWrapCheck; }
@@ -436,6 +471,9 @@ public:
     QSpinBox *speechFilterFadeSamplesSpin() const { return m_speechFilterFadeSamplesSpin; }
     QDoubleSpinBox *speechFilterCurveStrengthSpin() const { return m_speechFilterCurveStrengthSpin; }
     QCheckBox *speechFilterRangeCrossfadeCheckBox() const { return m_speechFilterRangeCrossfadeCheckBox; }
+    QComboBox *speechFilterFrameTransitionModeCombo() const { return m_speechFilterFrameTransitionModeCombo; }
+    QCheckBox *speechFilterFrameCrossfadeCheckBox() const { return m_speechFilterFrameCrossfadeCheckBox; }
+    QSpinBox *speechFilterFrameCrossfadeFramesSpin() const { return m_speechFilterFrameCrossfadeFramesSpin; }
     QComboBox *playbackClockSourceCombo() const { return m_playbackClockSourceCombo; }
     QComboBox *playbackAudioWarpModeCombo() const { return m_playbackAudioWarpModeCombo; }
 
@@ -461,6 +499,7 @@ private:
     QWidget *buildKeyframesTab();
     QWidget *buildTranscriptTab();
     QWidget *buildSpeakersTab();
+    QWidget *buildSpeakersContinuityTab(QWidget *parent);
     QWidget *buildClipTab();
     QWidget *buildClipsTab();
     QWidget *buildTracksTab();
@@ -536,6 +575,7 @@ private:
     QDoubleSpinBox *m_effectSpeedSpin = nullptr;
     QDoubleSpinBox *m_effectScaleSpin = nullptr;
     QCheckBox *m_effectAlternateDirectionCheck = nullptr;
+    QCheckBox *m_effectSpeechSyncCheck = nullptr;
     QComboBox *m_tilingPatternCombo = nullptr;
     QDoubleSpinBox *m_tilingSpacingSpin = nullptr;
     QCheckBox *m_tilingWrapCheck = nullptr;
@@ -735,6 +775,14 @@ private:
     QPushButton *m_transcriptBackgroundColorButton = nullptr;
     QPushButton *m_transcriptHighlightColorButton = nullptr;
     QCheckBox *m_transcriptShadowEnabledCheckBox = nullptr;
+    QPushButton *m_transcriptShadowColorButton = nullptr;
+    QSpinBox *m_transcriptShadowOpacitySpin = nullptr;
+    QSpinBox *m_transcriptShadowOffsetXSpin = nullptr;
+    QSpinBox *m_transcriptShadowOffsetYSpin = nullptr;
+    QCheckBox *m_transcriptOutlineEnabledCheckBox = nullptr;
+    QPushButton *m_transcriptOutlineColorButton = nullptr;
+    QSpinBox *m_transcriptOutlineWidthSpin = nullptr;
+    QSpinBox *m_transcriptOutlineOpacitySpin = nullptr;
     QCheckBox *m_transcriptShowSpeakerTitleCheckBox = nullptr;
     QCheckBox *m_transcriptHighlightCurrentWordCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
@@ -768,6 +816,27 @@ private:
     QSpinBox *m_speakerSectionMinimumWordsSpin = nullptr;
     QPushButton *m_speakerExportLongSectionsButton = nullptr;
     QPushButton *m_speakerCreateTitleClipsButton = nullptr;
+    QPushButton *m_speakerOverlayCreateTitleClipsButton = nullptr;
+    QComboBox *m_speakerOverlayFlyInStyleCombo = nullptr;
+    QDoubleSpinBox *m_speakerOverlayFlyInDelaySpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayFlyInDurationSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayFlyInTimeSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapRadiusSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapDepthSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapStartAngleSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapEndAngleSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapPitchSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayWrapRollSpin = nullptr;
+    QSpinBox *m_speakerOverlayTitleFontSizeSpin = nullptr;
+    QSpinBox *m_speakerOverlayTitleBoxWidthSpin = nullptr;
+    QComboBox *m_speakerOverlayTitleTextMaterialCombo = nullptr;
+    QComboBox *m_speakerOverlayTitleBorderMaterialCombo = nullptr;
+    QLineEdit *m_speakerOverlayTitleTextPatternPathEdit = nullptr;
+    QLineEdit *m_speakerOverlayTitleBorderPatternPathEdit = nullptr;
+    QDoubleSpinBox *m_speakerOverlayTitlePatternScaleSpin = nullptr;
+    QCheckBox *m_speakerOverlayTitleExtrudeCheckBox = nullptr;
+    QDoubleSpinBox *m_speakerOverlayTitleExtrudeDepthSpin = nullptr;
+    QDoubleSpinBox *m_speakerOverlayTitleBevelScaleSpin = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerNameTextSizeSpin = nullptr;
@@ -786,9 +855,14 @@ private:
     QPushButton *m_speakerCurrentSpeakerShadowColorButton = nullptr;
     QSpinBox *m_speakerCurrentSpeakerShadowOpacitySpin = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
+    QWidget *m_selectedSpeakerPopup = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QLineEdit *m_selectedSpeakerNameEdit = nullptr;
     QLineEdit *m_selectedSpeakerOrganizationEdit = nullptr;
+    QLineEdit *m_selectedSpeakerLogoPathEdit = nullptr;
+    QLineEdit *m_selectedSpeakerPrimaryColorEdit = nullptr;
+    QLineEdit *m_selectedSpeakerSecondaryColorEdit = nullptr;
+    QLineEdit *m_selectedSpeakerAccentColorEdit = nullptr;
     QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;
     QListWidget *m_speakerPlayheadFaceDetectionsList = nullptr;
     QCheckBox *m_speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
@@ -886,6 +960,9 @@ private:
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QDoubleSpinBox *m_speechFilterCurveStrengthSpin = nullptr;
     QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
+    QComboBox *m_speechFilterFrameTransitionModeCombo = nullptr;
+    QCheckBox *m_speechFilterFrameCrossfadeCheckBox = nullptr;
+    QSpinBox *m_speechFilterFrameCrossfadeFramesSpin = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     QLabel *m_processingJobsSummaryLabel = nullptr;

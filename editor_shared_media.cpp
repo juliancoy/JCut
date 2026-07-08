@@ -604,6 +604,8 @@ QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode) {
         return QStringLiteral("varispeed");
     case PlaybackAudioWarpMode::TimeStretch:
         return QStringLiteral("time_stretch");
+    case PlaybackAudioWarpMode::RubberBand:
+        return QStringLiteral("rubber_band");
     case PlaybackAudioWarpMode::Disabled:
     default:
         return QStringLiteral("disabled");
@@ -618,6 +620,14 @@ PlaybackAudioWarpMode playbackAudioWarpModeFromString(const QString& value) {
     if (normalized == QStringLiteral("time_stretch") || normalized == QStringLiteral("time-stretch")) {
         return PlaybackAudioWarpMode::TimeStretch;
     }
+    if (normalized == QStringLiteral("rubber_band") ||
+        normalized == QStringLiteral("rubber-band") ||
+        normalized == QStringLiteral("rubberband") ||
+        normalized == QStringLiteral("rubber_band_100") ||
+        normalized == QStringLiteral("rubberband_100") ||
+        normalized == QStringLiteral("rubber-band-100")) {
+        return PlaybackAudioWarpMode::RubberBand;
+    }
     return PlaybackAudioWarpMode::Disabled;
 }
 
@@ -627,10 +637,21 @@ QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode) {
         return QStringLiteral("Varispeed");
     case PlaybackAudioWarpMode::TimeStretch:
         return QStringLiteral("Time-Stretch");
+    case PlaybackAudioWarpMode::RubberBand:
+        return QStringLiteral("Rubber Band Always");
     case PlaybackAudioWarpMode::Disabled:
     default:
         return QStringLiteral("Disabled");
     }
+}
+
+bool playbackAudioWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode) {
+    return mode == PlaybackAudioWarpMode::TimeStretch ||
+           mode == PlaybackAudioWarpMode::RubberBand;
+}
+
+bool playbackAudioWarpModeForcesUnityTimeStretch(PlaybackAudioWarpMode mode) {
+    return mode == PlaybackAudioWarpMode::RubberBand;
 }
 
 qreal normalizedPlaybackSpeed(qreal speed) {
@@ -644,10 +665,8 @@ PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, Playb
         return mode;
     }
 
-    if (mode == PlaybackAudioWarpMode::Disabled) {
-        return PlaybackAudioWarpMode::TimeStretch;
-    }
-    if (mode == PlaybackAudioWarpMode::Varispeed) {
+    if (mode == PlaybackAudioWarpMode::Disabled ||
+        mode == PlaybackAudioWarpMode::Varispeed) {
         return PlaybackAudioWarpMode::TimeStretch;
     }
     return mode;
@@ -668,8 +687,11 @@ bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
     if (!hasPlayableAudio) {
         return false;
     }
-    return normalizedPlaybackAudioWarpMode(playbackSpeed, mode) == PlaybackAudioWarpMode::TimeStretch &&
-           qAbs(effectivePlaybackAudioWarpRate(playbackSpeed, mode) - 1.0) >= 0.0001;
+    const PlaybackAudioWarpMode effectiveMode =
+        normalizedPlaybackAudioWarpMode(playbackSpeed, mode);
+    return playbackAudioWarpModeUsesTimeStretch(effectiveMode) &&
+           (playbackAudioWarpModeForcesUnityTimeStretch(effectiveMode) ||
+            qAbs(effectivePlaybackAudioWarpRate(playbackSpeed, mode) - 1.0) >= 0.0001);
 }
 
 bool clipHasVisuals(const TimelineClip& clip) {
@@ -807,6 +829,9 @@ bool correctionPolygonActiveAtTimelinePosition(const TimelineClip& clip,
 }
 
 bool clipVisualPlaybackEnabled(const TimelineClip& clip) {
+    if (clip.clipRole == ClipRole::EffectSynth) {
+        return false;
+    }
     return clipHasVisuals(clip) && clip.videoEnabled;
 }
 

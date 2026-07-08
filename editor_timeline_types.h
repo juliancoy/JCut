@@ -44,6 +44,7 @@ enum class ClipEffectPreset {
     StepRepeat,
     DirectionalTrimTicker,
     SourceTile,
+    Vulkan3DSynth,
 };
 
 enum class ClipTilingPattern {
@@ -104,6 +105,14 @@ struct TimelineClip {
     };
 
     struct TitleKeyframe {
+        enum class MaterialStyle {
+            Solid = 0,
+            Neon = 1,
+            DiagonalStripes = 2,
+            Grid = 3,
+            ImagePattern = 4,
+        };
+
         int64_t frame = 0;
         QString text;
         qreal translationX = 0.0;
@@ -118,6 +127,10 @@ struct TimelineClip {
         bool bold = true;
         bool italic = false;
         QColor color = QColor(QStringLiteral("#ffffff"));
+        QString logoPath;
+        MaterialStyle textMaterialStyle = MaterialStyle::Solid;
+        QString textPatternImagePath;
+        qreal textPatternScale = 1.0;
         bool dropShadowEnabled = true;
         QColor dropShadowColor = QColor(QStringLiteral("#000000"));
         qreal dropShadowOpacity = 0.6;
@@ -127,11 +140,24 @@ struct TimelineClip {
         QColor windowColor = QColor(QStringLiteral("#000000"));
         qreal windowOpacity = 0.35;
         qreal windowPadding = 16.0;
+        qreal windowWidth = 0.0;
         bool windowFrameEnabled = false;
         QColor windowFrameColor = QColor(QStringLiteral("#ffffffff"));
         qreal windowFrameOpacity = 1.0;
         qreal windowFrameWidth = 2.0;
         qreal windowFrameGap = 4.0;
+        MaterialStyle windowFrameMaterialStyle = MaterialStyle::Solid;
+        QString windowFramePatternImagePath;
+        qreal windowFramePatternScale = 1.0;
+        bool vulkan3DEnabled = false;
+        bool vulkan3DExtrudeEnabled = false;
+        qreal vulkan3DExtrudeDepth = 0.0;
+        qreal vulkan3DBevelScale = 0.0;
+        qreal vulkan3DYawDegrees = 0.0;
+        qreal vulkan3DPitchDegrees = 0.0;
+        qreal vulkan3DRollDegrees = 0.0;
+        qreal vulkan3DDepth = 0.0;
+        qreal vulkan3DScale = 1.0;
         bool linearInterpolation = true;
     };
 
@@ -146,6 +172,14 @@ struct TimelineClip {
         qreal backgroundOpacity = 120.0 / 255.0;
         qreal backgroundCornerRadius = 14.0;
         bool showShadow = true;
+        QColor shadowColor = QColor(QStringLiteral("#000000"));
+        qreal shadowOpacity = 0.78;
+        qreal shadowOffsetX = 5.0;
+        qreal shadowOffsetY = 5.0;
+        bool textOutlineEnabled = false;
+        qreal textOutlineWidth = 0.0;
+        QColor textOutlineColor = QColor(QStringLiteral("#000000"));
+        qreal textOutlineOpacity = 0.80;
         bool showSpeakerTitle = false;
         bool highlightCurrentWord = true;
         bool autoScroll = false;
@@ -176,6 +210,11 @@ struct TimelineClip {
             fontPointSize = qMax(kMinReadableFontPointSize, fontPointSize);
             backgroundOpacity = qBound<qreal>(0.0, backgroundOpacity, 1.0);
             backgroundCornerRadius = qBound<qreal>(0.0, backgroundCornerRadius, 128.0);
+            shadowOpacity = qBound<qreal>(0.0, shadowOpacity, 1.0);
+            shadowOffsetX = qBound<qreal>(-128.0, shadowOffsetX, 128.0);
+            shadowOffsetY = qBound<qreal>(-128.0, shadowOffsetY, 128.0);
+            textOutlineWidth = qBound<qreal>(0.0, textOutlineWidth, 24.0);
+            textOutlineOpacity = qBound<qreal>(0.0, textOutlineOpacity, 1.0);
         }
     };
 
@@ -255,6 +294,7 @@ struct TimelineClip {
     int speakerSectionMinimumWords = 10;
     static constexpr qreal kSpeakerFramingSmoothingStrengthMax = 5.0;
     bool transformSkipAwareTiming = true;
+    bool effectSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
     QVector<BoolKeyframe> speakerFramingEnabledKeyframes;
     QVector<TransformKeyframe> speakerFramingKeyframes;

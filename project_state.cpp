@@ -1,5 +1,6 @@
 // project_state.cpp
 #include "editor.h"
+#include "background_fill_effect.h"
 #include "json_io_utils.h"
 #include "speakers_table.h"
 #include "clip_serialization.h"
@@ -917,6 +918,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
     root[QStringLiteral("speechFilterCurveStrength")] = m_speechFilterCurveStrength;
     root[QStringLiteral("speechFilterRangeCrossfade")] = m_speechFilterRangeCrossfade;
+    root[QStringLiteral("speechFilterFrameTransitionMode")] =
+        playbackFrameTransitionModeToString(m_speechFilterFrameTransitionMode);
+    root[QStringLiteral("speechFilterFrameCrossfadeEnabled")] = m_speechFilterFrameCrossfadeEnabled;
+    root[QStringLiteral("speechFilterFrameCrossfadeFrames")] = m_speechFilterFrameCrossfadeFrames;
     root[QStringLiteral("transcriptUnifiedEditColors")] =
         m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()
             ? m_inspectorPane->transcriptUnifiedEditModeCheckBox()->isChecked()

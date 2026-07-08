@@ -1,8 +1,10 @@
 #include "editor.h"
+#include "background_fill_effect.h"
 #include "mask_tab.h"
 #include "speakers_table.h"
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
+#include "editor_effect_presets.h"
 #include "transform_skip_aware_timing.h"
 #include "debug_controls.h"
 #include "speaker_export_harness.h"
@@ -458,6 +460,7 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
     m_preview->setClipCount(m_timeline->clips().size());
     m_preview->setTimelineTracks(m_timeline->tracks());
     m_preview->setTimelineClips(m_timeline->clips());
+    m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(playbackRanges));
     m_preview->setExportRanges(playbackRanges);
     m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
     m_preview->setSelectedClipId(selectedClipId);
@@ -1035,7 +1038,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
-    const BackgroundFillEffect backgroundFillEffect =
+    BackgroundFillEffect backgroundFillEffect =
         backgroundFillEffectFromString(root.value(QStringLiteral("backgroundFillEffect"))
                                            .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect)));
     const qreal backgroundFillOpacity =
@@ -1048,6 +1051,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         qBound(1, root.value(QStringLiteral("backgroundFillEdgePixels")).toInt(1), 512);
     const bool backgroundFillEdgeProgressive =
         root.value(QStringLiteral("backgroundFillEdgeProgressive")).toBool(false);
+    if (backgroundFillEffect == BackgroundFillEffect::EdgeStretch && backgroundFillEdgeProgressive) {
+        backgroundFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
+    }
     const qreal backgroundFillEdgePower =
         qBound<qreal>(0.25, root.value(QStringLiteral("backgroundFillEdgePower")).toDouble(2.0), 8.0);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
@@ -1247,6 +1253,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("speechFilterFadeMode")).toString();
     const bool speechFilterRangeCrossfade =
         root.value(QStringLiteral("speechFilterRangeCrossfade")).toBool(false);
+    const bool speechFilterFrameCrossfadeEnabled =
+        root.value(QStringLiteral("speechFilterFrameCrossfadeEnabled")).toBool(false);
+    const QString speechFilterFrameTransitionModeValue =
+        root.value(QStringLiteral("speechFilterFrameTransitionMode")).toString();
+    const int speechFilterFrameCrossfadeFrames =
+        root.value(QStringLiteral("speechFilterFrameCrossfadeFrames")).toInt(6);
     const bool transcriptUnifiedEditColors =
         root.value(QStringLiteral("transcriptUnifiedEditColors")).toBool(true);
     const bool transcriptShowExcludedLines =
@@ -1292,7 +1304,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     PlaybackClockSource effectivePlaybackClockSource = playbackClockSource;
     if (!root.value(QStringLiteral("playbackClockSourceExplicit")).toBool(false) &&
         playbackClockSource == PlaybackClockSource::Timeline &&
-        playbackAudioWarpMode == PlaybackAudioWarpMode::TimeStretch) {
+        playbackAudioWarpModeUsesTimeStretch(playbackAudioWarpMode)) {
         effectivePlaybackClockSource = PlaybackClockSource::Auto;
     }
     const bool playbackLoopEnabled =
@@ -1445,6 +1457,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     markStartup(QStringLiteral("apply_state.timeline_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_clip_count"), loadedClips.size()}});
+    normalizeSamMaskMatteClips(loadedClips);
 
     if (!startupMarking && !m_restoringHistory && !loadedClips.isEmpty()) {
         QElapsedTimer relocateTimer;
@@ -1600,12 +1613,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     if (m_backgroundFillEdgeProgressiveCheckBox) {
         QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
-        m_backgroundFillEdgeProgressiveCheckBox->setChecked(backgroundFillEdgeProgressive);
+        m_backgroundFillEdgeProgressiveCheckBox->setChecked(
+            backgroundFillEdgeProgressive ||
+            backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch);
     }
     if (m_backgroundFillEdgePowerSpin) {
         QSignalBlocker block(m_backgroundFillEdgePowerSpin);
         m_backgroundFillEdgePowerSpin->setValue(backgroundFillEdgePower);
-        m_backgroundFillEdgePowerSpin->setEnabled(backgroundFillEdgeProgressive);
+        m_backgroundFillEdgePowerSpin->setEnabled(
+            backgroundFillEdgeProgressive ||
+            backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch);
     }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
@@ -1838,7 +1855,19 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_speechFilterFadeMode = AudioEngine::speechFilterFadeModeFromString(
         speechFilterFadeModeValue, legacyFallback);
     m_speechFilterCurveStrength = speechFilterCurveStrength;
-    m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
+    if (speechFilterRangeCrossfade && m_speechFilterEnabled &&
+        m_speechFilterFadeMode != AudioEngine::SpeechFilterFadeMode::JumpCut) {
+        m_speechFilterFadeMode = AudioEngine::SpeechFilterFadeMode::Crossfade;
+    }
+    m_speechFilterRangeCrossfade = false;
+    m_speechFilterFrameTransitionMode = playbackFrameTransitionModeFromString(
+        speechFilterFrameTransitionModeValue,
+        speechFilterFrameCrossfadeEnabled
+            ? PlaybackFrameTransitionMode::Crossfade
+            : PlaybackFrameTransitionMode::Cut);
+    m_speechFilterFrameCrossfadeEnabled =
+        m_speechFilterFrameTransitionMode == PlaybackFrameTransitionMode::Crossfade;
+    m_speechFilterFrameCrossfadeFrames = qBound(0, speechFilterFrameCrossfadeFrames, 240);
     
     if (m_transcriptPrependMsSpin) { QSignalBlocker block(m_transcriptPrependMsSpin); m_transcriptPrependMsSpin->setValue(m_transcriptPrependMs); }
     if (m_transcriptPostpendMsSpin) { QSignalBlocker block(m_transcriptPostpendMsSpin); m_transcriptPostpendMsSpin->setValue(m_transcriptPostpendMs); }
@@ -1862,6 +1891,22 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speechFilterRangeCrossfadeCheckBox) {
         QSignalBlocker block(m_speechFilterRangeCrossfadeCheckBox);
         m_speechFilterRangeCrossfadeCheckBox->setChecked(m_speechFilterRangeCrossfade);
+    }
+    if (m_speechFilterFrameTransitionModeCombo) {
+        QSignalBlocker block(m_speechFilterFrameTransitionModeCombo);
+        const int index = m_speechFilterFrameTransitionModeCombo->findData(
+            playbackFrameTransitionModeToString(m_speechFilterFrameTransitionMode));
+        if (index >= 0) {
+            m_speechFilterFrameTransitionModeCombo->setCurrentIndex(index);
+        }
+    }
+    if (m_speechFilterFrameCrossfadeCheckBox) {
+        QSignalBlocker block(m_speechFilterFrameCrossfadeCheckBox);
+        m_speechFilterFrameCrossfadeCheckBox->setChecked(m_speechFilterFrameCrossfadeEnabled);
+    }
+    if (m_speechFilterFrameCrossfadeFramesSpin) {
+        QSignalBlocker block(m_speechFilterFrameCrossfadeFramesSpin);
+        m_speechFilterFrameCrossfadeFramesSpin->setValue(m_speechFilterFrameCrossfadeFrames);
     }
     refreshSpeechFilterFadeParameterVisibility();
     if (m_transcriptTab) {
@@ -2216,13 +2261,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         startupMarking
             ? m_timeline->exportRanges()
             : effectivePlaybackRanges();
-    if (startupMarking) {
-        setTransformSkipAwareTimelineRanges({});
-    } else {
-        setTransformSkipAwareTimelineRanges(
-            speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
-    }
-    
     if (!startupMarking) {
         markStartup(QStringLiteral("apply_state.preview_bind.begin"));
         markStartup(QStringLiteral("apply_state.audio_bind.begin"));
@@ -2292,10 +2330,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             });
             QTimer::singleShot(0, this, [this, currentFrame, selectedClipId]() {
                 const QVector<ExportRangeSegment> deferredPlaybackRanges = effectivePlaybackRanges();
-                setTransformSkipAwareTimelineRanges(
-                    speechFilterPlaybackEnabled()
-                        ? deferredPlaybackRanges
-                        : QVector<ExportRangeSegment>{});
                 bindTimelineMediaState(selectedClipId, deferredPlaybackRanges, currentFrame, true);
             });
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared_core.h"
+#include "transform_skip_aware_timing.h"
 
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
@@ -40,5 +41,10 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
                                                                 const QVector<TimelineTrack>& tracks,
                                                                 qreal timelineFramePosition,
                                                                 const QVector<RenderSyncMarker>& markers);
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
+                                                                const QVector<TimelineTrack>& tracks,
+                                                                qreal timelineFramePosition,
+                                                                const QVector<RenderSyncMarker>& markers,
+                                                                const PlaybackTimingContext& timing);
 bool trackHasEffectPreset(const TimelineTrack& track);
 TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);

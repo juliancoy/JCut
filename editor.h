@@ -223,6 +223,7 @@ private:
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
     QVector<ExportRangeSegment> applySpeechFilterToExportRanges(const QVector<ExportRangeSegment>& ranges) const;
+    PlaybackTimingContext speechFilterPlaybackTimingContext(const QVector<ExportRangeSegment>& ranges) const;
     QString playbackRangeCacheSignature(bool discrete, int neighborWordRadius = 0) const;
     void invalidatePlaybackRangeCaches();
     void scheduleTranscriptNormalizeRangeRefresh(int delayMs = 0);
@@ -635,11 +636,13 @@ private:
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QSpinBox *m_transcriptOffsetMsSpin = nullptr;
-    QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QComboBox *m_speechFilterFadeModeCombo = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QDoubleSpinBox *m_speechFilterCurveStrengthSpin = nullptr;
     QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
+    QComboBox *m_speechFilterFrameTransitionModeCombo = nullptr;
+    QCheckBox *m_speechFilterFrameCrossfadeCheckBox = nullptr;
+    QSpinBox *m_speechFilterFrameCrossfadeFramesSpin = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     int m_transcriptPrependMs = 150;
@@ -651,6 +654,9 @@ private:
     int m_speechFilterFadeSamples = 300;
     qreal m_speechFilterCurveStrength = 1.0;
     bool m_speechFilterRangeCrossfade = false;
+    PlaybackFrameTransitionMode m_speechFilterFrameTransitionMode = PlaybackFrameTransitionMode::Cut;
+    bool m_speechFilterFrameCrossfadeEnabled = false;
+    int m_speechFilterFrameCrossfadeFrames = 6;
     PlaybackClockSource m_playbackClockSource = PlaybackClockSource::Auto;
     PlaybackAudioWarpMode m_playbackAudioWarpMode = PlaybackAudioWarpMode::Disabled;
     bool m_playbackLoopEnabled = false;

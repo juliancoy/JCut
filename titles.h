@@ -7,6 +7,8 @@
 #include <QRect>
 #include <QString>
 
+using TitleMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle;
+
 // Evaluated title state at a specific frame — the result of interpolating
 // between TitleKeyframes. Used by both the preview renderer and the export pipeline.
 struct EvaluatedTitle {
@@ -19,6 +21,10 @@ struct EvaluatedTitle {
     bool bold = true;
     bool italic = false;
     QColor color = QColor(Qt::white);
+    QString logoPath;
+    TitleMaterialStyle textMaterialStyle = TitleMaterialStyle::Solid;
+    QString textPatternImagePath;
+    qreal textPatternScale = 1.0;
     bool dropShadowEnabled = true;
     QColor dropShadowColor = QColor(Qt::black);
     qreal dropShadowOpacity = 0.6;
@@ -28,11 +34,24 @@ struct EvaluatedTitle {
     QColor windowColor = QColor(Qt::black);
     qreal windowOpacity = 0.35;
     qreal windowPadding = 16.0;
+    qreal windowWidth = 0.0;
     bool windowFrameEnabled = false;
     QColor windowFrameColor = QColor(Qt::white);
     qreal windowFrameOpacity = 1.0;
     qreal windowFrameWidth = 2.0;
     qreal windowFrameGap = 4.0;
+    TitleMaterialStyle windowFrameMaterialStyle = TitleMaterialStyle::Solid;
+    QString windowFramePatternImagePath;
+    qreal windowFramePatternScale = 1.0;
+    bool vulkan3DEnabled = false;
+    bool vulkan3DExtrudeEnabled = false;
+    qreal vulkan3DExtrudeDepth = 0.0;
+    qreal vulkan3DBevelScale = 0.0;
+    qreal vulkan3DYawDegrees = 0.0;
+    qreal vulkan3DPitchDegrees = 0.0;
+    qreal vulkan3DRollDegrees = 0.0;
+    qreal vulkan3DDepth = 0.0;
+    qreal vulkan3DScale = 1.0;
     bool valid = false;  // false if no keyframes exist
 };
 
