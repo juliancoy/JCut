@@ -1,15 +1,10 @@
-#include "audio_engine.h"
 #include "editor_runtime.h"
 #include "editor_document_core_json.h"
-#include "editor_document_render_bridge.h"
-#include "editor_shared_render_sync.h"
 #include "imgui_project_io.h"
 #include "render_contract_json.h"
-#include "render_runtime.h"
 #include "runtime_control_server.h"
 #include "standalone_export_renderer.h"
 #include "standalone_preview_renderer.h"
-#include "vulkan_detector_frame_handoff.h"
 
 #include "external/imgui/imgui.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
@@ -86,7 +81,6 @@ struct ShellState {
     std::string projectRootPath;
     std::string lastSavedSnapshotJson;
     std::string statusMessage;
-    AudioEngine audioEngine;
     bool audioInitialized = false;
     bool audioTimelineConfigured = false;
     bool audioPlaybackActive = false;
@@ -232,17 +226,6 @@ jcut::EditorDocumentCore documentWithResolvedMediaPaths(
         clip.sourcePath = resolvePathForRoot(clip.sourcePath, rootDirectory);
     }
     return document;
-}
-
-template <typename T>
-QVector<T> toQVector(const std::vector<T>& values)
-{
-    QVector<T> result;
-    result.reserve(static_cast<qsizetype>(values.size()));
-    for (const T& value : values) {
-        result.push_back(value);
-    }
-    return result;
 }
 
 std::string readTextFile(const fs::path& path)
@@ -453,103 +436,14 @@ void cancelExportRender(ShellState* shellState)
 
 std::string snapshotJson(const jcut::EditorDocumentCore& snapshot);
 
-void configureAudioTimeline(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
-{
-    jcut::EditorDocumentCore signatureDocument = snapshot;
-    signatureDocument.transport = {};
-    const std::string signature =
-        shellState->projectRootPath + "\n" + snapshotJson(signatureDocument);
-    if (shellState->audioTimelineConfigured &&
-        shellState->audioTimelineSignature == signature) {
-        return;
-    }
-
-    const jcut::EditorDocumentCore renderDocument =
-        documentWithResolvedMediaPaths(snapshot, shellState->projectRootPath);
-    const jcut::render::TimelineRenderData timelineData =
-        jcut::render::buildTimelineRenderData(renderDocument);
-    shellState->audioEngine.setTimelineTracks(toQVector(timelineData.tracks));
-    shellState->audioEngine.setTimelineClips(toQVector(timelineData.clips));
-    shellState->audioEngine.setExportRanges(toQVector(timelineData.exportRanges));
-    shellState->audioEngine.setRenderSyncMarkers(toQVector(timelineData.renderSyncMarkers));
-    shellState->audioTimelineConfigured = true;
-    shellState->audioTimelineSignature = signature;
-}
-
-bool ensureAudioInitialized(ShellState* shellState)
-{
-    if (shellState->audioInitialized) {
-        return true;
-    }
-    shellState->audioInitialized = shellState->audioEngine.initialize();
-    if (!shellState->audioInitialized) {
-        shellState->audioStatusMessage =
-            shellState->audioEngine.audioOutputStatusText().toStdString();
-        if (shellState->audioStatusMessage.empty()) {
-            shellState->audioStatusMessage = "audio output unavailable";
-        }
-    }
-    return shellState->audioInitialized;
-}
-
 void syncAudioEngine(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
 {
-    if (!snapshot.transport.playbackActive) {
-        if (shellState->audioPlaybackActive) {
-            shellState->audioEngine.stop();
-        }
-        shellState->audioPlaybackActive = false;
-        shellState->audioLastFrame = snapshot.transport.currentFrame;
-        return;
-    }
-
-    if (!ensureAudioInitialized(shellState)) {
-        return;
-    }
-
-    configureAudioTimeline(shellState, snapshot);
-    const double speed = snapshot.transport.playbackSpeed == 0.0
+    shellState->audioPlaybackActive = false;
+    shellState->audioLastFrame = snapshot.transport.currentFrame;
+    shellState->audioLastSpeed = snapshot.transport.playbackSpeed == 0.0
         ? 1.0
         : snapshot.transport.playbackSpeed;
-    const PlaybackAudioWarpMode warpMode =
-        std::abs(speed - 1.0) < 0.0001
-            ? PlaybackAudioWarpMode::Disabled
-            : PlaybackAudioWarpMode::Varispeed;
-    shellState->audioEngine.setPlaybackWarpMode(
-        normalizedPlaybackAudioWarpMode(speed, warpMode));
-    shellState->audioEngine.setPlaybackRate(
-        effectivePlaybackAudioWarpRate(speed, warpMode));
-
-    if (!shellState->audioEngine.hasPlayableAudio()) {
-        if (shellState->audioPlaybackActive) {
-            shellState->audioEngine.stop();
-        }
-        shellState->audioPlaybackActive = false;
-        shellState->audioStatusMessage = "no playable audio on timeline";
-        return;
-    }
-
-    const int currentFrame = snapshot.transport.currentFrame;
-    const bool speedChanged = std::abs(speed - shellState->audioLastSpeed) >= 0.0001;
-    const bool frameJumped = shellState->audioLastFrame >= 0 &&
-        std::abs(currentFrame - shellState->audioLastFrame) > 8;
-
-    if (!shellState->audioPlaybackActive || !shellState->audioEngine.playbackStarted()) {
-        if (!shellState->audioEngine.warmPlaybackAudio(currentFrame, 1000)) {
-            std::fprintf(stderr,
-                         "[AUDIO WARN] continuing playback without warmed audio at frame %d\n",
-                         currentFrame);
-        }
-        shellState->audioEngine.start(currentFrame);
-        shellState->audioPlaybackActive = true;
-    } else if (frameJumped || speedChanged) {
-        shellState->audioEngine.seek(currentFrame);
-    }
-
-    shellState->audioLastFrame = currentFrame;
-    shellState->audioLastSpeed = speed;
-    shellState->audioStatusMessage =
-        shellState->audioEngine.audioOutputStatusText().toStdString();
+    shellState->audioStatusMessage = "audio disabled in Qt-free ImGui shell";
 }
 
 template <typename Command>
@@ -718,18 +612,10 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"initialized", shellState->audioInitialized},
             {"timelineConfigured", shellState->audioTimelineConfigured},
             {"playbackActive", shellState->audioPlaybackActive},
-            {"playbackStarted", shellState->audioInitialized
-                ? shellState->audioEngine.playbackStarted()
-                : false},
-            {"hasPlayableAudio", shellState->audioInitialized
-                ? shellState->audioEngine.hasPlayableAudio()
-                : false},
-            {"clockAvailable", shellState->audioInitialized
-                ? shellState->audioEngine.audioClockAvailable()
-                : false},
-            {"outputUnavailable", shellState->audioInitialized
-                ? shellState->audioEngine.audioOutputUnavailableForPlayback()
-                : false},
+            {"playbackStarted", false},
+            {"hasPlayableAudio", false},
+            {"clockAvailable", false},
+            {"outputUnavailable", true},
             {"status", shellState->audioStatusMessage}
         }},
         {"preview", {
@@ -738,13 +624,13 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"message", previewResult.message},
             {"sourcePath", previewResult.sourcePath},
             {"zeroCopyVulkan", {
-                {"ready", previewResult.vulkanFrame.valid},
-                {"presentedFrames", previewResult.vulkanFrame.valid ? previewCompletedGeneration : 0},
+                {"ready", false},
+                {"presentedFrames", 0},
                 {"failures", 0},
-                {"failureReason", ""},
-                {"lastFrameValid", previewResult.vulkanFrame.valid},
-                {"lastFrameWidth", previewResult.vulkanFrame.size.width},
-                {"lastFrameHeight", previewResult.vulkanFrame.size.height}
+                {"failureReason", "disabled in Qt-free ImGui shell"},
+                {"lastFrameValid", false},
+                {"lastFrameWidth", 0},
+                {"lastFrameHeight", 0}
             }},
             {"image", {
                 {"valid", !previewResult.image.empty()},
@@ -1051,8 +937,7 @@ void runPreviewWorker(ShellState* shellState)
                         ? document.exportRequest.outputSize
                         : jcut::core::SizeI{1080, 1920},
                     document.transport.currentFrame,
-                    rootDirectory,
-                    true});
+                    rootDirectory});
 
         {
             std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -1462,10 +1347,15 @@ struct VulkanShell {
     VkQueue queue = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkSampler previewSampler = VK_NULL_HANDLE;
+    VkCommandPool uploadCommandPool = VK_NULL_HANDLE;
+    VkImage previewImage = VK_NULL_HANDLE;
+    VkDeviceMemory previewImageMemory = VK_NULL_HANDLE;
+    VkImageView previewImageView = VK_NULL_HANDLE;
+    jcut::core::SizeI previewImageSize{};
+    VkImageLayout previewImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ImGui_ImplVulkanH_Window windowData{};
     uint32_t minImageCount = 2;
     bool swapchainRebuild = false;
-    jcut::vulkan_detector::VulkanDetectorFrameHandoff previewHandoff;
     VkDescriptorSet previewTextureSet = VK_NULL_HANDLE;
     VkImageView boundPreviewView = VK_NULL_HANDLE;
     VkImageLayout boundPreviewLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1663,6 +1553,363 @@ struct VulkanShell {
         return true;
     }
 
+    bool createUploadCommandPool(std::string* error)
+    {
+        VkCommandPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        info.queueFamilyIndex = queueFamily;
+        if (vkCreateCommandPool(device, &info, nullptr, &uploadCommandPool) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan preview upload command pool.";
+            return false;
+        }
+        return true;
+    }
+
+    uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const
+    {
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if ((typeBits & (1u << i)) &&
+                (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        return UINT32_MAX;
+    }
+
+    bool createBuffer(VkDeviceSize size,
+                      VkBufferUsageFlags usage,
+                      VkMemoryPropertyFlags properties,
+                      VkBuffer* buffer,
+                      VkDeviceMemory* memory,
+                      std::string* error)
+    {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, buffer) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan preview upload buffer.";
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device, *buffer, &requirements);
+        const uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, properties);
+        if (memoryType == UINT32_MAX) {
+            if (error) *error = "No suitable memory type for Vulkan preview upload buffer.";
+            vkDestroyBuffer(device, *buffer, nullptr);
+            *buffer = VK_NULL_HANDLE;
+            return false;
+        }
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(device, &allocInfo, nullptr, memory) != VK_SUCCESS) {
+            if (error) *error = "Failed to allocate Vulkan preview upload buffer memory.";
+            vkDestroyBuffer(device, *buffer, nullptr);
+            *buffer = VK_NULL_HANDLE;
+            return false;
+        }
+        vkBindBufferMemory(device, *buffer, *memory, 0);
+        return true;
+    }
+
+    bool createPreviewImage(const jcut::core::SizeI& size, std::string* error)
+    {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent = {
+            static_cast<uint32_t>(size.width),
+            static_cast<uint32_t>(size.height),
+            1
+        };
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &imageInfo, nullptr, &previewImage) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan preview image.";
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device, previewImage, &requirements);
+        const uint32_t memoryType =
+            findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX) {
+            if (error) *error = "No suitable memory type for Vulkan preview image.";
+            releasePreviewTextureResources();
+            return false;
+        }
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &previewImageMemory) != VK_SUCCESS) {
+            if (error) *error = "Failed to allocate Vulkan preview image memory.";
+            releasePreviewTextureResources();
+            return false;
+        }
+        vkBindImageMemory(device, previewImage, previewImageMemory, 0);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = previewImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(device, &viewInfo, nullptr, &previewImageView) != VK_SUCCESS) {
+            if (error) *error = "Failed to create Vulkan preview image view.";
+            releasePreviewTextureResources();
+            return false;
+        }
+
+        previewImageSize = size;
+        previewImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        return true;
+    }
+
+    VkCommandBuffer beginUploadCommands(std::string* error)
+    {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = uploadCommandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+            if (error) *error = "Failed to allocate Vulkan preview upload command buffer.";
+            return VK_NULL_HANDLE;
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            if (error) *error = "Failed to begin Vulkan preview upload command buffer.";
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &commandBuffer);
+            return VK_NULL_HANDLE;
+        }
+        return commandBuffer;
+    }
+
+    bool endUploadCommands(VkCommandBuffer commandBuffer, std::string* error)
+    {
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            if (error) *error = "Failed to finish Vulkan preview upload command buffer.";
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &commandBuffer);
+            return false;
+        }
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        if (vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vkQueueWaitIdle(queue) != VK_SUCCESS) {
+            if (error) *error = "Failed to submit Vulkan preview upload commands.";
+            vkFreeCommandBuffers(device, uploadCommandPool, 1, &commandBuffer);
+            return false;
+        }
+        vkFreeCommandBuffers(device, uploadCommandPool, 1, &commandBuffer);
+        return true;
+    }
+
+    void transitionPreviewImage(VkCommandBuffer commandBuffer,
+                                VkImageLayout oldLayout,
+                                VkImageLayout newLayout)
+    {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = previewImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            srcStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+
+        vkCmdPipelineBarrier(commandBuffer,
+                             srcStage,
+                             dstStage,
+                             0,
+                             0,
+                             nullptr,
+                             0,
+                             nullptr,
+                             1,
+                             &barrier);
+    }
+
+    void releasePreviewTextureResources()
+    {
+        if (device == VK_NULL_HANDLE) {
+            return;
+        }
+        if (previewTextureSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+            previewTextureSet = VK_NULL_HANDLE;
+        }
+        if (previewImageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, previewImageView, nullptr);
+            previewImageView = VK_NULL_HANDLE;
+        }
+        if (previewImage != VK_NULL_HANDLE) {
+            vkDestroyImage(device, previewImage, nullptr);
+            previewImage = VK_NULL_HANDLE;
+        }
+        if (previewImageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, previewImageMemory, nullptr);
+            previewImageMemory = VK_NULL_HANDLE;
+        }
+        previewImageSize = {};
+        previewImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        boundPreviewView = VK_NULL_HANDLE;
+        boundPreviewLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    bool uploadPreviewImage(const jcut::core::ImageBuffer& image,
+                            ImTextureID* textureOut,
+                            std::string* error)
+    {
+        if (image.empty() || image.format != jcut::core::PixelFormat::Rgba8) {
+            if (error) *error = "Invalid CPU preview image.";
+            return false;
+        }
+        const VkDeviceSize byteCount =
+            static_cast<VkDeviceSize>(image.size.width) *
+            static_cast<VkDeviceSize>(image.size.height) * 4;
+        std::vector<std::uint8_t> packed;
+        const std::uint8_t* uploadBytes = image.bytes.data();
+        if (image.strideBytes != image.size.width * 4) {
+            packed.resize(static_cast<std::size_t>(byteCount));
+            for (int y = 0; y < image.size.height; ++y) {
+                std::memcpy(packed.data() + static_cast<std::size_t>(y * image.size.width * 4),
+                            image.bytes.data() + static_cast<std::size_t>(y * image.strideBytes),
+                            static_cast<std::size_t>(image.size.width * 4));
+            }
+            uploadBytes = packed.data();
+        }
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        if (!createBuffer(byteCount,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &stagingBuffer,
+                          &stagingMemory,
+                          error)) {
+            return false;
+        }
+
+        void* mapped = nullptr;
+        if (vkMapMemory(device, stagingMemory, 0, byteCount, 0, &mapped) != VK_SUCCESS || !mapped) {
+            if (error) *error = "Failed to map Vulkan preview upload memory.";
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            vkFreeMemory(device, stagingMemory, nullptr);
+            return false;
+        }
+        std::memcpy(mapped, uploadBytes, static_cast<std::size_t>(byteCount));
+        vkUnmapMemory(device, stagingMemory);
+
+        if (previewImage == VK_NULL_HANDLE ||
+            previewImageSize.width != image.size.width ||
+            previewImageSize.height != image.size.height) {
+            vkDeviceWaitIdle(device);
+            releasePreviewTextureResources();
+            if (!createPreviewImage(image.size, error)) {
+                vkDestroyBuffer(device, stagingBuffer, nullptr);
+                vkFreeMemory(device, stagingMemory, nullptr);
+                return false;
+            }
+        }
+
+        VkCommandBuffer commandBuffer = beginUploadCommands(error);
+        if (commandBuffer == VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            vkFreeMemory(device, stagingMemory, nullptr);
+            return false;
+        }
+        transitionPreviewImage(commandBuffer, previewImageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.mipLevel = 0;
+        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageExtent = {
+            static_cast<uint32_t>(image.size.width),
+            static_cast<uint32_t>(image.size.height),
+            1
+        };
+        vkCmdCopyBufferToImage(commandBuffer,
+                               stagingBuffer,
+                               previewImage,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1,
+                               &copyRegion);
+        transitionPreviewImage(commandBuffer,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const bool submitted = endUploadCommands(commandBuffer, error);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        if (!submitted) {
+            return false;
+        }
+        previewImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        if (previewTextureSet == VK_NULL_HANDLE ||
+            boundPreviewView != previewImageView ||
+            boundPreviewLayout != previewImageLayout) {
+            if (previewTextureSet != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+            }
+            previewTextureSet =
+                ImGui_ImplVulkan_AddTexture(previewSampler, previewImageView, previewImageLayout);
+            boundPreviewView = previewImageView;
+            boundPreviewLayout = previewImageLayout;
+        }
+        if (textureOut) {
+            *textureOut = reinterpret_cast<ImTextureID>(previewTextureSet);
+        }
+        return previewTextureSet != VK_NULL_HANDLE;
+    }
+
     bool setupSwapchain(int width, int height, std::string* error)
     {
         windowData.Surface = surface;
@@ -1717,7 +1964,8 @@ struct VulkanShell {
         if (!selectPhysicalDevice(error) ||
             !createDevice(error) ||
             !createDescriptorPool(error) ||
-            !createPreviewSampler(error)) {
+            !createPreviewSampler(error) ||
+            !createUploadCommandPool(error)) {
             return false;
         }
         if (!platform) {
@@ -1745,44 +1993,7 @@ struct VulkanShell {
             if (error) *error = "Failed to initialize ImGui Vulkan backend.";
             return false;
         }
-        std::string handoffError;
-        if (!previewHandoff.initialize({physicalDevice, device, queue, queueFamily}, &handoffError)) {
-            if (error) *error = handoffError;
-            return false;
-        }
         return true;
-    }
-
-    bool bindPreviewFrame(const render_detail::OffscreenVulkanFrame& frame, ImTextureID* textureOut)
-    {
-        if (!frame.valid) {
-            return false;
-        }
-        std::string error;
-        if (!previewHandoff.importOffscreenFrame(frame, &error)) {
-            std::fprintf(stderr, "Vulkan preview import failed: %s\n", error.c_str());
-            return false;
-        }
-        const jcut::vulkan_detector::VulkanExternalImage external = previewHandoff.externalImage();
-        if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
-            return false;
-        }
-        if (previewTextureSet == VK_NULL_HANDLE ||
-            boundPreviewView != external.imageView ||
-            boundPreviewLayout != external.imageLayout) {
-            if (previewTextureSet != VK_NULL_HANDLE) {
-                ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
-                previewTextureSet = VK_NULL_HANDLE;
-            }
-            previewTextureSet =
-                ImGui_ImplVulkan_AddTexture(previewSampler, external.imageView, external.imageLayout);
-            boundPreviewView = external.imageView;
-            boundPreviewLayout = external.imageLayout;
-        }
-        if (textureOut) {
-            *textureOut = reinterpret_cast<ImTextureID>(previewTextureSet);
-        }
-        return previewTextureSet != VK_NULL_HANDLE;
     }
 
     void rebuildSwapchainIfNeeded()
@@ -1894,11 +2105,7 @@ struct VulkanShell {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
         }
-        if (previewTextureSet != VK_NULL_HANDLE) {
-            ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
-            previewTextureSet = VK_NULL_HANDLE;
-        }
-        previewHandoff.release();
+        releasePreviewTextureResources();
         ImGui_ImplVulkan_Shutdown();
         if (device != VK_NULL_HANDLE && windowData.Surface != VK_NULL_HANDLE) {
             ImGui_ImplVulkanH_DestroyWindow(instance, device, &windowData, nullptr);
@@ -1906,6 +2113,10 @@ struct VulkanShell {
         if (previewSampler != VK_NULL_HANDLE) {
             vkDestroySampler(device, previewSampler, nullptr);
             previewSampler = VK_NULL_HANDLE;
+        }
+        if (uploadCommandPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, uploadCommandPool, nullptr);
+            uploadCommandPool = VK_NULL_HANDLE;
         }
         if (descriptorPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -1940,10 +2151,13 @@ void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
         completedGeneration = shellState->previewCompletedGeneration;
     }
 
-    if (vulkanShell && previewResult.vulkanFrame.valid) {
+    if (vulkanShell && !previewResult.image.empty()) {
         ImTextureID texture = 0;
-        if (vulkanShell->bindPreviewFrame(previewResult.vulkanFrame, &texture)) {
+        std::string error;
+        if (vulkanShell->uploadPreviewImage(previewResult.image, &texture, &error)) {
             shellState->previewTextureId = texture;
+        } else if (!error.empty()) {
+            std::fprintf(stderr, "Vulkan CPU preview upload failed: %s\n", error.c_str());
         }
     }
 
@@ -3360,8 +3574,6 @@ int main(int argc, char** argv)
     }
 
     vulkanShell.shutdown();
-    shellState.audioEngine.stop();
-    shellState.audioEngine.shutdown();
     ImGui::DestroyContext();
     {
         std::lock_guard<std::mutex> lock(shellState.previewMutex);

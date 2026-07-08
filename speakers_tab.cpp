@@ -2354,14 +2354,15 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         rotationItem->setData(SpeakerSectionRotationRole, sectionRotation);
         wordsItem->setFlags(wordsItem->flags() & ~Qt::ItemIsEditable);
         snippetItem->setFlags(snippetItem->flags() & ~Qt::ItemIsEditable);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionAvatarColumn, avatarItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionIndexColumn, indexItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionSpeakerColumn, speakerItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRangeColumn, rangeItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTrackColumn, trackItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionRotationColumn, rotationItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionWordsColumn, wordsItem);
-        m_widgets.speakerSectionsTable->setItem(visualRow, SpeakerSectionTranscriptColumn, snippetItem);
+        const int row = visualRow;
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionAvatarColumn, avatarItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionIndexColumn, indexItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionSpeakerColumn, speakerItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionRangeColumn, rangeItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTrackColumn, trackItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionRotationColumn, rotationItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionWordsColumn, wordsItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTranscriptColumn, snippetItem);
         ++visualRow;
 
         if (!expanded) {

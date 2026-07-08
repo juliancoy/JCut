@@ -2708,7 +2708,7 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     auto *speakerDebugPage = new QWidget(speakerWorkTabs);
     auto *speakerDebugLayout = createTabLayout(speakerDebugPage);
-    speakerDebugPage->setObjectName(QStringLiteral("speakers.section.debug"));
+    speakerDebugPage->setObjectName(QStringLiteral("speakers_debug_section"));
     speakerDebugLayout->addWidget(debugTitle);
     speakerDebugLayout->addWidget(m_speakerDebugCaptureCheckBox);
     speakerDebugLayout->addLayout(debugActionsRow);

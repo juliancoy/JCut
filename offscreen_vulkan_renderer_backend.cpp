@@ -3775,7 +3775,11 @@ public:
       const QVector<TimelineClip> &orderedClips) {
     QVector<TranscriptTextInput> inputs;
     for (const TimelineClip &clip : orderedClips) {
-      const QString transcriptPath = activeTranscriptPathForClip(clip);
+      const QString transcriptPath =
+          activeTranscriptPathForClipFile(clip.filePath);
+      if (transcriptPath.trimmed().isEmpty()) {
+        continue;
+      }
       QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
       if (sections.isEmpty()) {
         sections = loadTranscriptSections(transcriptPath);
@@ -3853,7 +3857,8 @@ public:
           (!clip.hasAudio && clip.mediaType != ClipMediaType::Audio)) {
         continue;
       }
-      const QString transcriptPath = activeTranscriptPathForClip(clip);
+      const QString transcriptPath =
+          activeTranscriptPathForClipFile(clip.filePath);
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }

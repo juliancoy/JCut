@@ -215,6 +215,9 @@ void SpeakersTab::wire()
                 &QTableWidget::itemChanged,
                 this,
                 [this](QTableWidgetItem* item) {
+                    if (!item || item->column() != SpeakerSectionRotationColumn) {
+                        return;
+                    }
                     int row = -1;
                     int column = -1;
                     if (!editor::findTableCellForItem(m_widgets.speakerSectionsTable, item, &row, &column) ||
@@ -238,7 +241,7 @@ void SpeakersTab::wire()
                         return;
                     }
                     const qreal boundedRotation = qBound<qreal>(-180.0, rotation, 180.0);
-                    if (!saveSpeakerSectionRotation(row, boundedRotation)) {
+                    if (!saveSpeakerSectionRotation(item->row(), boundedRotation)) {
                         QSignalBlocker blocker(m_widgets.speakerSectionsTable);
                         const qreal previous =
                             qBound<qreal>(-180.0,

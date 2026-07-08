@@ -1,6 +1,4 @@
 #include "standalone_preview_renderer.h"
-#include "editor_document_render_bridge.h"
-#include "render_runtime.h"
 #include "standalone_timeline_renderer.h"
 
 #include <filesystem>
@@ -48,26 +46,6 @@ PreviewRenderResult renderPreviewFrame(const PreviewRenderRequest& request)
         : renderDocument.exportRequest.outputSize;
 
     if (renderRequest.outputSize.valid()) {
-        const render::TimelineRenderData timelineData =
-            render::buildTimelineRenderData(renderDocument);
-        const render::PreviewFrameResultCore qtResult =
-            render::renderPreviewFrameCore(
-                renderRequest,
-                timelineData,
-                static_cast<std::int64_t>(request.timelineFrame),
-                false,
-                !request.vulkanFrameOnly);
-        if (qtResult.success && (!qtResult.image.empty() || qtResult.vulkanFrame.valid)) {
-            PreviewRenderResult result;
-            result.success = true;
-            result.message = qtResult.effectiveRenderBackend.empty()
-                ? std::string("preview frame rendered")
-                : std::string("preview frame rendered with ") + qtResult.effectiveRenderBackend;
-            result.image = qtResult.image;
-            result.vulkanFrame = qtResult.vulkanFrame;
-            return result;
-        }
-
         const TimelineRenderResult fallbackResult = renderTimelineFrame({
             renderDocument,
             renderRequest.outputSize,
@@ -75,10 +53,7 @@ PreviewRenderResult renderPreviewFrame(const PreviewRenderRequest& request)
             {}});
         PreviewRenderResult result;
         result.success = fallbackResult.success;
-        result.message = qtResult.message.empty()
-            ? fallbackResult.message
-            : std::string("Qt preview failed: ") + qtResult.message +
-                  "; fallback: " + fallbackResult.message;
+        result.message = fallbackResult.message;
         result.image = fallbackResult.image;
         result.sourcePath = fallbackResult.sourcePath;
         return result;

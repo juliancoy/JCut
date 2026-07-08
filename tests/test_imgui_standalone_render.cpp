@@ -1,7 +1,5 @@
 #include <QtTest/QtTest>
 
-#include "../editor_document_render_bridge.h"
-#include "../editor_shared_render_sync.h"
 #include "../standalone_preview_renderer.h"
 
 #include <QTemporaryDir>
@@ -67,22 +65,36 @@ void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
 
 void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
 {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    const QString imagePath = tempDir.filePath(QStringLiteral("legacy.ppm"));
+    {
+        std::ofstream output(imagePath.toStdString(), std::ios::binary);
+        QVERIFY(output.is_open());
+        output << "P6\n2 2\n255\n";
+        const unsigned char pixels[] = {
+            240, 32, 32,   240, 32, 32,
+            240, 32, 32,   240, 32, 32
+        };
+        output.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+        QVERIFY(output.good());
+    }
+
     jcut::EditorDocumentCore document;
     document.tracks.push_back({1, "Video", true});
-    document.clips.push_back({1, 1, "clip", 0, 30, true, "/tmp/example.mp4"});
+    document.clips.push_back({1, 1, "clip", 0, 30, true, imagePath.toStdString()});
+    document.exportRequest.outputSize = {160, 120};
 
-    const jcut::render::TimelineRenderData timelineData =
-        jcut::render::buildTimelineRenderData(document);
+    const jcut::standalone_render::PreviewRenderResult result =
+        jcut::standalone_render::renderPreviewFrame({
+            document,
+            document.exportRequest.outputSize,
+            12
+        });
 
-    QCOMPARE(timelineData.clips.size(), 1);
-    QCOMPARE(timelineData.clips.front().mediaType, ClipMediaType::Video);
-    QVERIFY(timelineData.clips.front().videoEnabled);
-    QVERIFY(timelineData.clips.front().sourceDurationFrames > 0);
-
-    const RenderFrameClock clock = renderFrameClockForTimelinePosition(12.0);
-    const ClipFrameMapping mapping =
-        clipFrameMappingForClock(timelineData.clips.front(), clock, {});
-    QVERIFY(mapping.sourceFrame > 0);
+    QVERIFY2(result.success, result.message.c_str());
+    QVERIFY(!result.image.empty());
 }
 
 QTEST_MAIN(TestImGuiStandaloneRender)

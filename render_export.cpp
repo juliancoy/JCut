@@ -1088,7 +1088,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             QJsonObject frameExportFaceTransformDiagnostics;
             const bool renderedOk =
                 activeRenderer->renderFrameToOutput(request,
-                                                    visualTimelineFramePosition,
+                                                    timelineFramePosition,
                                                     decoders,
                                                     asyncDecoder.get(),
                                                     &asyncFrameCache,

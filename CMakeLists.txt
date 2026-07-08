@@ -643,6 +643,11 @@ if(TARGET jcut_vulkan_shaders)
 endif()
 
 add_library(jcut_imgui_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_project_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_contract_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_control_server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_export_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_preview_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_timeline_renderer.cpp
@@ -659,7 +664,6 @@ target_include_directories(jcut_imgui_runtime
 )
 target_link_libraries(jcut_imgui_runtime
     PUBLIC
-        jcut_editor_runtime
         PkgConfig::FFMPEG
         Threads::Threads
 )
