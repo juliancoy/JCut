@@ -458,13 +458,13 @@ SeedTrackMatchDialogResult reviewSeedTrackMatches(QWidget* parent,
     QHash<int, bool> selectableByTrackId;
     auto isSelectable = [&](const jcut::facedetections_assignment::SeedTrackMatch& match) {
         return match.trackId == seedTrackId ||
-               match.decision == QLatin1StringView("auto_match") ||
-               match.decision == QLatin1StringView("review");
+               match.decision == QLatin1String("auto_match") ||
+               match.decision == QLatin1String("review");
     };
     for (const auto& match : matches) {
         const bool selectable = isSelectable(match);
         selectableByTrackId.insert(match.trackId, selectable);
-        if (match.trackId == seedTrackId || match.decision == QLatin1StringView("auto_match")) {
+        if (match.trackId == seedTrackId || match.decision == QLatin1String("auto_match")) {
             selectedTrackIds.insert(match.trackId);
         }
     }
@@ -563,7 +563,7 @@ SeedTrackMatchDialogResult reviewSeedTrackMatches(QWidget* parent,
     QObject::connect(autoOnlyButton, &QPushButton::clicked, &dialog, [&]() {
         selectedTrackIds.clear();
         for (const auto& match : matches) {
-            if (match.trackId == seedTrackId || match.decision == QLatin1StringView("auto_match")) {
+            if (match.trackId == seedTrackId || match.decision == QLatin1String("auto_match")) {
                 selectedTrackIds.insert(match.trackId);
             }
         }
@@ -1286,9 +1286,9 @@ bool SpeakersTab::findMatchingTracksFromSeedTrack(int seedTrackId)
     QVector<jcut::facedetections_assignment::SeedTrackMatch> candidateMatches;
     candidateMatches.reserve(matchResult.matches.size());
     for (const auto& match : matchResult.matches) {
-        if (match.decision == QLatin1StringView("seed") ||
-            match.decision == QLatin1StringView("auto_match") ||
-            match.decision == QLatin1StringView("review")) {
+        if (match.decision == QLatin1String("seed") ||
+            match.decision == QLatin1String("auto_match") ||
+            match.decision == QLatin1String("review")) {
             candidateMatches.push_back(match);
         }
     }

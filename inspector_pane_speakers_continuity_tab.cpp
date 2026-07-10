@@ -295,6 +295,19 @@ QWidget *InspectorPane::buildSpeakersContinuityTab(QWidget *parent)
     m_speakerApplyFramingToClipCheckBox = new QCheckBox(QStringLiteral("Apply Face Stabilize To Selected Clip"), page);
     m_speakerFramingEnabledKeyframeTable = new QTableWidget(page);
     m_speakerClipFramingStatusLabel = new QLabel(QStringLiteral("Face Stabilize: OFF | 0 keys"), page);
+    m_speakerFramingZoomEnabledCheckBox->setObjectName(QStringLiteral("speakers.face_stabilize.target_box_enabled"));
+    m_speakerFramingTargetXSpin->setObjectName(QStringLiteral("speakers.face_stabilize.target_x"));
+    m_speakerFramingTargetYSpin->setObjectName(QStringLiteral("speakers.face_stabilize.target_y"));
+    m_speakerFramingTargetBoxSpin->setObjectName(QStringLiteral("speakers.face_stabilize.target_box"));
+    m_speakerSectionRotationSpin->setObjectName(QStringLiteral("speakers.face_stabilize.section_rotation"));
+    m_speakerFramingCenterSmoothingFramesSpin->setObjectName(QStringLiteral("speakers.face_stabilize.center_smoothing_frames"));
+    m_speakerFramingZoomSmoothingFramesSpin->setObjectName(QStringLiteral("speakers.face_stabilize.zoom_jitter_smoothing_frames"));
+    m_speakerFramingSmoothingModeCombo->setObjectName(QStringLiteral("speakers.face_stabilize.smoothing_mode"));
+    m_speakerFramingCenterSmoothingStrengthSpin->setObjectName(QStringLiteral("speakers.face_stabilize.center_smoothing_strength"));
+    m_speakerFramingZoomSmoothingStrengthSpin->setObjectName(QStringLiteral("speakers.face_stabilize.zoom_jitter_smoothing_strength"));
+    m_speakerFramingGapHoldFramesSpin->setObjectName(QStringLiteral("speakers.face_stabilize.gap_hold_frames"));
+    m_speakerApplyFramingToClipCheckBox->setObjectName(QStringLiteral("speakers.face_stabilize.apply_to_clip"));
+    m_speakerClipFramingStatusLabel->setObjectName(QStringLiteral("speakers.face_stabilize.status"));
     for (QDoubleSpinBox *spinBox :
          {m_speakerFramingTargetXSpin, m_speakerFramingTargetYSpin, m_speakerFramingTargetBoxSpin}) {
         spinBox->setDecimals(3);
@@ -326,7 +339,7 @@ QWidget *InspectorPane::buildSpeakersContinuityTab(QWidget *parent)
     m_speakerFramingCenterSmoothingFramesSpin->setToolTip(
         QStringLiteral("Average the active face center over this many frames centered on the current frame."));
     m_speakerFramingZoomSmoothingFramesSpin->setToolTip(
-        QStringLiteral("Average the active face box size over this many frames centered on the current frame."));
+        QStringLiteral("Stabilize zoom by smoothing small FaceDetections box-size changes over this many frames. Increase this when tiny face-box resizes cause extreme zoom pumping."));
     m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Robust"), 0);
     m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Responsive"), 1);
     m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Locked Down"), 2);
@@ -343,7 +356,7 @@ QWidget *InspectorPane::buildSpeakersContinuityTab(QWidget *parent)
     m_speakerFramingCenterSmoothingStrengthSpin->setToolTip(
         QStringLiteral("Pan/center smoothing amount only. 0.0 is raw, 1.0 is normal robust smoothing, higher values approach the stable path without overshooting."));
     m_speakerFramingZoomSmoothingStrengthSpin->setToolTip(
-        QStringLiteral("Zoom/box smoothing amount only. 0.0 is raw, 1.0 is normal robust smoothing, higher values approach the stable box size without overshooting."));
+        QStringLiteral("Zoom jitter damping amount. 0.0 is raw, 1.0 is normal robust smoothing, higher values hold closer to the stable face-box size without overshooting."));
     m_speakerFramingGapHoldFramesSpin->setToolTip(
         QStringLiteral("Keep using a nearby assigned-track sample across missing detections up to this many frames."));
     m_speakerFramingEnabledKeyframeTable->setObjectName(QStringLiteral("speakers.face_stabilize_keyframes"));
@@ -420,17 +433,17 @@ QWidget *InspectorPane::buildSpeakersContinuityTab(QWidget *parent)
     framingForm->addRow(QStringLiteral("Target Box"), m_speakerFramingTargetBoxSpin);
     framingForm->addRow(QStringLiteral("Section Rotation"), m_speakerSectionRotationSpin);
     framingForm->addRow(QStringLiteral("Center Smoothing"), m_speakerFramingCenterSmoothingFramesSpin);
-    framingForm->addRow(QStringLiteral("Zoom Smoothing"), m_speakerFramingZoomSmoothingFramesSpin);
+    framingForm->addRow(QStringLiteral("Zoom Jitter Smoothing"), m_speakerFramingZoomSmoothingFramesSpin);
     framingForm->addRow(QStringLiteral("Smoothing Mode"), m_speakerFramingSmoothingModeCombo);
     framingForm->addRow(QStringLiteral("Pan Strength"), m_speakerFramingCenterSmoothingStrengthSpin);
-    framingForm->addRow(QStringLiteral("Zoom Strength"), m_speakerFramingZoomSmoothingStrengthSpin);
+    framingForm->addRow(QStringLiteral("Zoom Jitter Strength"), m_speakerFramingZoomSmoothingStrengthSpin);
     framingForm->addRow(QStringLiteral("Gap Hold"), m_speakerFramingGapHoldFramesSpin);
 
     auto framingSection = createSectionFrame(page, QStringLiteral("speakers_framing_section"));
     auto *framingTitle = new QLabel(QStringLiteral("Framing"), page);
     styleSectionTitle(framingTitle);
     auto *framingHelp = new QLabel(
-        QStringLiteral("Capture speaker references, bind clip framing, and tune face-stabilize targets without leaving the page."),
+        QStringLiteral("Capture speaker references, bind clip framing, and tune face-stabilize targets. Use Zoom Jitter Smoothing when small face-box size changes cause large zoom jumps."),
         page);
     styleSectionHelp(framingHelp);
     framingSection.second->addWidget(framingTitle);

@@ -45,16 +45,16 @@ void TimelineContainer::setupLayout()
     m_topLeftPlaceholder = new QWidget(this);
     m_topLeftPlaceholder->setObjectName(QStringLiteral("timeline.placeholder"));
     m_topLeftPlaceholder->setFixedWidth(TrackSidebar::kTrackColumnWidth);
-    m_topLeftPlaceholder->setFixedHeight(44);
+    m_topLeftPlaceholder->setFixedHeight(42);
     m_topLeftPlaceholder->setStyleSheet(QStringLiteral(
-        "QWidget { background: #14181e; border-bottom: 1px solid #2a3542; border-right: 1px solid #2a3542; }"));
+        "QWidget { background: #0f151c; border-bottom: 1px solid #2a3542; border-right: 1px solid #2a3542; }"));
 
     auto *placeholderLayout = new QHBoxLayout(m_topLeftPlaceholder);
     placeholderLayout->setContentsMargins(8, 4, 8, 4);
 
     auto *placeholderLabel = new QLabel(QStringLiteral("Tracks"), m_topLeftPlaceholder);
     placeholderLabel->setStyleSheet(QStringLiteral(
-        "color: #7f8a99; font-weight: bold; font-size: 11px;"));
+        "color: #9aacbf; font-weight: 700; font-size: 11px;"));
     placeholderLayout->addWidget(placeholderLabel);
     placeholderLayout->addStretch();
 
@@ -63,9 +63,9 @@ void TimelineContainer::setupLayout()
     // === TOP RIGHT: Transport controls ===
     m_transportWidget = new QWidget(this);
     m_transportWidget->setObjectName(QStringLiteral("timeline.transport"));
-    m_transportWidget->setFixedHeight(44);
+    m_transportWidget->setFixedHeight(42);
     m_transportWidget->setStyleSheet(QStringLiteral(
-        "QWidget { background: #14181e; border-bottom: 1px solid #2a3542; }"));
+        "QWidget { background: #0f151c; border-bottom: 1px solid #2a3542; }"));
 
     auto *transportLayout = new QHBoxLayout(m_transportWidget);
     transportLayout->setContentsMargins(8, 4, 8, 4);

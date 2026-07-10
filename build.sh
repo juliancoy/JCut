@@ -384,7 +384,14 @@ ensure_qt_private_headers() {
         return 0
     fi
 
-    local required_header="/usr/include/x86_64-linux-gnu/qt6/QtGui/6.4.2/QtGui/private/qrhi_p.h"
+    local qt_version="6.4.2"
+    local qt_headers="/usr/include/x86_64-linux-gnu/qt6"
+    if command -v qmake6 >/dev/null 2>&1; then
+        qt_version="$(qmake6 -query QT_VERSION)"
+        qt_headers="$(qmake6 -query QT_INSTALL_HEADERS)"
+    fi
+
+    local required_header="${qt_headers}/QtGui/${qt_version}/QtGui/private/qrhi_p.h"
     local local_required_header="${QT_PRIVATE_DEV_DIR}${required_header}"
     if [[ -f "${required_header}" || -f "${local_required_header}" ]]; then
         return 0

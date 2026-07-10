@@ -3460,12 +3460,10 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString&
                                                                   qreal boxSizeNorm)
 {
     const QString trimmedClipId = clipId.trimmed();
+    const QString trimmedStreamId = streamId.trimmed();
     if (trimmedClipId.isEmpty() || trackId < 0 || !m_speakerDeps.updateClipById) {
         return false;
     }
-    Q_UNUSED(xNorm);
-    Q_UNUSED(yNorm);
-
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!selectedClip || selectedClip->id != trimmedClipId) {
         return false;
@@ -3479,15 +3477,13 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString&
         qMax<int64_t>(0, selectedClip->durationFrames - 1));
 
     const qreal detectedBox = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-    const TimelineClip::TransformKeyframe currentTarget =
-        evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, timelineFrame);
-    const qreal targetX = qBound<qreal>(0.0, currentTarget.translationX, 1.0);
-    const qreal targetY = qBound<qreal>(0.0, currentTarget.translationY, 1.0);
-    const qreal targetBox = currentTarget.scaleX > 0.0
-        ? qBound<qreal>(0.01, currentTarget.scaleX, 1.0)
-        : qBound<qreal>(0.12, qMax<qreal>(0.20, detectedBox * 2.5), 0.45);
+    const qreal targetX = qBound<qreal>(0.0, xNorm, 1.0);
+    const qreal targetY = qBound<qreal>(0.0, yNorm, 1.0);
+    const qreal targetBox = qBound<qreal>(0.12, qMax<qreal>(0.20, detectedBox * 2.5), 0.45);
 
-    const bool changed = m_speakerDeps.updateClipById(trimmedClipId, [&](TimelineClip& editableClip) {
+    const bool changed = m_speakerDeps.updateClipById(
+        trimmedClipId,
+        [localFrame, trackId, targetX, targetY, targetBox, trimmedStreamId](TimelineClip& editableClip) {
         TimelineClip::TransformKeyframe target;
         target.frame = localFrame;
         target.title = QStringLiteral("Speaker framing target from assigned face track T%1").arg(trackId);
@@ -3499,28 +3495,23 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString&
         target.linearInterpolation = true;
 
         editableClip.speakerFramingManualTrackId = trackId;
-        editableClip.speakerFramingManualStreamId = streamId.trimmed();
+        editableClip.speakerFramingManualStreamId = trimmedStreamId;
         editableClip.speakerFramingKeyframes.clear();
 
-        bool replacedTarget = false;
         for (TimelineClip::TransformKeyframe& keyframe : editableClip.speakerFramingTargetKeyframes) {
             if (keyframe.frame == localFrame) {
                 keyframe = target;
-                replacedTarget = true;
                 break;
             }
         }
 
-        bool touchedEnabled = false;
         for (TimelineClip::BoolKeyframe& keyframe : editableClip.speakerFramingEnabledKeyframes) {
             if (keyframe.frame == localFrame) {
                 keyframe.enabled = true;
-                touchedEnabled = true;
                 break;
             }
         }
-        editableClip.speakerFramingEnabled =
-            editableClip.speakerFramingEnabled || replacedTarget || touchedEnabled;
+        editableClip.speakerFramingEnabled = true;
         editableClip.speakerFramingBakedTargetXNorm = targetX;
         editableClip.speakerFramingBakedTargetYNorm = targetY;
         editableClip.speakerFramingBakedTargetBoxNorm = targetBox;
@@ -3848,6 +3839,8 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                                                  qreal yNorm,
                                                  qreal boxSizeNorm)
 {
+    const QString clickedClipId = clipId;
+    const QString clickedStreamId = streamId;
     QElapsedTimer clickTimer;
     clickTimer.start();
     auto report = [this](const QString& message) {
@@ -3856,9 +3849,9 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     };
 
     report(QStringLiteral("Face box click: clip=%1 track=%2 stream=%3 source_frame=%4 x=%5 y=%6 box=%7")
-               .arg(clipId)
+               .arg(clickedClipId)
                .arg(trackId)
-               .arg(streamId.isEmpty() ? QStringLiteral("<empty>") : streamId)
+               .arg(clickedStreamId.isEmpty() ? QStringLiteral("<empty>") : clickedStreamId)
                .arg(sourceFrame)
                .arg(xNorm, 0, 'f', 4)
                    .arg(yNorm, 0, 'f', 4)
@@ -3877,20 +3870,20 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip || clip->id != clipId) {
+    if (!clip || clip->id != clickedClipId) {
         report(QStringLiteral("Face box click selecting visible clip %1 before selecting track; previous selected clip was %2.")
-                   .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
-        if (!m_speakerDeps.selectClipById || !m_speakerDeps.selectClipById(clipId)) {
+                   .arg(clickedClipId, clip ? clip->id : QStringLiteral("<none>")));
+        if (!m_speakerDeps.selectClipById || !m_speakerDeps.selectClipById(clickedClipId)) {
             report(QStringLiteral("Face box selection blocked: the clicked continuity track is on clip %1, "
                                   "but that visible clip could not be selected. Current selected clip is %2.")
-                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+                       .arg(clickedClipId, clip ? clip->id : QStringLiteral("<none>")));
             logTiming(QStringLiteral("rejected_clip"));
             return false;
         }
         clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-        if (!clip || clip->id != clipId) {
+        if (!clip || clip->id != clickedClipId) {
             report(QStringLiteral("Face box selection blocked: selected clip did not update to clicked clip %1; current selected clip is %2.")
-                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+                       .arg(clickedClipId, clip ? clip->id : QStringLiteral("<none>")));
             logTiming(QStringLiteral("rejected_clip_after_select"));
             return false;
         }
@@ -3922,9 +3915,15 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     }
     const bool framingTrackingApplied =
         applyPreviewFaceBoxSpeakerFramingTrackSelection(
-            clipId, trackId, streamId, xNorm, yNorm, boxSizeNorm);
+            clickedClipId, trackId, clickedStreamId, xNorm, yNorm, boxSizeNorm);
     if (framingTrackingApplied && m_speakerDeps.refreshPreview) {
-        m_speakerDeps.refreshPreview();
+        QPointer<SpeakersTab> self(this);
+        QTimer::singleShot(0, this, [self]() {
+            if (!self || !self->m_speakerDeps.refreshPreview) {
+                return;
+            }
+            self->m_speakerDeps.refreshPreview();
+        });
     }
     logTiming(selectedPlayheadTrack
                   ? QStringLiteral("selected_playhead_track")
@@ -4079,11 +4078,11 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
             sectionSpeakerId,
             applyToAllMatchingSections ? transcriptFrame : speakerSourceFrame);
         const bool assignedSection = assignTrackToContiguousSections(
-            clipId,
+            clickedClipId,
             sectionSpeakerId,
             targetSections,
             trackId,
-            streamId,
+            clickedStreamId,
             mediaSourceFrame,
             xNorm,
             yNorm,
@@ -4113,7 +4112,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     const bool assigned = assignTrackToSpeaker(
         speakerId,
         trackId,
-        streamId,
+        clickedStreamId,
         mediaSourceFrame,
         xNorm,
         yNorm,

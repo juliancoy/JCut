@@ -1859,6 +1859,14 @@ void TranscriptTab::onOffsetMsChanged(int value)
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
+void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
+{
+    m_speechFilterEnabled = enabled;
+    emit speechFilterParametersChanged();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
+}
+
 void TranscriptTab::onSpeechFilterFadeModeChanged(int index)
 {
     Q_UNUSED(index);

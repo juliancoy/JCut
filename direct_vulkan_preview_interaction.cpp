@@ -512,19 +512,23 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
         const QPointF center = overlay.boxNorm.center();
         const qreal boxSideNorm =
             qBound<qreal>(0.01, qMax(overlay.boxNorm.width(), overlay.boxNorm.height()), 1.0);
+        const QString clickedClipId = overlay.clipId;
+        const QString clickedStreamId = overlay.streamId;
+        const int clickedTrackId = overlay.trackId;
+        const int64_t clickedSourceFrame = overlay.sourceFrame;
         qInfo().noquote()
             << QStringLiteral("Face box click dispatch: clip=%1 track=%2 stream=%3 source_frame=%4 hit_test_ms=%5 overlays=%6 mapped=%7")
-                   .arg(overlay.clipId)
-                   .arg(overlay.trackId)
-                   .arg(overlay.streamId.isEmpty() ? QStringLiteral("<empty>") : overlay.streamId)
-                   .arg(overlay.sourceFrame)
+                   .arg(clickedClipId)
+                   .arg(clickedTrackId)
+                   .arg(clickedStreamId.isEmpty() ? QStringLiteral("<empty>") : clickedStreamId)
+                   .arg(clickedSourceFrame)
                    .arg(clickTimer.elapsed())
                    .arg(testedOverlays)
                    .arg(mappedOverlays);
-        callback(overlay.clipId,
-                 overlay.trackId,
-                 overlay.streamId,
-                 overlay.sourceFrame,
+        callback(clickedClipId,
+                 clickedTrackId,
+                 clickedStreamId,
+                 clickedSourceFrame,
                  center.x(),
                  center.y(),
                  boxSideNorm);
@@ -534,19 +538,23 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
         const QPointF center = nearestOverlay->boxNorm.center();
         const qreal boxSideNorm =
             qBound<qreal>(0.01, qMax(nearestOverlay->boxNorm.width(), nearestOverlay->boxNorm.height()), 1.0);
+        const QString clickedClipId = nearestOverlay->clipId;
+        const QString clickedStreamId = nearestOverlay->streamId;
+        const int clickedTrackId = nearestOverlay->trackId;
+        const int64_t clickedSourceFrame = nearestOverlay->sourceFrame;
         qInfo().noquote()
             << QStringLiteral("Face box click dispatch nearest: clip=%1 track=%2 stream=%3 source_frame=%4 hit_test_ms=%5 overlays=%6 mapped=%7")
-                   .arg(nearestOverlay->clipId)
-                   .arg(nearestOverlay->trackId)
-                   .arg(nearestOverlay->streamId.isEmpty() ? QStringLiteral("<empty>") : nearestOverlay->streamId)
-                   .arg(nearestOverlay->sourceFrame)
+                   .arg(clickedClipId)
+                   .arg(clickedTrackId)
+                   .arg(clickedStreamId.isEmpty() ? QStringLiteral("<empty>") : clickedStreamId)
+                   .arg(clickedSourceFrame)
                    .arg(clickTimer.elapsed())
                    .arg(testedOverlays)
                    .arg(mappedOverlays);
-        callback(nearestOverlay->clipId,
-                 nearestOverlay->trackId,
-                 nearestOverlay->streamId,
-                 nearestOverlay->sourceFrame,
+        callback(clickedClipId,
+                 clickedTrackId,
+                 clickedStreamId,
+                 clickedSourceFrame,
                  center.x(),
                  center.y(),
                  boxSideNorm);

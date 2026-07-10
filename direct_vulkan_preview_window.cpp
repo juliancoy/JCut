@@ -9,6 +9,7 @@
 #include "direct_vulkan_preview_transcript.h"
 #include "direct_vulkan_frame_handoff_pipeline.h"
 #include "direct_vulkan_preview_audio.h"
+#include "cpu_overlay_render_backend.h"
 #include "preview_speaker_profiles.h"
 #include "preview_view_transform.h"
 #include "render_vulkan_shared.h"
@@ -114,8 +115,15 @@ private:
         std::shared_ptr<ClipHandoffResources> resources;
         int framesRemaining = 0;
     };
+    struct TitleOverlayResources {
+        std::unique_ptr<VulkanResources> resources;
+        QString textureKey;
+        bool textureReady = false;
+    };
     ClipHandoffResources* ensureClipHandoffResources(const QString& clipId);
+    TitleOverlayResources* ensureTitleOverlayResources(const QString& clipId);
     void pruneClipHandoffResources(const QSet<QString>& activeClipIds);
+    void pruneTitleOverlayResources(const QSet<QString>& activeClipIds);
     void advanceRetiredClipHandoffResources();
     void releaseClipHandoffResources(const std::shared_ptr<ClipHandoffResources>& resources);
     void updateClipHandoffResourceStats();
@@ -131,6 +139,7 @@ private:
     std::unique_ptr<VulkanTextRenderer> m_temporalDebugTextRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources;
+    QHash<QString, std::shared_ptr<TitleOverlayResources>> m_titleOverlayResources;
     QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources;
     QString m_playbackStatusOverlayTextureKey;
     QString m_lastPreparedTextKey;
@@ -1254,6 +1263,7 @@ void DirectVulkanPreviewRenderer::releaseResources()
         releaseClipHandoffResources(retired.resources);
     }
     m_clipHandoffResources.clear();
+    m_titleOverlayResources.clear();
     m_retiredClipHandoffResources.clear();
     m_audioTab.reset();
     m_temporalDebugTextRenderer.reset();
@@ -1318,6 +1328,32 @@ DirectVulkanPreviewRenderer::ensureClipHandoffResources(const QString& clipId)
     return raw;
 }
 
+DirectVulkanPreviewRenderer::TitleOverlayResources*
+DirectVulkanPreviewRenderer::ensureTitleOverlayResources(const QString& clipId)
+{
+    if (clipId.trimmed().isEmpty() || !m_window || !m_devFuncs) {
+        return nullptr;
+    }
+    auto existing = m_titleOverlayResources.find(clipId);
+    if (existing != m_titleOverlayResources.end()) {
+        return existing.value().get();
+    }
+
+    auto resources = std::make_shared<TitleOverlayResources>();
+    resources->resources = std::make_unique<VulkanResources>();
+    if (!resources->resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
+        if (m_owner) {
+            m_owner->markFailure(QStringLiteral("Failed to initialize direct preview title overlay resources for %1.")
+                                     .arg(clipId));
+        }
+        return nullptr;
+    }
+
+    TitleOverlayResources* raw = resources.get();
+    m_titleOverlayResources.insert(clipId, resources);
+    return raw;
+}
+
 void DirectVulkanPreviewRenderer::pruneClipHandoffResources(const QSet<QString>& activeClipIds)
 {
     for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end();) {
@@ -1334,6 +1370,17 @@ void DirectVulkanPreviewRenderer::pruneClipHandoffResources(const QSet<QString>&
         it = m_clipHandoffResources.erase(it);
     }
     updateClipHandoffResourceStats();
+}
+
+void DirectVulkanPreviewRenderer::pruneTitleOverlayResources(const QSet<QString>& activeClipIds)
+{
+    for (auto it = m_titleOverlayResources.begin(); it != m_titleOverlayResources.end();) {
+        if (activeClipIds.contains(it.key())) {
+            ++it;
+        } else {
+            it = m_titleOverlayResources.erase(it);
+        }
+    }
 }
 
 void DirectVulkanPreviewRenderer::advanceRetiredClipHandoffResources()
@@ -1811,7 +1858,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         QRectF bounds;
         bool ready = false;
     };
+    struct PreparedTitleOverlay {
+        VulkanResources* resources = nullptr;
+        QString clipId;
+        QRectF bounds;
+        bool ready = false;
+    };
     PreparedTranscriptOverlayMap preparedTranscriptOverlays;
+    QHash<QString, PreparedTitleOverlay> preparedTitleOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
@@ -1992,6 +2046,128 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             stats->lastTranscriptPresentedMediaSourceFrame =
                 transcriptCollectionStats.lastPreparedPresentedMediaSourceFrame;
         }
+        QSet<QString> activeTitleClipIds;
+        int titleCandidateCount = 0;
+        int titlePreparedCount = 0;
+        QString lastTitleSkipReason;
+        QString lastTitleClipId;
+        const int64_t titleFrame = static_cast<int64_t>(std::floor(state->currentFramePosition));
+        for (const TimelineClip& clip : state->clips) {
+            if (clip.mediaType != ClipMediaType::Title) {
+                continue;
+            }
+            if (!clipVisualPlaybackEnabled(clip, state->tracks) ||
+                !editor::clipIsActiveAtTimelineFrame(clip, state->tracks, state->currentFramePosition, false)) {
+                continue;
+            }
+            ++titleCandidateCount;
+            activeTitleClipIds.insert(clip.id);
+            lastTitleClipId = clip.id;
+            if (clip.titleKeyframes.isEmpty()) {
+                lastTitleSkipReason = QStringLiteral("title_keyframes_empty");
+                continue;
+            }
+            const int64_t localFrame = qBound<int64_t>(
+                0,
+                titleFrame - clip.startFrame,
+                qMax<int64_t>(0, clip.durationFrames - 1));
+            const EffectiveVisualEffects effects =
+                evaluateEffectiveVisualEffectsAtPosition(
+                    clip,
+                    state->tracks,
+                    state->currentFramePosition,
+                    state->renderSyncMarkers,
+                    state->playbackTiming);
+            if (effects.grading.opacity <= 0.001) {
+                lastTitleSkipReason = QStringLiteral("title_zero_opacity");
+                continue;
+            }
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle title =
+                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
+            if (!title.valid || title.text.trimmed().isEmpty() || title.opacity <= 0.001) {
+                lastTitleSkipReason = QStringLiteral("title_evaluated_invisible");
+                continue;
+            }
+            if (title.vulkan3DEnabled) {
+                lastTitleSkipReason = QStringLiteral("title_3d_unsupported_in_direct_preview");
+                continue;
+            }
+            TitleOverlayResources* titleResources = ensureTitleOverlayResources(clip.id);
+            if (!titleResources || !titleResources->resources || !titleResources->resources->isReady()) {
+                lastTitleSkipReason = QStringLiteral("title_resources_unavailable");
+                continue;
+            }
+            const QString textureKey = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18|%19|%20|%21|%22|%23|%24|%25|%26|%27")
+                                           .arg(clip.id)
+                                           .arg(localFrame)
+                                           .arg(title.text)
+                                           .arg(QString::number(title.x, 'f', 3))
+                                           .arg(QString::number(title.y, 'f', 3))
+                                           .arg(QString::number(title.opacity, 'f', 3))
+                                           .arg(QString::number(effects.grading.opacity, 'f', 3))
+                                           .arg(QString::number(title.fontSize, 'f', 3))
+                                           .arg(title.fontFamily)
+                                           .arg(title.bold ? 1 : 0)
+                                           .arg(title.italic ? 1 : 0)
+                                           .arg(title.color.rgba(), 0, 16)
+                                           .arg(static_cast<int>(title.textMaterialStyle))
+                                           .arg(title.textPatternImagePath)
+                                           .arg(QString::number(title.textPatternScale, 'f', 3))
+                                           .arg(title.dropShadowEnabled ? 1 : 0)
+                                           .arg(title.dropShadowColor.rgba(), 0, 16)
+                                           .arg(QString::number(title.dropShadowOpacity, 'f', 3))
+                                           .arg(QString::number(title.dropShadowOffsetX, 'f', 3))
+                                           .arg(QString::number(title.dropShadowOffsetY, 'f', 3))
+                                           .arg(title.windowEnabled ? 1 : 0)
+                                           .arg(title.windowColor.rgba(), 0, 16)
+                                           .arg(QString::number(title.windowOpacity, 'f', 3))
+                                           .arg(QString::number(title.windowPadding, 'f', 3))
+                                           .arg(title.windowFrameEnabled ? 1 : 0)
+                                           .arg(title.windowFrameColor.rgba(), 0, 16)
+                                           .arg(QString::number(title.windowFrameWidth, 'f', 3));
+            bool textureReady = titleResources->textureReady &&
+                                titleResources->textureKey == textureKey;
+            if (!textureReady) {
+                if (!titleResources->resources->beginFrameUploads(
+                        swapchainImageIndex,
+                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
+                    lastTitleSkipReason = QStringLiteral("title_upload_frame_slot_unavailable");
+                    continue;
+                }
+                const render_detail::OverlayImage titleImage =
+                    render_detail::overlayRenderBackend().renderTitleOverlay(
+                        state->outputSize,
+                        title,
+                        state->outputSize);
+                textureReady = !titleImage.isNull() &&
+                               titleResources->resources->uploadImageTexture(cb, titleImage);
+                titleResources->textureReady = textureReady;
+                titleResources->textureKey = textureReady ? textureKey : QString();
+            }
+            if (!textureReady ||
+                titleResources->resources->descriptorSet() == VK_NULL_HANDLE) {
+                lastTitleSkipReason = QStringLiteral("title_texture_upload_failed");
+                continue;
+            }
+            preparedTitleOverlays.insert(
+                clip.id,
+                PreparedTitleOverlay{
+                    titleResources->resources.get(),
+                    clip.id,
+                    QRectF(QPointF(0.0, 0.0), QSizeF(state->outputSize)),
+                    true});
+            ++titlePreparedCount;
+            lastTitleSkipReason.clear();
+        }
+        pruneTitleOverlayResources(activeTitleClipIds);
+        if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+            stats->titleCandidateCount = titleCandidateCount;
+            stats->titlePreparedCount = titlePreparedCount;
+            stats->lastTitleSkipReason = lastTitleSkipReason;
+            stats->lastTitleClipId = lastTitleClipId;
+        }
         if (m_playbackStatusOverlayResources &&
             m_playbackStatusOverlayResources->isReady() &&
             m_playbackStatusOverlayResources->descriptorSet() != VK_NULL_HANDLE) {
@@ -2034,6 +2210,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         stats->transcriptCandidateCount = 0;
         stats->transcriptPreparedCount = 0;
         stats->transcriptDrawnCount = 0;
+        stats->titleCandidateCount = 0;
+        stats->titlePreparedCount = 0;
+        stats->titleDrawnCount = 0;
+        stats->lastTitleSkipReason = QStringLiteral("overlays_unavailable");
         stats->lastTranscriptSkipReason = QStringLiteral("overlays_unavailable");
     }
     render_detail::SpeakerLabelOverlaySpec preparedSpeakerSpec;
@@ -2156,10 +2336,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     if (m_owner->stats()) {
         const qint64 textAttemptCount =
             preparedTranscriptOverlays.size() +
+            preparedTitleOverlays.size() +
             ((preparedSpeakerSpec.showName || preparedSpeakerSpec.showOrganization) ? 1 : 0) +
             (!preparedTemporalDebugSpec.organization.trimmed().isEmpty() ? 1 : 0);
         const qint64 textSuccessCount =
             preparedTranscriptAtlasClipIds.size() +
+            preparedTitleOverlays.size() +
             (preparedSpeakerLabel ? 1 : 0) +
             (preparedTemporalDebugLabel ? 1 : 0);
         editor::accumulatePlaybackStageMetric(&m_owner->stats()->textPrepStageMetric,
@@ -2171,8 +2353,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                  ? QStringLiteral("text_prepare_cache_hit")
                                                  : QStringLiteral("text_prepared"))
                                           : QStringLiteral("text_not_requested"),
-                                      QStringLiteral("transcript=%1 speaker=%2 debug=%3 cache_hit=%4")
+                                      QStringLiteral("transcript=%1 title=%2 speaker=%3 debug=%4 cache_hit=%5")
                                           .arg(preparedTranscriptAtlasClipIds.size())
+                                          .arg(preparedTitleOverlays.size())
                                           .arg(preparedSpeakerLabel ? 1 : 0)
                                           .arg(preparedTemporalDebugLabel ? 1 : 0)
                                           .arg(textPrepCacheHit ? 1 : 0));
@@ -2215,6 +2398,53 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 overlayScissor,
                                 overlay.resources->descriptorSet(),
                                 overlayPush);
+    };
+    auto drawPreparedTitleOverlayForClip = [&](const QString& clipId, const QRectF& compositeRect) -> bool {
+        const auto titleIt = preparedTitleOverlays.constFind(clipId);
+        if (titleIt == preparedTitleOverlays.constEnd() ||
+            !titleIt.value().ready ||
+            !titleIt.value().resources ||
+            titleIt.value().resources->descriptorSet() == VK_NULL_HANDLE ||
+            !m_pipeline ||
+            !m_pipeline->isReady()) {
+            return false;
+        }
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(std::max(1, swapSize.width()));
+        viewport.height = static_cast<float>(std::max(1, swapSize.height()));
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        PreviewClipGeometry titleGeometry;
+        titleGeometry.localRect = QRectF(-compositeRect.width() / 2.0,
+                                         -compositeRect.height() / 2.0,
+                                         compositeRect.width(),
+                                         compositeRect.height());
+        titleGeometry.clipToScreen.translate(compositeRect.center().x(), compositeRect.center().y());
+        titleGeometry.bounds = compositeRect;
+        VulkanPipeline::Push titlePush{};
+        mvpForVulkanClipTransform(titleGeometry.clipToScreen,
+                                  titleGeometry.localRect,
+                                  swapSize,
+                                  titlePush.mvp);
+        VkRect2D titleScissor{};
+        if (state && state->hideOutsideOutputWindow) {
+            titleScissor = scissorFromQRect(compositeRect, swapSize);
+        } else {
+            titleScissor.offset = {0, 0};
+            titleScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                   static_cast<uint32_t>(std::max(1, swapSize.height()))};
+        }
+        m_pipeline->bindAndDraw(cb,
+                                viewport,
+                                titleScissor,
+                                titleIt.value().resources->descriptorSet(),
+                                titlePush);
+        if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+            ++stats->titleDrawnCount;
+        }
+        return true;
     };
     QSet<QString> drawnTranscriptOverlayClipIds;
     auto drawPreparedTranscriptOverlayForClip = [&](const QString& clipId, const QRectF& compositeRect) -> bool {
@@ -2309,7 +2539,22 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         canvasBorder,
                         clearRectFromQRect(compositeRect.adjusted(-1, -1, 1, 1), swapSize),
                         std::max(1, std::min(swapSize.width(), swapSize.height()) / 360));
+        QSet<QString> drawnTitleOverlayClipIds;
         for (const TimelineClip& clip : state->clips) {
+            if (clip.mediaType == ClipMediaType::Title) {
+                if (drawPreparedTitleOverlayForClip(clip.id, compositeRect)) {
+                    drawnTitleOverlayClipIds.insert(clip.id);
+                }
+                if (clip.id == state->selectedClipId) {
+                    const int selectionThickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 360);
+                    clearBoxOutline(m_devFuncs,
+                                    cb,
+                                    selectionOutlineColor(),
+                                    clearRectFromQRect(compositeRect, swapSize),
+                                    selectionThickness);
+                }
+                continue;
+            }
             const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
             if (!status || !status->active || status->drawSuppressed) {
                 continue;
@@ -2725,6 +2970,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
         }
         qint64 fallbackTranscriptDrawCount = 0;
+        qint64 fallbackTitleDrawCount = 0;
+        for (auto it = preparedTitleOverlays.cbegin(); it != preparedTitleOverlays.cend(); ++it) {
+            if (!drawnTitleOverlayClipIds.contains(it.key()) &&
+                drawPreparedTitleOverlayForClip(it.key(), compositeRect)) {
+                drawnTitleOverlayClipIds.insert(it.key());
+                ++fallbackTitleDrawCount;
+            }
+        }
         for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
             if (!drawnTranscriptOverlayClipIds.contains(it.key())) {
                 if (drawPreparedTranscriptOverlayForClip(it.key(), compositeRect)) {
@@ -2735,18 +2988,25 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         if (m_owner->stats()) {
             const qint64 transcriptDrawAttempts = preparedTranscriptAtlasClipIds.size();
             const qint64 transcriptDrawSuccesses = drawnTranscriptOverlayClipIds.size();
+            const qint64 titleDrawAttempts = preparedTitleOverlays.size();
+            const qint64 titleDrawSuccesses = drawnTitleOverlayClipIds.size();
             m_owner->stats()->transcriptDrawnCount = static_cast<int>(transcriptDrawSuccesses);
+            m_owner->stats()->titleDrawnCount = static_cast<int>(titleDrawSuccesses);
             editor::accumulatePlaybackStageMetric(&m_owner->stats()->textDrawStageMetric,
-                                          transcriptDrawAttempts,
-                                          transcriptDrawSuccesses,
-                                          qMax<qint64>(0, transcriptDrawAttempts - transcriptDrawSuccesses),
-                                          transcriptDrawAttempts > 0
+                                          transcriptDrawAttempts + titleDrawAttempts,
+                                          transcriptDrawSuccesses + titleDrawSuccesses,
+                                          qMax<qint64>(0, transcriptDrawAttempts + titleDrawAttempts -
+                                                             transcriptDrawSuccesses - titleDrawSuccesses),
+                                          (transcriptDrawAttempts + titleDrawAttempts) > 0
                                               ? QStringLiteral("text_draw_evaluated")
                                               : QStringLiteral("text_draw_not_requested"),
-                                          QStringLiteral("transcript_prepared=%1 transcript_drawn=%2 fallback_drawn=%3")
+                                          QStringLiteral("transcript_prepared=%1 transcript_drawn=%2 fallback_drawn=%3 title_prepared=%4 title_drawn=%5 title_fallback_drawn=%6")
                                               .arg(transcriptDrawAttempts)
                                               .arg(transcriptDrawSuccesses)
-                                              .arg(fallbackTranscriptDrawCount));
+                                              .arg(fallbackTranscriptDrawCount)
+                                              .arg(titleDrawAttempts)
+                                              .arg(titleDrawSuccesses)
+                                              .arg(fallbackTitleDrawCount));
         }
         if (preparedSpeakerLabel && m_speakerTextRenderer && m_speakerTextRenderer->isReady()) {
             if (!m_speakerTextRenderer->drawSpeakerLabel(cb,

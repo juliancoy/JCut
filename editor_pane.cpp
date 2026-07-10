@@ -131,10 +131,14 @@ EditorPane::EditorPane(QWidget *parent)
     setStyleSheet(
         QStringLiteral(
             "QWidget { background: #0c1015; color: #edf2f7; }"
-            "QPushButton, QToolButton { background: #1b2430; border: 1px solid #2e3b4a; border-radius: 7px; padding: 8px 12px; }"
-            "QPushButton:hover, QToolButton:hover { background: #233142; }"
-            "QSlider::groove:horizontal { background: #24303c; height: 6px; border-radius: 3px; }"
-            "QSlider::handle:horizontal { background: #ff6f61; width: 14px; margin: -5px 0; border-radius: 7px; }"));
+            "QPushButton, QToolButton { background: #18222d; border: 1px solid #2b3948; border-radius: 6px; padding: 5px 9px; }"
+            "QPushButton:hover, QToolButton:hover { background: #223246; border-color: #4c657e; }"
+            "QPushButton:pressed, QToolButton:pressed { background: #111a24; border-color: #7eaad0; }"
+            "QWidget#timeline\\.transport { background: #0f151c; border-bottom: 1px solid #2a3542; }"
+            "QPushButton#transport\\.play { background: #193426; border-color: #39724d; color: #dfffe8; font-weight: 700; }"
+            "QPushButton#transport\\.play:hover { background: #214a33; border-color: #6bcc88; }"
+            "QSlider::groove:horizontal { background: #263340; height: 5px; border-radius: 2px; }"
+            "QSlider::handle:horizontal { background: #f0c36a; width: 12px; margin: -5px 0; border-radius: 6px; }"));
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
@@ -150,7 +154,8 @@ EditorPane::EditorPane(QWidget *parent)
     layout->addWidget(verticalSplitter, 1);
 
     auto *previewFrame = new QFrame;
-    previewFrame->setMinimumHeight(150);
+    previewFrame->setMinimumHeight(240);
+    previewFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     previewFrame->setFrameShape(QFrame::NoFrame);
     previewFrame->setStyleSheet(QStringLiteral(
         "QFrame { background: #05080c; border: 1px solid #202934; border-radius: 14px; }"));
@@ -159,7 +164,7 @@ EditorPane::EditorPane(QWidget *parent)
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(0);
 
-    m_preview = createPreviewSurfaceForConfiguredBackend();
+    m_preview = createPreviewSurfaceForConfiguredBackend(previewFrame);
     if (!m_preview) {
         qFatal("Vulkan preview surface creation failed and no fallback preview surface is available.");
     }
@@ -208,8 +213,8 @@ EditorPane::EditorPane(QWidget *parent)
 
     // TimelineContainer with 2x2 grid layout
     m_timelineContainer = new TimelineContainer;
-    m_timelineContainer->setMinimumHeight(200);
-    m_timelineContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+    m_timelineContainer->setMinimumHeight(300);
+    m_timelineContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     
     // Create transport controls and add to TimelineContainer's transport area
     setupTransportControls();
@@ -217,9 +222,9 @@ EditorPane::EditorPane(QWidget *parent)
     verticalSplitter->addWidget(m_timelineContainer);
     verticalSplitter->setCollapsible(0, false);
     verticalSplitter->setCollapsible(1, false);
-    verticalSplitter->setStretchFactor(0, 3);
-    verticalSplitter->setStretchFactor(1, 2);
-    verticalSplitter->setSizes({540, 320});
+    verticalSplitter->setStretchFactor(0, 5);
+    verticalSplitter->setStretchFactor(1, 4);
+    verticalSplitter->setSizes({470, 390});
 }
 
 void EditorPane::setupTransportControls()
@@ -241,7 +246,8 @@ void EditorPane::setupTransportControls()
         return;
     }
     transportLayout->setSizeConstraint(QLayout::SetNoConstraint);
-    transportLayout->setSpacing(4);
+    transportLayout->setContentsMargins(10, 5, 10, 5);
+    transportLayout->setSpacing(5);
     
     // Clear the placeholder stretch
     QLayoutItem *item;
@@ -251,8 +257,8 @@ void EditorPane::setupTransportControls()
 
     m_playButton = new QPushButton(editor::transportIcon(editor::TransportIconGlyph::Play), QString());
     m_playButton->setObjectName(QStringLiteral("transport.play"));
-    m_playButton->setMinimumWidth(0);
-    m_playButton->setMaximumWidth(34);
+    m_playButton->setFixedWidth(40);
+    m_playButton->setFixedHeight(30);
     m_playButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_playButton->setIconSize(QSize(18, 18));
     m_playButton->setToolTip(QStringLiteral("Play / Pause (Space)"));
@@ -280,8 +286,7 @@ void EditorPane::setupTransportControls()
     m_nextFrameButton->setAccessibleName(QStringLiteral("Next Frame"));
     for (QToolButton* btn : {m_startButton, m_endButton, m_prevFrameButton, m_nextFrameButton}) {
         btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        btn->setMinimumWidth(0);
-        btn->setMaximumWidth(30);
+        btn->setFixedSize(30, 30);
         btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
         btn->setIconSize(QSize(18, 18));
     }
@@ -291,8 +296,7 @@ void EditorPane::setupTransportControls()
     m_razorButton->setText(QStringLiteral("R"));
     m_razorButton->setCheckable(true);
     m_razorButton->setToolTip(QStringLiteral("Razor tool (B) \u2014 click to split clips"));
-    m_razorButton->setMinimumWidth(0);
-    m_razorButton->setMaximumWidth(28);
+    m_razorButton->setFixedSize(30, 30);
     m_razorButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_razorButton->setStyleSheet(QStringLiteral(
         "QToolButton:checked { background: #3a4d63; border-color: #a0e0ff; color: #a0e0ff; }"));
@@ -339,8 +343,7 @@ void EditorPane::setupTransportControls()
     m_audioToolsButton->setObjectName(QStringLiteral("transport.audio_tools"));
     m_audioToolsButton->setText(QStringLiteral("FX"));
     m_audioToolsButton->setToolTip(QStringLiteral("Open the Audio inspector tab."));
-    m_audioToolsButton->setMinimumWidth(0);
-    m_audioToolsButton->setMaximumWidth(34);
+    m_audioToolsButton->setFixedSize(32, 30);
     m_audioToolsButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     m_loopButton = new QToolButton;
@@ -348,8 +351,7 @@ void EditorPane::setupTransportControls()
     m_loopButton->setText(QStringLiteral("Loop"));
     m_loopButton->setCheckable(true);
     m_loopButton->setToolTip(QStringLiteral("Loop playback range"));
-    m_loopButton->setMinimumWidth(0);
-    m_loopButton->setMaximumWidth(46);
+    m_loopButton->setFixedSize(44, 30);
     m_loopButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_loopButton->setStyleSheet(QStringLiteral(
         "QToolButton:checked { background: #2d455f; border-color: #9ee5ff; color: #c8f3ff; }"));
@@ -360,8 +362,7 @@ void EditorPane::setupTransportControls()
     m_audioMuteButton->setIcon(editor::volumeTransportIcon(false));
     m_audioMuteButton->setIconSize(QSize(18, 18));
     m_audioMuteButton->setToolTip(QStringLiteral("Mute / Unmute"));
-    m_audioMuteButton->setMinimumWidth(0);
-    m_audioMuteButton->setMaximumWidth(28);
+    m_audioMuteButton->setFixedSize(30, 30);
     m_audioMuteButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     m_audioVolumeSlider = new QSlider(Qt::Horizontal);
@@ -381,8 +382,8 @@ void EditorPane::setupTransportControls()
     m_zoomFitButton = new QPushButton(QStringLiteral("Zoom Fit"));
     m_zoomFitButton->setObjectName(QStringLiteral("transport.zoom_fit"));
     m_zoomFitButton->setToolTip(QStringLiteral("Fit preview to canvas and recenter"));
-    m_zoomFitButton->setMinimumWidth(64);
-    m_zoomFitButton->setMaximumWidth(88);
+    m_zoomFitButton->setText(QStringLiteral("Fit"));
+    m_zoomFitButton->setFixedSize(38, 30);
     m_zoomFitButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     // Common transport order: first, previous frame, play/pause, next frame, last.
@@ -474,7 +475,16 @@ void EditorPane::updateTransportDensity(int transportWidth)
     const bool showPlaybackSpeed = transportWidth >= 500;
     const bool showLoop = transportWidth >= 460;
     const bool showMute = transportWidth >= 360;
+    const bool showRazor = transportWidth >= 300;
+    const bool showStepButtons = transportWidth >= 240;
+    const bool showEdgeButtons = transportWidth >= 210;
+    const bool showTimecode = transportWidth >= 180;
 
+    if (m_startButton) m_startButton->setVisible(showEdgeButtons);
+    if (m_endButton) m_endButton->setVisible(showEdgeButtons);
+    if (m_prevFrameButton) m_prevFrameButton->setVisible(showStepButtons);
+    if (m_nextFrameButton) m_nextFrameButton->setVisible(showStepButtons);
+    if (m_razorButton) m_razorButton->setVisible(showRazor);
     if (m_audioNowPlayingLabel) m_audioNowPlayingLabel->setVisible(showAudioStatus);
     if (m_audioToolsButton) m_audioToolsButton->setVisible(showAudioTools);
     if (m_audioVolumeSlider) m_audioVolumeSlider->setVisible(showAudioVolume);
@@ -482,9 +492,10 @@ void EditorPane::updateTransportDensity(int transportWidth)
     if (m_playbackSpeedCombo) m_playbackSpeedCombo->setVisible(showPlaybackSpeed);
     if (m_loopButton) m_loopButton->setVisible(showLoop);
     if (m_audioMuteButton) m_audioMuteButton->setVisible(showMute);
+    if (m_timecodeLabel) m_timecodeLabel->setVisible(showTimecode);
 
     if (m_seekSlider) {
-        m_seekSlider->setMinimumWidth(transportWidth >= 420 ? 120 : 96);
+        m_seekSlider->setMinimumWidth(transportWidth >= 420 ? 120 : (transportWidth >= 220 ? 96 : 48));
     }
 }
 

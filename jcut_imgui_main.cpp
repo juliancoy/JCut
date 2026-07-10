@@ -782,7 +782,45 @@ ShellLayout computeShellLayout()
     const float bottom = viewport->Pos.y + viewport->Size.y - kStatusBarHeight - kShellGap;
     const float left = viewport->Pos.x + kShellGap;
     const float right = viewport->Pos.x + viewport->Size.x - kShellGap;
-    const float contentHeight = std::max(400.0f, bottom - top);
+    const float contentHeight = std::max(260.0f, bottom - top);
+    const float contentWidth = std::max(320.0f, right - left);
+
+    if (viewport->Size.x < 760.0f) {
+        const float gap = kShellGap * 0.6f;
+        const float previewHeight = std::max(170.0f, contentHeight * 0.36f);
+        const float timelineHeight = std::max(140.0f, contentHeight * 0.24f);
+        const float remainingHeight = std::max(
+            120.0f,
+            contentHeight - previewHeight - timelineHeight - (3.0f * gap));
+        const float secondaryHeight = std::max(96.0f, remainingHeight * 0.5f);
+        const float inspectorHeight = std::max(96.0f, remainingHeight - secondaryHeight);
+
+        ShellLayout layout;
+        float y = top;
+        layout.preview = {{left, y}, {contentWidth, previewHeight}};
+        y += previewHeight + gap;
+        layout.timeline = {{left, y}, {contentWidth, timelineHeight}};
+        y += timelineHeight + gap;
+        layout.media = {{left, y}, {contentWidth, secondaryHeight}};
+        y += secondaryHeight + gap;
+        layout.inspector = {{left, y}, {contentWidth, inspectorHeight}};
+        return layout;
+    }
+
+    if (viewport->Size.x < 1040.0f) {
+        const float gap = kShellGap;
+        const float previewHeight = std::max(240.0f, contentHeight * 0.48f);
+        const float timelineHeight = std::max(170.0f, contentHeight * 0.25f);
+        const float lowerHeight = std::max(150.0f, contentHeight - previewHeight - timelineHeight - (2.0f * gap));
+        const float lowerWidth = (contentWidth - gap) * 0.5f;
+
+        ShellLayout layout;
+        layout.preview = {{left, top}, {contentWidth, previewHeight}};
+        layout.timeline = {{left, top + previewHeight + gap}, {contentWidth, timelineHeight}};
+        layout.media = {{left, top + previewHeight + timelineHeight + (2.0f * gap)}, {lowerWidth, lowerHeight}};
+        layout.inspector = {{left + lowerWidth + gap, layout.media.pos.y}, {lowerWidth, lowerHeight}};
+        return layout;
+    }
 
     const float mediaWidth = std::min(kMediaPanelWidth, viewport->Size.x * 0.22f);
     const float inspectorWidth = std::min(kInspectorPanelWidth, viewport->Size.x * 0.24f);

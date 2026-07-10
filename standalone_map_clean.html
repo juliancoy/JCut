@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root {
+      color-scheme: light;
+      --panel: #ffffff;
+      --panel-soft: #f6f7f9;
+      --text: #17191c;
+      --muted: #68707a;
+      --line: #d8dde3;
+      --accent: #0d6efd;
+      --good: #16845b;
+      --warn: #c47a00;
+      --bad: #c83f49;
+      --shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: #e8edf3;
+    }
+
+    #map {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .toolbar,
+    .legend,
+    .details,
+    .drop-hint {
+      position: absolute;
+      z-index: 700;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .toolbar {
+      top: 16px;
+      left: 16px;
+      right: 16px;
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
+      align-items: center;
+      gap: 8px;
+      max-width: 980px;
+      padding: 10px;
+      border-radius: 8px;
+    }
+
+    .search {
+      min-width: 0;
+      width: 100%;
+      height: 38px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: var(--panel-soft);
+      font-size: 14px;
+    }
+
+    button,
+    .file-button {
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: var(--panel);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover,
+    .file-button:hover {
+      border-color: #aab3bd;
+      background: #f8fafc;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .legend {
+      top: 76px;
+      right: 16px;
+      width: min(320px, calc(100vw - 32px));
+      max-height: calc(100vh - 112px);
+      display: flex;
+      flex-direction: column;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .legend.is-hidden {
+      display: none;
+    }
+
+    .legend-header,
+    .details-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .legend-title,
+    .details-title {
+      min-width: 0;
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    .legend-body {
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .legend-row {
+      display: grid;
+      grid-template-columns: 16px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid #edf0f3;
+      font-size: 13px;
+    }
+
+    .legend-row:last-child {
+      border-bottom: 0;
+    }
+
+    .swatch {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 2px solid rgba(0, 0, 0, 0.16);
+    }
+
+    .count {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .details {
+      left: 16px;
+      bottom: 16px;
+      width: min(380px, calc(100vw - 32px));
+      max-height: min(390px, calc(100vh - 118px));
+      display: none;
+      flex-direction: column;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .details.is-visible {
+      display: flex;
+    }
+
+    .details-body {
+      overflow: auto;
+      padding: 12px;
+      font-size: 13px;
+    }
+
+    .property {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 10px;
+      padding: 7px 0;
+      border-bottom: 1px solid #edf0f3;
+    }
+
+    .property:last-child {
+      border-bottom: 0;
+    }
+
+    .property-key {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .property-value {
+      overflow-wrap: anywhere;
+    }
+
+    .drop-hint {
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      padding: 10px 14px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 13px;
+      pointer-events: none;
+    }
+
+    .drop-hint.is-active {
+      color: var(--text);
+      border-color: var(--accent);
+      background: #eef5ff;
+    }
+
+    .leaflet-control-zoom a {
+      color: var(--text);
+    }
+
+    .leaflet-popup-content {
+      min-width: 180px;
+      margin: 12px;
+      font-size: 13px;
+    }
+
+    .popup-title {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+
+    @media (max-width: 720px) {
+      .toolbar {
+        grid-template-columns: 1fr 1fr;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+      }
+
+      .search {
+        grid-column: 1 / -1;
+      }
+
+      .legend {
+        top: 112px;
+        right: 8px;
+      }
+
+      .details {
+        left: 8px;
+        bottom: 8px;
+      }
+
+      .drop-hint {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="map" aria-label="Interactive map"></div>
+
+  <div class="toolbar" aria-label="Map controls">
+    <input id="search" class="search" type="search" placeholder="Search visible features">
+    <label class="file-button" for="geojsonFile">Load GeoJSON</label>
+    <input id="geojsonFile" type="file" accept=".geojson,.json,application/geo+json,application/json">
+    <button id="fitButton" type="button">Fit</button>
+    <button id="legendButton" type="button" aria-expanded="true">Legend</button>
+    <button id="clearButton" type="button">Clear</button>
+  </div>
+
+  <aside id="legend" class="legend" aria-label="Map legend">
+    <div class="legend-header">
+      <h2 class="legend-title">Legend</h2>
+      <button id="hideLegendButton" type="button">Hide</button>
+    </div>
+    <div id="legendBody" class="legend-body"></div>
+  </aside>
+
+  <aside id="details" class="details" aria-label="Feature details">
+    <div class="details-header">
+      <h2 id="detailsTitle" class="details-title">Feature</h2>
+      <button id="closeDetailsButton" type="button">Close</button>
+    </div>
+    <div id="detailsBody" class="details-body"></div>
+  </aside>
+
+  <div id="dropHint" class="drop-hint">Drop a GeoJSON file anywhere on the map</div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const categoryColors = {
+      default: "#0d6efd",
+      active: "#16845b",
+      warning: "#c47a00",
+      urgent: "#c83f49",
+      inactive: "#68707a"
+    };
+
+    const sampleData = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { name: "North Site", status: "active", type: "Field Office" },
+          geometry: { type: "Point", coordinates: [-73.9857, 40.7484] }
+        },
+        {
+          type: "Feature",
+          properties: { name: "West Site", status: "warning", type: "Service Area" },
+          geometry: { type: "Point", coordinates: [-74.006, 40.7128] }
+        },
+        {
+          type: "Feature",
+          properties: { name: "East Site", status: "urgent", type: "Priority Zone" },
+          geometry: { type: "Point", coordinates: [-73.9442, 40.6782] }
+        }
+      ]
+    };
+
+    const map = L.map("map", {
+      zoomControl: false
+    }).setView([40.72, -73.98], 11);
+
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    let currentLayer = null;
+    let currentData = null;
+    let allFeatureLayers = [];
+
+    const searchInput = document.getElementById("search");
+    const fileInput = document.getElementById("geojsonFile");
+    const fitButton = document.getElementById("fitButton");
+    const legendButton = document.getElementById("legendButton");
+    const clearButton = document.getElementById("clearButton");
+    const legend = document.getElementById("legend");
+    const legendBody = document.getElementById("legendBody");
+    const hideLegendButton = document.getElementById("hideLegendButton");
+    const details = document.getElementById("details");
+    const detailsTitle = document.getElementById("detailsTitle");
+    const detailsBody = document.getElementById("detailsBody");
+    const closeDetailsButton = document.getElementById("closeDetailsButton");
+    const dropHint = document.getElementById("dropHint");
+
+    function featureCategory(feature) {
+      const props = feature && feature.properties ? feature.properties : {};
+      return String(props.status || props.category || props.type || "default").toLowerCase();
+    }
+
+    function featureName(feature) {
+      const props = feature && feature.properties ? feature.properties : {};
+      return props.name || props.title || props.label || props.id || "Feature";
+    }
+
+    function colorForCategory(category) {
+      return categoryColors[category] || categoryColors.default;
+    }
+
+    function styleForFeature(feature) {
+      const color = colorForCategory(featureCategory(feature));
+      return {
+        color,
+        fillColor: color,
+        fillOpacity: 0.28,
+        opacity: 0.9,
+        weight: 2
+      };
+    }
+
+    function pointToLayer(feature, latlng) {
+      const color = colorForCategory(featureCategory(feature));
+      return L.circleMarker(latlng, {
+        radius: 8,
+        color: "#ffffff",
+        fillColor: color,
+        fillOpacity: 0.95,
+        opacity: 1,
+        weight: 2
+      });
+    }
+
+    function propertyRows(properties) {
+      return Object.entries(properties || {})
+        .map(([key, value]) => {
+          const displayValue = value === null || value === undefined ? "" : String(value);
+          return `<div class="property"><div class="property-key">${escapeHtml(key)}</div><div class="property-value">${escapeHtml(displayValue)}</div></div>`;
+        })
+        .join("") || '<div class="property"><div class="property-key">No properties</div><div class="property-value"></div></div>';
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function showDetails(feature) {
+      const name = featureName(feature);
+      detailsTitle.textContent = name;
+      detailsBody.innerHTML = propertyRows(feature.properties);
+      details.classList.add("is-visible");
+    }
+
+    function bindFeature(feature, layer) {
+      allFeatureLayers.push({ feature, layer });
+      const name = escapeHtml(featureName(feature));
+      const props = feature.properties || {};
+      const summary = Object.entries(props)
+        .slice(0, 4)
+        .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</div>`)
+        .join("");
+      layer.bindPopup(`<h3 class="popup-title">${name}</h3>${summary}`);
+      layer.on("click", () => showDetails(feature));
+    }
+
+    function renderLegend(data) {
+      const counts = new Map();
+      for (const feature of data.features || []) {
+        const category = featureCategory(feature);
+        counts.set(category, (counts.get(category) || 0) + 1);
+      }
+
+      legendBody.innerHTML = Array.from(counts.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([category, count]) => `
+          <div class="legend-row">
+            <span class="swatch" style="background:${colorForCategory(category)}"></span>
+            <span>${escapeHtml(category)}</span>
+            <span class="count">${count}</span>
+          </div>
+        `)
+        .join("") || '<div class="legend-row"><span class="swatch" style="background:#0d6efd"></span><span>No data</span><span class="count">0</span></div>';
+    }
+
+    function loadGeoJson(data) {
+      if (!data || data.type !== "FeatureCollection") {
+        throw new Error("Expected a GeoJSON FeatureCollection.");
+      }
+
+      if (currentLayer) {
+        currentLayer.remove();
+      }
+
+      currentData = data;
+      allFeatureLayers = [];
+      currentLayer = L.geoJSON(data, {
+        style: styleForFeature,
+        pointToLayer,
+        onEachFeature: bindFeature
+      }).addTo(map);
+
+      renderLegend(data);
+      searchInput.value = "";
+      fitToData();
+    }
+
+    function fitToData() {
+      if (!currentLayer) {
+        return;
+      }
+
+      const bounds = currentLayer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.16), { animate: true });
+      }
+    }
+
+    function filterFeatures(query) {
+      const normalized = query.trim().toLowerCase();
+      for (const { feature, layer } of allFeatureLayers) {
+        const text = JSON.stringify(feature.properties || {}).toLowerCase();
+        const visible = !normalized || text.includes(normalized);
+        const element = layer.getElement && layer.getElement();
+        if (element) {
+          element.style.display = visible ? "" : "none";
+        }
+        if (layer.setStyle) {
+          layer.setStyle({ opacity: visible ? 0.9 : 0.12, fillOpacity: visible ? 0.28 : 0.05 });
+        }
+      }
+    }
+
+    function setLegendVisible(visible) {
+      legend.classList.toggle("is-hidden", !visible);
+      legendButton.setAttribute("aria-expanded", String(visible));
+    }
+
+    async function readGeoJsonFile(file) {
+      const text = await file.text();
+      loadGeoJson(JSON.parse(text));
+    }
+
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        return;
+      }
+      try {
+        await readGeoJsonFile(file);
+      } catch (error) {
+        alert(error.message || "Unable to load GeoJSON.");
+      } finally {
+        fileInput.value = "";
+      }
+    });
+
+    searchInput.addEventListener("input", () => filterFeatures(searchInput.value));
+    fitButton.addEventListener("click", fitToData);
+    clearButton.addEventListener("click", () => loadGeoJson(sampleData));
+    legendButton.addEventListener("click", () => setLegendVisible(legend.classList.contains("is-hidden")));
+    hideLegendButton.addEventListener("click", () => setLegendVisible(false));
+    closeDetailsButton.addEventListener("click", () => details.classList.remove("is-visible"));
+
+    for (const eventName of ["dragenter", "dragover"]) {
+      window.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropHint.classList.add("is-active");
+      });
+    }
+
+    for (const eventName of ["dragleave", "drop"]) {
+      window.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        dropHint.classList.remove("is-active");
+      });
+    }
+
+    window.addEventListener("drop", async (event) => {
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) {
+        return;
+      }
+      try {
+        await readGeoJsonFile(file);
+      } catch (error) {
+        alert(error.message || "Unable to load GeoJSON.");
+      }
+    });
+
+    loadGeoJson(sampleData);
+  </script>
+</body>
+</html>

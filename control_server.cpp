@@ -22,6 +22,7 @@ ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> getPlaybackConfigCallback,
                              std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                              std::function<QJsonObject()> audioSnapshotCallback,
+                             std::function<QJsonObject(const QJsonObject&)> setAudioConfigCallback,
                              std::function<QJsonObject()> renderResultCallback,
                              QObject* parent)
     : QObject(parent)
@@ -41,6 +42,7 @@ ControlServer::ControlServer(QWidget* window,
     , m_getPlaybackConfigCallback(std::move(getPlaybackConfigCallback))
     , m_setPlaybackConfigCallback(std::move(setPlaybackConfigCallback))
     , m_audioSnapshotCallback(std::move(audioSnapshotCallback))
+    , m_setAudioConfigCallback(std::move(setAudioConfigCallback))
     , m_renderResultCallback(std::move(renderResultCallback)) {}
 
 ControlServer::~ControlServer() {
@@ -80,6 +82,7 @@ bool ControlServer::start(quint16 port) {
                                                            m_getPlaybackConfigCallback,
                                                            m_setPlaybackConfigCallback,
                                                            m_audioSnapshotCallback,
+                                                           m_setAudioConfigCallback,
                                                            m_renderResultCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());

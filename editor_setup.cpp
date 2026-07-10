@@ -24,6 +24,8 @@ using namespace editor;
 namespace {
 constexpr int kMinApplicationFontPointSize = 8;
 constexpr int kMaxApplicationFontPointSize = 96;
+constexpr int kCompactLayoutWidth = 900;
+constexpr int kPhoneLayoutWidth = 640;
 
 bool restVulkanDiagnosticsModeEnabled()
 {
@@ -44,10 +46,13 @@ void EditorWindow::setupWindowChrome()
     }
     const QRect available = targetScreen ? targetScreen->availableGeometry()
                                          : QRect(0, 0, 1280, 800);
-    const int maxWidth = qMax(640, available.width() - 80);
-    const int maxHeight = qMax(480, available.height() - 120);
-    const int width = qMin(1500, maxWidth);
-    const int height = qMin(860, maxHeight);
+    const bool compactScreen = available.width() < kCompactLayoutWidth;
+    const int edgeMargin = compactScreen ? 0 : 80;
+    const int verticalMargin = compactScreen ? 0 : 120;
+    const int maxWidth = qMax(360, available.width() - edgeMargin);
+    const int maxHeight = qMax(520, available.height() - verticalMargin);
+    const int width = compactScreen ? maxWidth : qMin(1500, maxWidth);
+    const int height = compactScreen ? maxHeight : qMin(860, maxHeight);
     resize(width, height);
     move(available.center() - rect().center());
 }
@@ -78,7 +83,8 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     qDebug() << "[STARTUP] Building explorer pane...";
     m_explorerPane = new ExplorerPane(this);
     m_explorerPane->setObjectName(QStringLiteral("column.explorer"));
-    m_explorerPane->setMinimumWidth(140);
+    m_explorerPane->setMinimumWidth(220);
+    m_explorerPane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     splitter->addWidget(m_explorerPane);
 
     connect(m_explorerPane, &ExplorerPane::fileActivated, this, [this](const QString& filePath) {
@@ -102,7 +108,8 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     QWidget* editorPane = buildEditorPane();
     if (editorPane) {
         editorPane->setObjectName(QStringLiteral("column.editor"));
-        editorPane->setMinimumWidth(360);
+        editorPane->setMinimumWidth(280);
+        editorPane->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
     splitter->addWidget(editorPane);
     m_explorerPane->setPreviewWindow(m_preview);
@@ -112,7 +119,8 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     m_inspectorPane = new InspectorPane(this);
     m_inspectorPane->setObjectName(QStringLiteral("column.inspector"));
-    m_inspectorPane->setMinimumWidth(180);
+    m_inspectorPane->setMinimumWidth(260);
+    m_inspectorPane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorPane) {
@@ -199,10 +207,22 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setStretchFactor(2, 0);
-    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(0, true);
     splitter->setCollapsible(1, false);
-    splitter->setCollapsible(2, false);
-    splitter->setSizes({320, 900, 280});
+    splitter->setCollapsible(2, true);
+
+    const int shellWidth = width();
+    if (shellWidth <= kPhoneLayoutWidth) {
+        m_explorerPane->setMinimumWidth(0);
+        m_inspectorPane->setMinimumWidth(0);
+        splitter->setSizes({0, shellWidth, 0});
+    } else if (shellWidth <= kCompactLayoutWidth) {
+        m_explorerPane->setMinimumWidth(0);
+        m_inspectorPane->setMinimumWidth(220);
+        splitter->setSizes({0, qMax(1, shellWidth - 220), 220});
+    } else {
+        splitter->setSizes({300, 1040, 360});
+    }
 
     setCentralWidget(central);
     startupProfileMark(QStringLiteral("layout.central_widget.done"));
@@ -424,14 +444,15 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             const qint64 heartbeatMs = m_lastMainThreadHeartbeatMs.load();
             const qint64 playheadMs = m_lastPlayheadAdvanceMs.load();
             const qint64 playheadAgeMs = playheadMs > 0 ? now - playheadMs : -1;
+            const bool playbackIsActive = playbackActive();
             const bool playbackTimerActive = m_playbackTimer.isActive();
-            const bool playbackStalled = playbackTimerActive &&
+            const bool playbackStalled = playbackIsActive &&
                                          playheadAgeMs > 500;
             return QJsonObject{
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("pid"), static_cast<qint64>(QCoreApplication::applicationPid())},
                 {QStringLiteral("current_frame"), m_fastCurrentFrame.load()},
-                {QStringLiteral("playback_active"), playbackTimerActive && !playbackStalled},
+                {QStringLiteral("playback_active"), playbackIsActive && !playbackStalled},
                 {QStringLiteral("playback_timer_active"), playbackTimerActive},
                 {QStringLiteral("playback_stalled"), playbackStalled},
                 {QStringLiteral("main_thread_heartbeat_ms"), heartbeatMs},
@@ -490,6 +511,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
         [this]() { return playbackConfigSnapshot(); },
         [this](const QJsonObject& patch) { return applyPlaybackConfigPatch(patch); },
         [this]() { return audioDebugSnapshot(); },
+        [this](const QJsonObject& patch) { return applyAudioConfigPatch(patch); },
         [this]() {
             const QJsonObject active = m_liveRenderProfile;
             const QJsonObject last = m_lastRenderProfile;

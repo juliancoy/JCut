@@ -70,6 +70,11 @@ struct DirectVulkanPreviewStats {
     int transcriptCandidateCount = 0;
     int transcriptPreparedCount = 0;
     int transcriptDrawnCount = 0;
+    int titleCandidateCount = 0;
+    int titlePreparedCount = 0;
+    int titleDrawnCount = 0;
+    QString lastTitleSkipReason;
+    QString lastTitleClipId;
     QString lastTranscriptSkipReason;
     QString lastTranscriptClipId;
     QString lastTranscriptPath;

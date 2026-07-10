@@ -98,6 +98,11 @@ void EditorWindow::advanceFrame()
         updatePlaybackStatusOverlay();
         return;
     }
+    if (!m_playbackLoopEnabled && m_timeline &&
+        m_timeline->currentFrame() >= lastPlayableFrame()) {
+        stopPlaybackWithReason(QStringLiteral("range_end"));
+        return;
+    }
 
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
     const int64_t currentSample = m_transportTimelineSample;

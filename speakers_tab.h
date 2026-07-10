@@ -305,6 +305,7 @@ private:
     QVector<int> speakerSectionRowsAtFrame(const QString& speakerId, int64_t sourceFrame) const;
     bool selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame);
     void focusSpeakerSectionTrackFromRow(int row);
+    QSet<int> manualPreviewAssignedFaceTrackIdsForClip(const TimelineClip& clip) const;
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
     QPixmap faceStreamPreviewAvatar(const TimelineClip& clip,
                                     const QString& speakerId,

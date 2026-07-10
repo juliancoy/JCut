@@ -110,13 +110,13 @@ QVector<QJsonObject> selectRepresentativeKeyframesForIdentity(
     minFrameSpacing = qMax(0, minFrameSpacing);
 
     std::sort(rows.begin(), rows.end(), [](const QJsonObject& a, const QJsonObject& b) {
-        const double scoreA = a.value(QLatin1StringView(kTrackingConfidenceKey)).toDouble(0.0);
-        const double scoreB = b.value(QLatin1StringView(kTrackingConfidenceKey)).toDouble(0.0);
+        const double scoreA = a.value(QLatin1String(kTrackingConfidenceKey)).toDouble(0.0);
+        const double scoreB = b.value(QLatin1String(kTrackingConfidenceKey)).toDouble(0.0);
         if (scoreA == scoreB) {
             const int64_t frameA =
-                a.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+                a.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
             const int64_t frameB =
-                b.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+                b.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
             return frameA < frameB;
         }
         return scoreA > scoreB;
@@ -126,11 +126,11 @@ QVector<QJsonObject> selectRepresentativeKeyframesForIdentity(
     selected.reserve(qMin(maxRepresentativeCrops, rows.size()));
     for (const QJsonObject& keyframe : rows) {
         const int64_t frame =
-            keyframe.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+            keyframe.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
         bool spacedEnough = true;
         for (const QJsonObject& chosen : selected) {
             const int64_t chosenFrame =
-                chosen.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+                chosen.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
             if (std::llabs(frame - chosenFrame) < minFrameSpacing) {
                 spacedEnough = false;
                 break;
@@ -168,8 +168,8 @@ QVector<QJsonObject> selectRepresentativeKeyframesForIdentity(
     }
 
     std::sort(selected.begin(), selected.end(), [](const QJsonObject& a, const QJsonObject& b) {
-        return a.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong() <
-               b.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+        return a.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong() <
+               b.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
     });
     return selected;
 }
@@ -261,7 +261,7 @@ CropExtractionResult extractRepresentativeCrops(
         for (const QJsonValue& keyframeValue : keyframes) {
             const QJsonObject keyframe = keyframeValue.toObject();
             const int64_t frame =
-                keyframe.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong();
+                keyframe.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong();
             if (frame >= 0) {
                 streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
                 streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
@@ -282,9 +282,9 @@ CropExtractionResult extractRepresentativeCrops(
         int sampleIndex = 0;
         for (const QJsonObject& keyframe : selectedKeyframes) {
             const double keyframeScore =
-                keyframe.value(QLatin1StringView(kTrackingConfidenceKey)).toDouble(0.0);
+                keyframe.value(QLatin1String(kTrackingConfidenceKey)).toDouble(0.0);
             const int64_t keyframeFrame = qMax<int64_t>(
-                0, keyframe.value(QLatin1StringView(kTrackingFrameKey)).toVariant().toLongLong());
+                0, keyframe.value(QLatin1String(kTrackingFrameKey)).toVariant().toLongLong());
             const int64_t sourceFrame = mapFacestreamFrameToSourceFrame(
                 request.clip, keyframeFrame, frameDomain, request.renderSyncMarkers);
             int64_t timelineFrame = keyframeFrame;
@@ -306,11 +306,11 @@ CropExtractionResult extractRepresentativeCrops(
             }
 
             const qreal xNorm = qBound<qreal>(
-                0.0, keyframe.value(QLatin1StringView(kTrackingXKey)).toDouble(0.5), 1.0);
+                0.0, keyframe.value(QLatin1String(kTrackingXKey)).toDouble(0.5), 1.0);
             const qreal yNorm = qBound<qreal>(
-                0.0, keyframe.value(QLatin1StringView(kTrackingYKey)).toDouble(0.85), 1.0);
+                0.0, keyframe.value(QLatin1String(kTrackingYKey)).toDouble(0.85), 1.0);
             const qreal boxNorm = qBound<qreal>(
-                0.01, keyframe.value(QLatin1StringView(kTrackingBoxSizeKey)).toDouble(0.2), 1.0);
+                0.01, keyframe.value(QLatin1String(kTrackingBoxSizeKey)).toDouble(0.2), 1.0);
             const QRectF normRect = normalizedCenterBoxRect(
                 xNorm, yNorm, boxNorm, QSizeF(image.width(), image.height()));
             const QRect cropRect = pixelRectFromNormalizedRect(normRect, image.size());
@@ -784,13 +784,13 @@ SeedTrackMatchResult matchFaceTracksToSeed(
             if (match.trackId == seedTrackId) {
                 return 0;
             }
-            if (match.decision == QLatin1StringView("auto_match")) {
+            if (match.decision == QLatin1String("auto_match")) {
                 return 1;
             }
-            if (match.decision == QLatin1StringView("review")) {
+            if (match.decision == QLatin1String("review")) {
                 return 2;
             }
-            if (match.decision == QLatin1StringView("no_embedding")) {
+            if (match.decision == QLatin1String("no_embedding")) {
                 return 3;
             }
             return 4;

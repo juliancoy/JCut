@@ -158,6 +158,7 @@ private:
     QJsonObject playbackConfigSnapshot() const;
     QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
     QJsonObject audioDebugSnapshot() const;
+    QJsonObject applyAudioConfigPatch(const QJsonObject& patch);
     void attachTranscriptDocumentsToHistorySnapshot(QJsonObject* snapshot) const;
     void restoreTranscriptDocumentsFromHistorySnapshot(const QJsonObject& snapshot);
     QString optimizedProfilePath() const;

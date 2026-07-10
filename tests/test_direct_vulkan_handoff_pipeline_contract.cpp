@@ -1836,6 +1836,35 @@ void TestDirectVulkanHandoffPipelineContract::
                speakers.contains(QStringLiteral("resolvedCurrentTrackIdsForSpeaker")),
            "preview track selection sync must use contiguous section-track "
            "mapping in section mode and speaker-track identity mapping outside it");
+  QVERIFY2(speakers.contains(QStringLiteral("manualPreviewAssignedFaceTrackIdsForClip")) &&
+               speakers.contains(QStringLiteral("clip.speakerFramingManualTrackId >= 0")) &&
+               speakers.contains(QStringLiteral("return manualPreviewAssignedFaceTrackIdsForClip(clip)")),
+           "preview track selection sync must fall back to the persisted manual "
+           "FaceDetections track when no transcript speaker is active after restart");
+  QVERIFY2(speakers.contains(QStringLiteral("m_speakerDeps.isPlaybackActive")) &&
+               speakers.contains(QStringLiteral("syncCurrentSpeakerSentenceToPlayhead(true)")) &&
+               speakers.contains(QStringLiteral("if (playbackActive)")),
+           "playback playhead sync must not auto-select speakers/sections or "
+           "replace the user's current face-track allocation context");
+  const qsizetype syncIdentityIndex =
+      speakers.indexOf(QStringLiteral("void SpeakersTab::syncIdentityToPlayhead"));
+  const qsizetype selectSpeakerIndex =
+      speakers.indexOf(QStringLiteral("bool SpeakersTab::selectSpeakerRowById"), syncIdentityIndex);
+  QVERIFY2(syncIdentityIndex >= 0 && selectSpeakerIndex > syncIdentityIndex,
+           "speaker identity sync body must be bounded for playback-context checks");
+  const QString syncIdentityBody =
+      speakers.mid(syncIdentityIndex, selectSpeakerIndex - syncIdentityIndex);
+  const qsizetype playbackGuardIndex =
+      syncIdentityBody.indexOf(QStringLiteral("if (playbackActive)"));
+  const qsizetype activeSpeakerLookupIndex =
+      syncIdentityBody.indexOf(QStringLiteral("activeSpeakerIdInTranscriptRootAtSourceFrame"));
+  QVERIFY2(playbackGuardIndex >= 0 && activeSpeakerLookupIndex > playbackGuardIndex,
+           "playback context guard must run before active-speaker selection sync");
+  const QString playbackGuardBody =
+      syncIdentityBody.mid(playbackGuardIndex, activeSpeakerLookupIndex - playbackGuardIndex);
+  QVERIFY2(!playbackGuardBody.contains(QStringLiteral("m_lastPlayheadSynced")),
+           "playback context guard must not update full-sync markers; stopping "
+           "playback must force a normal speaker/track sync at the final frame");
   const QString interactions =
       readSourceFile(QStringLiteral("speakers_tab_interactions.cpp"));
   QVERIFY2(!interactions.isEmpty(), "speakers_tab_interactions.cpp must be readable");
@@ -1845,6 +1874,10 @@ void TestDirectVulkanHandoffPipelineContract::
            "selected-speaker panel refresh must not clear contiguous "
            "section-track preview assignments when continuity streams are "
            "stored in indexed artifacts");
+  QVERIFY2(!interactions.contains(QStringLiteral("setPreviewAssignedFaceTrackIds({})")) &&
+               interactions.contains(QStringLiteral("manualPreviewAssignedFaceTrackIdsForClip(*clip)")),
+           "selected-speaker panel refresh must not erase a saved manual "
+           "facebox track when there is no selected speaker");
   QVERIFY2(speakers.contains(QStringLiteral("speakerSectionMinimumWords")) &&
                speakers.contains(QStringLiteral("sectionAssignmentWordCount")) &&
                speakers.contains(QStringLiteral("currentRow.wordCount >= minimumWords")),
@@ -1961,6 +1994,19 @@ void TestDirectVulkanHandoffPipelineContract::
                routes.contains(QStringLiteral("row[QStringLiteral(\"track_ids\")] = trackIds")),
            "REST track-map diagnostics must expose the full contiguous-section "
            "track list");
+
+  const QString presenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(!presenter.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
+  QVERIFY2(presenter.contains(QStringLiteral("preview_assigned_face_track_ids")) &&
+               presenter.contains(QStringLiteral("selected_speaker_assigned_face_track_ids")),
+           "preview diagnostics must expose the currently highlighted/restored "
+           "FaceDetections track ids");
+  QVERIFY2(routes.contains(QStringLiteral("preview_assigned_face_track_ids")) &&
+               routes.contains(QStringLiteral("visible_face_track_ids")),
+           "playback diagnostics must surface preview face-track selection for "
+           "restart regression verification");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -1982,6 +2028,14 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!body.contains(QStringLiteral("speakerFramingEnabledKeyframes.push_back")),
            "assigning a face track must not create a new speaker-framing "
            "enabled keyframe");
+  QVERIFY2(body.contains(QStringLiteral("editableClip.speakerFramingManualTrackId = trackId")) &&
+               body.contains(QStringLiteral("editableClip.speakerFramingManualStreamId = trimmedStreamId")),
+           "assigning a face track must persist the manual FaceDetections "
+           "track identity on the clip");
+  QVERIFY2(body.contains(QStringLiteral("m_deps.scheduleSaveState")) &&
+               body.contains(QStringLiteral("m_deps.scheduleSaveState()")),
+           "assigning a face track must schedule a project-state save so the "
+           "manual selection survives restart");
   QVERIFY2(body.contains(QStringLiteral("target.title")) &&
                body.contains(QStringLiteral("Speaker framing target from assigned face track")),
            "existing speaker-framing target keyframes updated by assignment "

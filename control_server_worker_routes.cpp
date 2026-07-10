@@ -1961,6 +1961,12 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                            preview.value(QStringLiteral("pending_visible_requests")).toArray());
         diagnostics.insert(QStringLiteral("visible_decode_diagnostics"),
                            preview.value(QStringLiteral("visible_decode_diagnostics")).toObject());
+        diagnostics.insert(QStringLiteral("preview_assigned_face_track_ids"),
+                           preview.value(QStringLiteral("preview_assigned_face_track_ids")).toArray());
+        diagnostics.insert(QStringLiteral("selected_speaker_assigned_face_track_ids"),
+                           preview.value(QStringLiteral("selected_speaker_assigned_face_track_ids")).toArray());
+        diagnostics.insert(QStringLiteral("visible_face_track_ids"),
+                           preview.value(QStringLiteral("visible_face_track_ids")).toArray());
         diagnostics.insert(QStringLiteral("visible_decode_retention_policy"),
                            preview.value(QStringLiteral("visible_decode_retention_policy")).toObject());
         diagnostics.insert(QStringLiteral("cache_pending_visible_requests"),
@@ -2149,6 +2155,69 @@ bool ControlServerWorker::handleAudioRoutes(QTcpSocket* socket, const Request& r
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), audio.value(QStringLiteral("ok")).toBool(true)},
             {QStringLiteral("audio"), audio}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/audio")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        QJsonObject result;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &result, [this, body]() {
+                return m_setAudioConfigCallback
+                    ? m_setAudioConfigCallback(body)
+                    : QJsonObject{{QStringLiteral("ok"), false},
+                                  {QStringLiteral("error"), QStringLiteral("audio config callback not configured")}};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for audio config update"));
+            return true;
+        }
+        if (!result.value(QStringLiteral("ok")).toBool()) {
+            writeError(socket, 400, result.value(QStringLiteral("error")).toString(
+                QStringLiteral("failed to update audio config")));
+            return true;
+        }
+
+        if (!m_lastStateSnapshot.isEmpty() && result.value(QStringLiteral("audio")).isObject()) {
+            const QJsonObject audio = result.value(QStringLiteral("audio")).toObject();
+            static const QStringList audioStateKeys = {
+                QStringLiteral("audioAmplifyEnabled"),
+                QStringLiteral("audioAmplifyDb"),
+                QStringLiteral("audioNormalizeEnabled"),
+                QStringLiteral("audioNormalizeTargetDb"),
+                QStringLiteral("audioStereoToMonoEnabled"),
+                QStringLiteral("audioSelectiveNormalizeEnabled"),
+                QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds"),
+                QStringLiteral("audioSelectiveNormalizePeakDb"),
+                QStringLiteral("audioSelectiveNormalizePasses"),
+                QStringLiteral("audioSelectiveNormalizeOverlayVisible"),
+                QStringLiteral("audioTranscriptNormalizeEnabled"),
+                QStringLiteral("audioWaveformPreviewPostProcessing"),
+                QStringLiteral("audioPeakReductionEnabled"),
+                QStringLiteral("audioPeakThresholdDb"),
+                QStringLiteral("audioLimiterEnabled"),
+                QStringLiteral("audioLimiterThresholdDb"),
+                QStringLiteral("audioCompressorEnabled"),
+                QStringLiteral("audioCompressorThresholdDb"),
+                QStringLiteral("audioCompressorRatio"),
+                QStringLiteral("audioSoftClipEnabled")
+            };
+            for (const QString& key : audioStateKeys) {
+                if (audio.contains(key)) {
+                    m_lastStateSnapshot.insert(key, audio.value(key));
+                }
+            }
+            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        }
+
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("editor"), result}
         });
         return true;
     }

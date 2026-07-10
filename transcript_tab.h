@@ -143,6 +143,7 @@ private slots:
     void onPrependMsChanged(int value);
     void onPostpendMsChanged(int value);
     void onOffsetMsChanged(int value);
+    void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeModeChanged(int index);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);

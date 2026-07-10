@@ -438,13 +438,25 @@ bool DecoderContext::initCodec() {
 
     if (m_streamHasAlphaTag) {
         m_codecCtx->get_format = get_alpha_compatible_format;
+    } else if (!hardwareEnabled) {
+        m_codecCtx->get_format = avcodec_default_get_format;
+        m_codecCtx->opaque = nullptr;
+        m_hwPixFmt = AV_PIX_FMT_NONE;
+        if (m_codecCtx->hw_device_ctx) {
+            av_buffer_unref(&m_codecCtx->hw_device_ctx);
+        }
     }
 
     AVDictionary* codecOptions = nullptr;
     if (!hardwareEnabled) {
         av_dict_set(&codecOptions, "threads", "1", 0);
     }
-    ret = avcodec_open2(m_codecCtx, decoder, &codecOptions);
+    if (hardwareEnabled) {
+        ret = avcodec_open2(m_codecCtx, decoder, &codecOptions);
+    } else {
+        std::unique_lock<std::mutex> decodeLock(ffmpegDecodeMutex());
+        ret = avcodec_open2(m_codecCtx, decoder, &codecOptions);
+    }
     av_dict_free(&codecOptions);
     if (ret < 0) {
         qWarning() << "Failed to open codec:" << avErrToString(ret);
@@ -591,7 +603,7 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         }
     }
 
-    m_codecCtx->get_format = nullptr;
+    m_codecCtx->get_format = avcodec_default_get_format;
     m_codecCtx->opaque = nullptr;
     m_hwPixFmt = AV_PIX_FMT_NONE;
     return false;

@@ -29,6 +29,7 @@ public:
                            std::function<QJsonObject()> getPlaybackConfigCallback,
                            std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                            std::function<QJsonObject()> audioSnapshotCallback,
+                           std::function<QJsonObject(const QJsonObject&)> setAudioConfigCallback,
                            std::function<QJsonObject()> renderResultCallback,
                            QObject* parent = nullptr);
     ~ControlServer() override;
@@ -55,6 +56,7 @@ private:
     std::function<QJsonObject()> m_getPlaybackConfigCallback;
     std::function<QJsonObject(const QJsonObject&)> m_setPlaybackConfigCallback;
     std::function<QJsonObject()> m_audioSnapshotCallback;
+    std::function<QJsonObject(const QJsonObject&)> m_setAudioConfigCallback;
     std::function<QJsonObject()> m_renderResultCallback;
     QObject* m_worker = nullptr;
     std::unique_ptr<QThread> m_thread;

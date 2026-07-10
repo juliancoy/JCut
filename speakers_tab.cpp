@@ -1630,11 +1630,22 @@ void SpeakersTab::syncIdentityToPlayhead(int64_t absolutePlaybackSample,
         return;
     }
 
+    const bool playbackActive =
+        m_speakerDeps.isPlaybackActive && m_speakerDeps.isPlaybackActive();
+    if (playbackActive) {
+        // Playback should not steal the user's speaker/track allocation context.
+        // Leave the last full-sync markers untouched so stopping playback forces
+        // a normal selection sync at the final playhead position.
+        syncCurrentSpeakerSentenceToPlayhead(true);
+        return;
+    }
+
     const QString activeSpeakerId =
         activeSpeakerIdInTranscriptRootAtSourceFrame(m_transcriptSession.rootObject(), sourceFrame);
     if (activeSpeakerId.isEmpty()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-            m_speakerDeps.setPreviewAssignedFaceTrackIds({});
+            m_speakerDeps.setPreviewAssignedFaceTrackIds(
+                manualPreviewAssignedFaceTrackIdsForClip(*clip));
         }
         m_lastPlayheadSyncedSourceFrame = sourceFrame;
         m_lastPlayheadSyncedSpeakerId.clear();
@@ -1785,6 +1796,15 @@ void SpeakersTab::focusSpeakerSectionTrackFromRow(int row)
                  speakerId.isEmpty() ? QStringLiteral("speaker") : speakerDisplayLabel(speakerId)));
 }
 
+QSet<int> SpeakersTab::manualPreviewAssignedFaceTrackIdsForClip(const TimelineClip& clip) const
+{
+    QSet<int> trackIds;
+    if (clip.speakerFramingManualTrackId >= 0) {
+        trackIds.insert(clip.speakerFramingManualTrackId);
+    }
+    return trackIds;
+}
+
 QSet<int> SpeakersTab::previewAssignedFaceTrackIdsForSpeakerAtFrame(const TimelineClip& clip,
                                                                     const QString& speakerId,
                                                                     int64_t sourceFrame) const
@@ -1792,7 +1812,7 @@ QSet<int> SpeakersTab::previewAssignedFaceTrackIdsForSpeakerAtFrame(const Timeli
     const QString trimmedSpeakerId = speakerId.trimmed();
     QSet<int> trackIds;
     if (trimmedSpeakerId.isEmpty()) {
-        return trackIds;
+        return manualPreviewAssignedFaceTrackIdsForClip(clip);
     }
 
     if (contiguousTranscriptSectionModeActive()) {

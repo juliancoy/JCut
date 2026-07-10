@@ -219,7 +219,8 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     };
     if (!clip || !m_transcriptSession.hasObjectDocument()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-            m_speakerDeps.setPreviewAssignedFaceTrackIds({});
+            m_speakerDeps.setPreviewAssignedFaceTrackIds(
+                clip ? manualPreviewAssignedFaceTrackIdsForClip(*clip) : QSet<int>{});
         }
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(
@@ -244,7 +245,8 @@ void SpeakersTab::updateSelectedSpeakerPanel()
 
     if (speakerId.isEmpty()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-            m_speakerDeps.setPreviewAssignedFaceTrackIds({});
+            m_speakerDeps.setPreviewAssignedFaceTrackIds(
+                clip ? manualPreviewAssignedFaceTrackIdsForClip(*clip) : QSet<int>{});
         }
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(QStringLiteral("No speaker selected"));
@@ -375,7 +377,8 @@ void SpeakersTab::updateSelectedSpeakerPanelFast()
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-            m_speakerDeps.setPreviewAssignedFaceTrackIds({});
+            m_speakerDeps.setPreviewAssignedFaceTrackIds(
+                clip ? manualPreviewAssignedFaceTrackIdsForClip(*clip) : QSet<int>{});
         }
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(

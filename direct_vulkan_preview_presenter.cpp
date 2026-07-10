@@ -680,13 +680,10 @@ void DirectVulkanPreviewPresenter::requestUpdate()
             m_stack->setCurrentWidget(m_windowContainer);
         }
     }
-    if (jcut::direct_vulkan_preview::vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
+    if (m_windowContainer) {
         m_windowContainer->raise();
     }
     if (m_window) {
-        if (jcut::direct_vulkan_preview::vulkanPreviewDirectSwapchainVisible()) {
-            directVulkanPreviewWindowRaise(m_window);
-        }
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
     }
     if (m_overlayWidget && kAllowQtPainterOverlayInDirectVulkanPreview) {
@@ -1120,6 +1117,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("decode_status_details"), statusDetails},
         {QStringLiteral("facedetections_overlay_boxes"), m_state ? m_state->facedetectionsOverlays.size() : 0},
         {QStringLiteral("facedetections_overlays"), facedetectionsOverlays},
+        {QStringLiteral("preview_assigned_face_track_ids"), selectedSpeakerAssignedFaceTrackIds},
         {QStringLiteral("selected_speaker_assigned_face_track_ids"), selectedSpeakerAssignedFaceTrackIds},
         {QStringLiteral("visible_face_track_ids"), visibleFaceTrackIds},
         {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
@@ -1175,6 +1173,11 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("transcript_candidate_count"), m_stats.transcriptCandidateCount},
         {QStringLiteral("transcript_prepared_count"), m_stats.transcriptPreparedCount},
         {QStringLiteral("transcript_drawn_count"), m_stats.transcriptDrawnCount},
+        {QStringLiteral("title_candidate_count"), m_stats.titleCandidateCount},
+        {QStringLiteral("title_prepared_count"), m_stats.titlePreparedCount},
+        {QStringLiteral("title_drawn_count"), m_stats.titleDrawnCount},
+        {QStringLiteral("last_title_skip_reason"), m_stats.lastTitleSkipReason},
+        {QStringLiteral("last_title_clip_id"), m_stats.lastTitleClipId},
         {QStringLiteral("last_transcript_skip_reason"), m_stats.lastTranscriptSkipReason},
         {QStringLiteral("last_transcript_clip_id"), m_stats.lastTranscriptClipId},
         {QStringLiteral("last_transcript_path"), m_stats.lastTranscriptPath},
@@ -1301,6 +1304,11 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("transcript_candidate_count"), m_stats.transcriptCandidateCount},
         {QStringLiteral("transcript_prepared_count"), m_stats.transcriptPreparedCount},
         {QStringLiteral("transcript_drawn_count"), m_stats.transcriptDrawnCount},
+        {QStringLiteral("title_candidate_count"), m_stats.titleCandidateCount},
+        {QStringLiteral("title_prepared_count"), m_stats.titlePreparedCount},
+        {QStringLiteral("title_drawn_count"), m_stats.titleDrawnCount},
+        {QStringLiteral("last_title_skip_reason"), m_stats.lastTitleSkipReason},
+        {QStringLiteral("last_title_clip_id"), m_stats.lastTitleClipId},
         {QStringLiteral("last_transcript_skip_reason"), m_stats.lastTranscriptSkipReason},
         {QStringLiteral("last_transcript_clip_id"), m_stats.lastTranscriptClipId},
         {QStringLiteral("last_transcript_path"), m_stats.lastTranscriptPath},

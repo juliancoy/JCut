@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QSet>
+#include <QSignalBlocker>
 #include <limits>
 #include <algorithm>
 
@@ -814,4 +815,164 @@ QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
                        QStringLiteral("playback"),
                        patch);
     return playbackConfigSnapshot();
+}
+
+QJsonObject EditorWindow::applyAudioConfigPatch(const QJsonObject& patch)
+{
+    auto reject = [](const QString& error) {
+        return QJsonObject{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("error"), error}
+        };
+    };
+
+    auto readBool = [&patch, &reject](const QString& key, bool* target) -> QJsonObject {
+        if (!patch.contains(key)) {
+            return {};
+        }
+        if (!patch.value(key).isBool()) {
+            return reject(QStringLiteral("%1 must be a boolean").arg(key));
+        }
+        *target = patch.value(key).toBool();
+        return {};
+    };
+
+    auto readDouble = [&patch, &reject](const QString& key, qreal min, qreal max, qreal* target) -> QJsonObject {
+        if (!patch.contains(key)) {
+            return {};
+        }
+        bool ok = false;
+        const qreal value = patch.value(key).toVariant().toDouble(&ok);
+        if (!ok || value < min || value > max) {
+            return reject(QStringLiteral("%1 must be a number in [%2, %3]")
+                              .arg(key)
+                              .arg(min)
+                              .arg(max));
+        }
+        *target = value;
+        return {};
+    };
+
+    auto readInt = [&patch, &reject](const QString& key, int min, int max, int* target) -> QJsonObject {
+        if (!patch.contains(key)) {
+            return {};
+        }
+        bool ok = false;
+        const int value = patch.value(key).toVariant().toInt(&ok);
+        if (!ok || value < min || value > max) {
+            return reject(QStringLiteral("%1 must be an integer in [%2, %3]")
+                              .arg(key)
+                              .arg(min)
+                              .arg(max));
+        }
+        *target = value;
+        return {};
+    };
+
+    PreviewSurface::AudioDynamicsSettings next = m_previewAudioDynamics;
+    QJsonObject error;
+    if (!(error = readBool(QStringLiteral("audioAmplifyEnabled"), &next.amplifyEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioAmplifyDb"), -36.0, 36.0, &next.amplifyDb)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioNormalizeEnabled"), &next.normalizeEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioNormalizeTargetDb"), -24.0, 0.0, &next.normalizeTargetDb)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioStereoToMonoEnabled"), &next.stereoToMonoEnabled)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioSelectiveNormalizeEnabled"), &next.selectiveNormalizeEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds"), 0.1, 30.0, &next.selectiveNormalizeMinSegmentSeconds)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioSelectiveNormalizePeakDb"), -36.0, 0.0, &next.selectiveNormalizePeakDb)).isEmpty()) return error;
+    if (!(error = readInt(QStringLiteral("audioSelectiveNormalizePasses"), 1, 8, &next.selectiveNormalizePasses)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioSelectiveNormalizeOverlayVisible"), &next.selectiveNormalizeOverlayVisible)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioTranscriptNormalizeEnabled"), &next.transcriptNormalizeEnabled)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioWaveformPreviewPostProcessing"), &next.waveformPreviewPostProcessing)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioPeakReductionEnabled"), &next.peakReductionEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioPeakThresholdDb"), -24.0, 0.0, &next.peakThresholdDb)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioLimiterEnabled"), &next.limiterEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioLimiterThresholdDb"), -12.0, 0.0, &next.limiterThresholdDb)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioCompressorEnabled"), &next.compressorEnabled)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioCompressorThresholdDb"), -30.0, -1.0, &next.compressorThresholdDb)).isEmpty()) return error;
+    if (!(error = readDouble(QStringLiteral("audioCompressorRatio"), 1.0, 20.0, &next.compressorRatio)).isEmpty()) return error;
+    if (!(error = readBool(QStringLiteral("audioSoftClipEnabled"), &next.softClipEnabled)).isEmpty()) return error;
+
+    m_previewAudioDynamics = next;
+
+    auto setCheckedBlocked = [](QCheckBox* box, bool checked) {
+        if (!box) return;
+        QSignalBlocker block(box);
+        box->setChecked(checked);
+    };
+    auto setDoubleBlocked = [](QDoubleSpinBox* spin, qreal value) {
+        if (!spin) return;
+        QSignalBlocker block(spin);
+        spin->setValue(value);
+    };
+    auto setIntBlocked = [](QSpinBox* spin, int value) {
+        if (!spin) return;
+        QSignalBlocker block(spin);
+        spin->setValue(value);
+    };
+
+    setCheckedBlocked(m_audioAmplifyEnabledCheckBox, next.amplifyEnabled);
+    setDoubleBlocked(m_audioAmplifyDbSpin, next.amplifyDb);
+    setCheckedBlocked(m_audioNormalizeEnabledCheckBox, next.normalizeEnabled);
+    setDoubleBlocked(m_audioNormalizeTargetDbSpin, next.normalizeTargetDb);
+    setCheckedBlocked(m_audioStereoToMonoCheckBox, next.stereoToMonoEnabled);
+    setCheckedBlocked(m_audioSelectiveNormalizeEnabledCheckBox, next.selectiveNormalizeEnabled);
+    setDoubleBlocked(m_audioSelectiveNormalizeMinSecondsSpin, next.selectiveNormalizeMinSegmentSeconds);
+    setDoubleBlocked(m_audioSelectiveNormalizePeakDbSpin, next.selectiveNormalizePeakDb);
+    setIntBlocked(m_audioSelectiveNormalizePassesSpin, next.selectiveNormalizePasses);
+    setCheckedBlocked(m_audioSelectiveNormalizeOverlayVisibleCheckBox, next.selectiveNormalizeOverlayVisible);
+    setCheckedBlocked(m_audioTranscriptNormalizeEnabledCheckBox, next.transcriptNormalizeEnabled);
+    setCheckedBlocked(m_audioWaveformPreviewProcessedCheckBox, next.waveformPreviewPostProcessing);
+    setCheckedBlocked(m_audioPeakReductionEnabledCheckBox, next.peakReductionEnabled);
+    setDoubleBlocked(m_audioPeakThresholdDbSpin, next.peakThresholdDb);
+    setCheckedBlocked(m_audioLimiterEnabledCheckBox, next.limiterEnabled);
+    setDoubleBlocked(m_audioLimiterThresholdDbSpin, next.limiterThresholdDb);
+    setCheckedBlocked(m_audioCompressorEnabledCheckBox, next.compressorEnabled);
+    setDoubleBlocked(m_audioCompressorThresholdDbSpin, next.compressorThresholdDb);
+    setDoubleBlocked(m_audioCompressorRatioSpin, next.compressorRatio);
+    setCheckedBlocked(m_audioSoftClipEnabledCheckBox, next.softClipEnabled);
+
+    if (m_preview) {
+        m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
+    }
+    if (m_audioEngine) {
+        m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioEngine->setTranscriptNormalizeRanges(
+            m_previewAudioDynamics.transcriptNormalizeEnabled
+                ? effectiveTranscriptNormalizeRanges()
+                : QVector<ExportRangeSegment>{});
+        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+    }
+
+    appendRuntimePatch(&m_runtimePatchLog,
+                       &m_runtimePatchSequence,
+                       QStringLiteral("audio"),
+                       patch);
+
+    QJsonObject audio{
+        {QStringLiteral("audioAmplifyEnabled"), m_previewAudioDynamics.amplifyEnabled},
+        {QStringLiteral("audioAmplifyDb"), m_previewAudioDynamics.amplifyDb},
+        {QStringLiteral("audioNormalizeEnabled"), m_previewAudioDynamics.normalizeEnabled},
+        {QStringLiteral("audioNormalizeTargetDb"), m_previewAudioDynamics.normalizeTargetDb},
+        {QStringLiteral("audioStereoToMonoEnabled"), m_previewAudioDynamics.stereoToMonoEnabled},
+        {QStringLiteral("audioSelectiveNormalizeEnabled"), m_previewAudioDynamics.selectiveNormalizeEnabled},
+        {QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds"), m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds},
+        {QStringLiteral("audioSelectiveNormalizePeakDb"), m_previewAudioDynamics.selectiveNormalizePeakDb},
+        {QStringLiteral("audioSelectiveNormalizePasses"), m_previewAudioDynamics.selectiveNormalizePasses},
+        {QStringLiteral("audioSelectiveNormalizeOverlayVisible"), m_previewAudioDynamics.selectiveNormalizeOverlayVisible},
+        {QStringLiteral("audioTranscriptNormalizeEnabled"), m_previewAudioDynamics.transcriptNormalizeEnabled},
+        {QStringLiteral("audioWaveformPreviewPostProcessing"), m_previewAudioDynamics.waveformPreviewPostProcessing},
+        {QStringLiteral("audioPeakReductionEnabled"), m_previewAudioDynamics.peakReductionEnabled},
+        {QStringLiteral("audioPeakThresholdDb"), m_previewAudioDynamics.peakThresholdDb},
+        {QStringLiteral("audioLimiterEnabled"), m_previewAudioDynamics.limiterEnabled},
+        {QStringLiteral("audioLimiterThresholdDb"), m_previewAudioDynamics.limiterThresholdDb},
+        {QStringLiteral("audioCompressorEnabled"), m_previewAudioDynamics.compressorEnabled},
+        {QStringLiteral("audioCompressorThresholdDb"), m_previewAudioDynamics.compressorThresholdDb},
+        {QStringLiteral("audioCompressorRatio"), m_previewAudioDynamics.compressorRatio},
+        {QStringLiteral("audioSoftClipEnabled"), m_previewAudioDynamics.softClipEnabled}
+    };
+
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("audio"), audio}
+    };
 }
