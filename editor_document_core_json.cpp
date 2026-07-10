@@ -335,17 +335,61 @@ std::string outputModeToString(jcut::render::RenderOutputMode mode)
     return "encoded_file";
 }
 
-json legacyClipJson(const jcut::EditorClip& clip)
+json legacyClipJson(const jcut::EditorClip& clip, const json* baseClip = nullptr)
 {
-    return json{
-        {"id", std::string("imgui-clip-") + std::to_string(clip.id)},
-        {"label", clip.label},
-        {"filePath", clip.sourcePath},
-        {"trackIndex", std::max(0, clip.trackId - 1)},
-        {"startFrame", clip.startFrame},
-        {"durationFrames", std::max(1, clip.durationFrames)},
-        {"mediaType", "video"}
+    json out = (baseClip && baseClip->is_object()) ? *baseClip : json::object();
+    if (!out.contains("id") || !out["id"].is_string() || out["id"].get<std::string>().empty()) {
+        out["id"] = std::string("imgui-clip-") + std::to_string(clip.id);
+    }
+    out["label"] = clip.label;
+    out["filePath"] = clip.sourcePath;
+    out["trackIndex"] = std::max(0, clip.trackId - 1);
+    out["startFrame"] = clip.startFrame;
+    out["durationFrames"] = std::max(1, clip.durationFrames);
+    if (!out.contains("mediaType") || !out["mediaType"].is_string()) {
+        out["mediaType"] = "video";
+    }
+    return out;
+}
+
+const json* findPreservedClipJson(const json& baseTimeline,
+                                  const jcut::EditorClip& clip,
+                                  std::vector<bool>* consumed)
+{
+    if (!baseTimeline.is_array() || !consumed || consumed->size() != baseTimeline.size()) {
+        return nullptr;
+    }
+
+    auto matchesPath = [&](const json& candidate) {
+        return stringOr(candidate, "filePath") == clip.sourcePath ||
+               stringOr(candidate, "proxyPath") == clip.sourcePath ||
+               stringOr(candidate, "audioSourcePath") == clip.sourcePath;
     };
+    auto matchesShape = [&](const json& candidate) {
+        return stringOr(candidate, "label") == clip.label &&
+               valueOr(candidate, "trackIndex", 0) == std::max(0, clip.trackId - 1) &&
+               valueOr(candidate, "startFrame", 0) == clip.startFrame;
+    };
+
+    for (std::size_t i = 0; i < baseTimeline.size(); ++i) {
+        if ((*consumed)[i] || !baseTimeline.at(i).is_object()) {
+            continue;
+        }
+        if (matchesPath(baseTimeline.at(i))) {
+            (*consumed)[i] = true;
+            return &baseTimeline.at(i);
+        }
+    }
+    for (std::size_t i = 0; i < baseTimeline.size(); ++i) {
+        if ((*consumed)[i] || !baseTimeline.at(i).is_object()) {
+            continue;
+        }
+        if (matchesShape(baseTimeline.at(i))) {
+            (*consumed)[i] = true;
+            return &baseTimeline.at(i);
+        }
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -454,11 +498,16 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
 
     int selectedTrackIndex = -1;
     json tracks = json::array();
+    const json baseTracks = root.value("tracks", json::array());
     for (std::size_t i = 0; i < document.tracks.size(); ++i) {
         const EditorTrack& track = document.tracks[i];
-        tracks.push_back({
-            {"name", track.label.empty() ? std::string("Track ") + std::to_string(i + 1) : track.label}
-        });
+        json trackJson = (baseTracks.is_array() && i < baseTracks.size() && baseTracks.at(i).is_object())
+            ? baseTracks.at(i)
+            : json::object();
+        trackJson["name"] = track.label.empty()
+            ? std::string("Track ") + std::to_string(i + 1)
+            : track.label;
+        tracks.push_back(std::move(trackJson));
         if (track.selected) {
             selectedTrackIndex = static_cast<int>(i);
         }
@@ -469,8 +518,11 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     json timeline = json::array();
     json selectedClip = json::object();
     std::string selectedClipId;
+    const json baseTimeline = root.value("timeline", json::array());
+    std::vector<bool> consumedBaseClips(baseTimeline.is_array() ? baseTimeline.size() : 0, false);
     for (const EditorClip& clip : document.clips) {
-        json clipJson = legacyClipJson(clip);
+        const json* baseClip = findPreservedClipJson(baseTimeline, clip, &consumedBaseClips);
+        json clipJson = legacyClipJson(clip, baseClip);
         timeline.push_back(clipJson);
         if (clip.selected) {
             selectedClipId = clipJson.value("id", std::string{});

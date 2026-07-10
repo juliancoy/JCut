@@ -38,6 +38,7 @@ private slots:
     void testDocumentBuildsTimelineRenderData();
     void testCoreDocumentJsonRoundTrips();
     void testLegacyStateJsonBuildsDocumentCore();
+    void testLegacyStateJsonPreservesQtOnlyArtifactFields();
     void testCoreDocumentFileRoundTrips();
     void testImGuiProjectSessionLoadsActiveQtProjectFiles();
     void testImGuiProjectSessionSaveWritesQtStateFiles();
@@ -503,6 +504,65 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
              jcut::render::RenderOutputMode::EncodedFileAndImageSequence);
 }
 
+void TestEditorRuntime::testLegacyStateJsonPreservesQtOnlyArtifactFields()
+{
+    const nlohmann::json base = {
+        {"projectName", "Artifact"},
+        {"mediaRoot", "/media/root"},
+        {"selectedClipId", "clip-a"},
+        {"tracks", nlohmann::json::array({
+            {
+                {"name", "Video"},
+                {"height", 72},
+                {"visualsEnabled", false},
+                {"audioEnabled", true}
+            }
+        })},
+        {"timeline", nlohmann::json::array({
+            {
+                {"id", "clip-a"},
+                {"label", "Interview"},
+                {"filePath", "interview.mov"},
+                {"proxyPath", "proxy/interview"},
+                {"audioSourcePath", "audio/interview.wav"},
+                {"mediaType", "video"},
+                {"trackIndex", 0},
+                {"startFrame", 10},
+                {"durationFrames", 90},
+                {"gradingKeyframes", nlohmann::json::array({{{"frame", 10}, {"brightness", 0.25}}})},
+                {"transcriptPath", "transcripts/interview.json"},
+                {"speakerTrackingEnabled", true},
+                {"correctionPolygons", nlohmann::json::array({{{"enabled", true}}})}
+            }
+        })}
+    };
+
+    std::string error;
+    const std::optional<jcut::EditorDocumentCore> core =
+        jcut::editorDocumentCoreFromJson(base, &error);
+    QVERIFY2(core.has_value(), error.c_str());
+
+    jcut::EditorDocumentCore updated = *core;
+    updated.projectName = "Artifact Edited";
+    updated.transport.currentFrame = 42;
+    updated.clips.front().startFrame = 12;
+    updated.clips.front().selected = true;
+
+    const nlohmann::json saved = jcut::toLegacyStateJson(updated, &base);
+    QCOMPARE(QString::fromStdString(saved.value("mediaRoot", std::string{})), QStringLiteral("/media/root"));
+    const nlohmann::json track = saved.at("tracks").at(0);
+    QCOMPARE(track.value("height", 0), 72);
+    QCOMPARE(track.value("visualsEnabled", true), false);
+    const nlohmann::json clip = saved.at("timeline").at(0);
+    QCOMPARE(QString::fromStdString(clip.value("id", std::string{})), QStringLiteral("clip-a"));
+    QCOMPARE(clip.value("startFrame", 0), 12);
+    QVERIFY(clip.contains("gradingKeyframes"));
+    QVERIFY(clip.contains("transcriptPath"));
+    QVERIFY(clip.contains("speakerTrackingEnabled"));
+    QVERIFY(clip.contains("correctionPolygons"));
+    QCOMPARE(QString::fromStdString(saved.value("selectedClipId", std::string{})), QStringLiteral("clip-a"));
+}
+
 void TestEditorRuntime::testCoreDocumentFileRoundTrips()
 {
     const jcut::EditorDocumentCore original = jcut::EditorRuntime::createDemo().snapshot();
@@ -547,6 +607,7 @@ void TestEditorRuntime::testImGuiProjectSessionLoadsActiveQtProjectFiles()
     QVERIFY(stateFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
     QVERIFY(stateFile.write(R"({
   "projectName": "Client Cut",
+  "mediaRoot": "media",
   "currentFrame": 64,
   "selectedTrackIndex": 0,
   "selectedClipId": "clip-1",
@@ -576,6 +637,8 @@ void TestEditorRuntime::testImGuiProjectSessionLoadsActiveQtProjectFiles()
     QVERIFY2(session.has_value(), error.c_str());
     QCOMPARE(QString::fromStdString(session->projectId), QStringLiteral("client-cut"));
     QCOMPARE(QString::fromStdString(session->rootDirPath), tempDir.path());
+    QCOMPARE(QString::fromStdString(session->mediaRootPath),
+             QDir(tempDir.path()).filePath(QStringLiteral("media")));
     QCOMPARE(QString::fromStdString(session->document.projectName), QStringLiteral("Client Cut"));
     QCOMPARE(session->document.transport.currentFrame, 64);
     QCOMPARE(session->document.clips.size(), std::size_t(1));

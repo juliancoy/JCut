@@ -38,6 +38,36 @@ std::string pathString(const fs::path& path)
     return path.lexically_normal().string();
 }
 
+std::string stringValue(const json& object, const char* key)
+{
+    if (!object.is_object()) {
+        return {};
+    }
+    const json::const_iterator it = object.find(key);
+    if (it == object.end() || !it->is_string()) {
+        return {};
+    }
+    return it->get<std::string>();
+}
+
+std::string resolvePathForRoot(const std::string& path, const fs::path& rootDir)
+{
+    const std::string cleaned = trim(path);
+    if (cleaned.empty()) {
+        return {};
+    }
+    fs::path resolved(cleaned);
+    if (resolved.is_relative()) {
+        resolved = rootDir / resolved;
+    }
+    std::error_code ec;
+    const fs::path canonical = fs::canonical(resolved, ec);
+    if (!ec) {
+        return pathString(canonical);
+    }
+    return pathString(fs::absolute(resolved, ec));
+}
+
 std::optional<fs::path> normalizedExistingDirPath(const std::string& path)
 {
     const std::string cleaned = trim(path);
@@ -273,6 +303,14 @@ std::optional<ImGuiProjectSession> loadActiveImGuiProjectSession(std::string* er
     session.statePath = pathString(statePath);
     session.historyPath = pathString(historyPath);
     session.rootDirPath = pathString(rootDir);
+    session.mediaRootPath = resolvePathForRoot(
+        stringValue(root, "mediaRoot").empty()
+            ? stringValue(root, "explorerRoot")
+            : stringValue(root, "mediaRoot"),
+        rootDir);
+    if (session.mediaRootPath.empty()) {
+        session.mediaRootPath = session.rootDirPath;
+    }
     session.legacyStateRoot = root.is_object() ? root : json::object();
     return session;
 }

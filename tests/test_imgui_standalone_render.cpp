@@ -2,6 +2,7 @@
 
 #include "../standalone_preview_renderer.h"
 
+#include <QFile>
 #include <QTemporaryDir>
 
 #include <fstream>
@@ -12,7 +13,21 @@ class TestImGuiStandaloneRender : public QObject {
 private slots:
     void testRenderPreviewFrameDecodesImageClip();
     void testLegacyClipWithoutMediaKindIsVisual();
+    void testPreviewKeepsZeroCopyWithCpuFallbackContract();
 };
+
+namespace {
+
+QString readSourceFile(const QString& relativePath)
+{
+    QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + relativePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return {};
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+} // namespace
 
 void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
 {
@@ -95,6 +110,28 @@ void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
 
     QVERIFY2(result.success, result.message.c_str());
     QVERIFY(!result.image.empty());
+}
+
+void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract()
+{
+    const QString shell = readSourceFile(QStringLiteral("jcut_imgui_main.cpp"));
+    const QString preview = readSourceFile(QStringLiteral("standalone_preview_renderer.cpp"));
+    QVERIFY2(!shell.isEmpty(), "jcut_imgui_main.cpp must be readable");
+    QVERIFY2(!preview.isEmpty(), "standalone_preview_renderer.cpp must be readable");
+
+    QVERIFY2(shell.contains(QStringLiteral("bindPreviewFrame(previewResult.vulkanFrame")),
+             "ImGui preview must try importing offscreen Vulkan frames before CPU upload");
+    QVERIFY2(shell.contains(QStringLiteral("uploadPreviewImage(previewResult.image")),
+             "ImGui preview must retain CPU upload fallback for devices without external-frame import");
+    QVERIFY2(shell.contains(QStringLiteral("previewCpuFallbackPreferred")),
+             "ImGui preview must adaptively switch to CPU fallback after zero-copy import fails");
+    QVERIFY2(!shell.contains(QStringLiteral("audio disabled in Qt-free ImGui shell")),
+             "ImGui audio must not be hard-disabled as a shell policy");
+
+    QVERIFY2(preview.contains(QStringLiteral("renderPreviewFrameCore(")) &&
+                 preview.contains(QStringLiteral("false,\n                    false")) &&
+                 preview.contains(QStringLiteral("false,\n                    true")),
+             "standalone preview must request zero-copy Vulkan first, then CPU readback fallback");
 }
 
 QTEST_MAIN(TestImGuiStandaloneRender)

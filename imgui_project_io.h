@@ -15,6 +15,7 @@ struct ImGuiProjectSession {
     std::string statePath;
     std::string historyPath;
     std::string rootDirPath;
+    std::string mediaRootPath;
     nlohmann::json legacyStateRoot;
 };
 

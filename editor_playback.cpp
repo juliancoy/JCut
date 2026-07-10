@@ -678,7 +678,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
                                       : QStringLiteral("seek_or_idle"));
     const qint64 tickNowMs = nowMs();
     const int64_t boundedSample =
-        qBound<int64_t>(0, samplePosition, frameToSamples(lastPlayableFrame()));
+        qBound<int64_t>(0, samplePosition, playableTimelineEndSampleExclusive());
     const qreal framePosition = samplesToFramePosition(boundedSample);
     const int64_t bounded =
         qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), lastPlayableFrame());

@@ -36,6 +36,7 @@ private slots:
     void testAudioFeedbackProjectionUsesSpeechRangeAnchor();
     void testSystemClockDecisionCarriesTransportSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
+    void testPlaybackSampleClampUsesExclusivePlayableEnd();
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
@@ -361,6 +362,17 @@ void TestPlaybackPolicy::testPlayableSampleAtOrAfterAcrossSpeechRanges() {
     QCOMPARE(playableSampleAtOrAfter(frameToSamples(65), ranges, &atOrPastEnd),
              lastPlayableSample);
     QVERIFY(atOrPastEnd);
+}
+
+void TestPlaybackPolicy::testPlaybackSampleClampUsesExclusivePlayableEnd()
+{
+    const QString source = readSourceFile(QStringLiteral("editor_playback.cpp"));
+    QVERIFY2(!source.isEmpty(), "editor_playback.cpp must be readable");
+    QVERIFY2(source.contains(QStringLiteral("playableTimelineEndSampleExclusive()")),
+             "playback sample clamping must use the exclusive end sample so playback can reach range_end");
+    QVERIFY2(!source.contains(QStringLiteral(
+                 "qBound<int64_t>(0, samplePosition, frameToSamples(lastPlayableFrame()))")),
+             "clamping to the first sample of the last frame can stall playback on the last content frame");
 }
 
 void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()

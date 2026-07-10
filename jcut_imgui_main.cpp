@@ -1,10 +1,15 @@
+#include "audio_engine.h"
 #include "editor_runtime.h"
 #include "editor_document_core_json.h"
+#include "editor_document_render_bridge.h"
+#include "editor_shared_render_sync.h"
 #include "imgui_project_io.h"
 #include "render_contract_json.h"
+#include "render_runtime.h"
 #include "runtime_control_server.h"
 #include "standalone_export_renderer.h"
 #include "standalone_preview_renderer.h"
+#include "vulkan_detector_frame_handoff.h"
 
 #include "external/imgui/imgui.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
@@ -79,8 +84,10 @@ struct ShellState {
     std::string statePath;
     std::string historyPath;
     std::string projectRootPath;
+    std::string mediaRootDirectory;
     std::string lastSavedSnapshotJson;
     std::string statusMessage;
+    AudioEngine audioEngine;
     bool audioInitialized = false;
     bool audioTimelineConfigured = false;
     bool audioPlaybackActive = false;
@@ -123,6 +130,10 @@ struct ShellState {
     std::uint64_t previewRequestGeneration = 0;
     std::uint64_t previewCompletedGeneration = 0;
     std::uint64_t previewUploadedGeneration = 0;
+    bool previewLastUsedZeroCopy = false;
+    bool previewZeroCopyAvailable = false;
+    std::string previewZeroCopyFailureReason;
+    bool previewCpuFallbackPreferred = false;
     float previewPanX = 0.0f;
     float previewPanY = 0.0f;
     jcut::EditorDocumentCore previewDocument;
@@ -226,6 +237,17 @@ jcut::EditorDocumentCore documentWithResolvedMediaPaths(
         clip.sourcePath = resolvePathForRoot(clip.sourcePath, rootDirectory);
     }
     return document;
+}
+
+template <typename T>
+QVector<T> toQVector(const std::vector<T>& values)
+{
+    QVector<T> result;
+    result.reserve(static_cast<qsizetype>(values.size()));
+    for (const T& value : values) {
+        result.push_back(value);
+    }
+    return result;
 }
 
 std::string readTextFile(const fs::path& path)
@@ -398,7 +420,9 @@ void requestPreviewRender(ShellState* shellState)
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
         shellState->previewDocument = snapshot;
-        shellState->previewRootDirectory = shellState->projectRootPath;
+        shellState->previewRootDirectory = shellState->mediaRootDirectory.empty()
+            ? shellState->projectRootPath
+            : shellState->mediaRootDirectory;
         shellState->previewRenderRequested = true;
         ++shellState->previewRequestGeneration;
     }
@@ -417,7 +441,9 @@ bool requestExportRender(ShellState* shellState)
         return false;
     }
     shellState->exportDocument = snapshot;
-    shellState->exportRootDirectory = shellState->projectRootPath;
+    shellState->exportRootDirectory = shellState->mediaRootDirectory.empty()
+        ? shellState->projectRootPath
+        : shellState->mediaRootDirectory;
     shellState->exportRequested = true;
     shellState->exportCancelRequested = false;
     shellState->exportHasProgress = false;
@@ -436,14 +462,109 @@ void cancelExportRender(ShellState* shellState)
 
 std::string snapshotJson(const jcut::EditorDocumentCore& snapshot);
 
+void configureAudioTimeline(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
+{
+    jcut::EditorDocumentCore signatureDocument = snapshot;
+    signatureDocument.transport = {};
+    const std::string signature =
+        (shellState->mediaRootDirectory.empty()
+            ? shellState->projectRootPath
+            : shellState->mediaRootDirectory) + "\n" + snapshotJson(signatureDocument);
+    if (shellState->audioTimelineConfigured &&
+        shellState->audioTimelineSignature == signature) {
+        return;
+    }
+
+    const jcut::EditorDocumentCore renderDocument =
+        documentWithResolvedMediaPaths(
+            snapshot,
+            shellState->mediaRootDirectory.empty()
+                ? shellState->projectRootPath
+                : shellState->mediaRootDirectory);
+    const jcut::render::TimelineRenderData timelineData =
+        jcut::render::buildTimelineRenderData(renderDocument);
+    shellState->audioEngine.setTimelineTracks(toQVector(timelineData.tracks));
+    shellState->audioEngine.setTimelineClips(toQVector(timelineData.clips));
+    shellState->audioEngine.setExportRanges(toQVector(timelineData.exportRanges));
+    shellState->audioEngine.setRenderSyncMarkers(toQVector(timelineData.renderSyncMarkers));
+    shellState->audioTimelineConfigured = true;
+    shellState->audioTimelineSignature = signature;
+}
+
+bool ensureAudioInitialized(ShellState* shellState)
+{
+    if (shellState->audioInitialized) {
+        return true;
+    }
+    shellState->audioInitialized = shellState->audioEngine.initialize();
+    if (!shellState->audioInitialized) {
+        shellState->audioStatusMessage =
+            shellState->audioEngine.audioOutputStatusText().toStdString();
+        if (shellState->audioStatusMessage.empty()) {
+            shellState->audioStatusMessage = "audio output unavailable";
+        }
+    }
+    return shellState->audioInitialized;
+}
+
 void syncAudioEngine(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
 {
-    shellState->audioPlaybackActive = false;
-    shellState->audioLastFrame = snapshot.transport.currentFrame;
-    shellState->audioLastSpeed = snapshot.transport.playbackSpeed == 0.0
+    if (!snapshot.transport.playbackActive) {
+        if (shellState->audioPlaybackActive) {
+            shellState->audioEngine.stop();
+        }
+        shellState->audioPlaybackActive = false;
+        shellState->audioLastFrame = snapshot.transport.currentFrame;
+        return;
+    }
+
+    if (!ensureAudioInitialized(shellState)) {
+        return;
+    }
+
+    configureAudioTimeline(shellState, snapshot);
+    const double speed = snapshot.transport.playbackSpeed == 0.0
         ? 1.0
         : snapshot.transport.playbackSpeed;
-    shellState->audioStatusMessage = "audio disabled in Qt-free ImGui shell";
+    const PlaybackAudioWarpMode warpMode =
+        std::abs(speed - 1.0) < 0.0001
+            ? PlaybackAudioWarpMode::Disabled
+            : PlaybackAudioWarpMode::Varispeed;
+    shellState->audioEngine.setPlaybackWarpMode(
+        normalizedPlaybackAudioWarpMode(speed, warpMode));
+    shellState->audioEngine.setPlaybackRate(
+        effectivePlaybackAudioWarpRate(speed, warpMode));
+
+    if (!shellState->audioEngine.hasPlayableAudio()) {
+        if (shellState->audioPlaybackActive) {
+            shellState->audioEngine.stop();
+        }
+        shellState->audioPlaybackActive = false;
+        shellState->audioStatusMessage = "no playable audio on timeline";
+        return;
+    }
+
+    const int currentFrame = snapshot.transport.currentFrame;
+    const bool speedChanged = std::abs(speed - shellState->audioLastSpeed) >= 0.0001;
+    const bool frameJumped = shellState->audioLastFrame >= 0 &&
+        std::abs(currentFrame - shellState->audioLastFrame) > 8;
+
+    if (!shellState->audioPlaybackActive || !shellState->audioEngine.playbackStarted()) {
+        if (!shellState->audioEngine.warmPlaybackAudio(currentFrame, 1000)) {
+            std::fprintf(stderr,
+                         "[AUDIO WARN] continuing playback without warmed audio at frame %d\n",
+                         currentFrame);
+        }
+        shellState->audioEngine.start(currentFrame);
+        shellState->audioPlaybackActive = true;
+    } else if (frameJumped || speedChanged) {
+        shellState->audioEngine.seek(currentFrame);
+    }
+
+    shellState->audioLastFrame = currentFrame;
+    shellState->audioLastSpeed = speed;
+    shellState->audioStatusMessage =
+        shellState->audioEngine.audioOutputStatusText().toStdString();
 }
 
 template <typename Command>
@@ -576,10 +697,16 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
 
     jcut::standalone_render::PreviewRenderResult previewResult;
     std::uint64_t previewCompletedGeneration = 0;
+    bool previewLastUsedZeroCopy = false;
+    bool previewZeroCopyAvailable = false;
+    std::string previewZeroCopyFailureReason;
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
         previewResult = shellState->previewResult;
         previewCompletedGeneration = shellState->previewCompletedGeneration;
+        previewLastUsedZeroCopy = shellState->previewLastUsedZeroCopy;
+        previewZeroCopyAvailable = shellState->previewZeroCopyAvailable;
+        previewZeroCopyFailureReason = shellState->previewZeroCopyFailureReason;
     }
 
     jcut::render::RenderProgressCore exportProgress;
@@ -612,10 +739,18 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"initialized", shellState->audioInitialized},
             {"timelineConfigured", shellState->audioTimelineConfigured},
             {"playbackActive", shellState->audioPlaybackActive},
-            {"playbackStarted", false},
-            {"hasPlayableAudio", false},
-            {"clockAvailable", false},
-            {"outputUnavailable", true},
+            {"playbackStarted", shellState->audioInitialized
+                ? shellState->audioEngine.playbackStarted()
+                : false},
+            {"hasPlayableAudio", shellState->audioInitialized
+                ? shellState->audioEngine.hasPlayableAudio()
+                : false},
+            {"clockAvailable", shellState->audioInitialized
+                ? shellState->audioEngine.audioClockAvailable()
+                : false},
+            {"outputUnavailable", shellState->audioInitialized
+                ? shellState->audioEngine.audioOutputUnavailableForPlayback()
+                : false},
             {"status", shellState->audioStatusMessage}
         }},
         {"preview", {
@@ -624,13 +759,13 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"message", previewResult.message},
             {"sourcePath", previewResult.sourcePath},
             {"zeroCopyVulkan", {
-                {"ready", false},
-                {"presentedFrames", 0},
-                {"failures", 0},
-                {"failureReason", "disabled in Qt-free ImGui shell"},
-                {"lastFrameValid", false},
-                {"lastFrameWidth", 0},
-                {"lastFrameHeight", 0}
+                {"ready", previewZeroCopyAvailable},
+                {"presentedFrames", previewLastUsedZeroCopy ? previewCompletedGeneration : 0},
+                {"failures", previewZeroCopyFailureReason.empty() ? 0 : 1},
+                {"failureReason", previewZeroCopyFailureReason},
+                {"lastFrameValid", previewResult.vulkanFrame.valid},
+                {"lastFrameWidth", previewResult.vulkanFrame.size.width},
+                {"lastFrameHeight", previewResult.vulkanFrame.size.height}
             }},
             {"image", {
                 {"valid", !previewResult.image.empty()},
@@ -900,6 +1035,13 @@ bool reloadCurrentDocument(ShellState* shellState)
         shellState->statePath = session->statePath;
         shellState->historyPath = session->historyPath;
         shellState->projectRootPath = session->rootDirPath;
+        shellState->mediaRootDirectory = session->mediaRootPath.empty()
+            ? session->rootDirPath
+            : session->mediaRootPath;
+        std::snprintf(shellState->mediaRootPath.data(),
+                      shellState->mediaRootPath.size(),
+                      "%s",
+                      shellState->mediaRootDirectory.c_str());
         shellState->legacyStateRoot = session->legacyStateRoot;
         shellState->lastSavedSnapshotJson = snapshotJson(session->document);
         std::snprintf(shellState->exportOutputPath.data(),
@@ -930,6 +1072,11 @@ bool reloadCurrentDocument(ShellState* shellState)
     }
     shellState->lastSavedSnapshotJson = snapshotJson(*document);
     shellState->projectRootPath = pathString(fs::path(shellState->documentPath).parent_path());
+    shellState->mediaRootDirectory = shellState->projectRootPath;
+    std::snprintf(shellState->mediaRootPath.data(),
+                  shellState->mediaRootPath.size(),
+                  "%s",
+                  shellState->mediaRootDirectory.c_str());
     std::snprintf(shellState->exportOutputPath.data(),
                   shellState->exportOutputPath.size(),
                   "%s",
@@ -953,6 +1100,7 @@ void runPreviewWorker(ShellState* shellState)
         jcut::EditorDocumentCore document;
         std::string rootDirectory;
         std::uint64_t generation = 0;
+        bool preferVulkanFrame = true;
         {
             std::unique_lock<std::mutex> lock(shellState->previewMutex);
             shellState->previewCondition.wait(lock, [shellState]() {
@@ -964,6 +1112,7 @@ void runPreviewWorker(ShellState* shellState)
             document = shellState->previewDocument;
             rootDirectory = shellState->previewRootDirectory;
             generation = shellState->previewRequestGeneration;
+            preferVulkanFrame = !shellState->previewCpuFallbackPreferred;
             shellState->previewRenderRequested = false;
         }
 
@@ -975,7 +1124,9 @@ void runPreviewWorker(ShellState* shellState)
                         ? document.exportRequest.outputSize
                         : jcut::core::SizeI{1080, 1920},
                     document.transport.currentFrame,
-                    rootDirectory});
+                    rootDirectory,
+                    preferVulkanFrame,
+                    true});
 
         {
             std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -1394,6 +1545,9 @@ struct VulkanShell {
     ImGui_ImplVulkanH_Window windowData{};
     uint32_t minImageCount = 2;
     bool swapchainRebuild = false;
+    jcut::vulkan_detector::VulkanDetectorFrameHandoff previewHandoff;
+    bool previewHandoffInitialized = false;
+    std::string previewHandoffStatus;
     VkDescriptorSet previewTextureSet = VK_NULL_HANDLE;
     VkImageView boundPreviewView = VK_NULL_HANDLE;
     VkImageLayout boundPreviewLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2031,7 +2185,56 @@ struct VulkanShell {
             if (error) *error = "Failed to initialize ImGui Vulkan backend.";
             return false;
         }
+        std::string handoffError;
+        previewHandoffInitialized =
+            previewHandoff.initialize({physicalDevice, device, queue, queueFamily}, &handoffError);
+        previewHandoffStatus = previewHandoffInitialized
+            ? std::string("ready")
+            : (handoffError.empty()
+                ? std::string("Vulkan external frame import unavailable")
+                : handoffError);
         return true;
+    }
+
+    bool bindPreviewFrame(const render_detail::OffscreenVulkanFrame& frame,
+                          ImTextureID* textureOut,
+                          std::string* error)
+    {
+        if (!frame.valid) {
+            if (error) *error = "invalid offscreen Vulkan frame";
+            return false;
+        }
+        if (!previewHandoffInitialized) {
+            if (error) *error = previewHandoffStatus.empty()
+                ? "Vulkan external frame import unavailable"
+                : previewHandoffStatus;
+            return false;
+        }
+        if (!previewHandoff.importOffscreenFrame(frame, error)) {
+            return false;
+        }
+        const jcut::vulkan_detector::VulkanExternalImage external =
+            previewHandoff.externalImage();
+        if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
+            if (error) *error = "imported Vulkan preview image is unavailable";
+            return false;
+        }
+        if (previewTextureSet == VK_NULL_HANDLE ||
+            boundPreviewView != external.imageView ||
+            boundPreviewLayout != external.imageLayout) {
+            if (previewTextureSet != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+                previewTextureSet = VK_NULL_HANDLE;
+            }
+            previewTextureSet =
+                ImGui_ImplVulkan_AddTexture(previewSampler, external.imageView, external.imageLayout);
+            boundPreviewView = external.imageView;
+            boundPreviewLayout = external.imageLayout;
+        }
+        if (textureOut) {
+            *textureOut = reinterpret_cast<ImTextureID>(previewTextureSet);
+        }
+        return previewTextureSet != VK_NULL_HANDLE;
     }
 
     void rebuildSwapchainIfNeeded()
@@ -2144,6 +2347,8 @@ struct VulkanShell {
             vkDeviceWaitIdle(device);
         }
         releasePreviewTextureResources();
+        previewHandoff.release();
+        previewHandoffInitialized = false;
         ImGui_ImplVulkan_Shutdown();
         if (device != VK_NULL_HANDLE && windowData.Surface != VK_NULL_HANDLE) {
             ImGui_ImplVulkanH_DestroyWindow(instance, device, &windowData, nullptr);
@@ -2189,19 +2394,56 @@ void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
         completedGeneration = shellState->previewCompletedGeneration;
     }
 
-    if (vulkanShell && !previewResult.image.empty()) {
+    bool usedZeroCopy = false;
+    bool zeroCopyAvailable = false;
+    std::string zeroCopyFailureReason;
+    bool requestCpuFallbackFrame = false;
+    if (vulkanShell && previewResult.vulkanFrame.valid) {
+        ImTextureID texture = 0;
+        std::string error;
+        if (vulkanShell->bindPreviewFrame(previewResult.vulkanFrame, &texture, &error)) {
+            shellState->previewTextureId = texture;
+            usedZeroCopy = true;
+            zeroCopyAvailable = true;
+        } else {
+            zeroCopyFailureReason = error.empty()
+                ? "Vulkan external frame import failed"
+                : error;
+            if (previewResult.image.empty()) {
+                requestCpuFallbackFrame = true;
+            }
+        }
+    } else if (!previewResult.vulkanFrame.valid) {
+        zeroCopyFailureReason = "preview renderer did not return a Vulkan frame";
+    }
+
+    if (!usedZeroCopy && vulkanShell && !previewResult.image.empty()) {
         ImTextureID texture = 0;
         std::string error;
         if (vulkanShell->uploadPreviewImage(previewResult.image, &texture, &error)) {
             shellState->previewTextureId = texture;
         } else if (!error.empty()) {
             std::fprintf(stderr, "Vulkan CPU preview upload failed: %s\n", error.c_str());
+            if (zeroCopyFailureReason.empty()) {
+                zeroCopyFailureReason = error;
+            }
         }
     }
 
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
         shellState->previewUploadedGeneration = completedGeneration;
+        shellState->previewLastUsedZeroCopy = usedZeroCopy;
+        shellState->previewZeroCopyAvailable = zeroCopyAvailable;
+        shellState->previewZeroCopyFailureReason = usedZeroCopy ? std::string{} : zeroCopyFailureReason;
+        if (requestCpuFallbackFrame) {
+            shellState->previewCpuFallbackPreferred = true;
+        } else if (usedZeroCopy) {
+            shellState->previewCpuFallbackPreferred = false;
+        }
+    }
+    if (requestCpuFallbackFrame) {
+        requestPreviewRender(shellState);
     }
 }
 
@@ -2308,17 +2550,25 @@ void drawMediaPanel(ShellState* shellState, const jcut::EditorDocumentCore& snap
                 std::snprintf(shellState->mediaRootPath.data(),
                               shellState->mediaRootPath.size(),
                               "%s",
-                              shellState->projectRootPath.empty()
-                                  ? fs::current_path().string().c_str()
-                                  : shellState->projectRootPath.c_str());
+                              shellState->mediaRootDirectory.empty()
+                                  ? (shellState->projectRootPath.empty()
+                                      ? fs::current_path().string().c_str()
+                                      : shellState->projectRootPath.c_str())
+                                  : shellState->mediaRootDirectory.c_str());
             }
-            ImGui::InputText("Root", shellState->mediaRootPath.data(), shellState->mediaRootPath.size());
+            if (ImGui::InputText("Root", shellState->mediaRootPath.data(), shellState->mediaRootPath.size())) {
+                shellState->mediaRootDirectory = shellState->mediaRootPath.data();
+                shellState->mediaGalleryPath.clear();
+                requestPreviewRender(shellState);
+            }
             ImGui::InputText("Filter", shellState->mediaBrowserFilter.data(), shellState->mediaBrowserFilter.size());
             if (ImGui::Button("Use Project Root")) {
                 std::snprintf(shellState->mediaRootPath.data(),
                               shellState->mediaRootPath.size(),
                               "%s",
-                              shellState->projectRootPath.c_str());
+                              shellState->mediaRootDirectory.empty()
+                                  ? shellState->projectRootPath.c_str()
+                                  : shellState->mediaRootDirectory.c_str());
                 shellState->mediaGalleryPath.clear();
             }
             ImGui::SameLine();
@@ -2332,6 +2582,7 @@ void drawMediaPanel(ShellState* shellState, const jcut::EditorDocumentCore& snap
                                   shellState->mediaRootPath.size(),
                                   "%s",
                                   parent.c_str());
+                    shellState->mediaRootDirectory = parent;
                     shellState->mediaGalleryPath.clear();
                 }
             }
@@ -3457,6 +3708,11 @@ int main(int argc, char** argv)
         }
         shellState.documentPath = argv[1];
         shellState.projectRootPath = pathString(fs::path(shellState.documentPath).parent_path());
+        shellState.mediaRootDirectory = shellState.projectRootPath;
+        std::snprintf(shellState.mediaRootPath.data(),
+                      shellState.mediaRootPath.size(),
+                      "%s",
+                      shellState.mediaRootDirectory.c_str());
         shellState.preferencesPath = pathString(fs::path(shellState.documentPath).parent_path() /
                                                 (fs::path(shellState.documentPath).filename().string() +
                                                  ".imgui_prefs.json"));
@@ -3482,6 +3738,13 @@ int main(int argc, char** argv)
         shellState.statePath = session->statePath;
         shellState.historyPath = session->historyPath;
         shellState.projectRootPath = session->rootDirPath;
+        shellState.mediaRootDirectory = session->mediaRootPath.empty()
+            ? session->rootDirPath
+            : session->mediaRootPath;
+        std::snprintf(shellState.mediaRootPath.data(),
+                      shellState.mediaRootPath.size(),
+                      "%s",
+                      shellState.mediaRootDirectory.c_str());
         shellState.preferencesPath = pathString(fs::path(shellState.statePath).parent_path() /
                                                 "imgui_prefs.json");
         shellState.legacyStateRoot = session->legacyStateRoot;
@@ -3612,6 +3875,8 @@ int main(int argc, char** argv)
     }
 
     vulkanShell.shutdown();
+    shellState.audioEngine.stop();
+    shellState.audioEngine.shutdown();
     ImGui::DestroyContext();
     {
         std::lock_guard<std::mutex> lock(shellState.previewMutex);
