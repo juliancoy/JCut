@@ -85,6 +85,7 @@ struct EffectiveVisualEffects {
     TimelineClip::GradingKeyframe grading;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    int maskFeatherFalloff = 0;
     QVector<TimelineClip::CorrectionPolygon> correctionPolygons;
 };
 

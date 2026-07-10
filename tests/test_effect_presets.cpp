@@ -4,6 +4,7 @@
 #include "../editor_effect_presets.h"
 #include "../editor_shared_effects.h"
 #include "../render_vulkan_shared.h"
+#include "../mask_sidecar.h"
 #include "../transform_skip_aware_timing.h"
 #include "../vulkan_effect_synth.h"
 
@@ -51,6 +52,8 @@ private slots:
     void init();
     void cleanup();
     void clipSerializationPersistsEffectPresetState();
+    void maskFeatherFalloffProfilesShapeAlphaDifferently();
+    void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
     void clipSerializationMigratesLegacyEffectSpeechSync();
     void clipSerializationPersistsArpeggiatorEffectPresets();
     void effectPresetMetadataCoversSerializedSynthPresets();
@@ -108,6 +111,8 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskRepeatEnabled = true;
     clip.maskRepeatDeltaX = 120.0;
     clip.maskRepeatDeltaY = -15.0;
+    clip.maskFeatherGamma = 2.4;
+    clip.maskFeatherFalloff = 3;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
     clip.effectRows = 32;
     clip.effectSpeed = 1.75;
@@ -122,6 +127,7 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     const QJsonObject json = editor::clipToJson(clip);
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("maskFeatherFalloff")).toInt(), 3);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaX")).toDouble() - 120.0) < 0.000001);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaY")).toDouble() + 15.0) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), QStringLiteral("news_logo_ticker"));
@@ -135,6 +141,8 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.maskForegroundLayerEnabled, true);
     QCOMPARE(loaded.maskRepeatEnabled, true);
+    QCOMPARE(loaded.maskFeatherFalloff, 3);
+    QVERIFY(std::abs(loaded.maskFeatherGamma - 2.4) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::NewsLogoTicker);
@@ -147,6 +155,50 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.tilingPattern, ClipTilingPattern::SpiralXY);
     QVERIFY(std::abs(loaded.tilingSpacing - 1.4) < 0.000001);
     QCOMPARE(loaded.tilingWrap, false);
+}
+
+void TestEffectPresets::maskFeatherFalloffProfilesShapeAlphaDifferently()
+{
+    QImage source(5, 1, QImage::Format_ARGB32);
+    source.fill(Qt::transparent);
+    source.setPixel(2, 0, qRgba(255, 255, 255, 255));
+
+    const QImage linear = applyMaskFeather(source, 1.0, 1.0, 1);
+    const QImage power = applyMaskFeather(source, 1.0, 3.0, 0);
+    const QImage smoother = applyMaskFeather(source, 1.0, 1.0, 3);
+    const int linearAlpha = qAlpha(linear.pixel(1, 0));
+    const int powerAlpha = qAlpha(power.pixel(1, 0));
+    const int smootherAlpha = qAlpha(smoother.pixel(1, 0));
+    QVERIFY(powerAlpha > linearAlpha);
+    QVERIFY(smootherAlpha < linearAlpha);
+}
+
+void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString mediaPath = temp.filePath(QStringLiteral("shot.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.close();
+    const QString sidecarDir = temp.filePath(QStringLiteral("shot_sam3_person_binary_masks"));
+    QVERIFY(QDir().mkpath(sidecarDir));
+    for (const int frame : {7, 8, 12}) {
+        QFile image(QDir(sidecarDir).filePath(
+            QStringLiteral("frame_%1.png").arg(frame, 6, 10, QLatin1Char('0'))));
+        QVERIFY(image.open(QIODevice::WriteOnly));
+        image.write("png");
+    }
+    TimelineClip clip;
+    clip.filePath = mediaPath;
+    const auto sidecars = editor::masks::discoverMaskSidecars(clip);
+    QCOMPARE(sidecars.size(), 1);
+    QCOMPARE(sidecars.constFirst().displayName, QStringLiteral("person"));
+    QCOMPARE(sidecars.constFirst().frameCount, 3);
+    QCOMPARE(sidecars.constFirst().firstFrame, int64_t(7));
+    QCOMPARE(sidecars.constFirst().lastFrame, int64_t(12));
+    QCOMPARE(sidecars.constFirst().id,
+             editor::masks::stableMaskSidecarId(sidecarDir));
 }
 
 void TestEffectPresets::clipSerializationMigratesLegacyEffectSpeechSync()
@@ -418,10 +470,13 @@ void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
     QCOMPARE(clips[1].maskErode, clips[0].maskErode);
     QCOMPARE(clips[1].maskBlur, clips[0].maskBlur);
     QCOMPARE(clips[1].maskOpacity, clips[0].maskOpacity);
-    QCOMPARE(clips[1].maskGradeEnabled, clips[0].maskGradeEnabled);
-    QCOMPARE(clips[1].maskGradeBrightness, clips[0].maskGradeBrightness);
-    QCOMPARE(clips[1].maskGradeContrast, clips[0].maskGradeContrast);
-    QCOMPARE(clips[1].maskGradeSaturation, clips[0].maskGradeSaturation);
+    QVERIFY(!clips[0].maskGradeEnabled);
+    QVERIFY(!clips[1].maskGradeEnabled);
+    QCOMPARE(clips[1].gradingKeyframes.size(), 1);
+    QCOMPARE(clips[1].gradingKeyframes.constFirst().frame, int64_t(0));
+    QCOMPARE(clips[1].gradingKeyframes.constFirst().brightness, 0.2);
+    QCOMPARE(clips[1].gradingKeyframes.constFirst().contrast, 1.3);
+    QCOMPARE(clips[1].gradingKeyframes.constFirst().saturation, 0.8);
     QCOMPARE(clips[1].baseTranslationX, clips[0].baseTranslationX);
     QCOMPARE(clips[1].baseTranslationY, clips[0].baseTranslationY);
     QCOMPARE(clips[1].transformKeyframes.size(), clips[0].transformKeyframes.size());

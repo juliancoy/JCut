@@ -1,6 +1,8 @@
 #include "inspector_pane.h"
 
 #include "preview_surface.h"
+#include "editor_playback_types.h"
+#include "editor_shared.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -201,6 +203,32 @@ QWidget* InspectorPane::buildAudioTab()
     m_audioSoftClipEnabledCheckBox->setToolTip(
         QStringLiteral("Apply smooth saturation before the limiter to tame transients without hard clipping."));
 
+    m_playbackClockSourceCombo = new QComboBox(content);
+    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Auto),
+                                        playbackClockSourceToString(PlaybackClockSource::Auto));
+    m_playbackClockSourceCombo->setEnabled(false);
+    m_playbackClockSourceCombo->setVisible(false);
+    m_playbackClockSourceCombo->setToolTip(
+        QStringLiteral("Preview time is driven by the system transport clock."));
+    m_playbackAudioWarpModeCombo = new QComboBox(content);
+    for (const PlaybackAudioWarpMode mode : {
+             PlaybackAudioWarpMode::TimeStretch, PlaybackAudioWarpMode::RubberBand,
+             PlaybackAudioWarpMode::RubberBandPassThroughFrequency}) {
+        m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(mode),
+                                              playbackAudioWarpModeToString(mode));
+    }
+    m_playbackAudioWarpModeCombo->setToolTip(
+        QStringLiteral("Select preview audio timing or the two-stage harmonic speech isolation treatment. Transport timing remains independent."));
+    m_playbackAudioWarpModeCombo->setAccessibleName(QStringLiteral("Preview audio treatment"));
+    const QStringList treatmentHelp = {
+        QStringLiteral("Keep speech pitch stable when playback speed changes."),
+        QStringLiteral("Always run Rubber Band, including at normal speed."),
+        QStringLiteral("Two-stage speech treatment that attenuates non-harmonic content while staying synchronized.")};
+    for (int index = 0; index < m_playbackAudioWarpModeCombo->count(); ++index) {
+        m_playbackAudioWarpModeCombo->setItemData(index, treatmentHelp.value(index), Qt::ToolTipRole);
+        m_playbackAudioWarpModeCombo->setItemData(index, treatmentHelp.value(index), Qt::AccessibleDescriptionRole);
+    }
+
     auto trackSection = createDisclosureSection(content, QStringLiteral("Selected Track"), true);
     auto* trackForm = new QFormLayout;
     configureForm(trackForm);
@@ -256,6 +284,19 @@ QWidget* InspectorPane::buildAudioTab()
     addFormRow(dynamicsForm, QStringLiteral("Soft Clip"), m_audioSoftClipEnabledCheckBox);
     dynamicsSection.body->addLayout(dynamicsForm);
 
+    auto playbackSection = createDisclosureSection(content, QStringLiteral("Preview Audio"), true);
+    auto* playbackForm = new QFormLayout;
+    configureForm(playbackForm);
+    addFormRow(playbackForm, QStringLiteral("Treatment"), m_playbackAudioWarpModeCombo);
+    auto* treatmentDescription = new QLabel(
+        QStringLiteral("Harmonic Speech Isolation uses two Rubber Band stages to attenuate non-harmonic speech content without changing playback timing. The first use prepares cached audio; playback starts when it is ready."),
+        content);
+    treatmentDescription->setWordWrap(true);
+    treatmentDescription->setStyleSheet(QStringLiteral("color: #8fa0b5;"));
+    playbackSection.body->addLayout(playbackForm);
+    playbackSection.body->addWidget(treatmentDescription);
+
+    contentLayout->addWidget(playbackSection.container);
     contentLayout->addWidget(trackSection.container);
     contentLayout->addWidget(speakerSection.container);
     contentLayout->addWidget(viewSection.container);

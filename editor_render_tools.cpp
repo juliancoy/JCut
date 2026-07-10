@@ -616,6 +616,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.currentSpeakerOrganizationColor = m_speakerCurrentSpeakerOrganizationColor;
     request.currentSpeakerBackgroundColor = m_speakerCurrentSpeakerBackgroundColor;
     request.currentSpeakerBorderColor = m_speakerCurrentSpeakerBorderColor;
+    if (!m_speakerCurrentSpeakerBackgroundVisible) {
+        request.currentSpeakerBackgroundColor.setAlpha(0);
+        request.currentSpeakerBorderColor.setAlpha(0);
+    }
     request.currentSpeakerBackgroundCornerRadius =
         m_speakerCurrentSpeakerBackgroundRadiusSpin
             ? qBound<qreal>(0.0, m_speakerCurrentSpeakerBackgroundRadiusSpin->value(), 128.0)

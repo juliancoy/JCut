@@ -1,4 +1,5 @@
 #include "audio_time_stretch.h"
+#include "audio_speech_harmonic_isolator.h"
 
 #include <QtTest/QtTest>
 
@@ -11,6 +12,7 @@ private slots:
     void testSolaImplementationIsDisabled();
     void testDefaultBackendDoesNotUseSolaFallback();
     void testRubberBandStreamsPastProcessLimit();
+    void testSpeechHarmonicIsolationPreservesTransportDuration();
 };
 
 namespace {
@@ -113,6 +115,25 @@ void TestAudioTimeStretch::testRubberBandStreamsPastProcessLimit()
              qPrintable(QStringLiteral("actual=%1 expected=%2").arg(actualFrames).arg(expectedFrames)));
 #else
     QVERIFY(stretched.isEmpty());
+#endif
+}
+
+void TestAudioTimeStretch::testSpeechHarmonicIsolationPreservesTransportDuration()
+{
+    constexpr int sampleRate = 48000;
+    constexpr double transportSpeed = 2.0;
+    const QVector<float> input = sineStereo(330.0, 2.0, sampleRate);
+    const QVector<float> processed = editor::audio::SpeechHarmonicIsolator::process(
+        {&input, 2, sampleRate, transportSpeed, {}});
+#if JCUT_HAVE_RUBBERBAND
+    const int expectedFrames = static_cast<int>((input.size() / 2) / transportSpeed);
+    const int actualFrames = processed.size() / 2;
+    QVERIFY2(!processed.isEmpty(), "two-stage harmonic isolation must produce audio");
+    QVERIFY2(std::abs(actualFrames - expectedFrames) <= 8192,
+             qPrintable(QStringLiteral("actual=%1 expected=%2")
+                            .arg(actualFrames).arg(expectedFrames)));
+#else
+    QVERIFY(processed.isEmpty());
 #endif
 }
 

@@ -1418,6 +1418,10 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
                 flyInSettings);
         });
     if (!updated || appliedTitleCount <= 0) {
+        if (m_widgets.speakerOverlayCreateTitleClipsButton) {
+            QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
+            m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(false);
+        }
         QMessageBox::information(nullptr,
                                  QStringLiteral("News lower-third fly in"),
                                  QStringLiteral("No speaker changes were found in the selected transcript range."));
@@ -1522,6 +1526,15 @@ void SpeakersTab::refresh()
 
 void SpeakersTab::refreshForSubtab(const QString& subtabName)
 {
+    const QString normalized = subtabName.trimmed();
+    if (m_widgets.speakerShowContiguousSectionsCheckBox) {
+        if (normalized.compare(QStringLiteral("Sections"), Qt::CaseInsensitive) == 0) {
+            m_widgets.speakerShowContiguousSectionsCheckBox->setChecked(true);
+        } else if (normalized.compare(QStringLiteral("Roster"), Qt::CaseInsensitive) == 0) {
+            m_widgets.speakerShowContiguousSectionsCheckBox->setChecked(false);
+        }
+    }
+
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     const QString transcriptPath = clip
         ? transcriptPathForRuntimeSidecarForClip(*clip, activeTranscriptPathForClip(*clip))
@@ -1532,7 +1545,6 @@ void SpeakersTab::refreshForSubtab(const QString& subtabName)
         return;
     }
 
-    const QString normalized = subtabName.trimmed();
     if (normalized.compare(QStringLiteral("Continuity Tracks"), Qt::CaseInsensitive) == 0) {
         requestRefreshFaceDetectionsPathsPanel();
         updateSpeakerTrackingStatusLabel();
@@ -1566,12 +1578,10 @@ void SpeakersTab::syncSpeakerListMode()
     const bool showSections =
         m_widgets.speakerShowContiguousSectionsCheckBox &&
         m_widgets.speakerShowContiguousSectionsCheckBox->isChecked();
-    if (m_widgets.speakersTable) {
-        m_widgets.speakersTable->setVisible(!showSections);
-    }
-    if (m_widgets.speakerSectionsTable) {
-        m_widgets.speakerSectionsTable->setVisible(showSections);
-    }
+    // The roster and section tables live on different QTabWidget pages. The
+    // tab stack is the sole visibility owner; hiding either table here can
+    // leave an active page permanently empty when state is restored before
+    // SpeakersTab connects its mode signal.
     if (m_widgets.speakerHideUnidentifiedCheckBox) {
         m_widgets.speakerHideUnidentifiedCheckBox->setEnabled(!showSections);
     }
@@ -3604,6 +3614,9 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     if (m_widgets.speakerOverlayCreateTitleClipsButton) {
         m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
+        QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
+        m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
+            selectedClip && !selectedClip->titleKeyframes.isEmpty());
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);
@@ -4016,6 +4029,9 @@ void SpeakersTab::updateSpeakerTrackingStatusLabelFast()
     if (m_widgets.speakerOverlayCreateTitleClipsButton) {
         m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
+        QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
+        m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
+            selectedClip && !selectedClip->titleKeyframes.isEmpty());
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);

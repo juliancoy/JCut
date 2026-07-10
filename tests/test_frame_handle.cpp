@@ -1,6 +1,10 @@
 #include <QtTest/QtTest>
 #include "../frame_handle.h"
 
+extern "C" {
+#include <libavutil/frame.h>
+}
+
 using namespace editor;
 
 class TestFrameHandle : public QObject {
@@ -13,6 +17,7 @@ private slots:
     void testFrameComparison();
     void testMemoryUsage();
     void testSharedData();
+    void testHardwareFramePreservesValidCropRect();
 };
 
 void TestFrameHandle::testDefaultConstruction() {
@@ -80,6 +85,30 @@ void TestFrameHandle::testSharedData() {
     
     // Both should have same data pointer
     QCOMPARE(frame1.data(), frame2.data());
+}
+
+void TestFrameHandle::testHardwareFramePreservesValidCropRect() {
+    AVFrame* avFrame = av_frame_alloc();
+    QVERIFY(avFrame != nullptr);
+    avFrame->width = 1920;
+    avFrame->height = 1088;
+    avFrame->format = AV_PIX_FMT_NV12;
+    QVERIFY(av_frame_get_buffer(avFrame, 32) >= 0);
+    avFrame->crop_left = 8;
+    avFrame->crop_right = 12;
+    avFrame->crop_top = 4;
+    avFrame->crop_bottom = 4;
+
+    const FrameHandle frame = FrameHandle::createHardwareFrame(
+        avFrame, 7, QStringLiteral("padded.mp4"), AV_PIX_FMT_NV12);
+    av_frame_free(&avFrame);
+
+    QVERIFY(frame.hasHardwareFrame());
+    const QRectF crop = frame.validTextureRectNormalized();
+    QVERIFY(qAbs(crop.left() - (8.0 / 1920.0)) < 0.000001);
+    QVERIFY(qAbs(crop.top() - (4.0 / 1088.0)) < 0.000001);
+    QVERIFY(qAbs(crop.width() - (1900.0 / 1920.0)) < 0.000001);
+    QVERIFY(qAbs(crop.height() - (1080.0 / 1088.0)) < 0.000001);
 }
 
 QTEST_MAIN(TestFrameHandle)

@@ -83,6 +83,8 @@ void EditorWindow::bindInspectorWidgets()
         m_inspectorPane->speakerCurrentSpeakerOrganizationColorButton();
     m_speakerCurrentSpeakerBackgroundColorButton =
         m_inspectorPane->speakerCurrentSpeakerBackgroundColorButton();
+    m_speakerCurrentSpeakerBackgroundVisibleCheckBox =
+        m_inspectorPane->speakerCurrentSpeakerBackgroundVisibleCheckBox();
     m_speakerCurrentSpeakerBackgroundOpacitySpin =
         m_inspectorPane->speakerCurrentSpeakerBackgroundOpacitySpin();
     m_speakerCurrentSpeakerBorderColorButton =
@@ -658,16 +660,20 @@ void EditorWindow::setupPreviewControls()
 
     if (m_bypassGradingCheckBox) {
         connect(m_bypassGradingCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_preview) {
-                m_preview->setBypassGrading(!checked);
+            if (!m_timeline) {
+                return;
             }
+            const QString clipId = m_timeline->selectedClipId();
+            if (clipId.isEmpty()) return;
+            m_timeline->updateClipById(clipId, [checked](TimelineClip& clip) {
+                clip.gradingPreviewEnabled = checked;
+            });
+            if (m_preview) m_preview->setTimelineClips(m_timeline->clips());
             updateTransportLabels();
             scheduleSaveState();
             pushHistorySnapshot();
         });
-        if (m_preview) {
-            m_preview->setBypassGrading(!m_bypassGradingCheckBox->isChecked());
-        }
+        if (m_preview) m_preview->setBypassGrading(false);
     }
 
     connect(m_previewHideOutsideOutputCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
@@ -802,11 +808,20 @@ void EditorWindow::setupPreviewControls()
         m_speakerCurrentSpeakerBackgroundColor = background;
         m_speakerCurrentSpeakerBorderColor = border;
         m_speakerCurrentSpeakerShadowColor = shadow;
+        m_speakerCurrentSpeakerBackgroundVisible =
+            !m_speakerCurrentSpeakerBackgroundVisibleCheckBox ||
+            m_speakerCurrentSpeakerBackgroundVisibleCheckBox->isChecked();
+        QColor effectiveBackground = background;
+        QColor effectiveBorder = border;
+        if (!m_speakerCurrentSpeakerBackgroundVisible) {
+            effectiveBackground.setAlpha(0);
+            effectiveBorder.setAlpha(0);
+        }
         if (m_preview) {
             m_preview->setCurrentSpeakerNameColor(m_speakerCurrentSpeakerNameColor);
             m_preview->setCurrentSpeakerOrganizationColor(m_speakerCurrentSpeakerOrganizationColor);
-            m_preview->setCurrentSpeakerBackgroundColor(m_speakerCurrentSpeakerBackgroundColor);
-            m_preview->setCurrentSpeakerBorderColor(m_speakerCurrentSpeakerBorderColor);
+            m_preview->setCurrentSpeakerBackgroundColor(effectiveBackground);
+            m_preview->setCurrentSpeakerBorderColor(effectiveBorder);
             m_preview->setCurrentSpeakerBackgroundCornerRadius(
                 m_speakerCurrentSpeakerBackgroundRadiusSpin
                     ? m_speakerCurrentSpeakerBackgroundRadiusSpin->value()
@@ -872,6 +887,21 @@ void EditorWindow::setupPreviewControls()
                 &QCheckBox::toggled,
                 this,
                 [applySpeakerLabelStyle]() { applySpeakerLabelStyle(); });
+    }
+    if (m_speakerCurrentSpeakerBackgroundVisibleCheckBox) {
+        connect(m_speakerCurrentSpeakerBackgroundVisibleCheckBox, &QCheckBox::toggled,
+                this, [this, applySpeakerLabelStyle](bool visible) {
+            for (QWidget* control : {
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundColorButton),
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundOpacitySpin),
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBorderColorButton),
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBorderOpacitySpin),
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundRadiusSpin),
+                     static_cast<QWidget*>(m_speakerCurrentSpeakerBorderWidthSpin)}) {
+                if (control) control->setEnabled(visible);
+            }
+            applySpeakerLabelStyle();
+        });
     }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,

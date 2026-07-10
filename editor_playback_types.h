@@ -25,6 +25,7 @@ enum class PlaybackAudioWarpMode {
     Varispeed,
     TimeStretch,
     RubberBand,
+    RubberBandPassThroughFrequency,
 };
 
 struct RenderSyncMarker {

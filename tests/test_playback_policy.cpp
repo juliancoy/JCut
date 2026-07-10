@@ -67,10 +67,14 @@ void TestPlaybackPolicy::testAudioWarpRoundTrip() {
              PlaybackAudioWarpMode::TimeStretch);
     QCOMPARE(playbackAudioWarpModeFromString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::RubberBand)),
              PlaybackAudioWarpMode::RubberBand);
+    QCOMPARE(playbackAudioWarpModeFromString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::RubberBandPassThroughFrequency)),
+             PlaybackAudioWarpMode::RubberBandPassThroughFrequency);
     QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("time-stretch")),
              PlaybackAudioWarpMode::TimeStretch);
     QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("rubberband_100")),
              PlaybackAudioWarpMode::RubberBand);
+    QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("rubber-band-pass-through-frequency")),
+             PlaybackAudioWarpMode::RubberBandPassThroughFrequency);
     QCOMPARE(playbackAudioWarpModeFromString(QStringLiteral("invalid")),
              PlaybackAudioWarpMode::Disabled);
 }
@@ -81,6 +85,7 @@ void TestPlaybackPolicy::testEffectiveWarpRate() {
     QCOMPARE(effectivePlaybackAudioWarpRate(4.0, PlaybackAudioWarpMode::TimeStretch), 3.0);
     QCOMPARE(effectivePlaybackAudioWarpRate(1.5, PlaybackAudioWarpMode::Varispeed), 1.5);
     QCOMPARE(effectivePlaybackAudioWarpRate(1.0, PlaybackAudioWarpMode::RubberBand), 1.0);
+    QCOMPARE(effectivePlaybackAudioWarpRate(2.0, PlaybackAudioWarpMode::RubberBandPassThroughFrequency), 2.0);
 }
 
 void TestPlaybackPolicy::testNormalizedAudioWarpMode() {

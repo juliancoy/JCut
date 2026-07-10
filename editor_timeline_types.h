@@ -299,6 +299,7 @@ struct TimelineClip {
     QVector<BoolKeyframe> speakerFramingEnabledKeyframes;
     QVector<TransformKeyframe> speakerFramingKeyframes;
     QVector<TransformKeyframe> speakerFramingTargetKeyframes;
+    bool gradingPreviewEnabled = true;
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;
@@ -309,6 +310,7 @@ struct TimelineClip {
     QString maskFramesDir;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    int maskFeatherFalloff = 0; // 0 power, 1 linear, 2 smoothstep, 3 smootherstep, 4 cosine, 5 gaussian
     qreal maskDilate = 0.0;
     qreal maskErode = 0.0;
     qreal maskBlur = 0.0;

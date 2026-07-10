@@ -3,6 +3,7 @@
 #include "qt_compat.h"  // Qt 6.4/GCC 13 compatibility
 #include <QExplicitlySharedDataPointer>
 #include <QImage>
+#include <QRectF>
 #include <QSize>
 #include <QString>
 #include <atomic>
@@ -41,6 +42,7 @@ public:
     int64_t frameNumber = -1;
     QString sourcePath;
     QSize size;
+    QRectF validTextureRectNorm = QRectF(0.0, 0.0, 1.0, 1.0);
     qint64 decodeTimestamp = 0;  // When this frame was decoded
     std::atomic<int> gpuTextureOwned{0};  // 1 if we own the texture
     
@@ -75,6 +77,9 @@ public:
     int64_t frameNumber() const { return d ? d->frameNumber : -1; }
     QString sourcePath() const { return d ? d->sourcePath : QString(); }
     QSize size() const { return d ? d->size : QSize(); }
+    QRectF validTextureRectNormalized() const {
+        return d ? d->validTextureRectNorm : QRectF(0.0, 0.0, 1.0, 1.0);
+    }
     bool hasCpuImage() const { return d && !d->cpuImage.isNull(); }
     bool hasGpuTexture() const { return d && d->gpuTexture != nullptr; }
     bool hasHardwareFrame() const { return d && d->hardwareFrame != nullptr; }

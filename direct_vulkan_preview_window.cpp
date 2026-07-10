@@ -2611,13 +2611,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                         state->outputSize)) {
                     const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
-                    const QRectF sourceRectNorm(
-                        (effectiveClipGeometry.bounds.left() - compositeRect.left()) /
-                            qMax<qreal>(1.0, compositeRect.width()),
-                        (effectiveClipGeometry.bounds.top() - compositeRect.top()) /
-                            qMax<qreal>(1.0, compositeRect.height()),
-                        effectiveClipGeometry.bounds.width() / qMax<qreal>(1.0, compositeRect.width()),
-                        effectiveClipGeometry.bounds.height() / qMax<qreal>(1.0, compositeRect.height()));
                     const bool fullCanvasFill =
                         fillEffect == BackgroundFillEffect::EdgeStretch ||
                         fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
@@ -2641,6 +2634,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             backgroundGeometry.clipToScreen.mapRect(backgroundGeometry.localRect);
                     }
                     VulkanPipeline::Push backgroundPush{};
+                    m_resources->updateFrameUniform(swapSize);
                     mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
                                               backgroundGeometry.localRect,
                                               swapSize,
@@ -2657,7 +2651,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             state->backgroundFillEdgePixels,
                             state->backgroundFillEdgeProgressive,
                             static_cast<float>(state->backgroundFillEdgePower),
-                            sourceRectNorm);
+                            status->frame.validTextureRectNormalized(),
+                            render_detail::vulkanBackgroundFillMapping(
+                                effectiveClipGeometry.clipToScreen,
+                                effectiveClipGeometry.localRect,
+                                swapSize));
                     backgroundPush.opacity = backgroundEffects.opacity;
                     backgroundPush.brightness = backgroundEffects.brightness;
                     backgroundPush.contrast = backgroundEffects.contrast;
@@ -2714,7 +2712,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         ? render_detail::kVulkanEffectModeCurve
                         : render_detail::kVulkanEffectModeNormal;
                     push.midtones[3] = static_cast<float>(std::max<qreal>(0.0, status->maskFeather));
-                    push.highlights[3] = static_cast<float>(std::max<qreal>(0.01, status->maskFeatherGamma));
+                    // Pack falloff profile and power into the otherwise unused
+                    // positive mask parameter: profile * 10 + exponent.
+                    push.highlights[3] = static_cast<float>(
+                        qBound(0, status->maskFeatherFalloff, 5) * 10.0 +
+                        std::clamp<qreal>(status->maskFeatherGamma, 0.1, 5.0));
                     if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                         stats->lastEffectsPath = status->effectsPath;
                         stats->lastTargetRect = compositeRect;

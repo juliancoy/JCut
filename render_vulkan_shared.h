@@ -98,6 +98,19 @@ struct VulkanDrawEffectState {
     float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
+struct VulkanBackgroundFillMapping {
+    float centerXNorm = 0.5f;
+    float centerYNorm = 0.5f;
+    float halfWidthOverOutputHeight = 0.5f;
+    float signedHalfHeightOverOutputHeight = 0.5f;
+    float rotationRadians = 0.0f;
+};
+
+VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
+    const QTransform& sourceToOutput,
+    const QRectF& localRect,
+    const QSize& outputSize);
+
 VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
@@ -108,6 +121,7 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
                                                       int edgePixels = 1,
                                                       bool progressiveEdge = false,
                                                       float edgePower = 2.0f,
-                                                      const QRectF& sourceRectNorm = QRectF());
+                                                      const QRectF& validTextureRectNorm = QRectF(0.0, 0.0, 1.0, 1.0),
+                                                      const VulkanBackgroundFillMapping& mapping = VulkanBackgroundFillMapping{});
 
 } // namespace render_detail

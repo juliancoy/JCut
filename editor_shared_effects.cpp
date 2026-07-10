@@ -373,6 +373,7 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip&
     effects.grading = evaluateEffectiveClipGradingAtFrame(clip, tracks, timelineFrame);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
+    effects.maskFeatherFalloff = clip.maskFeatherFalloff;
     for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
         if (correctionPolygonActiveAtTimelineFrame(clip, polygon, timelineFrame)) {
             effects.correctionPolygons.push_back(polygon);
@@ -388,6 +389,7 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
     effects.grading = evaluateEffectiveClipGradingAtPosition(clip, tracks, timelineFramePosition);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
+    effects.maskFeatherFalloff = clip.maskFeatherFalloff;
     for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
         if (correctionPolygonActiveAtTimelinePosition(clip, polygon, timelineFramePosition)) {
             effects.correctionPolygons.push_back(polygon);
@@ -758,12 +760,12 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
     }
 
     QImage original = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QImage base = clip.maskGradeEnabled
+    const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
+    QImage base = generatedMaskMatte
                       ? applyClipGrade(original, clipGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied)
                       : original;
     QImage output(base.size(), QImage::Format_ARGB32_Premultiplied);
     output.fill(Qt::transparent);
-    const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
 
     if (clip.maskDropShadowEnabled && clip.maskDropShadowOpacity > 0.0) {
         QImage shadowMask = clip.maskDropShadowRadius > 0.0
@@ -783,36 +785,6 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
         QPainter painter(&output);
         painter.drawImage(QPointF(clip.maskDropShadowOffsetX, clip.maskDropShadowOffsetY), shadow);
         painter.end();
-    }
-
-    if (clip.maskGradeEnabled) {
-        const TimelineClip::GradingKeyframe maskGrade = maskGradeForClip(clip);
-        QImage graded = applyClipGrade(original, maskGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied);
-        QImage composited(base.size(), QImage::Format_ARGB32_Premultiplied);
-        composited.fill(Qt::transparent);
-        for (int y = 0; y < base.height(); ++y) {
-            const uchar* maskRow = mask.constScanLine(y);
-            const QRgb* srcRow = reinterpret_cast<const QRgb*>(base.constScanLine(y));
-            const QRgb* gradeRow = reinterpret_cast<const QRgb*>(graded.constScanLine(y));
-            QRgb* dstRow = reinterpret_cast<QRgb*>(composited.scanLine(y));
-            for (int x = 0; x < base.width(); ++x) {
-                const int alpha = qBound(0, qRound(maskRow[x] * clip.maskOpacity), 255);
-                if (alpha <= 0) {
-                    dstRow[x] = srcRow[x];
-                    continue;
-                }
-                if (alpha >= 255) {
-                    dstRow[x] = qRgba(qRed(gradeRow[x]), qGreen(gradeRow[x]), qBlue(gradeRow[x]), qAlpha(srcRow[x]));
-                    continue;
-                }
-                const int invAlpha = 255 - alpha;
-                dstRow[x] = qRgba((qRed(srcRow[x]) * invAlpha + qRed(gradeRow[x]) * alpha + 127) / 255,
-                                  (qGreen(srcRow[x]) * invAlpha + qGreen(gradeRow[x]) * alpha + 127) / 255,
-                                  (qBlue(srcRow[x]) * invAlpha + qBlue(gradeRow[x]) * alpha + 127) / 255,
-                                  qAlpha(srcRow[x]));
-            }
-        }
-        base = composited;
     }
 
     QPainter painter(&output);
@@ -865,12 +837,14 @@ QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const Effect
         painter.end();
     }
     if (effects.maskFeather > 0.0) {
-        output = applyMaskFeather(output, effects.maskFeather, effects.maskFeatherGamma);
+        output = applyMaskFeather(output, effects.maskFeather, effects.maskFeatherGamma,
+                                  effects.maskFeatherFalloff);
     }
     return output;
 }
 
-QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma) {
+QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma,
+                        int featherFalloff) {
     if (source.isNull() || featherRadius <= 0.0) {
         return source;
     }
@@ -907,9 +881,33 @@ QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal feather
 
             // Box blur average
             const qreal blurredAlpha = static_cast<qreal>(alphaSum) / pixelCount / 255.0;
-            // Apply gamma curve (1.0 = linear, <1.0 = sharper, >1.0 = softer)
-            const qreal curvedAlpha = std::pow(blurredAlpha, 1.0 / gamma);
-            const int newAlpha = qBound(0, qRound(curvedAlpha * 255.0), 255);
+            const qreal t = qBound<qreal>(0.0, blurredAlpha, 1.0);
+            qreal shapedAlpha = t;
+            switch (qBound(0, featherFalloff, 5)) {
+            case 1: // Linear
+                break;
+            case 2: // Smoothstep: C1-continuous, common compositing falloff.
+                shapedAlpha = t * t * (3.0 - 2.0 * t);
+                break;
+            case 3: // Smootherstep: C2-continuous for especially clean motion.
+                shapedAlpha = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+                break;
+            case 4: // Raised cosine.
+                shapedAlpha = 0.5 - 0.5 * std::cos(t * 3.14159265358979323846);
+                break;
+            case 5: { // Gaussian-style S curve, normalized to [0, 1].
+                constexpr qreal k = 4.0;
+                const qreal lo = std::exp(-k);
+                shapedAlpha = (std::exp(-k * (1.0 - t) * (1.0 - t)) - lo) /
+                              (1.0 - lo);
+                break;
+            }
+            case 0:
+            default:
+                shapedAlpha = std::pow(t, 1.0 / gamma);
+                break;
+            }
+            const int newAlpha = qBound(0, qRound(shapedAlpha * 255.0), 255);
             const QRgb original = destRow[x];
             destRow[x] = qRgba(qRed(original), qGreen(original), qBlue(original), newAlpha);
         }

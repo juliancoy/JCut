@@ -54,6 +54,8 @@ struct PreviewInteractionTransientState {
 
 struct VulkanPreviewClipFrameStatus {
     QString clipId;
+    QString mediaOwnerClipId;
+    QString effectsOwnerClipId;
     QString label;
     QString decodePath;
     QString frameSelection;
@@ -95,6 +97,7 @@ struct VulkanPreviewClipFrameStatus {
     int correctionPolygonCount = 0;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    int maskFeatherFalloff = 0;
     bool maskInvert = false;
     qreal maskErode = 0.0;
     qreal maskDilate = 0.0;

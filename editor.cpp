@@ -1099,6 +1099,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root,
         QStringLiteral("previewCurrentSpeakerBackgroundColor"),
         QColor(8, 13, 20, 190));
+    const bool previewCurrentSpeakerBackgroundVisible =
+        root.value(QStringLiteral("previewCurrentSpeakerBackgroundVisible")).toBool(true);
     const int previewCurrentSpeakerBackgroundOpacityPercent = qBound(
         0,
         root.value(QStringLiteral("previewCurrentSpeakerBackgroundOpacityPercent")).toInt(75),
@@ -1457,6 +1459,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     markStartup(QStringLiteral("apply_state.timeline_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_clip_count"), loadedClips.size()}});
+    constexpr int kCurrentMaskArchitectureVersion = 2;
+    const int loadedMaskArchitectureVersion =
+        root.value(QStringLiteral("maskArchitectureVersion")).toInt(1);
+    if (loadedMaskArchitectureVersion < kCurrentMaskArchitectureVersion) {
+        migrateLegacyMaskGradingToMattes(loadedClips);
+    }
     normalizeSamMaskMatteClips(loadedClips);
 
     if (!startupMarking && !m_restoringHistory && !loadedClips.isEmpty()) {
@@ -1668,7 +1676,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_speakerShowFaceDetectionsBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
     }
     if (m_speakerShowContiguousSectionsCheckBox) {
-        QSignalBlocker block(m_speakerShowContiguousSectionsCheckBox);
+        // This checkbox switches both the Speakers work page and the table
+        // populated by SpeakersTab, so its signal is part of applying state.
         m_speakerShowContiguousSectionsCheckBox->setChecked(speakerShowContiguousTranscriptSections);
     }
     if (m_speakerApplyTrackToAllMatchingSectionsCheckBox) {
@@ -1708,6 +1717,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_speakerCurrentSpeakerNameColor = previewCurrentSpeakerNameColor;
     m_speakerCurrentSpeakerOrganizationColor = previewCurrentSpeakerOrganizationColor;
     m_speakerCurrentSpeakerBackgroundColor = previewCurrentSpeakerBackgroundColor;
+    m_speakerCurrentSpeakerBackgroundVisible = previewCurrentSpeakerBackgroundVisible;
     m_speakerCurrentSpeakerBorderColor = previewCurrentSpeakerBorderColor;
     m_speakerCurrentSpeakerShadowColor = previewCurrentSpeakerShadowColor;
     setEditorColorButtonSwatch(m_speakerCurrentSpeakerNameColorButton, m_speakerCurrentSpeakerNameColor);
@@ -1715,6 +1725,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     setEditorColorButtonSwatch(m_speakerCurrentSpeakerBackgroundColorButton, m_speakerCurrentSpeakerBackgroundColor);
     setEditorColorButtonSwatch(m_speakerCurrentSpeakerBorderColorButton, m_speakerCurrentSpeakerBorderColor);
     setEditorColorButtonSwatch(m_speakerCurrentSpeakerShadowColorButton, m_speakerCurrentSpeakerShadowColor);
+    if (m_speakerCurrentSpeakerBackgroundVisibleCheckBox) {
+        QSignalBlocker block(m_speakerCurrentSpeakerBackgroundVisibleCheckBox);
+        m_speakerCurrentSpeakerBackgroundVisibleCheckBox->setChecked(
+            m_speakerCurrentSpeakerBackgroundVisible);
+    }
+    for (QWidget* control : {
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundColorButton),
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundOpacitySpin),
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBorderColorButton),
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBorderOpacitySpin),
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundRadiusSpin),
+             static_cast<QWidget*>(m_speakerCurrentSpeakerBorderWidthSpin)}) {
+        if (control) control->setEnabled(m_speakerCurrentSpeakerBackgroundVisible);
+    }
     if (m_speakerCurrentSpeakerBackgroundOpacitySpin) {
         QSignalBlocker block(m_speakerCurrentSpeakerBackgroundOpacitySpin);
         m_speakerCurrentSpeakerBackgroundOpacitySpin->setValue(previewCurrentSpeakerBackgroundOpacityPercent);
@@ -2027,8 +2051,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             previewCurrentSpeakerOrganizationYPositionPercent / 100.0);
         m_preview->setCurrentSpeakerNameColor(m_speakerCurrentSpeakerNameColor);
         m_preview->setCurrentSpeakerOrganizationColor(m_speakerCurrentSpeakerOrganizationColor);
-        m_preview->setCurrentSpeakerBackgroundColor(m_speakerCurrentSpeakerBackgroundColor);
-        m_preview->setCurrentSpeakerBorderColor(m_speakerCurrentSpeakerBorderColor);
+        QColor effectiveSpeakerBackground = m_speakerCurrentSpeakerBackgroundColor;
+        QColor effectiveSpeakerBorder = m_speakerCurrentSpeakerBorderColor;
+        if (!m_speakerCurrentSpeakerBackgroundVisible) {
+            effectiveSpeakerBackground.setAlpha(0);
+            effectiveSpeakerBorder.setAlpha(0);
+        }
+        m_preview->setCurrentSpeakerBackgroundColor(effectiveSpeakerBackground);
+        m_preview->setCurrentSpeakerBorderColor(effectiveSpeakerBorder);
         m_preview->setCurrentSpeakerBackgroundCornerRadius(previewCurrentSpeakerBackgroundRadiusPx);
         m_preview->setCurrentSpeakerBorderWidth(previewCurrentSpeakerBorderWidthPx);
         m_preview->setCurrentSpeakerShadowEnabled(previewCurrentSpeakerShadowEnabled);

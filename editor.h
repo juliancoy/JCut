@@ -510,6 +510,7 @@ private:
     QPushButton *m_speakerCurrentSpeakerNameColorButton = nullptr;
     QPushButton *m_speakerCurrentSpeakerOrganizationColorButton = nullptr;
     QPushButton *m_speakerCurrentSpeakerBackgroundColorButton = nullptr;
+    QCheckBox *m_speakerCurrentSpeakerBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerBackgroundOpacitySpin = nullptr;
     QPushButton *m_speakerCurrentSpeakerBorderColorButton = nullptr;
     QSpinBox *m_speakerCurrentSpeakerBorderOpacitySpin = nullptr;
@@ -521,6 +522,7 @@ private:
     QColor m_speakerCurrentSpeakerNameColor = QColor(QStringLiteral("#f4f8fc"));
     QColor m_speakerCurrentSpeakerOrganizationColor = QColor(QStringLiteral("#b9d0e5"));
     QColor m_speakerCurrentSpeakerBackgroundColor = QColor(8, 13, 20, 190);
+    bool m_speakerCurrentSpeakerBackgroundVisible = true;
     QColor m_speakerCurrentSpeakerBorderColor = QColor(225, 236, 247, 120);
     QColor m_speakerCurrentSpeakerShadowColor = QColor(0, 0, 0, 190);
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
@@ -686,7 +688,6 @@ private:
     QPushButton *m_flipHorizontalButton = nullptr;
     QPushButton *m_renderButton = nullptr;
     QString m_lastRenderOutputPath;
-    QString m_lastAutoTranscriptSwitchClipId;
 
     std::unique_ptr<ControlServer> m_controlServer;
     std::unique_ptr<AudioEngine> m_audioEngine;

@@ -97,7 +97,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
         return false;
     }
 
-    VkDescriptorSetLayoutBinding bindings[4]{};
+    VkDescriptorSetLayoutBinding bindings[5]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -114,22 +114,28 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
     descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutInfo.bindingCount = 4;
+    descriptorSetLayoutInfo.bindingCount = 5;
     descriptorSetLayoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
         destroy();
         return false;
     }
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount * 4);
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount * 4);
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount);
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptorPoolInfo.poolSizeCount = 1;
-    descriptorPoolInfo.pPoolSizes = &poolSize;
+    descriptorPoolInfo.poolSizeCount = 2;
+    descriptorPoolInfo.pPoolSizes = poolSizes;
     descriptorPoolInfo.maxSets = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount);
     if (vkCreateDescriptorPool(m_device, &descriptorPoolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS) {
         destroy();
@@ -147,6 +153,31 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
         destroy();
         return false;
     }
+
+    VkBufferCreateInfo uniformBufferInfo{};
+    uniformBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    uniformBufferInfo.size = sizeof(float) * 4;
+    uniformBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uniformBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(m_device, &uniformBufferInfo, nullptr, &m_frameUniformBuffer) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+    VkMemoryRequirements uniformRequirements{};
+    vkGetBufferMemoryRequirements(m_device, m_frameUniformBuffer, &uniformRequirements);
+    VkMemoryAllocateInfo uniformAlloc{};
+    uniformAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    uniformAlloc.allocationSize = uniformRequirements.size;
+    uniformAlloc.memoryTypeIndex = findMemoryType(
+        uniformRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(m_device, &uniformAlloc, nullptr, &m_frameUniformMemory) != VK_SUCCESS ||
+        vkBindBufferMemory(m_device, m_frameUniformBuffer, m_frameUniformMemory, 0) != VK_SUCCESS ||
+        vkMapMemory(m_device, m_frameUniformMemory, 0, sizeof(float) * 4, 0, &m_frameUniformMapped) != VK_SUCCESS) {
+        destroy();
+        return false;
+    }
+    updateFrameUniform(QSize(1, 1));
 
     if (!createTextureResources() || !createMaskComputeResources()) {
         destroy();
@@ -240,6 +271,18 @@ void VulkanResources::destroy()
     }
     destroyMaskImage(m_maskRawImage, m_maskRawMemory, m_maskRawView);
     destroyMaskImage(m_maskWorkImage, m_maskWorkMemory, m_maskWorkView);
+    if (m_frameUniformMapped && m_frameUniformMemory != VK_NULL_HANDLE) {
+        vkUnmapMemory(m_device, m_frameUniformMemory);
+        m_frameUniformMapped = nullptr;
+    }
+    if (m_frameUniformBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(m_device, m_frameUniformBuffer, nullptr);
+        m_frameUniformBuffer = VK_NULL_HANDLE;
+    }
+    if (m_frameUniformMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, m_frameUniformMemory, nullptr);
+        m_frameUniformMemory = VK_NULL_HANDLE;
+    }
     if (m_descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
@@ -265,6 +308,8 @@ void VulkanResources::destroy()
     m_maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskRawSize = QSize();
+    m_uploadedMaskCacheKey = 0;
+    m_uploadedMaskOutputSize = QSize();
     m_maskSize = QSize();
     m_stagingRing.reset();
     m_initialized = false;
@@ -369,7 +414,11 @@ bool VulkanResources::createTextureResources()
     imageInfoDesc[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfoDesc[3].imageView = m_maskCurveLutView;
     imageInfoDesc[3].sampler = m_sampler;
-    std::array<VkWriteDescriptorSet, VulkanResources::kDescriptorSetCount * 4> writes{};
+    VkDescriptorBufferInfo frameUniformInfo{};
+    frameUniformInfo.buffer = m_frameUniformBuffer;
+    frameUniformInfo.offset = 0;
+    frameUniformInfo.range = sizeof(float) * 4;
+    std::array<VkWriteDescriptorSet, VulkanResources::kDescriptorSetCount * 5> writes{};
     size_t writeIndex = 0;
     for (VkDescriptorSet descriptorSet : m_descriptorSets) {
         if (descriptorSet == VK_NULL_HANDLE) {
@@ -384,8 +433,27 @@ bool VulkanResources::createTextureResources()
             writes[writeIndex].pImageInfo = &imageInfoDesc[binding];
             ++writeIndex;
         }
+        writes[writeIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeIndex].dstSet = descriptorSet;
+        writes[writeIndex].dstBinding = 4;
+        writes[writeIndex].descriptorCount = 1;
+        writes[writeIndex].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[writeIndex].pBufferInfo = &frameUniformInfo;
+        ++writeIndex;
     }
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeIndex), writes.data(), 0, nullptr);
+    return true;
+}
+
+bool VulkanResources::updateFrameUniform(const QSize& outputSize)
+{
+    if (!m_frameUniformMapped) {
+        return false;
+    }
+    const float width = static_cast<float>(qMax(1, outputSize.width()));
+    const float height = static_cast<float>(qMax(1, outputSize.height()));
+    const float values[4] = {width, height, 1.0f / width, 1.0f / height};
+    std::memcpy(m_frameUniformMapped, values, sizeof(values));
     return true;
 }
 
@@ -1417,6 +1485,18 @@ bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer,
     if (!m_initialized || !commandBuffer || image.isNull()) {
         return false;
     }
+    const QSize requestedOutputSize =
+        options.outputSize.isValid() ? options.outputSize : image.size();
+    const qint64 sourceCacheKey = image.cacheKey();
+    if (sourceCacheKey != 0 && sourceCacheKey == m_uploadedMaskCacheKey &&
+        requestedOutputSize == m_uploadedMaskOutputSize &&
+        options.invert == m_uploadedMaskInvert &&
+        options.erodeRadius == m_uploadedMaskErodeRadius &&
+        options.dilateRadius == m_uploadedMaskDilateRadius &&
+        options.blurRadius == m_uploadedMaskBlurRadius &&
+        m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        return true;
+    }
     const QImage gray = image.convertToFormat(QImage::Format_Grayscale8);
     if (gray.isNull() || gray.width() <= 0 || gray.height() <= 0) {
         return false;
@@ -1487,7 +1567,16 @@ bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer,
                             VK_ACCESS_TRANSFER_WRITE_BIT,
                             VK_ACCESS_SHADER_READ_BIT);
     m_maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return preprocessMaskTexture(commandBuffer, options);
+    if (!preprocessMaskTexture(commandBuffer, options)) {
+        return false;
+    }
+    m_uploadedMaskCacheKey = sourceCacheKey;
+    m_uploadedMaskOutputSize = requestedOutputSize;
+    m_uploadedMaskInvert = options.invert;
+    m_uploadedMaskErodeRadius = options.erodeRadius;
+    m_uploadedMaskDilateRadius = options.dilateRadius;
+    m_uploadedMaskBlurRadius = options.blurRadius;
+    return true;
 }
 
 bool VulkanResources::ensureAuxiliaryImagesReadable(VkCommandBuffer commandBuffer)

@@ -719,6 +719,7 @@ void EditorWindow::renameProject(const QString &projectId)
 QJsonObject EditorWindow::buildStateJson() const
 {
     QJsonObject root;
+    root[QStringLiteral("maskArchitectureVersion")] = 2;
     const QString mediaRoot =
         m_explorerPane ? m_explorerPane->currentRootPath() : QString();
     const QString mediaGalleryPath =
@@ -843,6 +844,10 @@ QJsonObject EditorWindow::buildStateJson() const
         QColor(m_speakerCurrentSpeakerBackgroundColor.red(),
                m_speakerCurrentSpeakerBackgroundColor.green(),
                m_speakerCurrentSpeakerBackgroundColor.blue()).name(QColor::HexRgb);
+    root[QStringLiteral("previewCurrentSpeakerBackgroundVisible")] =
+        m_speakerCurrentSpeakerBackgroundVisibleCheckBox
+            ? m_speakerCurrentSpeakerBackgroundVisibleCheckBox->isChecked()
+            : m_speakerCurrentSpeakerBackgroundVisible;
     root[QStringLiteral("previewCurrentSpeakerBackgroundOpacityPercent")] =
         m_speakerCurrentSpeakerBackgroundOpacitySpin
             ? m_speakerCurrentSpeakerBackgroundOpacitySpin->value()

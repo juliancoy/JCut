@@ -54,7 +54,7 @@ public:
         QSpinBox* speakerSectionMinimumWordsSpin = nullptr;
         QPushButton* speakerExportLongSectionsButton = nullptr;
         QPushButton* speakerCreateTitleClipsButton = nullptr;
-        QPushButton* speakerOverlayCreateTitleClipsButton = nullptr;
+        QCheckBox* speakerOverlayCreateTitleClipsButton = nullptr;
         QComboBox* speakerOverlayFlyInStyleCombo = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInDelaySpin = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInDurationSpin = nullptr;

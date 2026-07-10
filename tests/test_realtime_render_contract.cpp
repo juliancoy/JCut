@@ -1,6 +1,8 @@
 #include <QtTest/QtTest>
 
 #include "../editor_shared_keyframes.h"
+#include "../editor_shared_effects.h"
+#include "../editor_shared_media.h"
 #include "../editor_shared_render_sync.h"
 #include "../export_timing.h"
 #include "../timeline_fps.h"
@@ -56,6 +58,8 @@ private slots:
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
     void childTransformLockUsesSourceTransformWhenEnabled();
+    void virtualMaskMatteOwnsIndependentKeyframedGrade();
+    void hiddenParentStillProvidesMediaForVisibleMaskMatte();
     void exportLoopPassesFractionalPositionToRenderer();
 };
 
@@ -177,6 +181,62 @@ void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnable
     QCOMPARE(locked.rotation, source.baseRotation);
     QCOMPARE(locked.scaleX, source.baseScaleX);
     QCOMPARE(locked.scaleY, source.baseScaleY);
+}
+
+void TestRealtimeRenderContract::virtualMaskMatteOwnsIndependentKeyframedGrade()
+{
+    TimelineClip source = makeMappedClip(30.0);
+    source.id = QStringLiteral("source");
+    source.gradingKeyframes = {
+        TimelineClip::GradingKeyframe{0, 0.1, 1.0, 1.0},
+    };
+
+    TimelineClip matte = source;
+    matte.id = QStringLiteral("source-mask-matte");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.linkedSourceClipId = source.id;
+    matte.gradingKeyframes = {
+        TimelineClip::GradingKeyframe{0, 0.0, 1.0, 1.0},
+        TimelineClip::GradingKeyframe{10, 0.8, 1.4, 0.6},
+    };
+
+    const TimelineClip::GradingKeyframe sourceGrade =
+        evaluateEffectiveClipGradingAtPosition(source, {}, 5.0);
+    const TimelineClip::GradingKeyframe matteGrade =
+        evaluateEffectiveClipGradingAtPosition(matte, {}, 5.0);
+
+    QVERIFY(std::abs(sourceGrade.brightness - 0.1) < 0.000001);
+    QVERIFY2(std::abs(matteGrade.brightness - 0.4) < 0.000001,
+             "virtual matte brightness must interpolate on the matte's own grading timeline");
+    QVERIFY2(std::abs(matteGrade.contrast - 1.2) < 0.000001,
+             "virtual matte contrast must not fall back to the linked source grade");
+    QVERIFY2(std::abs(matteGrade.saturation - 0.8) < 0.000001,
+             "virtual matte saturation must not fall back to the linked source grade");
+    QVERIFY2(std::abs(sourceGrade.brightness - matteGrade.brightness) > 0.1,
+             "grading the virtual matte must leave the linked source grade independent");
+}
+
+void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMatte()
+{
+    TimelineClip source = makeMappedClip(30.0);
+    source.id = QStringLiteral("hidden-parent");
+    source.videoEnabled = false;
+
+    TimelineClip matte = source;
+    matte.id = QStringLiteral("visible-mask-child");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.linkedSourceClipId = source.id;
+    matte.videoEnabled = true;
+
+    const QVector<TimelineClip> clips{source, matte};
+    QVERIFY(!clipVisualPlaybackEnabled(source, {}));
+    QVERIFY(clipVisualPlaybackEnabled(matte, {}));
+    QVERIFY2(clipProvidesMediaForVisibleMaskMatte(source, clips, {}),
+             "a hidden parent must remain a decode provider for its visible virtual mask child");
+
+    matte.videoEnabled = false;
+    QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(source, {source, matte}, {}),
+             "a hidden virtual mask must not keep its parent active as a media provider");
 }
 
 void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()

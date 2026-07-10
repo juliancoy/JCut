@@ -600,6 +600,8 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_audio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_speech_harmonic_isolator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mask_sidecar.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_codecs.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp

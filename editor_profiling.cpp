@@ -785,10 +785,16 @@ QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
             QStringLiteral("rubberband"),
             QStringLiteral("rubber_band_100"),
             QStringLiteral("rubberband_100"),
-            QStringLiteral("rubber-band-100")
+            QStringLiteral("rubber-band-100"),
+            QStringLiteral("rubber_band_pass_through_frequency"),
+            QStringLiteral("rubber-band-pass-through-frequency"),
+            QStringLiteral("rubberband_pass_through_frequency"),
+            QStringLiteral("rubber_band_50"),
+            QStringLiteral("rubberband_50"),
+            QStringLiteral("rubber-band-50")
         };
         if (!validValues.contains(raw)) {
-            error = QStringLiteral("audio_warp_mode must be one of: disabled, varispeed, time_stretch, rubber_band");
+            error = QStringLiteral("audio_warp_mode must be one of: disabled, varispeed, time_stretch, rubber_band, rubber_band_pass_through_frequency");
             return QJsonObject{
                 {QStringLiteral("ok"), false},
                 {QStringLiteral("error"), error}

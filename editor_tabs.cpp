@@ -856,6 +856,14 @@ void EditorWindow::refreshTimelineSelectionInspectorViews()
     if (m_gradingTab) {
         m_gradingTab->refresh();
     }
+    if (m_bypassGradingCheckBox) {
+        const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr;
+        QSignalBlocker blocker(m_bypassGradingCheckBox);
+        m_bypassGradingCheckBox->setEnabled(clip && clipHasVisuals(*clip));
+        m_bypassGradingCheckBox->setChecked(clip ? clip->gradingPreviewEnabled : false);
+        m_bypassGradingCheckBox->setToolTip(QStringLiteral(
+            "Show this clip's grading in the editor preview. Export grading is unchanged."));
+    }
     if (m_effectsTab) {
         m_effectsTab->refresh();
     }
@@ -1629,6 +1637,7 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->effectsPathLabel(),
             m_inspectorPane->maskFeatherSpin(),
             m_inspectorPane->maskFeatherGammaSpin(),
+            m_inspectorPane->maskFeatherFalloffCombo(),
             m_inspectorPane->maskFeatherEnabledCheck(),
             m_inspectorPane->maskForegroundLayerCheck(),
             m_inspectorPane->maskRepeatEnabledCheck(),
@@ -1676,22 +1685,17 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskClipLabel(),
             m_inspectorPane->maskEnabledCheck(),
             m_inspectorPane->maskFramesDirEdit(),
+            m_inspectorPane->maskSidecarCombo(),
             m_inspectorPane->maskBrowseButton(),
             m_inspectorPane->maskShapeFeatherSpin(),
+            m_inspectorPane->maskShapeFeatherFalloffCombo(),
+            m_inspectorPane->maskShapeFeatherPowerSpin(),
             m_inspectorPane->maskDilateSpin(),
             m_inspectorPane->maskErodeSpin(),
             m_inspectorPane->maskBlurSpin(),
             m_inspectorPane->maskInvertCheck(),
             m_inspectorPane->maskShowOnlyCheck(),
             m_inspectorPane->maskOpacitySpin(),
-            m_inspectorPane->maskGradeEnabledCheck(),
-            m_inspectorPane->maskGradeBrightnessSpin(),
-            m_inspectorPane->maskGradeContrastSpin(),
-            m_inspectorPane->maskGradeSaturationSpin(),
-            m_inspectorPane->maskResetGradeButton(),
-            m_inspectorPane->maskCurveChannelCombo(),
-            m_inspectorPane->maskHistogramWidget(),
-            m_inspectorPane->maskCurveSmoothingCheckBox(),
             m_inspectorPane->maskShadowEnabledCheck(),
             m_inspectorPane->maskShadowRadiusSpin(),
             m_inspectorPane->maskShadowOffsetXSpin(),

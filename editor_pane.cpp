@@ -326,8 +326,8 @@ void EditorPane::setupTransportControls()
     m_playbackSpeedCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_playbackSpeedCombo->setMinimumContentsLength(4);
     m_playbackSpeedCombo->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
-    m_playbackSpeedCombo->setToolTip(
-        QStringLiteral("Timeline playback speed. Audio clock remains authoritative when audio is active."));
+    m_playbackSpeedCombo->setToolTip(QStringLiteral("Timeline playback speed."));
+    m_playbackSpeedCombo->setAccessibleName(QStringLiteral("Playback speed"));
 
     m_previewModeCombo = new QComboBox;
     m_previewModeCombo->setObjectName(QStringLiteral("transport.preview_mode"));

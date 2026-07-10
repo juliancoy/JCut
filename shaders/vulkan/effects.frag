@@ -5,6 +5,10 @@ layout(set = 0, binding = 0) uniform sampler2D u_texture;
 layout(set = 0, binding = 1) uniform sampler2D u_curve_lut;
 layout(set = 0, binding = 2) uniform sampler2D u_mask;
 layout(set = 0, binding = 3) uniform sampler2D u_mask_curve_lut;
+layout(set = 0, binding = 4) uniform FrameUniforms {
+    vec2 outputSize;
+    vec2 inverseOutputSize;
+} frame;
 layout(push_constant) uniform Push {
     mat4 u_mvp;
     float u_brightness;
@@ -44,41 +48,51 @@ vec4 blurredFillSample(vec2 uv) {
 }
 
 vec4 edgeStretchFillSample(vec2 uv) {
-    vec4 rect = pc.u_shadows;
-    float left = min(rect.x, rect.z);
-    float right = max(rect.x, rect.z);
-    float top = min(rect.y, rect.w);
-    float bottom = max(rect.y, rect.w);
-    float width = max(0.0001, right - left);
-    float height = max(0.0001, bottom - top);
-    vec2 clampedOutput = vec2(clamp(uv.x, left, right),
-                              clamp(uv.y, top, bottom));
-    vec2 sourceUv = vec2((clampedOutput.x - left) / width,
-                         (clampedOutput.y - top) / height);
+    vec2 center = pc.u_shadows.xy;
+    float halfWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedHalfHeight = abs(pc.u_shadows.w) < 0.0001
+        ? 0.0001
+        : pc.u_shadows.w;
+    float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
+    vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
+    float angle = pc.u_midtones.y;
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
+                          -sine * delta.x + cosine * delta.y);
+    vec2 sourceUv = vec2(unrotated.x / (2.0 * halfWidth) + 0.5,
+                         unrotated.y / (2.0 * signedHalfHeight) + 0.5);
     vec2 texSize = vec2(textureSize(u_texture, 0));
     vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
-    vec2 edgeSpan = clamp(vec2(max(1.0, pc.u_midtones.x)) / max(vec2(1.0), texSize),
+    vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
+    vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
+    vec2 validSpan = max(validMax - validMin, halfTexel * 2.0);
+    vec2 edgeSpan = clamp(vec2(max(1.0, pc.u_midtones.x)) /
+                              max(vec2(1.0), texSize * validSpan),
                           halfTexel,
                           vec2(1.0) - halfTexel);
-    bool progressive = pc.u_midtones.y > 0.5;
+    bool progressive = pc.u_highlights.a < -2.5;
     float power = max(0.25, pc.u_midtones.z);
 
-    if (uv.x < left) {
-        float fillT = clamp((left - uv.x) / max(0.0001, left), 0.0, 1.0);
+    if (sourceUv.x < 0.0) {
+        float fillT = clamp(-sourceUv.x, 0.0, 1.0);
         sourceUv.x = mix(halfTexel.x, edgeSpan.x, progressive ? pow(fillT, power) : fillT);
-    } else if (uv.x > right) {
-        float fillT = clamp((uv.x - right) / max(0.0001, 1.0 - right), 0.0, 1.0);
+    } else if (sourceUv.x > 1.0) {
+        float fillT = clamp(sourceUv.x - 1.0, 0.0, 1.0);
         sourceUv.x = mix(1.0 - halfTexel.x, 1.0 - edgeSpan.x, progressive ? pow(fillT, power) : fillT);
     }
 
-    if (uv.y < top) {
-        float fillT = clamp((top - uv.y) / max(0.0001, top), 0.0, 1.0);
+    if (sourceUv.y < 0.0) {
+        float fillT = clamp(-sourceUv.y, 0.0, 1.0);
         sourceUv.y = mix(halfTexel.y, edgeSpan.y, progressive ? pow(fillT, power) : fillT);
-    } else if (uv.y > bottom) {
-        float fillT = clamp((uv.y - bottom) / max(0.0001, 1.0 - bottom), 0.0, 1.0);
+    } else if (sourceUv.y > 1.0) {
+        float fillT = clamp(sourceUv.y - 1.0, 0.0, 1.0);
         sourceUv.y = mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, progressive ? pow(fillT, power) : fillT);
     }
-    return texture(u_texture, textureInteriorClamp(sourceUv));
+    vec2 validHalfTexel = min(halfTexel, validSpan * 0.5);
+    vec2 mappedUv = validMin + sourceUv * validSpan;
+    return texture(u_texture,
+                   clamp(mappedUv, validMin + validHalfTexel, validMax - validHalfTexel));
 }
 
 float mirroredCoord(float t) {
@@ -87,17 +101,23 @@ float mirroredCoord(float t) {
 }
 
 vec4 mirrorFillSample(vec2 uv) {
-    vec4 rect = pc.u_shadows;
-    float left = min(rect.x, rect.z);
-    float right = max(rect.x, rect.z);
-    float top = min(rect.y, rect.w);
-    float bottom = max(rect.y, rect.w);
-    float width = max(0.0001, right - left);
-    float height = max(0.0001, bottom - top);
-    vec2 sourceUv = vec2((uv.x - left) / width,
-                         (uv.y - top) / height);
-    return texture(u_texture, textureInteriorClamp(vec2(mirroredCoord(sourceUv.x),
-                                                        mirroredCoord(sourceUv.y))));
+    vec2 center = pc.u_shadows.xy;
+    float halfWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedHalfHeight = abs(pc.u_shadows.w) < 0.0001 ? 0.0001 : pc.u_shadows.w;
+    float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
+    vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
+    float angle = pc.u_midtones.y;
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
+                          -sine * delta.x + cosine * delta.y);
+    vec2 sourceUv = vec2(unrotated.x / (2.0 * halfWidth) + 0.5,
+                         unrotated.y / (2.0 * signedHalfHeight) + 0.5);
+    vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
+    vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
+    vec2 validUv = validMin + vec2(mirroredCoord(sourceUv.x), mirroredCoord(sourceUv.y)) *
+                                      max(validMax - validMin, vec2(0.0001));
+    return texture(u_texture, textureInteriorClamp(validUv));
 }
 
 void main() {
@@ -208,6 +228,23 @@ void main() {
     bool maskOnly = pc.u_shadows.a > 2.5;
     if (maskOverlay || maskOnly) {
         float maskValue = clamp(texture(u_mask, v_texCoord).r, 0.0, 1.0);
+        float packedFalloff = max(pc.u_highlights.a, 0.1);
+        int falloff = int(floor(packedFalloff / 10.0));
+        float power = clamp(packedFalloff - float(falloff) * 10.0, 0.1, 5.0);
+        if (falloff == 0) {
+            maskValue = pow(maskValue, 1.0 / power);
+        } else if (falloff == 2) {
+            maskValue = smoothstep(0.0, 1.0, maskValue);
+        } else if (falloff == 3) {
+            float t = maskValue;
+            maskValue = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+        } else if (falloff == 4) {
+            maskValue = 0.5 - 0.5 * cos(maskValue * 3.14159265359);
+        } else if (falloff == 5) {
+            const float k = 4.0;
+            float lo = exp(-k);
+            maskValue = (exp(-k * (1.0 - maskValue) * (1.0 - maskValue)) - lo) / (1.0 - lo);
+        }
         if (maskOnly) {
             outColor = vec4(vec3(maskValue), maskValue * pc.u_opacity);
             return;

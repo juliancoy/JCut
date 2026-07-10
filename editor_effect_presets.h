@@ -18,6 +18,7 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset);
 bool effectPresetUsesTilingControls(ClipEffectPreset preset);
 
 TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip);
+bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips);
 bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips);
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex);
 TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex);

@@ -213,6 +213,15 @@ set_tests_properties(test_contiguous_transcript_sections_state_persistence PROPE
     LABELS "logic"
 )
 
+add_test(NAME test_speaker_sections_tab_mode_sync
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_speaker_sections_tab_mode_sync.cmake
+)
+set_tests_properties(test_speaker_sections_tab_mode_sync PROPERTIES
+    LABELS "logic"
+)
+
 add_test(NAME test_contiguous_sections_avatar_column
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..

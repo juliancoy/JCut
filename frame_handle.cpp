@@ -135,6 +135,13 @@ FrameHandle FrameHandle::createHardwareFrame(const AVFrame* frame,
     handle.d->frameNumber = frameNum;
     handle.d->sourcePath = path;
     handle.d->size = QSize(frame->width, frame->height);
+    const int visibleWidth = qMax(1, frame->width - static_cast<int>(frame->crop_left + frame->crop_right));
+    const int visibleHeight = qMax(1, frame->height - static_cast<int>(frame->crop_top + frame->crop_bottom));
+    handle.d->validTextureRectNorm = QRectF(
+        static_cast<qreal>(frame->crop_left) / qMax(1, frame->width),
+        static_cast<qreal>(frame->crop_top) / qMax(1, frame->height),
+        static_cast<qreal>(visibleWidth) / qMax(1, frame->width),
+        static_cast<qreal>(visibleHeight) / qMax(1, frame->height));
     handle.d->decodeTimestamp = QDateTime::currentMSecsSinceEpoch();
     return handle;
 }

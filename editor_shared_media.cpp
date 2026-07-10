@@ -635,6 +635,8 @@ QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode) {
         return QStringLiteral("time_stretch");
     case PlaybackAudioWarpMode::RubberBand:
         return QStringLiteral("rubber_band");
+    case PlaybackAudioWarpMode::RubberBandPassThroughFrequency:
+        return QStringLiteral("rubber_band_pass_through_frequency");
     case PlaybackAudioWarpMode::Disabled:
     default:
         return QStringLiteral("disabled");
@@ -657,26 +659,38 @@ PlaybackAudioWarpMode playbackAudioWarpModeFromString(const QString& value) {
         normalized == QStringLiteral("rubber-band-100")) {
         return PlaybackAudioWarpMode::RubberBand;
     }
+    if (normalized == QStringLiteral("rubber_band_pass_through_frequency") ||
+        normalized == QStringLiteral("rubber-band-pass-through-frequency") ||
+        normalized == QStringLiteral("rubberband_pass_through_frequency") ||
+        // Kept for projects saved before this mode was renamed.
+        normalized == QStringLiteral("rubber_band_50") ||
+        normalized == QStringLiteral("rubber-band-50") ||
+        normalized == QStringLiteral("rubberband_50")) {
+        return PlaybackAudioWarpMode::RubberBandPassThroughFrequency;
+    }
     return PlaybackAudioWarpMode::Disabled;
 }
 
 QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode) {
     switch (mode) {
     case PlaybackAudioWarpMode::Varispeed:
-        return QStringLiteral("Varispeed");
+        return QStringLiteral("Follow Speed (Changes Pitch)");
     case PlaybackAudioWarpMode::TimeStretch:
-        return QStringLiteral("Time-Stretch");
+        return QStringLiteral("Preserve Pitch");
     case PlaybackAudioWarpMode::RubberBand:
-        return QStringLiteral("Rubber Band Always");
+        return QStringLiteral("Rubber Band at Any Speed");
+    case PlaybackAudioWarpMode::RubberBandPassThroughFrequency:
+        return QStringLiteral("Harmonic Speech Isolation");
     case PlaybackAudioWarpMode::Disabled:
     default:
-        return QStringLiteral("Disabled");
+        return QStringLiteral("Off");
     }
 }
 
 bool playbackAudioWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode) {
     return mode == PlaybackAudioWarpMode::TimeStretch ||
-           mode == PlaybackAudioWarpMode::RubberBand;
+           mode == PlaybackAudioWarpMode::RubberBand ||
+           mode == PlaybackAudioWarpMode::RubberBandPassThroughFrequency;
 }
 
 bool playbackAudioWarpModeForcesUnityTimeStretch(PlaybackAudioWarpMode mode) {
@@ -876,6 +890,19 @@ bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineT
         return false;
     }
     return trackVisualModeForClip(clip, tracks) != TrackVisualMode::Hidden;
+}
+
+bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
+                                          const QVector<TimelineClip>& clips,
+                                          const QVector<TimelineTrack>& tracks) {
+    for (const TimelineClip& child : clips) {
+        if (child.clipRole == ClipRole::MaskMatte &&
+            child.linkedSourceClipId.trimmed() == source.id &&
+            clipVisualPlaybackEnabled(child, tracks)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool clipAudioPlaybackEnabled(const TimelineClip& clip) {

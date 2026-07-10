@@ -120,7 +120,7 @@ public:
     QSpinBox *speakerSectionMinimumWordsSpin() const { return m_speakerSectionMinimumWordsSpin; }
     QPushButton *speakerExportLongSectionsButton() const { return m_speakerExportLongSectionsButton; }
     QPushButton *speakerCreateTitleClipsButton() const { return m_speakerCreateTitleClipsButton; }
-    QPushButton *speakerOverlayCreateTitleClipsButton() const { return m_speakerOverlayCreateTitleClipsButton; }
+    QCheckBox *speakerOverlayCreateTitleClipsButton() const { return m_speakerOverlayCreateTitleClipsButton; }
     QComboBox *speakerOverlayFlyInStyleCombo() const { return m_speakerOverlayFlyInStyleCombo; }
     QDoubleSpinBox *speakerOverlayFlyInDelaySpin() const { return m_speakerOverlayFlyInDelaySpin; }
     QDoubleSpinBox *speakerOverlayFlyInDurationSpin() const { return m_speakerOverlayFlyInDurationSpin; }
@@ -150,6 +150,7 @@ public:
     QPushButton *speakerCurrentSpeakerNameColorButton() const { return m_speakerCurrentSpeakerNameColorButton; }
     QPushButton *speakerCurrentSpeakerOrganizationColorButton() const { return m_speakerCurrentSpeakerOrganizationColorButton; }
     QPushButton *speakerCurrentSpeakerBackgroundColorButton() const { return m_speakerCurrentSpeakerBackgroundColorButton; }
+    QCheckBox *speakerCurrentSpeakerBackgroundVisibleCheckBox() const { return m_speakerCurrentSpeakerBackgroundVisibleCheckBox; }
     QSpinBox *speakerCurrentSpeakerBackgroundOpacitySpin() const { return m_speakerCurrentSpeakerBackgroundOpacitySpin; }
     QPushButton *speakerCurrentSpeakerBorderColorButton() const { return m_speakerCurrentSpeakerBorderColorButton; }
     QSpinBox *speakerCurrentSpeakerBorderOpacitySpin() const { return m_speakerCurrentSpeakerBorderOpacitySpin; }
@@ -238,6 +239,7 @@ public:
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
     QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
+    QComboBox *maskFeatherFalloffCombo() const { return m_maskFeatherFalloffCombo; }
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
     QCheckBox *maskForegroundLayerCheck() const { return m_maskForegroundLayerCheck; }
     QCheckBox *maskRepeatEnabledCheck() const { return m_maskRepeatEnabledCheck; }
@@ -255,22 +257,17 @@ public:
     QLabel *maskClipLabel() const { return m_maskClipLabel; }
     QCheckBox *maskEnabledCheck() const { return m_maskEnabledCheck; }
     QLineEdit *maskFramesDirEdit() const { return m_maskFramesDirEdit; }
+    QComboBox *maskSidecarCombo() const { return m_maskSidecarCombo; }
     QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
     QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
     QDoubleSpinBox *maskBlurSpin() const { return m_maskBlurSpin; }
+    QComboBox *maskShapeFeatherFalloffCombo() const { return m_maskShapeFeatherFalloffCombo; }
+    QDoubleSpinBox *maskShapeFeatherPowerSpin() const { return m_maskShapeFeatherPowerSpin; }
     QCheckBox *maskInvertCheck() const { return m_maskInvertCheck; }
     QCheckBox *maskShowOnlyCheck() const { return m_maskShowOnlyCheck; }
     QDoubleSpinBox *maskOpacitySpin() const { return m_maskOpacitySpin; }
-    QCheckBox *maskGradeEnabledCheck() const { return m_maskGradeEnabledCheck; }
-    QDoubleSpinBox *maskGradeBrightnessSpin() const { return m_maskGradeBrightnessSpin; }
-    QDoubleSpinBox *maskGradeContrastSpin() const { return m_maskGradeContrastSpin; }
-    QDoubleSpinBox *maskGradeSaturationSpin() const { return m_maskGradeSaturationSpin; }
-    QPushButton *maskResetGradeButton() const { return m_maskResetGradeButton; }
-    QComboBox *maskCurveChannelCombo() const { return m_maskCurveChannelCombo; }
-    GradingHistogramWidget *maskHistogramWidget() const { return m_maskHistogramWidget; }
-    QCheckBox *maskCurveSmoothingCheckBox() const { return m_maskCurveSmoothingCheckBox; }
     QCheckBox *maskShadowEnabledCheck() const { return m_maskShadowEnabledCheck; }
     QDoubleSpinBox *maskShadowRadiusSpin() const { return m_maskShadowRadiusSpin; }
     QDoubleSpinBox *maskShadowOffsetXSpin() const { return m_maskShadowOffsetXSpin; }
@@ -565,6 +562,7 @@ private:
     QLabel *m_effectsPathLabel = nullptr;
     QDoubleSpinBox *m_maskFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
+    QComboBox *m_maskFeatherFalloffCombo = nullptr;
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
     QCheckBox *m_maskForegroundLayerCheck = nullptr;
     QCheckBox *m_maskRepeatEnabledCheck = nullptr;
@@ -582,23 +580,17 @@ private:
     QLabel *m_maskClipLabel = nullptr;
     QCheckBox *m_maskEnabledCheck = nullptr;
     QLineEdit *m_maskFramesDirEdit = nullptr;
+    QComboBox *m_maskSidecarCombo = nullptr;
     QPushButton *m_maskBrowseButton = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskDilateSpin = nullptr;
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
     QDoubleSpinBox *m_maskBlurSpin = nullptr;
+    QComboBox *m_maskShapeFeatherFalloffCombo = nullptr;
+    QDoubleSpinBox *m_maskShapeFeatherPowerSpin = nullptr;
     QCheckBox *m_maskInvertCheck = nullptr;
     QCheckBox *m_maskShowOnlyCheck = nullptr;
     QDoubleSpinBox *m_maskOpacitySpin = nullptr;
-    QCheckBox *m_maskGradeEnabledCheck = nullptr;
-    QDoubleSpinBox *m_maskGradeBrightnessSpin = nullptr;
-    QDoubleSpinBox *m_maskGradeContrastSpin = nullptr;
-    QDoubleSpinBox *m_maskGradeSaturationSpin = nullptr;
-    QPushButton *m_maskResetGradeButton = nullptr;
-    QTabBar *m_maskCurveChannelTabs = nullptr;
-    QComboBox *m_maskCurveChannelCombo = nullptr;
-    GradingHistogramWidget *m_maskHistogramWidget = nullptr;
-    QCheckBox *m_maskCurveSmoothingCheckBox = nullptr;
     QCheckBox *m_maskShadowEnabledCheck = nullptr;
     QDoubleSpinBox *m_maskShadowRadiusSpin = nullptr;
     QDoubleSpinBox *m_maskShadowOffsetXSpin = nullptr;
@@ -816,7 +808,7 @@ private:
     QSpinBox *m_speakerSectionMinimumWordsSpin = nullptr;
     QPushButton *m_speakerExportLongSectionsButton = nullptr;
     QPushButton *m_speakerCreateTitleClipsButton = nullptr;
-    QPushButton *m_speakerOverlayCreateTitleClipsButton = nullptr;
+    QCheckBox *m_speakerOverlayCreateTitleClipsButton = nullptr;
     QComboBox *m_speakerOverlayFlyInStyleCombo = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInDelaySpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInDurationSpin = nullptr;
@@ -846,6 +838,7 @@ private:
     QPushButton *m_speakerCurrentSpeakerNameColorButton = nullptr;
     QPushButton *m_speakerCurrentSpeakerOrganizationColorButton = nullptr;
     QPushButton *m_speakerCurrentSpeakerBackgroundColorButton = nullptr;
+    QCheckBox *m_speakerCurrentSpeakerBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerBackgroundOpacitySpin = nullptr;
     QPushButton *m_speakerCurrentSpeakerBorderColorButton = nullptr;
     QSpinBox *m_speakerCurrentSpeakerBorderOpacitySpin = nullptr;

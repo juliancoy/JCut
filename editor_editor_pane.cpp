@@ -164,26 +164,10 @@ void EditorWindow::connectTimelineSignals()
         pushHistorySnapshot();
     };
     m_timeline->selectionChanged = [this]() {
-        const TimelineClip* selectedClip = m_timeline ? m_timeline->selectedClip() : nullptr;
-        const QString selectedClipId = selectedClip ? selectedClip->id : QString();
-        const bool selectionChanged = selectedClipId != m_lastAutoTranscriptSwitchClipId;
-        m_lastAutoTranscriptSwitchClipId = selectedClipId;
-
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
         refreshSyncInspector();
         m_transcriptTab->refresh();
         refreshClipInspector();
-        if (!m_loadingState && selectionChanged && selectedClip && !selectedClip->filePath.isEmpty()) {
-            const QString transcriptPath = transcriptWorkingPathForClip(*selectedClip);
-            if (QFileInfo::exists(transcriptPath) && m_inspectorTabs) {
-                for (int i = 0; i < m_inspectorTabs->count(); ++i) {
-                    if (m_inspectorTabs->tabText(i) == QStringLiteral("Transcript")) {
-                        m_inspectorTabs->setCurrentIndex(i);
-                        break;
-                    }
-                }
-            }
-        }
         refreshTimelineSelectionInspectorViews();
     };
     m_timeline->renderSyncMarkersChanged = [this]() {

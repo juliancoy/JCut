@@ -175,6 +175,27 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.maskShowOnly = false;
     maskClip.maskForegroundLayerEnabled = false;
     maskClip.effectPreset = ClipEffectPreset::None;
+    // A mask matte is independently gradeable. Do not inherit the source
+    // clip's grade; migrate the former masked-area grade into its standard
+    // grading model instead.
+    maskClip.brightness = sourceClip.maskGradeEnabled ? sourceClip.maskGradeBrightness : 0.0;
+    maskClip.contrast = sourceClip.maskGradeEnabled ? sourceClip.maskGradeContrast : 1.0;
+    maskClip.saturation = sourceClip.maskGradeEnabled ? sourceClip.maskGradeSaturation : 1.0;
+    maskClip.gradingKeyframes.clear();
+    if (sourceClip.maskGradeEnabled) {
+        TimelineClip::GradingKeyframe grade;
+        grade.frame = 0;
+        grade.brightness = sourceClip.maskGradeBrightness;
+        grade.contrast = sourceClip.maskGradeContrast;
+        grade.saturation = sourceClip.maskGradeSaturation;
+        grade.curvePointsR = sourceClip.maskGradeCurvePointsR;
+        grade.curvePointsG = sourceClip.maskGradeCurvePointsG;
+        grade.curvePointsB = sourceClip.maskGradeCurvePointsB;
+        grade.curvePointsLuma = sourceClip.maskGradeCurvePointsLuma;
+        grade.curveSmoothingEnabled = sourceClip.maskGradeCurveSmoothingEnabled;
+        maskClip.gradingKeyframes = {grade};
+    }
+    maskClip.maskGradeEnabled = false;
     return maskClip;
 }
 
@@ -258,20 +279,34 @@ bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
         assignIfChanged(clip.generatedFromMaskId, source.maskFramesDir.trimmed());
         assignIfChanged(clip.maskFeather, source.maskFeather);
         assignIfChanged(clip.maskFeatherGamma, source.maskFeatherGamma);
+        assignIfChanged(clip.maskFeatherFalloff, source.maskFeatherFalloff);
         assignIfChanged(clip.maskDilate, source.maskDilate);
         assignIfChanged(clip.maskErode, source.maskErode);
         assignIfChanged(clip.maskBlur, source.maskBlur);
         assignIfChanged(clip.maskInvert, source.maskInvert);
         assignIfChanged(clip.maskOpacity, source.maskOpacity);
-        assignIfChanged(clip.maskGradeEnabled, source.maskGradeEnabled);
-        assignIfChanged(clip.maskGradeBrightness, source.maskGradeBrightness);
-        assignIfChanged(clip.maskGradeContrast, source.maskGradeContrast);
-        assignIfChanged(clip.maskGradeSaturation, source.maskGradeSaturation);
-        assignIfChanged(clip.maskGradeCurvePointsR, source.maskGradeCurvePointsR);
-        assignIfChanged(clip.maskGradeCurvePointsG, source.maskGradeCurvePointsG);
-        assignIfChanged(clip.maskGradeCurvePointsB, source.maskGradeCurvePointsB);
-        assignIfChanged(clip.maskGradeCurvePointsLuma, source.maskGradeCurvePointsLuma);
-        assignIfChanged(clip.maskGradeCurveSmoothingEnabled, source.maskGradeCurveSmoothingEnabled);
+        const bool migrateLegacyMaskGrade = source.maskGradeEnabled || clip.maskGradeEnabled;
+        if (migrateLegacyMaskGrade) {
+            const TimelineClip& legacy = source.maskGradeEnabled ? source : clip;
+            TimelineClip::GradingKeyframe grade;
+            grade.frame = 0;
+            grade.brightness = legacy.maskGradeBrightness;
+            grade.contrast = legacy.maskGradeContrast;
+            grade.saturation = legacy.maskGradeSaturation;
+            grade.curvePointsR = legacy.maskGradeCurvePointsR;
+            grade.curvePointsG = legacy.maskGradeCurvePointsG;
+            grade.curvePointsB = legacy.maskGradeCurvePointsB;
+            grade.curvePointsLuma = legacy.maskGradeCurvePointsLuma;
+            grade.curveSmoothingEnabled = legacy.maskGradeCurveSmoothingEnabled;
+            clip.brightness = grade.brightness;
+            clip.contrast = grade.contrast;
+            clip.saturation = grade.saturation;
+            clip.gradingKeyframes = {grade};
+            source.maskGradeEnabled = false;
+            clip.maskGradeEnabled = false;
+            changed = true;
+        }
+        assignIfChanged(clip.maskGradeEnabled, false);
         assignIfChanged(clip.maskDropShadowEnabled, source.maskDropShadowEnabled);
         assignIfChanged(clip.maskDropShadowRadius, source.maskDropShadowRadius);
         assignIfChanged(clip.maskDropShadowOffsetX, source.maskDropShadowOffsetX);
@@ -283,6 +318,16 @@ bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
     }
 
     return changed;
+}
+
+bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips)
+{
+    bool hasLegacyGrade = false;
+    for (const TimelineClip& clip : std::as_const(clips)) {
+        hasLegacyGrade = hasLegacyGrade || clip.maskGradeEnabled;
+    }
+    if (!hasLegacyGrade) return false;
+    return normalizeSamMaskMatteClips(clips);
 }
 
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex)

@@ -6,14 +6,11 @@
 #include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QPushButton>
-#include <QPointF>
-#include <QVector>
 #include <functional>
 
 #include "editor_shared.h"
 
 class QComboBox;
-class GradingHistogramWidget;
 
 class MaskTab : public QObject
 {
@@ -25,22 +22,17 @@ public:
         QLabel* clipLabel = nullptr;
         QCheckBox* enabledCheck = nullptr;
         QLineEdit* framesDirEdit = nullptr;
+        QComboBox* sidecarCombo = nullptr;
         QPushButton* browseButton = nullptr;
         QDoubleSpinBox* featherSpin = nullptr;
+        QComboBox* featherFalloffCombo = nullptr;
+        QDoubleSpinBox* featherPowerSpin = nullptr;
         QDoubleSpinBox* dilateSpin = nullptr;
         QDoubleSpinBox* erodeSpin = nullptr;
         QDoubleSpinBox* blurSpin = nullptr;
         QCheckBox* invertCheck = nullptr;
         QCheckBox* showOnlyCheck = nullptr;
         QDoubleSpinBox* opacitySpin = nullptr;
-        QCheckBox* gradeEnabledCheck = nullptr;
-        QDoubleSpinBox* gradeBrightnessSpin = nullptr;
-        QDoubleSpinBox* gradeContrastSpin = nullptr;
-        QDoubleSpinBox* gradeSaturationSpin = nullptr;
-        QPushButton* resetGradeButton = nullptr;
-        QComboBox* curveChannelCombo = nullptr;
-        GradingHistogramWidget* histogramWidget = nullptr;
-        QCheckBox* curveSmoothingCheck = nullptr;
         QCheckBox* shadowEnabledCheck = nullptr;
         QDoubleSpinBox* shadowRadiusSpin = nullptr;
         QDoubleSpinBox* shadowOffsetXSpin = nullptr;
@@ -68,17 +60,8 @@ public:
 
 private:
     void setControlsEnabled(bool enabled);
-    void resetGrade();
-    QVector<QPointF> currentCurvePoints() const;
-    void applyCurvePointsToCurrentChannel(const QVector<QPointF>& points);
-    void updateCurveWidget();
 
     Widgets m_widgets;
     Dependencies m_deps;
     bool m_updating = false;
-    QVector<QPointF> m_curvePointsR;
-    QVector<QPointF> m_curvePointsG;
-    QVector<QPointF> m_curvePointsB;
-    QVector<QPointF> m_curvePointsLuma;
-    bool m_curveSmoothingEnabled = true;
 };

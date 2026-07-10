@@ -24,6 +24,9 @@ bool correctionPolygonActiveAtTimelinePosition(const TimelineClip& clip,
 bool clipVisualPlaybackEnabled(const TimelineClip& clip);
 TrackVisualMode trackVisualModeForClip(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
+bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
+                                          const QVector<TimelineClip>& clips,
+                                          const QVector<TimelineTrack>& tracks);
 bool clipAudioPlaybackEnabled(const TimelineClip& clip);
 bool clipHasAlpha(const TimelineClip& clip);
 

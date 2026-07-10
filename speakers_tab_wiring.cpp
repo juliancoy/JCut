@@ -103,9 +103,77 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerOverlayCreateTitleClipsButton) {
         connect(m_widgets.speakerOverlayCreateTitleClipsButton,
-                &QPushButton::clicked,
+                &QCheckBox::toggled,
                 this,
-                &SpeakersTab::onSpeakerCreateTitleClipsClicked);
+                [this](bool enabled) {
+                    if (m_updating) return;
+                    if (enabled) {
+                        onSpeakerCreateTitleClipsClicked();
+                        const TimelineClip* updatedClip = m_deps.getSelectedClip
+                            ? m_deps.getSelectedClip() : nullptr;
+                        if (!updatedClip || updatedClip->titleKeyframes.isEmpty()) {
+                            QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
+                            m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(false);
+                        }
+                        return;
+                    }
+                    const TimelineClip* clip = m_deps.getSelectedClip
+                        ? m_deps.getSelectedClip() : nullptr;
+                    if (!clip || !m_speakerDeps.updateClipById) return;
+                    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+                    const QString clipId = clip->id;
+                    m_speakerDeps.updateClipById(clipId, [](TimelineClip& editable) {
+                        editable.titleKeyframes.clear();
+                    });
+                    if (m_speakerDeps.replaceSpeakerTitleClips) {
+                        m_speakerDeps.replaceSpeakerTitleClips(clipId, {});
+                    }
+                    if (m_speakerDeps.refreshPreview) m_speakerDeps.refreshPreview();
+                    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+                });
+
+        auto refreshEnabledFlyIn = [this]() {
+            if (!m_updating && m_widgets.speakerOverlayCreateTitleClipsButton &&
+                m_widgets.speakerOverlayCreateTitleClipsButton->isChecked()) {
+                onSpeakerCreateTitleClipsClicked();
+            }
+        };
+        for (QDoubleSpinBox* spin : {
+                 m_widgets.speakerOverlayFlyInDelaySpin,
+                 m_widgets.speakerOverlayFlyInDurationSpin,
+                 m_widgets.speakerOverlayFlyInTimeSpin,
+                 m_widgets.speakerOverlayWrapRadiusSpin,
+                 m_widgets.speakerOverlayWrapDepthSpin,
+                 m_widgets.speakerOverlayWrapStartAngleSpin,
+                 m_widgets.speakerOverlayWrapEndAngleSpin,
+                 m_widgets.speakerOverlayWrapPitchSpin,
+                 m_widgets.speakerOverlayWrapRollSpin,
+                 m_widgets.speakerOverlayTitlePatternScaleSpin,
+                 m_widgets.speakerOverlayTitleExtrudeDepthSpin,
+                 m_widgets.speakerOverlayTitleBevelScaleSpin}) {
+            if (spin) connect(spin, &QDoubleSpinBox::editingFinished,
+                              this, refreshEnabledFlyIn);
+        }
+        for (QSpinBox* spin : {m_widgets.speakerOverlayTitleFontSizeSpin,
+                               m_widgets.speakerOverlayTitleBoxWidthSpin}) {
+            if (spin) connect(spin, &QSpinBox::editingFinished,
+                              this, refreshEnabledFlyIn);
+        }
+        for (QComboBox* combo : {m_widgets.speakerOverlayFlyInStyleCombo,
+                                 m_widgets.speakerOverlayTitleTextMaterialCombo,
+                                 m_widgets.speakerOverlayTitleBorderMaterialCombo}) {
+            if (combo) connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                               this, [refreshEnabledFlyIn](int) { refreshEnabledFlyIn(); });
+        }
+        for (QLineEdit* edit : {m_widgets.speakerOverlayTitleTextPatternPathEdit,
+                                m_widgets.speakerOverlayTitleBorderPatternPathEdit}) {
+            if (edit) connect(edit, &QLineEdit::editingFinished,
+                              this, refreshEnabledFlyIn);
+        }
+        if (m_widgets.speakerOverlayTitleExtrudeCheckBox) {
+            connect(m_widgets.speakerOverlayTitleExtrudeCheckBox, &QCheckBox::toggled,
+                    this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
+        }
     }
     if (m_widgets.speakerSectionMinimumWordsSpin) {
         connect(m_widgets.speakerSectionMinimumWordsSpin,
@@ -153,7 +221,7 @@ void SpeakersTab::wire()
         m_widgets.speakerSectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
         m_widgets.speakerSectionsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
         m_widgets.speakerSectionsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        m_widgets.speakerSectionsTable->setMaximumHeight(360);
+        m_widgets.speakerSectionsTable->setMinimumHeight(220);
         m_widgets.speakerSectionsTable->setEditTriggers(
             QAbstractItemView::DoubleClicked |
             QAbstractItemView::EditKeyPressed |

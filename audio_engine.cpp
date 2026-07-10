@@ -1,4 +1,5 @@
 #include "audio_engine.h"
+#include "audio_speech_harmonic_isolator.h"
 
 #include "audio_mix_readiness.h"
 #include "audio_source_key.h"
@@ -237,6 +238,13 @@ void AudioEngine::setPlaybackWarpMode(PlaybackAudioWarpMode mode) {
       m_playbackWarpMode.exchange(newMode, std::memory_order_acq_rel);
   if (oldMode == newMode) {
     return;
+  }
+  // The in-memory cache is indexed by rate for fast callback-side lookup.
+  // A rate-equivalent entry produced by another algorithm is not
+  // interchangeable with the two-pass speech treatment.
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_timeStretchAudioCache.clear();
   }
   if (playbackWarpModeUsesTimeStretch(mode) &&
       pitchPreservingTimeStretchActive(
@@ -1464,7 +1472,15 @@ int AudioEngine::precomputedTimeStretchSpeedKey(qreal playbackRate,
   const int channels = editor::rubberBandChannelsTogether() ? 1 : 0;
   const int settingsOrdinal =
       engine + (threading * 2) + (window * 6) + (pitch * 18) + (channels * 54);
-  return qMax(1, qRound(speed * 1000.0) * 1000 + settingsOrdinal);
+  // Sidecars are persistent. Include the algorithm in the key so the
+  // two-pass speech treatment can never alias an ordinary stretch generated
+  // at the same transport speed and with the same Rubber Band settings.
+  const int modeOrdinal =
+      mode == PlaybackAudioWarpMode::RubberBandPassThroughFrequency
+          ? editor::audio::SpeechHarmonicIsolator::kAlgorithmVersion
+          : 0;
+  return qMax(1, qRound(speed * 1000.0) * 100000 +
+                     modeOrdinal * 10000 + settingsOrdinal);
 }
 
 bool AudioEngine::pitchPreservingTimeStretchActive(qreal playbackRate) {
@@ -1485,7 +1501,8 @@ bool AudioEngine::pitchPreservingTimeStretchActive(qreal playbackRate,
 
 bool AudioEngine::playbackWarpModeUsesTimeStretch(PlaybackAudioWarpMode mode) {
   return mode == PlaybackAudioWarpMode::TimeStretch ||
-         mode == PlaybackAudioWarpMode::RubberBand;
+         mode == PlaybackAudioWarpMode::RubberBand ||
+         mode == PlaybackAudioWarpMode::RubberBandPassThroughFrequency;
 }
 
 bool AudioEngine::playbackWarpModeForcesUnityTimeStretch(
@@ -2775,18 +2792,26 @@ AudioEngine::AudioClipCacheEntry AudioEngine::buildTimeStretchCacheEntry(
     markTimeStretchJob(path, sidecarSpeedKey, TimeStretchJobGenerating, 0.0);
     m_timeStretchGenerationPhase.store(TimeStretchGenerationRubberBand,
                                        std::memory_order_release);
-    const QVector<float> stretched = timeStretchPreservePitch(
-        decoded.samples, decoded.channelCount, decoded.sampleRate, speed,
-        AudioTimeStretchBackend::RubberBand,
-        [this, path, sidecarSpeedKey](double progress) {
+    auto reportRubberBandProgress = [this, path, sidecarSpeedKey](double progress) {
           m_timeStretchGenerationProgressPermille.store(
               qBound(0, qRound(progress * 950.0), 950),
               std::memory_order_release);
           markTimeStretchJob(path, sidecarSpeedKey,
                              TimeStretchJobGenerating,
                              qBound<qreal>(0.0, progress * 0.95, 0.95));
-        },
-        rubberBandSettingsFromRuntimeControls());
+        };
+    QVector<float> stretched;
+    if (mode == PlaybackAudioWarpMode::RubberBandPassThroughFrequency) {
+      stretched = editor::audio::SpeechHarmonicIsolator::process(
+          {&decoded.samples, decoded.channelCount, decoded.sampleRate, speed,
+           rubberBandSettingsFromRuntimeControls()},
+          reportRubberBandProgress);
+    } else {
+      stretched = timeStretchPreservePitch(
+          decoded.samples, decoded.channelCount, decoded.sampleRate, speed,
+          AudioTimeStretchBackend::RubberBand, reportRubberBandProgress,
+          rubberBandSettingsFromRuntimeControls());
+    }
     if (!stretched.isEmpty()) {
       const int64_t sourceFrames = static_cast<int64_t>(
           decoded.samples.size() / qMax(1, decoded.channelCount));

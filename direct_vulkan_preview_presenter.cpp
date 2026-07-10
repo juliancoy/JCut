@@ -991,6 +991,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             curveLutApplied = curveLutApplied || status.curveLutApplied;
             statusDetails.append(QJsonObject{
                 {QStringLiteral("clip_id"), status.clipId},
+                {QStringLiteral("media_owner_clip_id"), status.mediaOwnerClipId},
+                {QStringLiteral("effects_owner_clip_id"), status.effectsOwnerClipId},
                 {QStringLiteral("label"), status.label},
                 {QStringLiteral("decode_path"), status.decodePath},
                 {QStringLiteral("requested_source_frame"), static_cast<double>(status.requestedSourceFrame)},

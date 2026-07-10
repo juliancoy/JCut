@@ -546,7 +546,8 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
                                                       int edgePixels,
                                                       bool progressiveEdge,
                                                       float edgePower,
-                                                      const QRectF& sourceRectNorm)
+                                                      const QRectF& validTextureRectNorm,
+                                                      const VulkanBackgroundFillMapping& mapping)
 {
     VulkanDrawEffectState state;
     state.opacity = std::clamp(opacity, 0.0f, 1.0f);
@@ -558,13 +559,18 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
         effect == BackgroundFillEffect::Mirror) {
         const bool progressive = progressiveEdge ||
             effect == BackgroundFillEffect::ProgressiveEdgeStretch;
-        state.shadows[0] = static_cast<float>(sourceRectNorm.left());
-        state.shadows[1] = static_cast<float>(sourceRectNorm.top());
-        state.shadows[2] = static_cast<float>(sourceRectNorm.right());
-        state.shadows[3] = static_cast<float>(sourceRectNorm.bottom());
+        state.shadows[0] = mapping.centerXNorm;
+        state.shadows[1] = mapping.centerYNorm;
+        state.shadows[2] = mapping.halfWidthOverOutputHeight;
+        state.shadows[3] = mapping.signedHalfHeightOverOutputHeight;
         state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
-        state.midtones[1] = progressive ? 1.0f : 0.0f;
+        state.midtones[1] = mapping.rotationRadians;
         state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
+        const QRectF validRect = validTextureRectNorm.normalized().intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+        state.highlights[0] = static_cast<float>(validRect.left());
+        state.highlights[1] = static_cast<float>(validRect.top());
+        state.highlights[2] = static_cast<float>(validRect.right());
+        state.midtones[3] = static_cast<float>(validRect.bottom());
         state.highlights[3] = effect == BackgroundFillEffect::Mirror
             ? kVulkanEffectModeBackgroundMirror
             : (progressive
@@ -575,6 +581,34 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
     state.highlights[3] = kVulkanEffectModeBackgroundBlur;
     state.midtones[3] = -34.0f;
     return state;
+}
+
+VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
+    const QTransform& sourceToOutput,
+    const QRectF& localRect,
+    const QSize& outputSize)
+{
+    VulkanBackgroundFillMapping mapping;
+    const qreal outputWidth = qMax(1, outputSize.width());
+    const qreal outputHeight = qMax(1, outputSize.height());
+    const QPointF localCenter = localRect.center();
+    const QPointF center = sourceToOutput.map(localCenter);
+    const QPointF xEdge = sourceToOutput.map(
+        localCenter + QPointF(localRect.width() * 0.5, 0.0));
+    const QPointF yEdge = sourceToOutput.map(
+        localCenter + QPointF(0.0, localRect.height() * 0.5));
+    const QPointF xAxis = xEdge - center;
+    const QPointF yAxis = yEdge - center;
+    const qreal determinant = (xAxis.x() * yAxis.y()) - (xAxis.y() * yAxis.x());
+    mapping.centerXNorm = static_cast<float>(center.x() / outputWidth);
+    mapping.centerYNorm = static_cast<float>(center.y() / outputHeight);
+    mapping.halfWidthOverOutputHeight = static_cast<float>(
+        std::hypot(xAxis.x(), xAxis.y()) / outputHeight);
+    mapping.signedHalfHeightOverOutputHeight = static_cast<float>(
+        std::copysign(std::hypot(yAxis.x(), yAxis.y()) / outputHeight,
+                      determinant == 0.0 ? 1.0 : determinant));
+    mapping.rotationRadians = static_cast<float>(std::atan2(xAxis.y(), xAxis.x()));
+    return mapping;
 }
 
 } // namespace render_detail

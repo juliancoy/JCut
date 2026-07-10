@@ -503,7 +503,36 @@ public:
       return false;
     }
 
-    VkDescriptorSetLayoutBinding descriptorBindings[4]{};
+    VkBufferCreateInfo frameUniformBufferInfo{};
+    frameUniformBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    frameUniformBufferInfo.size = sizeof(float) * 4;
+    frameUniformBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    frameUniformBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(m_device, &frameUniformBufferInfo, nullptr, &m_frameUniformBuffer) != VK_SUCCESS) {
+      return false;
+    }
+    VkMemoryRequirements frameUniformRequirements{};
+    vkGetBufferMemoryRequirements(m_device, m_frameUniformBuffer, &frameUniformRequirements);
+    VkMemoryAllocateInfo frameUniformAlloc{};
+    frameUniformAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    frameUniformAlloc.allocationSize = frameUniformRequirements.size;
+    frameUniformAlloc.memoryTypeIndex = findMemoryType(
+        m_physicalDevice,
+        frameUniformRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(m_device, &frameUniformAlloc, nullptr, &m_frameUniformMemory) != VK_SUCCESS ||
+        vkBindBufferMemory(m_device, m_frameUniformBuffer, m_frameUniformMemory, 0) != VK_SUCCESS ||
+        vkMapMemory(m_device, m_frameUniformMemory, 0, sizeof(float) * 4, 0, &m_frameUniformMapped) != VK_SUCCESS) {
+      return false;
+    }
+    const float frameUniformValues[4] = {
+        static_cast<float>(qMax(1, m_outputSize.width())),
+        static_cast<float>(qMax(1, m_outputSize.height())),
+        1.0f / static_cast<float>(qMax(1, m_outputSize.width())),
+        1.0f / static_cast<float>(qMax(1, m_outputSize.height()))};
+    std::memcpy(m_frameUniformMapped, frameUniformValues, sizeof(frameUniformValues));
+
+    VkDescriptorSetLayoutBinding descriptorBindings[5]{};
     descriptorBindings[0].binding = 0;
     descriptorBindings[0].descriptorType =
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -524,11 +553,15 @@ public:
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptorBindings[3].descriptorCount = 1;
     descriptorBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    descriptorBindings[4].binding = 4;
+    descriptorBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorBindings[4].descriptorCount = 1;
+    descriptorBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
     descriptorSetLayoutInfo.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutInfo.bindingCount = 4;
+    descriptorSetLayoutInfo.bindingCount = 5;
     descriptorSetLayoutInfo.pBindings = descriptorBindings;
 
     if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr,
@@ -540,14 +573,16 @@ public:
       return false;
     }
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = (1 + kMaxLayerTextures) * 4;
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = (1 + kMaxLayerTextures) * 4;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].descriptorCount = 1 + kMaxLayerTextures;
 
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptorPoolInfo.poolSizeCount = 1;
-    descriptorPoolInfo.pPoolSizes = &poolSize;
+    descriptorPoolInfo.poolSizeCount = 2;
+    descriptorPoolInfo.pPoolSizes = poolSizes;
     descriptorPoolInfo.maxSets = 1 + kMaxLayerTextures;
 
     if (vkCreateDescriptorPool(m_device, &descriptorPoolInfo, nullptr,
@@ -716,7 +751,10 @@ public:
       di[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[3].imageView = slot.maskCurveLutView;
       di[3].sampler = m_sampler;
-      VkWriteDescriptorSet writes[4]{};
+      VkDescriptorBufferInfo frameUniformInfo{};
+      frameUniformInfo.buffer = m_frameUniformBuffer;
+      frameUniformInfo.range = sizeof(float) * 4;
+      VkWriteDescriptorSet writes[5]{};
       for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = slot.descriptorSet;
@@ -726,7 +764,13 @@ public:
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[binding].pImageInfo = &di[binding];
       }
-      vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
+      writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[4].dstSet = slot.descriptorSet;
+      writes[4].dstBinding = 4;
+      writes[4].descriptorCount = 1;
+      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[4].pBufferInfo = &frameUniformInfo;
+      vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
       m_layerSlots.push_back(slot);
       return true;
     };
@@ -1449,7 +1493,10 @@ public:
                                      ? m_layerSlots.first().maskCurveLutView
                                      : VK_NULL_HANDLE;
     imageInfoDesc[3].sampler = m_sampler;
-    VkWriteDescriptorSet writes[4]{};
+    VkDescriptorBufferInfo frameUniformInfo{};
+    frameUniformInfo.buffer = m_frameUniformBuffer;
+    frameUniformInfo.range = sizeof(float) * 4;
+    VkWriteDescriptorSet writes[5]{};
     for (uint32_t binding = 0; binding < 4; ++binding) {
       writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[binding].dstSet = m_descriptorSet;
@@ -1459,7 +1506,13 @@ public:
           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       writes[binding].pImageInfo = &imageInfoDesc[binding];
     }
-    vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = m_descriptorSet;
+    writes[4].dstBinding = 4;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[4].pBufferInfo = &frameUniformInfo;
+    vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
 
     auto createPipeline = [&](VkShaderModule vert, VkShaderModule frag,
                               VkPipelineLayout layout, VkRenderPass renderPass,
@@ -1982,6 +2035,18 @@ public:
       vkDestroyRenderPass(m_device, m_renderPass, nullptr);
       m_renderPass = VK_NULL_HANDLE;
     }
+    if (m_frameUniformMapped && m_frameUniformMemory != VK_NULL_HANDLE) {
+      vkUnmapMemory(m_device, m_frameUniformMemory);
+      m_frameUniformMapped = nullptr;
+    }
+    if (m_frameUniformBuffer != VK_NULL_HANDLE) {
+      vkDestroyBuffer(m_device, m_frameUniformBuffer, nullptr);
+      m_frameUniformBuffer = VK_NULL_HANDLE;
+    }
+    if (m_frameUniformMemory != VK_NULL_HANDLE) {
+      vkFreeMemory(m_device, m_frameUniformMemory, nullptr);
+      m_frameUniformMemory = VK_NULL_HANDLE;
+    }
     if (m_descriptorPool != VK_NULL_HANDLE) {
       vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
       m_descriptorPool = VK_NULL_HANDLE;
@@ -2467,7 +2532,10 @@ public:
       di[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[3].imageView = slot.maskCurveLutView;
       di[3].sampler = m_sampler;
-      VkWriteDescriptorSet writes[4]{};
+      VkDescriptorBufferInfo frameUniformInfo{};
+      frameUniformInfo.buffer = m_frameUniformBuffer;
+      frameUniformInfo.range = sizeof(float) * 4;
+      VkWriteDescriptorSet writes[5]{};
       for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = slot.descriptorSet;
@@ -2477,7 +2545,13 @@ public:
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[binding].pImageInfo = &di[binding];
       }
-      vkUpdateDescriptorSets(m_device, 4, writes, 0, nullptr);
+      writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[4].dstSet = slot.descriptorSet;
+      writes[4].dstBinding = 4;
+      writes[4].descriptorCount = 1;
+      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[4].pBufferInfo = &frameUniformInfo;
+      vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
     };
     auto prepareLayerSource =
         [&](LayerTextureSlot &slot, const LayerInput &layer,
@@ -3948,6 +4022,9 @@ private:
   VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
+  VkBuffer m_frameUniformBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory m_frameUniformMemory = VK_NULL_HANDLE;
+  void *m_frameUniformMapped = nullptr;
   VkDescriptorSetLayout m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet m_yuvComputeDescriptorSet = VK_NULL_HANDLE;
@@ -4081,6 +4158,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (clip.clipRole == ClipRole::MaskMatte &&
         clip.locked &&
         clip.sourceTransformLocked &&
+        clipVisualPlaybackEnabled(clip, request.tracks) &&
         timelineFrame >= clip.startFrame &&
         timelineFrame < clip.startFrame + clip.durationFrames) {
       const QString sourceId = clip.linkedSourceClipId.trimmed();
@@ -4090,7 +4168,28 @@ QImage OffscreenVulkanRenderer::renderFrame(
     }
   }
   QHash<QString, OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayerBySourceId;
+  QHash<QString, TimelineClip> maskMatteClipBySourceId;
   QVector<QPair<int, QString>> pendingMaskMarkerInsertions;
+  const auto applyMaskMatteGrade = [&](OffscreenVulkanRendererPrivate::LayerInput& layer,
+                                       const TimelineClip& matteClip) {
+    const TimelineClip::GradingKeyframe grade = request.bypassGrading
+        ? TimelineClip::GradingKeyframe{}
+        : evaluateEffectiveClipGradingAtPosition(
+              matteClip, request.tracks, static_cast<qreal>(timelineFrame));
+    const VulkanDrawEffectState effects = vulkanDrawEffectStateForGrade(grade);
+    layer.brightness = effects.brightness;
+    layer.contrast = effects.contrast;
+    layer.saturation = effects.saturation;
+    layer.opacity = effects.opacity;
+    std::copy(std::begin(effects.shadows), std::end(effects.shadows), layer.shadows);
+    std::copy(std::begin(effects.midtones), std::end(effects.midtones), layer.midtones);
+    std::copy(std::begin(effects.highlights), std::end(effects.highlights), layer.highlights);
+    layer.shadows[3] = kVulkanEffectModeMaskGrade;
+    layer.midtones[3] = gradingUsesCurveLut(grade)
+        ? kVulkanMaskGradeUseSelectedCurveLut : 0.0f;
+    layer.maskCurveLutRgba = curveLutBytesForGrade(grade);
+    layer.maskCurveLutApplied = gradingUsesCurveLut(grade);
+  };
   bool hasTranscriptCandidate = false;
   const QVector<TimelineClip> transcriptOverlayClips =
       sortedTranscriptOverlayClips(request.clips, request.tracks);
@@ -4116,12 +4215,19 @@ QImage OffscreenVulkanRenderer::renderFrame(
   for (const TimelineClip &clip : orderedClips) {
     if (clip.clipRole == ClipRole::MaskMatte &&
         clip.locked &&
-        clip.sourceTransformLocked) {
+        clip.sourceTransformLocked &&
+        clip.filePath.trimmed().isEmpty()) {
       const QString sourceId = clip.linkedSourceClipId.trimmed();
+      if (!sourceId.isEmpty()) {
+        maskMatteClipBySourceId.insert(sourceId, clip);
+      }
       if (foregroundMaskLayerBySourceId.contains(sourceId) &&
           timelineFrame >= clip.startFrame &&
           timelineFrame < clip.startFrame + clip.durationFrames) {
-        layers.push_back(foregroundMaskLayerBySourceId.value(sourceId));
+        OffscreenVulkanRendererPrivate::LayerInput matteLayer =
+            foregroundMaskLayerBySourceId.value(sourceId);
+        applyMaskMatteGrade(matteLayer, clip);
+        layers.push_back(matteLayer);
       } else if (!sourceId.isEmpty() &&
                  timelineFrame >= clip.startFrame &&
                  timelineFrame < clip.startFrame + clip.durationFrames) {
@@ -4133,7 +4239,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
         timelineFrame >= clip.startFrame + clip.durationFrames) {
       continue;
     }
-    if (!clipVisualPlaybackEnabled(clip, request.tracks)) {
+    const bool clipVisible = clipVisualPlaybackEnabled(clip, request.tracks);
+    const bool maskMediaProvider = maskMarkerSourceIds.contains(clip.id);
+    if (!clipVisible && !maskMediaProvider) {
       continue;
     }
     EffectiveVisualEffects effects =
@@ -4234,7 +4342,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
     const bool gpuMaskEnabled =
         clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-        (generatedMaskMatte || clip.maskShowOnly || clip.maskGradeEnabled ||
+        (generatedMaskMatte || clip.maskShowOnly ||
          clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
     if (gpuMaskEnabled) {
       const QImage mask = rawClipMaskImage(clip, localFrame);
@@ -4245,7 +4353,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskTextureEnabled = true;
         layer.maskClipSource = generatedMaskMatte;
         layer.maskShowOnly = clip.maskShowOnly;
-        layer.maskGradeEnabled = clip.maskGradeEnabled;
+        layer.maskGradeEnabled = false;
         layer.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
         layer.maskInvert = clip.maskInvert;
         layer.maskErodeRadius = qRound(qMax<qreal>(0.0, clip.maskErode));
@@ -4290,6 +4398,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
                            ? kVulkanEffectModeCurve
                            : kVulkanEffectModeNormal;
     layer.curveLutRgba = curveLutBytesForGrade(grade);
+    if (generatedMaskMatte) {
+      layer.maskCurveLutRgba = layer.curveLutRgba;
+      layer.maskCurveLutApplied = layer.curveLutApplied;
+      layer.midtones[3] = layer.curveLutApplied
+          ? kVulkanMaskGradeUseSelectedCurveLut : 0.0f;
+    }
     QJsonObject transformDiagnostics;
     const TimelineClip::TransformKeyframe transform =
         evaluateClipRenderTransformWithSourceLockAtPosition(
@@ -4374,16 +4488,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY),
         layer.mvp);
-    if (!backgroundFilled &&
+    if (clipVisible && !backgroundFilled &&
         shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
       const BackgroundFillEffect fillEffect = request.backgroundFillEffect;
-      const QRectF sourceRectNorm(
-          (layerGeometry.bounds.left() - outputRect.left()) / qMax<qreal>(1.0, outputRect.width()),
-          (layerGeometry.bounds.top() - outputRect.top()) / qMax<qreal>(1.0, outputRect.height()),
-          layerGeometry.bounds.width() / qMax<qreal>(1.0, outputRect.width()),
-          layerGeometry.bounds.height() / qMax<qreal>(1.0, outputRect.height()));
       const VulkanDrawEffectState backgroundEffects =
           vulkanBackgroundFillEffectState(
               fillEffect,
@@ -4394,7 +4503,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
               request.backgroundFillEdgePixels,
               request.backgroundFillEdgeProgressive,
               static_cast<float>(request.backgroundFillEdgePower),
-              sourceRectNorm);
+              frame.validTextureRectNormalized(),
+              vulkanBackgroundFillMapping(
+                  layerGeometry.clipToScreen,
+                  layerGeometry.localRect,
+                  request.outputSize));
       backgroundLayer.opacity = backgroundEffects.opacity;
       backgroundLayer.brightness = backgroundEffects.brightness;
       backgroundLayer.contrast = backgroundEffects.contrast;
@@ -4443,7 +4556,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
         backgroundFilled = true;
       }
     }
-    layers.push_back(layer);
+    if (clipVisible) {
+      layers.push_back(layer);
+    }
     if (layer.maskTextureEnabled && layer.maskForegroundLayerEnabled) {
       OffscreenVulkanRendererPrivate::LayerInput foregroundLayer = layer;
       const bool applyMaskGradeToForeground = foregroundLayer.maskGradeEnabled;
@@ -4507,9 +4622,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
               return a.first > b.first;
             });
   for (const QPair<int, QString>& pending : std::as_const(pendingMaskMarkerInsertions)) {
-    if (foregroundMaskLayerBySourceId.contains(pending.second)) {
-      layers.insert(qBound(0, pending.first, layers.size()),
-                    foregroundMaskLayerBySourceId.value(pending.second));
+    if (foregroundMaskLayerBySourceId.contains(pending.second) &&
+        maskMatteClipBySourceId.contains(pending.second)) {
+      OffscreenVulkanRendererPrivate::LayerInput matteLayer =
+          foregroundMaskLayerBySourceId.value(pending.second);
+      const TimelineClip& matteClip = maskMatteClipBySourceId.value(pending.second);
+      applyMaskMatteGrade(matteLayer, matteClip);
+      layers.insert(qBound(0, pending.first, layers.size()), matteLayer);
     }
   }
   layers += foregroundMaskLayers;

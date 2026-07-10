@@ -1,6 +1,6 @@
 #include "mask_tab.h"
 #include "editor_tab_edit_effects.h"
-#include "grading_histogram_widget.h"
+#include "mask_sidecar.h"
 
 #include <QComboBox>
 #include <QDir>
@@ -63,6 +63,7 @@ QString autoMaskFramesDirForClip(const TimelineClip& clip)
 
     return QString();
 }
+
 }
 
 void MaskTab::wire()
@@ -84,6 +85,16 @@ void MaskTab::wire()
     if (m_widgets.framesDirEdit) {
         connect(m_widgets.framesDirEdit, &QLineEdit::editingFinished, this, [this]() { apply(true); });
     }
+    if (m_widgets.sidecarCombo) {
+        connect(m_widgets.sidecarCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int index) {
+            if (m_updating || index < 0 || !m_widgets.framesDirEdit) return;
+            m_widgets.framesDirEdit->setText(
+                m_widgets.sidecarCombo->itemData(index).toString());
+            if (m_widgets.enabledCheck) m_widgets.enabledCheck->setChecked(true);
+            apply(true);
+        });
+    }
     if (m_widgets.browseButton) {
         connect(m_widgets.browseButton, &QPushButton::clicked, this, [this]() {
             if (!m_deps.chooseMaskDirectory || !m_widgets.framesDirEdit) {
@@ -104,50 +115,28 @@ void MaskTab::wire()
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
-                             m_widgets.gradeEnabledCheck,
                              m_widgets.shadowEnabledCheck}) {
         if (check) {
             connect(check, &QCheckBox::toggled, this, [this](bool) { apply(true); });
         }
     }
     connectApply(m_widgets.featherSpin);
+    connectApply(m_widgets.featherPowerSpin);
+    if (m_widgets.featherFalloffCombo) {
+        connect(m_widgets.featherFalloffCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+            if (m_updating) return;
+            if (m_widgets.featherPowerSpin) {
+                m_widgets.featherPowerSpin->setEnabled(
+                    m_widgets.featherFalloffCombo->currentData().toInt() == 0);
+            }
+            apply(true);
+        });
+    }
     connectApply(m_widgets.dilateSpin);
     connectApply(m_widgets.erodeSpin);
     connectApply(m_widgets.blurSpin);
     connectApply(m_widgets.opacitySpin);
-    connectApply(m_widgets.gradeBrightnessSpin);
-    connectApply(m_widgets.gradeContrastSpin);
-    connectApply(m_widgets.gradeSaturationSpin);
-    if (m_widgets.resetGradeButton) {
-        connect(m_widgets.resetGradeButton, &QPushButton::clicked, this, [this]() {
-            resetGrade();
-        });
-    }
-    if (m_widgets.curveChannelCombo) {
-        connect(m_widgets.curveChannelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-            updateCurveWidget();
-        });
-    }
-    if (m_widgets.curveSmoothingCheck) {
-        connect(m_widgets.curveSmoothingCheck, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_updating) {
-                return;
-            }
-            m_curveSmoothingEnabled = checked;
-            updateCurveWidget();
-            apply(true);
-        });
-    }
-    if (m_widgets.histogramWidget) {
-        connect(m_widgets.histogramWidget, &GradingHistogramWidget::curvePointsAdjusted,
-                this, [this](const QVector<QPointF>& points, bool finalized) {
-                    if (m_updating) {
-                        return;
-                    }
-                    applyCurvePointsToCurrentChannel(points);
-                    apply(finalized);
-                });
-    }
     connectApply(m_widgets.shadowRadiusSpin);
     connectApply(m_widgets.shadowOffsetXSpin);
     connectApply(m_widgets.shadowOffsetYSpin);
@@ -209,7 +198,38 @@ void MaskTab::refresh()
             QSignalBlocker blocker(m_widgets.framesDirEdit);
             m_widgets.framesDirEdit->setText(effectiveMaskFramesDir);
         }
+        if (m_widgets.sidecarCombo) {
+            QSignalBlocker blocker(m_widgets.sidecarCombo);
+            m_widgets.sidecarCombo->clear();
+            const QVector<editor::masks::MaskSidecar> sidecars =
+                editor::masks::discoverMaskSidecars(*clip);
+            for (const editor::masks::MaskSidecar& sidecar : sidecars) {
+                const QString coverage = sidecar.firstFrame >= 0
+                    ? QStringLiteral("%1 frames · %2–%3")
+                          .arg(sidecar.frameCount).arg(sidecar.firstFrame).arg(sidecar.lastFrame)
+                    : QStringLiteral("%1 frames").arg(sidecar.frameCount);
+                m_widgets.sidecarCombo->addItem(
+                    QStringLiteral("%1 (%2)").arg(sidecar.displayName, coverage),
+                    sidecar.directory);
+                m_widgets.sidecarCombo->setItemData(
+                    m_widgets.sidecarCombo->count() - 1, sidecar.id, Qt::UserRole + 1);
+            }
+            if (sidecars.isEmpty()) {
+                m_widgets.sidecarCombo->addItem(QStringLiteral("No sidecar masks found"), QString());
+            }
+            const int selected = m_widgets.sidecarCombo->findData(effectiveMaskFramesDir);
+            m_widgets.sidecarCombo->setCurrentIndex(selected >= 0 ? selected : 0);
+        }
         setSpin(m_widgets.featherSpin, clip->maskFeather);
+        setSpin(m_widgets.featherPowerSpin, clip->maskFeatherGamma);
+        if (m_widgets.featherFalloffCombo) {
+            QSignalBlocker blocker(m_widgets.featherFalloffCombo);
+            const int index = m_widgets.featherFalloffCombo->findData(clip->maskFeatherFalloff);
+            m_widgets.featherFalloffCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        if (m_widgets.featherPowerSpin) {
+            m_widgets.featherPowerSpin->setEnabled(clip->maskFeatherFalloff == 0);
+        }
         setSpin(m_widgets.dilateSpin, clip->maskDilate);
         setSpin(m_widgets.erodeSpin, clip->maskErode);
         setSpin(m_widgets.blurSpin, clip->maskBlur);
@@ -220,17 +240,6 @@ void MaskTab::refresh()
             m_widgets.showOnlyCheck->setEnabled(showOnlyAvailable);
         }
         setSpin(m_widgets.opacitySpin, clip->maskOpacity);
-        setCheck(m_widgets.gradeEnabledCheck, clip->maskGradeEnabled);
-        setSpin(m_widgets.gradeBrightnessSpin, clip->maskGradeBrightness);
-        setSpin(m_widgets.gradeContrastSpin, clip->maskGradeContrast);
-        setSpin(m_widgets.gradeSaturationSpin, clip->maskGradeSaturation);
-        m_curvePointsR = sanitizeGradingCurvePoints(clip->maskGradeCurvePointsR);
-        m_curvePointsG = sanitizeGradingCurvePoints(clip->maskGradeCurvePointsG);
-        m_curvePointsB = sanitizeGradingCurvePoints(clip->maskGradeCurvePointsB);
-        m_curvePointsLuma = sanitizeGradingCurvePoints(clip->maskGradeCurvePointsLuma);
-        m_curveSmoothingEnabled = clip->maskGradeCurveSmoothingEnabled;
-        setCheck(m_widgets.curveSmoothingCheck, m_curveSmoothingEnabled);
-        updateCurveWidget();
         setCheck(m_widgets.shadowEnabledCheck, clip->maskDropShadowEnabled);
         setSpin(m_widgets.shadowRadiusSpin, clip->maskDropShadowRadius);
         setSpin(m_widgets.shadowOffsetXSpin, clip->maskDropShadowOffsetX);
@@ -242,13 +251,6 @@ void MaskTab::refresh()
             QSignalBlocker blocker(m_widgets.framesDirEdit);
             m_widgets.framesDirEdit->clear();
         }
-        m_curvePointsR = defaultGradingCurvePoints();
-        m_curvePointsG = defaultGradingCurvePoints();
-        m_curvePointsB = defaultGradingCurvePoints();
-        m_curvePointsLuma = defaultGradingCurvePoints();
-        m_curveSmoothingEnabled = true;
-        setCheck(m_widgets.curveSmoothingCheck, m_curveSmoothingEnabled);
-        updateCurveWidget();
     }
 
     m_updating = false;
@@ -269,6 +271,9 @@ void MaskTab::apply(bool pushHistory)
         clip.maskEnabled = m_widgets.enabledCheck && m_widgets.enabledCheck->isChecked();
         clip.maskFramesDir = m_widgets.framesDirEdit ? m_widgets.framesDirEdit->text().trimmed() : QString();
         clip.maskFeather = m_widgets.featherSpin ? m_widgets.featherSpin->value() : 0.0;
+        clip.maskFeatherGamma = m_widgets.featherPowerSpin ? m_widgets.featherPowerSpin->value() : 2.0;
+        clip.maskFeatherFalloff = m_widgets.featherFalloffCombo
+            ? qBound(0, m_widgets.featherFalloffCombo->currentData().toInt(), 5) : 0;
         clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
         clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
         clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
@@ -278,15 +283,6 @@ void MaskTab::apply(bool pushHistory)
             m_widgets.showOnlyCheck &&
             m_widgets.showOnlyCheck->isChecked();
         clip.maskOpacity = m_widgets.opacitySpin ? m_widgets.opacitySpin->value() : 1.0;
-        clip.maskGradeEnabled = m_widgets.gradeEnabledCheck && m_widgets.gradeEnabledCheck->isChecked();
-        clip.maskGradeBrightness = m_widgets.gradeBrightnessSpin ? m_widgets.gradeBrightnessSpin->value() : 0.0;
-        clip.maskGradeContrast = m_widgets.gradeContrastSpin ? m_widgets.gradeContrastSpin->value() : 1.0;
-        clip.maskGradeSaturation = m_widgets.gradeSaturationSpin ? m_widgets.gradeSaturationSpin->value() : 1.0;
-        clip.maskGradeCurvePointsR = sanitizeGradingCurvePoints(m_curvePointsR);
-        clip.maskGradeCurvePointsG = sanitizeGradingCurvePoints(m_curvePointsG);
-        clip.maskGradeCurvePointsB = sanitizeGradingCurvePoints(m_curvePointsB);
-        clip.maskGradeCurvePointsLuma = sanitizeGradingCurvePoints(m_curvePointsLuma);
-        clip.maskGradeCurveSmoothingEnabled = m_curveSmoothingEnabled;
         clip.maskDropShadowEnabled = m_widgets.shadowEnabledCheck && m_widgets.shadowEnabledCheck->isChecked();
         clip.maskDropShadowRadius = m_widgets.shadowRadiusSpin ? m_widgets.shadowRadiusSpin->value() : 12.0;
         clip.maskDropShadowOffsetX = m_widgets.shadowOffsetXSpin ? m_widgets.shadowOffsetXSpin->value() : 0.0;
@@ -303,22 +299,17 @@ void MaskTab::setControlsEnabled(bool enabled)
 {
     for (QWidget* widget : {static_cast<QWidget*>(m_widgets.enabledCheck),
                             static_cast<QWidget*>(m_widgets.framesDirEdit),
+                            static_cast<QWidget*>(m_widgets.sidecarCombo),
                             static_cast<QWidget*>(m_widgets.browseButton),
                             static_cast<QWidget*>(m_widgets.featherSpin),
+                            static_cast<QWidget*>(m_widgets.featherFalloffCombo),
+                            static_cast<QWidget*>(m_widgets.featherPowerSpin),
                             static_cast<QWidget*>(m_widgets.dilateSpin),
                             static_cast<QWidget*>(m_widgets.erodeSpin),
                             static_cast<QWidget*>(m_widgets.blurSpin),
                             static_cast<QWidget*>(m_widgets.invertCheck),
                             static_cast<QWidget*>(m_widgets.showOnlyCheck),
                             static_cast<QWidget*>(m_widgets.opacitySpin),
-                            static_cast<QWidget*>(m_widgets.gradeEnabledCheck),
-                            static_cast<QWidget*>(m_widgets.gradeBrightnessSpin),
-                            static_cast<QWidget*>(m_widgets.gradeContrastSpin),
-                            static_cast<QWidget*>(m_widgets.gradeSaturationSpin),
-                            static_cast<QWidget*>(m_widgets.resetGradeButton),
-                            static_cast<QWidget*>(m_widgets.curveChannelCombo),
-                            static_cast<QWidget*>(m_widgets.histogramWidget),
-                            static_cast<QWidget*>(m_widgets.curveSmoothingCheck),
                             static_cast<QWidget*>(m_widgets.shadowEnabledCheck),
                             static_cast<QWidget*>(m_widgets.shadowRadiusSpin),
                             static_cast<QWidget*>(m_widgets.shadowOffsetXSpin),
@@ -331,98 +322,4 @@ void MaskTab::setControlsEnabled(bool enabled)
     if (enabled && m_widgets.showOnlyCheck) {
         m_widgets.showOnlyCheck->setEnabled(true);
     }
-}
-
-void MaskTab::resetGrade()
-{
-    if (m_updating) {
-        return;
-    }
-
-    auto setSpin = [](QDoubleSpinBox* spin, double value) {
-        if (!spin) {
-            return;
-        }
-        QSignalBlocker blocker(spin);
-        spin->setValue(value);
-    };
-    auto setCheck = [](QCheckBox* check, bool value) {
-        if (!check) {
-            return;
-        }
-        QSignalBlocker blocker(check);
-        check->setChecked(value);
-    };
-
-    setCheck(m_widgets.gradeEnabledCheck, false);
-    setSpin(m_widgets.gradeBrightnessSpin, 0.0);
-    setSpin(m_widgets.gradeContrastSpin, 1.0);
-    setSpin(m_widgets.gradeSaturationSpin, 1.0);
-    m_curvePointsR = defaultGradingCurvePoints();
-    m_curvePointsG = defaultGradingCurvePoints();
-    m_curvePointsB = defaultGradingCurvePoints();
-    m_curvePointsLuma = defaultGradingCurvePoints();
-    m_curveSmoothingEnabled = true;
-    setCheck(m_widgets.curveSmoothingCheck, m_curveSmoothingEnabled);
-    updateCurveWidget();
-    apply(true);
-}
-
-QVector<QPointF> MaskTab::currentCurvePoints() const
-{
-    const int channelIndex = m_widgets.curveChannelCombo
-                                 ? qBound(0, m_widgets.curveChannelCombo->currentIndex(), 3)
-                                 : 0;
-    if (channelIndex == 1) {
-        return sanitizeGradingCurvePoints(m_curvePointsG);
-    }
-    if (channelIndex == 2) {
-        return sanitizeGradingCurvePoints(m_curvePointsB);
-    }
-    if (channelIndex == 3) {
-        return sanitizeGradingCurvePoints(m_curvePointsLuma);
-    }
-    return sanitizeGradingCurvePoints(m_curvePointsR);
-}
-
-void MaskTab::applyCurvePointsToCurrentChannel(const QVector<QPointF>& points)
-{
-    const QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
-    const int channelIndex = m_widgets.curveChannelCombo
-                                 ? qBound(0, m_widgets.curveChannelCombo->currentIndex(), 3)
-                                 : 0;
-    if (channelIndex == 1) {
-        m_curvePointsG = sanitized;
-    } else if (channelIndex == 2) {
-        m_curvePointsB = sanitized;
-    } else if (channelIndex == 3) {
-        m_curvePointsLuma = sanitized;
-    } else {
-        m_curvePointsR = sanitized;
-    }
-}
-
-void MaskTab::updateCurveWidget()
-{
-    if (!m_widgets.histogramWidget) {
-        return;
-    }
-    const QSignalBlocker blocker(m_widgets.histogramWidget);
-    const int channelIndex = m_widgets.curveChannelCombo
-                                 ? qBound(0, m_widgets.curveChannelCombo->currentIndex(), 3)
-                                 : 0;
-    m_widgets.histogramWidget->setSelectedChannel(
-        channelIndex == 1 ? GradingHistogramWidget::Channel::Green
-        : channelIndex == 2 ? GradingHistogramWidget::Channel::Blue
-        : channelIndex == 3 ? GradingHistogramWidget::Channel::Brightness
-                            : GradingHistogramWidget::Channel::Red);
-    const QColor channelBackground =
-        channelIndex == 0 ? QColor(54, 21, 24, 220)
-        : channelIndex == 1 ? QColor(20, 48, 28, 220)
-        : channelIndex == 2 ? QColor(18, 30, 58, 220)
-                            : QColor(52, 42, 13, 220);
-    m_widgets.histogramWidget->setChartBackgroundColor(channelBackground);
-    m_widgets.histogramWidget->setCurveSmoothingEnabled(m_curveSmoothingEnabled);
-    m_widgets.histogramWidget->setThreePointLockEnabled(false);
-    m_widgets.histogramWidget->setCurvePoints(currentCurvePoints());
 }

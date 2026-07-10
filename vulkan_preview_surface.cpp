@@ -114,7 +114,8 @@ QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& cli
     QVector<TimelineClip> playbackClips;
     playbackClips.reserve(clips.size());
     for (const TimelineClip& clip : clips) {
-        if (!clipVisualPlaybackEnabled(clip, tracks) ||
+        if ((!clipVisualPlaybackEnabled(clip, tracks) &&
+             !clipProvidesMediaForVisibleMaskMatte(clip, clips, tracks)) ||
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
@@ -1177,7 +1178,9 @@ void VulkanPreviewSurface::registerVisibleClips()
     QSet<QString> visible;
     QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const TimelineClip& clip : m_interaction.clips) {
-        if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
+        if ((!clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
+             !clipProvidesMediaForVisibleMaskMatte(
+                 clip, m_interaction.clips, m_interaction.tracks)) ||
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
@@ -1223,7 +1226,8 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte &&
             clip.locked &&
-            clip.sourceTransformLocked) {
+            clip.sourceTransformLocked &&
+            clip.filePath.trimmed().isEmpty()) {
             continue;
         }
         if (!directVulkanPreviewSupportsClip(clip)) {
@@ -1401,11 +1405,13 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
-        if (!visualClipActiveAtSample(clip,
-                                      m_interaction.tracks,
-                                      visualSample,
-                                      visualFramePosition,
-                                      m_bypassGrading)) {
+        const bool visibleSource = visualClipActiveAtSample(
+            clip, m_interaction.tracks, visualSample, visualFramePosition, m_bypassGrading);
+        const bool maskMediaProvider =
+            clipProvidesMediaForVisibleMaskMatte(
+                clip, m_interaction.clips, m_interaction.tracks) &&
+            isSampleWithinClip(clip, visualSample);
+        if (!visibleSource && !maskMediaProvider) {
             continue;
         }
 
@@ -1677,6 +1683,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (clip.clipRole == ClipRole::MaskMatte &&
             clip.locked &&
             clip.sourceTransformLocked &&
+            clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
             clip.startFrame <= visualFramePosition &&
             visualFramePosition < clip.startFrame + clip.durationFrames) {
             const QString sourceId = clip.linkedSourceClipId.trimmed();
@@ -1780,6 +1787,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
 
         VulkanPreviewClipFrameStatus status;
         status.clipId = clip.id;
+        status.mediaOwnerClipId = clip.id;
+        status.effectsOwnerClipId = clip.id;
         status.label = clip.label;
         status.decodePath = QStringLiteral("missing");
         status.frameSelection = frameSelection.selection;
@@ -1819,7 +1828,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             visualFramePosition,
             m_interaction.renderSyncMarkers,
             m_interaction.playbackTiming);
-        if (m_bypassGrading) {
+        if (m_bypassGrading || !clip.gradingPreviewEnabled) {
             effects.grading = TimelineClip::GradingKeyframe{};
         }
         if (!m_correctionsEnabled) {
@@ -1828,6 +1837,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.grading = effects.grading;
         status.maskFeather = effects.maskFeather;
         status.maskFeatherGamma = effects.maskFeatherGamma;
+        status.maskFeatherFalloff = effects.maskFeatherFalloff;
         status.maskInvert = clip.maskInvert;
         status.maskErode = clip.maskErode;
         status.maskDilate = clip.maskDilate;
@@ -1874,7 +1884,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
             const bool gpuMaskEnabled =
                 clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-                (generatedMaskMatte || clip.maskShowOnly || clip.maskGradeEnabled ||
+                (generatedMaskMatte || clip.maskShowOnly ||
                  clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
             const int64_t maskSourceFrame =
                 staticImageClip ? 0 : qMax<int64_t>(0, status.presentedSourceFrame);
@@ -1886,13 +1896,21 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
                     status.maskShowOnly = clip.maskShowOnly;
-                    status.maskGradeEnabled = clip.maskGradeEnabled;
+                    status.maskGradeEnabled = false;
                     status.maskOpacity = clip.maskOpacity;
                     status.maskGradeBrightness = clip.maskGradeBrightness;
                     status.maskGradeContrast = clip.maskGradeContrast;
                     status.maskGradeSaturation = clip.maskGradeSaturation;
                     status.maskGrade = maskGradeForClip(clip);
                     status.maskCurveLutApplied = gradingUsesCurveLut(status.maskGrade);
+                    if (generatedMaskMatte) {
+                        status.maskGradeEnabled = true;
+                        status.maskGrade = effects.grading;
+                        status.maskGradeBrightness = effects.grading.brightness;
+                        status.maskGradeContrast = effects.grading.contrast;
+                        status.maskGradeSaturation = effects.grading.saturation;
+                        status.maskCurveLutApplied = gradingUsesCurveLut(effects.grading);
+                    }
                 }
             }
             status.hardwareFrame = selectedHasHardwareFrame;
@@ -1983,7 +2001,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.clipRole == ClipRole::MaskMatte &&
                 clip.locked &&
-                clip.sourceTransformLocked) {
+                clip.sourceTransformLocked &&
+                clip.filePath.trimmed().isEmpty()) {
                 const QString sourceId = clip.linkedSourceClipId.trimmed();
                 if (maskForegroundStatusBySourceId.contains(sourceId) &&
                     clip.startFrame <= visualFramePosition &&
@@ -1991,13 +2010,46 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     VulkanPreviewClipFrameStatus markerStatus = maskForegroundStatusBySourceId.value(sourceId);
                     markerStatus.clipId = clip.id;
                     markerStatus.label = clip.label;
+                    markerStatus.mediaOwnerClipId = sourceId;
+                    markerStatus.effectsOwnerClipId = clip.id;
+                    // The marker reuses the linked source's decoded frame and
+                    // mask texture, but visual effects belong to the virtual
+                    // Mask Matte itself. Cloning the entire source status here
+                    // previously replaced the matte's migrated/keyframed grade
+                    // with the source clip's grade.
+                    EffectiveVisualEffects matteEffects =
+                        evaluateEffectiveVisualEffectsAtPosition(
+                            clip,
+                            m_interaction.tracks,
+                            visualFramePosition,
+                            m_interaction.renderSyncMarkers,
+                            m_interaction.playbackTiming);
+                    if (m_bypassGrading || !clip.gradingPreviewEnabled) {
+                        matteEffects.grading = TimelineClip::GradingKeyframe{};
+                    }
+                    markerStatus.grading = matteEffects.grading;
+                    markerStatus.curveLutApplied = gradingUsesCurveLut(matteEffects.grading);
+                    // Mask-matte draws use the mask shader, so route the
+                    // matte's standard grading model through that shader's
+                    // grade inputs. The linked source layer remains unchanged.
+                    markerStatus.maskGradeEnabled = true;
+                    markerStatus.maskGrade = matteEffects.grading;
+                    markerStatus.maskGradeBrightness = matteEffects.grading.brightness;
+                    markerStatus.maskGradeContrast = matteEffects.grading.contrast;
+                    markerStatus.maskGradeSaturation = matteEffects.grading.saturation;
+                    markerStatus.maskCurveLutApplied = gradingUsesCurveLut(matteEffects.grading);
+                    markerStatus.maskFeather = matteEffects.maskFeather;
+                    markerStatus.maskFeatherGamma = matteEffects.maskFeatherGamma;
+                    markerStatus.maskFeatherFalloff = matteEffects.maskFeatherFalloff;
                     orderedStatuses.push_back(markerStatus);
                 }
                 continue;
             }
             if (statusByClipId.contains(clip.id)) {
-                orderedStatuses.push_back(statusByClipId.value(clip.id));
                 emittedClipIds.insert(clip.id);
+                if (clipVisualPlaybackEnabled(clip, m_interaction.tracks)) {
+                    orderedStatuses.push_back(statusByClipId.value(clip.id));
+                }
             }
         }
         for (const VulkanPreviewClipFrameStatus& status : std::as_const(statuses)) {
@@ -2188,7 +2240,9 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
-        if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
+        if ((!clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
+             !clipProvidesMediaForVisibleMaskMatte(
+                 clip, m_interaction.clips, m_interaction.tracks)) ||
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }

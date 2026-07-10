@@ -390,6 +390,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
             speakerFramingTargetKeyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("speakerFramingTargetKeyframes")] = speakerFramingTargetKeyframes;
+        obj[QStringLiteral("gradingPreviewEnabled")] = clip.gradingPreviewEnabled;
         QJsonArray gradingKeyframes;
         for (const TimelineClip::GradingKeyframe &keyframe : clip.gradingKeyframes)
         {
@@ -536,21 +537,13 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskFramesDir")] = clip.maskFramesDir;
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
+        obj[QStringLiteral("maskFeatherFalloff")] = clip.maskFeatherFalloff;
         obj[QStringLiteral("maskDilate")] = clip.maskDilate;
         obj[QStringLiteral("maskErode")] = clip.maskErode;
         obj[QStringLiteral("maskBlur")] = clip.maskBlur;
         obj[QStringLiteral("maskInvert")] = clip.maskInvert;
         obj[QStringLiteral("maskShowOnly")] = clip.maskShowOnly;
         obj[QStringLiteral("maskOpacity")] = clip.maskOpacity;
-        obj[QStringLiteral("maskGradeEnabled")] = clip.maskGradeEnabled;
-        obj[QStringLiteral("maskGradeBrightness")] = clip.maskGradeBrightness;
-        obj[QStringLiteral("maskGradeContrast")] = clip.maskGradeContrast;
-        obj[QStringLiteral("maskGradeSaturation")] = clip.maskGradeSaturation;
-        obj[QStringLiteral("maskGradeCurvePointsR")] = curvePointsToJson(clip.maskGradeCurvePointsR);
-        obj[QStringLiteral("maskGradeCurvePointsG")] = curvePointsToJson(clip.maskGradeCurvePointsG);
-        obj[QStringLiteral("maskGradeCurvePointsB")] = curvePointsToJson(clip.maskGradeCurvePointsB);
-        obj[QStringLiteral("maskGradeCurvePointsLuma")] = curvePointsToJson(clip.maskGradeCurvePointsLuma);
-        obj[QStringLiteral("maskGradeCurveSmoothingEnabled")] = clip.maskGradeCurveSmoothingEnabled;
         obj[QStringLiteral("maskDropShadowEnabled")] = clip.maskDropShadowEnabled;
         obj[QStringLiteral("maskDropShadowRadius")] = clip.maskDropShadowRadius;
         obj[QStringLiteral("maskDropShadowOffsetX")] = clip.maskDropShadowOffsetX;
@@ -870,6 +863,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                 keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
             clip.speakerFramingTargetKeyframes.push_back(keyframe);
         }
+        clip.gradingPreviewEnabled = obj.value(QStringLiteral("gradingPreviewEnabled")).toBool(true);
         const QJsonArray gradingKeyframes = obj.value(QStringLiteral("gradingKeyframes")).toArray();
         QVector<TimelineClip::OpacityKeyframe> migratedOpacityKeyframes;
         for (const QJsonValue &value : gradingKeyframes)
@@ -1006,6 +1000,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskFramesDir = obj.value(QStringLiteral("maskFramesDir")).toString().trimmed();
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
         clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
+        clip.maskFeatherFalloff = qBound(0, obj.value(QStringLiteral("maskFeatherFalloff")).toInt(0), 5);
         clip.maskDilate = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDilate")).toDouble(0.0), 200.0);
         clip.maskErode = qBound<qreal>(0.0, obj.value(QStringLiteral("maskErode")).toDouble(0.0), 200.0);
         clip.maskBlur = qBound<qreal>(0.0, obj.value(QStringLiteral("maskBlur")).toDouble(0.0), 200.0);

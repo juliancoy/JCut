@@ -79,6 +79,11 @@ void EffectsTab::wire()
         connect(m_widgets.maskFeatherGammaSpin, &QDoubleSpinBox::editingFinished,
                 this, &EffectsTab::onEditingFinished);
     }
+    if (m_widgets.maskFeatherFalloffCombo) {
+        connect(m_widgets.maskFeatherFalloffCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &EffectsTab::onMaskFeatherFalloffChanged);
+    }
     if (m_widgets.maskFeatherEnabledCheck) {
         connect(m_widgets.maskFeatherEnabledCheck, &QCheckBox::toggled,
                 this, &EffectsTab::onMaskFeatherEnabledChanged);
@@ -166,6 +171,10 @@ void EffectsTab::refresh()
 
     QSignalBlocker featherBlock(m_widgets.maskFeatherSpin);
     QSignalBlocker enabledBlock(m_widgets.maskFeatherEnabledCheck);
+    const std::unique_ptr<QSignalBlocker> falloffBlock =
+        m_widgets.maskFeatherFalloffCombo
+            ? std::make_unique<QSignalBlocker>(m_widgets.maskFeatherFalloffCombo)
+            : nullptr;
     const std::unique_ptr<QSignalBlocker> foregroundBlock =
         m_widgets.maskForegroundLayerCheck
             ? std::make_unique<QSignalBlocker>(m_widgets.maskForegroundLayerCheck)
@@ -303,6 +312,10 @@ void EffectsTab::refresh()
     if (m_widgets.maskFeatherGammaSpin) {
         m_widgets.maskFeatherGammaSpin->setValue(clip->maskFeatherGamma);
     }
+    if (m_widgets.maskFeatherFalloffCombo) {
+        const int index = m_widgets.maskFeatherFalloffCombo->findData(clip->maskFeatherFalloff);
+        m_widgets.maskFeatherFalloffCombo->setCurrentIndex(index >= 0 ? index : 0);
+    }
     if (m_widgets.maskFeatherEnabledCheck) {
         m_widgets.maskFeatherEnabledCheck->setChecked(clip->maskFeather > 0.0);
     }
@@ -376,14 +389,22 @@ void EffectsTab::refresh()
             QStringLiteral("Feather radius in pixels for the mask edge."));
     }
     if (m_widgets.maskFeatherGammaSpin) {
-        m_widgets.maskFeatherGammaSpin->setEnabled(hasAlpha && (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
+        const bool powerFalloff = !m_widgets.maskFeatherFalloffCombo ||
+            m_widgets.maskFeatherFalloffCombo->currentData().toInt() == 0;
+        m_widgets.maskFeatherGammaSpin->setEnabled(hasAlpha && powerFalloff &&
+            (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
         if (!hasAlpha) {
             m_widgets.maskFeatherGammaSpin->setToolTip(
                 QStringLiteral("Disabled: Selected clip does not have an alpha channel."));
         } else {
             m_widgets.maskFeatherGammaSpin->setToolTip(
-                QStringLiteral("Feather curve gamma. 1.0=linear (soft), 2.0=default (smooth), higher=sharper edges."));
+                QStringLiteral("Power-law exponent. 1.0 is linear; higher values retain a more opaque edge."));
         }
+    }
+    if (m_widgets.maskFeatherFalloffCombo) {
+        m_widgets.maskFeatherFalloffCombo->setEnabled(
+            hasAlpha && (!m_widgets.maskFeatherEnabledCheck ||
+                         m_widgets.maskFeatherEnabledCheck->isChecked()));
     }
     const bool hasSamMask = clip->maskEnabled && !clip->maskFramesDir.trimmed().isEmpty();
     if (m_widgets.maskForegroundLayerCheck) {
@@ -458,10 +479,13 @@ void EffectsTab::applyMaskFeather(bool pushHistory)
                                     ? m_widgets.maskFeatherSpin->value()
                                     : 0.0;
     const double featherGamma = m_widgets.maskFeatherGammaSpin ? m_widgets.maskFeatherGammaSpin->value() : 2.0;
+    const int featherFalloff = m_widgets.maskFeatherFalloffCombo
+        ? m_widgets.maskFeatherFalloffCombo->currentData().toInt() : 0;
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [featherValue, featherGamma](TimelineClip& clip) {
+    const bool updated = m_deps.updateClipById(selectedClip->id, [featherValue, featherGamma, featherFalloff](TimelineClip& clip) {
         clip.maskFeather = featherValue;
         clip.maskFeatherGamma = featherGamma;
+        clip.maskFeatherFalloff = qBound(0, featherFalloff, 5);
     });
 
     if (!updated) return;
@@ -555,6 +579,18 @@ void EffectsTab::onMaskFeatherGammaChanged(double value)
     applyMaskFeather(false);
 }
 
+void EffectsTab::onMaskFeatherFalloffChanged(int index)
+{
+    Q_UNUSED(index);
+    if (m_updating) return;
+    if (m_widgets.maskFeatherGammaSpin && m_widgets.maskFeatherFalloffCombo) {
+        m_widgets.maskFeatherGammaSpin->setEnabled(
+            m_widgets.maskFeatherFalloffCombo->currentData().toInt() == 0 &&
+            (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
+    }
+    applyMaskFeather(true);
+}
+
 void EffectsTab::onMaskFeatherEnabledChanged(bool enabled)
 {
     if (m_updating) return;
@@ -572,6 +608,9 @@ void EffectsTab::onMaskFeatherEnabledChanged(bool enabled)
         if (enabled && qFuzzyCompare(m_widgets.maskFeatherGammaSpin->value(), m_widgets.maskFeatherGammaSpin->minimum())) {
             m_widgets.maskFeatherGammaSpin->setValue(2.0);  // Default gamma 2.0
         }
+    }
+    if (m_widgets.maskFeatherFalloffCombo) {
+        m_widgets.maskFeatherFalloffCombo->setEnabled(enabled);
     }
     
     applyMaskFeather(true);

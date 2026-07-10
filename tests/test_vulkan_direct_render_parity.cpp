@@ -66,14 +66,13 @@ private slots:
 
     void backgroundFillEffectsUseSelectableShaderSignals()
     {
-        const QRectF sourceRect(0.25, 0.0, 0.5, 1.0);
         render_detail::VulkanDrawEffectState baseState;
         baseState.brightness = 0.12f;
         baseState.contrast = 1.3f;
         baseState.saturation = 0.7f;
         const render_detail::VulkanDrawEffectState edgeState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, false, 2.5f, sourceRect);
+                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, false, 2.5f);
         QCOMPARE(edgeState.opacity, 0.8f);
         QVERIFY(qAbs(edgeState.brightness - 0.1f) < 0.0001f);
         QCOMPARE(edgeState.contrast, 1.3f);
@@ -81,10 +80,10 @@ private slots:
         QCOMPARE(edgeState.midtones[0], 24.0f);
         QCOMPARE(edgeState.midtones[1], 0.0f);
         QCOMPARE(edgeState.midtones[2], 2.5f);
-        QCOMPARE(edgeState.shadows[0], 0.25f);
-        QCOMPARE(edgeState.shadows[1], 0.0f);
-        QCOMPARE(edgeState.shadows[2], 0.75f);
-        QCOMPARE(edgeState.shadows[3], 1.0f);
+        QCOMPARE(edgeState.shadows[0], 0.5f);
+        QCOMPARE(edgeState.shadows[1], 0.5f);
+        QCOMPARE(edgeState.shadows[2], 0.5f);
+        QCOMPARE(edgeState.shadows[3], 0.5f);
         QVERIFY2(edgeState.highlights[3] < -1.5f,
                  "Edge-stretch background fill must signal row-wise edge sampling.");
 
@@ -98,9 +97,9 @@ private slots:
                 24,
                 false,
                 2.5f,
-                sourceRect);
+                QRectF(0.0, 0.0, 1.0, 1.0));
         QCOMPARE(progressiveEdgeState.midtones[0], 24.0f);
-        QCOMPARE(progressiveEdgeState.midtones[1], 1.0f);
+        QCOMPARE(progressiveEdgeState.midtones[1], 0.0f);
         QCOMPARE(progressiveEdgeState.midtones[2], 2.5f);
         QVERIFY2(progressiveEdgeState.highlights[3] < -2.5f &&
                      progressiveEdgeState.highlights[3] > -3.5f,
@@ -108,11 +107,11 @@ private slots:
 
         const render_detail::VulkanDrawEffectState mirrorState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f, sourceRect);
-        QCOMPARE(mirrorState.shadows[0], 0.25f);
-        QCOMPARE(mirrorState.shadows[1], 0.0f);
-        QCOMPARE(mirrorState.shadows[2], 0.75f);
-        QCOMPARE(mirrorState.shadows[3], 1.0f);
+                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f);
+        QCOMPARE(mirrorState.shadows[0], 0.5f);
+        QCOMPARE(mirrorState.shadows[1], 0.5f);
+        QCOMPARE(mirrorState.shadows[2], 0.5f);
+        QCOMPARE(mirrorState.shadows[3], 0.5f);
         QVERIFY2(mirrorState.highlights[3] < -3.5f,
                  "Mirror background fill must signal reflected source sampling.");
 
@@ -124,6 +123,21 @@ private slots:
                  "Blurred fill background must signal blur cover mode.");
         QVERIFY2(blurState.midtones[3] < 0.0f,
                  "Blurred fill background must carry a negative shader blur radius.");
+    }
+
+    void backgroundFillMappingTracksAffineTransform()
+    {
+        QTransform transform;
+        transform.translate(640.0, 360.0);
+        transform.rotate(30.0);
+        transform.scale(1.5, -0.75);
+        const auto mapping = render_detail::vulkanBackgroundFillMapping(
+            transform, QRectF(-100.0, -200.0, 200.0, 400.0), QSize(1280, 720));
+        QVERIFY(qAbs(mapping.centerXNorm - 0.5f) < 0.0001f);
+        QVERIFY(qAbs(mapping.centerYNorm - 0.5f) < 0.0001f);
+        QVERIFY(qAbs(mapping.halfWidthOverOutputHeight - (150.0f / 720.0f)) < 0.0001f);
+        QVERIFY(qAbs(mapping.signedHalfHeightOverOutputHeight - (-150.0f / 720.0f)) < 0.0001f);
+        QVERIFY(qAbs(mapping.rotationRadians - 0.5235988f) < 0.0001f);
     }
 
     void pushConstantLayoutKeepsParityFlagsInPadding()
@@ -217,6 +231,13 @@ private slots:
                  "Direct Vulkan presenter must use the push-constant edge-stretch background signal.");
         QVERIFY2(source.contains(QStringLiteral("edgeStretchFillSample")),
                  "Direct Vulkan presenter must drag edge pixels across missing background rows.");
+        QVERIFY2(source.contains(QStringLiteral("validMin")) &&
+                     source.contains(QStringLiteral("mappedUv")),
+                 "Edge stretch must sample within explicit decoded-frame crop bounds.");
+        QVERIFY2(source.contains(QStringLiteral("binding = 4")) &&
+                     source.contains(QStringLiteral("frame.outputSize")) &&
+                     !source.contains(QStringLiteral("dFdx(uv.x)")),
+                 "Background transforms must use explicit frame uniforms, not fragment derivatives.");
         QVERIFY2(source.contains(QStringLiteral("blurredFillSample")),
                  "Direct Vulkan presenter must blur the cover-fill background in shader.");
         QVERIFY2(source.contains(QStringLiteral("float curveLuma = lumaOf(rgb);")),

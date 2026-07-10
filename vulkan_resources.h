@@ -49,6 +49,7 @@ public:
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
     bool uploadMaskCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
     bool beginFrameUploads(size_t frameSlot, size_t frameSlotCount);
+    bool updateFrameUniform(const QSize& outputSize);
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }
     VkDescriptorSet descriptorSet() const { return m_descriptorSets[m_descriptorSetIndex]; }
@@ -110,6 +111,9 @@ private:
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, kDescriptorSetCount> m_descriptorSets{};
     size_t m_descriptorSetIndex = 0;
+    VkBuffer m_frameUniformBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_frameUniformMemory = VK_NULL_HANDLE;
+    void* m_frameUniformMapped = nullptr;
 
     VkImage m_textureImage = VK_NULL_HANDLE;
     VkDeviceMemory m_textureMemory = VK_NULL_HANDLE;
@@ -143,6 +147,12 @@ private:
     VkImageLayout m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     QSize m_maskSize;
     QSize m_maskRawSize;
+    qint64 m_uploadedMaskCacheKey = 0;
+    QSize m_uploadedMaskOutputSize;
+    bool m_uploadedMaskInvert = false;
+    int m_uploadedMaskErodeRadius = 0;
+    int m_uploadedMaskDilateRadius = 0;
+    int m_uploadedMaskBlurRadius = 0;
 
     VkDescriptorSetLayout m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_maskComputeDescriptorPool = VK_NULL_HANDLE;
