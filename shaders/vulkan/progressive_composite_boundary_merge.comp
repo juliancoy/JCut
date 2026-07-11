@@ -1,0 +1,53 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer RowTileEdges {
+    uvec2 rowTiles[];
+};
+layout(std430, set = 0, binding = 1) readonly buffer ColumnTileEdges {
+    uvec2 columnTiles[];
+};
+layout(std430, set = 0, binding = 2) writeonly buffer RowEdges {
+    uvec2 rows[];
+};
+layout(std430, set = 0, binding = 3) writeonly buffer ColumnEdges {
+    uvec2 columns[];
+};
+
+layout(push_constant) uniform Params {
+    uvec2 outputSize;
+    uint rowTileCount;
+    uint columnTileCount;
+} pc;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index < pc.outputSize.y) {
+        uvec2 result = uvec2(0xffffffffu);
+        for (uint tile = 0; tile < pc.rowTileCount; ++tile) {
+            uvec2 candidate = rowTiles[index * pc.rowTileCount + tile];
+            if (candidate.x != 0xffffffffu) {
+                result.x = min(result.x, candidate.x);
+                result.y = result.y == 0xffffffffu
+                    ? candidate.y
+                    : max(result.y, candidate.y);
+            }
+        }
+        rows[index] = result;
+    }
+    if (index < pc.outputSize.x) {
+        uvec2 result = uvec2(0xffffffffu);
+        for (uint tile = 0; tile < pc.columnTileCount; ++tile) {
+            uvec2 candidate = columnTiles[index * pc.columnTileCount + tile];
+            if (candidate.x != 0xffffffffu) {
+                result.x = min(result.x, candidate.x);
+                result.y = result.y == 0xffffffffu
+                    ? candidate.y
+                    : max(result.y, candidate.y);
+            }
+        }
+        columns[index] = result;
+    }
+}

@@ -29,6 +29,7 @@ bool shouldSkipBlockingAudioWarmup(PlaybackAudioWarpMode runtimeWarpMode,
            !needsPitchPreservingAudio &&
            qAbs(effectiveWarpRate - 1.0) < 0.0001;
 }
+
 }
 
 void EditorWindow::advanceFrame()
@@ -224,7 +225,7 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
     QVector<ExportRangeSegment> ranges = m_timeline->exportRanges();
     if (speechFilterPlaybackEnabled()) {
         ranges = m_transcriptEngine.transcriptWordExportRanges(ranges,
-                                                               m_timeline->clips(),
+                                                               audibleTimelineClips(m_timeline->clips(), m_timeline->tracks()),
                                                                m_timeline->renderSyncMarkers(),
                                                                m_transcriptPrependMs,
                                                                m_transcriptPostpendMs,
@@ -271,7 +272,7 @@ QVector<ExportRangeSegment> EditorWindow::applySpeechFilterToExportRanges(
     }
 
     return m_transcriptEngine.transcriptWordExportRanges(ranges,
-                                                        m_timeline->clips(),
+                                                        audibleTimelineClips(m_timeline->clips(), m_timeline->tracks()),
                                                         m_timeline->renderSyncMarkers(),
                                                         m_transcriptPrependMs,
                                                         m_transcriptPostpendMs,
@@ -291,7 +292,7 @@ QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() c
 
     m_effectiveTranscriptNormalizeRangesCache = m_transcriptEngine.transcriptWordExportRangesDiscrete(
         m_timeline->exportRanges(),
-        m_timeline->clips(),
+        audibleTimelineClips(m_timeline->clips(), m_timeline->tracks()),
         m_timeline->renderSyncMarkers(),
         m_transcriptPrependMs,
         m_transcriptPostpendMs,
@@ -327,7 +328,7 @@ QString EditorWindow::playbackRangeCacheSignature(bool discrete, int neighborWor
     }
     for (const TimelineClip& clip : m_timeline->clips()) {
         const QFileInfo transcriptInfo(m_transcriptEngine.transcriptPathForClip(clip));
-        signature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10|")
+        signature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13|")
                          .arg(clip.id)
                          .arg(clip.startFrame)
                          .arg(clip.startSubframeSamples)
@@ -337,7 +338,17 @@ QString EditorWindow::playbackRangeCacheSignature(bool discrete, int neighborWor
                          .arg(clip.sourceDurationFrames)
                          .arg(clip.playbackRate, 0, 'g', 12)
                          .arg(clip.filePath)
-                         .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : -1);
+                         .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : -1)
+                         .arg(clip.audioEnabled ? 1 : 0)
+                         .arg(clip.audioSolo ? 1 : 0)
+                         .arg(clip.audioGain, 0, 'g', 12);
+    }
+    for (const TimelineTrack& track : m_timeline->tracks()) {
+        signature += QStringLiteral("track-audio:%1:%2:%3:%4|")
+                         .arg(track.audioEnabled ? 1 : 0)
+                         .arg(track.audioMuted ? 1 : 0)
+                         .arg(track.audioSolo ? 1 : 0)
+                         .arg(track.audioGain, 0, 'g', 12);
     }
     return signature;
 }
@@ -398,7 +409,8 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
 
     const qint64 generation = m_transcriptNormalizeRefreshGeneration;
     const QVector<ExportRangeSegment> baseRanges = m_timeline->exportRanges();
-    const QVector<TimelineClip> clips = m_timeline->clips();
+    const QVector<TimelineClip> clips =
+        audibleTimelineClips(m_timeline->clips(), m_timeline->tracks());
     const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
     const int transcriptPrependMs = m_transcriptPrependMs;
     const int transcriptPostpendMs = m_transcriptPostpendMs;

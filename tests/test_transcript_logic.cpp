@@ -85,7 +85,9 @@ private slots:
     }
 
     void testSpeechFilterUsesActiveTranscriptCut();
+    void testSpeechFilterUsesLiveTranscriptBeforeAsyncSave();
     void testAllSkippedWordsYieldNoSpeechRanges();
+    void testAudibleTimelineClipsExcludeDisabledOverlappingTrack();
     void testSpeechFilterIgnoresMalformedWordTiming();
     void testSpeechFilterRangesHonorPlaybackRateWithoutMarkers();
     void testEmptyBaseRangesUseInclusiveClipEnd();
@@ -180,6 +182,55 @@ void TestTranscriptLogic::testAllSkippedWordsYieldNoSpeechRanges() {
         engine.transcriptWordExportRanges(baseRanges, {clip}, {}, 0, 0);
 
     QVERIFY(ranges.isEmpty());
+}
+
+void TestTranscriptLogic::testSpeechFilterUsesLiveTranscriptBeforeAsyncSave() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath = transcriptEditablePathForClipFile(clipPath);
+    QJsonArray diskWords;
+    diskWords.push_back(wordObj(0.0, 0.5, true));
+    QVERIFY(writeTranscriptJson(transcriptPath, diskWords));
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+
+    QJsonObject insertedWord = wordObj(1.0, 1.2, false);
+    insertedWord[QStringLiteral("word")] = QStringLiteral("inserted");
+    QJsonObject segment;
+    segment[QStringLiteral("words")] = QJsonArray{insertedWord};
+    QJsonObject liveRoot;
+    liveRoot[QStringLiteral("segments")] = QJsonArray{segment};
+
+    TranscriptEngine engine;
+    engine.setLiveTranscriptDocument(transcriptPath, QJsonDocument(liveRoot));
+    const TimelineClip clip = makeAudioClip(QStringLiteral("live-clip"), clipPath, 100, 90);
+    const QVector<ExportRangeSegment> ranges = engine.transcriptWordExportRanges(
+        {ExportRangeSegment{100, 189}}, {clip}, {}, 0, 0);
+
+    QCOMPARE(ranges.size(), 1);
+    QCOMPARE(ranges.constFirst().startFrame, int64_t(130));
+    QCOMPARE(ranges.constFirst().endFrame, int64_t(135));
+}
+
+void TestTranscriptLogic::testAudibleTimelineClipsExcludeDisabledOverlappingTrack() {
+    TimelineClip transcriptAudio = makeAudioClip(QStringLiteral("transcript-audio"),
+                                                 QStringLiteral("voice.wav"), 0, 300);
+    transcriptAudio.trackIndex = 0;
+    TimelineClip overlappingVideo = makeAudioClip(QStringLiteral("overlapping-video"),
+                                                  QStringLiteral("camera.mp4"), 0, 300);
+    overlappingVideo.mediaType = ClipMediaType::Video;
+    overlappingVideo.trackIndex = 1;
+
+    QVector<TimelineTrack> tracks(2);
+    tracks[0].audioEnabled = true;
+    tracks[1].audioEnabled = false;
+
+    const QVector<TimelineClip> audible =
+        audibleTimelineClips({transcriptAudio, overlappingVideo}, tracks);
+    QCOMPARE(audible.size(), 1);
+    QCOMPARE(audible.constFirst().id, transcriptAudio.id);
 }
 
 void TestTranscriptLogic::testSpeechFilterIgnoresMalformedWordTiming() {

@@ -1000,6 +1000,37 @@ bool clipAudioPlaybackEnabled(const TimelineClip& clip) {
     return clip.hasAudio && clip.audioEnabled;
 }
 
+QVector<TimelineClip> audibleTimelineClips(const QVector<TimelineClip>& clips,
+                                           const QVector<TimelineTrack>& tracks) {
+    bool soloActive = false;
+    for (const TimelineClip& clip : clips) {
+        soloActive = soloActive || (clipAudioPlaybackEnabled(clip) && clip.audioSolo);
+    }
+    for (const TimelineTrack& track : tracks) {
+        soloActive = soloActive || track.audioSolo;
+    }
+
+    QVector<TimelineClip> audible;
+    audible.reserve(clips.size());
+    for (const TimelineClip& clip : clips) {
+        if (!clipAudioPlaybackEnabled(clip) || clip.audioGain <= 0.0) {
+            continue;
+        }
+        bool clipOrTrackSolo = clip.audioSolo;
+        if (clip.trackIndex >= 0 && clip.trackIndex < tracks.size()) {
+            const TimelineTrack& track = tracks.at(clip.trackIndex);
+            if (!track.audioEnabled || track.audioMuted || track.audioGain <= 0.0) {
+                continue;
+            }
+            clipOrTrackSolo = clipOrTrackSolo || track.audioSolo;
+        }
+        if (!soloActive || clipOrTrackSolo) {
+            audible.push_back(clip);
+        }
+    }
+    return audible;
+}
+
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) {
     QElapsedTimer probeTimer;
     probeTimer.start();

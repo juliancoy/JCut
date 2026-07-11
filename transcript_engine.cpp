@@ -839,6 +839,45 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
         return false;
     }
 
+    const QString absolutePath = QFileInfo(transcriptPath).absoluteFilePath();
+    const auto liveIt = m_liveTranscriptDocuments.constFind(absolutePath);
+    if (liveIt != m_liveTranscriptDocuments.cend() && liveIt->isObject()) {
+        QVector<TranscriptSection> sections;
+        const QJsonArray segments = liveIt->object().value(QStringLiteral("segments")).toArray();
+        for (const QJsonValue& segmentValue : segments) {
+            const QJsonObject segment = segmentValue.toObject();
+            const QString segmentSpeaker = segment.value(QStringLiteral("speaker")).toString().trimmed();
+            for (const QJsonValue& wordValue : segment.value(QStringLiteral("words")).toArray()) {
+                const QJsonObject wordObject = wordValue.toObject();
+                const QString text = wordObject.value(QStringLiteral("word")).toString().trimmed();
+                if (text.isEmpty() || wordObject.value(QStringLiteral("skipped")).toBool(false)) {
+                    continue;
+                }
+                const double startSeconds = wordObject.value(QStringLiteral("start")).toDouble(-1.0);
+                const double endSeconds = wordObject.value(QStringLiteral("end")).toDouble(-1.0);
+                if (!std::isfinite(startSeconds) || !std::isfinite(endSeconds) ||
+                    startSeconds < 0.0 || endSeconds < startSeconds) {
+                    continue;
+                }
+                TranscriptWord word;
+                word.startFrame = qMax<int64_t>(0, qFloor(startSeconds * kTimelineFps));
+                word.endFrame = qMax<int64_t>(word.startFrame, qCeil(endSeconds * kTimelineFps) - 1);
+                word.text = text;
+                word.speaker = wordObject.value(QStringLiteral("speaker")).toString().trimmed();
+                if (word.speaker.isEmpty()) word.speaker = segmentSpeaker;
+                TranscriptSection section;
+                section.startFrame = word.startFrame;
+                section.endFrame = word.endFrame;
+                section.text = word.text;
+                section.words.push_back(word);
+                sections.push_back(section);
+            }
+        }
+        *rangesOut = mergeRanges(transcriptPaddedWordRanges(
+            sections, transcriptPrependMs, transcriptPostpendMs, transcriptOffsetMs));
+        return true;
+    }
+
     const QFileInfo transcriptInfo(transcriptPath);
     if (!transcriptInfo.exists() || !transcriptInfo.isFile()) {
         return false;
@@ -1159,6 +1198,7 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
 
 void TranscriptEngine::invalidateCache()
 {
+    m_transcriptSourceWordRangesCache.clear();
     m_transcriptWordRangesCache.clear();
     m_transcriptWordRangesCacheSignature.clear();
     m_transcriptWordRangesMergedCache.clear();
@@ -1166,6 +1206,21 @@ void TranscriptEngine::invalidateCache()
     m_transcriptWordRangesDiscreteCache.clear();
     QMutexLocker locker(&g_facedetectionsDocCacheMutex);
     g_facedetectionsDocCache.clear();
+}
+
+void TranscriptEngine::setLiveTranscriptDocument(const QString& transcriptPath,
+                                                 const QJsonDocument& document)
+{
+    if (transcriptPath.trimmed().isEmpty() || !document.isObject()) return;
+    m_liveTranscriptDocuments.insert(QFileInfo(transcriptPath).absoluteFilePath(), document);
+    invalidateCache();
+}
+
+void TranscriptEngine::clearLiveTranscriptDocument(const QString& transcriptPath)
+{
+    if (transcriptPath.trimmed().isEmpty()) return;
+    m_liveTranscriptDocuments.remove(QFileInfo(transcriptPath).absoluteFilePath());
+    invalidateCache();
 }
 
 } // namespace editor

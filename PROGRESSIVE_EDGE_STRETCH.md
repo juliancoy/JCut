@@ -164,7 +164,110 @@ is visible, blend across a small, resolution-independent transition band.
 Rows or columns without visible pixels must fall back to the valid direction.
 If neither direction is valid, output the configured canvas background.
 
-## Phase 5: Master-pipeline integration
+## Phase 5: Vulkan resource and pipeline lifecycle
+
+Complete the shared shader ABI before recording any new commands. Extend both
+existing Vulkan resource owners with the following size-dependent resources.
+
+### Per-frame resources
+
+- A transparent RGBA intermediate composite image, device memory, and image
+  view for every in-flight frame slot.
+- Row-tile and column-tile reduction buffers sized using the shared tile-count
+  contract.
+- Final row-edge and column-edge buffers.
+- Frame-local descriptor sets referencing that slot's images and buffers.
+- Explicit tracked image layouts for every intermediate image.
+
+Do not share writable intermediate images or edge buffers between frames that
+may be simultaneously in flight. Reuse is permitted only after the owning
+frame fence signals.
+
+### Persistent resources
+
+- Composite sampler.
+- Boundary-tile descriptor-set layout and pipeline layout.
+- Boundary-merge descriptor-set layout and pipeline layout.
+- Final-stretch descriptor-set layout and pipeline layout.
+- Boundary-tile and boundary-merge compute shader modules and pipelines.
+- Fullscreen stretch vertex/fragment modules and graphics pipeline.
+- Descriptor pool capacity for every frame slot and all three passes.
+
+### Creation and destruction requirements
+
+- Allocate resources during renderer initialization or size-dependent
+  recreation; never allocate them per rendered frame.
+- Check every Vulkan allocation, bind, view, descriptor, module, layout, and
+  pipeline result and return a specific initialization error.
+- Tear resources down in reverse dependency order.
+- Destroy or recreate size-dependent resources only after the device or owning
+  frames are idle.
+- Integrate direct-preview resources with swapchain recreation.
+- Integrate export resources with output-size/backend reinitialization.
+- Use Vulkan debug names when debug utilities are available.
+
+### Shader ABI validation
+
+- Keep C++ push structures byte-for-byte compatible with GLSL.
+- Assert structure sizes and required alignment.
+- Validate row/column buffer sizing at zero, odd, HD, and 4K dimensions.
+- Keep push constants within the device limit; move additional state into a
+  small uniform buffer if the contract grows.
+
+This phase is complete only when both resource owners can create and destroy
+all required resources cleanly, including repeated resize/recreation cycles.
+
+## Phase 6: Offscreen/export master-pipeline integration
+
+Convert the offscreen/export renderer first because its output dimensions and
+readback are deterministic.
+
+1. Render all media, masks, effects, titles, captions, and overlays into the
+   frame slot's transparent intermediate composite image.
+2. End the graphics render pass.
+3. Transition composite color writes to compute shader reads.
+4. Bind and dispatch tiled boundary reduction.
+5. Insert a compute-write to compute-read buffer barrier.
+6. Bind and dispatch boundary merge.
+7. Insert a compute-write to fragment-read buffer barrier.
+8. Begin the final output render pass, bind the fullscreen stretch pipeline,
+   and draw into the existing export color image.
+9. Continue through the existing NV12/YUV conversion, encoder handoff, or CPU
+   readback path without changing its public contract.
+
+The intermediate composite must clear to `(0, 0, 0, 0)`. The final destination
+may retain the renderer's configured opaque canvas behavior.
+
+Add an ordinary fullscreen composite-copy path for frames where final stretch
+is disabled, or retain the existing direct path when doing so does not duplicate
+rendering logic. Measure before selecting the permanent disabled-effect path.
+
+The export integration is complete only after deterministic render tests,
+hardware-frame input tests, readback tests, and Vulkan validation pass.
+
+## Phase 7: Direct-preview master-pipeline integration
+
+Mirror the export recording sequence in the direct Vulkan preview while
+respecting swapchain ownership.
+
+1. Render the complete output canvas—not preview chrome—into a frame-local,
+   transparent intermediate composite image.
+2. Run the same tiled reduction and merge dispatches.
+3. Draw the final stretch result into the canvas region of the active swapchain
+   framebuffer.
+4. Keep canvas-to-surface placement in the presentation transform only; do not
+   feed preview zoom, pan, margins, or widget dimensions into edge sampling.
+5. Preserve overlays that are intentionally preview UI rather than project
+   content by drawing them after the final composite pass.
+
+Handle swapchain recreation, device-pixel ratio changes, output-size changes,
+and frame-slot fence reuse. Validate that descriptor sets never reference a
+destroyed swapchain-generation resource.
+
+The preview integration is complete only after zoom/pan invariance tests,
+resize/recreation tests, playback smoke tests, and Vulkan validation pass.
+
+## Phase 8: Activate final-pass semantics and remove legacy behavior
 
 Remove creation of edge-stretch background layers from individual clip loops.
 The clip render order and grading behavior otherwise remain unchanged.
@@ -186,27 +289,13 @@ they are deliberately migrated in a separate change.
 Use identical settings construction for preview and export. Differences should
 be limited to the final destination and canvas-to-surface transform.
 
-## Phase 6: Resource and pipeline setup
+Do not remove the legacy path until both export and preview final passes are
+operational. Use a temporary internal feature gate during integration, then
+remove that gate once parity and validation succeed. Add a source/contract test
+that prevents progressive background layers from being reintroduced inside
+individual clip loops.
 
-Extend the existing Vulkan resource owners with:
-
-- composite images, views, and memory per frame slot
-- row/column edge buffers per frame slot
-- optional tile-result buffers
-- descriptor-set layouts and descriptor sets
-- boundary reduction shader module and compute pipeline
-- optional merge shader module and compute pipeline
-- fullscreen vertex/fragment modules and graphics pipeline, or a final compute
-  pipeline if destination storage-image support is preferable
-- pipeline layouts and push-constant definitions
-
-Keep push constants within device limits. Put larger or less frequently changed
-settings in the existing frame-uniform mechanism or a dedicated small uniform
-buffer.
-
-Use debug names when Vulkan debug utilities are available.
-
-## Phase 7: Tests
+## Phase 9: Tests
 
 ### Pure/contract tests
 
@@ -249,7 +338,7 @@ Run relevant tests with validation enabled and require no:
 - simultaneous sampled/attachment use of one image
 - frame-slot reuse hazards
 
-## Phase 8: Performance validation
+## Phase 10: Performance validation
 
 Measure GPU time separately for:
 

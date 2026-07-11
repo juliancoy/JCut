@@ -1161,7 +1161,15 @@ void EditorWindow::createTranscriptTab()
     m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
 
     connect(m_transcriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {
-        m_transcriptEngine.invalidateCache();
+        QString liveTranscriptPath;
+        QJsonDocument liveTranscriptDocument;
+        if (m_transcriptTab->activeTranscriptDocumentSnapshot(
+                nullptr, &liveTranscriptPath, &liveTranscriptDocument)) {
+            m_transcriptEngine.setLiveTranscriptDocument(
+                liveTranscriptPath, liveTranscriptDocument);
+        } else {
+            m_transcriptEngine.invalidateCache();
+        }
         invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (m_preview) {

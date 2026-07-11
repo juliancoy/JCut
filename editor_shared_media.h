@@ -62,6 +62,8 @@ bool clipContributesVisualMedia(const TimelineClip& clip,
                                 const QVector<TimelineTrack>& tracks,
                                 const ClipParentChildIndex* relationships = nullptr);
 bool clipAudioPlaybackEnabled(const TimelineClip& clip);
+QVector<TimelineClip> audibleTimelineClips(const QVector<TimelineClip>& clips,
+                                           const QVector<TimelineTrack>& tracks);
 bool clipHasAlpha(const TimelineClip& clip);
 
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);

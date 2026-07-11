@@ -2,6 +2,7 @@
 #include "../background_fill_effect.h"
 #include "../render_vulkan_shared.h"
 #include "../preview_view_transform.h"
+#include "../vulkan_progressive_composite_stretch.h"
 
 #include <QtTest/QtTest>
 #include <QFile>
@@ -179,6 +180,84 @@ private slots:
                      "zoom 1=%1, zoom 2=%2")
                                 .arg(zoomOneFillT, 0, 'f', 6)
                                 .arg(zoomTwoFillT, 0, 'f', 6)));
+    }
+
+    void finalCompositeStretchContractIsDeterministic()
+    {
+        using namespace render_detail;
+        QCOMPARE(sizeof(ProgressiveCompositeRowEdges), size_t(8));
+        QCOMPARE(sizeof(ProgressiveCompositeColumnEdges), size_t(8));
+        QCOMPARE(sizeof(ProgressiveCompositeStretchPush), size_t(32));
+        QCOMPARE(progressiveCompositeTileCount(0), 0u);
+        QCOMPARE(progressiveCompositeTileCount(1), 1u);
+        QCOMPARE(progressiveCompositeTileCount(16), 1u);
+        QCOMPARE(progressiveCompositeTileCount(17), 2u);
+        QCOMPARE(sizeof(ProgressiveCompositeBoundaryTilePush), size_t(20));
+        QCOMPARE(sizeof(ProgressiveCompositeBoundaryMergePush), size_t(16));
+        const ProgressiveCompositeBufferSizes sizes =
+            progressiveCompositeBufferSizes(1920, 1080);
+        QCOMPARE(sizes.rowTileBytes,
+                 size_t(1080) * size_t(120) * sizeof(ProgressiveCompositeRowEdges));
+        QCOMPARE(sizes.columnTileBytes,
+                 size_t(1920) * size_t(68) * sizeof(ProgressiveCompositeColumnEdges));
+        QCOMPARE(sizes.rowEdgeBytes,
+                 size_t(1080) * sizeof(ProgressiveCompositeRowEdges));
+        QCOMPARE(sizes.columnEdgeBytes,
+                 size_t(1920) * sizeof(ProgressiveCompositeColumnEdges));
+
+        ProgressiveCompositeStretchSettings settings;
+        settings.effect = BackgroundFillEffect::ProgressiveEdgeStretch;
+        settings.outputSize = QSize(1920, 1080);
+        QVERIFY(settings.enabled());
+
+        const ProgressiveCompositeRowEdges row{400u, 1500u};
+        const ProgressiveCompositeColumnEdges column{200u, 800u};
+        QCOMPARE(progressiveCompositeDirection(0, 540, 1920, 1080, row, column),
+                 ProgressiveCompositeDirection::Left);
+        QCOMPARE(progressiveCompositeDirection(1919, 540, 1920, 1080, row, column),
+                 ProgressiveCompositeDirection::Right);
+        QCOMPARE(progressiveCompositeDirection(960, 0, 1920, 1080, row, column),
+                 ProgressiveCompositeDirection::Top);
+        QCOMPARE(progressiveCompositeDirection(960, 1079, 1920, 1080, row, column),
+                 ProgressiveCompositeDirection::Bottom);
+        QCOMPARE(progressiveCompositeDirection(960, 540, 1920, 1080, row, column),
+                 ProgressiveCompositeDirection::None);
+
+        const ProgressiveCompositeRowEdges noRow;
+        QCOMPARE(progressiveCompositeDirection(0, 0, 1920, 1080, noRow, column),
+                 ProgressiveCompositeDirection::Top);
+    }
+
+    void finalCompositeBoundaryShadersUseTiledReduction()
+    {
+        QFile tiles(QStringLiteral(JCUT_SOURCE_DIR
+                                   "/shaders/vulkan/progressive_composite_boundary_tiles.comp"));
+        QFile merge(QStringLiteral(JCUT_SOURCE_DIR
+                                   "/shaders/vulkan/progressive_composite_boundary_merge.comp"));
+        QVERIFY(tiles.open(QIODevice::ReadOnly));
+        QVERIFY(merge.open(QIODevice::ReadOnly));
+        const QByteArray tileSource = tiles.readAll();
+        const QByteArray mergeSource = merge.readAll();
+        QVERIFY(tileSource.contains("local_size_x = 16"));
+        QVERIFY(tileSource.contains("alphaThreshold"));
+        QVERIFY(tileSource.contains("shared uint rowMinimum[16]"));
+        QVERIFY(mergeSource.contains("rowTileCount"));
+        QVERIFY(mergeSource.contains("columnTileCount"));
+        QVERIFY(mergeSource.contains("0xffffffffu"));
+    }
+
+    void finalCompositeStretchShaderUsesReducedScreenEdges()
+    {
+        QFile shader(QStringLiteral(JCUT_SOURCE_DIR
+                                    "/shaders/vulkan/progressive_composite_stretch.frag"));
+        QVERIFY(shader.open(QIODevice::ReadOnly));
+        const QByteArray source = shader.readAll();
+        QVERIFY(source.contains("readonly buffer RowEdges"));
+        QVERIFY(source.contains("readonly buffer ColumnEdges"));
+        QVERIFY(source.contains("texelFetch(u_composite"));
+        QVERIFY(source.contains("if (composite.a > pc.alphaThreshold)"));
+        QVERIFY(source.contains("pow(clamp(bestDistance"));
+        QVERIFY(source.contains("outColor = composite"));
     }
 
     void pushConstantLayoutKeepsParityFlagsInPadding()

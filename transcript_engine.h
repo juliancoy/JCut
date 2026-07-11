@@ -51,6 +51,9 @@ public:
                                                                    int transcriptOffsetMs = 0) const;
 
     void invalidateCache();
+    void setLiveTranscriptDocument(const QString& transcriptPath,
+                                   const QJsonDocument& document);
+    void clearLiveTranscriptDocument(const QString& transcriptPath);
 
 private:
     struct TranscriptSourceWordRangeCacheEntry {
@@ -70,6 +73,7 @@ private:
                                     QVector<ExportRangeSegment>* rangesOut) const;
 
     mutable QHash<QString, TranscriptSourceWordRangeCacheEntry> m_transcriptSourceWordRangesCache;
+    QHash<QString, QJsonDocument> m_liveTranscriptDocuments;
     mutable QHash<QString, QVector<ExportRangeSegment>> m_transcriptWordRangesCache;
     mutable QString m_transcriptWordRangesCacheSignature;
     mutable QVector<ExportRangeSegment> m_transcriptWordRangesMergedCache;

@@ -1658,8 +1658,10 @@ void TranscriptTab::onTranscriptRowClicked(int row)
     }
 
     const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
-    if (modifiers.testFlag(Qt::ShiftModifier) ||
-        modifiers.testFlag(Qt::ControlModifier) ||
+    // Use the resulting row count to identify Shift range selections. The
+    // application-wide Shift state can remain stale if its release is missed,
+    // which would otherwise suppress later ordinary transcript clicks.
+    if (modifiers.testFlag(Qt::ControlModifier) ||
         modifiers.testFlag(Qt::MetaModifier)) {
         return;
     }
@@ -1796,8 +1798,9 @@ void TranscriptTab::onTranscriptSelectionChanged()
     persistSelectionIdentityFromRow(selectedRows.constFirst().row());
 
     const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
-    if (modifiers.testFlag(Qt::ShiftModifier) ||
-        modifiers.testFlag(Qt::ControlModifier) ||
+    // Multi-row Shift selections returned above. Do not depend on the global
+    // Shift state here because a missed key-release can make it appear stuck.
+    if (modifiers.testFlag(Qt::ControlModifier) ||
         modifiers.testFlag(Qt::MetaModifier)) {
         return;
     }
