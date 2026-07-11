@@ -57,8 +57,32 @@ private slots:
     void derivedDomainsStayLockedAtPlaybackSpeeds();
     void clipFrameMappingCarriesAllClockDomains();
     void renderSyncMarkersFeedVideoAndTranscriptMapping();
+    void transcriptSectionStartMapsBackToExactTimelineFrame();
     void systemClockDecisionIgnoresAudioReadiness();
 };
+
+void TestTemporalSyncContract::transcriptSectionStartMapsBackToExactTimelineFrame()
+{
+    TimelineClip clip = makeSixtyFpsClip();
+    clip.startFrame = 137;
+    clip.sourceInFrame = 240;
+    clip.playbackRate = 1.25;
+
+    for (const int64_t expectedTimelineFrame : {137LL, 138LL, 212LL, 511LL}) {
+        const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+            clip, frameToSamples(expectedTimelineFrame), {});
+        const int64_t actualTimelineFrame =
+            timelineFrameForClipTranscriptFrame(clip, transcriptFrame, {});
+        QCOMPARE(transcriptFrameForClipAtTimelineSample(
+                     clip, frameToSamples(actualTimelineFrame), {}),
+                 transcriptFrame);
+        QVERIFY(actualTimelineFrame <= expectedTimelineFrame);
+        if (actualTimelineFrame > clip.startFrame) {
+            QVERIFY(transcriptFrameForClipAtTimelineSample(
+                        clip, frameToSamples(actualTimelineFrame - 1), {}) < transcriptFrame);
+        }
+    }
+}
 
 void TestTemporalSyncContract::derivedDomainsStayLockedAtPlaybackSpeeds()
 {

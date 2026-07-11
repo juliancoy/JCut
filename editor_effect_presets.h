@@ -43,8 +43,13 @@ struct SpeakerTitleFlyInSettings {
     qreal wrapEndAngleDegrees = 110.0;
     qreal wrapPitchDegrees = 8.0;
     qreal wrapRollDegrees = 0.0;
+    qreal rotationStartXDegrees = 0.0;
+    qreal rotationStartYDegrees = 0.0;
+    qreal rotationStartZDegrees = 0.0;
     qreal titleFontSize = 48.0;
     qreal titleBoxWidth = 720.0;
+    bool showSpeakerName = true;
+    bool showSpeakerOrganization = true;
     TimelineClip::TitleKeyframe::MaterialStyle titleTextMaterialStyle =
         TimelineClip::TitleKeyframe::MaterialStyle::Solid;
     TimelineClip::TitleKeyframe::MaterialStyle titleBorderMaterialStyle =
@@ -53,6 +58,8 @@ struct SpeakerTitleFlyInSettings {
     QString titleBorderPatternImagePath;
     qreal titlePatternScale = 1.0;
     bool titleExtrude3D = false;
+    TimelineClip::TitleKeyframe::TextExtrudeMode titleExtrudeMode =
+        TimelineClip::TitleKeyframe::TextExtrudeMode::ErodedSolid;
     qreal titleExtrudeDepth = 0.16;
     qreal titleBevelScale = 0.7;
 };

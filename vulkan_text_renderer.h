@@ -2,6 +2,7 @@
 
 #include "cpu_overlay_render_backend.h"
 #include "vulkan_resources.h"
+#include "title_mesh_extrusion.h"
 
 #include <QHash>
 #include <QColor>
@@ -60,6 +61,13 @@ public:
                      const VkRect2D& scissor,
                      VkDescriptorSet descriptorSet,
                      const Push& push) const;
+    void bindAndDrawMesh(VkCommandBuffer commandBuffer,
+                         const VkViewport& viewport,
+                         const VkRect2D& scissor,
+                         VkDescriptorSet descriptorSet,
+                         VkBuffer vertexBuffer,
+                         uint32_t vertexCount,
+                         const Push& push) const;
 
 private:
     VkShaderModule createShaderModule(const QString& path, QString* errorMessage);
@@ -68,8 +76,11 @@ private:
     QVulkanDeviceFunctions* m_funcs = nullptr;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
+    VkPipeline m_meshPipeline = VK_NULL_HANDLE;
     VkShaderModule m_vertShader = VK_NULL_HANDLE;
     VkShaderModule m_fragShader = VK_NULL_HANDLE;
+    VkShaderModule m_meshVertShader = VK_NULL_HANDLE;
+    VkShaderModule m_meshFragShader = VK_NULL_HANDLE;
     bool m_ready = false;
 };
 
@@ -134,6 +145,7 @@ public:
 private:
     struct Glyph {
         QRectF uv;
+        QRectF erodedUv;
         QSize size;
         QPointF bearing;
         qreal advance = 0.0;
@@ -145,6 +157,8 @@ private:
         int materialStyle = 0;
         qreal patternScale = 1.0;
         QRectF patternUv;
+        QRectF erodedUv;
+        bool extrudable = false;
     };
     struct TranscriptBackground {
         QRectF rect;
@@ -192,6 +206,7 @@ private:
         QVector<LaidOutGlyph> glyphs;
         QVector<TranscriptBackground> backgrounds;
         QPointF center;
+        QVector<TitleMeshVertex> meshVertices;
     };
 
     bool buildAtlasAndLayout(const QSize& outputSize,
@@ -257,6 +272,14 @@ private:
                           int materialStyle = 0,
                           qreal patternScale = 1.0,
                           const QRectF& patternUv = QRectF());
+    bool drawTitleMesh(VkCommandBuffer commandBuffer,
+                       const QSize& swapSize,
+                       const QSize& outputSize,
+                       const QRectF& outputTargetRect,
+                       const EvaluatedTitle& title,
+                       const TitleLayoutCache& layout);
+    bool ensureTitleMeshBuffer(VkDeviceSize bytes);
+    uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
@@ -268,4 +291,8 @@ private:
     mutable SpeakerLayoutCache m_speakerLayoutCache;
     mutable TranscriptLayoutCache m_transcriptLayoutCache;
     mutable TitleLayoutCache m_titleLayoutCache;
+    VkBuffer m_titleMeshBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_titleMeshMemory = VK_NULL_HANDLE;
+    VkDeviceSize m_titleMeshBufferCapacity = 0;
+    QString m_titleMeshBufferKey;
 };

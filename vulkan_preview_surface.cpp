@@ -109,13 +109,13 @@ TimelineClip::GradingKeyframe maskGradeForClip(const TimelineClip& clip)
 
 QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& clips,
                                                 const QVector<TimelineTrack>& tracks,
-                                                bool useProxyMedia)
+                                                bool useProxyMedia,
+                                                const VirtualClipRelationshipIndex* relationships)
 {
     QVector<TimelineClip> playbackClips;
     playbackClips.reserve(clips.size());
     for (const TimelineClip& clip : clips) {
-        if ((!clipVisualPlaybackEnabled(clip, tracks) &&
-             !clipProvidesMediaForVisibleMaskMatte(clip, clips, tracks)) ||
+        if (!clipContributesVisualMedia(clip, clips, tracks, relationships) ||
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
@@ -421,6 +421,8 @@ void VulkanPreviewSurface::setSelectedClipId(const QString& clipId)
 void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
+    ++m_timelineClipRevision;
+    m_virtualClipRelationships.rebuild(m_interaction.clips, m_timelineClipRevision);
     m_interaction.clipCount = clips.size();
     if (m_interaction.transient.dragMode == PreviewDragMode::None &&
         (m_interaction.transient.transformOverrideActive ||
@@ -431,7 +433,8 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
     warmClipsSpeakerFramingContinuityRuntime(m_interaction.clips);
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
-            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
+                                      &m_virtualClipRelationships));
     }
     registerVisibleClips();
     updateNativeTitle();
@@ -444,7 +447,8 @@ void VulkanPreviewSurface::setTimelineTracks(const QVector<TimelineTrack>& track
     m_interaction.tracks = tracks;
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
-            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
+                                      &m_virtualClipRelationships));
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -496,7 +500,8 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
     }
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
-            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
+                                      &m_virtualClipRelationships));
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -1149,7 +1154,8 @@ void VulkanPreviewSurface::ensureFramePipeline()
     m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
     m_playbackPipeline->setPlaybackSpeed(m_playbackSpeed);
     m_playbackPipeline->setTimelineClips(
-        directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+        directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
+                                  &m_virtualClipRelationships));
     m_playbackPipeline->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     QObject::connect(m_cache.get(),
                      &editor::TimelineCache::frameLoaded,
@@ -1178,9 +1184,9 @@ void VulkanPreviewSurface::registerVisibleClips()
     QSet<QString> visible;
     QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const TimelineClip& clip : m_interaction.clips) {
-        if ((!clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
-             !clipProvidesMediaForVisibleMaskMatte(
-                 clip, m_interaction.clips, m_interaction.tracks)) ||
+        if (!clipContributesVisualMedia(
+                clip, m_interaction.clips, m_interaction.tracks,
+                &m_virtualClipRelationships) ||
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
@@ -1407,11 +1413,11 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
         const bool visibleSource = visualClipActiveAtSample(
             clip, m_interaction.tracks, visualSample, visualFramePosition, m_bypassGrading);
-        const bool maskMediaProvider =
-            clipProvidesMediaForVisibleMaskMatte(
+        const bool virtualChildMediaProvider =
+            m_virtualClipRelationships.hasVisibleChild(
                 clip, m_interaction.clips, m_interaction.tracks) &&
             isSampleWithinClip(clip, visualSample);
-        if (!visibleSource && !maskMediaProvider) {
+        if (!visibleSource && !virtualChildMediaProvider) {
             continue;
         }
 
@@ -1584,11 +1590,14 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
-        if (!visualClipActiveAtSample(clip,
-                                      m_interaction.tracks,
-                                      visualSample,
-                                      visualFramePosition,
-                                      m_bypassGrading)) {
+        const bool visibleSource = visualClipActiveAtSample(
+            clip, m_interaction.tracks, visualSample, visualFramePosition, m_bypassGrading);
+        const bool hiddenVirtualChildMediaProvider =
+            !clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
+            m_virtualClipRelationships.hasVisibleChild(
+                clip, m_interaction.clips, m_interaction.tracks) &&
+            isSampleWithinClip(clip, visualSample);
+        if (!visibleSource && !hiddenVirtualChildMediaProvider) {
             continue;
         }
         const int64_t localFrame = clip.mediaType == ClipMediaType::Image
@@ -2001,8 +2010,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.clipRole == ClipRole::MaskMatte &&
                 clip.locked &&
-                clip.sourceTransformLocked &&
-                clip.filePath.trimmed().isEmpty()) {
+                clip.sourceTransformLocked) {
                 const QString sourceId = clip.linkedSourceClipId.trimmed();
                 if (maskForegroundStatusBySourceId.contains(sourceId) &&
                     clip.startFrame <= visualFramePosition &&
@@ -2240,9 +2248,9 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
-        if ((!clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
-             !clipProvidesMediaForVisibleMaskMatte(
-                 clip, m_interaction.clips, m_interaction.tracks)) ||
+        if (!clipContributesVisualMedia(
+                clip, m_interaction.clips, m_interaction.tracks,
+                &m_virtualClipRelationships) ||
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }

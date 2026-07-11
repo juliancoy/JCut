@@ -120,6 +120,7 @@ target_sources(test_vulkan_text_generation
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../transcript_overlay_cache_key.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../title_mesh_extrusion.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
 )
@@ -168,6 +169,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../transcript_overlay_cache_key.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../title_mesh_extrusion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
 )
 target_link_libraries(test_vulkan_subtitle_render

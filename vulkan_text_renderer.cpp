@@ -23,6 +23,8 @@
 #include FT_FREETYPE_H
 #include <fontconfig/fontconfig.h>
 
+QByteArray erodeGlyphAlpha(const FT_Bitmap& bitmap, int radius);
+
 namespace {
 
 using jcut::vulkan::clearRect;
@@ -173,6 +175,9 @@ QString speakerLabelLayoutKey(const QSize& outputSize, const render_detail::Spea
         QString::number(spec.backgroundCornerRadius, 'f', 2) + QLatin1Char('|') +
         QString::number(spec.borderWidth, 'f', 2) + QLatin1Char('|') +
         QString::number(spec.showShadow ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<int>(spec.textExtrudeMode)) + QLatin1Char('|') +
+        QString::number(spec.textExtrudeDepth, 'f', 3) + QLatin1Char('|') +
+        QString::number(spec.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(spec.shadowColor.rgba()));
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
@@ -196,6 +201,9 @@ QString transcriptOverlayLayoutKey(const QSize& outputSize,
         QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
         rectKey(outputRect) + QLatin1Char('|') +
         speakerTitle + QLatin1Char('|') +
+        QString::number(static_cast<int>(clip.transcriptOverlay.textExtrudeMode)) + QLatin1Char('|') +
+        QString::number(clip.transcriptOverlay.textExtrudeDepth, 'f', 3) + QLatin1Char('|') +
+        QString::number(clip.transcriptOverlay.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
         transcriptOverlayStyleCacheMaterial(clip) + QLatin1Char('|') +
         layoutMaterial;
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
@@ -219,6 +227,8 @@ QString transcriptOverlayAtlasKey(const TimelineClip& clip,
         QString::number(bodyPixelSize) + QLatin1Char('|') +
         QString::number(titlePixelSize) + QLatin1Char('|') +
         QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<int>(overlay.textExtrudeMode)) + QLatin1Char('|') +
+        QString::number(overlay.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
         speakerTitle.trimmed() + QLatin1Char('|') +
         glyphMaterial;
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
@@ -428,6 +438,25 @@ int materialStyleId(TitleMaterialStyle style)
     }
 }
 
+QVector<qreal> textExtrusionLayerOffsets(TextExtrudeMode mode, qreal depth)
+{
+    QVector<qreal> offsets;
+    if (mode == TextExtrudeMode::None || depth <= 0.001) return offsets;
+    const bool stacked = mode == TextExtrudeMode::StackedCopies;
+    const int sparseLayers = qBound(1, static_cast<int>(std::ceil(depth * 24.0)), 12);
+    const qreal totalDepth = stacked
+        ? qBound<qreal>(0.6, depth * 8.0, 4.5) * sparseLayers
+        : qBound<qreal>(1.0, depth * 18.0, 36.0);
+    const int layers = stacked
+        ? sparseLayers
+        : qBound(2, static_cast<int>(std::ceil(totalDepth / 0.65)), 64);
+    offsets.reserve(layers);
+    for (int layer = layers; layer >= 1; --layer) {
+        offsets.push_back(totalDepth * static_cast<qreal>(layer) / layers);
+    }
+    return offsets;
+}
+
 QVector<QPointF> dilationOffsets(qreal radius)
 {
     QVector<QPointF> offsets;
@@ -535,6 +564,32 @@ void mvpForTitle3DRect(const QRectF& rect,
     std::copy(mvp.constData(), mvp.constData() + 16, outMvp);
 }
 
+void mvpForTitleMesh(const QPointF& center, qreal pixelHeight, const QSize& swapSize,
+                     const EvaluatedTitle& title, float outMvp[16])
+{
+    const qreal w = qMax<qreal>(1.0, swapSize.width());
+    const qreal h = qMax<qreal>(1.0, swapSize.height());
+    const qreal aspect = w / h;
+    constexpr float cameraDistance = 5.2f;
+    constexpr float fovDegrees = 43.0f;
+    const qreal halfViewH = std::tan((fovDegrees * M_PI / 180.0) * .5) * cameraDistance;
+    const qreal halfViewW = halfViewH * aspect;
+    const QVector3D centerWorld(static_cast<float>(((2.0 * center.x() / w) - 1.0) * halfViewW),
+                                static_cast<float>(((2.0 * center.y() / h) - 1.0) * halfViewH), 0.0f);
+    QMatrix4x4 projection; projection.perspective(fovDegrees, static_cast<float>(aspect), .1f, 32.0f);
+    QMatrix4x4 view; view.lookAt(QVector3D(0, 0, cameraDistance), QVector3D(0, 0, 0), QVector3D(0, 1, 0));
+    QMatrix4x4 model;
+    model.translate(centerWorld);
+    model.rotate(static_cast<float>(title.vulkan3DYawDegrees), 0, 1, 0);
+    model.rotate(static_cast<float>(title.vulkan3DPitchDegrees), 1, 0, 0);
+    model.rotate(static_cast<float>(title.vulkan3DRollDegrees), 0, 0, 1);
+    model.translate(0, 0, static_cast<float>(qBound<qreal>(-3.0, title.vulkan3DDepth, 3.0)));
+    const qreal scale = (pixelHeight / h) * 2.0 * halfViewH * qBound<qreal>(.05, title.vulkan3DScale, 4.0);
+    model.scale(static_cast<float>(scale));
+    const QMatrix4x4 mvp = projection * view * model;
+    std::copy(mvp.constData(), mvp.constData() + 16, outMvp);
+}
+
 } // namespace
 
 VulkanTextPipeline::~VulkanTextPipeline()
@@ -561,7 +616,10 @@ bool VulkanTextPipeline::initialize(VkDevice device,
     const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
     m_vertShader = createShaderModule(shaderDir + QStringLiteral("/text.vert.spv"), errorMessage);
     m_fragShader = createShaderModule(shaderDir + QStringLiteral("/text.frag.spv"), errorMessage);
-    if (m_vertShader == VK_NULL_HANDLE || m_fragShader == VK_NULL_HANDLE) {
+    m_meshVertShader = createShaderModule(shaderDir + QStringLiteral("/title_mesh.vert.spv"), errorMessage);
+    m_meshFragShader = createShaderModule(shaderDir + QStringLiteral("/title_mesh.frag.spv"), errorMessage);
+    if (m_vertShader == VK_NULL_HANDLE || m_fragShader == VK_NULL_HANDLE ||
+        m_meshVertShader == VK_NULL_HANDLE || m_meshFragShader == VK_NULL_HANDLE) {
         destroy();
         return false;
     }
@@ -660,6 +718,35 @@ bool VulkanTextPipeline::initialize(VkDevice device,
         destroy();
         return false;
     }
+    VkVertexInputBindingDescription meshBinding{};
+    meshBinding.binding = 0;
+    meshBinding.stride = sizeof(TitleMeshVertex);
+    meshBinding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription meshAttributes[3]{};
+    meshAttributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(TitleMeshVertex, position))};
+    meshAttributes[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(TitleMeshVertex, normal))};
+    meshAttributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(TitleMeshVertex, uv))};
+    VkPipelineVertexInputStateCreateInfo meshVertexInput{};
+    meshVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    meshVertexInput.vertexBindingDescriptionCount = 1;
+    meshVertexInput.pVertexBindingDescriptions = &meshBinding;
+    meshVertexInput.vertexAttributeDescriptionCount = 3;
+    meshVertexInput.pVertexAttributeDescriptions = meshAttributes;
+    VkPipelineInputAssemblyStateCreateInfo meshAssembly{};
+    meshAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    meshAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineShaderStageCreateInfo meshStages[2] = {shaderStages[0], shaderStages[1]};
+    meshStages[0].module = m_meshVertShader;
+    meshStages[1].module = m_meshFragShader;
+    VkGraphicsPipelineCreateInfo meshPipelineInfo = pipelineInfo;
+    meshPipelineInfo.pStages = meshStages;
+    meshPipelineInfo.pVertexInputState = &meshVertexInput;
+    meshPipelineInfo.pInputAssemblyState = &meshAssembly;
+    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &meshPipelineInfo, nullptr, &m_meshPipeline) != VK_SUCCESS) {
+        if (errorMessage) *errorMessage = QStringLiteral("Failed to create Vulkan title mesh pipeline.");
+        destroy();
+        return false;
+    }
 
     m_ready = true;
     return true;
@@ -677,6 +764,7 @@ void VulkanTextPipeline::destroy()
         vkDestroyPipeline(m_device, m_pipeline, nullptr);
         m_pipeline = VK_NULL_HANDLE;
     }
+    if (m_meshPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(m_device, m_meshPipeline, nullptr); m_meshPipeline = VK_NULL_HANDLE; }
     if (m_pipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
         m_pipelineLayout = VK_NULL_HANDLE;
@@ -689,6 +777,8 @@ void VulkanTextPipeline::destroy()
         vkDestroyShaderModule(m_device, m_fragShader, nullptr);
         m_fragShader = VK_NULL_HANDLE;
     }
+    if (m_meshVertShader != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, m_meshVertShader, nullptr); m_meshVertShader = VK_NULL_HANDLE; }
+    if (m_meshFragShader != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, m_meshFragShader, nullptr); m_meshFragShader = VK_NULL_HANDLE; }
     m_ready = false;
     m_device = VK_NULL_HANDLE;
     m_funcs = nullptr;
@@ -753,6 +843,28 @@ void VulkanTextPipeline::bindAndDraw(VkCommandBuffer commandBuffer,
     vkCmdDraw(commandBuffer, 4, 1, 0, 0);
 }
 
+void VulkanTextPipeline::bindAndDrawMesh(VkCommandBuffer commandBuffer,
+                                         const VkViewport& viewport,
+                                         const VkRect2D& scissor,
+                                         VkDescriptorSet descriptorSet,
+                                         VkBuffer vertexBuffer,
+                                         uint32_t vertexCount,
+                                         const Push& push) const
+{
+    if (!m_ready || m_meshPipeline == VK_NULL_HANDLE || commandBuffer == VK_NULL_HANDLE ||
+        descriptorSet == VK_NULL_HANDLE || vertexBuffer == VK_NULL_HANDLE || vertexCount == 0) return;
+    VkDeviceSize offset = 0;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
+                            0, 1, &descriptorSet, 0, nullptr);
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
+    vkCmdPushConstants(commandBuffer, m_pipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &push);
+    vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
+}
+
 VulkanTextRenderer::~VulkanTextRenderer()
 {
     destroy();
@@ -792,6 +904,12 @@ bool VulkanTextRenderer::initialize(VkPhysicalDevice physicalDevice,
 
 void VulkanTextRenderer::destroy()
 {
+    if (m_titleMeshBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, m_titleMeshBuffer, nullptr);
+    if (m_titleMeshMemory != VK_NULL_HANDLE) vkFreeMemory(m_device, m_titleMeshMemory, nullptr);
+    m_titleMeshBuffer = VK_NULL_HANDLE;
+    m_titleMeshMemory = VK_NULL_HANDLE;
+    m_titleMeshBufferCapacity = 0;
+    m_titleMeshBufferKey.clear();
     m_pipeline.reset();
     m_atlasResources.reset();
     m_uploadedAtlasKey.clear();
@@ -801,6 +919,41 @@ void VulkanTextRenderer::destroy()
     m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_funcs = nullptr;
+}
+
+uint32_t VulkanTextRenderer::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const
+{
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memory);
+    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+        if ((typeBits & (1u << i)) && (memory.memoryTypes[i].propertyFlags & properties) == properties) return i;
+    return UINT32_MAX;
+}
+
+bool VulkanTextRenderer::ensureTitleMeshBuffer(VkDeviceSize bytes)
+{
+    if (m_titleMeshBuffer != VK_NULL_HANDLE && m_titleMeshBufferCapacity >= bytes) return true;
+    if (m_titleMeshBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, m_titleMeshBuffer, nullptr);
+    if (m_titleMeshMemory != VK_NULL_HANDLE) vkFreeMemory(m_device, m_titleMeshMemory, nullptr);
+    m_titleMeshBuffer = VK_NULL_HANDLE; m_titleMeshMemory = VK_NULL_HANDLE; m_titleMeshBufferCapacity = 0;
+    m_titleMeshBufferKey.clear();
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = qMax<VkDeviceSize>(bytes, 1);
+    info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(m_device, &info, nullptr, &m_titleMeshBuffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(m_device, m_titleMeshBuffer, &requirements);
+    const uint32_t type = findMemoryType(requirements.memoryTypeBits,
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type == UINT32_MAX) return false;
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = type;
+    if (vkAllocateMemory(m_device, &allocation, nullptr, &m_titleMeshMemory) != VK_SUCCESS ||
+        vkBindBufferMemory(m_device, m_titleMeshBuffer, m_titleMeshMemory, 0) != VK_SUCCESS) return false;
+    m_titleMeshBufferCapacity = requirements.size;
+    return true;
 }
 
 bool VulkanTextRenderer::isReady() const
@@ -940,7 +1093,11 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
         const FT_Bitmap& bitmap = slot->bitmap;
         const int width = static_cast<int>(bitmap.width);
         const int height = static_cast<int>(bitmap.rows);
-        if (penX + width + kGlyphPadding >= kAtlasSize) {
+        const int erosionRadius = title.vulkan3DExtrudeEnabled &&
+                title.textExtrudeMode == TextExtrudeMode::ErodedSolid
+            ? qBound(1, qRound(1.0 + title.vulkan3DBevelScale * 1.5), 4) : 0;
+        const int packedWidth = width + (erosionRadius > 0 ? width + kGlyphPadding : 0);
+        if (penX + packedWidth + kGlyphPadding >= kAtlasSize) {
             penX = kGlyphPadding;
             penY += rowHeight + kGlyphPadding;
             rowHeight = 0;
@@ -959,11 +1116,25 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
                           static_cast<qreal>(penY) / kAtlasSize,
                           static_cast<qreal>(width) / kAtlasSize,
                           static_cast<qreal>(height) / kAtlasSize);
+        if (erosionRadius > 0) {
+            const QByteArray eroded = erodeGlyphAlpha(bitmap, erosionRadius);
+            const int erodedX = penX + width + kGlyphPadding;
+            for (int row = 0; row < height; ++row) {
+                for (int col = 0; col < width; ++col) {
+                    blendAtlasPixel(&atlas->image, erodedX + col, penY + row,
+                                    static_cast<unsigned char>(eroded.at(row * width + col)));
+                }
+            }
+            glyph.erodedUv = QRectF(static_cast<qreal>(erodedX) / kAtlasSize,
+                                    static_cast<qreal>(penY) / kAtlasSize,
+                                    static_cast<qreal>(width) / kAtlasSize,
+                                    static_cast<qreal>(height) / kAtlasSize);
+        }
         glyph.size = QSize(width, height);
         glyph.bearing = QPointF(slot->bitmap_left, slot->bitmap_top);
         glyph.advance = static_cast<qreal>(slot->advance.x) / 64.0;
         atlas->glyphs.insert(key, glyph);
-        penX += width + kGlyphPadding;
+        penX += packedWidth + kGlyphPadding;
         rowHeight = std::max(rowHeight, height);
         return true;
     };
@@ -1058,7 +1229,9 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
                         shadow,
                         0,
                         1.0,
-                        atlas->solidUv});
+                        atlas->solidUv,
+                        QRectF(),
+                        false});
                 }
                 QColor color = title.color.isValid() ? title.color : QColor(Qt::white);
                 color.setAlphaF(qBound<qreal>(0.0, color.alphaF() * title.opacity, 1.0));
@@ -1068,7 +1241,9 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
                     color,
                     materialStyleId(title.textMaterialStyle),
                     qBound<qreal>(0.10, title.textPatternScale, 8.0),
-                    atlas->textPatternUv});
+                    atlas->textPatternUv,
+                    glyph.erodedUv,
+                    true});
             }
             cursor += glyph.advance;
             previous = glyphIndex;
@@ -1077,11 +1252,14 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
     }
 
     const QString keyMaterial =
-        QStringLiteral("title-vktext-v1|") + title.fontFamily + QLatin1Char('|') +
+        QStringLiteral("title-vktext-v2|") + title.fontFamily + QLatin1Char('|') +
         QString::number(pixelSize) + QLatin1Char('|') +
         QString::number(title.bold ? 1 : 0) + QLatin1Char('|') +
         title.text + QLatin1Char('|') +
         title.logoPath + QLatin1Char('|') +
+        QString::number(title.vulkan3DExtrudeEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<int>(title.textExtrudeMode)) + QLatin1Char('|') +
+        QString::number(title.vulkan3DBevelScale, 'f', 3) + QLatin1Char('|') +
         title.textPatternImagePath + QLatin1Char('|') +
         title.windowFramePatternImagePath;
     atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
@@ -1158,7 +1336,10 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         const FT_Bitmap& bitmap = slot->bitmap;
         const int width = static_cast<int>(bitmap.width);
         const int height = static_cast<int>(bitmap.rows);
-        if (penX + width + kGlyphPadding >= kAtlasSize) {
+        const int erosionRadius = spec.textExtrudeMode == TextExtrudeMode::ErodedSolid
+            ? qBound(1, qRound(1.0 + spec.textExtrudeBevelScale * 1.5), 4) : 0;
+        const int packedWidth = width + (erosionRadius > 0 ? width + kGlyphPadding : 0);
+        if (penX + packedWidth + kGlyphPadding >= kAtlasSize) {
             penX = kGlyphPadding;
             penY += rowHeight + kGlyphPadding;
             rowHeight = 0;
@@ -1177,11 +1358,25 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
                           static_cast<qreal>(penY) / kAtlasSize,
                           static_cast<qreal>(width) / kAtlasSize,
                           static_cast<qreal>(height) / kAtlasSize);
+        if (erosionRadius > 0) {
+            const QByteArray eroded = erodeGlyphAlpha(bitmap, erosionRadius);
+            const int erodedX = penX + width + kGlyphPadding;
+            for (int row = 0; row < height; ++row) {
+                for (int col = 0; col < width; ++col) {
+                    blendAtlasPixel(&atlas->image, erodedX + col, penY + row,
+                                    static_cast<unsigned char>(eroded.at(row * width + col)));
+                }
+            }
+            glyph.erodedUv = QRectF(static_cast<qreal>(erodedX) / kAtlasSize,
+                                    static_cast<qreal>(penY) / kAtlasSize,
+                                    static_cast<qreal>(width) / kAtlasSize,
+                                    static_cast<qreal>(height) / kAtlasSize);
+        }
         glyph.size = QSize(width, height);
         glyph.bearing = QPointF(slot->bitmap_left, slot->bitmap_top);
         glyph.advance = static_cast<qreal>(slot->advance.x) / 64.0;
         atlas->glyphs.insert(key, glyph);
-        penX += width + kGlyphPadding;
+        penX += packedWidth + kGlyphPadding;
         rowHeight = std::max(rowHeight, height);
         return true;
     };
@@ -1284,6 +1479,8 @@ bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
         QString::number(spec.nameTextScale, 'f', 3) + QLatin1Char('|') +
         QString::number(spec.organizationTextScale, 'f', 3) + QLatin1Char('|') +
         QString::number(spec.showShadow ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<int>(spec.textExtrudeMode)) + QLatin1Char('|') +
+        QString::number(spec.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(spec.shadowColor.rgba()));
     atlas->key = QString::fromLatin1(QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
     return !glyphs->isEmpty() ? true : fail(QStringLiteral("speaker_empty_glyph_layout"));
@@ -1360,7 +1557,12 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
         const FT_Bitmap& bitmap = slot->bitmap;
         const int width = static_cast<int>(bitmap.width);
         const int height = static_cast<int>(bitmap.rows);
-        if (penX + width + kGlyphPadding >= kAtlasSize) {
+        const int erosionRadius =
+            clip.transcriptOverlay.textExtrudeMode == TextExtrudeMode::ErodedSolid
+            ? qBound(1, qRound(1.0 + clip.transcriptOverlay.textExtrudeBevelScale * 1.5), 4)
+            : 0;
+        const int packedWidth = width + (erosionRadius > 0 ? width + kGlyphPadding : 0);
+        if (penX + packedWidth + kGlyphPadding >= kAtlasSize) {
             penX = kGlyphPadding;
             penY += rowHeight + kGlyphPadding;
             rowHeight = 0;
@@ -1379,11 +1581,25 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
                           static_cast<qreal>(penY) / kAtlasSize,
                           static_cast<qreal>(width) / kAtlasSize,
                           static_cast<qreal>(height) / kAtlasSize);
+        if (erosionRadius > 0) {
+            const QByteArray eroded = erodeGlyphAlpha(bitmap, erosionRadius);
+            const int erodedX = penX + width + kGlyphPadding;
+            for (int row = 0; row < height; ++row) {
+                for (int col = 0; col < width; ++col) {
+                    blendAtlasPixel(&atlas->image, erodedX + col, penY + row,
+                                    static_cast<unsigned char>(eroded.at(row * width + col)));
+                }
+            }
+            glyph.erodedUv = QRectF(static_cast<qreal>(erodedX) / kAtlasSize,
+                                    static_cast<qreal>(penY) / kAtlasSize,
+                                    static_cast<qreal>(width) / kAtlasSize,
+                                    static_cast<qreal>(height) / kAtlasSize);
+        }
         glyph.size = QSize(width, height);
         glyph.bearing = QPointF(slot->bitmap_left, slot->bitmap_top);
         glyph.advance = static_cast<qreal>(slot->advance.x) / 64.0;
         atlas->glyphs.insert(key, glyph);
-        penX += width + kGlyphPadding;
+        penX += packedWidth + kGlyphPadding;
         rowHeight = std::max(rowHeight, height);
         return true;
     };
@@ -1446,17 +1662,31 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
     auto ascender = [](FT_Face face) {
         return static_cast<qreal>(face->size->metrics.ascender) / 64.0;
     };
-    const QRectF textBounds = outputRect.adjusted(18.0, 14.0, -18.0, -14.0);
+    const qreal padding = qBound<qreal>(0.0, clip.transcriptOverlay.backgroundPadding, 400.0);
+    const QRectF textBounds = outputRect.adjusted(padding, padding, -padding, -padding);
     if (textBounds.isEmpty()) {
         return fail(QStringLiteral("transcript_text_bounds_empty"));
     }
     if (clip.transcriptOverlay.showBackground) {
+        if (clip.transcriptOverlay.backgroundFrameEnabled &&
+            clip.transcriptOverlay.backgroundFrameWidth > 0.0) {
+            QColor frameColor = clip.transcriptOverlay.backgroundFrameColor.isValid()
+                ? clip.transcriptOverlay.backgroundFrameColor : QColor(Qt::white);
+            frameColor.setAlphaF(clip.transcriptOverlay.backgroundFrameOpacity);
+            const qreal inset = qMax<qreal>(0.0, clip.transcriptOverlay.backgroundFrameGap);
+            backgrounds->push_back(TranscriptBackground{
+                outputRect.adjusted(inset, inset, -inset, -inset), atlas.solidUv, frameColor,
+                qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0)});
+        }
         QColor backgroundColor = clip.transcriptOverlay.backgroundColor.isValid()
             ? clip.transcriptOverlay.backgroundColor
             : QColor(Qt::black);
         backgroundColor.setAlphaF(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0));
+        const qreal frameInset = clip.transcriptOverlay.backgroundFrameEnabled
+            ? qMax<qreal>(0.0, clip.transcriptOverlay.backgroundFrameGap + clip.transcriptOverlay.backgroundFrameWidth)
+            : 0.0;
         backgrounds->push_back(TranscriptBackground{
-            outputRect,
+            outputRect.adjusted(frameInset, frameInset, -frameInset, -frameInset),
             atlas.solidUv,
             backgroundColor,
             qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0)});
@@ -1548,9 +1778,10 @@ bool VulkanTextRenderer::buildTranscriptLayout(const QSize& outputSize,
         }
     };
 
-    const QColor textColor = clip.transcriptOverlay.textColor.isValid()
+    QColor textColor = clip.transcriptOverlay.textColor.isValid()
         ? clip.transcriptOverlay.textColor
         : QColor(Qt::white);
+    textColor.setAlphaF(textColor.alphaF() * qBound<qreal>(0.0, clip.transcriptOverlay.textOpacity, 1.0));
     const QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
         ? clip.transcriptOverlay.highlightColor
         : QColor(QStringLiteral("#fff2a8"));
@@ -1751,6 +1982,7 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
         QString::number(static_cast<int>(title.windowFrameMaterialStyle)) + QLatin1Char('|') +
         QString::number(title.windowFramePatternScale, 'f', 3) + QLatin1Char('|') +
         QString::number(title.vulkan3DExtrudeEnabled ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<int>(title.textExtrudeMode)) + QLatin1Char('|') +
         QString::number(title.vulkan3DExtrudeDepth, 'f', 3) + QLatin1Char('|') +
         QString::number(title.vulkan3DBevelScale, 'f', 3) + QLatin1Char('|') +
         QString::number(title.dropShadowEnabled ? 1 : 0) + QLatin1Char('|') +
@@ -1772,6 +2004,18 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
                                              &rebuilt.glyphs,
                                              &rebuilt.backgrounds,
                                              &rebuilt.center);
+    if (rebuilt.valid && title.vulkan3DExtrudeEnabled &&
+        title.textExtrudeMode != TextExtrudeMode::None &&
+        title.vulkan3DExtrudeDepth > 0.001) {
+        rebuilt.meshVertices = buildExtrudedTitleMesh(
+            title.text,
+            TitleMeshExtrusionOptions{title.fontFamily, title.bold,
+                                      qBound(24, qRound(title.fontSize * 2.0), 256),
+                                      title.vulkan3DExtrudeDepth,
+                                      title.textExtrudeMode == TextExtrudeMode::ErodedSolid
+                                          ? title.vulkan3DBevelScale : 0.0},
+            nullptr);
+    }
     rebuilt.atlasKey = rebuilt.atlas.key;
     if (!rebuilt.valid) {
         m_titleLayoutCache = TitleLayoutCache{};
@@ -1867,6 +2111,88 @@ void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
     push.patternRect[2] = static_cast<float>(pattern.width());
     push.patternRect[3] = static_cast<float>(pattern.height());
     m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
+}
+
+bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
+                                       const QSize& swapSize,
+                                       const QSize& outputSize,
+                                       const QRectF& outputTargetRect,
+                                       const EvaluatedTitle& title,
+                                       const TitleLayoutCache& layout)
+{
+    if (layout.meshVertices.isEmpty()) return false;
+    EvaluatedTitle meshTitle = title;
+    if (std::abs(meshTitle.vulkan3DYawDegrees) < 0.001 &&
+        std::abs(meshTitle.vulkan3DPitchDegrees) < 0.001 &&
+        std::abs(meshTitle.vulkan3DRollDegrees) < 0.001) {
+        // A front-on real mesh has no visible side wall. Keep authored camera
+        // rotations intact, but give extrusion-only titles a readable default.
+        meshTitle.vulkan3DYawDegrees = -32.0;
+        meshTitle.vulkan3DPitchDegrees = 8.0;
+    }
+    const QString meshBufferKey = layout.layoutKey + QLatin1Char('|') +
+        QString::number(meshTitle.vulkan3DYawDegrees, 'f', 3) + QLatin1Char('|') +
+        QString::number(meshTitle.vulkan3DPitchDegrees, 'f', 3);
+    QVector<TitleMeshVertex> orderedVertices;
+    if (m_titleMeshBufferKey != meshBufferKey) {
+        orderedVertices = layout.meshVertices;
+        // The overlay render passes do not universally expose a depth attachment.
+        // Order transparent mesh triangles back-to-front in camera space so bevels
+        // and side walls remain correct in both preview and export.
+        const float yaw = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DYawDegrees));
+        const float pitch = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DPitchDegrees));
+        const float cy = std::cos(yaw), sy = std::sin(yaw);
+        const float cx = std::cos(pitch), sx = std::sin(pitch);
+        QVector<int> triangles;
+        triangles.reserve(orderedVertices.size() / 3);
+        for (int i = 0; i + 2 < orderedVertices.size(); i += 3) triangles.push_back(i);
+        const auto cameraZ = [&](int index) {
+            const QVector3D p = (orderedVertices.at(index).position + orderedVertices.at(index + 1).position +
+                                 orderedVertices.at(index + 2).position) / 3.0f;
+            const float zAfterYaw = -sy * p.x() + cy * p.z();
+            return sx * p.y() + cx * zAfterYaw;
+        };
+        std::stable_sort(triangles.begin(), triangles.end(), [&](int left, int right) {
+            return cameraZ(left) < cameraZ(right);
+        });
+        QVector<TitleMeshVertex> sorted;
+        sorted.reserve(orderedVertices.size());
+        for (int index : triangles) {
+            sorted.append(orderedVertices.at(index));
+            sorted.append(orderedVertices.at(index + 1));
+            sorted.append(orderedVertices.at(index + 2));
+        }
+        orderedVertices = std::move(sorted);
+    }
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(layout.meshVertices.size() * sizeof(TitleMeshVertex));
+    if (!ensureTitleMeshBuffer(bytes)) return false;
+    if (m_titleMeshBufferKey != meshBufferKey) {
+        void* mapped = nullptr;
+        if (vkMapMemory(m_device, m_titleMeshMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) return false;
+        std::memcpy(mapped, orderedVertices.constData(), static_cast<size_t>(bytes));
+        vkUnmapMemory(m_device, m_titleMeshMemory);
+        m_titleMeshBufferKey = meshBufferKey;
+    }
+    VkViewport viewport{0.0f, 0.0f, static_cast<float>(qMax(1, swapSize.width())),
+                        static_cast<float>(qMax(1, swapSize.height())), 0.0f, 1.0f};
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {static_cast<uint32_t>(qMax(1, swapSize.width())), static_cast<uint32_t>(qMax(1, swapSize.height()))};
+    const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
+    const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
+    const QPointF center(outputTargetRect.left() + layout.center.x() * scaleX,
+                         outputTargetRect.top() + layout.center.y() * scaleY);
+    VulkanTextPipeline::Push push{};
+    mvpForTitleMesh(center, meshTitle.fontSize * scaleY, swapSize, meshTitle, push.mvp);
+    const QColor color = title.color.isValid() ? title.color : QColor(Qt::white);
+    push.color[0] = color.redF(); push.color[1] = color.greenF(); push.color[2] = color.blueF();
+    push.color[3] = qBound<qreal>(0.0, color.alphaF() * title.opacity, 1.0);
+    push.material[2] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DYawDegrees));
+    push.material[3] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DPitchDegrees));
+    push.uvRect[3] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DRollDegrees));
+    m_pipeline->bindAndDrawMesh(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(),
+                                m_titleMeshBuffer, static_cast<uint32_t>(layout.meshVertices.size()), push);
+    return true;
 }
 
 void VulkanTextRenderer::drawSolidRoundedRect(VkCommandBuffer commandBuffer,
@@ -1965,6 +2291,21 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
                              layout->atlas.solidUv,
                              spec.backgroundColor);
     }
+    const QVector<qreal> speakerExtrusion = textExtrusionLayerOffsets(
+        spec.textExtrudeMode, spec.textExtrudeDepth);
+    for (int layerIndex = 0; layerIndex < speakerExtrusion.size(); ++layerIndex) {
+        const int layer = speakerExtrusion.size() - layerIndex;
+        for (const LaidOutGlyph& glyph : layout->glyphs) {
+            QColor side = glyph.color.darker(175);
+            const QRectF uv = spec.textExtrudeMode == TextExtrudeMode::ErodedSolid &&
+                    layer <= qRound(1.0 + spec.textExtrudeBevelScale * 2.0) &&
+                    !glyph.erodedUv.isEmpty()
+                ? glyph.erodedUv : glyph.uv;
+            const qreal offset = speakerExtrusion.at(layerIndex);
+            drawGlyph(commandBuffer, swapSize,
+                      mapRect(glyph.rect.translated(offset, offset * 0.58)), uv, side);
+        }
+    }
     for (const LaidOutGlyph& glyph : layout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
     }
@@ -2039,6 +2380,22 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                          ? highlight.color
                                          : QColor(QStringLiteral("#fff2a8"))),
                   clearRectFromQRect(mapRect(highlight.rect), swapSize));
+    }
+    const auto& textSettings = clip.transcriptOverlay;
+    const QVector<qreal> transcriptExtrusion = textExtrusionLayerOffsets(
+        textSettings.textExtrudeMode, textSettings.textExtrudeDepth);
+    for (int layerIndex = 0; layerIndex < transcriptExtrusion.size(); ++layerIndex) {
+        const int layer = transcriptExtrusion.size() - layerIndex;
+        for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
+            QColor side = glyph.color.darker(175);
+            const QRectF uv = textSettings.textExtrudeMode == TextExtrudeMode::ErodedSolid &&
+                    layer <= qRound(1.0 + textSettings.textExtrudeBevelScale * 2.0) &&
+                    !glyph.erodedUv.isEmpty()
+                ? glyph.erodedUv : glyph.uv;
+            const qreal offset = transcriptExtrusion.at(layerIndex);
+            drawGlyph(commandBuffer, swapSize,
+                      mapRect(glyph.rect.translated(offset, offset * 0.58)), uv, side);
+        }
     }
     for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
@@ -2141,26 +2498,48 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                          background.patternScale,
                          background.patternUv);
     }
-    if (title.vulkan3DExtrudeEnabled && title.vulkan3DExtrudeDepth > 0.001) {
-        const int layers = qBound(1, static_cast<int>(std::ceil(title.vulkan3DExtrudeDepth * 24.0)), 12);
-        const qreal step = qBound<qreal>(0.6, title.vulkan3DExtrudeDepth * 8.0, 4.5);
-        for (int layer = layers; layer >= 1; --layer) {
-            const qreal k = static_cast<qreal>(layer);
+    const bool meshDrawn = title.vulkan3DExtrudeEnabled &&
+        title.textExtrudeMode != TextExtrudeMode::None &&
+        drawTitleMesh(commandBuffer, swapSize, outputSize, outputTargetRect, title, *layout);
+    if (!meshDrawn && title.vulkan3DExtrudeEnabled && title.vulkan3DExtrudeDepth > 0.001) {
+        // Build a continuous sidewall. Large gaps between a small number of
+        // translated glyph copies read as repeated text rather than solid
+        // geometry, especially at the maximum depth.
+        const bool stackedCopies = title.textExtrudeMode == TextExtrudeMode::StackedCopies;
+        const QVector<qreal> layerOffsets = textExtrusionLayerOffsets(
+            title.textExtrudeMode, title.vulkan3DExtrudeDepth);
+        const int layers = layerOffsets.size();
+        const int bevelLayers = qBound(1, qRound(1.0 + title.vulkan3DBevelScale * 2.0), qMax(1, layers));
+        for (int layerIndex = 0; layerIndex < layers; ++layerIndex) {
+            const int layer = layers - layerIndex;
+            const qreal faceT = static_cast<qreal>(layer) / qMax<qreal>(1.0, layers);
+            const qreal layerOffset = layerOffsets.at(layerIndex);
             for (const LaidOutGlyph& glyph : layout->glyphs) {
+                if (!glyph.extrudable) continue;
                 QColor side = glyph.color;
-                side.setRedF(qBound<qreal>(0.0, side.redF() * 0.30, 1.0));
-                side.setGreenF(qBound<qreal>(0.0, side.greenF() * 0.36, 1.0));
-                side.setBlueF(qBound<qreal>(0.0, side.blueF() * 0.46, 1.0));
-                side.setAlphaF(qBound<qreal>(0.0,
-                                             side.alphaF() * (0.20 + title.vulkan3DBevelScale * 0.22),
-                                             0.72));
-                const QRectF extrudedRect = mapRect(glyph.rect.translated(step * k, step * k * 0.58));
+                // Keep the side wall opaque enough to read as geometry. The
+                // previous translucent near-black copies disappeared into the
+                // dark lower-third window and looked like an ordinary shadow.
+                const qreal light = qBound<qreal>(0.34,
+                    0.62 - faceT * 0.20 + title.vulkan3DBevelScale * 0.08,
+                    0.76);
+                side.setRedF(qBound<qreal>(0.0, side.redF() * light, 1.0));
+                side.setGreenF(qBound<qreal>(0.0, side.greenF() * light, 1.0));
+                side.setBlueF(qBound<qreal>(0.0, side.blueF() * qMin<qreal>(0.82, light + 0.08), 1.0));
+                side.setAlphaF(qBound<qreal>(0.58,
+                                             side.alphaF() * (0.76 + title.vulkan3DBevelScale * 0.10),
+                                             0.96));
+                const QRectF extrudedRect =
+                    mapRect(glyph.rect.translated(layerOffset, layerOffset * 0.58));
+                const QRectF sideUv = !stackedCopies &&
+                        layer <= bevelLayers && !glyph.erodedUv.isEmpty()
+                    ? glyph.erodedUv : glyph.uv;
                 float mvp[16];
                 mvpForTitle3DRect(extrudedRect, mappedCenter, swapSize, title, mvp);
                 drawGlyphWithMvp(commandBuffer,
                                  swapSize,
                                  mvp,
-                                 glyph.uv,
+                                 sideUv,
                                  side,
                                  0,
                                  1.0,
@@ -2169,6 +2548,7 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
         }
     }
     for (const LaidOutGlyph& glyph : layout->glyphs) {
+        if (meshDrawn && glyph.extrudable) continue;
         float mvp[16];
         mvpForTitle3DRect(mapRect(glyph.rect), mappedCenter, swapSize, title, mvp);
         drawGlyphWithMvp(commandBuffer,
@@ -2181,4 +2561,35 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                          glyph.patternUv);
     }
     return true;
+}
+QByteArray erodeGlyphAlpha(const FT_Bitmap& bitmap, int radius)
+{
+    const int width = static_cast<int>(bitmap.width);
+    const int height = static_cast<int>(bitmap.rows);
+    if (width <= 0 || height <= 0) return {};
+    QByteArray current(width * height, char(0));
+    for (int y = 0; y < height; ++y) {
+        const unsigned char* row = bitmap.buffer + y * bitmap.pitch;
+        for (int x = 0; x < width; ++x) current[y * width + x] = static_cast<char>(row[x]);
+    }
+    QByteArray next(current.size(), char(0));
+    for (int pass = 0; pass < qMax(0, radius); ++pass) {
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                unsigned char minimum = 255;
+                for (int oy = -1; oy <= 1; ++oy) {
+                    for (int ox = -1; ox <= 1; ++ox) {
+                        const int sx = x + ox;
+                        const int sy = y + oy;
+                        const unsigned char sample = (sx < 0 || sy < 0 || sx >= width || sy >= height)
+                            ? 0 : static_cast<unsigned char>(current.at(sy * width + sx));
+                        minimum = qMin(minimum, sample);
+                    }
+                }
+                next[y * width + x] = static_cast<char>(minimum);
+            }
+        }
+        current.swap(next);
+    }
+    return current;
 }

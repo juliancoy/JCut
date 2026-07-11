@@ -822,6 +822,41 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerShowCurrentSpeakerOrganizationCheckBox
             ? m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked()
             : false;
+    if (m_inspectorPane) {
+        QJsonObject settings;
+        settings[QStringLiteral("version")] = 1;
+        auto combo = [](QComboBox* widget) { return widget ? widget->currentData().toInt() : 0; };
+        auto decimal = [](QDoubleSpinBox* widget, double fallback) { return widget ? widget->value() : fallback; };
+        auto integer = [](QSpinBox* widget, int fallback) { return widget ? widget->value() : fallback; };
+        settings[QStringLiteral("flyInStyle")] = combo(m_inspectorPane->speakerOverlayFlyInStyleCombo());
+        settings[QStringLiteral("delaySeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInDelaySpin(), 0.35);
+        settings[QStringLiteral("durationSeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInDurationSpin(), 3.0);
+        settings[QStringLiteral("flyTimeSeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), 0.35);
+        settings[QStringLiteral("wrapRadius")] = decimal(m_inspectorPane->speakerOverlayWrapRadiusSpin(), 1.05);
+        settings[QStringLiteral("wrapDepth")] = decimal(m_inspectorPane->speakerOverlayWrapDepthSpin(), 0.70);
+        settings[QStringLiteral("wrapStartAngle")] = decimal(m_inspectorPane->speakerOverlayWrapStartAngleSpin(), -110.0);
+        settings[QStringLiteral("wrapEndAngle")] = decimal(m_inspectorPane->speakerOverlayWrapEndAngleSpin(), 110.0);
+        settings[QStringLiteral("wrapPitch")] = decimal(m_inspectorPane->speakerOverlayWrapPitchSpin(), 8.0);
+        settings[QStringLiteral("wrapRoll")] = decimal(m_inspectorPane->speakerOverlayWrapRollSpin(), 0.0);
+        settings[QStringLiteral("rotationX")] = decimal(m_inspectorPane->speakerOverlayRotationXSpin(), 0.0);
+        settings[QStringLiteral("rotationY")] = decimal(m_inspectorPane->speakerOverlayRotationYSpin(), 0.0);
+        settings[QStringLiteral("rotationZ")] = decimal(m_inspectorPane->speakerOverlayRotationZSpin(), 0.0);
+        settings[QStringLiteral("fontSize")] = integer(m_inspectorPane->speakerOverlayTitleFontSizeSpin(), 48);
+        settings[QStringLiteral("boxWidth")] = integer(m_inspectorPane->speakerOverlayTitleBoxWidthSpin(), 720);
+        settings[QStringLiteral("textMaterial")] = combo(m_inspectorPane->speakerOverlayTitleTextMaterialCombo());
+        settings[QStringLiteral("borderMaterial")] = combo(m_inspectorPane->speakerOverlayTitleBorderMaterialCombo());
+        settings[QStringLiteral("textPatternPath")] = m_inspectorPane->speakerOverlayTitleTextPatternPathEdit()
+            ? m_inspectorPane->speakerOverlayTitleTextPatternPathEdit()->text().trimmed() : QString();
+        settings[QStringLiteral("borderPatternPath")] = m_inspectorPane->speakerOverlayTitleBorderPatternPathEdit()
+            ? m_inspectorPane->speakerOverlayTitleBorderPatternPathEdit()->text().trimmed() : QString();
+        settings[QStringLiteral("patternScale")] = decimal(m_inspectorPane->speakerOverlayTitlePatternScaleSpin(), 1.0);
+        settings[QStringLiteral("extrudeEnabled")] = m_inspectorPane->speakerOverlayTitleExtrudeCheckBox()
+            ? m_inspectorPane->speakerOverlayTitleExtrudeCheckBox()->isChecked() : false;
+        settings[QStringLiteral("extrudeMode")] = combo(m_inspectorPane->speakerOverlayTitleExtrudeModeCombo());
+        settings[QStringLiteral("extrudeDepth")] = decimal(m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin(), 0.16);
+        settings[QStringLiteral("bevelScale")] = decimal(m_inspectorPane->speakerOverlayTitleBevelScaleSpin(), 0.70);
+        root[QStringLiteral("speakerTitleSettings")] = settings;
+    }
     root[QStringLiteral("previewCurrentSpeakerNameTextScalePercent")] =
         m_speakerCurrentSpeakerNameTextSizeSpin ? m_speakerCurrentSpeakerNameTextSizeSpin->value() : 100;
     root[QStringLiteral("previewCurrentSpeakerOrganizationTextScalePercent")] =

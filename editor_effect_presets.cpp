@@ -465,34 +465,24 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             const int64_t titleLookupFrame = qMax<int64_t>(
                 word.startFrame,
                 word.startFrame + ((qMax<int64_t>(word.startFrame, word.endFrame) - word.startFrame) / 2));
-            QString title = transcriptSpeakerTitleForSourceFrame(
-                transcriptPath,
-                sections,
-                titleLookupFrame,
-                TranscriptOverlayTiming{0, 0}).trimmed();
-            if (title.isEmpty() || title == speakerId) {
-                const SpeakerProfile profile = transcriptSpeakerProfileForSourceFrame(
-                    transcriptPath,
-                    sections,
-                    titleLookupFrame,
-                    TranscriptOverlayTiming{0, 0});
-                const QString name = profile.name.trimmed();
-                const QString organization = profile.organization.trimmed();
-                if (!name.isEmpty()) {
-                    title = name;
-                    if (!organization.isEmpty()) {
-                        title += QStringLiteral(" - ") + organization;
-                    }
-                }
-            }
-            if (title.isEmpty()) {
-                title = speakerId;
-            }
             const SpeakerProfile speakerProfile = transcriptSpeakerProfileForSourceFrame(
                 transcriptPath,
                 sections,
                 titleLookupFrame,
                 TranscriptOverlayTiming{0, 0});
+            QStringList titleLines;
+            if (settings.showSpeakerName) {
+                const QString name = speakerProfile.name.trimmed();
+                titleLines.push_back(name.isEmpty() ? speakerId : name);
+            }
+            if (settings.showSpeakerOrganization &&
+                !speakerProfile.organization.trimmed().isEmpty()) {
+                titleLines.push_back(speakerProfile.organization.trimmed());
+            }
+            if (titleLines.isEmpty()) {
+                continue;
+            }
+            const QString title = titleLines.join(QLatin1Char('\n'));
 
             TimelineClip titleClip;
             titleClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -512,7 +502,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             titleClip.color = QColor(QStringLiteral("#255f85"));
 
             TimelineClip::TitleKeyframe base;
-            base.text = title.simplified();
+            base.text = title.trimmed();
             base.translationY = 0.68;
             base.fontSize = qBound<qreal>(12.0, settings.titleFontSize, 220.0);
             base.color = QColor(QStringLiteral("#f7fbff"));
@@ -546,8 +536,18 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             base.dropShadowOffsetX = 3.0;
             base.dropShadowOffsetY = 5.0;
             base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
+            base.textExtrudeMode = settings.titleExtrude3D
+                ? settings.titleExtrudeMode
+                : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+            base.vulkan3DEnabled = settings.titleExtrude3D;
             base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
             base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
+            // The solid extrusion is the depth cue. Keeping a second offset
+            // shadow makes the title look duplicated rather than dimensional.
+            base.dropShadowEnabled = !settings.titleExtrude3D;
+            if (settings.titleExtrude3D) {
+                base.dropShadowOpacity = 0.0;
+            }
             titleClip.titleKeyframes = {base};
             applyNewsLowerThirdFlyInPreset(titleClip, settings);
             clips.push_back(titleClip);
@@ -569,6 +569,14 @@ int applySpeakerTitleFlyInsToSourceClip(TimelineClip& sourceClip,
         sourceClip.trackIndex,
         settings);
 
+    if (!titleClips.isEmpty()) {
+        // A generated lower-third owns speaker identification. Showing the
+        // transcript overlay's speaker label at the same time produces two
+        // competing speaker titles; keep transcript captions, but suppress
+        // their redundant identity label.
+        sourceClip.transcriptOverlay.showSpeakerTitle = false;
+    }
+
     QVector<TimelineClip::TitleKeyframe> sourceKeyframes;
     for (const TimelineClip& titleClip : titleClips) {
         const int64_t titleStartLocalFrame =
@@ -588,6 +596,7 @@ int applySpeakerTitleFlyInsToSourceClip(TimelineClip& sourceClip,
                   return a.frame < b.frame;
               });
     sourceClip.titleKeyframes = sourceKeyframes;
+    sourceClip.speakerTitleEngineActive = !titleClips.isEmpty();
     return titleClips.size();
 }
 
@@ -630,8 +639,20 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
     base.windowFramePatternImagePath = settings.titleBorderPatternImagePath;
     base.windowFramePatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
     base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
+    base.textExtrudeMode = settings.titleExtrude3D
+        ? settings.titleExtrudeMode
+        : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+    const bool animated3DRotation =
+        std::abs(settings.rotationStartXDegrees) > 0.001 ||
+        std::abs(settings.rotationStartYDegrees) > 0.001 ||
+        std::abs(settings.rotationStartZDegrees) > 0.001;
+    base.vulkan3DEnabled = settings.titleExtrude3D || animated3DRotation;
     base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
     base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
+    base.dropShadowEnabled = !settings.titleExtrude3D;
+    if (settings.titleExtrude3D) {
+        base.dropShadowOpacity = 0.0;
+    }
     base.linearInterpolation = true;
 
     if (settings.style == SpeakerTitleFlyInStyle::WrapAroundSpeaker) {
@@ -646,7 +667,7 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
         const qreal depth = qBound<qreal>(0.0, settings.wrapDepth, 1.0);
         const qreal baseFontSize = base.fontSize;
         const qreal orbitFontSize = qMin<qreal>(baseFontSize, 30.0);
-        const QString orbitText = base.text.simplified();
+        const QString orbitText = base.text.trimmed();
         const qreal startAngle = settings.wrapStartAngleDegrees * M_PI / 180.0;
         const qreal endAngle = settings.wrapEndAngleDegrees * M_PI / 180.0;
         const qreal pitch = qBound<qreal>(-80.0, settings.wrapPitchDegrees, 80.0) * M_PI / 180.0;
@@ -695,9 +716,19 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
             keyframe.fontSize = orbitFontSize * depthScale;
             keyframe.opacity = visibility;
             keyframe.vulkan3DEnabled = true;
-            keyframe.vulkan3DYawDegrees = qBound<qreal>(-62.0, -angleDegrees * 0.52, 62.0);
-            keyframe.vulkan3DPitchDegrees = settings.wrapPitchDegrees;
-            keyframe.vulkan3DRollDegrees = settings.wrapRollDegrees;
+            keyframe.vulkan3DYawDegrees =
+                qBound<qreal>(-720.0,
+                              qBound<qreal>(-62.0, -angleDegrees * 0.52, 62.0) +
+                                  settings.rotationStartYDegrees * (1.0 - t),
+                              720.0);
+            keyframe.vulkan3DPitchDegrees = qBound<qreal>(
+                -720.0,
+                settings.wrapPitchDegrees + settings.rotationStartXDegrees * (1.0 - t),
+                720.0);
+            keyframe.vulkan3DRollDegrees = qBound<qreal>(
+                -720.0,
+                settings.wrapRollDegrees + settings.rotationStartZDegrees * (1.0 - t),
+                720.0);
             keyframe.vulkan3DDepth = z * depth;
             keyframe.vulkan3DScale = depthScale;
             if (behindMask) {
@@ -728,7 +759,7 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
         arrived.frame = arriveFrame;
         arrived.translationX = kDefaultLowerThirdX;
         arrived.opacity = 1.0;
-        arrived.vulkan3DEnabled = false;
+        arrived.vulkan3DEnabled = arrived.vulkan3DExtrudeEnabled;
         arrived.vulkan3DYawDegrees = 0.0;
         arrived.vulkan3DPitchDegrees = 0.0;
         arrived.vulkan3DRollDegrees = 0.0;
@@ -759,11 +790,17 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
     TimelineClip::TitleKeyframe before = base;
     before.frame = 0;
     before.opacity = 0.0;
+    before.vulkan3DPitchDegrees = settings.rotationStartXDegrees;
+    before.vulkan3DYawDegrees = settings.rotationStartYDegrees;
+    before.vulkan3DRollDegrees = settings.rotationStartZDegrees;
 
     TimelineClip::TitleKeyframe arrived = base;
     arrived.frame = inEnd;
     arrived.translationX = kDefaultLowerThirdX;
     arrived.opacity = 1.0;
+    arrived.vulkan3DPitchDegrees = 0.0;
+    arrived.vulkan3DYawDegrees = 0.0;
+    arrived.vulkan3DRollDegrees = 0.0;
 
     TimelineClip::TitleKeyframe hold = arrived;
     hold.frame = holdEnd;

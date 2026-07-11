@@ -625,16 +625,23 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             const QString transcriptPath = activeTranscriptPathForClip(source).trimmed();
             const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
             const bool removedExisting = removeGeneratedClipsForSource(source.id, ClipRole::SpeakerTitle);
-            int appliedTitleCount = 0;
-            updateClipById(source.id, [&](TimelineClip& clip) {
-                appliedTitleCount = applySpeakerTitleFlyInsToSourceClip(
-                    clip,
-                    transcriptPath,
-                    sections,
+            const QVector<TimelineClip> generatedTitles =
+                makeSpeakerTitleClipsForTranscriptIntroductions(
+                    source, transcriptPath, sections, source.trackIndex + 1,
                     SpeakerTitleFlyInSettings{});
+            updateClipById(source.id, [&](TimelineClip& clip) {
+                clip.titleKeyframes.clear();
+                clip.speakerTitleEngineActive = !generatedTitles.isEmpty();
+                clip.transcriptOverlay.showSpeakerTitle = false;
             });
-            if (appliedTitleCount > 0 || removedExisting) {
-                finishGeneratedClipMutation(source.id);
+            QString firstTitleId;
+            for (const TimelineClip& title : generatedTitles) {
+                const QString id = placeGeneratedClip(
+                    title, QStringLiteral("Speaker Titles"), source.trackIndex + 1);
+                if (firstTitleId.isEmpty()) firstTitleId = id;
+            }
+            if (!generatedTitles.isEmpty() || removedExisting) {
+                finishGeneratedClipMutation(firstTitleId.isEmpty() ? source.id : firstTitleId);
             }
         }
         return;

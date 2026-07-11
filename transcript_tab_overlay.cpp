@@ -1,6 +1,8 @@
 #include "transcript_tab.h"
 
 #include "editor_tab_edit_effects.h"
+#include "overlay_text_style.h"
+#include "overlay_style_ui.h"
 
 #include <QColorDialog>
 #include <QFont>
@@ -41,6 +43,12 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
         clip.transcriptOverlay.backgroundCornerRadius = m_widgets.transcriptBackgroundCornerRadiusSpin
             ? qBound<qreal>(0.0, m_widgets.transcriptBackgroundCornerRadiusSpin->value(), 128.0)
             : 14.0;
+        clip.transcriptOverlay.textOpacity = m_widgets.transcriptTextOpacitySpin ? m_widgets.transcriptTextOpacitySpin->value() / 100.0 : 1.0;
+        clip.transcriptOverlay.backgroundPadding = m_widgets.transcriptBackgroundPaddingSpin ? m_widgets.transcriptBackgroundPaddingSpin->value() : 16.0;
+        clip.transcriptOverlay.backgroundFrameEnabled = m_widgets.transcriptBackgroundFrameCheckBox && m_widgets.transcriptBackgroundFrameCheckBox->isChecked();
+        clip.transcriptOverlay.backgroundFrameOpacity = m_widgets.transcriptBackgroundFrameOpacitySpin ? m_widgets.transcriptBackgroundFrameOpacitySpin->value() / 100.0 : 1.0;
+        clip.transcriptOverlay.backgroundFrameWidth = m_widgets.transcriptBackgroundFrameWidthSpin ? m_widgets.transcriptBackgroundFrameWidthSpin->value() : 2.0;
+        clip.transcriptOverlay.backgroundFrameGap = m_widgets.transcriptBackgroundFrameGapSpin ? m_widgets.transcriptBackgroundFrameGapSpin->value() : 4.0;
         clip.transcriptOverlay.showShadow = m_widgets.transcriptShadowEnabledCheckBox &&
                                             m_widgets.transcriptShadowEnabledCheckBox->isChecked();
         clip.transcriptOverlay.shadowOpacity = m_widgets.transcriptShadowOpacitySpin
@@ -60,6 +68,14 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
         clip.transcriptOverlay.textOutlineOpacity = m_widgets.transcriptOutlineOpacitySpin
             ? qBound<qreal>(0.0, m_widgets.transcriptOutlineOpacitySpin->value() / 100.0, 1.0)
             : 0.80;
+        clip.transcriptOverlay.textExtrudeMode = m_widgets.transcriptTextExtrudeModeCombo
+            ? static_cast<TimelineClip::TitleKeyframe::TextExtrudeMode>(
+                  m_widgets.transcriptTextExtrudeModeCombo->currentData().toInt())
+            : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+        clip.transcriptOverlay.textExtrudeDepth = m_widgets.transcriptTextExtrudeDepthSpin
+            ? m_widgets.transcriptTextExtrudeDepthSpin->value() : 0.16;
+        clip.transcriptOverlay.textExtrudeBevelScale = m_widgets.transcriptTextExtrudeBevelSpin
+            ? m_widgets.transcriptTextExtrudeBevelSpin->value() : 0.7;
         clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
                                                   m_widgets.transcriptShowSpeakerTitleCheckBox->isChecked();
         clip.transcriptOverlay.highlightCurrentWord =
@@ -101,6 +117,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
                                       m_widgets.transcriptBoldCheckBox->isChecked();
         clip.transcriptOverlay.italic = m_widgets.transcriptItalicCheckBox &&
                                         m_widgets.transcriptItalicCheckBox->isChecked();
+        applyOverlayTextStyle(overlayTextStyleFromTranscript(clip.transcriptOverlay),
+                              &clip.transcriptOverlay);
     });
 
     if (!updated) return;
@@ -111,18 +129,7 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
 
 void TranscriptTab::setOverlayColorButtonSwatch(QPushButton* button, const QColor& color) const
 {
-    if (!button) {
-        return;
-    }
-    const QColor validColor = color.isValid() ? color : QColor(Qt::white);
-    const QColor opaqueColor(validColor.red(), validColor.green(), validColor.blue());
-    button->setText(opaqueColor.name(QColor::HexRgb));
-    button->setStyleSheet(
-        QStringLiteral("QPushButton { background: %1; color: %2; "
-                       "border: 1px solid #2e3b4a; border-radius: 4px; padding: 3px 8px; }")
-            .arg(opaqueColor.name(QColor::HexRgb),
-                 opaqueColor.lightness() > 128 ? QStringLiteral("#000000")
-                                                : QStringLiteral("#ffffff")));
+    applyOverlayColorButtonStyle(button, color, true);
 }
 
 QColor TranscriptTab::overlayColorForButton(const QPushButton* button, const TimelineClip& clip) const
@@ -142,6 +149,7 @@ QColor TranscriptTab::overlayColorForButton(const QPushButton* button, const Tim
     if (button == m_widgets.transcriptOutlineColorButton) {
         return clip.transcriptOverlay.textOutlineColor;
     }
+    if (button == m_widgets.transcriptBackgroundFrameColorButton) return clip.transcriptOverlay.backgroundFrameColor;
     return QColor();
 }
 
@@ -161,6 +169,8 @@ void TranscriptTab::setOverlayColorForButton(const QPushButton* button, const QC
         clip.transcriptOverlay.shadowColor = opaqueColor;
     } else if (button == m_widgets.transcriptOutlineColorButton) {
         clip.transcriptOverlay.textOutlineColor = opaqueColor;
+    } else if (button == m_widgets.transcriptBackgroundFrameColorButton) {
+        clip.transcriptOverlay.backgroundFrameColor = opaqueColor;
     }
 }
 
@@ -254,6 +264,12 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     QSignalBlocker backgroundBlock(m_widgets.transcriptBackgroundVisibleCheckBox);
     QSignalBlocker backgroundOpacityBlock(m_widgets.transcriptBackgroundOpacitySpin);
     QSignalBlocker backgroundCornerRadiusBlock(m_widgets.transcriptBackgroundCornerRadiusSpin);
+    QSignalBlocker textOpacityBlock(m_widgets.transcriptTextOpacitySpin);
+    QSignalBlocker backgroundPaddingBlock(m_widgets.transcriptBackgroundPaddingSpin);
+    QSignalBlocker backgroundFrameBlock(m_widgets.transcriptBackgroundFrameCheckBox);
+    QSignalBlocker backgroundFrameOpacityBlock(m_widgets.transcriptBackgroundFrameOpacitySpin);
+    QSignalBlocker backgroundFrameWidthBlock(m_widgets.transcriptBackgroundFrameWidthSpin);
+    QSignalBlocker backgroundFrameGapBlock(m_widgets.transcriptBackgroundFrameGapSpin);
     QSignalBlocker shadowBlock(m_widgets.transcriptShadowEnabledCheckBox);
     QSignalBlocker shadowColorBlock(m_widgets.transcriptShadowColorButton);
     QSignalBlocker shadowOpacityBlock(m_widgets.transcriptShadowOpacitySpin);
@@ -301,6 +317,13 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     setOverlayColorButtonSwatch(m_widgets.transcriptHighlightColorButton, clip.transcriptOverlay.highlightColor);
     setOverlayColorButtonSwatch(m_widgets.transcriptShadowColorButton, clip.transcriptOverlay.shadowColor);
     setOverlayColorButtonSwatch(m_widgets.transcriptOutlineColorButton, clip.transcriptOverlay.textOutlineColor);
+    setOverlayColorButtonSwatch(m_widgets.transcriptBackgroundFrameColorButton, clip.transcriptOverlay.backgroundFrameColor);
+    if (m_widgets.transcriptTextOpacitySpin) m_widgets.transcriptTextOpacitySpin->setValue(qRound(clip.transcriptOverlay.textOpacity * 100.0));
+    if (m_widgets.transcriptBackgroundPaddingSpin) m_widgets.transcriptBackgroundPaddingSpin->setValue(qRound(clip.transcriptOverlay.backgroundPadding));
+    if (m_widgets.transcriptBackgroundFrameCheckBox) m_widgets.transcriptBackgroundFrameCheckBox->setChecked(clip.transcriptOverlay.backgroundFrameEnabled);
+    if (m_widgets.transcriptBackgroundFrameOpacitySpin) m_widgets.transcriptBackgroundFrameOpacitySpin->setValue(qRound(clip.transcriptOverlay.backgroundFrameOpacity * 100.0));
+    if (m_widgets.transcriptBackgroundFrameWidthSpin) m_widgets.transcriptBackgroundFrameWidthSpin->setValue(qRound(clip.transcriptOverlay.backgroundFrameWidth));
+    if (m_widgets.transcriptBackgroundFrameGapSpin) m_widgets.transcriptBackgroundFrameGapSpin->setValue(qRound(clip.transcriptOverlay.backgroundFrameGap));
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         m_widgets.transcriptShadowEnabledCheckBox->setChecked(clip.transcriptOverlay.showShadow);
     }
@@ -326,6 +349,21 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     if (m_widgets.transcriptOutlineOpacitySpin) {
         m_widgets.transcriptOutlineOpacitySpin->setValue(
             static_cast<int>(std::round(qBound<qreal>(0.0, clip.transcriptOverlay.textOutlineOpacity, 1.0) * 100.0)));
+    }
+    if (m_widgets.transcriptTextExtrudeModeCombo) {
+        const int index = m_widgets.transcriptTextExtrudeModeCombo->findData(
+            static_cast<int>(clip.transcriptOverlay.textExtrudeMode));
+        m_widgets.transcriptTextExtrudeModeCombo->setCurrentIndex(qMax(0, index));
+        const bool enabled = clip.transcriptOverlay.textExtrudeMode !=
+            TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+        if (m_widgets.transcriptTextExtrudeDepthSpin) m_widgets.transcriptTextExtrudeDepthSpin->setEnabled(enabled);
+        if (m_widgets.transcriptTextExtrudeBevelSpin) m_widgets.transcriptTextExtrudeBevelSpin->setEnabled(enabled);
+    }
+    if (m_widgets.transcriptTextExtrudeDepthSpin) {
+        m_widgets.transcriptTextExtrudeDepthSpin->setValue(clip.transcriptOverlay.textExtrudeDepth);
+    }
+    if (m_widgets.transcriptTextExtrudeBevelSpin) {
+        m_widgets.transcriptTextExtrudeBevelSpin->setValue(clip.transcriptOverlay.textExtrudeBevelScale);
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         m_widgets.transcriptShowSpeakerTitleCheckBox->setChecked(clip.transcriptOverlay.showSpeakerTitle);

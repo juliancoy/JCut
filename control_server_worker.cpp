@@ -200,8 +200,10 @@ void ControlServerWorker::refreshBackgroundCaches() {
         m_lastProjectSnapshot.isEmpty() || (now - m_lastProjectDemandMs) <= m_snapshotDemandWindowMs;
     const bool historyInDemand =
         m_lastHistorySnapshot.isEmpty() || (now - m_lastHistoryDemandMs) <= m_snapshotDemandWindowMs;
-    const bool uiTreeInDemand =
-        m_lastUiTreeSnapshot.isEmpty() || (now - m_lastUiTreeDemandMs) <= m_snapshotDemandWindowMs;
+    // UI hierarchy snapshots are generated on demand by /ui. Keeping a second
+    // mutable QJsonObject cache in the worker created a cross-request lifetime
+    // hazard and provided little value for an explicitly diagnostic endpoint.
+    const bool uiTreeInDemand = false;
     const qint64 profileIntervalMs = uiResponsive
         ? (playbackActive ? qMax(m_profileRefreshIntervalMs, m_profilePlaybackRefreshIntervalMs)
                           : m_profileRefreshIntervalMs)

@@ -409,6 +409,9 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
 
     QList<TimelineClip> candidates;
     for (const TimelineClip& clip : state->clips) {
+        if (clip.speakerTitleEngineActive) {
+            continue;
+        }
         const QString transcriptPath = activeTranscriptPathForClip(clip);
         if (transcriptPath.isEmpty()) {
             continue;
@@ -485,6 +488,13 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
     QJsonArray skippedClips;
     QList<TimelineClip> candidates;
     for (const TimelineClip& clip : state->clips) {
+        if (clip.speakerTitleEngineActive) {
+            skippedClips.push_back(QJsonObject{
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("reason"), QStringLiteral("speaker_title_engine_active")}
+            });
+            continue;
+        }
         const QString transcriptPath = activeTranscriptPathForClip(clip);
         if (transcriptPath.isEmpty()) {
             continue;

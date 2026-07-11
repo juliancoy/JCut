@@ -52,6 +52,7 @@ private slots:
     void init();
     void cleanup();
     void clipSerializationPersistsEffectPresetState();
+    void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
     void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
     void clipSerializationMigratesLegacyEffectSpeechSync();
@@ -65,7 +66,7 @@ private slots:
     void sourceTilingFactoryCreatesVisualOnlySynthClip();
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
     void speakerTitleFlyInsApplyToSourceClipKeyframes();
-    void speakerTitleFlyInsKeepSingleLineAndIndependentBoxWidth();
+    void speakerTitleFlyInsKeepOrganizationSeparateAndIndependentBoxWidth();
     void effectPipelinePassesThroughWhenPresetIsOff();
     void effectPipelineUsesGeneratedDrawsForTiling();
     void maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets();
@@ -155,6 +156,31 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.tilingPattern, ClipTilingPattern::SpiralXY);
     QVERIFY(std::abs(loaded.tilingSpacing - 1.4) < 0.000001);
     QCOMPARE(loaded.tilingWrap, false);
+}
+
+void TestEffectPresets::textExtrudeModesSerializeAndMigrate()
+{
+    using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+    TimelineClip clip;
+    TimelineClip::TitleKeyframe keyframe;
+    keyframe.vulkan3DExtrudeEnabled = true;
+    keyframe.textExtrudeMode = Mode::ErodedSolid;
+    clip.titleKeyframes = {keyframe};
+    clip.transcriptOverlay.textExtrudeMode = Mode::StackedCopies;
+    clip.transcriptOverlay.textExtrudeDepth = 0.42;
+    const TimelineClip loaded = editor::clipFromJson(editor::clipToJson(clip));
+    QCOMPARE(loaded.titleKeyframes.constFirst().textExtrudeMode, Mode::ErodedSolid);
+    QCOMPARE(loaded.transcriptOverlay.textExtrudeMode, Mode::StackedCopies);
+    QCOMPARE(loaded.transcriptOverlay.textExtrudeDepth, 0.42);
+
+    QJsonObject legacy = editor::clipToJson(clip);
+    QJsonArray keyframes = legacy.value(QStringLiteral("titleKeyframes")).toArray();
+    QJsonObject legacyKeyframe = keyframes.at(0).toObject();
+    legacyKeyframe.remove(QStringLiteral("textExtrudeMode"));
+    keyframes[0] = legacyKeyframe;
+    legacy[QStringLiteral("titleKeyframes")] = keyframes;
+    QCOMPARE(editor::clipFromJson(legacy).titleKeyframes.constFirst().textExtrudeMode,
+             Mode::StackedCopies);
 }
 
 void TestEffectPresets::maskFeatherFalloffProfilesShapeAlphaDifferently()
@@ -413,6 +439,7 @@ void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
     source.startFrame = 71;
     source.durationFrames = 85000;
     source.playbackRate = 1.0;
+    source.transcriptOverlay.showSpeakerTitle = true;
     source.maskEnabled = true;
     source.maskFramesDir = QStringLiteral("/tmp/shot-01_masks");
     source.maskFeather = 4.5;
@@ -608,15 +635,15 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     QCOMPARE(titles.at(0).trackIndex, 4);
     QCOMPARE(titles.at(0).startFrame, int64_t(1010));
     QCOMPARE(titles.at(0).durationFrames, int64_t(90));
-    QCOMPARE(titles.at(0).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe - Director"));
+    QCOMPARE(titles.at(0).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe\nDirector"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().logoPath, QStringLiteral("/tmp/jane-logo.png"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().color.name(QColor::HexRgb), QStringLiteral("#f4fbff"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().windowColor.name(QColor::HexRgb), QStringLiteral("#102030"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().windowFrameColor.name(QColor::HexRgb), QStringLiteral("#4ac7ff"));
     QCOMPARE(titles.at(1).startFrame, int64_t(1040));
-    QCOMPARE(titles.at(1).titleKeyframes.constFirst().text, QStringLiteral("John Roe - Producer"));
+    QCOMPARE(titles.at(1).titleKeyframes.constFirst().text, QStringLiteral("John Roe\nProducer"));
     QCOMPARE(titles.at(2).startFrame, int64_t(1070));
-    QCOMPARE(titles.at(2).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe - Director"));
+    QCOMPARE(titles.at(2).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe\nDirector"));
 
     const QVector<TimelineClip> delayedTitles = makeSpeakerTitleClipsForTranscriptIntroductions(
         source,
@@ -626,12 +653,28 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
         90);
     QCOMPARE(delayedTitles.constFirst().startFrame, int64_t(1010 + ((kTimelineFps * 35 + 50) / 100)));
 
+    SpeakerTitleFlyInSettings nameOnly;
+    nameOnly.showSpeakerOrganization = false;
+    const auto nameOnlyTitles = makeSpeakerTitleClipsForTranscriptIntroductions(
+        source, transcriptPath, QVector<TranscriptSection>{section}, 4, nameOnly);
+    QCOMPARE(nameOnlyTitles.constFirst().titleKeyframes.constFirst().text,
+             QStringLiteral("Jane Doe"));
+
+    SpeakerTitleFlyInSettings organizationOnly;
+    organizationOnly.showSpeakerName = false;
+    const auto organizationOnlyTitles = makeSpeakerTitleClipsForTranscriptIntroductions(
+        source, transcriptPath, QVector<TranscriptSection>{section}, 4, organizationOnly);
+    QCOMPARE(organizationOnlyTitles.constFirst().titleKeyframes.constFirst().text,
+             QStringLiteral("Director"));
+
     SpeakerTitleFlyInSettings rightFly;
     rightFly.style = SpeakerTitleFlyInStyle::SlideFromRight;
     rightFly.titleStartDelayFrames = 0;
     rightFly.titleDurationFrames = 120;
     rightFly.flyInFrames = 12;
     rightFly.flyOutFrames = 18;
+    rightFly.titleExtrude3D = true;
+    rightFly.titleExtrudeDepth = 0.24;
     const QVector<TimelineClip> rightTitles = makeSpeakerTitleClipsForTranscriptIntroductions(
         source,
         transcriptPath,
@@ -642,6 +685,13 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     QCOMPARE(rightTitles.constFirst().titleKeyframes.at(1).frame, int64_t(12));
     QVERIFY(rightTitles.constFirst().titleKeyframes.constFirst().translationX >
             rightTitles.constFirst().titleKeyframes.at(1).translationX);
+    for (const TimelineClip::TitleKeyframe& keyframe : rightTitles.constFirst().titleKeyframes) {
+        QVERIFY(keyframe.vulkan3DEnabled);
+        QVERIFY(keyframe.vulkan3DExtrudeEnabled);
+        QVERIFY(!keyframe.dropShadowEnabled);
+        QCOMPARE(keyframe.dropShadowOpacity, 0.0);
+        QCOMPARE(keyframe.vulkan3DExtrudeDepth, rightFly.titleExtrudeDepth);
+    }
 
     SpeakerTitleFlyInSettings riseFly;
     riseFly.style = SpeakerTitleFlyInStyle::RiseFromBottom;
@@ -703,15 +753,17 @@ void TestEffectPresets::speakerTitleFlyInsApplyToSourceClipKeyframes()
     QCOMPARE(source.mediaType, ClipMediaType::Video);
     QCOMPARE(source.clipRole, ClipRole::Media);
     QVERIFY(!source.titleKeyframes.isEmpty());
+    QVERIFY(source.speakerTitleEngineActive);
+    QVERIFY(!source.transcriptOverlay.showSpeakerTitle);
     QCOMPARE(source.titleKeyframes.constFirst().frame, int64_t(10));
-    QCOMPARE(source.titleKeyframes.constFirst().text, QStringLiteral("Jane Doe - Director"));
+    QCOMPARE(source.titleKeyframes.constFirst().text, QStringLiteral("Jane Doe\nDirector"));
     QVERIFY(source.titleKeyframes.constFirst().translationX < source.titleKeyframes.at(1).translationX);
 
     bool sawSecondSpeaker = false;
     for (const TimelineClip::TitleKeyframe& keyframe : source.titleKeyframes) {
         QVERIFY(keyframe.frame >= 0);
         QVERIFY(keyframe.frame < source.durationFrames);
-        if (keyframe.text == QStringLiteral("John Roe - Producer")) {
+        if (keyframe.text == QStringLiteral("John Roe\nProducer")) {
             sawSecondSpeaker = true;
             QVERIFY(keyframe.frame >= 40);
         }
@@ -719,7 +771,7 @@ void TestEffectPresets::speakerTitleFlyInsApplyToSourceClipKeyframes()
     QVERIFY(sawSecondSpeaker);
 }
 
-void TestEffectPresets::speakerTitleFlyInsKeepSingleLineAndIndependentBoxWidth()
+void TestEffectPresets::speakerTitleFlyInsKeepOrganizationSeparateAndIndependentBoxWidth()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -765,8 +817,8 @@ void TestEffectPresets::speakerTitleFlyInsKeepSingleLineAndIndependentBoxWidth()
     QCOMPARE(appliedCount, 1);
     QVERIFY(!source.titleKeyframes.isEmpty());
     for (const TimelineClip::TitleKeyframe& keyframe : source.titleKeyframes) {
-        QCOMPARE(keyframe.text, QStringLiteral("Jane Doe - Director"));
-        QVERIFY(!keyframe.text.contains(QLatin1Char('\n')));
+        QCOMPARE(keyframe.text, QStringLiteral("Jane Doe\nDirector"));
+        QCOMPARE(keyframe.text.split(QLatin1Char('\n')).size(), 2);
         QCOMPARE(keyframe.windowWidth, 940.0);
     }
 
@@ -1549,6 +1601,9 @@ void TestEffectPresets::speakerTitleWrapAroundSpeakerBuilds3DKeyframes()
     settings.wrapEndAngleDegrees = 110.0;
     settings.wrapPitchDegrees = 12.0;
     settings.wrapRollDegrees = 10.0;
+    settings.rotationStartXDegrees = 45.0;
+    settings.rotationStartYDegrees = 30.0;
+    settings.rotationStartZDegrees = 25.0;
     settings.titleTextMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle::DiagonalStripes;
     settings.titleBorderMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle::Neon;
     settings.titleTextPatternImagePath = QStringLiteral("/tmp/text-pattern.png");
@@ -1577,20 +1632,31 @@ void TestEffectPresets::speakerTitleWrapAroundSpeakerBuilds3DKeyframes()
         QCOMPARE(keyframe.windowFrameMaterialStyle, settings.titleBorderMaterialStyle);
         QCOMPARE(keyframe.textPatternImagePath, settings.titleTextPatternImagePath);
         QCOMPARE(keyframe.windowFramePatternImagePath, settings.titleBorderPatternImagePath);
-        QCOMPARE(keyframe.vulkan3DPitchDegrees, settings.wrapPitchDegrees);
-        QCOMPARE(keyframe.vulkan3DRollDegrees, settings.wrapRollDegrees);
         minOpacity = qMin(minOpacity, keyframe.opacity);
         maxOrbitX = qMax(maxOrbitX, std::abs(keyframe.translationX));
         sawPitchedOrRolledY = sawPitchedOrRolledY || std::abs(keyframe.translationY - 0.92) > 0.025;
         sawYawChange = sawYawChange || std::abs(keyframe.vulkan3DYawDegrees - firstYaw) > 1.0;
-        QVERIFY(std::abs(keyframe.vulkan3DYawDegrees) <= 62.1);
+        QVERIFY(std::abs(keyframe.vulkan3DYawDegrees) <=
+                62.1 + std::abs(settings.rotationStartYDegrees));
     }
     QVERIFY(minOpacity < 0.12);
     QVERIFY(maxOrbitX > 0.55);
     QVERIFY(sawPitchedOrRolledY);
     QVERIFY(sawYawChange);
-    QVERIFY(!clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DEnabled);
+    QCOMPARE(clip.titleKeyframes.constFirst().vulkan3DPitchDegrees,
+             settings.wrapPitchDegrees + settings.rotationStartXDegrees);
+    QCOMPARE(clip.titleKeyframes.constFirst().vulkan3DRollDegrees,
+             settings.wrapRollDegrees + settings.rotationStartZDegrees);
+    QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes - 1).vulkan3DPitchDegrees,
+             settings.wrapPitchDegrees);
+    QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes - 1).vulkan3DRollDegrees,
+             settings.wrapRollDegrees);
+    QVERIFY(clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DEnabled);
+    QVERIFY(clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DExtrudeEnabled);
     QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes).translationX, 0.0);
+    QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DPitchDegrees, 0.0);
+    QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DYawDegrees, 0.0);
+    QCOMPARE(clip.titleKeyframes.at(kExpectedOrbitKeyframes).vulkan3DRollDegrees, 0.0);
 
     TimelineClip narrowClip = clip;
     narrowClip.titleKeyframes = {base};

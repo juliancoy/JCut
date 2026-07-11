@@ -171,9 +171,9 @@ void TestSpeakerTitleFlyInVideo::rendersSourceClipSpeakerTitleFlyInVideo()
         QVERIFY(hidden.valid);
         QVERIFY(arrived.valid);
         if (videoCase.style == SpeakerTitleFlyInStyle::WrapAroundSpeaker) {
-            QCOMPARE(arrived.text, QStringLiteral("Jane Doe - Director"));
+            QCOMPARE(arrived.text, QStringLiteral("Jane Doe\nDirector"));
         } else {
-            QCOMPARE(arrived.text, QStringLiteral("Jane Doe - Director"));
+            QCOMPARE(arrived.text, QStringLiteral("Jane Doe\nDirector"));
         }
         QVERIFY(hidden.opacity < arrived.opacity);
         QCOMPARE(hold.opacity, 1.0);

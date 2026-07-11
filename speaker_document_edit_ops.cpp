@@ -38,8 +38,8 @@ SpeakerDocumentEditResult applyProfileCellEdit(TranscriptDocumentSession& sessio
     }
 
     bool ok = true;
-    const double parsed = (column == 2 || column == 3) ? valueText.toDouble(&ok) : 0.0;
-    if ((column == 2 || column == 3) && !ok) {
+    const double parsed = (column == 3 || column == 4) ? valueText.toDouble(&ok) : 0.0;
+    if ((column == 3 || column == 4) && !ok) {
         return {};
     }
 
@@ -56,12 +56,19 @@ SpeakerDocumentEditResult applyProfileCellEdit(TranscriptDocumentSession& sessio
             }
             profile[QString(kTranscriptSpeakerNameKey)] = nextValue;
             changed = true;
-        } else if (column == 2 || column == 3) {
+        } else if (column == 2) {
+            const QString nextValue = valueText.trimmed();
+            if (profile.value(QString(kTranscriptSpeakerOrganizationKey)).toString().trimmed() == nextValue) {
+                return false;
+            }
+            profile[QString(kTranscriptSpeakerOrganizationKey)] = nextValue;
+            changed = true;
+        } else if (column == 3 || column == 4) {
             const double bounded = qBound(0.0, parsed, 1.0);
-            const QString key = column == 2
+            const QString key = column == 3
                 ? QString(kTranscriptSpeakerLocationXKey)
                 : QString(kTranscriptSpeakerLocationYKey);
-            if (std::abs(location.value(key).toDouble(column == 2 ? 0.5 : 0.85) - bounded) < 0.0001) {
+            if (std::abs(location.value(key).toDouble(column == 3 ? 0.5 : 0.85) - bounded) < 0.0001) {
                 return false;
             }
             location[key] = bounded;

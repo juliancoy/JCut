@@ -65,6 +65,9 @@ public:
         QDoubleSpinBox* speakerOverlayWrapEndAngleSpin = nullptr;
         QDoubleSpinBox* speakerOverlayWrapPitchSpin = nullptr;
         QDoubleSpinBox* speakerOverlayWrapRollSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayRotationXSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayRotationYSpin = nullptr;
+        QDoubleSpinBox* speakerOverlayRotationZSpin = nullptr;
         QSpinBox* speakerOverlayTitleFontSizeSpin = nullptr;
         QSpinBox* speakerOverlayTitleBoxWidthSpin = nullptr;
         QComboBox* speakerOverlayTitleTextMaterialCombo = nullptr;
@@ -73,6 +76,7 @@ public:
         QLineEdit* speakerOverlayTitleBorderPatternPathEdit = nullptr;
         QDoubleSpinBox* speakerOverlayTitlePatternScaleSpin = nullptr;
         QCheckBox* speakerOverlayTitleExtrudeCheckBox = nullptr;
+        QComboBox* speakerOverlayTitleExtrudeModeCombo = nullptr;
         QDoubleSpinBox* speakerOverlayTitleExtrudeDepthSpin = nullptr;
         QDoubleSpinBox* speakerOverlayTitleBevelScaleSpin = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
@@ -304,6 +308,7 @@ private:
     int speakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame) const;
     QVector<int> speakerSectionRowsAtFrame(const QString& speakerId, int64_t sourceFrame) const;
     bool selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame);
+    bool seekToSpeakerSectionRow(int row, int64_t* timelineFrameOut = nullptr);
     void focusSpeakerSectionTrackFromRow(int row);
     QSet<int> manualPreviewAssignedFaceTrackIdsForClip(const TimelineClip& clip) const;
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);

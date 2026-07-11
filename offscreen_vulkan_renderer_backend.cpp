@@ -3923,6 +3923,9 @@ public:
     spec.shadowColor = request.currentSpeakerShadowColor;
 
     for (const TimelineClip &clip : orderedClips) {
+      if (clip.speakerTitleEngineActive) {
+        continue;
+      }
       const int64_t clipStartSample = clipTimelineStartSamples(clip);
       const int64_t clipEndSample = clipTimelineEndSamples(clip);
       if (clip.filePath.trimmed().isEmpty() ||
@@ -4271,26 +4274,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
         continue;
       }
-      if (title.vulkan3DEnabled) {
-        textInputs.title3D.push_back(title);
-        continue;
-      }
-      if (gpuOutputOnly) {
-        qWarning().noquote()
-            << QStringLiteral(
-                   "[vulkan-compose] skipped CPU-raster title layer in GPU-only render pipeline at frame=%1")
-                   .arg(timelineFrame);
-        continue;
-      }
-
-      const OverlayImage titleImage = overlayRenderBackend().renderTitleOverlay(
-          request.outputSize, title, request.outputSize);
-
-      OffscreenVulkanRendererPrivate::LayerInput layer;
-      layer.overlayImage = titleImage;
-      layer.sourceSize = QSize(titleImage.width, titleImage.height);
-      layer.opacity = 1.0f;
-      layers.push_back(layer);
+      textInputs.title3D.push_back(title);
       continue;
     }
     const QString decodePath = playbackMediaPathForClip(clip);
@@ -4601,17 +4585,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       const EvaluatedTitle title = composeTitleWithOpacity(
           evaluatedTitle, static_cast<qreal>(grade.opacity));
       if (title.valid && !title.text.isEmpty() && title.opacity > 0.001) {
-        if (title.vulkan3DEnabled) {
-          textInputs.title3D.push_back(title);
-        } else if (!gpuOutputOnly) {
-        const OverlayImage titleImage = overlayRenderBackend().renderTitleOverlay(
-            request.outputSize, title, request.outputSize);
-        OffscreenVulkanRendererPrivate::LayerInput titleLayer;
-        titleLayer.overlayImage = titleImage;
-        titleLayer.sourceSize = QSize(titleImage.width, titleImage.height);
-        titleLayer.opacity = 1.0f;
-        layers.push_back(titleLayer);
-        }
+        textInputs.title3D.push_back(title);
       }
     }
     ++visualLayersResolved;

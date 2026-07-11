@@ -1387,21 +1387,9 @@ void SpeakersTab::onSpeakersSelectionChanged()
     if (m_updating) {
         return;
     }
-    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    const QString clipId = clip ? clip->id : QString();
     const QString speakerId = selectedSpeakerId();
     if (!speakerId.isEmpty()) {
         m_lastSelectedSpeakerIdHint = speakerId;
-        const bool selectionChanged =
-            (speakerId != m_lastSelectionSeekSpeakerId) || (clipId != m_lastSelectionSeekClipId);
-        if (selectionChanged) {
-            seekToSpeakerFirstWord(speakerId);
-            m_lastSelectionSeekSpeakerId = speakerId;
-            m_lastSelectionSeekClipId = clipId;
-        }
-    } else {
-        m_lastSelectionSeekSpeakerId.clear();
-        m_lastSelectionSeekClipId.clear();
     }
     updateSpeakerTrackingStatusLabel();
     updateSelectedSpeakerPanel();
@@ -1824,28 +1812,9 @@ void SpeakersTab::onSpeakersTableItemClicked(QTableWidgetItem* item)
     if (!clickedSpeakerId.isEmpty() && m_widgets.speakersTable->currentRow() != item->row()) {
         m_widgets.speakersTable->setCurrentCell(item->row(), 1);
     }
-    if (column == 4 && activeCutMutable()) {
-        const QString speakerId = clickedSpeakerId.isEmpty() ? selectedSpeakerId() : clickedSpeakerId;
-        if (speakerId.isEmpty()) {
-            updateSpeakerTrackingStatusLabel();
-            return;
-        }
-        if (!cycleFramingModeForSpeaker(speakerId)) {
-            refresh();
-            return;
-        }
-        emit transcriptDocumentChanged();
-        applySpeakerDocumentEffects(m_deps);
-        refresh();
-        return;
-    }
     // Preserve in-place editing workflow for editable columns.
     if (column == 2 || column == 3 || column == 4) {
         return;
-    }
-    const QString speakerId = clickedSpeakerId.isEmpty() ? selectedSpeakerId() : clickedSpeakerId;
-    if (!speakerId.isEmpty()) {
-        seekToSpeakerFirstWord(speakerId);
     }
 }
 

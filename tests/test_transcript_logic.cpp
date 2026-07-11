@@ -11,6 +11,7 @@
 #include "../editor_shared_transcript.h"
 #include "../clip_serialization.h"
 #include "../transcript_overlay_cache_key.h"
+#include "../overlay_text_style.h"
 #include "../transcript_engine.h"
 
 using namespace editor;
@@ -117,6 +118,7 @@ private slots:
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
     void testTranscriptOverlayStyleCacheMaterialIncludesTransformFields();
     void testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry();
+    void testSharedOverlayStyleConvertsWithoutLosingCommonProperties();
     void testNonVideoClipsDoNotPersistProxyEnabled();
     void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
     void testSpeakerFramingRuntimeSpeakerDescendsFromTranscript();
@@ -1335,6 +1337,13 @@ void TestTranscriptLogic::testTranscriptOverlayStyleCacheMaterialIncludesTransfo
     dilated.transcriptOverlay.textOutlineWidth = 3.0;
     QVERIFY2(transcriptOverlayStyleCacheMaterial(dilated) != baseMaterial,
              "Transcript overlay cache material must change when text dilation styling changes.");
+
+    TimelineClip extruded = clip;
+    extruded.transcriptOverlay.textExtrudeMode =
+        TimelineClip::TitleKeyframe::TextExtrudeMode::ErodedSolid;
+    extruded.transcriptOverlay.textExtrudeDepth = 0.42;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(extruded) != baseMaterial,
+             "Transcript overlay cache material must change when extrusion styling changes.");
 }
 
 void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry() {
@@ -1352,6 +1361,13 @@ void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGe
     source.transcriptOverlay.shadowOpacity = 3.0;
     source.transcriptOverlay.textOutlineWidth = 99.0;
     source.transcriptOverlay.textOutlineOpacity = -1.0;
+    source.transcriptOverlay.textOpacity = 2.0;
+    source.transcriptOverlay.backgroundPadding = 999.0;
+    source.transcriptOverlay.backgroundFrameEnabled = true;
+    source.transcriptOverlay.backgroundFrameColor = QColor(QStringLiteral("#ff123456"));
+    source.transcriptOverlay.backgroundFrameOpacity = -1.0;
+    source.transcriptOverlay.backgroundFrameWidth = 999.0;
+    source.transcriptOverlay.backgroundFrameGap = 999.0;
 
     const QJsonObject json = clipToJson(source);
     QCOMPARE(json.value(QStringLiteral("transcriptOverlay"))
@@ -1373,6 +1389,39 @@ void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGe
     QCOMPARE(loaded.transcriptOverlay.shadowOpacity, 1.0);
     QCOMPARE(loaded.transcriptOverlay.textOutlineWidth, 24.0);
     QCOMPARE(loaded.transcriptOverlay.textOutlineOpacity, 0.0);
+    QCOMPARE(loaded.transcriptOverlay.textOpacity, 1.0);
+    QCOMPARE(loaded.transcriptOverlay.backgroundPadding, 400.0);
+    QCOMPARE(loaded.transcriptOverlay.backgroundFrameEnabled, true);
+    QCOMPARE(loaded.transcriptOverlay.backgroundFrameColor, QColor(QStringLiteral("#ff123456")));
+    QCOMPARE(loaded.transcriptOverlay.backgroundFrameOpacity, 0.0);
+    QCOMPARE(loaded.transcriptOverlay.backgroundFrameWidth, 120.0);
+    QCOMPARE(loaded.transcriptOverlay.backgroundFrameGap, 200.0);
+}
+
+void TestTranscriptLogic::testSharedOverlayStyleConvertsWithoutLosingCommonProperties() {
+    TimelineClip::TitleKeyframe title;
+    title.fontFamily = QStringLiteral("DejaVu Serif");
+    title.fontSize = 73.0;
+    title.opacity = 0.42;
+    title.windowEnabled = true;
+    title.windowFrameEnabled = true;
+    title.windowFrameGap = 11.0;
+
+    TimelineClip::TranscriptOverlaySettings transcript;
+    applyOverlayTextStyle(overlayTextStyleFromTitle(title), &transcript);
+    QCOMPARE(transcript.fontFamily, title.fontFamily);
+    QCOMPARE(transcript.fontPointSize, 73);
+    QCOMPARE(transcript.textOpacity, title.opacity);
+    QCOMPARE(transcript.showBackground, title.windowEnabled);
+    QCOMPARE(transcript.backgroundFrameEnabled, title.windowFrameEnabled);
+    QCOMPARE(transcript.backgroundFrameGap, title.windowFrameGap);
+
+    TimelineClip::TitleKeyframe roundTrip;
+    applyOverlayTextStyle(overlayTextStyleFromTranscript(transcript), &roundTrip);
+    QCOMPARE(roundTrip.fontFamily, title.fontFamily);
+    QCOMPARE(roundTrip.fontSize, title.fontSize);
+    QCOMPARE(roundTrip.opacity, title.opacity);
+    QCOMPARE(roundTrip.windowFrameGap, title.windowFrameGap);
 }
 
 void TestTranscriptLogic::testNonVideoClipsDoNotPersistProxyEnabled() {

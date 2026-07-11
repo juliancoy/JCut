@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "vulkan_text_renderer.h"
+#include "title_mesh_extrusion.h"
 
 class TestVulkanTextGeneration : public QObject {
     Q_OBJECT
@@ -8,6 +9,7 @@ class TestVulkanTextGeneration : public QObject {
 private slots:
     void speakerLabelGeneratesGlyphAtlasAndSeparateCards();
     void speakerLabelStyleControlsAffectLayout();
+    void sharedTextExtrudeModesAffectSpeakerAndTranscriptAtlases();
     void transcriptOverlayGeneratesBackgroundHighlightAndGlyphs();
     void transcriptOverlayStyleControlsAffectGlyphPasses();
     void transcriptOverlayCanDisableCurrentWordHighlight();
@@ -17,6 +19,7 @@ private slots:
     void transcriptOverlaySeparatesAtlasKeyFromActiveWordLayout();
     void transcriptOverlayKeepsFirstLineStableAcrossLineCounts();
     void emptyInputsDoNotGenerateText();
+    void titleContourMeshHasFrontBackSideAndBevelGeometry();
 };
 
 namespace {
@@ -136,6 +139,34 @@ void TestVulkanTextGeneration::speakerLabelStyleControlsAffectLayout()
     QVERIFY2(unshadowed.valid, "speaker label layout should survive disabled shadows");
     QVERIFY(!unshadowed.glyphColors.contains(spec.shadowColor));
     QVERIFY(unshadowed.glyphDrawCount < shadowed.glyphDrawCount);
+}
+
+void TestVulkanTextGeneration::sharedTextExtrudeModesAffectSpeakerAndTranscriptAtlases()
+{
+    using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+    VulkanTextRenderer renderer;
+    render_detail::SpeakerLabelOverlaySpec speaker = speakerSpec();
+    const auto flatSpeaker = renderer.buildSpeakerLabelLayoutForTesting(QSize(1080, 1920), speaker);
+    speaker.textExtrudeMode = Mode::ErodedSolid;
+    const auto erodedSpeaker = renderer.buildSpeakerLabelLayoutForTesting(QSize(1080, 1920), speaker);
+    QVERIFY(flatSpeaker.valid && erodedSpeaker.valid);
+    QVERIFY(flatSpeaker.atlasKey != erodedSpeaker.atlasKey);
+    QVERIFY(flatSpeaker.layoutKey != erodedSpeaker.layoutKey);
+
+    TimelineClip clip = transcriptClip();
+    const TranscriptOverlayLayout layout = transcriptLayout(-1);
+    const QRectF rect(90, 1400, 900, 300);
+    const auto flatTranscript = renderer.buildTranscriptOverlayLayoutForTesting(
+        QSize(1080, 1920), clip, layout, rect, QStringLiteral("Speaker"));
+    clip.transcriptOverlay.textExtrudeMode = Mode::StackedCopies;
+    const auto stackedTranscript = renderer.buildTranscriptOverlayLayoutForTesting(
+        QSize(1080, 1920), clip, layout, rect, QStringLiteral("Speaker"));
+    clip.transcriptOverlay.textExtrudeMode = Mode::ErodedSolid;
+    const auto erodedTranscript = renderer.buildTranscriptOverlayLayoutForTesting(
+        QSize(1080, 1920), clip, layout, rect, QStringLiteral("Speaker"));
+    QVERIFY(flatTranscript.atlasKey != stackedTranscript.atlasKey);
+    QVERIFY(stackedTranscript.atlasKey != erodedTranscript.atlasKey);
+    QVERIFY(stackedTranscript.layoutKey != erodedTranscript.layoutKey);
 }
 
 void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndGlyphs()
@@ -442,6 +473,50 @@ void TestVulkanTextGeneration::emptyInputsDoNotGenerateText()
 
     QVERIFY(!renderer.buildTranscriptOverlayLayoutForTesting(
         QSize(1080, 1920), transcriptClip(), TranscriptOverlayLayout{}, QRectF(0, 0, 900, 220), QString()).valid);
+}
+
+void TestVulkanTextGeneration::titleContourMeshHasFrontBackSideAndBevelGeometry()
+{
+    TitleMeshExtrusionOptions options;
+    options.fontFamily = kDefaultFontFamily;
+    options.bold = true;
+    options.pixelHeight = 96;
+    options.depth = 0.35;
+    options.bevelScale = 0.8;
+    QString error;
+    const QVector<TitleMeshVertex> mesh = buildExtrudedTitleMesh(QStringLiteral("O8"), options, &error);
+    QVERIFY2(!mesh.isEmpty(), qPrintable(error));
+    QCOMPARE(mesh.size() % 3, 0);
+    bool front = false, back = false, side = false, bevel = false;
+    for (const TitleMeshVertex& vertex : mesh) {
+        front = front || vertex.normal.z() > 0.99f;
+        back = back || vertex.normal.z() < -0.99f;
+        side = side || std::abs(vertex.normal.z()) < 0.05f;
+        bevel = bevel || (std::abs(vertex.normal.z()) > 0.1f && std::abs(vertex.normal.z()) < 0.99f);
+    }
+    QVERIFY(front);
+    QVERIFY(back);
+    QVERIFY(side);
+    QVERIFY(bevel);
+
+    const QVector<TitleMeshVertex> multiline =
+        buildExtrudedTitleMesh(QStringLiteral("A\nA"), options, &error);
+    QVERIFY2(!multiline.isEmpty(), qPrintable(error));
+
+    const QVector<TitleMeshVertex> upright =
+        buildExtrudedTitleMesh(QStringLiteral("L"), options, &error);
+    QVERIFY2(!upright.isEmpty(), qPrintable(error));
+    qreal frontY = 0.0;
+    int frontCount = 0;
+    for (const TitleMeshVertex& vertex : upright) {
+        if (vertex.normal.z() > 0.99f) {
+            frontY += vertex.position.y();
+            ++frontCount;
+        }
+    }
+    QVERIFY(frontCount > 0);
+    QVERIFY2(frontY / frontCount > 0.0,
+             "screen-space mesh orientation must keep the foot of L below its stem");
 }
 
 QTEST_MAIN(TestVulkanTextGeneration)

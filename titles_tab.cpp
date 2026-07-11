@@ -1,6 +1,8 @@
 #include "titles_tab.h"
 #include "editor_title_opacity_keyframe_ops.h"
 #include "keyframe_table_shared.h"
+#include "overlay_text_style.h"
+#include "overlay_style_ui.h"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -43,6 +45,17 @@ void TitlesTab::wire()
     connectSpin(m_widgets.titleWindowFrameOpacitySpin);
     connectSpin(m_widgets.titleWindowFrameWidthSpin);
     connectSpin(m_widgets.titleWindowFrameGapSpin);
+    connectSpin(m_widgets.titleTextExtrudeDepthSpin);
+    connectSpin(m_widgets.titleTextExtrudeBevelSpin);
+    if (m_widgets.titleTextExtrudeModeCombo) {
+        connect(m_widgets.titleTextExtrudeModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+                    const bool enabled = m_widgets.titleTextExtrudeModeCombo->currentData().toInt() != 0;
+                    if (m_widgets.titleTextExtrudeDepthSpin) m_widgets.titleTextExtrudeDepthSpin->setEnabled(enabled);
+                    if (m_widgets.titleTextExtrudeBevelSpin) m_widgets.titleTextExtrudeBevelSpin->setEnabled(enabled);
+                    if (!m_updating) applyKeyframeFromInspector();
+                });
+    }
 
     if (m_widgets.titleTextEdit) {
         // Connect textChanged signal for real-time updates
@@ -98,10 +111,7 @@ void TitlesTab::wire()
                 return;
             }
             m_selectedTitleColor = chosen;
-            m_widgets.titleColorButton->setStyleSheet(
-                QStringLiteral("QPushButton { background: %1; color: %2; }")
-                    .arg(chosen.name(QColor::HexArgb),
-                         chosen.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+            applyOverlayColorButtonStyle(m_widgets.titleColorButton, chosen);
             if (!m_updating) {
                 applyKeyframeFromInspector();
             }
@@ -123,10 +133,7 @@ void TitlesTab::wire()
                 return;
             }
             m_selectedShadowColor = chosen;
-            m_widgets.titleShadowColorButton->setStyleSheet(
-                QStringLiteral("QPushButton { background: %1; color: %2; }")
-                    .arg(chosen.name(QColor::HexArgb),
-                         chosen.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+            applyOverlayColorButtonStyle(m_widgets.titleShadowColorButton, chosen);
             if (!m_updating) {
                 applyKeyframeFromInspector();
             }
@@ -148,10 +155,7 @@ void TitlesTab::wire()
                 return;
             }
             m_selectedWindowColor = chosen;
-            m_widgets.titleWindowColorButton->setStyleSheet(
-                QStringLiteral("QPushButton { background: %1; color: %2; }")
-                    .arg(chosen.name(QColor::HexArgb),
-                         chosen.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+            applyOverlayColorButtonStyle(m_widgets.titleWindowColorButton, chosen);
             if (!m_updating) {
                 applyKeyframeFromInspector();
             }
@@ -173,10 +177,7 @@ void TitlesTab::wire()
                 return;
             }
             m_selectedWindowFrameColor = chosen;
-            m_widgets.titleWindowFrameColorButton->setStyleSheet(
-                QStringLiteral("QPushButton { background: %1; color: %2; }")
-                    .arg(chosen.name(QColor::HexArgb),
-                         chosen.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+            applyOverlayColorButtonStyle(m_widgets.titleWindowFrameColorButton, chosen);
             if (!m_updating) {
                 applyKeyframeFromInspector();
             }
@@ -277,6 +278,9 @@ void TitlesTab::refresh()
         displayed.windowFrameOpacity = selected.windowFrameOpacity;
         displayed.windowFrameWidth = selected.windowFrameWidth;
         displayed.windowFrameGap = selected.windowFrameGap;
+        displayed.textExtrudeMode = selected.textExtrudeMode;
+        displayed.textExtrudeDepth = selected.vulkan3DExtrudeDepth;
+        displayed.textExtrudeBevel = selected.vulkan3DBevelScale;
         displayed.linearInterpolation = selected.linearInterpolation;
     }
     updateWidgetsFromKeyframe(displayed);
@@ -391,6 +395,9 @@ TitlesTab::TitleKeyframeDisplay TitlesTab::evaluateDisplayedTitle(
     display.windowFrameOpacity = kf.windowFrameOpacity;
     display.windowFrameWidth = kf.windowFrameWidth;
     display.windowFrameGap = kf.windowFrameGap;
+    display.textExtrudeMode = kf.textExtrudeMode;
+    display.textExtrudeDepth = kf.vulkan3DExtrudeDepth;
+    display.textExtrudeBevel = kf.vulkan3DBevelScale;
     display.linearInterpolation = kf.linearInterpolation;
     return display;
 }
@@ -414,6 +421,18 @@ void TitlesTab::updateWidgetsFromKeyframe(const TitleKeyframeDisplay &display)
     blockAndSet(m_widgets.titleWindowFrameOpacitySpin, display.windowFrameOpacity);
     blockAndSet(m_widgets.titleWindowFrameWidthSpin, display.windowFrameWidth);
     blockAndSet(m_widgets.titleWindowFrameGapSpin, display.windowFrameGap);
+    blockAndSet(m_widgets.titleTextExtrudeDepthSpin, display.textExtrudeDepth);
+    blockAndSet(m_widgets.titleTextExtrudeBevelSpin, display.textExtrudeBevel);
+    if (m_widgets.titleTextExtrudeModeCombo) {
+        const QSignalBlocker b(m_widgets.titleTextExtrudeModeCombo);
+        const int index = m_widgets.titleTextExtrudeModeCombo->findData(
+            static_cast<int>(display.textExtrudeMode));
+        m_widgets.titleTextExtrudeModeCombo->setCurrentIndex(qMax(0, index));
+        const bool enabled = display.textExtrudeMode !=
+            TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+        if (m_widgets.titleTextExtrudeDepthSpin) m_widgets.titleTextExtrudeDepthSpin->setEnabled(enabled);
+        if (m_widgets.titleTextExtrudeBevelSpin) m_widgets.titleTextExtrudeBevelSpin->setEnabled(enabled);
+    }
 
     if (m_widgets.titleTextEdit) {
         // Avoid clobbering active typing/cursor position during inspector refresh.
@@ -450,35 +469,19 @@ void TitlesTab::updateWidgetsFromKeyframe(const TitleKeyframeDisplay &display)
     }
     if (m_widgets.titleColorButton) {
         m_selectedTitleColor = display.color;
-        const QString fg = display.color.lightness() < 128 ? QStringLiteral("#ffffff")
-                                                           : QStringLiteral("#000000");
-        m_widgets.titleColorButton->setStyleSheet(
-            QStringLiteral("QPushButton { background: %1; color: %2; }")
-                .arg(display.color.name(QColor::HexArgb), fg));
+        applyOverlayColorButtonStyle(m_widgets.titleColorButton, display.color);
     }
     if (m_widgets.titleShadowColorButton) {
         m_selectedShadowColor = display.dropShadowColor;
-        const QString fg = display.dropShadowColor.lightness() < 128 ? QStringLiteral("#ffffff")
-                                                                     : QStringLiteral("#000000");
-        m_widgets.titleShadowColorButton->setStyleSheet(
-            QStringLiteral("QPushButton { background: %1; color: %2; }")
-                .arg(display.dropShadowColor.name(QColor::HexArgb), fg));
+        applyOverlayColorButtonStyle(m_widgets.titleShadowColorButton, display.dropShadowColor);
     }
     if (m_widgets.titleWindowColorButton) {
         m_selectedWindowColor = display.windowColor;
-        const QString fg = display.windowColor.lightness() < 128 ? QStringLiteral("#ffffff")
-                                                                 : QStringLiteral("#000000");
-        m_widgets.titleWindowColorButton->setStyleSheet(
-            QStringLiteral("QPushButton { background: %1; color: %2; }")
-                .arg(display.windowColor.name(QColor::HexArgb), fg));
+        applyOverlayColorButtonStyle(m_widgets.titleWindowColorButton, display.windowColor);
     }
     if (m_widgets.titleWindowFrameColorButton) {
         m_selectedWindowFrameColor = display.windowFrameColor;
-        const QString fg = display.windowFrameColor.lightness() < 128 ? QStringLiteral("#ffffff")
-                                                                      : QStringLiteral("#000000");
-        m_widgets.titleWindowFrameColorButton->setStyleSheet(
-            QStringLiteral("QPushButton { background: %1; color: %2; }")
-                .arg(display.windowFrameColor.name(QColor::HexArgb), fg));
+        applyOverlayColorButtonStyle(m_widgets.titleWindowFrameColorButton, display.windowFrameColor);
     }
 }
 
@@ -549,6 +552,26 @@ void TitlesTab::applyKeyframeFromInspectorLive()
 TimelineClip::TitleKeyframe TitlesTab::buildStoredKeyframeFromInspector(int64_t targetFrame) const
 {
     TimelineClip::TitleKeyframe keyframe;
+    // The inspector intentionally exposes the controls common to ordinary and
+    // generated speaker titles.  Start from the current keyframe so editing a
+    // common property never resets advanced material, pattern, width, or 3D
+    // properties that were authored by the speaker-title workflow.
+    if (m_deps.getSelectedClipConst) {
+        const TimelineClip* clip = m_deps.getSelectedClipConst();
+        if (clip && !clip->titleKeyframes.isEmpty()) {
+            int sourceIndex = 0;
+            for (int i = 0; i < clip->titleKeyframes.size(); ++i) {
+                if (clip->titleKeyframes.at(i).frame <= targetFrame) {
+                    sourceIndex = i;
+                }
+                if (clip->titleKeyframes.at(i).frame == targetFrame) {
+                    sourceIndex = i;
+                    break;
+                }
+            }
+            keyframe = clip->titleKeyframes.at(sourceIndex);
+        }
+    }
     keyframe.frame = targetFrame;
     keyframe.text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
     keyframe.translationX = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
@@ -585,6 +608,20 @@ TimelineClip::TitleKeyframe TitlesTab::buildStoredKeyframeFromInspector(int64_t 
         m_widgets.titleWindowFrameWidthSpin ? m_widgets.titleWindowFrameWidthSpin->value() : 2.0;
     keyframe.windowFrameGap =
         m_widgets.titleWindowFrameGapSpin ? m_widgets.titleWindowFrameGapSpin->value() : 4.0;
+    keyframe.textExtrudeMode = m_widgets.titleTextExtrudeModeCombo
+        ? static_cast<TimelineClip::TitleKeyframe::TextExtrudeMode>(
+              m_widgets.titleTextExtrudeModeCombo->currentData().toInt())
+        : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+    keyframe.vulkan3DExtrudeEnabled =
+        keyframe.textExtrudeMode != TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+    keyframe.vulkan3DEnabled = keyframe.vulkan3DEnabled || keyframe.vulkan3DExtrudeEnabled;
+    keyframe.vulkan3DExtrudeDepth = m_widgets.titleTextExtrudeDepthSpin
+        ? m_widgets.titleTextExtrudeDepthSpin->value() : 0.16;
+    keyframe.vulkan3DBevelScale = m_widgets.titleTextExtrudeBevelSpin
+        ? m_widgets.titleTextExtrudeBevelSpin->value() : 0.7;
+    // Keep every title source on the same bounded style contract. Advanced
+    // title-only fields remain untouched by the adapter.
+    applyOverlayTextStyle(overlayTextStyleFromTitle(keyframe), &keyframe);
     return keyframe;
 }
 
@@ -893,6 +930,9 @@ void TitlesTab::onTableSelectionChanged()
             display.windowFrameOpacity = kf.windowFrameOpacity;
             display.windowFrameWidth = kf.windowFrameWidth;
             display.windowFrameGap = kf.windowFrameGap;
+            display.textExtrudeMode = kf.textExtrudeMode;
+            display.textExtrudeDepth = kf.vulkan3DExtrudeDepth;
+            display.textExtrudeBevel = kf.vulkan3DBevelScale;
             display.linearInterpolation = kf.linearInterpolation;
             updateWidgetsFromKeyframe(display);
             m_updating = false;

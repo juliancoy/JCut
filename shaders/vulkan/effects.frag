@@ -74,19 +74,30 @@ vec4 edgeStretchFillSample(vec2 uv) {
     bool progressive = pc.u_highlights.a < -2.5;
     float power = max(0.25, pc.u_midtones.z);
 
+    // Normalize the progressive curve over the available fill distance on each
+    // side.  sourceUv overflow is measured in source widths/heights, so using it
+    // directly makes the result depend on the preview scale (and clamps narrow
+    // sources especially early in the horizontal direction).
+    float leftOverflow = max(0.0001, center.x * outputAspect / (2.0 * halfWidth));
+    float rightOverflow = max(0.0001, (1.0 - center.x) * outputAspect /
+                                        (2.0 * halfWidth));
+    float topOverflow = max(0.0001, center.y / (2.0 * abs(signedHalfHeight)));
+    float bottomOverflow = max(0.0001, (1.0 - center.y) /
+                                         (2.0 * abs(signedHalfHeight)));
+
     if (sourceUv.x < 0.0) {
-        float fillT = clamp(-sourceUv.x, 0.0, 1.0);
+        float fillT = clamp(-sourceUv.x / leftOverflow, 0.0, 1.0);
         sourceUv.x = mix(halfTexel.x, edgeSpan.x, progressive ? pow(fillT, power) : fillT);
     } else if (sourceUv.x > 1.0) {
-        float fillT = clamp(sourceUv.x - 1.0, 0.0, 1.0);
+        float fillT = clamp((sourceUv.x - 1.0) / rightOverflow, 0.0, 1.0);
         sourceUv.x = mix(1.0 - halfTexel.x, 1.0 - edgeSpan.x, progressive ? pow(fillT, power) : fillT);
     }
 
     if (sourceUv.y < 0.0) {
-        float fillT = clamp(-sourceUv.y, 0.0, 1.0);
+        float fillT = clamp(-sourceUv.y / topOverflow, 0.0, 1.0);
         sourceUv.y = mix(halfTexel.y, edgeSpan.y, progressive ? pow(fillT, power) : fillT);
     } else if (sourceUv.y > 1.0) {
-        float fillT = clamp(sourceUv.y - 1.0, 0.0, 1.0);
+        float fillT = clamp((sourceUv.y - 1.0) / bottomOverflow, 0.0, 1.0);
         sourceUv.y = mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, progressive ? pow(fillT, power) : fillT);
     }
     vec2 validHalfTexel = min(halfTexel, validSpan * 0.5);

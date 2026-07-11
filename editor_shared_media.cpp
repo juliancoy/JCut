@@ -3,6 +3,8 @@
 
 #include <QFile>
 
+#include <algorithm>
+
 extern "C" {
 #include <libavutil/buffer.h>
 #include <libavutil/hwcontext.h>
@@ -897,12 +899,75 @@ bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
                                           const QVector<TimelineTrack>& tracks) {
     for (const TimelineClip& child : clips) {
         if (child.clipRole == ClipRole::MaskMatte &&
-            child.linkedSourceClipId.trimmed() == source.id &&
-            clipVisualPlaybackEnabled(child, tracks)) {
+            clipIsVirtualChildOf(child, source) &&
+            clipVirtualChildPlaybackEnabled(child, tracks)) {
             return true;
         }
     }
     return false;
+}
+
+bool clipIsVirtualChildOf(const TimelineClip& child, const TimelineClip& parent) {
+    return child.clipRole != ClipRole::Media &&
+           !parent.id.trimmed().isEmpty() &&
+           child.linkedSourceClipId.trimmed() == parent.id.trimmed();
+}
+
+bool clipVirtualChildPlaybackEnabled(const TimelineClip& child,
+                                     const QVector<TimelineTrack>& tracks) {
+    return child.clipRole != ClipRole::Media &&
+           child.videoEnabled &&
+           trackVisualModeForClip(child, tracks) != TrackVisualMode::Hidden;
+}
+
+bool clipHasVisibleVirtualChild(const TimelineClip& parent,
+                                const QVector<TimelineClip>& clips,
+                                const QVector<TimelineTrack>& tracks) {
+    return std::any_of(clips.cbegin(), clips.cend(),
+                       [&parent, &tracks](const TimelineClip& child) {
+        return clipIsVirtualChildOf(child, parent) &&
+               clipVirtualChildPlaybackEnabled(child, tracks);
+    });
+}
+
+void VirtualClipRelationshipIndex::rebuild(const QVector<TimelineClip>& clips,
+                                           quint64 timelineRevision) {
+    m_childIndicesByParentId.clear();
+    for (int index = 0; index < clips.size(); ++index) {
+        const TimelineClip& child = clips.at(index);
+        const QString parentId = child.linkedSourceClipId.trimmed();
+        if (child.clipRole != ClipRole::Media && !parentId.isEmpty()) {
+            m_childIndicesByParentId[parentId].push_back(index);
+        }
+    }
+    m_timelineRevision = timelineRevision;
+}
+
+bool VirtualClipRelationshipIndex::hasVisibleChild(
+    const TimelineClip& parent,
+    const QVector<TimelineClip>& clips,
+    const QVector<TimelineTrack>& tracks) const {
+    const auto it = m_childIndicesByParentId.constFind(parent.id.trimmed());
+    if (it == m_childIndicesByParentId.cend()) {
+        return false;
+    }
+    for (const int index : it.value()) {
+        if (index >= 0 && index < clips.size() &&
+            clipVirtualChildPlaybackEnabled(clips.at(index), tracks)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool clipContributesVisualMedia(const TimelineClip& clip,
+                                const QVector<TimelineClip>& clips,
+                                const QVector<TimelineTrack>& tracks,
+                                const VirtualClipRelationshipIndex* relationships) {
+    return clipVisualPlaybackEnabled(clip, tracks) ||
+           (relationships
+                ? relationships->hasVisibleChild(clip, clips, tracks)
+                : clipHasVisibleVirtualChild(clip, clips, tracks));
 }
 
 bool clipAudioPlaybackEnabled(const TimelineClip& clip) {

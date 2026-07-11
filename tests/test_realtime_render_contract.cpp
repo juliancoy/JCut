@@ -233,10 +233,27 @@ void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMat
     QVERIFY(clipVisualPlaybackEnabled(matte, {}));
     QVERIFY2(clipProvidesMediaForVisibleMaskMatte(source, clips, {}),
              "a hidden parent must remain a decode provider for its visible virtual mask child");
+    QVERIFY2(clipContributesVisualMedia(source, clips, {}),
+             "shared render policy must retain a hidden source for its visible mask matte");
+
+    TimelineClip synth = matte;
+    synth.id = QStringLiteral("visible-effect-child");
+    synth.clipRole = ClipRole::EffectSynth;
+    QVERIFY(clipIsVirtualChildOf(synth, source));
+    QVERIFY(clipVirtualChildPlaybackEnabled(synth, {}));
+    QVERIFY2(clipHasVisibleVirtualChild(source, {source, synth}, {}),
+             "decode ownership must consider every visible virtual child role");
+    QVERIFY(clipContributesVisualMedia(source, {source, synth}, {}));
+    VirtualClipRelationshipIndex relationships;
+    relationships.rebuild({source, synth}, 42);
+    QCOMPARE(relationships.timelineRevision(), quint64(42));
+    QVERIFY(relationships.hasVisibleChild(source, {source, synth}, {}));
+    QVERIFY(clipContributesVisualMedia(source, {source, synth}, {}, &relationships));
 
     matte.videoEnabled = false;
     QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(source, {source, matte}, {}),
              "a hidden virtual mask must not keep its parent active as a media provider");
+    QVERIFY(!clipContributesVisualMedia(source, {source, matte}, {}));
 }
 
 void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
@@ -268,9 +285,9 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     const QString vulkanSource = QString::fromUtf8(vulkanFile.readAll());
     QVERIFY2(vulkanSource.contains(QStringLiteral("const bool gpuOutputOnly = (readbackMs == nullptr)")),
              "Vulkan export must make GPU-output mode explicit");
-    QVERIFY2(vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
-                 vulkanSource.contains(QStringLiteral("gpuOutputOnly")),
-             "GPU-output render path must skip CPU-raster title layers");
+    QVERIFY2(!vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
+                 vulkanSource.contains(QStringLiteral("textInputs.title3D.push_back(title)")),
+             "All titles must use the Vulkan text path, including GPU-only export");
     QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frameHandle, false")) &&
                  vulkanSource.contains(QStringLiteral("return false;\n        }\n      }\n      QImage rgba")),
              "GPU-output render path must not fall back to CPU image uploads when hardware handoff fails");

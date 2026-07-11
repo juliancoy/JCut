@@ -1071,6 +1071,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowCurrentSpeakerName")).toBool(false);
     const bool previewShowCurrentSpeakerOrganization =
         root.value(QStringLiteral("previewShowCurrentSpeakerOrganization")).toBool(false);
+    const QJsonObject speakerTitleSettings =
+        root.value(QStringLiteral("speakerTitleSettings")).toObject();
     const int previewCurrentSpeakerNameTextScalePercent = qBound(
         25,
         root.value(QStringLiteral("previewCurrentSpeakerNameTextScalePercent")).toInt(100),
@@ -1695,6 +1697,62 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
         QSignalBlocker block(m_speakerShowCurrentSpeakerOrganizationCheckBox);
         m_speakerShowCurrentSpeakerOrganizationCheckBox->setChecked(previewShowCurrentSpeakerOrganization);
+    }
+    if (m_inspectorPane && !speakerTitleSettings.isEmpty()) {
+        auto setCombo = [&speakerTitleSettings](QComboBox* widget, const QString& key) {
+            if (!widget || !speakerTitleSettings.contains(key)) return;
+            const int index = widget->findData(speakerTitleSettings.value(key).toInt());
+            if (index >= 0) widget->setCurrentIndex(index);
+        };
+        auto setDecimal = [&speakerTitleSettings](QDoubleSpinBox* widget, const QString& key) {
+            if (!widget || !speakerTitleSettings.contains(key)) return;
+            const QSignalBlocker blocker(widget);
+            widget->setValue(speakerTitleSettings.value(key).toDouble(widget->value()));
+        };
+        auto setInteger = [&speakerTitleSettings](QSpinBox* widget, const QString& key) {
+            if (!widget || !speakerTitleSettings.contains(key)) return;
+            const QSignalBlocker blocker(widget);
+            widget->setValue(speakerTitleSettings.value(key).toInt(widget->value()));
+        };
+        setCombo(m_inspectorPane->speakerOverlayFlyInStyleCombo(), QStringLiteral("flyInStyle"));
+        setDecimal(m_inspectorPane->speakerOverlayFlyInDelaySpin(), QStringLiteral("delaySeconds"));
+        setDecimal(m_inspectorPane->speakerOverlayFlyInDurationSpin(), QStringLiteral("durationSeconds"));
+        setDecimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), QStringLiteral("flyTimeSeconds"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapRadiusSpin(), QStringLiteral("wrapRadius"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapDepthSpin(), QStringLiteral("wrapDepth"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapStartAngleSpin(), QStringLiteral("wrapStartAngle"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapEndAngleSpin(), QStringLiteral("wrapEndAngle"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapPitchSpin(), QStringLiteral("wrapPitch"));
+        setDecimal(m_inspectorPane->speakerOverlayWrapRollSpin(), QStringLiteral("wrapRoll"));
+        setDecimal(m_inspectorPane->speakerOverlayRotationXSpin(), QStringLiteral("rotationX"));
+        setDecimal(m_inspectorPane->speakerOverlayRotationYSpin(), QStringLiteral("rotationY"));
+        setDecimal(m_inspectorPane->speakerOverlayRotationZSpin(), QStringLiteral("rotationZ"));
+        setInteger(m_inspectorPane->speakerOverlayTitleFontSizeSpin(), QStringLiteral("fontSize"));
+        setInteger(m_inspectorPane->speakerOverlayTitleBoxWidthSpin(), QStringLiteral("boxWidth"));
+        setCombo(m_inspectorPane->speakerOverlayTitleTextMaterialCombo(), QStringLiteral("textMaterial"));
+        setCombo(m_inspectorPane->speakerOverlayTitleBorderMaterialCombo(), QStringLiteral("borderMaterial"));
+        setDecimal(m_inspectorPane->speakerOverlayTitlePatternScaleSpin(), QStringLiteral("patternScale"));
+        setCombo(m_inspectorPane->speakerOverlayTitleExtrudeModeCombo(), QStringLiteral("extrudeMode"));
+        setDecimal(m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin(), QStringLiteral("extrudeDepth"));
+        setDecimal(m_inspectorPane->speakerOverlayTitleBevelScaleSpin(), QStringLiteral("bevelScale"));
+        auto setText = [&speakerTitleSettings](QLineEdit* widget, const QString& key) {
+            if (!widget || !speakerTitleSettings.contains(key)) return;
+            const QSignalBlocker blocker(widget);
+            widget->setText(speakerTitleSettings.value(key).toString());
+        };
+        setText(m_inspectorPane->speakerOverlayTitleTextPatternPathEdit(), QStringLiteral("textPatternPath"));
+        setText(m_inspectorPane->speakerOverlayTitleBorderPatternPathEdit(), QStringLiteral("borderPatternPath"));
+        if (QCheckBox* extrude = m_inspectorPane->speakerOverlayTitleExtrudeCheckBox()) {
+            const QSignalBlocker blocker(extrude);
+            extrude->setChecked(speakerTitleSettings.value(QStringLiteral("extrudeEnabled")).toBool(false));
+            const bool enabled = extrude->isChecked();
+            if (m_inspectorPane->speakerOverlayTitleExtrudeModeCombo())
+                m_inspectorPane->speakerOverlayTitleExtrudeModeCombo()->setEnabled(enabled);
+            if (m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin())
+                m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin()->setEnabled(enabled);
+            if (m_inspectorPane->speakerOverlayTitleBevelScaleSpin())
+                m_inspectorPane->speakerOverlayTitleBevelScaleSpin()->setEnabled(enabled);
+        }
     }
     if (m_speakerCurrentSpeakerNameTextSizeSpin) {
         QSignalBlocker block(m_speakerCurrentSpeakerNameTextSizeSpin);

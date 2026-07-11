@@ -49,6 +49,9 @@ public:
         QDoubleSpinBox *titleWindowFrameOpacitySpin = nullptr;
         QDoubleSpinBox *titleWindowFrameWidthSpin = nullptr;
         QDoubleSpinBox *titleWindowFrameGapSpin = nullptr;
+        QComboBox *titleTextExtrudeModeCombo = nullptr;
+        QDoubleSpinBox *titleTextExtrudeDepthSpin = nullptr;
+        QDoubleSpinBox *titleTextExtrudeBevelSpin = nullptr;
         QCheckBox *titleAutoScrollCheck = nullptr;
         QPushButton *addTitleKeyframeButton = nullptr;
         QPushButton *removeTitleKeyframeButton = nullptr;
@@ -96,6 +99,10 @@ private:
         double windowFrameOpacity = 1.0;
         double windowFrameWidth = 2.0;
         double windowFrameGap = 4.0;
+        TimelineClip::TitleKeyframe::TextExtrudeMode textExtrudeMode =
+            TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+        double textExtrudeDepth = 0.16;
+        double textExtrudeBevel = 0.7;
         bool linearInterpolation = true;
     };
 

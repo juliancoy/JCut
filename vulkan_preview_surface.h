@@ -8,6 +8,7 @@
 #include "debug_controls.h"
 #include "frame_handle.h"
 #include "playback_stage_metrics.h"
+#include "editor_shared_media.h"
 
 #include <QJsonObject>
 #include <QHash>
@@ -234,6 +235,8 @@ private:
     QHash<QString, QJsonObject> m_facedetectionsArtifactRootCache;
     QHash<QString, QJsonObject> m_facedetectionsProcessedArtifactRootCache;
     PreviewInteractionState m_interaction;
+    VirtualClipRelationshipIndex m_virtualClipRelationships;
+    quint64 m_timelineClipRevision = 0;
     AudioDynamicsSettings m_audioDynamics;
     LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;
     AudioVisualizationMode m_audioVisualizationMode = AudioVisualizationMode::Waveform;

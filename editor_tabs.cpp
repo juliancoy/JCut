@@ -1066,6 +1066,13 @@ void EditorWindow::createTranscriptTab()
     transcriptWidgets.transcriptBackgroundVisibleCheckBox = m_inspectorPane->transcriptBackgroundVisibleCheckBox();
     transcriptWidgets.transcriptBackgroundOpacitySpin = m_inspectorPane->transcriptBackgroundOpacitySpin();
     transcriptWidgets.transcriptBackgroundCornerRadiusSpin = m_inspectorPane->transcriptBackgroundCornerRadiusSpin();
+    transcriptWidgets.transcriptTextOpacitySpin = m_inspectorPane->transcriptTextOpacitySpin();
+    transcriptWidgets.transcriptBackgroundPaddingSpin = m_inspectorPane->transcriptBackgroundPaddingSpin();
+    transcriptWidgets.transcriptBackgroundFrameCheckBox = m_inspectorPane->transcriptBackgroundFrameCheckBox();
+    transcriptWidgets.transcriptBackgroundFrameColorButton = m_inspectorPane->transcriptBackgroundFrameColorButton();
+    transcriptWidgets.transcriptBackgroundFrameOpacitySpin = m_inspectorPane->transcriptBackgroundFrameOpacitySpin();
+    transcriptWidgets.transcriptBackgroundFrameWidthSpin = m_inspectorPane->transcriptBackgroundFrameWidthSpin();
+    transcriptWidgets.transcriptBackgroundFrameGapSpin = m_inspectorPane->transcriptBackgroundFrameGapSpin();
     transcriptWidgets.transcriptTextColorButton = m_inspectorPane->transcriptTextColorButton();
     transcriptWidgets.transcriptBackgroundColorButton = m_inspectorPane->transcriptBackgroundColorButton();
     transcriptWidgets.transcriptHighlightColorButton = m_inspectorPane->transcriptHighlightColorButton();
@@ -1078,6 +1085,9 @@ void EditorWindow::createTranscriptTab()
     transcriptWidgets.transcriptOutlineColorButton = m_inspectorPane->transcriptOutlineColorButton();
     transcriptWidgets.transcriptOutlineWidthSpin = m_inspectorPane->transcriptOutlineWidthSpin();
     transcriptWidgets.transcriptOutlineOpacitySpin = m_inspectorPane->transcriptOutlineOpacitySpin();
+    transcriptWidgets.transcriptTextExtrudeModeCombo = m_inspectorPane->transcriptTextExtrudeModeCombo();
+    transcriptWidgets.transcriptTextExtrudeDepthSpin = m_inspectorPane->transcriptTextExtrudeDepthSpin();
+    transcriptWidgets.transcriptTextExtrudeBevelSpin = m_inspectorPane->transcriptTextExtrudeBevelSpin();
     transcriptWidgets.transcriptShowSpeakerTitleCheckBox = m_inspectorPane->transcriptShowSpeakerTitleCheckBox();
     transcriptWidgets.transcriptHighlightCurrentWordCheckBox = m_inspectorPane->transcriptHighlightCurrentWordCheckBox();
     transcriptWidgets.transcriptMaxLinesSpin = m_transcriptMaxLinesSpin;
@@ -1294,6 +1304,9 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerOverlayWrapEndAngleSpin(),
             m_inspectorPane->speakerOverlayWrapPitchSpin(),
             m_inspectorPane->speakerOverlayWrapRollSpin(),
+            m_inspectorPane->speakerOverlayRotationXSpin(),
+            m_inspectorPane->speakerOverlayRotationYSpin(),
+            m_inspectorPane->speakerOverlayRotationZSpin(),
             m_inspectorPane->speakerOverlayTitleFontSizeSpin(),
             m_inspectorPane->speakerOverlayTitleBoxWidthSpin(),
             m_inspectorPane->speakerOverlayTitleTextMaterialCombo(),
@@ -1302,6 +1315,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerOverlayTitleBorderPatternPathEdit(),
             m_inspectorPane->speakerOverlayTitlePatternScaleSpin(),
             m_inspectorPane->speakerOverlayTitleExtrudeCheckBox(),
+            m_inspectorPane->speakerOverlayTitleExtrudeModeCombo(),
             m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin(),
             m_inspectorPane->speakerOverlayTitleBevelScaleSpin(),
             m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox(),
@@ -1381,7 +1395,6 @@ void EditorWindow::createSpeakersTab()
                 if (!m_timeline) {
                     return {};
                 }
-                pushHistorySnapshot();
                 QVector<TimelineClip> clips = m_timeline->clips();
                 QVector<TimelineTrack> tracks = m_timeline->tracks();
                 GeneratedClipPlacementResult result = replaceGeneratedClipsForSource(
@@ -1809,6 +1822,9 @@ void EditorWindow::createTitlesTab()
             m_inspectorPane->titleWindowFrameOpacitySpin(),
             m_inspectorPane->titleWindowFrameWidthSpin(),
             m_inspectorPane->titleWindowFrameGapSpin(),
+            m_inspectorPane->titleTextExtrudeModeCombo(),
+            m_inspectorPane->titleTextExtrudeDepthSpin(),
+            m_inspectorPane->titleTextExtrudeBevelSpin(),
             m_inspectorPane->titleAutoScrollCheck(),
             m_inspectorPane->addTitleKeyframeButton(),
             m_inspectorPane->removeTitleKeyframeButton(),

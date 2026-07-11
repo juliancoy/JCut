@@ -260,3 +260,35 @@ int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
         static_cast<qreal>(sourceSample) / static_cast<qreal>(kAudioSampleRate);
     return qMax<int64_t>(0, static_cast<int64_t>(std::floor(sourceSeconds * static_cast<qreal>(kTimelineFps))));
 }
+
+int64_t timelineFrameForClipTranscriptFrame(const TimelineClip& clip,
+                                            int64_t transcriptFrame,
+                                            const QVector<RenderSyncMarker>& markers) {
+    const int64_t clipStart = clip.startFrame;
+    const int64_t clipEnd = clipStart + qMax<int64_t>(0, clip.durationFrames - 1);
+    if (clip.durationFrames <= 0 || transcriptFrame <=
+            transcriptFrameForClipAtTimelineSample(clip, frameToSamples(clipStart), markers)) {
+        return clipStart;
+    }
+    if (transcriptFrame >=
+            transcriptFrameForClipAtTimelineSample(clip, frameToSamples(clipEnd), markers)) {
+        return clipEnd;
+    }
+
+    // Find the earliest displayed frame whose source clock has reached the
+    // requested transcript frame. This preserves exact section boundaries and
+    // honors trims, playback rate, source FPS, and render-sync adjustments.
+    int64_t low = clipStart;
+    int64_t high = clipEnd;
+    while (low < high) {
+        const int64_t mid = low + (high - low) / 2;
+        const int64_t mapped =
+            transcriptFrameForClipAtTimelineSample(clip, frameToSamples(mid), markers);
+        if (mapped < transcriptFrame) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return low;
+}

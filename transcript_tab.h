@@ -39,6 +39,13 @@ public:
         QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
         QSpinBox* transcriptBackgroundOpacitySpin = nullptr;
         QSpinBox* transcriptBackgroundCornerRadiusSpin = nullptr;
+        QSpinBox* transcriptTextOpacitySpin = nullptr;
+        QSpinBox* transcriptBackgroundPaddingSpin = nullptr;
+        QCheckBox* transcriptBackgroundFrameCheckBox = nullptr;
+        QPushButton* transcriptBackgroundFrameColorButton = nullptr;
+        QSpinBox* transcriptBackgroundFrameOpacitySpin = nullptr;
+        QSpinBox* transcriptBackgroundFrameWidthSpin = nullptr;
+        QSpinBox* transcriptBackgroundFrameGapSpin = nullptr;
         QPushButton* transcriptTextColorButton = nullptr;
         QPushButton* transcriptBackgroundColorButton = nullptr;
         QPushButton* transcriptHighlightColorButton = nullptr;
@@ -51,6 +58,9 @@ public:
         QPushButton* transcriptOutlineColorButton = nullptr;
         QSpinBox* transcriptOutlineWidthSpin = nullptr;
         QSpinBox* transcriptOutlineOpacitySpin = nullptr;
+        QComboBox* transcriptTextExtrudeModeCombo = nullptr;
+        QDoubleSpinBox* transcriptTextExtrudeDepthSpin = nullptr;
+        QDoubleSpinBox* transcriptTextExtrudeBevelSpin = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QCheckBox* transcriptHighlightCurrentWordCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;

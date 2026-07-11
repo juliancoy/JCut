@@ -8,6 +8,7 @@
 #include <QString>
 
 using TitleMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle;
+using TextExtrudeMode = TimelineClip::TitleKeyframe::TextExtrudeMode;
 
 // Evaluated title state at a specific frame — the result of interpolating
 // between TitleKeyframes. Used by both the preview renderer and the export pipeline.
@@ -45,6 +46,7 @@ struct EvaluatedTitle {
     qreal windowFramePatternScale = 1.0;
     bool vulkan3DEnabled = false;
     bool vulkan3DExtrudeEnabled = false;
+    TextExtrudeMode textExtrudeMode = TextExtrudeMode::None;
     qreal vulkan3DExtrudeDepth = 0.0;
     qreal vulkan3DBevelScale = 0.0;
     qreal vulkan3DYawDegrees = 0.0;

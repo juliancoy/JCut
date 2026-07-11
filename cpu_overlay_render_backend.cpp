@@ -567,6 +567,24 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
             if (spec.showShadow) {
                 drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, spec.shadowColor);
             }
+            if (spec.textExtrudeMode != TimelineClip::TitleKeyframe::TextExtrudeMode::None &&
+                spec.textExtrudeDepth > 0.001) {
+                const bool stacked = spec.textExtrudeMode ==
+                    TimelineClip::TitleKeyframe::TextExtrudeMode::StackedCopies;
+                const int sparseLayers = qBound(1,
+                    static_cast<int>(std::ceil(spec.textExtrudeDepth * 24.0)), 12);
+                const qreal totalDepth = stacked
+                    ? qBound<qreal>(0.6, spec.textExtrudeDepth * 8.0, 4.5) * sparseLayers
+                    : qBound<qreal>(1.0, spec.textExtrudeDepth * 18.0, 36.0);
+                const int layers = stacked ? sparseLayers
+                    : qBound(2, static_cast<int>(std::ceil(totalDepth / 0.65)), 64);
+                QColor side = (line.name ? spec.nameColor : spec.organizationColor).darker(175);
+                for (int layer = layers; layer >= 1; --layer) {
+                    const qreal offset = totalDepth * static_cast<qreal>(layer) / layers;
+                    drawGlyphRun(&overlay, face, x + offset, baseline + offset * 0.58,
+                                 line.text, side);
+                }
+            }
             drawGlyphRun(&overlay,
                          face,
                          x,
@@ -665,6 +683,31 @@ OverlayImage renderTitleOverlayImageSoftware(const QSize& imageSize,
             const qreal x = centerX - (lineWidth / 2.0) + (title.dropShadowOffsetX * scaleX);
             const qreal y = topY + (i * metrics.lineHeight) + metrics.ascender + (title.dropShadowOffsetY * scaleY);
             drawGlyphRun(&titleImage, face, x, y, line, shadowColor);
+        }
+    }
+
+    if (title.vulkan3DExtrudeEnabled && title.textExtrudeMode != TextExtrudeMode::None &&
+        title.vulkan3DExtrudeDepth > 0.001) {
+        const bool stacked = title.textExtrudeMode == TextExtrudeMode::StackedCopies;
+        const int sparseLayers = qBound(1,
+            static_cast<int>(std::ceil(title.vulkan3DExtrudeDepth * 24.0)), 12);
+        const qreal totalDepth = stacked
+            ? qBound<qreal>(0.6, title.vulkan3DExtrudeDepth * 8.0, 4.5) * sparseLayers
+            : qBound<qreal>(1.0, title.vulkan3DExtrudeDepth * 18.0, 36.0);
+        const int layers = stacked
+            ? sparseLayers
+            : qBound(2, static_cast<int>(std::ceil(totalDepth / 0.65)), 64);
+        QColor sideColor = textColor.darker(175);
+        for (int layer = layers; layer >= 1; --layer) {
+            const qreal offset = totalDepth * static_cast<qreal>(layer) / layers;
+            for (int i = 0; i < lines.size(); ++i) {
+                const QString& line = lines.at(i);
+                const qreal lineWidth = measureTextWidth(face, line);
+                const qreal x = centerX - (lineWidth / 2.0) + offset * scaleX;
+                const qreal y = topY + (i * metrics.lineHeight) + metrics.ascender +
+                    offset * 0.58 * scaleY;
+                drawGlyphRun(&titleImage, face, x, y, line, sideColor);
+            }
         }
     }
 
@@ -808,6 +851,25 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                 drawGlyphRun(&canvas, face, x + offset.x(), baseline + offset.y(), text, outlineColor);
             }
         };
+        auto drawExtrudedGlyphRun = [&](FT_Face face, qreal x, qreal baseline,
+                                        const QString& text, const QColor& color) {
+            using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+            const Mode mode = clip.transcriptOverlay.textExtrudeMode;
+            const qreal depth = clip.transcriptOverlay.textExtrudeDepth * docScale;
+            if (mode == Mode::None || depth <= 0.001) return;
+            const bool stacked = mode == Mode::StackedCopies;
+            const int sparseLayers = qBound(1, static_cast<int>(std::ceil(depth * 24.0)), 12);
+            const qreal totalDepth = stacked
+                ? qBound<qreal>(0.6, depth * 8.0, 4.5) * sparseLayers
+                : qBound<qreal>(1.0, depth * 18.0, 36.0);
+            const int layers = stacked ? sparseLayers
+                : qBound(2, static_cast<int>(std::ceil(totalDepth / 0.65)), 64);
+            const QColor side = color.darker(175);
+            for (int layer = layers; layer >= 1; --layer) {
+                const qreal offset = totalDepth * static_cast<qreal>(layer) / layers;
+                drawGlyphRun(&canvas, face, x + offset, baseline + offset * 0.58, text, side);
+            }
+        };
 
         if (!speakerTitle.isEmpty() && titleFace) {
             const qreal titleWidth = speakerTitleWidth * docScale;
@@ -821,6 +883,7 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                              speakerTitle,
                              shadowColor);
             }
+            drawExtrudedGlyphRun(titleFace, titleX, titleBaseline, speakerTitle, textColor);
             drawDilatedGlyphRun(titleFace, titleX, titleBaseline, speakerTitle);
             drawGlyphRun(&canvas, titleFace, titleX, titleBaseline, speakerTitle, textColor);
             cursorY += (titleMetrics.lineHeight + titleGap) * docScale;
@@ -862,6 +925,7 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                                  word,
                                  shadowColor);
                 }
+                drawExtrudedGlyphRun(bodyFace, cursorX, baseline, word, glyphColor);
                 drawDilatedGlyphRun(bodyFace, cursorX, baseline, word);
                 drawGlyphRun(&canvas, bodyFace, cursorX, baseline, word, glyphColor);
                 cursorX += wordWidth;

@@ -1,4 +1,5 @@
 #include "clip_serialization.h"
+#include "overlay_text_style.h"
 #include "timeline_fps.h"
 
 #include <QColor>
@@ -174,6 +175,28 @@ TimelineClip::TitleKeyframe::MaterialStyle titleMaterialStyleFromJson(const QStr
         return MaterialStyle::ImagePattern;
     }
     return MaterialStyle::Solid;
+}
+
+QString textExtrudeModeToJson(TimelineClip::TitleKeyframe::TextExtrudeMode mode)
+{
+    using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+    switch (mode) {
+    case Mode::StackedCopies: return QStringLiteral("stacked_copies");
+    case Mode::ErodedSolid: return QStringLiteral("eroded_solid");
+    case Mode::None: return QStringLiteral("none");
+    }
+    return QStringLiteral("none");
+}
+
+TimelineClip::TitleKeyframe::TextExtrudeMode textExtrudeModeFromJson(
+    const QString& value,
+    bool legacyEnabled)
+{
+    using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("eroded_solid")) return Mode::ErodedSolid;
+    if (normalized == QStringLiteral("stacked_copies")) return Mode::StackedCopies;
+    return legacyEnabled ? Mode::StackedCopies : Mode::None;
 }
 
 QString clipRoleToJson(ClipRole role)
@@ -481,6 +504,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("windowFramePatternScale")] = keyframe.windowFramePatternScale;
             keyframeObj[QStringLiteral("vulkan3DEnabled")] = keyframe.vulkan3DEnabled;
             keyframeObj[QStringLiteral("vulkan3DExtrudeEnabled")] = keyframe.vulkan3DExtrudeEnabled;
+            keyframeObj[QStringLiteral("textExtrudeMode")] =
+                textExtrudeModeToJson(keyframe.textExtrudeMode);
             keyframeObj[QStringLiteral("vulkan3DExtrudeDepth")] = keyframe.vulkan3DExtrudeDepth;
             keyframeObj[QStringLiteral("vulkan3DBevelScale")] = keyframe.vulkan3DBevelScale;
             keyframeObj[QStringLiteral("vulkan3DYawDegrees")] = keyframe.vulkan3DYawDegrees;
@@ -492,11 +517,18 @@ QJsonObject clipToJson(const TimelineClip &clip)
             titleKeyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("titleKeyframes")] = titleKeyframes;
+        obj[QStringLiteral("speakerTitleEngineActive")] = clip.speakerTitleEngineActive;
         QJsonObject transcriptOverlayObj;
         transcriptOverlayObj[QStringLiteral("enabled")] = clip.transcriptOverlay.enabled;
         transcriptOverlayObj[QStringLiteral("showBackground")] = clip.transcriptOverlay.showBackground;
         transcriptOverlayObj[QStringLiteral("backgroundOpacity")] = clip.transcriptOverlay.backgroundOpacity;
         transcriptOverlayObj[QStringLiteral("backgroundCornerRadius")] = clip.transcriptOverlay.backgroundCornerRadius;
+        transcriptOverlayObj[QStringLiteral("backgroundPadding")] = clip.transcriptOverlay.backgroundPadding;
+        transcriptOverlayObj[QStringLiteral("backgroundFrameEnabled")] = clip.transcriptOverlay.backgroundFrameEnabled;
+        transcriptOverlayObj[QStringLiteral("backgroundFrameColor")] = clip.transcriptOverlay.backgroundFrameColor.name(QColor::HexArgb);
+        transcriptOverlayObj[QStringLiteral("backgroundFrameOpacity")] = clip.transcriptOverlay.backgroundFrameOpacity;
+        transcriptOverlayObj[QStringLiteral("backgroundFrameWidth")] = clip.transcriptOverlay.backgroundFrameWidth;
+        transcriptOverlayObj[QStringLiteral("backgroundFrameGap")] = clip.transcriptOverlay.backgroundFrameGap;
         transcriptOverlayObj[QStringLiteral("showShadow")] = clip.transcriptOverlay.showShadow;
         transcriptOverlayObj[QStringLiteral("shadowColor")] =
             clip.transcriptOverlay.shadowColor.name(QColor::HexArgb);
@@ -508,6 +540,11 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("textOutlineColor")] =
             clip.transcriptOverlay.textOutlineColor.name(QColor::HexArgb);
         transcriptOverlayObj[QStringLiteral("textOutlineOpacity")] = clip.transcriptOverlay.textOutlineOpacity;
+        transcriptOverlayObj[QStringLiteral("textExtrudeMode")] =
+            textExtrudeModeToJson(clip.transcriptOverlay.textExtrudeMode);
+        transcriptOverlayObj[QStringLiteral("textExtrudeDepth")] = clip.transcriptOverlay.textExtrudeDepth;
+        transcriptOverlayObj[QStringLiteral("textExtrudeBevelScale")] =
+            clip.transcriptOverlay.textExtrudeBevelScale;
         transcriptOverlayObj[QStringLiteral("showSpeakerTitle")] = clip.transcriptOverlay.showSpeakerTitle;
         transcriptOverlayObj[QStringLiteral("highlightCurrentWord")] = clip.transcriptOverlay.highlightCurrentWord;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
@@ -524,6 +561,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("italic")] = clip.transcriptOverlay.italic;
         transcriptOverlayObj[QStringLiteral("textColor")] =
             clip.transcriptOverlay.textColor.name(QColor::HexArgb);
+        transcriptOverlayObj[QStringLiteral("textOpacity")] = clip.transcriptOverlay.textOpacity;
         transcriptOverlayObj[QStringLiteral("backgroundColor")] =
             clip.transcriptOverlay.backgroundColor.name(QColor::HexArgb);
         transcriptOverlayObj[QStringLiteral("highlightColor")] =
@@ -948,6 +986,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             transcriptOverlayObj.value(QStringLiteral("backgroundOpacity")).toDouble(120.0 / 255.0);
         clip.transcriptOverlay.backgroundCornerRadius =
             transcriptOverlayObj.value(QStringLiteral("backgroundCornerRadius")).toDouble(14.0);
+        clip.transcriptOverlay.backgroundPadding = transcriptOverlayObj.value(QStringLiteral("backgroundPadding")).toDouble(16.0);
+        clip.transcriptOverlay.backgroundFrameEnabled = transcriptOverlayObj.value(QStringLiteral("backgroundFrameEnabled")).toBool(false);
+        clip.transcriptOverlay.backgroundFrameColor = QColor(transcriptOverlayObj.value(QStringLiteral("backgroundFrameColor")).toString(QStringLiteral("#ffffffff")));
+        clip.transcriptOverlay.backgroundFrameOpacity = transcriptOverlayObj.value(QStringLiteral("backgroundFrameOpacity")).toDouble(1.0);
+        clip.transcriptOverlay.backgroundFrameWidth = transcriptOverlayObj.value(QStringLiteral("backgroundFrameWidth")).toDouble(2.0);
+        clip.transcriptOverlay.backgroundFrameGap = transcriptOverlayObj.value(QStringLiteral("backgroundFrameGap")).toDouble(4.0);
         clip.transcriptOverlay.showShadow = transcriptOverlayObj.value(QStringLiteral("showShadow")).toBool(true);
         clip.transcriptOverlay.shadowColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("shadowColor")).toString(QStringLiteral("#ff000000")));
@@ -965,6 +1009,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             QColor(transcriptOverlayObj.value(QStringLiteral("textOutlineColor")).toString(QStringLiteral("#ff000000")));
         clip.transcriptOverlay.textOutlineOpacity =
             transcriptOverlayObj.value(QStringLiteral("textOutlineOpacity")).toDouble(0.80);
+        clip.transcriptOverlay.textExtrudeMode = textExtrudeModeFromJson(
+            transcriptOverlayObj.value(QStringLiteral("textExtrudeMode")).toString(), false);
+        clip.transcriptOverlay.textExtrudeDepth = qBound<qreal>(
+            0.0, transcriptOverlayObj.value(QStringLiteral("textExtrudeDepth")).toDouble(0.16), 2.0);
+        clip.transcriptOverlay.textExtrudeBevelScale = qBound<qreal>(
+            0.0, transcriptOverlayObj.value(QStringLiteral("textExtrudeBevelScale")).toDouble(0.7), 2.0);
         clip.transcriptOverlay.showSpeakerTitle =
             transcriptOverlayObj.value(QStringLiteral("showSpeakerTitle")).toBool(false);
         clip.transcriptOverlay.highlightCurrentWord =
@@ -987,13 +1037,15 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.italic = transcriptOverlayObj.value(QStringLiteral("italic")).toBool(false);
         clip.transcriptOverlay.textColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("textColor")).toString(QStringLiteral("#ffffffff")));
+        clip.transcriptOverlay.textOpacity = transcriptOverlayObj.value(QStringLiteral("textOpacity")).toDouble(1.0);
         clip.transcriptOverlay.backgroundColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("backgroundColor")).toString(QStringLiteral("#ff000000")));
         clip.transcriptOverlay.highlightColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("highlightColor")).toString(QStringLiteral("#fffff2a8")));
         clip.transcriptOverlay.highlightTextColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("highlightTextColor")).toString(QStringLiteral("#ff181818")));
-        clip.transcriptOverlay.normalizeReadableBounds();
+        applyOverlayTextStyle(overlayTextStyleFromTranscript(clip.transcriptOverlay),
+                              &clip.transcriptOverlay);
         clip.fadeSamples = qMax(0, obj.value(QStringLiteral("fadeSamples")).toInt(250));
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
         clip.maskEnabled = obj.value(QStringLiteral("maskEnabled")).toBool(false);
@@ -1078,6 +1130,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             }
         }
         const QJsonArray titleKeyframesArr = obj.value(QStringLiteral("titleKeyframes")).toArray();
+        clip.speakerTitleEngineActive = obj.contains(QStringLiteral("speakerTitleEngineActive"))
+            ? obj.value(QStringLiteral("speakerTitleEngineActive")).toBool(false)
+            : (!titleKeyframesArr.isEmpty() && clip.mediaType != ClipMediaType::Title);
         for (const QJsonValue &value : titleKeyframesArr)
         {
             if (!value.isObject()) continue;
@@ -1142,6 +1197,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.vulkan3DEnabled = keyframeObj.value(QStringLiteral("vulkan3DEnabled")).toBool(false);
             keyframe.vulkan3DExtrudeEnabled =
                 keyframeObj.value(QStringLiteral("vulkan3DExtrudeEnabled")).toBool(false);
+            keyframe.textExtrudeMode = textExtrudeModeFromJson(
+                keyframeObj.value(QStringLiteral("textExtrudeMode")).toString(),
+                keyframe.vulkan3DExtrudeEnabled);
             keyframe.vulkan3DExtrudeDepth =
                 qMax<qreal>(0.0, keyframeObj.value(QStringLiteral("vulkan3DExtrudeDepth")).toDouble(0.0));
             keyframe.vulkan3DBevelScale =
@@ -1157,6 +1215,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.vulkan3DScale =
                 qMax<qreal>(0.05, keyframeObj.value(QStringLiteral("vulkan3DScale")).toDouble(1.0));
             keyframe.linearInterpolation = keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
+            applyOverlayTextStyle(overlayTextStyleFromTitle(keyframe), &keyframe);
             clip.titleKeyframes.push_back(keyframe);
         }
         normalizeClipTransformKeyframes(clip);

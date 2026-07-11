@@ -756,11 +756,22 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptBackgroundCornerRadiusSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    for (QSpinBox* spin : {m_widgets.transcriptTextOpacitySpin,
+                           m_widgets.transcriptBackgroundPaddingSpin,
+                           m_widgets.transcriptBackgroundFrameOpacitySpin,
+                           m_widgets.transcriptBackgroundFrameWidthSpin,
+                           m_widgets.transcriptBackgroundFrameGapSpin}) {
+        if (spin) connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptBackgroundFrameCheckBox) {
+        connect(m_widgets.transcriptBackgroundFrameCheckBox, &QCheckBox::toggled, this, &TranscriptTab::onOverlaySettingChanged);
+    }
     for (QPushButton* button : {m_widgets.transcriptTextColorButton,
                                 m_widgets.transcriptBackgroundColorButton,
                                 m_widgets.transcriptHighlightColorButton,
                                 m_widgets.transcriptShadowColorButton,
-                                m_widgets.transcriptOutlineColorButton}) {
+                                m_widgets.transcriptOutlineColorButton,
+                                m_widgets.transcriptBackgroundFrameColorButton}) {
         if (button) {
             connect(button, &QPushButton::clicked, this, &TranscriptTab::onOverlayColorButtonClicked);
         }
@@ -792,6 +803,24 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptOutlineOpacitySpin) {
         connect(m_widgets.transcriptOutlineOpacitySpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptTextExtrudeModeCombo) {
+        connect(m_widgets.transcriptTextExtrudeModeCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+        connect(m_widgets.transcriptTextExtrudeModeCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+                    const bool enabled = m_widgets.transcriptTextExtrudeModeCombo->currentData().toInt() != 0;
+                    if (m_widgets.transcriptTextExtrudeDepthSpin) m_widgets.transcriptTextExtrudeDepthSpin->setEnabled(enabled);
+                    if (m_widgets.transcriptTextExtrudeBevelSpin) m_widgets.transcriptTextExtrudeBevelSpin->setEnabled(enabled);
+                });
+    }
+    for (QDoubleSpinBox* spin : {m_widgets.transcriptTextExtrudeDepthSpin,
+                                 m_widgets.transcriptTextExtrudeBevelSpin}) {
+        if (spin) {
+            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                    this, &TranscriptTab::onOverlaySettingChanged);
+        }
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         connect(m_widgets.transcriptShowSpeakerTitleCheckBox, &QCheckBox::toggled,

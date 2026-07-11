@@ -1,377 +1,253 @@
-# Refactor Plan
-
-## Purpose
-
-This document is the repo-specific execution plan for reducing large files under the 1500-line cap using the standards in `FILESIZE_REDUCTION_STRATEGY.md`.
-
-## Baseline (2026-04-27)
-
-Files currently over 1500 lines:
-
-1. `editor.cpp` (~3150)
-2. `speakers_tab_interactions.cpp` (~2961)
-3. `control_server_worker_routes.cpp` (~2166)
-4. `grading_tab.cpp` (~1795)
-5. `preview_window_overlay.cpp` (~1620)
-6. `inspector_pane.cpp` (~1611)
-
-Files near threshold (proactive split target):
-
-1. `timeline_widget_core.cpp` (~1461)
-2. `editor_media_tools.cpp` (~1461)
-3. `transcript_tab.cpp` (~1460)
-
-## Step-by-Step Execution Plan
-
-## Step 0: Preflight
-
-Source files:
-
-1. `CMakeLists.txt`
-
-Destination files:
-
-1. `CMakeLists.txt` (updated source lists only)
-
-Actions:
-
-1. Add placeholders for all destination files listed below.
-2. Build after each step with `./build.sh`.
-
-## Step 1: Split `editor.cpp`
-
-Source files:
-
-1. `editor.cpp`
-2. `editor.h`
-
-Destination files:
-
-1. `editor_main.cpp`
-2. `editor_cli.cpp`
-3. `editor_ai_auth.cpp`
-4. `editor_ai_actions.cpp`
-5. `editor_state_load.cpp`
-6. `editor_state_save.cpp`
-7. `editor_shortcuts.cpp`
-8. `editor_dialogs.cpp`
-
-Actions:
-
-1. Move `main()` and command-line parsing into `editor_main.cpp` and `editor_cli.cpp`.
-2. Move AI login/token/entitlement state refresh into `editor_ai_auth.cpp`.
-3. Move AI action submission wrappers into `editor_ai_actions.cpp`.
-4. Move project load/migration into `editor_state_load.cpp`.
-5. Move save/autosave/state snapshot code into `editor_state_save.cpp`.
-6. Move shortcut registration and handlers into `editor_shortcuts.cpp`.
-7. Move dialog construction/callbacks into `editor_dialogs.cpp`.
-8. Keep only high-level orchestration glue in `editor.cpp`.
-
-## Step 2: Split `speakers_tab_interactions.cpp`
-
-Source files:
-
-1. `speakers_tab_interactions.cpp`
-2. `speakers_tab.h`
-3. `speakers_tab_internal.h`
-
-Destination files:
-
-1. `speakers_tab_pipeline_transcript.cpp`
-2. `speakers_tab_pipeline_candidates.cpp`
-3. `speakers_tab_pipeline_matching.cpp`
-4. `speakers_tab_pipeline_apply.cpp`
-5. `speakers_tab_pipeline_debug.cpp`
-6. `speakers_tab_interactions_ui.cpp`
-
-Actions:
-
-1. Move transcript normalization/read helpers into `speakers_tab_pipeline_transcript.cpp`.
-2. Move candidate face detection and pre-crop logic into `speakers_tab_pipeline_candidates.cpp`.
-3. Move speaker name to face matching logic into `speakers_tab_pipeline_matching.cpp`.
-4. Move assignment writeback/mutation code into `speakers_tab_pipeline_apply.cpp`.
-5. Move artifact generation and overwrite-prompt logic into `speakers_tab_pipeline_debug.cpp`.
-6. Keep user-triggered handlers in `speakers_tab_interactions_ui.cpp`.
-7. Keep shared constants/types in `speakers_tab_internal.h`.
-
-## Step 3: Split `control_server_worker_routes.cpp`
-
-Source files:
-
-1. `control_server_worker_routes.cpp`
-2. `control_server_worker.h`
-
-Destination files:
-
-1. `control_server_routes_health.cpp`
-2. `control_server_routes_state.cpp`
-3. `control_server_routes_ui.cpp`
-4. `control_server_routes_media.cpp`
-5. `control_server_routes_debug.cpp`
-
-Actions:
-
-1. Move `/health`, `/version` style routes into `control_server_routes_health.cpp`.
-2. Move `/state`, `/project`, `/timeline`, `/tracks`, `/clips` routes into `control_server_routes_state.cpp`.
-3. Move `/ui`, `/click`, `/click-item`, `/menu`, `/windows`, `/screenshot` routes into `control_server_routes_ui.cpp`.
-4. Move decode/media diagnostics routes into `control_server_routes_media.cpp`.
-5. Move `/debug`, profiling and perf routes into `control_server_routes_debug.cpp`.
-6. Keep shared request parsing and route registration in `control_server_worker_routes.cpp`.
-
-## Step 4: Split `grading_tab.cpp`
-
-Source files:
-
-1. `grading_tab.cpp`
-2. `grading_tab.h`
-
-Destination files:
-
-1. `grading_tab_layout.cpp`
-2. `grading_tab_bindings.cpp`
-3. `grading_tab_state.cpp`
-4. `grading_tab_actions.cpp`
-
-Actions:
-
-1. Move widget construction/layout into `grading_tab_layout.cpp`.
-2. Move signal-slot wiring into `grading_tab_bindings.cpp`.
-3. Move model-to-UI and UI-to-model synchronization into `grading_tab_state.cpp`.
-4. Move command handlers and mutations into `grading_tab_actions.cpp`.
-
-## Step 5: Split `preview_window_overlay.cpp`
-
-Source files:
-
-1. `preview_window_overlay.cpp`
-2. `preview.h`
-
-Destination files:
-
-1. `preview_window_overlay_draw.cpp`
-2. `preview_window_overlay_labels.cpp`
-3. `preview_window_overlay_speakers.cpp`
-4. `preview_window_overlay_debug.cpp`
-
-Actions:
-
-1. Move generic overlay paint orchestration into `preview_window_overlay_draw.cpp`.
-2. Move text/label rendering into `preview_window_overlay_labels.cpp`.
-3. Move speaker box/track visualization into `preview_window_overlay_speakers.cpp`.
-4. Move debug overlays into `preview_window_overlay_debug.cpp`.
-
-## Step 6: Split `inspector_pane.cpp`
-
-Source files:
-
-1. `inspector_pane.cpp`
-2. `inspector_pane.h`
-
-Destination files:
-
-1. `inspector_pane_layout.cpp`
-2. `inspector_pane_bindings.cpp`
-3. `inspector_pane_state.cpp`
-4. `inspector_pane_actions.cpp`
-
-Actions:
-
-1. Move tab and widget layout builders into `inspector_pane_layout.cpp`.
-2. Move signal-slot and callback wiring into `inspector_pane_bindings.cpp`.
-3. Move state refresh/apply logic into `inspector_pane_state.cpp`.
-4. Move action handlers into `inspector_pane_actions.cpp`.
-
-## Step 7: Proactive Near-Threshold Split (`timeline_widget_core.cpp`)
-
-Source files:
-
-1. `timeline_widget_core.cpp`
-2. `timeline_widget.h`
-
-Destination files:
-
-1. `timeline_widget_layout.cpp`
-2. `timeline_widget_state.cpp`
-3. `timeline_widget_selection.cpp`
-
-Actions:
-
-1. Move geometry/layout calculations into `timeline_widget_layout.cpp`.
-2. Move cached state/update logic into `timeline_widget_state.cpp`.
-3. Move selection and selection-derived state changes into `timeline_widget_selection.cpp`.
-
-## Step 8: Proactive Near-Threshold Split (`editor_media_tools.cpp`)
-
-Source files:
-
-1. `editor_media_tools.cpp`
-2. `editor.h`
-
-Destination files:
-
-1. `editor_media_import.cpp`
-2. `editor_media_proxy.cpp`
-3. `editor_media_metadata.cpp`
-
-Actions:
-
-1. Move import/open media flows into `editor_media_import.cpp`.
-2. Move proxy generation/toggle/use logic into `editor_media_proxy.cpp`.
-3. Move metadata/probe/validation helpers into `editor_media_metadata.cpp`.
-
-## Step 9: Proactive Near-Threshold Split (`transcript_tab.cpp`)
-
-Source files:
-
-1. `transcript_tab.cpp`
-2. `transcript_tab.h`
-
-Destination files:
-
-1. `transcript_tab_layout.cpp`
-2. `transcript_tab_bindings.cpp`
-3. `transcript_tab_state.cpp`
-4. `transcript_tab_actions.cpp`
-
-Actions:
-
-1. Move UI construction into `transcript_tab_layout.cpp`.
-2. Move signal-slot bindings into `transcript_tab_bindings.cpp`.
-3. Move state sync and table/model refresh into `transcript_tab_state.cpp`.
-4. Move user action handlers into `transcript_tab_actions.cpp`.
-
-## Validation Per Step
-
-1. Build: `./build.sh`
-2. Smoke run for startup: `./build/jcut` (or current binary path)
-3. If route files changed: quick control-server endpoint smoke (`/health`, `/state`, `/ui`)
-4. If speaker pipeline changed: run speaker debug artifact flow and verify outputs
-
-## Completion Criteria
-
-1. Every file above is below 1500 lines.
-2. No destination file exceeds 1500 lines.
-3. Behavior is unchanged except intended cleanup.
-4. Build and smoke checks pass after each step.
-
-## Dataflow Hardening Track (From `DATAFLOW.md`)
-
-### Goal
-
-Stabilize runtime behavior by enforcing one-way dataflow and eliminating UI re-entrancy loops under heavy refresh pressure.
-
-### D0: Immediate Safety Guards
-
-Source files:
-
-1. `speakers_tab.cpp`
-2. `speakers_tab.h`
-3. `transcript_tab.cpp`
-4. `inspector_pane.cpp`
-5. `timeline_widget_core.cpp`
-
-Actions:
-
-1. Add explicit re-entrancy guards (`m_refreshing*`) for each heavy panel refresh.
-2. Wrap bulk table/list repaints with `QSignalBlocker` on widget and selection model.
-3. Prevent unconditional selection writes (`setCurrentCell`/`setCurrentIndex`) during refresh.
-4. Add debug log counters for skipped re-entrant refresh attempts.
-
-Exit checks:
-
-1. No recursive refresh stack traces in gdb when idling on Speakers tab.
-2. Idle CPU after startup remains stable (no sustained pegging).
-
-### D1: Intent Routing + Debounce
-
-Source files:
-
-1. `speakers_tab.cpp`
-2. `speakers_tab_interactions.cpp`
-3. `editor.cpp`
-4. `editor_setup.cpp`
-5. `transcript_tab.cpp`
-
-Actions:
-
-1. Replace direct refresh chains with explicit intent handlers per tab.
-2. Debounce playhead-driven panel refreshes (16-50ms window).
-3. Ensure signal handlers dispatch intents only; avoid direct persistence and heavy JSON work.
-
-Exit checks:
-
-1. No direct signal -> heavy JSON parse/serialize path without debounce.
-2. Playback scrubbing does not trigger runaway refresh loops.
-
-### D2: State/Render Separation
-
-Source files:
-
-1. `speakers_tab.cpp`
-2. `transcript_tab.cpp`
-3. `inspector_pane.cpp`
-4. `preview_window_overlay.cpp`
-
-Actions:
-
-1. Split tab logic into `compute*Model(...)` and `render*Model(...)` patterns.
-2. Ban persistence calls inside render functions.
-3. Move normalization and merge logic to compute phase only.
-
-Exit checks:
-
-1. Render methods are idempotent and safe to call repeatedly.
-2. No `save*` or subprocess launches from render paths.
-
-### D3: Persistence Budgeting
-
-Source files:
-
-1. `project_state.cpp`
-2. `project_manager.cpp`
-3. `cleanup.sh`
-4. `transcript_engine.cpp`
-
-Actions:
-
-1. Add history cap policy (max entries + optional byte budget).
-2. Add snapshot dedupe before append/write.
-3. Keep heavy-field stripping before history writes.
-4. Document and automate cleanup policy for debug artifacts and backups.
-
-Exit checks:
-
-1. `history.json` remains bounded over long editing sessions.
-2. Project directory growth is predictable and recoverable with `cleanup.sh`.
-
-### D4: Worker Isolation and Schema Gate
-
-Source files:
-
-1. `speakers_tab_facedetections_actions.cpp`
-2. `docker_face_detector.py`
-3. `speaker_face_candidates.py`
-4. `sam3.sh`
-
-Actions:
-
-1. Keep detector execution and parsing off UI hot paths.
-2. Validate backend JSON schema before ingesting into app state.
-3. Normalize all backend outputs to one canonical detection schema.
-4. Enforce clear timeout/cancel/error mapping per backend.
-
-Exit checks:
-
-1. Long-running detector tasks keep UI responsive.
-2. Backend-specific malformed output fails fast with actionable errors.
-
-### Dataflow Validation Checklist (Run Per Milestone)
-
-1. Build: `cmake --build build -j4 --target jcut`
-2. Startup smoke: `./build/jcut`
-3. Runtime sanity:
-4. Open Speakers tab and scrub timeline for 30s without CPU runaway.
-5. Run one native tracking preset and one Docker tracking preset.
-6. Persistence sanity:
-7. Confirm `state.json` and `history.json` remain valid JSON after runs.
-8. Confirm no multi-hundred-MB debug growth unless explicitly retained.
+# Large-File Refactor Plan
+
+## Objective
+
+Reduce high-churn source files to the repository's 1500-line hard cap, with a
+preferred steady-state size of 800-1200 lines. Splits are by responsibility;
+the first pass should move code without changing behavior or public APIs.
+
+Baseline: 2026-07-10, using `python countlines.py`.
+
+## Current Priorities
+
+| Priority | File | Lines | Main problem | Initial target |
+|---|---:|---:|---|---|
+| P0 | `tracks.cpp` | 4827 | assignment, diagnostics, previews, and UI actions are mixed | <1000 |
+| P0 | `offscreen_vulkan_renderer_backend.cpp` | 4826 | one private backend owns every Vulkan stage | <1200/file |
+| P0 | `speakers_tab.cpp` | 4117 | document, refresh, tables, generation, and status logic are mixed | <1000 |
+| P0 | `audio_engine.cpp` | 4092 | device control, scheduling, decoding, stretching, and mixing are mixed | <1200/file |
+| P0 | `jcut_imgui_main.cpp` | 3901 | application shell, platform/Vulkan setup, workers, and panels are mixed | <800 |
+| P1 | `vulkan_facedetections_offscreen_runner.cpp` | 3399 | CLI orchestration and the full processing pipeline are one function | <800 |
+| P1 | `direct_vulkan_preview_window.cpp` | 3307 | window, renderer lifecycle, readback, and frame submission are mixed | <1000 |
+| P1 | `editor_shared_keyframes.cpp` | 3097 | generic keyframes and speaker-framing runtime are coupled | <1000 |
+| P1 | `vulkan_preview_surface.cpp` | 2865 | preview lifecycle and rendering responsibilities are broad | <1000 |
+| P1 | `inspector_pane.cpp` | 2812 | layout, bindings, state sync, and actions remain mixed | <1000 |
+
+The remaining files above 1500 lines form the P2 backlog. Re-run the report
+after P0/P1 because extractions may make several of them shrink or reveal
+shared code: `vulkan_detector_frame_handoff.cpp`,
+`facedetections_continuity_artifacts.cpp`, `speakers_tab_interactions_ai.cpp`,
+`control_server_worker_routes.cpp`, `editor.cpp`, `editor_media_tools.cpp`,
+`editor_ai_integration.cpp`, `transcript_tab.cpp`, `vulkan_text_renderer.cpp`,
+`editor_tabs.cpp`, `control_server_worker_routes_ui.cpp`,
+`speakers_tab_interactions.cpp`, `editor_render_tools.cpp`,
+`transcript_tab_document.cpp`, `sam3_run.py`, `vulkan_resources.cpp`,
+`render_export.cpp`, `editor_shared_transcript.cpp`, `timeline_cache.cpp`,
+`speakers_tab_facedetections_generation.cpp`, `imgui_preview_window.cpp`, and
+`editor_playback.cpp`.
+
+## Phase 0: Guardrails
+
+1. Record the baseline in CI and warn at 1200 lines, fail when a changed file
+   grows beyond 1500 lines. Grandfather current oversized files but reject
+   line-count growth.
+2. Build and test before every extraction. Add new translation units to the
+   owning CMake target in the same commit as the move.
+3. Keep each extraction move-only. Do naming, ownership, or data-flow changes
+   only after the split compiles and focused tests pass.
+4. Prefer private free functions or internal implementation objects over
+   expanding public headers. Put cross-translation-unit private declarations
+   in a narrowly scoped `*_internal.h`.
+
+## Phase 1: Speaker and Track Domain
+
+Do these together because `tracks.cpp` implements `SpeakersTab`, and splitting
+either file independently could create a second round of churn.
+
+### `tracks.cpp`
+
+Extract in this order:
+
+1. `speakers_tab_track_avatars.cpp`: avatar decoding, representative frames,
+   continuity strips, hover previews, and tooltip rendering (roughly current
+   lines 499-1347).
+2. `speakers_tab_track_diagnostics.cpp`: paths/raw-detections panels, debug
+   snapshots, cache clearing, and deferred diagnostic refresh (roughly
+   706-1949, excluding avatar functions already moved).
+3. `speakers_tab_section_assignments.cpp`: contiguous-section lookup,
+   assignment, persistence, rotation, and deassignment (roughly 1951-3268).
+4. `speakers_tab_track_actions.cpp`: assign/deassign commands, preview face-box
+   actions, context menus, and batch anchor application (roughly 3416-4285).
+5. `speakers_tab_track_picker.cpp`: candidate list, picker dialogs, and avatar
+   refresh actions (roughly 4286-end).
+
+Keep only small shared JSON/key helpers in `tracks.cpp`, then rename it to
+`speakers_tab_tracks_core.cpp` once references are stable.
+
+### `speakers_tab.cpp`
+
+Extract:
+
+1. `speakers_tab_document.cpp`: transcript load/save/flush and loaded-document
+   application.
+2. `speakers_tab_sections_table.cpp`: section row construction, selection,
+   playhead synchronization, and incremental table refresh.
+3. `speakers_tab_speakers_table.cpp`: speaker-table population, display labels,
+   and speaker lookup/navigation.
+4. `speakers_tab_facedetections_actions.cpp`: generate/delete/view actions;
+   merge with the existing file of that name instead of creating a duplicate.
+5. `speakers_tab_status.cpp`: tracking/generator status polling and label
+   updates.
+
+Leave construction and top-level `refresh()` dispatch in `speakers_tab.cpp`.
+Before moving helpers, check `speakers_tab_internal.h` for an existing owner;
+deduplicate repeated section/track JSON helpers across these two source files.
+
+Verification: speaker/section selection, assign and deassign, face-box click,
+transcript save/reload, generation cancellation, and avatar refresh tests.
+
+## Phase 2: Audio Engine
+
+Keep `AudioEngine`'s public API stable and move member definitions into:
+
+1. `audio_engine_device.cpp`: initialization, shutdown, PortAudio callback,
+   transport, clock, volume, and output status.
+2. `audio_engine_schedule.cpp`: clip/range snapshots, timeline-to-source
+   mapping, decode queues, prioritization, and readiness checks.
+3. `audio_engine_decode.cpp`: `decodeClipAudio`, cache insertion, and
+   `decodeLoop`.
+4. `audio_engine_time_stretch.cpp`: job state, Rubber Band settings,
+   precompute, sidecar loading, and stretched-cache construction. Reuse the
+   existing `audio_time_stretch*.cpp` abstractions where they already own a
+   responsibility.
+5. `audio_engine_mix.cpp`: speech-range blending, crossfades, dynamics,
+   `mixChunk`, and `mixLoop`.
+6. `audio_ring_buffer.cpp`: ring-buffer implementation if it is useful outside
+   the engine; otherwise keep it private in the device file.
+
+Verification: unit tests for time/sample mapping and range blending, then
+play/seek/rate-change tests, cache miss/failure tests, and an export audio
+comparison. Run a thread sanitizer build if supported; this split crosses
+mutex and worker-thread boundaries.
+
+## Phase 3: Vulkan Rendering
+
+### `offscreen_vulkan_renderer_backend.cpp`
+
+First replace the monolithic `OffscreenVulkanRendererPrivate` definition with
+a private declaration in `offscreen_vulkan_renderer_internal.h`. Then extract
+cohesive methods into:
+
+1. `offscreen_vulkan_renderer_device.cpp`: instance/device/queue, memory type,
+   command pools, and teardown.
+2. `offscreen_vulkan_renderer_resources.cpp`: images, buffers, descriptors,
+   samplers, pipelines, and resource caches.
+3. `offscreen_vulkan_renderer_composite.cpp`: frame layer composition, masks,
+   overlays, grading, and draw submission.
+4. `offscreen_vulkan_renderer_readback.cpp`: BGRA/YUV readback and staging.
+5. `offscreen_vulkan_renderer_nv12.cpp`: NV12 conversion and CUDA external
+   memory transfer.
+6. Keep the public facade and high-level `renderFrame` orchestration in the
+   original file.
+
+This is the highest-risk split. Do not redesign resource ownership during the
+move. Verify CPU/Vulkan pixel parity, headless export, NV12/YUV paths, resize,
+device loss, repeated initialize/shutdown, and validation-layer output.
+
+### `direct_vulkan_preview_window.cpp`
+
+Extract class declarations to `direct_vulkan_preview_internal.h`, then move:
+
+1. renderer initialization/release and device loss to
+   `direct_vulkan_preview_lifecycle.cpp`;
+2. clip/title resource caches to `direct_vulkan_preview_resources.cpp`;
+3. swapchain/decoder readback to `direct_vulkan_preview_readback.cpp`;
+4. `startNextFrame` composition and submission to
+   `direct_vulkan_preview_frame.cpp`;
+5. window facade functions to `direct_vulkan_preview_window_api.cpp`.
+
+Reuse the already split audio, presenter, geometry, interaction, transcript,
+and overlay-rendering files; do not move those concerns back into the core.
+
+## Phase 4: ImGui Application Shell
+
+Split `jcut_imgui_main.cpp` into:
+
+1. `jcut_imgui_platform.cpp`: X11 input and Vulkan/ImGui platform setup.
+2. `jcut_imgui_preferences.cpp`: font and UI preference load/save.
+3. `jcut_imgui_runtime_control.cpp`: runtime snapshots, screenshots, and
+   playhead control.
+4. `jcut_imgui_workers.cpp`: preview/export worker orchestration.
+5. `jcut_imgui_media_panel.cpp`, `jcut_imgui_preview_panel.cpp`,
+   `jcut_imgui_timeline_panel.cpp`, and `jcut_imgui_inspector_panel.cpp`.
+6. Keep startup, the event loop, top-level layout, and shutdown in
+   `jcut_imgui_main.cpp`.
+
+Move `ShellState`, `ShellLayout`, and platform state into
+`jcut_imgui_internal.h`; avoid exposing them as application-wide APIs.
+
+Verification: launch/shutdown, preference persistence, media import,
+play/seek/edit, preview refresh, export/cancel, and runtime-control smoke tests.
+
+## Phase 5: Face-Detection Runner and Keyframes
+
+### `vulkan_facedetections_offscreen_runner.cpp`
+
+Break the current 3200-line orchestration function into stages:
+
+1. `vulkan_facedetections_offscreen_cli.cpp`: argument conversion and option
+   validation, building on the existing options module.
+2. `vulkan_facedetections_offscreen_pipeline.cpp`: top-level stage sequencing.
+3. `vulkan_facedetections_offscreen_decode.cpp`: input/decode and frame timing.
+4. `vulkan_facedetections_offscreen_detection.cpp`: batching and detector
+   invocation.
+5. `vulkan_facedetections_offscreen_tracking.cpp`: continuity/tracking handoff.
+6. `vulkan_facedetections_offscreen_artifacts.cpp`: checkpoint, resume, and
+   output coordination, delegating actual I/O to the existing artifact and
+   checkpoint modules.
+
+Verification: identical CLI errors and exit codes, clean run, resume after
+interruption, cancellation, empty input, and artifact JSON comparison.
+
+### `editor_shared_keyframes.cpp`
+
+Extract by keyframe family:
+
+1. `editor_keyframes_normalize.cpp`: normalization for transform, grading,
+   opacity, and title keyframes.
+2. `editor_keyframes_transform.cpp`: generic transform interpolation and
+   composition.
+3. `editor_keyframes_grading.cpp`, `editor_keyframes_opacity.cpp`, and
+   `editor_keyframes_titles.cpp`: family-specific evaluation.
+4. `editor_speaker_framing_continuity.cpp`: artifact lookup, cache warm-up,
+   tracking samples, smoothing, and runtime preparation.
+5. `editor_speaker_framing_keyframes.cpp`: target retargeting and speaker-frame
+   transform evaluation.
+
+Generic keyframe code must not depend on face-detection artifacts after this
+split. Add table-driven boundary/interpolation tests before moving evaluation
+logic, including duplicate frames, empty tracks, fractional positions, source
+lock, and rotation wraparound.
+
+## Phase 6: P1/P2 Sweep
+
+Apply the same seams to `vulkan_preview_surface.cpp` and `inspector_pane.cpp`,
+then regenerate the line report. Tackle remaining files in descending order,
+except where files share a domain: complete one domain together to avoid
+repeated internal-header and CMake churn. Python files use the same 1500-line
+cap but should be split into importable option, pipeline, I/O, and reporting
+modules rather than mechanically divided scripts.
+
+## Per-File Execution Checklist
+
+1. Identify functions and state for one destination; document its ownership in
+   the PR/commit description.
+2. Add focused characterization tests if the behavior is not already covered.
+3. Add the destination to the correct CMake target.
+4. Move declarations and definitions without semantic edits.
+5. Build the narrowest target, run focused tests, then run the full suite.
+6. Compare warnings, runtime diagnostics, artifacts, or rendered output as
+   appropriate to the domain.
+7. Commit one responsibility extraction at a time; do not combine unrelated
+   cleanup.
+8. Re-run `python countlines.py` and update this baseline after each phase.
+
+## Definition of Done
+
+- No changed source or header exceeds 1500 lines; active core files aim for
+  800-1200 lines.
+- Each destination has one clear responsibility and a narrow private boundary.
+- Public APIs and observable behavior are unchanged for move-only phases.
+- Build, focused tests, and the full test suite pass.
+- Rendering/audio/artifact outputs have domain-appropriate parity evidence.
+- The size check prevents the files from growing back into monoliths.

@@ -1311,7 +1311,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
                              QStringLiteral("No loaded transcript is available for the selected clip."));
         return;
     }
-    if (!m_speakerDeps.updateClipById) {
+    if (!m_speakerDeps.updateClipById || !m_speakerDeps.replaceSpeakerTitleClips) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("News lower-third fly in"),
                              QStringLiteral("Source clip title overlay updates are unavailable."));
@@ -1360,12 +1360,23 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_widgets.speakerOverlayWrapRollSpin) {
         flyInSettings.wrapRollDegrees = m_widgets.speakerOverlayWrapRollSpin->value();
     }
+    if (m_widgets.speakerOverlayRotationXSpin)
+        flyInSettings.rotationStartXDegrees = m_widgets.speakerOverlayRotationXSpin->value();
+    if (m_widgets.speakerOverlayRotationYSpin)
+        flyInSettings.rotationStartYDegrees = m_widgets.speakerOverlayRotationYSpin->value();
+    if (m_widgets.speakerOverlayRotationZSpin)
+        flyInSettings.rotationStartZDegrees = m_widgets.speakerOverlayRotationZSpin->value();
     if (m_widgets.speakerOverlayTitleFontSizeSpin) {
         flyInSettings.titleFontSize = m_widgets.speakerOverlayTitleFontSizeSpin->value();
     }
     if (m_widgets.speakerOverlayTitleBoxWidthSpin) {
         flyInSettings.titleBoxWidth = m_widgets.speakerOverlayTitleBoxWidthSpin->value();
     }
+    flyInSettings.showSpeakerName = !m_widgets.speakerShowCurrentSpeakerNameCheckBox ||
+        m_widgets.speakerShowCurrentSpeakerNameCheckBox->isChecked();
+    flyInSettings.showSpeakerOrganization =
+        m_widgets.speakerShowCurrentSpeakerOrganizationCheckBox &&
+        m_widgets.speakerShowCurrentSpeakerOrganizationCheckBox->isChecked();
     auto comboMaterialStyle = [](QComboBox* combo) {
         using MaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle;
         if (!combo) {
@@ -1397,6 +1408,11 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_widgets.speakerOverlayTitleExtrudeCheckBox) {
         flyInSettings.titleExtrude3D = m_widgets.speakerOverlayTitleExtrudeCheckBox->isChecked();
     }
+    if (m_widgets.speakerOverlayTitleExtrudeModeCombo) {
+        flyInSettings.titleExtrudeMode =
+            static_cast<TimelineClip::TitleKeyframe::TextExtrudeMode>(
+                m_widgets.speakerOverlayTitleExtrudeModeCombo->currentData().toInt());
+    }
     if (m_widgets.speakerOverlayTitleExtrudeDepthSpin) {
         flyInSettings.titleExtrudeDepth = m_widgets.speakerOverlayTitleExtrudeDepthSpin->value();
     }
@@ -1407,17 +1423,20 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
-    int appliedTitleCount = 0;
+    QVector<TimelineClip> generatedTitles = makeSpeakerTitleClipsForTranscriptIntroductions(
+        *clip, transcriptPath, sections, clip->trackIndex + 1, flyInSettings);
+    const int appliedTitleCount = generatedTitles.size();
     const bool updated = m_speakerDeps.updateClipById(
         clipId,
         [&](TimelineClip& editableClip) {
-            appliedTitleCount = applySpeakerTitleFlyInsToSourceClip(
-                editableClip,
-                transcriptPath,
-                sections,
-                flyInSettings);
+            editableClip.titleKeyframes.clear(); // migrate legacy embedded speaker titles
+            editableClip.speakerTitleEngineActive = !generatedTitles.isEmpty();
+            editableClip.transcriptOverlay.showSpeakerTitle = false;
         });
     if (!updated || appliedTitleCount <= 0) {
+        if (updated && appliedTitleCount <= 0) {
+            m_speakerDeps.replaceSpeakerTitleClips(clipId, {});
+        }
         if (m_widgets.speakerOverlayCreateTitleClipsButton) {
             QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
             m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(false);
@@ -1428,13 +1447,8 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
         return;
     }
 
-    GeneratedClipPlacementResult cleanupResult;
-    if (m_speakerDeps.replaceSpeakerTitleClips) {
-        cleanupResult = m_speakerDeps.replaceSpeakerTitleClips(clipId, {});
-    }
-    if (m_speakerDeps.selectClipById) {
-        m_speakerDeps.selectClipById(clipId);
-    }
+    const GeneratedClipPlacementResult placementResult =
+        m_speakerDeps.replaceSpeakerTitleClips(clipId, generatedTitles);
     if (m_speakerDeps.refreshPreview) {
         m_speakerDeps.refreshPreview();
     }
@@ -1443,9 +1457,9 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     }
     if (m_widgets.speakersInspectorDetailsLabel) {
         m_widgets.speakersInspectorDetailsLabel->setText(
-            QStringLiteral("Applied %1 speaker title fly-ins to the source clip. Removed %2 stale title clips.")
+            QStringLiteral("Created %1 editable speaker title clip(s). Removed %2 stale generated title clip(s).")
                 .arg(appliedTitleCount)
-                .arg(cleanupResult.removedCount));
+                .arg(placementResult.removedCount));
     }
 }
 
@@ -1756,6 +1770,43 @@ bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64
             speakerItem, QAbstractItemView::PositionAtCenter);
     }
     focusSpeakerSectionTrackFromRow(row);
+    return true;
+}
+
+bool SpeakersTab::seekToSpeakerSectionRow(int row, int64_t* timelineFrameOut)
+{
+    if (!m_widgets.speakerSectionsTable || row < 0 || !m_deps.seekToTimelineFrame) {
+        return false;
+    }
+    QTableWidgetItem* speakerItem =
+        m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
+    if (!speakerItem || speakerItem->data(SpeakerSectionRowTypeRole).toInt(0) != 0) {
+        return false;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return false;
+    }
+    const int64_t transcriptFrame =
+        speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+    if (transcriptFrame < 0) {
+        return false;
+    }
+    const QVector<RenderSyncMarker> markers = m_speakerDeps.getRenderSyncMarkers
+        ? m_speakerDeps.getRenderSyncMarkers()
+        : QVector<RenderSyncMarker>{};
+    const int64_t timelineFrame =
+        timelineFrameForClipTranscriptFrame(*clip, transcriptFrame, markers);
+    if (timelineFrameOut) {
+        *timelineFrameOut = timelineFrame;
+    }
+    const int64_t currentFrame = m_deps.getCurrentTimelineFrame
+        ? m_deps.getCurrentTimelineFrame()
+        : -1;
+    m_suppressSyncForTimelineFrame = timelineFrame;
+    if (currentFrame != timelineFrame) {
+        m_deps.seekToTimelineFrame(timelineFrame);
+    }
     return true;
 }
 
@@ -3616,7 +3667,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
         QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
         m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
-            selectedClip && !selectedClip->titleKeyframes.isEmpty());
+            selectedClip && selectedClip->speakerTitleEngineActive);
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);
@@ -4031,7 +4082,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabelFast()
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
         QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
         m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
-            selectedClip && !selectedClip->titleKeyframes.isEmpty());
+            selectedClip && selectedClip->speakerTitleEngineActive);
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);

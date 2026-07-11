@@ -930,9 +930,6 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 }
                 subtabs->setCurrentIndex(targetIndex);
                 const QJsonObject tree = widgetSnapshot(m_window);
-                m_lastUiTreeSnapshot = tree;
-                m_lastUiTreeSnapshotMs = QDateTime::currentMSecsSinceEpoch();
-                ++m_uiTreeSnapshotSuccessCount;
                 return QJsonObject{
                     {QStringLiteral("ok"), true},
                     {QStringLiteral("current_index"), subtabs->currentIndex()},
@@ -950,30 +947,18 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
     if (request.method == QStringLiteral("GET") &&
         (request.url.path() == QStringLiteral("/ui") || request.url.path() == QStringLiteral("/ui/"))) {
-        const QUrlQuery query(request.url);
-        const QString refreshValue = query.queryItemValue(QStringLiteral("refresh")).trimmed().toLower();
-        const bool forceRefresh =
-            refreshValue == QStringLiteral("1") ||
-            refreshValue == QStringLiteral("true") ||
-            refreshValue == QStringLiteral("yes");
-        if (forceRefresh || m_lastUiTreeSnapshot.isEmpty()) {
-            QString refreshError;
-            if (refreshUiTreeCacheFromUi(qMax(m_uiInvokeTimeoutMs, 2000), &refreshError)) {
-                m_lastUiTreeRefreshError.clear();
-            } else {
-                const QString error = refreshError.isEmpty()
-                    ? (m_lastUiTreeRefreshError.isEmpty()
-                           ? QStringLiteral("ui hierarchy unavailable; cache warming")
-                           : m_lastUiTreeRefreshError)
-                    : refreshError;
-                writeError(socket, 503, error);
-                return true;
-            }
+        QJsonObject tree;
+        if (!invokeOnUiThread(m_window,
+                              qMax(m_uiInvokeTimeoutMs, 2000),
+                              &tree,
+                              [this]() { return widgetSnapshot(m_window); })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for ui hierarchy"));
+            return true;
         }
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
-            {QStringLiteral("ui"), m_lastUiTreeSnapshot},
-            {QStringLiteral("window"), m_lastUiTreeSnapshot}
+            {QStringLiteral("ui"), tree},
+            {QStringLiteral("window"), tree}
         });
         return true;
     }

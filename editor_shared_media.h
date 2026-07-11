@@ -2,6 +2,19 @@
 
 #include "editor_shared_core.h"
 
+class VirtualClipRelationshipIndex {
+public:
+    void rebuild(const QVector<TimelineClip>& clips, quint64 timelineRevision);
+    bool hasVisibleChild(const TimelineClip& parent,
+                         const QVector<TimelineClip>& clips,
+                         const QVector<TimelineTrack>& tracks) const;
+    quint64 timelineRevision() const { return m_timelineRevision; }
+
+private:
+    QHash<QString, QVector<int>> m_childIndicesByParentId;
+    quint64 m_timelineRevision = 0;
+};
+
 QString clipMediaTypeToString(ClipMediaType type);
 ClipMediaType clipMediaTypeFromString(const QString& value);
 QString clipMediaTypeLabel(ClipMediaType type);
@@ -27,6 +40,16 @@ bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineT
 bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
                                           const QVector<TimelineClip>& clips,
                                           const QVector<TimelineTrack>& tracks);
+bool clipIsVirtualChildOf(const TimelineClip& child, const TimelineClip& parent);
+bool clipVirtualChildPlaybackEnabled(const TimelineClip& child,
+                                     const QVector<TimelineTrack>& tracks);
+bool clipHasVisibleVirtualChild(const TimelineClip& parent,
+                                const QVector<TimelineClip>& clips,
+                                const QVector<TimelineTrack>& tracks);
+bool clipContributesVisualMedia(const TimelineClip& clip,
+                                const QVector<TimelineClip>& clips,
+                                const QVector<TimelineTrack>& tracks,
+                                const VirtualClipRelationshipIndex* relationships = nullptr);
 bool clipAudioPlaybackEnabled(const TimelineClip& clip);
 bool clipHasAlpha(const TimelineClip& clip);
 

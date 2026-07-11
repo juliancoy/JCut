@@ -59,6 +59,7 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
     result.windowFramePatternScale = kf.windowFramePatternScale;
     result.vulkan3DEnabled = kf.vulkan3DEnabled;
     result.vulkan3DExtrudeEnabled = kf.vulkan3DExtrudeEnabled;
+    result.textExtrudeMode = kf.textExtrudeMode;
     result.vulkan3DExtrudeDepth = kf.vulkan3DExtrudeDepth;
     result.vulkan3DBevelScale = kf.vulkan3DBevelScale;
     result.vulkan3DYawDegrees = kf.vulkan3DYawDegrees;
@@ -86,6 +87,9 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
             result.windowWidth = kf.windowWidth + (next.windowWidth - kf.windowWidth) * t;
             result.vulkan3DEnabled = kf.vulkan3DEnabled || next.vulkan3DEnabled;
             result.vulkan3DExtrudeEnabled = kf.vulkan3DExtrudeEnabled || next.vulkan3DExtrudeEnabled;
+            result.textExtrudeMode = kf.textExtrudeMode != TextExtrudeMode::None
+                ? kf.textExtrudeMode
+                : next.textExtrudeMode;
             result.vulkan3DExtrudeDepth = kf.vulkan3DExtrudeDepth + (next.vulkan3DExtrudeDepth - kf.vulkan3DExtrudeDepth) * t;
             result.vulkan3DBevelScale = kf.vulkan3DBevelScale + (next.vulkan3DBevelScale - kf.vulkan3DBevelScale) * t;
             result.vulkan3DYawDegrees = kf.vulkan3DYawDegrees + (next.vulkan3DYawDegrees - kf.vulkan3DYawDegrees) * t;

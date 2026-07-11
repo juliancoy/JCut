@@ -64,3 +64,6 @@ int64_t transcriptFrameForClipSourceFrame(const TimelineClip& clip,
 int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
                                                int64_t timelineSample,
                                                const QVector<RenderSyncMarker>& markers);
+int64_t timelineFrameForClipTranscriptFrame(const TimelineClip& clip,
+                                            int64_t transcriptFrame,
+                                            const QVector<RenderSyncMarker>& markers);

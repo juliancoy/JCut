@@ -44,6 +44,10 @@ struct SpeakerLabelOverlaySpec {
     qreal borderWidth = 1.0;
     bool showShadow = true;
     QColor shadowColor = QColor(0, 0, 0, 190);
+    TimelineClip::TitleKeyframe::TextExtrudeMode textExtrudeMode =
+        TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+    qreal textExtrudeDepth = 0.16;
+    qreal textExtrudeBevelScale = 0.7;
 };
 
 class OverlayRenderBackend {

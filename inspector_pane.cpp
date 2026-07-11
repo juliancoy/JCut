@@ -1006,6 +1006,11 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titlesInspectorDetailsLabel = new QLabel;
     layout->addWidget(m_titlesInspectorDetailsLabel);
 
+    auto placementSection = createDisclosureSection(page, QStringLiteral("Overlay Placement"), false);
+    auto typographySection = createDisclosureSection(page, QStringLiteral("Typography"), false);
+    auto effectsSection = createDisclosureSection(page, QStringLiteral("Background & Effects"), false);
+    auto actionsSection = createDisclosureSection(page, QStringLiteral("Title Actions"), false);
+
     // Text input with splitter for resizable height
     auto *textGroup = new QGroupBox(QStringLiteral("Title Text"));
     auto *textLayout = new QVBoxLayout(textGroup);
@@ -1026,7 +1031,7 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleYSpin->setRange(-9999, 9999);
     m_titleYSpin->setDecimals(1);
     posRow->addWidget(m_titleYSpin);
-    layout->addLayout(posRow);
+    placementSection.body->addLayout(posRow);
 
     // Font row
     auto *fontRow = new QHBoxLayout;
@@ -1038,7 +1043,7 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleFontSizeSpin->setDecimals(1);
     m_titleFontSizeSpin->setValue(48.0);
     fontRow->addWidget(m_titleFontSizeSpin);
-    layout->addLayout(fontRow);
+    typographySection.body->addLayout(fontRow);
 
     // Style row
     auto *styleRow = new QHBoxLayout;
@@ -1058,7 +1063,7 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleOpacitySpin->setSingleStep(0.05);
     m_titleOpacitySpin->setValue(1.0);
     styleRow->addWidget(m_titleOpacitySpin);
-    layout->addLayout(styleRow);
+    typographySection.body->addLayout(styleRow);
 
     // Drop shadow row
     auto *shadowRow = new QHBoxLayout;
@@ -1089,7 +1094,7 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleShadowOffsetYSpin->setSingleStep(0.5);
     m_titleShadowOffsetYSpin->setValue(2.0);
     shadowRow->addWidget(m_titleShadowOffsetYSpin);
-    layout->addLayout(shadowRow);
+    effectsSection.body->addLayout(shadowRow);
 
     // Text window row
     auto *windowRow = new QHBoxLayout;
@@ -1113,7 +1118,7 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleWindowPaddingSpin->setSingleStep(1.0);
     m_titleWindowPaddingSpin->setValue(16.0);
     windowRow->addWidget(m_titleWindowPaddingSpin);
-    layout->addLayout(windowRow);
+    effectsSection.body->addLayout(windowRow);
 
     // Window frame row
     auto *windowFrameRow = new QHBoxLayout;
@@ -1144,7 +1149,25 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleWindowFrameGapSpin->setSingleStep(1.0);
     m_titleWindowFrameGapSpin->setValue(4.0);
     windowFrameRow->addWidget(m_titleWindowFrameGapSpin);
-    layout->addLayout(windowFrameRow);
+    effectsSection.body->addLayout(windowFrameRow);
+
+    auto *extrudeRow = new QHBoxLayout;
+    m_titleTextExtrudeModeCombo = new QComboBox;
+    m_titleTextExtrudeModeCombo->addItem(QStringLiteral("No Extrusion"), 0);
+    m_titleTextExtrudeModeCombo->addItem(QStringLiteral("Stacked Copies"), 1);
+    m_titleTextExtrudeModeCombo->addItem(QStringLiteral("Eroded Solid"), 2);
+    extrudeRow->addWidget(m_titleTextExtrudeModeCombo);
+    m_titleTextExtrudeDepthSpin = new QDoubleSpinBox;
+    m_titleTextExtrudeDepthSpin->setRange(0.02, 2.0);
+    m_titleTextExtrudeDepthSpin->setValue(0.16);
+    m_titleTextExtrudeDepthSpin->setPrefix(QStringLiteral("Depth "));
+    extrudeRow->addWidget(m_titleTextExtrudeDepthSpin);
+    m_titleTextExtrudeBevelSpin = new QDoubleSpinBox;
+    m_titleTextExtrudeBevelSpin->setRange(0.0, 2.0);
+    m_titleTextExtrudeBevelSpin->setValue(0.7);
+    m_titleTextExtrudeBevelSpin->setPrefix(QStringLiteral("Bevel "));
+    extrudeRow->addWidget(m_titleTextExtrudeBevelSpin);
+    effectsSection.body->addLayout(extrudeRow);
 
     // Buttons
     auto *buttonRow = new QHBoxLayout;
@@ -1152,7 +1175,7 @@ QWidget *InspectorPane::buildTitlesTab()
     buttonRow->addWidget(m_addTitleKeyframeButton);
     m_removeTitleKeyframeButton = new QPushButton(QStringLiteral("Remove Selected"));
     buttonRow->addWidget(m_removeTitleKeyframeButton);
-    layout->addLayout(buttonRow);
+    actionsSection.body->addLayout(buttonRow);
 
     auto *centerRow = new QHBoxLayout;
     m_titleCenterHorizontalButton = new QPushButton(QStringLiteral("Center H"));
@@ -1161,12 +1184,17 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleCenterVerticalButton = new QPushButton(QStringLiteral("Center V"));
     m_titleCenterVerticalButton->setToolTip(QStringLiteral("Center title vertically"));
     centerRow->addWidget(m_titleCenterVerticalButton);
-    layout->addLayout(centerRow);
+    placementSection.body->addLayout(centerRow);
 
     // Auto-scroll
     m_titleAutoScrollCheck = new QCheckBox(QStringLiteral("Auto-scroll to playhead"));
     m_titleAutoScrollCheck->setChecked(true);
-    layout->addWidget(m_titleAutoScrollCheck);
+    actionsSection.body->addWidget(m_titleAutoScrollCheck);
+
+    layout->addWidget(placementSection.container);
+    layout->addWidget(typographySection.container);
+    layout->addWidget(effectsSection.container);
+    layout->addWidget(actionsSection.container);
 
     // Table
     m_titleKeyframeTable = new QTableWidget;
@@ -1429,6 +1457,9 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Background"), settingsContainer);
     m_transcriptBackgroundOpacitySpin = new QSpinBox(settingsContainer);
     m_transcriptBackgroundCornerRadiusSpin = new QSpinBox(settingsContainer);
+    m_transcriptTextOpacitySpin = new QSpinBox(settingsContainer);
+    m_transcriptBackgroundPaddingSpin = new QSpinBox(settingsContainer);
+    m_transcriptBackgroundFrameCheckBox = new QCheckBox(QStringLiteral("Show Frame"), settingsContainer);
     auto makeTranscriptColorButton = [settingsContainer](const QString& color, const QString& tooltip) {
         auto* button = new QPushButton(color, settingsContainer);
         button->setMinimumHeight(24);
@@ -1447,6 +1478,11 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptBackgroundColorButton = makeTranscriptColorButton(
         QStringLiteral("#000000"),
         QStringLiteral("Set the transcript overlay window background color."));
+    m_transcriptBackgroundFrameColorButton = makeTranscriptColorButton(
+        QStringLiteral("#ffffff"), QStringLiteral("Set the transcript window frame color."));
+    m_transcriptBackgroundFrameOpacitySpin = new QSpinBox(settingsContainer);
+    m_transcriptBackgroundFrameWidthSpin = new QSpinBox(settingsContainer);
+    m_transcriptBackgroundFrameGapSpin = new QSpinBox(settingsContainer);
     m_transcriptHighlightColorButton = makeTranscriptColorButton(
         QStringLiteral("#fff2a8"),
         QStringLiteral("Set the active word highlight color."));
@@ -1463,6 +1499,16 @@ QWidget *InspectorPane::buildTranscriptTab()
         QStringLiteral("Set the subtitle text dilation/outline color."));
     m_transcriptOutlineWidthSpin = new QSpinBox(settingsContainer);
     m_transcriptOutlineOpacitySpin = new QSpinBox(settingsContainer);
+    m_transcriptTextExtrudeModeCombo = new QComboBox(settingsContainer);
+    m_transcriptTextExtrudeModeCombo->addItem(QStringLiteral("No Extrusion"), 0);
+    m_transcriptTextExtrudeModeCombo->addItem(QStringLiteral("Stacked Copies"), 1);
+    m_transcriptTextExtrudeModeCombo->addItem(QStringLiteral("Eroded Solid"), 2);
+    m_transcriptTextExtrudeDepthSpin = new QDoubleSpinBox(settingsContainer);
+    m_transcriptTextExtrudeDepthSpin->setRange(0.02, 2.0);
+    m_transcriptTextExtrudeDepthSpin->setValue(0.16);
+    m_transcriptTextExtrudeBevelSpin = new QDoubleSpinBox(settingsContainer);
+    m_transcriptTextExtrudeBevelSpin->setRange(0.0, 2.0);
+    m_transcriptTextExtrudeBevelSpin->setValue(0.7);
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
     m_transcriptHighlightCurrentWordCheckBox = new QCheckBox(QStringLiteral("Highlight Current Word"), settingsContainer);
     m_transcriptHighlightCurrentWordCheckBox->setToolTip(
@@ -1505,6 +1551,18 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptBackgroundCornerRadiusSpin->setSuffix(QStringLiteral(" px"));
     m_transcriptBackgroundCornerRadiusSpin->setToolTip(
         QStringLiteral("Corner radius of the subtitle background."));
+    for (QSpinBox* spin : {m_transcriptTextOpacitySpin, m_transcriptBackgroundFrameOpacitySpin}) {
+        spin->setRange(0, 100); spin->setSuffix(QStringLiteral("%")); spin->setValue(100);
+    }
+    m_transcriptBackgroundPaddingSpin->setRange(0, 400);
+    m_transcriptBackgroundPaddingSpin->setSuffix(QStringLiteral(" px"));
+    m_transcriptBackgroundPaddingSpin->setValue(16);
+    m_transcriptBackgroundFrameWidthSpin->setRange(0, 120);
+    m_transcriptBackgroundFrameWidthSpin->setSuffix(QStringLiteral(" px"));
+    m_transcriptBackgroundFrameWidthSpin->setValue(2);
+    m_transcriptBackgroundFrameGapSpin->setRange(0, 200);
+    m_transcriptBackgroundFrameGapSpin->setSuffix(QStringLiteral(" px"));
+    m_transcriptBackgroundFrameGapSpin->setValue(4);
     m_transcriptShadowOpacitySpin->setRange(0, 100);
     m_transcriptShadowOpacitySpin->setSuffix(QStringLiteral("%"));
     m_transcriptShadowOpacitySpin->setValue(78);
@@ -1686,6 +1744,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     typographyForm->addRow(QStringLiteral("Bold"), m_transcriptBoldCheckBox);
     typographyForm->addRow(QStringLiteral("Italic"), m_transcriptItalicCheckBox);
     typographyForm->addRow(QStringLiteral("Text Color"), m_transcriptTextColorButton);
+    typographyForm->addRow(QStringLiteral("Text Opacity"), m_transcriptTextOpacitySpin);
     typographySection.body->addLayout(typographyForm);
 
     auto backgroundSection = createDisclosureSection(settingsContainer, QStringLiteral("Background & Effects"), false);
@@ -1694,6 +1753,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     backgroundForm->addRow(QStringLiteral("Background Color"), m_transcriptBackgroundColorButton);
     backgroundForm->addRow(QStringLiteral("Background Opacity"), m_transcriptBackgroundOpacitySpin);
     backgroundForm->addRow(QStringLiteral("Corner Radius"), m_transcriptBackgroundCornerRadiusSpin);
+    backgroundForm->addRow(QStringLiteral("Padding"), m_transcriptBackgroundPaddingSpin);
+    backgroundForm->addRow(QStringLiteral("Frame"), m_transcriptBackgroundFrameCheckBox);
+    backgroundForm->addRow(QStringLiteral("Frame Color"), m_transcriptBackgroundFrameColorButton);
+    backgroundForm->addRow(QStringLiteral("Frame Opacity"), m_transcriptBackgroundFrameOpacitySpin);
+    backgroundForm->addRow(QStringLiteral("Frame Width"), m_transcriptBackgroundFrameWidthSpin);
+    backgroundForm->addRow(QStringLiteral("Frame Gap"), m_transcriptBackgroundFrameGapSpin);
     backgroundForm->addRow(QStringLiteral("Shadow"), m_transcriptShadowEnabledCheckBox);
     backgroundForm->addRow(QStringLiteral("Shadow Color"), m_transcriptShadowColorButton);
     backgroundForm->addRow(QStringLiteral("Shadow Opacity"), m_transcriptShadowOpacitySpin);
@@ -1703,6 +1768,9 @@ QWidget *InspectorPane::buildTranscriptTab()
     backgroundForm->addRow(QStringLiteral("Dilation Color"), m_transcriptOutlineColorButton);
     backgroundForm->addRow(QStringLiteral("Dilation Size"), m_transcriptOutlineWidthSpin);
     backgroundForm->addRow(QStringLiteral("Dilation Opacity"), m_transcriptOutlineOpacitySpin);
+    backgroundForm->addRow(QStringLiteral("Text Mode"), m_transcriptTextExtrudeModeCombo);
+    backgroundForm->addRow(QStringLiteral("Extrude Depth"), m_transcriptTextExtrudeDepthSpin);
+    backgroundForm->addRow(QStringLiteral("Extrude Bevel"), m_transcriptTextExtrudeBevelSpin);
     backgroundSection.body->addLayout(backgroundForm);
 
     auto contentSection = createDisclosureSection(settingsContainer, QStringLiteral("Transcript Behavior"), false);
@@ -1997,6 +2065,15 @@ QWidget *InspectorPane::buildSpeakersTab()
         -180.0,
         180.0,
         QStringLiteral("Roll the projected orbit path clockwise or counter-clockwise."));
+    m_speakerOverlayRotationXSpin = makeWrapAngleSpin(
+        0.0, -720.0, 720.0,
+        QStringLiteral("Initial X-axis rotation, animated to zero as the title settles."));
+    m_speakerOverlayRotationYSpin = makeWrapAngleSpin(
+        0.0, -720.0, 720.0,
+        QStringLiteral("Initial Y-axis rotation, animated to zero as the title settles."));
+    m_speakerOverlayRotationZSpin = makeWrapAngleSpin(
+        0.0, -720.0, 720.0,
+        QStringLiteral("Initial Z-axis rotation, animated to zero as the title settles."));
     m_speakerOverlayTitleFontSizeSpin = new QSpinBox(page);
     m_speakerOverlayTitleFontSizeSpin->setRange(12, 220);
     m_speakerOverlayTitleFontSizeSpin->setSingleStep(2);
@@ -2046,6 +2123,16 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerOverlayTitleExtrudeCheckBox->setChecked(false);
     m_speakerOverlayTitleExtrudeCheckBox->setToolTip(
         QStringLiteral("Mark generated wrap titles for the extruded 3D mesh pathway."));
+    m_speakerOverlayTitleExtrudeModeCombo = new QComboBox(page);
+    m_speakerOverlayTitleExtrudeModeCombo->addItem(
+        QStringLiteral("Stacked Copies"),
+        static_cast<int>(TimelineClip::TitleKeyframe::TextExtrudeMode::StackedCopies));
+    m_speakerOverlayTitleExtrudeModeCombo->addItem(
+        QStringLiteral("Eroded Solid"),
+        static_cast<int>(TimelineClip::TitleKeyframe::TextExtrudeMode::ErodedSolid));
+    m_speakerOverlayTitleExtrudeModeCombo->setCurrentIndex(1);
+    m_speakerOverlayTitleExtrudeModeCombo->setToolTip(
+        QStringLiteral("Choose separated text layers or a continuous eroded 3D sidewall."));
     m_speakerOverlayTitleExtrudeDepthSpin = new QDoubleSpinBox(page);
     m_speakerOverlayTitleExtrudeDepthSpin->setRange(0.02, 2.0);
     m_speakerOverlayTitleExtrudeDepthSpin->setDecimals(2);
@@ -2489,6 +2576,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerSectionsFilterLayout->addWidget(speakerSectionsSearchEdit, 1);
     speakerSectionsFilterLayout->addWidget(speakerSectionsSummaryLabel);
     speakerSectionsLayout->addWidget(speakerSectionsFilterRow);
+    m_speakerSectionsTable->setObjectName(QStringLiteral("speakers.sections_table"));
     speakerSectionsLayout->addWidget(m_speakerSectionsTable, 1);
     speakerSectionsControlsLayout->addWidget(m_speakerSectionMinimumWordsSpin, 0, 0);
     speakerSectionsControlsLayout->addWidget(m_speakerExportLongSectionsButton, 0, 1);
@@ -2606,6 +2694,9 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerOverlayFlyInForm->addRow(wrapEndAngleLabel, m_speakerOverlayWrapEndAngleSpin);
     speakerOverlayFlyInForm->addRow(wrapPitchLabel, m_speakerOverlayWrapPitchSpin);
     speakerOverlayFlyInForm->addRow(wrapRollLabel, m_speakerOverlayWrapRollSpin);
+    speakerOverlayFlyInForm->addRow(QStringLiteral("Start Rotation X"), m_speakerOverlayRotationXSpin);
+    speakerOverlayFlyInForm->addRow(QStringLiteral("Start Rotation Y"), m_speakerOverlayRotationYSpin);
+    speakerOverlayFlyInForm->addRow(QStringLiteral("Start Rotation Z"), m_speakerOverlayRotationZSpin);
     auto syncWrapControls = [this,
                              wrapRadiusLabel,
                              wrapDepthLabel,
@@ -2673,6 +2764,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Pattern Image"), m_speakerOverlayTitleBorderPatternPathEdit);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Pattern Scale"), m_speakerOverlayTitlePatternScaleSpin);
     currentSpeakerTextSizeLayout->addRow(m_speakerOverlayTitleExtrudeCheckBox);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Extrude Mode"), m_speakerOverlayTitleExtrudeModeCombo);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Extrude Depth"), m_speakerOverlayTitleExtrudeDepthSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Bevel Scale"), m_speakerOverlayTitleBevelScaleSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Size"), m_speakerCurrentSpeakerNameTextSizeSpin);

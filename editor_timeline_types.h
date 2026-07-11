@@ -105,6 +105,11 @@ struct TimelineClip {
     };
 
     struct TitleKeyframe {
+        enum class TextExtrudeMode {
+            None = 0,
+            StackedCopies = 1,
+            ErodedSolid = 2,
+        };
         enum class MaterialStyle {
             Solid = 0,
             Neon = 1,
@@ -151,6 +156,7 @@ struct TimelineClip {
         qreal windowFramePatternScale = 1.0;
         bool vulkan3DEnabled = false;
         bool vulkan3DExtrudeEnabled = false;
+        TextExtrudeMode textExtrudeMode = TextExtrudeMode::None;
         qreal vulkan3DExtrudeDepth = 0.0;
         qreal vulkan3DBevelScale = 0.0;
         qreal vulkan3DYawDegrees = 0.0;
@@ -171,6 +177,12 @@ struct TimelineClip {
         bool showBackground = true;
         qreal backgroundOpacity = 120.0 / 255.0;
         qreal backgroundCornerRadius = 14.0;
+        qreal backgroundPadding = 16.0;
+        bool backgroundFrameEnabled = false;
+        QColor backgroundFrameColor = QColor(QStringLiteral("#ffffffff"));
+        qreal backgroundFrameOpacity = 1.0;
+        qreal backgroundFrameWidth = 2.0;
+        qreal backgroundFrameGap = 4.0;
         bool showShadow = true;
         QColor shadowColor = QColor(QStringLiteral("#000000"));
         qreal shadowOpacity = 0.78;
@@ -180,6 +192,10 @@ struct TimelineClip {
         qreal textOutlineWidth = 0.0;
         QColor textOutlineColor = QColor(QStringLiteral("#000000"));
         qreal textOutlineOpacity = 0.80;
+        TitleKeyframe::TextExtrudeMode textExtrudeMode =
+            TitleKeyframe::TextExtrudeMode::None;
+        qreal textExtrudeDepth = 0.16;
+        qreal textExtrudeBevelScale = 0.7;
         bool showSpeakerTitle = false;
         bool highlightCurrentWord = true;
         bool autoScroll = false;
@@ -199,6 +215,7 @@ struct TimelineClip {
         bool bold = true;
         bool italic = false;
         QColor textColor = QColor(QStringLiteral("#ffffff"));
+        qreal textOpacity = 1.0;
         QColor backgroundColor = QColor(QStringLiteral("#000000"));
         QColor highlightColor = QColor(QStringLiteral("#fff2a8"));
         QColor highlightTextColor = QColor(QStringLiteral("#181818"));
@@ -210,11 +227,18 @@ struct TimelineClip {
             fontPointSize = qMax(kMinReadableFontPointSize, fontPointSize);
             backgroundOpacity = qBound<qreal>(0.0, backgroundOpacity, 1.0);
             backgroundCornerRadius = qBound<qreal>(0.0, backgroundCornerRadius, 128.0);
+            backgroundPadding = qBound<qreal>(0.0, backgroundPadding, 400.0);
+            backgroundFrameOpacity = qBound<qreal>(0.0, backgroundFrameOpacity, 1.0);
+            backgroundFrameWidth = qBound<qreal>(0.0, backgroundFrameWidth, 120.0);
+            backgroundFrameGap = qBound<qreal>(0.0, backgroundFrameGap, 200.0);
+            textOpacity = qBound<qreal>(0.0, textOpacity, 1.0);
             shadowOpacity = qBound<qreal>(0.0, shadowOpacity, 1.0);
             shadowOffsetX = qBound<qreal>(-128.0, shadowOffsetX, 128.0);
             shadowOffsetY = qBound<qreal>(-128.0, shadowOffsetY, 128.0);
             textOutlineWidth = qBound<qreal>(0.0, textOutlineWidth, 24.0);
             textOutlineOpacity = qBound<qreal>(0.0, textOutlineOpacity, 1.0);
+            textExtrudeDepth = qBound<qreal>(0.0, textExtrudeDepth, 2.0);
+            textExtrudeBevelScale = qBound<qreal>(0.0, textExtrudeBevelScale, 2.0);
         }
     };
 
@@ -303,6 +327,7 @@ struct TimelineClip {
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;
+    bool speakerTitleEngineActive = false;
     TranscriptOverlaySettings transcriptOverlay;
     int fadeSamples = 250;
     bool locked = false;

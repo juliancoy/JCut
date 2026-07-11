@@ -124,6 +124,7 @@ void SpeakersTab::wire()
                     const QString clipId = clip->id;
                     m_speakerDeps.updateClipById(clipId, [](TimelineClip& editable) {
                         editable.titleKeyframes.clear();
+                        editable.speakerTitleEngineActive = false;
                     });
                     if (m_speakerDeps.replaceSpeakerTitleClips) {
                         m_speakerDeps.replaceSpeakerTitleClips(clipId, {});
@@ -137,6 +138,9 @@ void SpeakersTab::wire()
                 m_widgets.speakerOverlayCreateTitleClipsButton->isChecked()) {
                 onSpeakerCreateTitleClipsClicked();
             }
+            if (!m_updating && m_deps.scheduleSaveState) {
+                m_deps.scheduleSaveState();
+            }
         };
         for (QDoubleSpinBox* spin : {
                  m_widgets.speakerOverlayFlyInDelaySpin,
@@ -148,6 +152,9 @@ void SpeakersTab::wire()
                  m_widgets.speakerOverlayWrapEndAngleSpin,
                  m_widgets.speakerOverlayWrapPitchSpin,
                  m_widgets.speakerOverlayWrapRollSpin,
+                 m_widgets.speakerOverlayRotationXSpin,
+                 m_widgets.speakerOverlayRotationYSpin,
+                 m_widgets.speakerOverlayRotationZSpin,
                  m_widgets.speakerOverlayTitlePatternScaleSpin,
                  m_widgets.speakerOverlayTitleExtrudeDepthSpin,
                  m_widgets.speakerOverlayTitleBevelScaleSpin}) {
@@ -161,7 +168,8 @@ void SpeakersTab::wire()
         }
         for (QComboBox* combo : {m_widgets.speakerOverlayFlyInStyleCombo,
                                  m_widgets.speakerOverlayTitleTextMaterialCombo,
-                                 m_widgets.speakerOverlayTitleBorderMaterialCombo}) {
+                                 m_widgets.speakerOverlayTitleBorderMaterialCombo,
+                                 m_widgets.speakerOverlayTitleExtrudeModeCombo}) {
             if (combo) connect(combo, qOverload<int>(&QComboBox::currentIndexChanged),
                                this, [refreshEnabledFlyIn](int) { refreshEnabledFlyIn(); });
         }
@@ -172,7 +180,22 @@ void SpeakersTab::wire()
         }
         if (m_widgets.speakerOverlayTitleExtrudeCheckBox) {
             connect(m_widgets.speakerOverlayTitleExtrudeCheckBox, &QCheckBox::toggled,
-                    this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
+                    this, [this, refreshEnabledFlyIn](bool enabled) {
+                        if (m_widgets.speakerOverlayTitleExtrudeModeCombo)
+                            m_widgets.speakerOverlayTitleExtrudeModeCombo->setEnabled(enabled);
+                        if (m_widgets.speakerOverlayTitleExtrudeDepthSpin)
+                            m_widgets.speakerOverlayTitleExtrudeDepthSpin->setEnabled(enabled);
+                        if (m_widgets.speakerOverlayTitleBevelScaleSpin)
+                            m_widgets.speakerOverlayTitleBevelScaleSpin->setEnabled(enabled);
+                        refreshEnabledFlyIn();
+                    });
+            const bool enabled = m_widgets.speakerOverlayTitleExtrudeCheckBox->isChecked();
+            if (m_widgets.speakerOverlayTitleExtrudeModeCombo)
+                m_widgets.speakerOverlayTitleExtrudeModeCombo->setEnabled(enabled);
+            if (m_widgets.speakerOverlayTitleExtrudeDepthSpin)
+                m_widgets.speakerOverlayTitleExtrudeDepthSpin->setEnabled(enabled);
+            if (m_widgets.speakerOverlayTitleBevelScaleSpin)
+                m_widgets.speakerOverlayTitleBevelScaleSpin->setEnabled(enabled);
         }
     }
     if (m_widgets.speakerSectionMinimumWordsSpin) {
@@ -257,8 +280,7 @@ void SpeakersTab::wire()
                         m_sectionSelectionTiming.finishSkipped(QStringLiteral("empty_speaker_id"));
                         return;
                     }
-                    const int64_t timelineFrame = speakerItem->data(Qt::UserRole + 1).toLongLong();
-                    m_sectionSelectionTiming.setSectionContext(speakerId, timelineFrame);
+                    int64_t timelineFrame = -1;
                     m_sectionSelectionTiming.markStep(QStringLiteral("row_lookup_duration_ms"));
                     updateSpeakerFramingTargetControls();
                     selectSpeakerRowById(speakerId);
@@ -269,8 +291,8 @@ void SpeakersTab::wire()
                     m_sectionSelectionTiming.markStep(QStringLiteral("tracking_status_duration_ms"));
                     updateSelectedSpeakerPanelFast();
                     m_sectionSelectionTiming.markStep(QStringLiteral("fast_panel_duration_ms"));
-                    if (timelineFrame >= 0 && m_deps.seekToTimelineFrame) {
-                        m_deps.seekToTimelineFrame(timelineFrame);
+                    if (seekToSpeakerSectionRow(row, &timelineFrame)) {
+                        m_sectionSelectionTiming.setSectionContext(speakerId, timelineFrame);
                         m_sectionSelectionTiming.markStep(QStringLiteral("seek_duration_ms"));
                     } else {
                         m_sectionSelectionTiming.markStep(QStringLiteral("seek_skipped_duration_ms"));
@@ -278,6 +300,14 @@ void SpeakersTab::wire()
                     scheduleSelectedSpeakerPanelRefresh();
                     m_sectionSelectionTiming.markStep(QStringLiteral("schedule_panel_refresh_duration_ms"));
                     m_sectionSelectionTiming.finish();
+                });
+        connect(m_widgets.speakerSectionsTable,
+                &QTableWidget::itemClicked,
+                this,
+                [this](QTableWidgetItem* item) {
+                    if (item) {
+                        seekToSpeakerSectionRow(item->row());
+                    }
                 });
         connect(m_widgets.speakerSectionsTable,
                 &QTableWidget::itemChanged,

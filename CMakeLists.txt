@@ -338,6 +338,8 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/text.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/text.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/title_mesh.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/title_mesh.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform_process.comp
@@ -511,6 +513,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_document.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_overlay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/overlay_text_style.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transform_skip_aware_timing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/waveform_service.cpp
@@ -619,6 +622,7 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/title_mesh_extrusion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
 )
@@ -817,6 +821,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/title_mesh_extrusion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp

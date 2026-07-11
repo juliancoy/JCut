@@ -1866,6 +1866,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     };
     PreparedTranscriptOverlayMap preparedTranscriptOverlays;
     QHash<QString, PreparedTitleOverlay> preparedTitleOverlays;
+    QHash<QString, EvaluatedTitle> prepared3DTitleOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
@@ -2053,11 +2054,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         QString lastTitleClipId;
         const int64_t titleFrame = static_cast<int64_t>(std::floor(state->currentFramePosition));
         for (const TimelineClip& clip : state->clips) {
-            if (clip.mediaType != ClipMediaType::Title) {
+            if (clip.titleKeyframes.isEmpty()) {
                 continue;
             }
-            if (!clipVisualPlaybackEnabled(clip, state->tracks) ||
-                !editor::clipIsActiveAtTimelineFrame(clip, state->tracks, state->currentFramePosition, false)) {
+            const bool inClipRange =
+                state->currentFramePosition >= static_cast<qreal>(clip.startFrame) &&
+                state->currentFramePosition < static_cast<qreal>(clip.startFrame + clip.durationFrames);
+            const bool standaloneTitle = clip.mediaType == ClipMediaType::Title;
+            if (!inClipRange ||
+                (standaloneTitle && !clipVisualPlaybackEnabled(clip, state->tracks))) {
                 continue;
             }
             ++titleCandidateCount;
@@ -2089,8 +2094,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 lastTitleSkipReason = QStringLiteral("title_evaluated_invisible");
                 continue;
             }
-            if (title.vulkan3DEnabled) {
-                lastTitleSkipReason = QStringLiteral("title_3d_unsupported_in_direct_preview");
+            {
+                prepared3DTitleOverlays.insert(clip.id, title);
+                ++titlePreparedCount;
+                lastTitleSkipReason.clear();
                 continue;
             }
             TitleOverlayResources* titleResources = ensureTitleOverlayResources(clip.id);
@@ -2235,6 +2242,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     };
     beginTextFrameUploads(m_textRenderer.get(),
                           QStringLiteral("transcript:text_upload_frame_slot_unavailable"));
+    if (m_textRenderer && m_textRenderer->isReady()) {
+        for (auto it = prepared3DTitleOverlays.cbegin(); it != prepared3DTitleOverlays.cend(); ++it) {
+            if (!m_textRenderer->prepareTitleOverlayAtlas(cb, state->outputSize, it.value())) {
+                textPrepFailureReason = QStringLiteral("title:%1").arg(m_textRenderer->lastFailureReason());
+            }
+        }
+    }
     beginTextFrameUploads(m_speakerTextRenderer.get(),
                           QStringLiteral("speaker:text_upload_frame_slot_unavailable"));
     beginTextFrameUploads(m_temporalDebugTextRenderer.get(),
@@ -2336,12 +2350,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     if (m_owner->stats()) {
         const qint64 textAttemptCount =
             preparedTranscriptOverlays.size() +
-            preparedTitleOverlays.size() +
+            preparedTitleOverlays.size() + prepared3DTitleOverlays.size() +
             ((preparedSpeakerSpec.showName || preparedSpeakerSpec.showOrganization) ? 1 : 0) +
             (!preparedTemporalDebugSpec.organization.trimmed().isEmpty() ? 1 : 0);
         const qint64 textSuccessCount =
             preparedTranscriptAtlasClipIds.size() +
-            preparedTitleOverlays.size() +
+            preparedTitleOverlays.size() + prepared3DTitleOverlays.size() +
             (preparedSpeakerLabel ? 1 : 0) +
             (preparedTemporalDebugLabel ? 1 : 0);
         editor::accumulatePlaybackStageMetric(&m_owner->stats()->textPrepStageMetric,
@@ -2355,7 +2369,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           : QStringLiteral("text_not_requested"),
                                       QStringLiteral("transcript=%1 title=%2 speaker=%3 debug=%4 cache_hit=%5")
                                           .arg(preparedTranscriptAtlasClipIds.size())
-                                          .arg(preparedTitleOverlays.size())
+                                          .arg(preparedTitleOverlays.size() + prepared3DTitleOverlays.size())
                                           .arg(preparedSpeakerLabel ? 1 : 0)
                                           .arg(preparedTemporalDebugLabel ? 1 : 0)
                                           .arg(textPrepCacheHit ? 1 : 0));
@@ -2400,6 +2414,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 overlayPush);
     };
     auto drawPreparedTitleOverlayForClip = [&](const QString& clipId, const QRectF& compositeRect) -> bool {
+        const auto title3DIt = prepared3DTitleOverlays.constFind(clipId);
+        if (title3DIt != prepared3DTitleOverlays.constEnd()) {
+            if (!m_textRenderer || !m_textRenderer->isReady()) return false;
+            const bool drawn = m_textRenderer->drawTitleOverlay3D(
+                cb, swapSize, state->outputSize, compositeRect, title3DIt.value());
+            if (drawn && m_owner && m_owner->stats()) ++m_owner->stats()->titleDrawnCount;
+            return drawn;
+        }
         const auto titleIt = preparedTitleOverlays.constFind(clipId);
         if (titleIt == preparedTitleOverlays.constEnd() ||
             !titleIt.value().ready ||
@@ -2973,6 +2995,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
         qint64 fallbackTranscriptDrawCount = 0;
         qint64 fallbackTitleDrawCount = 0;
+        for (auto it = prepared3DTitleOverlays.cbegin(); it != prepared3DTitleOverlays.cend(); ++it) {
+            if (!drawnTitleOverlayClipIds.contains(it.key()) &&
+                m_textRenderer && m_textRenderer->isReady() &&
+                m_textRenderer->drawTitleOverlay3D(cb, swapSize, state->outputSize,
+                                                   compositeRect, it.value())) {
+                drawnTitleOverlayClipIds.insert(it.key());
+                ++fallbackTitleDrawCount;
+            }
+        }
         for (auto it = preparedTitleOverlays.cbegin(); it != preparedTitleOverlays.cend(); ++it) {
             if (!drawnTitleOverlayClipIds.contains(it.key()) &&
                 drawPreparedTitleOverlayForClip(it.key(), compositeRect)) {
@@ -2990,7 +3021,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         if (m_owner->stats()) {
             const qint64 transcriptDrawAttempts = preparedTranscriptAtlasClipIds.size();
             const qint64 transcriptDrawSuccesses = drawnTranscriptOverlayClipIds.size();
-            const qint64 titleDrawAttempts = preparedTitleOverlays.size();
+            const qint64 titleDrawAttempts = preparedTitleOverlays.size() + prepared3DTitleOverlays.size();
             const qint64 titleDrawSuccesses = drawnTitleOverlayClipIds.size();
             m_owner->stats()->transcriptDrawnCount = static_cast<int>(transcriptDrawSuccesses);
             m_owner->stats()->titleDrawnCount = static_cast<int>(titleDrawSuccesses);
