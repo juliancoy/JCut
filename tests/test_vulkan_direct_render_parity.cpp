@@ -82,8 +82,8 @@ private slots:
         QCOMPARE(edgeState.midtones[2], 2.5f);
         QCOMPARE(edgeState.shadows[0], 0.5f);
         QCOMPARE(edgeState.shadows[1], 0.5f);
-        QCOMPARE(edgeState.shadows[2], 0.5f);
-        QCOMPARE(edgeState.shadows[3], 0.5f);
+        QCOMPARE(edgeState.shadows[2], 1.0f);
+        QCOMPARE(edgeState.shadows[3], 1.0f);
         QVERIFY2(edgeState.highlights[3] < -1.5f,
                  "Edge-stretch background fill must signal row-wise edge sampling.");
 
@@ -110,8 +110,8 @@ private slots:
                 BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f);
         QCOMPARE(mirrorState.shadows[0], 0.5f);
         QCOMPARE(mirrorState.shadows[1], 0.5f);
-        QCOMPARE(mirrorState.shadows[2], 0.5f);
-        QCOMPARE(mirrorState.shadows[3], 0.5f);
+        QCOMPARE(mirrorState.shadows[2], 1.0f);
+        QCOMPARE(mirrorState.shadows[3], 1.0f);
         QVERIFY2(mirrorState.highlights[3] < -3.5f,
                  "Mirror background fill must signal reflected source sampling.");
 
@@ -135,9 +135,50 @@ private slots:
             transform, QRectF(-100.0, -200.0, 200.0, 400.0), QSize(1280, 720));
         QVERIFY(qAbs(mapping.centerXNorm - 0.5f) < 0.0001f);
         QVERIFY(qAbs(mapping.centerYNorm - 0.5f) < 0.0001f);
-        QVERIFY(qAbs(mapping.halfWidthOverOutputHeight - (150.0f / 720.0f)) < 0.0001f);
-        QVERIFY(qAbs(mapping.signedHalfHeightOverOutputHeight - (-150.0f / 720.0f)) < 0.0001f);
+        QVERIFY(qAbs(mapping.outputHeightOverSourceWidth - (720.0f / 300.0f)) < 0.0001f);
+        QVERIFY(qAbs(mapping.signedOutputHeightOverSourceHeight - (-720.0f / 300.0f)) < 0.0001f);
         QVERIFY(qAbs(mapping.rotationRadians - 0.5235988f) < 0.0001f);
+    }
+
+    void progressiveEdgeStretchHorizontalSamplingIsPreviewZoomInvariant()
+    {
+        const QRectF surfaceRect(0.0, 0.0, 1280.0, 720.0);
+        const QSize outputSize(1920, 1080);
+        const QSize sourceSize(1080, 1920);
+        const QPointF outputPoint(90.0, 540.0);
+
+        auto horizontalFillT = [&](qreal previewZoom) {
+            const PreviewViewTransform view(
+                surfaceRect, outputSize, 36.0, previewZoom, QPointF());
+            const QRectF fitted = view.fittedClipRect(sourceSize, sourceSize);
+            const PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
+                fitted, view.outputScale(), QPointF(), 0.0, QPointF(1.0, 1.0));
+            const auto mapping = render_detail::vulkanBackgroundFillMapping(
+                geometry.clipToScreen, geometry.localRect, view.targetRect());
+
+            const QPointF screenPoint = view.outputToScreen(outputPoint);
+            const qreal uvX = (screenPoint.x() - view.targetRect().left()) /
+                view.targetRect().width();
+            const qreal outputAspect = view.targetRect().width() /
+                view.targetRect().height();
+            const qreal sourceUvX =
+                ((uvX - mapping.centerXNorm) * outputAspect *
+                 mapping.outputHeightOverSourceWidth) + 0.5;
+            const qreal leftOverflow = qMax<qreal>(
+                0.0001,
+                mapping.centerXNorm * outputAspect *
+                    mapping.outputHeightOverSourceWidth);
+            return qBound<qreal>(0.0, -sourceUvX / leftOverflow, 1.0);
+        };
+
+        const qreal zoomOneFillT = horizontalFillT(1.0);
+        const qreal zoomTwoFillT = horizontalFillT(2.0);
+        QVERIFY2(qAbs(zoomOneFillT - zoomTwoFillT) < 0.0001,
+                 qPrintable(QStringLiteral(
+                     "Horizontal progressive sampling changed with preview zoom: "
+                     "zoom 1=%1, zoom 2=%2")
+                                .arg(zoomOneFillT, 0, 'f', 6)
+                                .arg(zoomTwoFillT, 0, 'f', 6)));
     }
 
     void pushConstantLayoutKeepsParityFlagsInPadding()

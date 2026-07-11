@@ -48,6 +48,7 @@ struct SpeakerTitleFlyInSettings {
     qreal rotationStartZDegrees = 0.0;
     qreal titleFontSize = 48.0;
     qreal titleBoxWidth = 720.0;
+    bool titleBackgroundEnabled = true;
     bool showSpeakerName = true;
     bool showSpeakerOrganization = true;
     TimelineClip::TitleKeyframe::MaterialStyle titleTextMaterialStyle =

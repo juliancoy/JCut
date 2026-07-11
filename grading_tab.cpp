@@ -241,6 +241,10 @@ void GradingTab::wire()
         connect(m_widgets.gradingResetButton, &QPushButton::clicked,
                 this, &GradingTab::onResetGradingClicked);
     }
+    if (m_widgets.gradingNormalizeCurvesButton) {
+        connect(m_widgets.gradingNormalizeCurvesButton, &QPushButton::clicked,
+                this, &GradingTab::onNormalizeCurvesClicked);
+    }
     if (m_widgets.gradingAutoOpposeButton) {
         connect(m_widgets.gradingAutoOpposeButton, &QPushButton::clicked,
                 this, &GradingTab::onAutoOpposeGradeChangesClicked);

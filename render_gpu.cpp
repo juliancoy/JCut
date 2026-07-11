@@ -6,7 +6,7 @@ namespace render_detail {
 QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
                                         const QVector<TimelineTrack>& tracks) {
     QVector<TimelineClip> visual;
-    VirtualClipRelationshipIndex relationships;
+    ClipParentChildIndex relationships;
     relationships.rebuild(clips, 1);
     for (const TimelineClip& clip : clips) {
         if (clipContributesVisualMedia(clip, clips, tracks, &relationships)) {

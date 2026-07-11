@@ -470,6 +470,10 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), content);
     m_gradingResetButton = new QPushButton(QStringLiteral("Reset Grading"), content);
     m_gradingResetButton->setToolTip(QStringLiteral("Reset the current grading values and curves to neutral."));
+    m_gradingNormalizeCurvesButton = new QPushButton(QStringLiteral("Distribute Brightness"), content);
+    m_gradingNormalizeCurvesButton->setToolTip(QStringLiteral(
+        "Fold the Brightness transfer into Red, Green, and Blue, then reset Brightness to passthrough. "
+        "Each resulting channel is limited to 12 definitive points."));
     m_gradingAutoOpposeButton = new QPushButton(QStringLiteral("Auto Oppose"), content);
     m_gradingAutoOpposeButton->setToolTip(QStringLiteral(
         "Analyze the selected clip and add grading keyframes that oppose major exposure/color shifts."));
@@ -504,6 +508,7 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(m_gradingPreviewCheckBox);
     layout->addWidget(m_gradingKeyAtPlayheadButton);
     layout->addWidget(m_gradingResetButton);
+    layout->addWidget(m_gradingNormalizeCurvesButton);
     layout->addWidget(m_gradingAutoOpposeButton);
     layout->addWidget(m_gradingKeyframeTable);
 
@@ -1509,7 +1514,9 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTextExtrudeBevelSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptTextExtrudeBevelSpin->setRange(0.0, 2.0);
     m_transcriptTextExtrudeBevelSpin->setValue(0.7);
-    m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
+    m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Inline Speaker Label"), settingsContainer);
+    m_transcriptShowSpeakerTitleCheckBox->setToolTip(
+        QStringLiteral("Show a static speaker label inside the transcript caption. Animated speaker introductions are configured below."));
     m_transcriptHighlightCurrentWordCheckBox = new QCheckBox(QStringLiteral("Highlight Current Word"), settingsContainer);
     m_transcriptHighlightCurrentWordCheckBox->setToolTip(
         QStringLiteral("Highlight the active transcript word in the video overlay."));
@@ -1787,6 +1794,20 @@ QWidget *InspectorPane::buildTranscriptTab()
     contentForm->addRow(QStringLiteral("Visibility"), m_transcriptShowExcludedLinesCheckBox);
     contentSection.body->addLayout(contentForm);
 
+    auto speakerTitlesSection = createDisclosureSection(
+        settingsContainer, QStringLiteral("Animated Speaker Introductions"), false);
+    auto* speakerTitlesHelp = new QLabel(
+        QStringLiteral("Transcript-owned title events generated at speaker introductions. They remain linked to this transcript clip and use the shared title renderer."),
+        speakerTitlesSection.container);
+    speakerTitlesHelp->setWordWrap(true);
+    speakerTitlesHelp->setStyleSheet(QStringLiteral("color: #9aabc0; font-size: 11px;"));
+    speakerTitlesSection.body->addWidget(speakerTitlesHelp);
+    m_transcriptSpeakerTitlesContainer = new QWidget(speakerTitlesSection.container);
+    auto* transcriptSpeakerTitlesLayout = new QVBoxLayout(m_transcriptSpeakerTitlesContainer);
+    transcriptSpeakerTitlesLayout->setContentsMargins(0, 0, 0, 0);
+    transcriptSpeakerTitlesLayout->setSpacing(6);
+    speakerTitlesSection.body->addWidget(m_transcriptSpeakerTitlesContainer);
+
     auto speechTimingSection = createDisclosureSection(settingsContainer, QStringLiteral("Speech Filter Timing"), false);
     auto* speechTimingForm = makeSettingsForm();
     speechTimingForm->addRow(QStringLiteral("Mode"), m_speechFilterFadeModeCombo);
@@ -1813,6 +1834,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     settingsLayout->addWidget(typographySection.container);
     settingsLayout->addWidget(backgroundSection.container);
     settingsLayout->addWidget(contentSection.container);
+    settingsLayout->addWidget(speakerTitlesSection.container);
     settingsLayout->addWidget(speechTimingSection.container);
     settingsLayout->addWidget(frameTransitionSection.container);
     settingsLayout->addWidget(audioTransitionSection.container);
@@ -1976,11 +1998,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCreateTitleClipsButton->setEnabled(false);
     m_speakerCreateTitleClipsButton->setToolTip(
         QStringLiteral("Apply or refresh fly-in lower-third speaker titles on the selected source clip."));
-    m_speakerOverlayCreateTitleClipsButton = new QCheckBox(QStringLiteral("Enable Speaker Title Fly-In"), page);
+    m_speakerOverlayCreateTitleClipsButton = new QCheckBox(QStringLiteral("Enable Animated Speaker Introductions"), page);
     m_speakerOverlayCreateTitleClipsButton->setObjectName(QStringLiteral("speakers.overlay_create_news_title_clips"));
     m_speakerOverlayCreateTitleClipsButton->setEnabled(false);
     m_speakerOverlayCreateTitleClipsButton->setToolTip(
-        QStringLiteral("Automatically maintain animated speaker-title keyframes on the selected source clip. Turn off to remove them."));
+        QStringLiteral("Generate transcript-linked title events for speaker introductions. Turn off to remove those child events."));
     m_speakerOverlayFlyInStyleCombo = new QComboBox(page);
     m_speakerOverlayFlyInStyleCombo->addItem(QStringLiteral("Slide from left"), static_cast<int>(SpeakerTitleFlyInStyle::SlideFromLeft));
     m_speakerOverlayFlyInStyleCombo->addItem(QStringLiteral("Slide from right"), static_cast<int>(SpeakerTitleFlyInStyle::SlideFromRight));
@@ -2637,11 +2659,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerAiLayout->addWidget(speakerAiGroup);
     speakerAiLayout->addStretch(1);
 
-    auto *speakerTitlePage = new QWidget(speakerWorkTabs);
-    auto *speakerTitleLayout = new QVBoxLayout(speakerTitlePage);
-    speakerTitleLayout->setContentsMargins(0, 0, 0, 0);
-    speakerTitleLayout->setSpacing(6);
-    auto *speakerTitleTabs = new QTabWidget(speakerTitlePage);
+    auto *speakerTitleTabs = new QTabWidget(m_transcriptSpeakerTitlesContainer);
     speakerTitleTabs->setObjectName(QStringLiteral("speakers.title_tabs"));
     speakerTitleTabs->setDocumentMode(true);
     speakerTitleTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -2665,7 +2683,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerLabelLayout->addWidget(speakerOverlayVisibilityGroup);
     speakerLabelLayout->addStretch(1);
 
-    auto *speakerOverlayFlyInGroup = new QGroupBox(QStringLiteral("Speaker Title Fly-In"), speakerFlyInPage);
+    auto *speakerOverlayFlyInGroup = new QGroupBox(QStringLiteral("Introduction Animation"), speakerFlyInPage);
     auto *speakerOverlayFlyInLayout = new QVBoxLayout(speakerOverlayFlyInGroup);
     speakerOverlayFlyInLayout->setContentsMargins(8, 6, 8, 6);
     speakerOverlayFlyInLayout->setSpacing(6);
@@ -2767,29 +2785,17 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Extrude Mode"), m_speakerOverlayTitleExtrudeModeCombo);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Extrude Depth"), m_speakerOverlayTitleExtrudeDepthSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Bevel Scale"), m_speakerOverlayTitleBevelScaleSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Size"), m_speakerCurrentSpeakerNameTextSizeSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Size"), m_speakerCurrentSpeakerOrganizationTextSizeSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Y Position"), m_speakerCurrentSpeakerNameYPositionSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Y Position"), m_speakerCurrentSpeakerOrganizationYPositionSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Color"), m_speakerCurrentSpeakerNameColorButton);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Color"), m_speakerCurrentSpeakerOrganizationColorButton);
+    m_speakerCurrentSpeakerBackgroundVisibleCheckBox->setText(QStringLiteral("Show Background Box"));
     currentSpeakerTextSizeLayout->addRow(m_speakerCurrentSpeakerBackgroundVisibleCheckBox);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Background Color"), m_speakerCurrentSpeakerBackgroundColorButton);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Background Opacity"), m_speakerCurrentSpeakerBackgroundOpacitySpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Color"), m_speakerCurrentSpeakerBorderColorButton);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Opacity"), m_speakerCurrentSpeakerBorderOpacitySpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Corner Radius"), m_speakerCurrentSpeakerBackgroundRadiusSpin);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Width"), m_speakerCurrentSpeakerBorderWidthSpin);
-    currentSpeakerTextSizeLayout->addRow(m_speakerCurrentSpeakerShadowCheckBox);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Color"), m_speakerCurrentSpeakerShadowColorButton);
-    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Opacity"), m_speakerCurrentSpeakerShadowOpacitySpin);
     speakerOverlayStyleLayout->addLayout(currentSpeakerTextSizeLayout);
     speakerStyleLayout->addWidget(speakerOverlayStyleGroup);
     speakerStyleLayout->addStretch(1);
     speakerTitleTabs->addTab(speakerFlyInPage, QStringLiteral("Fly-In"));
     speakerTitleTabs->addTab(speakerLabelPage, QStringLiteral("Label"));
     speakerTitleTabs->addTab(speakerStylePage, QStringLiteral("Style"));
-    speakerTitleLayout->addWidget(speakerTitleTabs, 1);
+    if (m_transcriptSpeakerTitlesContainer && m_transcriptSpeakerTitlesContainer->layout()) {
+        m_transcriptSpeakerTitlesContainer->layout()->addWidget(speakerTitleTabs);
+    }
 
     auto *speakerContinuityPage = buildSpeakersContinuityTab(speakerWorkTabs);
 
@@ -2805,7 +2811,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     const int rosterTabIndex = speakerWorkTabs->addTab(speakerRosterPage, QStringLiteral("Roster"));
     const int sectionsTabIndex = speakerWorkTabs->addTab(speakerSectionsPage, QStringLiteral("Sections"));
     speakerWorkTabs->addTab(speakerAiPage, QStringLiteral("AI Cleanup"));
-    speakerWorkTabs->addTab(speakerTitlePage, QStringLiteral("Speaker Title"));
     speakerWorkTabs->addTab(speakerContinuityPage, QStringLiteral("Continuity Tracks"));
     speakerWorkTabs->addTab(speakerDebugPage, QStringLiteral("Debug"));
     const auto syncSectionModeFromWorkTab =

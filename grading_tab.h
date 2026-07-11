@@ -45,6 +45,7 @@ public:
         QCheckBox* gradingFollowCurrentCheckBox = nullptr;
         QPushButton* gradingKeyAtPlayheadButton = nullptr;
         QPushButton* gradingResetButton = nullptr;
+        QPushButton* gradingNormalizeCurvesButton = nullptr;
         QPushButton* gradingAutoOpposeButton = nullptr;
         QComboBox* gradingCurveChannelCombo = nullptr;
         QCheckBox* gradingCurveThreePointLockCheckBox = nullptr;
@@ -94,6 +95,7 @@ private slots:
     void onFollowCurrentToggled(bool checked);
     void onKeyAtPlayheadClicked();
     void onResetGradingClicked();
+    void onNormalizeCurvesClicked();
     void onAutoOpposeGradeChangesClicked();
     void onTableSelectionChanged();
     void onTableItemChanged(QTableWidgetItem* item);

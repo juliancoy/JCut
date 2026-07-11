@@ -49,8 +49,8 @@ vec4 blurredFillSample(vec2 uv) {
 
 vec4 edgeStretchFillSample(vec2 uv) {
     vec2 center = pc.u_shadows.xy;
-    float halfWidth = max(0.0001, abs(pc.u_shadows.z));
-    float signedHalfHeight = abs(pc.u_shadows.w) < 0.0001
+    float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001
         ? 0.0001
         : pc.u_shadows.w;
     float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
@@ -60,8 +60,8 @@ vec4 edgeStretchFillSample(vec2 uv) {
     float sine = sin(angle);
     vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
                           -sine * delta.x + cosine * delta.y);
-    vec2 sourceUv = vec2(unrotated.x / (2.0 * halfWidth) + 0.5,
-                         unrotated.y / (2.0 * signedHalfHeight) + 0.5);
+    vec2 sourceUv = vec2(unrotated.x * inverseWidth + 0.5,
+                         unrotated.y * signedInverseHeight + 0.5);
     vec2 texSize = vec2(textureSize(u_texture, 0));
     vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
     vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
@@ -74,31 +74,60 @@ vec4 edgeStretchFillSample(vec2 uv) {
     bool progressive = pc.u_highlights.a < -2.5;
     float power = max(0.25, pc.u_midtones.z);
 
-    // Normalize the progressive curve over the available fill distance on each
-    // side.  sourceUv overflow is measured in source widths/heights, so using it
-    // directly makes the result depend on the preview scale (and clamps narrow
-    // sources especially early in the horizontal direction).
-    float leftOverflow = max(0.0001, center.x * outputAspect / (2.0 * halfWidth));
-    float rightOverflow = max(0.0001, (1.0 - center.x) * outputAspect /
-                                        (2.0 * halfWidth));
-    float topOverflow = max(0.0001, center.y / (2.0 * abs(signedHalfHeight)));
-    float bottomOverflow = max(0.0001, (1.0 - center.y) /
-                                         (2.0 * abs(signedHalfHeight)));
+    if (progressive && (sourceUv.x < 0.0 || sourceUv.x > 1.0 ||
+                        sourceUv.y < 0.0 || sourceUv.y > 1.0)) {
+        // Trace from the transformed media center through this fragment in
+        // screen space.  The first intersection is the exact visible media
+        // edge; the second is the canvas edge.  This keeps the scan direction
+        // independent of clip rotation and placement.
+        vec2 localFromCenter = unrotated;
+        vec2 edgeRatioAtFragment = abs(localFromCenter) *
+            (2.0 * vec2(inverseWidth, abs(signedInverseHeight)));
+        float outsideScale = max(edgeRatioAtFragment.x, edgeRatioAtFragment.y);
+        float mediaEdgeScale = 1.0 / max(1.0, outsideScale);
+        vec2 mediaEdgeLocal = localFromCenter * mediaEdgeScale;
 
-    if (sourceUv.x < 0.0) {
-        float fillT = clamp(-sourceUv.x / leftOverflow, 0.0, 1.0);
-        sourceUv.x = mix(halfTexel.x, edgeSpan.x, progressive ? pow(fillT, power) : fillT);
-    } else if (sourceUv.x > 1.0) {
-        float fillT = clamp((sourceUv.x - 1.0) / rightOverflow, 0.0, 1.0);
-        sourceUv.x = mix(1.0 - halfTexel.x, 1.0 - edgeSpan.x, progressive ? pow(fillT, power) : fillT);
-    }
+        vec2 ray = delta;
+        float canvasScaleX = ray.x > 0.0
+            ? ((1.0 - center.x) * outputAspect) / max(0.0001, ray.x)
+            : (-center.x * outputAspect) / min(-0.0001, ray.x);
+        float canvasScaleY = ray.y > 0.0
+            ? (1.0 - center.y) / max(0.0001, ray.y)
+            : (-center.y) / min(-0.0001, ray.y);
+        float canvasEdgeScale = min(canvasScaleX, canvasScaleY);
+        float fillT = clamp((1.0 - mediaEdgeScale) /
+                                max(0.0001, canvasEdgeScale - mediaEdgeScale),
+                            0.0,
+                            1.0);
+        float scanT = pow(fillT, power);
+        sourceUv = mediaEdgeLocal * vec2(inverseWidth, signedInverseHeight) + 0.5;
 
-    if (sourceUv.y < 0.0) {
-        float fillT = clamp(-sourceUv.y / topOverflow, 0.0, 1.0);
-        sourceUv.y = mix(halfTexel.y, edgeSpan.y, progressive ? pow(fillT, power) : fillT);
-    } else if (sourceUv.y > 1.0) {
-        float fillT = clamp((sourceUv.y - 1.0) / bottomOverflow, 0.0, 1.0);
-        sourceUv.y = mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, progressive ? pow(fillT, power) : fillT);
+        vec2 edgeRatio = abs(mediaEdgeLocal) *
+            (2.0 * vec2(inverseWidth, abs(signedInverseHeight)));
+        if (edgeRatio.x >= edgeRatio.y) {
+            sourceUv.x = mediaEdgeLocal.x < 0.0
+                ? mix(halfTexel.x, edgeSpan.x, scanT)
+                : mix(1.0 - halfTexel.x, 1.0 - edgeSpan.x, scanT);
+        } else {
+            sourceUv.y = mediaEdgeLocal.y * signedInverseHeight < 0.0
+                ? mix(halfTexel.y, edgeSpan.y, scanT)
+                : mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, scanT);
+        }
+    } else {
+        if (sourceUv.x < 0.0) {
+            float fillT = clamp(-sourceUv.x, 0.0, 1.0);
+            sourceUv.x = mix(halfTexel.x, edgeSpan.x, fillT);
+        } else if (sourceUv.x > 1.0) {
+            float fillT = clamp(sourceUv.x - 1.0, 0.0, 1.0);
+            sourceUv.x = mix(1.0 - halfTexel.x, 1.0 - edgeSpan.x, fillT);
+        }
+        if (sourceUv.y < 0.0) {
+            float fillT = clamp(-sourceUv.y, 0.0, 1.0);
+            sourceUv.y = mix(halfTexel.y, edgeSpan.y, fillT);
+        } else if (sourceUv.y > 1.0) {
+            float fillT = clamp(sourceUv.y - 1.0, 0.0, 1.0);
+            sourceUv.y = mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, fillT);
+        }
     }
     vec2 validHalfTexel = min(halfTexel, validSpan * 0.5);
     vec2 mappedUv = validMin + sourceUv * validSpan;
@@ -113,8 +142,8 @@ float mirroredCoord(float t) {
 
 vec4 mirrorFillSample(vec2 uv) {
     vec2 center = pc.u_shadows.xy;
-    float halfWidth = max(0.0001, abs(pc.u_shadows.z));
-    float signedHalfHeight = abs(pc.u_shadows.w) < 0.0001 ? 0.0001 : pc.u_shadows.w;
+    float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001 ? 0.0001 : pc.u_shadows.w;
     float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
     vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
     float angle = pc.u_midtones.y;
@@ -122,8 +151,8 @@ vec4 mirrorFillSample(vec2 uv) {
     float sine = sin(angle);
     vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
                           -sine * delta.x + cosine * delta.y);
-    vec2 sourceUv = vec2(unrotated.x / (2.0 * halfWidth) + 0.5,
-                         unrotated.y / (2.0 * signedHalfHeight) + 0.5);
+    vec2 sourceUv = vec2(unrotated.x * inverseWidth + 0.5,
+                         unrotated.y * signedInverseHeight + 0.5);
     vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
     vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
     vec2 validUv = validMin + vec2(mirroredCoord(sourceUv.x), mirroredCoord(sourceUv.y)) *

@@ -185,16 +185,19 @@ const TimelineClip* sourceClipForSelectedMaskMatte(const TimelineWidget* timelin
     if (!selected || selected->clipRole != ClipRole::MaskMatte) {
         return selected;
     }
-    const QString sourceId = selected->linkedSourceClipId.trimmed();
-    if (sourceId.isEmpty()) {
+    return clipSelectionContext(selected, timeline->clips()).owner();
+}
+
+const TimelineClip* transcriptOwnerForSelection(const TimelineWidget* timeline)
+{
+    if (!timeline) {
+        return nullptr;
+    }
+    const TimelineClip* selected = timeline->selectedClip();
+    if (!selected || selected->clipRole != ClipRole::SpeakerTitle) {
         return selected;
     }
-    for (const TimelineClip& clip : timeline->clips()) {
-        if (clip.id == sourceId) {
-            return &clip;
-        }
-    }
-    return selected;
+    return clipSelectionContext(selected, timeline->clips()).owner();
 }
 
 QString sourceClipIdForSelectedMaskMatte(const TimelineWidget* timeline)
@@ -1121,7 +1124,7 @@ void EditorWindow::createTranscriptTab()
     m_transcriptTab = std::make_unique<TranscriptTab>(
         transcriptWidgets,
         TranscriptTab::Dependencies{
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return transcriptOwnerForSelection(m_timeline); },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
                 return m_timeline->updateClipById(id, updater);
             },
@@ -1132,7 +1135,7 @@ void EditorWindow::createTranscriptTab()
                 if (!m_preview || !m_timeline) {
                     return;
                 }
-                if (const TimelineClip* clip = m_timeline->selectedClip()) {
+                if (const TimelineClip* clip = transcriptOwnerForSelection(m_timeline)) {
                     m_preview->invalidateTranscriptOverlayCache(clip->filePath);
                 } else {
                     m_preview->invalidateTranscriptOverlayCache();
@@ -1235,7 +1238,7 @@ void EditorWindow::createSpeakersTab()
     m_speakerTranscriptTab = std::make_unique<TranscriptTab>(
         speakerTranscriptWidgets,
         TranscriptTab::Dependencies{
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return transcriptOwnerForSelection(m_timeline); },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
                 return m_timeline && m_timeline->updateClipById(id, updater);
             },
@@ -1309,6 +1312,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerOverlayRotationZSpin(),
             m_inspectorPane->speakerOverlayTitleFontSizeSpin(),
             m_inspectorPane->speakerOverlayTitleBoxWidthSpin(),
+            m_inspectorPane->speakerCurrentSpeakerBackgroundVisibleCheckBox(),
             m_inspectorPane->speakerOverlayTitleTextMaterialCombo(),
             m_inspectorPane->speakerOverlayTitleBorderMaterialCombo(),
             m_inspectorPane->speakerOverlayTitleTextPatternPathEdit(),
@@ -1376,7 +1380,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerRawDetectionTable(),
             m_inspectorPane->speakerRawDetectionDetailsEdit()},
         SpeakersTab::Dependencies{
-            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return transcriptOwnerForSelection(m_timeline); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Speakers")); },
@@ -1403,15 +1407,16 @@ void EditorWindow::createSpeakersTab()
                     sourceClipId,
                     ClipRole::SpeakerTitle,
                     titleClips,
-                    QStringLiteral("Speaker Titles"));
+                    QStringLiteral("Transcript • Speaker Introductions"));
                 if (!result.changed) {
                     return result;
                 }
                 m_timeline->setTracks(tracks);
                 m_timeline->setClips(clips);
-                if (!result.firstInsertedClipId.isEmpty()) {
-                    m_timeline->setSelectedClipId(result.firstInsertedClipId);
-                }
+                // Generated introductions are children of the transcript clip.
+                // Preserve the parent's selection; users can explicitly select
+                // a child when they want direct title-keyframe editing.
+                m_timeline->setSelectedClipId(sourceClipId);
                 if (m_preview) {
                     m_preview->setTimelineTracks(m_timeline->tracks());
                     m_preview->setTimelineClips(m_timeline->clips());
@@ -1570,6 +1575,7 @@ void EditorWindow::createGradingTab()
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
             m_gradingKeyAtPlayheadButton,
             m_inspectorPane->gradingResetButton(),
+            m_inspectorPane->gradingNormalizeCurvesButton(),
             m_inspectorPane->gradingAutoOpposeButton(),
             m_inspectorPane->gradingCurveChannelCombo(),
             m_inspectorPane->gradingCurveThreePointLockCheckBox(),

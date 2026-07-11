@@ -70,6 +70,7 @@ public:
         QDoubleSpinBox* speakerOverlayRotationZSpin = nullptr;
         QSpinBox* speakerOverlayTitleFontSizeSpin = nullptr;
         QSpinBox* speakerOverlayTitleBoxWidthSpin = nullptr;
+        QCheckBox* speakerOverlayTitleBackgroundCheckBox = nullptr;
         QComboBox* speakerOverlayTitleTextMaterialCombo = nullptr;
         QComboBox* speakerOverlayTitleBorderMaterialCombo = nullptr;
         QLineEdit* speakerOverlayTitleTextPatternPathEdit = nullptr;

@@ -6,6 +6,7 @@
 #include "../render_vulkan_shared.h"
 #include "../mask_sidecar.h"
 #include "../transform_skip_aware_timing.h"
+#include "../titles.h"
 #include "../vulkan_effect_synth.h"
 
 #include <algorithm>
@@ -72,6 +73,7 @@ private slots:
     void maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets();
     void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps();
+    void titleAnimationsUseContiguousPlaybackTimeAcrossSkips();
     void temporalEffectsStayOnRawClockDuringVisualSpeedThrough();
     void temporalMovingPresetOptionsStaySmoothAcrossMultipleSpeechBoundaries();
     void generatedDrawMvpKeepsVulkanYDownOrientation();
@@ -87,6 +89,7 @@ private slots:
     void newsLowerThirdPresetBuildsFlyInHoldFlyOutKeyframes();
     void speakerTitleWrapAroundSpeakerBuilds3DKeyframes();
     void generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConflicts();
+    void generatedSpeakerTitleResolvesToTranscriptParent();
 };
 
 void TestEffectPresets::init()
@@ -807,6 +810,7 @@ void TestEffectPresets::speakerTitleFlyInsKeepOrganizationSeparateAndIndependent
     settings.flyOutFrames = 18;
     settings.titleFontSize = 62.0;
     settings.titleBoxWidth = 940.0;
+    settings.titleBackgroundEnabled = false;
 
     const int appliedCount = applySpeakerTitleFlyInsToSourceClip(
         source,
@@ -820,6 +824,8 @@ void TestEffectPresets::speakerTitleFlyInsKeepOrganizationSeparateAndIndependent
         QCOMPARE(keyframe.text, QStringLiteral("Jane Doe\nDirector"));
         QCOMPARE(keyframe.text.split(QLatin1Char('\n')).size(), 2);
         QCOMPARE(keyframe.windowWidth, 940.0);
+        QVERIFY(!keyframe.windowEnabled);
+        QVERIFY(!keyframe.windowFrameEnabled);
     }
 
     bool sawRequestedFontSize = false;
@@ -1035,6 +1041,50 @@ void TestEffectPresets::temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps()
     TimelineClip unsyncedClip = clip;
     unsyncedClip.effectSkipAwareTiming = false;
     QCOMPARE(render_detail::clipEffectPlaybackFramePosition(unsyncedClip, {unsyncedClip}, 20.0, timing), 20.0);
+}
+
+void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
+{
+    TimelineClip clip = createDefaultTitleClip(0, 1, 100);
+    auto first = clip.titleKeyframes.first();
+    first.frame = 0;
+    first.translationX = 0.0;
+    first.opacity = 0.0;
+    first.fontSize = 20.0;
+    first.vulkan3DYawDegrees = 0.0;
+    first.vulkan3DPitchDegrees = 0.0;
+    first.vulkan3DRollDegrees = 0.0;
+
+    auto last = first;
+    last.frame = 40;
+    last.linearInterpolation = true;
+    last.translationX = 40.0;
+    last.opacity = 1.0;
+    last.fontSize = 60.0;
+    last.vulkan3DYawDegrees = 80.0;
+    last.vulkan3DPitchDegrees = 120.0;
+    last.vulkan3DRollDegrees = 160.0;
+    clip.titleKeyframes = {first, last};
+
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{0, 9},
+        ExportRangeSegment{20, 49},
+    };
+
+    const EvaluatedTitle before = evaluateTitleAtTimelinePosition(clip, 9.0, timing);
+    const EvaluatedTitle after = evaluateTitleAtTimelinePosition(clip, 20.0, timing);
+    const EvaluatedTitle fractional = evaluateTitleAtTimelinePosition(clip, 20.5, timing);
+
+    QCOMPARE(before.x, 9.0);
+    QCOMPARE(after.x, 10.0);
+    QCOMPARE(fractional.x, 10.5);
+    QCOMPARE(after.opacity, 0.25);
+    QCOMPARE(after.fontSize, 30.0);
+    QCOMPARE(after.vulkan3DYawDegrees, 20.0);
+    QCOMPARE(after.vulkan3DPitchDegrees, 30.0);
+    QCOMPARE(after.vulkan3DRollDegrees, 40.0);
+    QCOMPARE(after.x - before.x, 1.0);
 }
 
 void TestEffectPresets::temporalEffectsStayOnRawClockDuringVisualSpeedThrough()
@@ -1721,15 +1771,15 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
         source.id,
         ClipRole::SpeakerTitle,
         QVector<TimelineClip>{titleA, titleB},
-        QStringLiteral("Speaker Titles"));
+        QStringLiteral("Transcript • Speaker Introductions"));
 
     QVERIFY(result.changed);
     QCOMPARE(result.removedCount, 1);
     QCOMPARE(result.insertedCount, 2);
     QCOMPARE(result.firstInsertedClipId, QStringLiteral("title-a"));
     QCOMPARE(tracks.size(), 3);
-    QCOMPARE(tracks.at(1).name, QStringLiteral("Speaker Titles"));
-    QCOMPARE(tracks.at(2).name, QStringLiteral("Speaker Titles 2"));
+    QCOMPARE(tracks.at(1).name, QStringLiteral("Transcript • Speaker Introductions"));
+    QCOMPARE(tracks.at(2).name, QStringLiteral("Transcript • Speaker Introductions 2"));
 
     int sourceTitleCount = 0;
     int titleATrack = -1;
@@ -1753,6 +1803,29 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
     QVERIFY(keptUnrelated);
     QCOMPARE(titleATrack, 1);
     QCOMPARE(titleBTrack, 2);
+}
+
+void TestEffectPresets::generatedSpeakerTitleResolvesToTranscriptParent()
+{
+    TimelineClip transcript;
+    transcript.id = QStringLiteral("transcript-parent");
+    transcript.mediaType = ClipMediaType::Video;
+    transcript.filePath = QStringLiteral("/tmp/interview.mp4");
+
+    TimelineClip introduction = createDefaultTitleClip(20, 2, 40);
+    introduction.clipRole = ClipRole::SpeakerTitle;
+    introduction.linkedSourceClipId = transcript.id;
+
+    const QVector<TimelineClip> clips{transcript, introduction};
+    const TimelineClip* parent = clipParent(clips.at(1), clips);
+    QVERIFY(parent);
+    QCOMPARE(parent->id, transcript.id);
+    QCOMPARE(parent->filePath, transcript.filePath);
+    QVERIFY(!clipParent(clips.at(0), clips));
+    const ClipSelectionContext context = clipSelectionContext(&clips.at(1), clips);
+    QCOMPARE(context.selected->id, introduction.id);
+    QCOMPARE(context.parent->id, transcript.id);
+    QCOMPARE(context.owner()->id, transcript.id);
 }
 
 QTEST_MAIN(TestEffectPresets)

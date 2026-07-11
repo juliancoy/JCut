@@ -461,7 +461,7 @@ QJsonObject EditorWindow::streamTimingSnapshot() const
             {QStringLiteral("diagnostic"), QStringLiteral("generated_timing_followers_skipped")},
             {QStringLiteral("count"), generatedTimingFollowerCount},
             {QStringLiteral("reason"),
-             QStringLiteral("Locked source-transform mask mattes are virtual foreground markers, not independent A/V streams.")}
+             QStringLiteral("Locked source-transform mask mattes are child foreground markers, not independent A/V streams.")}
         });
     }
 

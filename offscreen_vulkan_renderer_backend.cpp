@@ -4265,10 +4265,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
       if (clip.titleKeyframes.isEmpty()) {
         continue;
       }
-      const int64_t localFrame = qMax<int64_t>(
-          0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
-      const EvaluatedTitle evaluatedTitle =
-          evaluateTitleAtLocalFrame(clip, localFrame);
+      const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
+          clip, static_cast<qreal>(timelineFrame), request.playbackTiming);
       const EvaluatedTitle title = composeTitleWithOpacity(
           evaluatedTitle, static_cast<qreal>(grade.opacity));
       if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
@@ -4578,10 +4576,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
       }
     }
     if (!clip.titleKeyframes.isEmpty()) {
-      const int64_t titleLocalFrame = qMax<int64_t>(
-          0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
-      const EvaluatedTitle evaluatedTitle =
-          evaluateTitleAtLocalFrame(clip, titleLocalFrame);
+      const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
+          clip, static_cast<qreal>(timelineFrame), request.playbackTiming);
       const EvaluatedTitle title = composeTitleWithOpacity(
           evaluatedTitle, static_cast<qreal>(grade.opacity));
       if (title.valid && !title.text.isEmpty() && title.opacity > 0.001) {

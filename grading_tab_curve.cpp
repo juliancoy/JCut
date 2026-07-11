@@ -3,6 +3,67 @@
 
 namespace {
 
+QVector<QPointF> simplifyCurvePoints(const QVector<QPointF>& points,
+                                     bool smoothingEnabled,
+                                     int maximumPoints = 12)
+{
+    constexpr int kSamples = TimelineClip::kGradingCurveLutSize;
+    const QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
+    const QVector<quint8> target = gradingCurveLut8(sanitized, kSamples, smoothingEnabled);
+    QVector<int> knots{0, kSamples - 1};
+    QVector<QPointF> candidate;
+    while (knots.size() <= maximumPoints) {
+        candidate.clear();
+        candidate.reserve(knots.size());
+        for (const int index : std::as_const(knots)) {
+            candidate.push_back(QPointF(static_cast<qreal>(index) / (kSamples - 1),
+                                        static_cast<qreal>(target.at(index)) / 255.0));
+        }
+        const QVector<quint8> approximation =
+            gradingCurveLut8(candidate, kSamples, smoothingEnabled);
+        int worstIndex = -1;
+        int worstError = 0;
+        for (int i = 1; i < kSamples - 1; ++i) {
+            const int error = std::abs(static_cast<int>(target.at(i)) -
+                                       static_cast<int>(approximation.at(i)));
+            if (error > worstError) {
+                worstError = error;
+                worstIndex = i;
+            }
+        }
+        if (worstError <= 1) {
+            return candidate;
+        }
+        if (knots.size() == maximumPoints || worstIndex < 0) {
+            // Return the best bounded approximation. The selected knots are
+            // the samples that remove the greatest LUT error at every step.
+            return candidate;
+        }
+        knots.push_back(worstIndex);
+        std::sort(knots.begin(), knots.end());
+    }
+    return sanitized;
+}
+
+QVector<QPointF> composedCurvePoints(const QVector<QPointF>& channel,
+                                     const QVector<QPointF>& brightness,
+                                     bool smoothingEnabled)
+{
+    constexpr int kSamples = TimelineClip::kGradingCurveLutSize;
+    const QVector<quint8> channelLut =
+        gradingCurveLut8(channel, kSamples, smoothingEnabled);
+    const QVector<quint8> brightnessLut =
+        gradingCurveLut8(brightness, kSamples, smoothingEnabled);
+    QVector<QPointF> composed;
+    composed.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        const int channelValue = qBound(0, static_cast<int>(channelLut.at(i)), kSamples - 1);
+        composed.push_back(QPointF(static_cast<qreal>(i) / (kSamples - 1),
+                                   static_cast<qreal>(brightnessLut.at(channelValue)) / 255.0));
+    }
+    return composed;
+}
+
 bool comboHasAlphaItem(const QComboBox* combo)
 {
     return combo && combo->findText(QStringLiteral("Alpha")) >= 0;
@@ -54,6 +115,30 @@ void toneValuesFromThreePointCurve(const QVector<QPointF>& points,
 }
 
 } // namespace
+
+void GradingTab::onNormalizeCurvesClicked()
+{
+    const QVector<QPointF> brightness = sanitizeGradingCurvePoints(m_curvePointsLuma);
+    m_curvePointsR = simplifyCurvePoints(
+        composedCurvePoints(m_curvePointsR, brightness, m_curveSmoothingEnabled), false);
+    m_curvePointsG = simplifyCurvePoints(
+        composedCurvePoints(m_curvePointsG, brightness, m_curveSmoothingEnabled), false);
+    m_curvePointsB = simplifyCurvePoints(
+        composedCurvePoints(m_curvePointsB, brightness, m_curveSmoothingEnabled), false);
+    m_curvePointsLuma = defaultGradingCurvePoints();
+    m_curveSmoothingEnabled = false;
+    m_curveThreePointLock = false;
+    if (m_widgets.gradingCurveSmoothingCheckBox) {
+        QSignalBlocker blocker(m_widgets.gradingCurveSmoothingCheckBox);
+        m_widgets.gradingCurveSmoothingCheckBox->setChecked(false);
+    }
+    if (m_widgets.gradingCurveThreePointLockCheckBox) {
+        QSignalBlocker blocker(m_widgets.gradingCurveThreePointLockCheckBox);
+        m_widgets.gradingCurveThreePointLockCheckBox->setChecked(false);
+    }
+    updateCurveFromInspectorValues();
+    applyGradeFromInspector(true);
+}
 
 void GradingTab::onCurveChannelChanged(int index)
 {

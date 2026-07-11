@@ -1,10 +1,11 @@
 #include "titles.h"
+#include "transform_skip_aware_timing.h"
 #include "cpu_overlay_render_backend.h"
 
 #include <QUuid>
 #include <cmath>
 
-EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t localFrame)
+EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFrame)
 {
     EvaluatedTitle result;
     if (clip.titleKeyframes.isEmpty()) {
@@ -104,6 +105,15 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t local
     }
 
     return result;
+}
+
+EvaluatedTitle evaluateTitleAtTimelinePosition(const TimelineClip& clip,
+                                               qreal timelineFramePosition,
+                                               const PlaybackTimingContext& timing)
+{
+    const qreal animationFrame = clipPlaybackFramePositionForTimelineFrame(
+        clip, timelineFramePosition, timing);
+    return evaluateTitleAtLocalFrame(clip, animationFrame);
 }
 
 EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacityMultiplier)

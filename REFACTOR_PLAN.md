@@ -6,29 +6,44 @@ Reduce high-churn source files to the repository's 1500-line hard cap, with a
 preferred steady-state size of 800-1200 lines. Splits are by responsibility;
 the first pass should move code without changing behavior or public APIs.
 
-Baseline: 2026-07-10, using `python countlines.py`.
+Baseline: 2026-07-11 at commit `073eb8b`, using `python countlines.py`.
+
+## Recent-History Adjustment
+
+The latest commit added 3,406 lines across title extrusion, overlay styling,
+grading UI, speaker UI, and Vulkan text rendering. It did not implement any of
+the planned large-file extractions. The plan therefore keeps the original P0
+sequence, updates current sizes, and promotes `vulkan_text_renderer.cpp` into
+the Vulkan phase. The new `title_mesh_extrusion.*` and `overlay_text_style.*`
+files are already appropriate owners and must not be folded back into a large
+renderer or UI file.
+
+The current uncommitted changes in `grading_histogram_widget.cpp`,
+`grading_histogram_widget.h`, and `tests/test_vulkan_direct_render_parity.cpp`
+belong to the user. Refactor work must preserve and avoid overwriting them.
 
 ## Current Priorities
 
 | Priority | File | Lines | Main problem | Initial target |
 |---|---:|---:|---|---|
 | P0 | `tracks.cpp` | 4827 | assignment, diagnostics, previews, and UI actions are mixed | <1000 |
-| P0 | `offscreen_vulkan_renderer_backend.cpp` | 4826 | one private backend owns every Vulkan stage | <1200/file |
-| P0 | `speakers_tab.cpp` | 4117 | document, refresh, tables, generation, and status logic are mixed | <1000 |
+| P0 | `offscreen_vulkan_renderer_backend.cpp` | 4800 | one private backend owns every Vulkan stage | <1200/file |
+| P0 | `speakers_tab.cpp` | 4168 | document, refresh, tables, generation, and status logic are mixed | <1000 |
 | P0 | `audio_engine.cpp` | 4092 | device control, scheduling, decoding, stretching, and mixing are mixed | <1200/file |
 | P0 | `jcut_imgui_main.cpp` | 3901 | application shell, platform/Vulkan setup, workers, and panels are mixed | <800 |
 | P1 | `vulkan_facedetections_offscreen_runner.cpp` | 3399 | CLI orchestration and the full processing pipeline are one function | <800 |
-| P1 | `direct_vulkan_preview_window.cpp` | 3307 | window, renderer lifecycle, readback, and frame submission are mixed | <1000 |
+| P1 | `direct_vulkan_preview_window.cpp` | 3338 | window, renderer lifecycle, readback, and frame submission are mixed | <1000 |
 | P1 | `editor_shared_keyframes.cpp` | 3097 | generic keyframes and speaker-framing runtime are coupled | <1000 |
-| P1 | `vulkan_preview_surface.cpp` | 2865 | preview lifecycle and rendering responsibilities are broad | <1000 |
-| P1 | `inspector_pane.cpp` | 2812 | layout, bindings, state sync, and actions remain mixed | <1000 |
+| P1 | `inspector_pane.cpp` | 2904 | per-tab construction remains centralized and is still growing | <800 |
+| P1 | `vulkan_preview_surface.cpp` | 2873 | preview lifecycle and rendering responsibilities are broad | <1000 |
+| P1 | `vulkan_text_renderer.cpp` | 2595 | font/layout, atlases, pipelines, mesh titles, and draw paths are mixed | <1000 |
 
 The remaining files above 1500 lines form the P2 backlog. Re-run the report
 after P0/P1 because extractions may make several of them shrink or reveal
 shared code: `vulkan_detector_frame_handoff.cpp`,
 `facedetections_continuity_artifacts.cpp`, `speakers_tab_interactions_ai.cpp`,
 `control_server_worker_routes.cpp`, `editor.cpp`, `editor_media_tools.cpp`,
-`editor_ai_integration.cpp`, `transcript_tab.cpp`, `vulkan_text_renderer.cpp`,
+`editor_ai_integration.cpp`, `transcript_tab.cpp`,
 `editor_tabs.cpp`, `control_server_worker_routes_ui.cpp`,
 `speakers_tab_interactions.cpp`, `editor_render_tools.cpp`,
 `transcript_tab_document.cpp`, `sam3_run.py`, `vulkan_resources.cpp`,
@@ -41,8 +56,10 @@ shared code: `vulkan_detector_frame_handoff.cpp`,
 1. Record the baseline in CI and warn at 1200 lines, fail when a changed file
    grows beyond 1500 lines. Grandfather current oversized files but reject
    line-count growth.
-2. Build and test before every extraction. Add new translation units to the
-   owning CMake target in the same commit as the move.
+2. Build and test before every extraction. Use `./build.sh` from the repository
+   root for every build and build-verification step; do not invoke CMake,
+   Ninja, Make, or another underlying build tool directly. Add new translation
+   units to the owning CMake target in the same commit as the move.
 3. Keep each extraction move-only. Do naming, ownership, or data-flow changes
    only after the split compiles and focused tests pass.
 4. Prefer private free functions or internal implementation objects over
@@ -158,6 +175,30 @@ Extract class declarations to `direct_vulkan_preview_internal.h`, then move:
 
 Reuse the already split audio, presenter, geometry, interaction, transcript,
 and overlay-rendering files; do not move those concerns back into the core.
+
+### `vulkan_text_renderer.cpp`
+
+The recent title-extrusion work makes this a P1 Vulkan target. Preserve
+`title_mesh_extrusion.*` as the geometry owner and `overlay_text_style.*` as the
+shared title/transcript style-conversion owner. Extract:
+
+1. `vulkan_text_font.cpp`: FreeType lifetime, font resolution/loading, glyph
+   metrics, wrapping, and glyph rasterization.
+2. `vulkan_text_pipeline.cpp`: shader modules, descriptor/pipeline creation,
+   pipeline destruction, and bind/draw primitives.
+3. `vulkan_text_atlas.cpp`: atlas image construction, cache keys, and uploads.
+4. `vulkan_text_layout_speakers.cpp`: speaker-label layout and preparation.
+5. `vulkan_text_layout_transcript.cpp`: transcript layout and preparation.
+6. `vulkan_text_layout_titles.cpp`: flat/3D title layout and orchestration;
+   delegate mesh generation to `title_mesh_extrusion.*`.
+7. Keep renderer lifetime and top-level draw dispatch in
+   `vulkan_text_renderer.cpp`.
+
+Do not duplicate overlay serialization/cache-key policy already owned by
+`overlay_text_style.*`, `clip_serialization.cpp`, and
+`transcript_overlay_cache_key.cpp`. Verify the existing text-generation tests,
+flat and extruded titles, transcript overlays, speaker labels, multiline text,
+font fallback, atlas reuse, and direct/offscreen render parity.
 
 ## Phase 4: ImGui Application Shell
 

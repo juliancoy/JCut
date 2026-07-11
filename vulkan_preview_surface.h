@@ -235,7 +235,7 @@ private:
     QHash<QString, QJsonObject> m_facedetectionsArtifactRootCache;
     QHash<QString, QJsonObject> m_facedetectionsProcessedArtifactRootCache;
     PreviewInteractionState m_interaction;
-    VirtualClipRelationshipIndex m_virtualClipRelationships;
+    ClipParentChildIndex m_clipParentChildRelationships;
     quint64 m_timelineClipRevision = 0;
     AudioDynamicsSettings m_audioDynamics;
     LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;

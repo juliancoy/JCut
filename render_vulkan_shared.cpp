@@ -561,8 +561,8 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
             effect == BackgroundFillEffect::ProgressiveEdgeStretch;
         state.shadows[0] = mapping.centerXNorm;
         state.shadows[1] = mapping.centerYNorm;
-        state.shadows[2] = mapping.halfWidthOverOutputHeight;
-        state.shadows[3] = mapping.signedHalfHeightOverOutputHeight;
+        state.shadows[2] = mapping.outputHeightOverSourceWidth;
+        state.shadows[3] = mapping.signedOutputHeightOverSourceHeight;
         state.midtones[0] = static_cast<float>(std::clamp(edgePixels, 1, 512));
         state.midtones[1] = mapping.rotationRadians;
         state.midtones[2] = std::clamp(edgePower, 0.25f, 8.0f);
@@ -588,9 +588,18 @@ VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QRectF& localRect,
     const QSize& outputSize)
 {
+    return vulkanBackgroundFillMapping(
+        sourceToOutput, localRect, QRectF(QPointF(), QSizeF(outputSize)));
+}
+
+VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
+    const QTransform& sourceToOutput,
+    const QRectF& localRect,
+    const QRectF& outputRect)
+{
     VulkanBackgroundFillMapping mapping;
-    const qreal outputWidth = qMax(1, outputSize.width());
-    const qreal outputHeight = qMax(1, outputSize.height());
+    const qreal outputWidth = qMax<qreal>(1.0, outputRect.width());
+    const qreal outputHeight = qMax<qreal>(1.0, outputRect.height());
     const QPointF localCenter = localRect.center();
     const QPointF center = sourceToOutput.map(localCenter);
     const QPointF xEdge = sourceToOutput.map(
@@ -600,12 +609,13 @@ VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QPointF xAxis = xEdge - center;
     const QPointF yAxis = yEdge - center;
     const qreal determinant = (xAxis.x() * yAxis.y()) - (xAxis.y() * yAxis.x());
-    mapping.centerXNorm = static_cast<float>(center.x() / outputWidth);
-    mapping.centerYNorm = static_cast<float>(center.y() / outputHeight);
-    mapping.halfWidthOverOutputHeight = static_cast<float>(
-        std::hypot(xAxis.x(), xAxis.y()) / outputHeight);
-    mapping.signedHalfHeightOverOutputHeight = static_cast<float>(
-        std::copysign(std::hypot(yAxis.x(), yAxis.y()) / outputHeight,
+    mapping.centerXNorm = static_cast<float>((center.x() - outputRect.left()) / outputWidth);
+    mapping.centerYNorm = static_cast<float>((center.y() - outputRect.top()) / outputHeight);
+    const qreal sourceWidth = qMax<qreal>(0.0001, 2.0 * std::hypot(xAxis.x(), xAxis.y()));
+    const qreal sourceHeight = qMax<qreal>(0.0001, 2.0 * std::hypot(yAxis.x(), yAxis.y()));
+    mapping.outputHeightOverSourceWidth = static_cast<float>(outputHeight / sourceWidth);
+    mapping.signedOutputHeightOverSourceHeight = static_cast<float>(
+        std::copysign(outputHeight / sourceHeight,
                       determinant == 0.0 ? 1.0 : determinant));
     mapping.rotationRadians = static_cast<float>(std::atan2(xAxis.y(), xAxis.x()));
     return mapping;

@@ -513,7 +513,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             base.textMaterialStyle = settings.titleTextMaterialStyle;
             base.textPatternImagePath = settings.titleTextPatternImagePath;
             base.textPatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
-            base.windowEnabled = true;
+            base.windowEnabled = settings.titleBackgroundEnabled;
             base.windowColor = QColor(QStringLiteral("#07111d"));
             if (speakerProfile.secondaryColor.isValid()) {
                 base.windowColor = speakerProfile.secondaryColor;
@@ -521,7 +521,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             base.windowOpacity = 0.72;
             base.windowPadding = 24.0;
             base.windowWidth = qMax<qreal>(0.0, settings.titleBoxWidth);
-            base.windowFrameEnabled = true;
+            base.windowFrameEnabled = settings.titleBackgroundEnabled;
             base.windowFrameColor = QColor(QStringLiteral("#56c7ff"));
             if (speakerProfile.accentColor.isValid()) {
                 base.windowFrameColor = speakerProfile.accentColor;
@@ -624,10 +624,10 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
     if (std::abs(base.translationY) < 4.0) {
         base.translationY = kDefaultLowerThirdY;
     }
-    base.windowEnabled = true;
+    base.windowEnabled = settings.titleBackgroundEnabled;
     base.windowOpacity = qMax<qreal>(base.windowOpacity, 0.55);
     base.windowPadding = qMax<qreal>(base.windowPadding, 22.0);
-    base.windowFrameEnabled = true;
+    base.windowFrameEnabled = settings.titleBackgroundEnabled;
     base.windowFrameOpacity = qMax<qreal>(base.windowFrameOpacity, 0.78);
     base.windowFrameWidth = qMax<qreal>(base.windowFrameWidth, 2.0);
     base.dropShadowEnabled = true;
@@ -854,10 +854,12 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
     const QString baseName = trackBaseName.trimmed().isEmpty()
                                  ? QStringLiteral("Generated")
                                  : trackBaseName.trimmed();
+    QSet<int> reusableChildTracks;
 
     for (int i = timelineClips.size() - 1; i >= 0; --i) {
         if (timelineClips.at(i).clipRole == generatedRole &&
             timelineClips.at(i).linkedSourceClipId == sourceId) {
+            reusableChildTracks.insert(timelineClips.at(i).trackIndex);
             timelineClips.removeAt(i);
             ++result.removedCount;
         }
@@ -872,12 +874,16 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
 
         int targetTrack = -1;
         for (int trackIndex = 0; trackIndex < timelineTracks.size(); ++trackIndex) {
-            if (!trackNameStartsWith(timelineTracks, trackIndex, baseName)) {
+            if (!trackNameStartsWith(timelineTracks, trackIndex, baseName) &&
+                !reusableChildTracks.contains(trackIndex)) {
                 continue;
             }
             clip.trackIndex = trackIndex;
             if (!wouldClipConflictWithTrack(timelineClips, clip, trackIndex)) {
                 targetTrack = trackIndex;
+                if (reusableChildTracks.contains(trackIndex)) {
+                    timelineTracks[trackIndex].name = baseName;
+                }
                 break;
             }
         }

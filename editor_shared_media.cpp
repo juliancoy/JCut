@@ -899,38 +899,64 @@ bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
                                           const QVector<TimelineTrack>& tracks) {
     for (const TimelineClip& child : clips) {
         if (child.clipRole == ClipRole::MaskMatte &&
-            clipIsVirtualChildOf(child, source) &&
-            clipVirtualChildPlaybackEnabled(child, tracks)) {
+            clipIsChildOf(child, source) &&
+            clipChildPlaybackEnabled(child, tracks)) {
             return true;
         }
     }
     return false;
 }
 
-bool clipIsVirtualChildOf(const TimelineClip& child, const TimelineClip& parent) {
+bool clipIsChildOf(const TimelineClip& child, const TimelineClip& parent) {
     return child.clipRole != ClipRole::Media &&
            !parent.id.trimmed().isEmpty() &&
            child.linkedSourceClipId.trimmed() == parent.id.trimmed();
 }
 
-bool clipVirtualChildPlaybackEnabled(const TimelineClip& child,
+const TimelineClip* clipParent(const TimelineClip& child,
+                                      const QVector<TimelineClip>& clips) {
+    if (child.clipRole == ClipRole::Media) {
+        return nullptr;
+    }
+    const QString parentId = child.linkedSourceClipId.trimmed();
+    if (parentId.isEmpty()) {
+        return nullptr;
+    }
+    const auto it = std::find_if(clips.cbegin(), clips.cend(),
+                                 [&parentId](const TimelineClip& candidate) {
+        return candidate.id.trimmed() == parentId;
+    });
+    return it == clips.cend() ? nullptr : &*it;
+}
+
+ClipSelectionContext clipSelectionContext(const TimelineClip* selected,
+                                          const QVector<TimelineClip>& clips) {
+    ClipSelectionContext context;
+    context.selected = selected;
+    if (selected) {
+        context.parent = clipParent(*selected, clips);
+    }
+    return context;
+}
+
+bool clipChildPlaybackEnabled(const TimelineClip& child,
                                      const QVector<TimelineTrack>& tracks) {
     return child.clipRole != ClipRole::Media &&
            child.videoEnabled &&
            trackVisualModeForClip(child, tracks) != TrackVisualMode::Hidden;
 }
 
-bool clipHasVisibleVirtualChild(const TimelineClip& parent,
+bool clipHasVisibleChild(const TimelineClip& parent,
                                 const QVector<TimelineClip>& clips,
                                 const QVector<TimelineTrack>& tracks) {
     return std::any_of(clips.cbegin(), clips.cend(),
                        [&parent, &tracks](const TimelineClip& child) {
-        return clipIsVirtualChildOf(child, parent) &&
-               clipVirtualChildPlaybackEnabled(child, tracks);
+        return clipIsChildOf(child, parent) &&
+               clipChildPlaybackEnabled(child, tracks);
     });
 }
 
-void VirtualClipRelationshipIndex::rebuild(const QVector<TimelineClip>& clips,
+void ClipParentChildIndex::rebuild(const QVector<TimelineClip>& clips,
                                            quint64 timelineRevision) {
     m_childIndicesByParentId.clear();
     for (int index = 0; index < clips.size(); ++index) {
@@ -943,7 +969,7 @@ void VirtualClipRelationshipIndex::rebuild(const QVector<TimelineClip>& clips,
     m_timelineRevision = timelineRevision;
 }
 
-bool VirtualClipRelationshipIndex::hasVisibleChild(
+bool ClipParentChildIndex::hasVisibleChild(
     const TimelineClip& parent,
     const QVector<TimelineClip>& clips,
     const QVector<TimelineTrack>& tracks) const {
@@ -953,7 +979,7 @@ bool VirtualClipRelationshipIndex::hasVisibleChild(
     }
     for (const int index : it.value()) {
         if (index >= 0 && index < clips.size() &&
-            clipVirtualChildPlaybackEnabled(clips.at(index), tracks)) {
+            clipChildPlaybackEnabled(clips.at(index), tracks)) {
             return true;
         }
     }
@@ -963,11 +989,11 @@ bool VirtualClipRelationshipIndex::hasVisibleChild(
 bool clipContributesVisualMedia(const TimelineClip& clip,
                                 const QVector<TimelineClip>& clips,
                                 const QVector<TimelineTrack>& tracks,
-                                const VirtualClipRelationshipIndex* relationships) {
+                                const ClipParentChildIndex* relationships) {
     return clipVisualPlaybackEnabled(clip, tracks) ||
            (relationships
                 ? relationships->hasVisibleChild(clip, clips, tracks)
-                : clipHasVisibleVirtualChild(clip, clips, tracks));
+                : clipHasVisibleChild(clip, clips, tracks));
 }
 
 bool clipAudioPlaybackEnabled(const TimelineClip& clip) {

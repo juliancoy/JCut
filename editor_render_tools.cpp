@@ -591,11 +591,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.backgroundFillEdgePower = m_backgroundFillEdgePowerSpin
         ? qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0)
         : 2.0;
-    request.showCurrentSpeakerName = m_speakerShowCurrentSpeakerNameCheckBox &&
-                                     m_speakerShowCurrentSpeakerNameCheckBox->isChecked();
-    request.showCurrentSpeakerOrganization =
-        m_speakerShowCurrentSpeakerOrganizationCheckBox &&
-        m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked();
+    // Speaker introductions are rendered exclusively as transcript-owned
+    // title clips. The retired current-speaker overlay must never enter export.
+    request.showCurrentSpeakerName = false;
+    request.showCurrentSpeakerOrganization = false;
     request.currentSpeakerNameTextScale =
         m_speakerCurrentSpeakerNameTextSizeSpin
             ? qBound<qreal>(0.25, m_speakerCurrentSpeakerNameTextSizeSpin->value() / 100.0, 3.0)

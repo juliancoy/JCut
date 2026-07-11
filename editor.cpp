@@ -1067,12 +1067,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("speakerApplyTrackToAllMatchingSections")).toBool(false);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
-    const bool previewShowCurrentSpeakerName =
-        root.value(QStringLiteral("previewShowCurrentSpeakerName")).toBool(false);
-    const bool previewShowCurrentSpeakerOrganization =
-        root.value(QStringLiteral("previewShowCurrentSpeakerOrganization")).toBool(false);
-    const QJsonObject speakerTitleSettings =
+    QJsonObject speakerTitleSettings =
         root.value(QStringLiteral("speakerTitleSettings")).toObject();
+    if (!speakerTitleSettings.contains(QStringLiteral("showName")))
+        speakerTitleSettings[QStringLiteral("showName")] = root.value(QStringLiteral("previewShowCurrentSpeakerName")).toBool(true);
+    if (!speakerTitleSettings.contains(QStringLiteral("showOrganization")))
+        speakerTitleSettings[QStringLiteral("showOrganization")] = root.value(QStringLiteral("previewShowCurrentSpeakerOrganization")).toBool(false);
+    if (!speakerTitleSettings.contains(QStringLiteral("backgroundEnabled")))
+        speakerTitleSettings[QStringLiteral("backgroundEnabled")] = root.value(QStringLiteral("previewCurrentSpeakerBackgroundVisible")).toBool(true);
+    const bool previewShowCurrentSpeakerName = speakerTitleSettings.value(QStringLiteral("showName")).toBool(true);
+    const bool previewShowCurrentSpeakerOrganization = speakerTitleSettings.value(QStringLiteral("showOrganization")).toBool(false);
     const int previewCurrentSpeakerNameTextScalePercent = qBound(
         25,
         root.value(QStringLiteral("previewCurrentSpeakerNameTextScalePercent")).toInt(100),
@@ -1786,7 +1790,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speakerCurrentSpeakerBackgroundVisibleCheckBox) {
         QSignalBlocker block(m_speakerCurrentSpeakerBackgroundVisibleCheckBox);
         m_speakerCurrentSpeakerBackgroundVisibleCheckBox->setChecked(
-            m_speakerCurrentSpeakerBackgroundVisible);
+            speakerTitleSettings.contains(QStringLiteral("backgroundEnabled"))
+                ? speakerTitleSettings.value(QStringLiteral("backgroundEnabled")).toBool(true)
+                : m_speakerCurrentSpeakerBackgroundVisible);
+        m_speakerCurrentSpeakerBackgroundVisible =
+            m_speakerCurrentSpeakerBackgroundVisibleCheckBox->isChecked();
     }
     for (QWidget* control : {
              static_cast<QWidget*>(m_speakerCurrentSpeakerBackgroundColorButton),
@@ -2098,8 +2106,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);
-        m_preview->setShowCurrentSpeakerName(previewShowCurrentSpeakerName);
-        m_preview->setShowCurrentSpeakerOrganization(previewShowCurrentSpeakerOrganization);
+        // Legacy current-speaker painting is retired. Transcript-linked title
+        // clips are the sole speaker-introduction rendering path.
+        m_preview->setShowCurrentSpeakerName(false);
+        m_preview->setShowCurrentSpeakerOrganization(false);
         m_preview->setCurrentSpeakerNameTextScale(previewCurrentSpeakerNameTextScalePercent / 100.0);
         m_preview->setCurrentSpeakerOrganizationTextScale(
             previewCurrentSpeakerOrganizationTextScalePercent / 100.0);

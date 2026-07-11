@@ -8,6 +8,15 @@ Do not ask one Codex session to implement every phase at once. Each prompt is
 intentionally bounded so that ownership, behavior, and tests can be verified
 before moving to another subsystem.
 
+For every prompt below, all builds and build verification must use
+`./build.sh` from the repository root. Do not invoke CMake, Ninja, Make, or
+another underlying build tool directly unless `./build.sh` cannot perform a
+required operation; if that occurs, stop and report the limitation rather than
+silently bypassing the repository policy. Every handoff must include the exact
+`./build.sh` command and options used. Preserve the user's current uncommitted
+changes, especially the grading histogram and direct-render parity work noted
+in `REFACTOR_PLAN.md`.
+
 ## Prompt 1: Speaker and Track Domain
 
 ```text
@@ -252,7 +261,74 @@ unless concretely blocked.
   parallel logic.
 - Lifecycle, readback, resize, interaction, and presentation checks pass.
 
-## Prompt 5: ImGui Application Shell
+## Prompt 5: Vulkan Text Renderer
+
+```text
+Implement the Vulkan text-renderer portion of Phase 3 in REFACTOR_PLAN.md using
+OWNERSHIPMATRIX.md as the authoritative ownership guide and
+FILESIZE_REDUCTION_STRATEGY.md as the size policy.
+
+Scope this session to vulkan_text_renderer.cpp and the private text-rendering
+modules needed to separate fonts, pipelines, atlases, speaker labels,
+transcripts, and titles. Preserve the ownership seams introduced by commit
+073eb8b.
+
+Requirements:
+
+1. Read all refactor documents, prior handoffs, recent relevant Git history,
+   and applicable AGENTS.md instructions. Do not create a Git branch. Preserve
+   unrelated and uncommitted user changes.
+2. Use ./build.sh from the repository root for every build and build
+   verification. Do not invoke CMake, Ninja, Make, or other underlying build
+   tools directly. Report every exact ./build.sh command and option used.
+3. Complete and record the ownership audit for every extraction. Inspect
+   title_mesh_extrusion.*, overlay_text_style.*,
+   transcript_overlay_cache_key.*, direct_vulkan_preview_transcript.*,
+   cpu_overlay_render_backend.*, and existing renderer interfaces first.
+4. Keep title mesh geometry in title_mesh_extrusion.* and shared
+   title/transcript styling in overlay_text_style.*. Keep serialization in
+   clip_serialization.cpp and public transcript cache-key policy in
+   transcript_overlay_cache_key.*. Do not duplicate these responsibilities in
+   renderer modules.
+5. Extract FreeType/font work, Vulkan pipeline work, atlas construction/upload,
+   speaker layout, transcript layout, and title layout along the boundaries in
+   OWNERSHIPMATRIX.md. Keep renderer lifetime and top-level dispatch in
+   vulkan_text_renderer.cpp.
+6. Use a narrow private internal boundary. Do not expose FreeType handles,
+   Vulkan implementation state, atlas internals, or renderer caches through
+   public UI/domain headers merely to enable the split.
+7. Treat the first pass as behavior-preserving. Preserve font fallback,
+   wrapping, glyph metrics, atlas/cache keys, descriptor and buffer lifetime,
+   upload synchronization, draw ordering, flat title rendering, 3D title
+   transforms, extrusion, transcript styling, and speaker labels.
+8. Work in small compile-safe batches. After each batch, run ./build.sh with
+   the appropriate supported options and the focused tests; fix introduced
+   failures before continuing.
+9. Continue until vulkan_text_renderer.cpp and every extracted file are below
+   1,500 lines, preferably 800-1,200.
+10. Run test_vulkan_text_generation, available direct/offscreen render parity
+    coverage, focused/full relevant tests, git diff --check,
+    python countlines.py, and scripts/scan_redundant_code.sh. Do not overwrite
+    the user's uncommitted test_vulkan_direct_render_parity.cpp changes.
+11. Update REFACTOR_PLAN.md and OWNERSHIPMATRIX.md with completed audit rows and
+    evidence-based boundary changes.
+12. Finish with source-to-destination symbol groups, canonical owners reused,
+    duplicates removed, final line counts, exact ./build.sh commands/results,
+    text/render parity evidence, and remaining hardware-dependent risks.
+
+Do not stop after analysis. Implement and verify the entire Vulkan text scope
+unless a concrete blocker prevents safe completion.
+```
+
+### Exit gate before Prompt 6
+
+- `vulkan_text_renderer.cpp` and its extracted files meet the size cap.
+- Title mesh geometry and overlay styling remain in their established owners.
+- Text-generation and available rendering-parity tests pass.
+- Font, atlas, pipeline, transcript, speaker, and title responsibilities have
+  one canonical owner each.
+
+## Prompt 6: ImGui Application Shell
 
 ```text
 Implement Phase 4 of REFACTOR_PLAN.md using OWNERSHIPMATRIX.md as the
@@ -293,14 +369,14 @@ Do not stop after analysis. Implement and verify this entire shell scope unless
 a concrete blocker prevents completion.
 ```
 
-### Exit gate before Prompt 6
+### Exit gate before Prompt 7
 
 - The ImGui main file is below 1,500 lines and contains only startup, event
   loop, top-level orchestration, and shutdown.
 - Worker cancellation, persistence, document operations, preview, export, and
   runtime control pass focused checks.
 
-## Prompt 6: Face-Detection Offscreen Runner
+## Prompt 7: Face-Detection Offscreen Runner
 
 ```text
 Implement the face-detection runner portion of Phase 5 in REFACTOR_PLAN.md
@@ -345,14 +421,14 @@ Do not stop after analysis. Implement and verify the full runner scope unless
 concretely blocked.
 ```
 
-### Exit gate before Prompt 7
+### Exit gate before Prompt 8
 
 - The runner is below the size cap and primarily sequences existing modules.
 - CLI compatibility, cancellation/resume, and artifact equivalence pass.
 - Existing modules own options, harness, filtering, tuning, persistence, and
   progress without parallel implementations.
 
-## Prompt 7: Keyframes and Speaker Framing
+## Prompt 8: Keyframes and Speaker Framing
 
 ```text
 Implement the keyframe and speaker-framing portion of Phase 5 in
@@ -397,14 +473,14 @@ Do not stop after analysis. Implement and verify the entire scoped phase unless
 a concrete blocker prevents safe completion.
 ```
 
-### Exit gate before Prompt 8
+### Exit gate before Prompt 9
 
 - Generic keyframes and speaker framing have separate dependency boundaries.
 - Evaluation and render parity tests pass.
 - Section parsing, timing, caches, artifacts, and mutation commands each have
   one canonical owner.
 
-## Prompt 8: Remaining P1/P2 Sweep
+## Prompt 9: Remaining P1/P2 Sweep
 
 ```text
 Complete Phase 6 of REFACTOR_PLAN.md using OWNERSHIPMATRIX.md as the
@@ -412,7 +488,7 @@ authoritative ownership guide and FILESIZE_REDUCTION_STRATEGY.md as the size
 policy.
 
 This is a planning-and-implementation sweep over the files that still exceed
-the 1,500-line cap after Prompts 1-7. Work one cohesive domain at a time; do not
+the 1,500-line cap after Prompts 1-8. Work one cohesive domain at a time; do not
 perform a repository-wide mechanical split.
 
 Requirements:

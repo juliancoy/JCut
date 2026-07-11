@@ -29,6 +29,9 @@ Decision meanings:
    real callers. Do not create generic `utils` files.
 5. Existing modules remain authoritative unless this document explicitly
    replaces their ownership.
+6. Use `./build.sh` from the repository root for all builds and build
+   verification. Do not invoke CMake, Ninja, Make, or other underlying build
+   tools directly.
 
 ## Speaker, Section, and Track Domain
 
@@ -112,6 +115,32 @@ Decision meanings:
 | Per-frame composition/submission | window file | `direct_vulkan_preview_frame.cpp` | Create |
 | Public window facade functions | window file | `direct_vulkan_preview_window.cpp` | Keep | 
 
+## Vulkan Text, Titles, and Overlay Styling
+
+This section incorporates the ownership seams added by commit `073eb8b`.
+
+| Responsibility | Current location(s) | Canonical owner | Decision |
+|---|---|---|---|
+| Shared title/transcript text-style representation and conversion | `overlay_text_style.cpp` | `overlay_text_style.*` | Keep |
+| Style serialization and backward-compatible defaults | `clip_serialization.cpp`, `overlay_text_style.cpp` | `clip_serialization.cpp` using `overlay_text_style.*` | Keep + Delegate |
+| Transcript overlay cache-key policy | `transcript_overlay_cache_key.cpp`, renderer-local keys | `transcript_overlay_cache_key.*` for public transcript policy | Consolidate renderer duplicates only when semantics match |
+| Extruded title mesh geometry | `title_mesh_extrusion.cpp`, `vulkan_text_renderer.cpp` | `title_mesh_extrusion.*` | Keep; renderer consumes generated vertices |
+| FreeType lifetime, font lookup/loading, glyph metrics and rasterization | `vulkan_text_renderer.cpp` | `vulkan_text_font.cpp` | Create private renderer module |
+| Text wrapping | `vulkan_text_renderer.cpp` | `vulkan_text_font.cpp` | Move with font metrics; do not create UI-specific wrappers |
+| Vulkan text shaders, descriptors, pipelines, and primitive draw binding | `vulkan_text_renderer.cpp` | `vulkan_text_pipeline.cpp` | Create private renderer module |
+| Atlas construction, glyph placement, cache storage, and GPU upload | `vulkan_text_renderer.cpp` | `vulkan_text_atlas.cpp` | Create private renderer module |
+| Speaker-label layout and draw orchestration | `vulkan_text_renderer.cpp` | `vulkan_text_layout_speakers.cpp` | Create |
+| Transcript layout and draw orchestration | `vulkan_text_renderer.cpp`, `direct_vulkan_preview_transcript.cpp` | Renderer layout in `vulkan_text_layout_transcript.cpp`; prepared-overlay data in existing direct-preview module | Create + Delegate |
+| Flat and 3D title layout/draw orchestration | `vulkan_text_renderer.cpp` | `vulkan_text_layout_titles.cpp` | Create; delegate mesh geometry and shared styling |
+| Renderer lifetime and top-level overlay dispatch | `vulkan_text_renderer.cpp` | `vulkan_text_renderer.cpp` | Keep |
+| CPU overlay rendering | `cpu_overlay_render_backend.cpp` | Existing CPU backend | Keep; consume shared style, never Vulkan implementation details |
+| Title/transcript/speaker style controls | `titles_tab.cpp`, `transcript_tab.cpp`, `speakers_tab.cpp`, `inspector_pane.cpp` | Respective tab/pane presentation modules | Keep UI orchestration; shared conversion remains in `overlay_text_style.*` |
+
+The text split must preserve `tests/test_vulkan_text_generation.cpp`, direct
+Vulkan parity coverage, font fallback, multiline layout, atlas/cache identity,
+and flat/extruded title behavior. The uncommitted direct-render parity test is
+user work and must not be overwritten.
+
 ## ImGui Application Shell
 
 | Responsibility | Current location | Canonical owner | Decision |
@@ -127,6 +156,22 @@ Decision meanings:
 | Inspector/clips/tracks tables | `jcut_imgui_main.cpp` | `jcut_imgui_inspector_panel.cpp` | Create |
 | Shared shell state/layout | `jcut_imgui_main.cpp` | `jcut_imgui_internal.h` | Create private boundary |
 | Document serialization | `jcut_imgui_main.cpp`, editor document JSON modules | Existing editor document JSON/I/O modules | Move to existing | 
+
+## Inspector and Grading UI
+
+Recent history expanded `inspector_pane.cpp` with title/transcript styling and
+grading controls. The pane owns widget composition; feature tabs own behavior.
+
+| Responsibility | Current location(s) | Canonical owner | Decision |
+|---|---|---|---|
+| Top-level inspector pane and tab-container construction | `inspector_pane.cpp` | `inspector_pane.cpp` | Keep thin orchestration |
+| Per-tab widget construction | `inspector_pane.cpp` | Existing feature-specific inspector files where present; otherwise `inspector_pane_<feature>_layout.cpp` | Move/Create after audit |
+| Grading curve/histogram behavior and state | `grading_tab.cpp`, `grading_tab_curve.cpp`, `grading_histogram_widget.*` | Existing grading modules | Keep; inspector only constructs/injects widgets |
+| Grading histogram painting and interaction | `grading_histogram_widget.*` | Existing widget module | Keep; preserve current uncommitted user work |
+| Transcript overlay controls | `inspector_pane.cpp`, `transcript_tab.*`, `transcript_tab_overlay.cpp` | Transcript tab modules for behavior; inspector layout module for widget creation | Consolidate presentation wiring without duplicating style conversion |
+| Title controls and behavior | `inspector_pane.cpp`, `titles_tab.*` | `titles_tab.*` for behavior; inspector title layout module for construction | Consolidate |
+| Speaker controls and behavior | `inspector_pane.cpp`, speaker modules | Existing speaker modules for behavior; inspector speaker layout module for construction | Delegate |
+| Shared overlay style conversion | inspector/tab files, `overlay_text_style.*` | `overlay_text_style.*` | Move to existing; UI files only gather/apply values |
 
 ## Face-Detection Offscreen Runner
 

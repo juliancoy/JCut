@@ -1294,26 +1294,20 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("News lower-third fly in"),
+                                 QStringLiteral("Animated Speaker Introductions"),
                                  QStringLiteral("Select a clip with a transcript first."));
-        return;
-    }
-    if (!activeCutMutable()) {
-        QMessageBox::information(nullptr,
-                                 QStringLiteral("News lower-third fly in"),
-                                 QStringLiteral("Create a transcript cut before generating speaker title clips."));
         return;
     }
     const QString transcriptPath = m_transcriptSession.transcriptPath().trimmed();
     if (transcriptPath.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("News lower-third fly in"),
+                             QStringLiteral("Animated Speaker Introductions"),
                              QStringLiteral("No loaded transcript is available for the selected clip."));
         return;
     }
     if (!m_speakerDeps.updateClipById || !m_speakerDeps.replaceSpeakerTitleClips) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("News lower-third fly in"),
+                             QStringLiteral("Animated Speaker Introductions"),
                              QStringLiteral("Source clip title overlay updates are unavailable."));
         return;
     }
@@ -1372,6 +1366,9 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_widgets.speakerOverlayTitleBoxWidthSpin) {
         flyInSettings.titleBoxWidth = m_widgets.speakerOverlayTitleBoxWidthSpin->value();
     }
+    flyInSettings.titleBackgroundEnabled =
+        !m_widgets.speakerOverlayTitleBackgroundCheckBox ||
+        m_widgets.speakerOverlayTitleBackgroundCheckBox->isChecked();
     flyInSettings.showSpeakerName = !m_widgets.speakerShowCurrentSpeakerNameCheckBox ||
         m_widgets.speakerShowCurrentSpeakerNameCheckBox->isChecked();
     flyInSettings.showSpeakerOrganization =
@@ -1442,7 +1439,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
             m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(false);
         }
         QMessageBox::information(nullptr,
-                                 QStringLiteral("News lower-third fly in"),
+                                 QStringLiteral("Animated Speaker Introductions"),
                                  QStringLiteral("No speaker changes were found in the selected transcript range."));
         return;
     }
@@ -1457,7 +1454,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     }
     if (m_widgets.speakersInspectorDetailsLabel) {
         m_widgets.speakersInspectorDetailsLabel->setText(
-            QStringLiteral("Created %1 editable speaker title clip(s). Removed %2 stale generated title clip(s).")
+            QStringLiteral("Updated %1 transcript-linked speaker introduction(s). Removed %2 stale event(s).")
                 .arg(appliedTitleCount)
                 .arg(placementResult.removedCount));
     }

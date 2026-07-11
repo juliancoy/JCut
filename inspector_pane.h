@@ -240,6 +240,7 @@ public:
     QCheckBox *gradingPreviewCheckBox() const { return m_gradingPreviewCheckBox; }
     QPushButton *gradingKeyAtPlayheadButton() const { return m_gradingKeyAtPlayheadButton; }
     QPushButton *gradingResetButton() const { return m_gradingResetButton; }
+    QPushButton *gradingNormalizeCurvesButton() const { return m_gradingNormalizeCurvesButton; }
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
     QPushButton *gradingAutoOpposeButton() const { return m_gradingAutoOpposeButton; }
@@ -559,6 +560,7 @@ private:
     QCheckBox *m_opacityFollowCurrentCheckBox = nullptr;
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
     QPushButton *m_gradingResetButton = nullptr;
+    QPushButton *m_gradingNormalizeCurvesButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
     QPushButton *m_gradingAutoOpposeButton = nullptr;
@@ -696,6 +698,7 @@ private:
     QLineEdit *m_transcriptInspectorClipLabel = nullptr;
     QLabel *m_transcriptInspectorDetailsLabel = nullptr;
     QTableWidget *m_transcriptTable = nullptr;
+    QWidget *m_transcriptSpeakerTitlesContainer = nullptr;
     QLabel *m_clipInspectorClipLabel = nullptr;
     QLabel *m_clipProxyUsageLabel = nullptr;
     QLabel *m_clipPlaybackSourceLabel = nullptr;

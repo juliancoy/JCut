@@ -816,12 +816,6 @@ QJsonObject EditorWindow::buildStateJson() const
             : false;
     root[QStringLiteral("previewShowRawDetections")] =
         m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
-    root[QStringLiteral("previewShowCurrentSpeakerName")] =
-        m_speakerShowCurrentSpeakerNameCheckBox ? m_speakerShowCurrentSpeakerNameCheckBox->isChecked() : false;
-    root[QStringLiteral("previewShowCurrentSpeakerOrganization")] =
-        m_speakerShowCurrentSpeakerOrganizationCheckBox
-            ? m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked()
-            : false;
     if (m_inspectorPane) {
         QJsonObject settings;
         settings[QStringLiteral("version")] = 1;
@@ -855,66 +849,16 @@ QJsonObject EditorWindow::buildStateJson() const
         settings[QStringLiteral("extrudeMode")] = combo(m_inspectorPane->speakerOverlayTitleExtrudeModeCombo());
         settings[QStringLiteral("extrudeDepth")] = decimal(m_inspectorPane->speakerOverlayTitleExtrudeDepthSpin(), 0.16);
         settings[QStringLiteral("bevelScale")] = decimal(m_inspectorPane->speakerOverlayTitleBevelScaleSpin(), 0.70);
+        settings[QStringLiteral("backgroundEnabled")] =
+            m_inspectorPane->speakerCurrentSpeakerBackgroundVisibleCheckBox()
+                ? m_inspectorPane->speakerCurrentSpeakerBackgroundVisibleCheckBox()->isChecked()
+                : true;
+        settings[QStringLiteral("showName")] = m_speakerShowCurrentSpeakerNameCheckBox
+            ? m_speakerShowCurrentSpeakerNameCheckBox->isChecked() : true;
+        settings[QStringLiteral("showOrganization")] = m_speakerShowCurrentSpeakerOrganizationCheckBox
+            ? m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked() : false;
         root[QStringLiteral("speakerTitleSettings")] = settings;
     }
-    root[QStringLiteral("previewCurrentSpeakerNameTextScalePercent")] =
-        m_speakerCurrentSpeakerNameTextSizeSpin ? m_speakerCurrentSpeakerNameTextSizeSpin->value() : 100;
-    root[QStringLiteral("previewCurrentSpeakerOrganizationTextScalePercent")] =
-        m_speakerCurrentSpeakerOrganizationTextSizeSpin
-            ? m_speakerCurrentSpeakerOrganizationTextSizeSpin->value()
-            : 100;
-    root[QStringLiteral("previewCurrentSpeakerNameYPositionPercent")] =
-        m_speakerCurrentSpeakerNameYPositionSpin
-            ? m_speakerCurrentSpeakerNameYPositionSpin->value()
-            : 86;
-    root[QStringLiteral("previewCurrentSpeakerOrganizationYPositionPercent")] =
-        m_speakerCurrentSpeakerOrganizationYPositionSpin
-            ? m_speakerCurrentSpeakerOrganizationYPositionSpin->value()
-            : 93;
-    root[QStringLiteral("previewCurrentSpeakerNameColor")] =
-        m_speakerCurrentSpeakerNameColor.name(QColor::HexRgb);
-    root[QStringLiteral("previewCurrentSpeakerOrganizationColor")] =
-        m_speakerCurrentSpeakerOrganizationColor.name(QColor::HexRgb);
-    root[QStringLiteral("previewCurrentSpeakerBackgroundColor")] =
-        QColor(m_speakerCurrentSpeakerBackgroundColor.red(),
-               m_speakerCurrentSpeakerBackgroundColor.green(),
-               m_speakerCurrentSpeakerBackgroundColor.blue()).name(QColor::HexRgb);
-    root[QStringLiteral("previewCurrentSpeakerBackgroundVisible")] =
-        m_speakerCurrentSpeakerBackgroundVisibleCheckBox
-            ? m_speakerCurrentSpeakerBackgroundVisibleCheckBox->isChecked()
-            : m_speakerCurrentSpeakerBackgroundVisible;
-    root[QStringLiteral("previewCurrentSpeakerBackgroundOpacityPercent")] =
-        m_speakerCurrentSpeakerBackgroundOpacitySpin
-            ? m_speakerCurrentSpeakerBackgroundOpacitySpin->value()
-            : qRound(m_speakerCurrentSpeakerBackgroundColor.alphaF() * 100.0);
-    root[QStringLiteral("previewCurrentSpeakerBorderColor")] =
-        QColor(m_speakerCurrentSpeakerBorderColor.red(),
-               m_speakerCurrentSpeakerBorderColor.green(),
-               m_speakerCurrentSpeakerBorderColor.blue()).name(QColor::HexRgb);
-    root[QStringLiteral("previewCurrentSpeakerBorderOpacityPercent")] =
-        m_speakerCurrentSpeakerBorderOpacitySpin
-            ? m_speakerCurrentSpeakerBorderOpacitySpin->value()
-            : qRound(m_speakerCurrentSpeakerBorderColor.alphaF() * 100.0);
-    root[QStringLiteral("previewCurrentSpeakerBackgroundRadiusPx")] =
-        m_speakerCurrentSpeakerBackgroundRadiusSpin
-            ? m_speakerCurrentSpeakerBackgroundRadiusSpin->value()
-            : 14;
-    root[QStringLiteral("previewCurrentSpeakerBorderWidthPx")] =
-        m_speakerCurrentSpeakerBorderWidthSpin
-            ? m_speakerCurrentSpeakerBorderWidthSpin->value()
-            : 1;
-    root[QStringLiteral("previewCurrentSpeakerShadowEnabled")] =
-        m_speakerCurrentSpeakerShadowCheckBox
-            ? m_speakerCurrentSpeakerShadowCheckBox->isChecked()
-            : true;
-    root[QStringLiteral("previewCurrentSpeakerShadowColor")] =
-        QColor(m_speakerCurrentSpeakerShadowColor.red(),
-               m_speakerCurrentSpeakerShadowColor.green(),
-               m_speakerCurrentSpeakerShadowColor.blue()).name(QColor::HexRgb);
-    root[QStringLiteral("previewCurrentSpeakerShadowOpacityPercent")] =
-        m_speakerCurrentSpeakerShadowOpacitySpin
-            ? m_speakerCurrentSpeakerShadowOpacitySpin->value()
-            : qRound(m_speakerCurrentSpeakerShadowColor.alphaF() * 100.0);
     root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();

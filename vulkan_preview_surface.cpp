@@ -110,7 +110,7 @@ TimelineClip::GradingKeyframe maskGradeForClip(const TimelineClip& clip)
 QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& clips,
                                                 const QVector<TimelineTrack>& tracks,
                                                 bool useProxyMedia,
-                                                const VirtualClipRelationshipIndex* relationships)
+                                                const ClipParentChildIndex* relationships)
 {
     QVector<TimelineClip> playbackClips;
     playbackClips.reserve(clips.size());
@@ -422,7 +422,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
     ++m_timelineClipRevision;
-    m_virtualClipRelationships.rebuild(m_interaction.clips, m_timelineClipRevision);
+    m_clipParentChildRelationships.rebuild(m_interaction.clips, m_timelineClipRevision);
     m_interaction.clipCount = clips.size();
     if (m_interaction.transient.dragMode == PreviewDragMode::None &&
         (m_interaction.transient.transformOverrideActive ||
@@ -434,7 +434,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
             directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
-                                      &m_virtualClipRelationships));
+                                      &m_clipParentChildRelationships));
     }
     registerVisibleClips();
     updateNativeTitle();
@@ -448,7 +448,7 @@ void VulkanPreviewSurface::setTimelineTracks(const QVector<TimelineTrack>& track
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
             directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
-                                      &m_virtualClipRelationships));
+                                      &m_clipParentChildRelationships));
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -501,7 +501,7 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
             directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
-                                      &m_virtualClipRelationships));
+                                      &m_clipParentChildRelationships));
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -1155,7 +1155,7 @@ void VulkanPreviewSurface::ensureFramePipeline()
     m_playbackPipeline->setPlaybackSpeed(m_playbackSpeed);
     m_playbackPipeline->setTimelineClips(
         directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
-                                  &m_virtualClipRelationships));
+                                  &m_clipParentChildRelationships));
     m_playbackPipeline->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     QObject::connect(m_cache.get(),
                      &editor::TimelineCache::frameLoaded,
@@ -1186,7 +1186,7 @@ void VulkanPreviewSurface::registerVisibleClips()
     for (const TimelineClip& clip : m_interaction.clips) {
         if (!clipContributesVisualMedia(
                 clip, m_interaction.clips, m_interaction.tracks,
-                &m_virtualClipRelationships) ||
+                &m_clipParentChildRelationships) ||
             !directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
@@ -1413,11 +1413,11 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
         const bool visibleSource = visualClipActiveAtSample(
             clip, m_interaction.tracks, visualSample, visualFramePosition, m_bypassGrading);
-        const bool virtualChildMediaProvider =
-            m_virtualClipRelationships.hasVisibleChild(
+        const bool childMediaProvider =
+            m_clipParentChildRelationships.hasVisibleChild(
                 clip, m_interaction.clips, m_interaction.tracks) &&
             isSampleWithinClip(clip, visualSample);
-        if (!visibleSource && !virtualChildMediaProvider) {
+        if (!visibleSource && !childMediaProvider) {
             continue;
         }
 
@@ -1592,12 +1592,12 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
         }
         const bool visibleSource = visualClipActiveAtSample(
             clip, m_interaction.tracks, visualSample, visualFramePosition, m_bypassGrading);
-        const bool hiddenVirtualChildMediaProvider =
+        const bool hiddenChildMediaProvider =
             !clipVisualPlaybackEnabled(clip, m_interaction.tracks) &&
-            m_virtualClipRelationships.hasVisibleChild(
+            m_clipParentChildRelationships.hasVisibleChild(
                 clip, m_interaction.clips, m_interaction.tracks) &&
             isSampleWithinClip(clip, visualSample);
-        if (!visibleSource && !hiddenVirtualChildMediaProvider) {
+        if (!visibleSource && !hiddenChildMediaProvider) {
             continue;
         }
         const int64_t localFrame = clip.mediaType == ClipMediaType::Image
@@ -2021,7 +2021,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.mediaOwnerClipId = sourceId;
                     markerStatus.effectsOwnerClipId = clip.id;
                     // The marker reuses the linked source's decoded frame and
-                    // mask texture, but visual effects belong to the virtual
+                    // mask texture, but visual effects belong to the child
                     // Mask Matte itself. Cloning the entire source status here
                     // previously replaced the matte's migrated/keyframed grade
                     // with the source clip's grade.
@@ -2250,7 +2250,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         }
         if (!clipContributesVisualMedia(
                 clip, m_interaction.clips, m_interaction.tracks,
-                &m_virtualClipRelationships) ||
+                &m_clipParentChildRelationships) ||
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }

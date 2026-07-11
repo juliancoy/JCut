@@ -58,7 +58,7 @@ private slots:
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
     void childTransformLockUsesSourceTransformWhenEnabled();
-    void virtualMaskMatteOwnsIndependentKeyframedGrade();
+    void childMaskMatteOwnsIndependentKeyframedGrade();
     void hiddenParentStillProvidesMediaForVisibleMaskMatte();
     void exportLoopPassesFractionalPositionToRenderer();
 };
@@ -183,7 +183,7 @@ void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnable
     QCOMPARE(locked.scaleY, source.baseScaleY);
 }
 
-void TestRealtimeRenderContract::virtualMaskMatteOwnsIndependentKeyframedGrade()
+void TestRealtimeRenderContract::childMaskMatteOwnsIndependentKeyframedGrade()
 {
     TimelineClip source = makeMappedClip(30.0);
     source.id = QStringLiteral("source");
@@ -232,19 +232,19 @@ void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMat
     QVERIFY(!clipVisualPlaybackEnabled(source, {}));
     QVERIFY(clipVisualPlaybackEnabled(matte, {}));
     QVERIFY2(clipProvidesMediaForVisibleMaskMatte(source, clips, {}),
-             "a hidden parent must remain a decode provider for its visible virtual mask child");
+             "a hidden parent must remain a decode provider for its visible child mask clip");
     QVERIFY2(clipContributesVisualMedia(source, clips, {}),
              "shared render policy must retain a hidden source for its visible mask matte");
 
     TimelineClip synth = matte;
     synth.id = QStringLiteral("visible-effect-child");
     synth.clipRole = ClipRole::EffectSynth;
-    QVERIFY(clipIsVirtualChildOf(synth, source));
-    QVERIFY(clipVirtualChildPlaybackEnabled(synth, {}));
-    QVERIFY2(clipHasVisibleVirtualChild(source, {source, synth}, {}),
-             "decode ownership must consider every visible virtual child role");
+    QVERIFY(clipIsChildOf(synth, source));
+    QVERIFY(clipChildPlaybackEnabled(synth, {}));
+    QVERIFY2(clipHasVisibleChild(source, {source, synth}, {}),
+             "decode ownership must consider every visible child role");
     QVERIFY(clipContributesVisualMedia(source, {source, synth}, {}));
-    VirtualClipRelationshipIndex relationships;
+    ClipParentChildIndex relationships;
     relationships.rebuild({source, synth}, 42);
     QCOMPARE(relationships.timelineRevision(), quint64(42));
     QVERIFY(relationships.hasVisibleChild(source, {source, synth}, {}));
@@ -252,7 +252,7 @@ void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMat
 
     matte.videoEnabled = false;
     QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(source, {source, matte}, {}),
-             "a hidden virtual mask must not keep its parent active as a media provider");
+             "a hidden child mask must not keep its parent active as a media provider");
     QVERIFY(!clipContributesVisualMedia(source, {source, matte}, {}));
 }
 

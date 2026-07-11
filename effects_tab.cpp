@@ -216,14 +216,14 @@ void EffectsTab::refresh()
     const std::unique_ptr<QSignalBlocker> tilingWrapBlock =
         m_widgets.tilingWrapCheck ? std::make_unique<QSignalBlocker>(m_widgets.tilingWrapCheck) : nullptr;
 
-    const bool selectedVirtualClip =
+    const bool selectedChildClip =
         clip && (clip->clipRole == ClipRole::MaskMatte ||
                  clip->clipRole == ClipRole::EffectSynth);
 
-    if (!clip || selectedVirtualClip || !m_deps.clipHasVisuals(*clip)) {
+    if (!clip || selectedChildClip || !m_deps.clipHasVisuals(*clip)) {
         m_widgets.effectsPathLabel->setText(
-            selectedVirtualClip
-                ? QStringLiteral("Virtual clip\nEffects are edited on the source clip")
+            selectedChildClip
+                ? QStringLiteral("Child clip\nEffects are edited on the source clip")
                 : selectedTrack
                 ? QStringLiteral("Track effects\n%1").arg(selectedTrack->name)
                 : QStringLiteral("No visual clip selected"));

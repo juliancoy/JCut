@@ -634,14 +634,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 clip.speakerTitleEngineActive = !generatedTitles.isEmpty();
                 clip.transcriptOverlay.showSpeakerTitle = false;
             });
-            QString firstTitleId;
             for (const TimelineClip& title : generatedTitles) {
-                const QString id = placeGeneratedClip(
-                    title, QStringLiteral("Speaker Titles"), source.trackIndex + 1);
-                if (firstTitleId.isEmpty()) firstTitleId = id;
+                placeGeneratedClip(
+                    title, QStringLiteral("Transcript • Speaker Introductions"), source.trackIndex + 1);
             }
             if (!generatedTitles.isEmpty() || removedExisting) {
-                finishGeneratedClipMutation(firstTitleId.isEmpty() ? source.id : firstTitleId);
+                finishGeneratedClipMutation(source.id);
             }
         }
         return;

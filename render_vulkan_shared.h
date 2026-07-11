@@ -101,8 +101,10 @@ struct VulkanDrawEffectState {
 struct VulkanBackgroundFillMapping {
     float centerXNorm = 0.5f;
     float centerYNorm = 0.5f;
-    float halfWidthOverOutputHeight = 0.5f;
-    float signedHalfHeightOverOutputHeight = 0.5f;
+    // Reciprocals of the transformed full source dimensions. Keeping these
+    // invariant divisions on the CPU saves work for every fill fragment.
+    float outputHeightOverSourceWidth = 1.0f;
+    float signedOutputHeightOverSourceHeight = 1.0f;
     float rotationRadians = 0.0f;
 };
 
@@ -110,6 +112,10 @@ VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QTransform& sourceToOutput,
     const QRectF& localRect,
     const QSize& outputSize);
+VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
+    const QTransform& sourceToOutput,
+    const QRectF& localRect,
+    const QRectF& outputRect);
 
 VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);

@@ -5,6 +5,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,9 @@ constexpr int kBins = 256;
 constexpr int kTargetSampleCount = 180000;
 constexpr qreal kHandleRadius = 4.5;
 constexpr qreal kHandleHitRadius = 10.0;
+constexpr qreal kYAxisWidth = 46.0;
+constexpr qreal kXAxisHeight = 28.0;
+constexpr qreal kMinimumAxisSpan = 0.02;
 
 float normalizeHistogramBin(uint32_t bin, uint32_t maxBin)
 {
@@ -144,6 +148,9 @@ GradingHistogramWidget::GradingHistogramWidget(QWidget* parent)
 {
     setMinimumHeight(170);
     setMouseTracking(true);
+    setToolTip(QStringLiteral(
+        "Drag points to grade. Scroll the left scale for finer output adjustment; "
+        "scroll the bottom scale for finer input selection."));
     m_points = defaultGradingCurvePoints();
 }
 
@@ -288,22 +295,35 @@ void GradingHistogramWidget::setChartBackgroundColor(const QColor& color)
 
 QRectF GradingHistogramWidget::chartRect() const
 {
-    constexpr qreal kLeft = 10.0;
+    constexpr qreal kLeft = kYAxisWidth;
     constexpr qreal kRight = 10.0;
     constexpr qreal kTop = 10.0;
-    constexpr qreal kBottom = 14.0;
+    constexpr qreal kBottom = kXAxisHeight;
     return QRectF(kLeft,
                   kTop,
                   qMax<qreal>(1.0, width() - (kLeft + kRight)),
                   qMax<qreal>(1.0, height() - (kTop + kBottom)));
 }
 
+QRectF GradingHistogramWidget::yAxisRect() const
+{
+    const QRectF chart = chartRect();
+    return QRectF(0.0, chart.top(), chart.left(), chart.height());
+}
+
+QRectF GradingHistogramWidget::xAxisRect() const
+{
+    const QRectF chart = chartRect();
+    return QRectF(chart.left(), chart.bottom(), chart.width(), height() - chart.bottom());
+}
+
 QPointF GradingHistogramWidget::pointToWidget(const QPointF& point) const
 {
     const QRectF rect = chartRect();
-    const qreal x = rect.left() + (qBound<qreal>(0.0, point.x(), 1.0) * rect.width());
+    const qreal xSpan = qMax<qreal>(kMinimumAxisSpan, m_xViewMax - m_xViewMin);
+    const qreal x = rect.left() + (((point.x() - m_xViewMin) / xSpan) * rect.width());
     const qreal delta = qBound<qreal>(-1.0, point.y() - point.x(), 1.0);
-    const qreal displayNorm = qBound<qreal>(0.0, (delta * 0.5) + 0.5, 1.0);
+    const qreal displayNorm = (delta / (2.0 * m_yViewHalfRange)) + 0.5;
     const qreal y = rect.bottom() - (displayNorm * rect.height());
     return QPointF(x, y);
 }
@@ -311,13 +331,16 @@ QPointF GradingHistogramWidget::pointToWidget(const QPointF& point) const
 QPointF GradingHistogramWidget::widgetToPoint(const QPointF& pos) const
 {
     const QRectF rect = chartRect();
-    const qreal xNorm = rect.width() <= 0.0
-                            ? 0.0
-                            : qBound<qreal>(0.0, (pos.x() - rect.left()) / rect.width(), 1.0);
+    const qreal displayX = rect.width() <= 0.0
+                               ? 0.0
+                               : qBound<qreal>(0.0, (pos.x() - rect.left()) / rect.width(), 1.0);
+    const qreal xNorm = qBound<qreal>(0.0,
+                                      m_xViewMin + displayX * (m_xViewMax - m_xViewMin),
+                                      1.0);
     const qreal displayNorm = rect.height() <= 0.0
                                   ? 0.5
                                   : qBound<qreal>(0.0, (rect.bottom() - pos.y()) / rect.height(), 1.0);
-    const qreal delta = (displayNorm - 0.5) * 2.0;
+    const qreal delta = (displayNorm - 0.5) * 2.0 * m_yViewHalfRange;
     const qreal yNorm = qBound<qreal>(-1.0, xNorm + delta, 2.0);
     return QPointF(xNorm, yNorm);
 }
@@ -413,6 +436,35 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
     painter.setPen(QPen(QColor(52, 66, 82, 220), 1.0));
     painter.drawRect(rect);
 
+    const QColor axisText(164, 177, 194, 220);
+    const QColor hoveredAxis(55, 73, 94, 150);
+    if (m_yAxisHovered) {
+        painter.fillRect(yAxisRect(), hoveredAxis);
+    }
+    if (m_xAxisHovered) {
+        painter.fillRect(xAxisRect(), hoveredAxis);
+    }
+    painter.setFont(QFont(painter.font().family(), 8));
+    painter.setPen(axisText);
+    for (int i = 0; i <= 4; ++i) {
+        const qreal t = i / 4.0;
+        const qreal y = rect.top() + rect.height() * t;
+        const qreal value = m_yViewHalfRange * (1.0 - 2.0 * t);
+        painter.drawText(QRectF(1.0, y - 8.0, kYAxisWidth - 6.0, 16.0),
+                         Qt::AlignRight | Qt::AlignVCenter,
+                         QString::number(value, 'f', m_yViewHalfRange < 0.1 ? 3 : 2));
+    }
+    for (int i = 0; i <= 4; ++i) {
+        const qreal t = i / 4.0;
+        const qreal x = rect.left() + rect.width() * t;
+        const qreal value = m_xViewMin + (m_xViewMax - m_xViewMin) * t;
+        const qreal labelWidth = 48.0;
+        painter.drawText(QRectF(x - labelWidth / 2.0, rect.bottom() + 3.0,
+                                labelWidth, kXAxisHeight - 4.0),
+                         Qt::AlignHCenter | Qt::AlignTop,
+                         QString::number(value, 'f', (m_xViewMax - m_xViewMin) < 0.1 ? 3 : 2));
+    }
+
     painter.setPen(QPen(QColor(40, 52, 66, 180), 1.0, Qt::DashLine));
     for (int i = 1; i < 4; ++i) {
         const qreal x = rect.left() + (rect.width() * i / 4.0);
@@ -469,6 +521,9 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
                                                              : sanitizeWidgetCurvePoints(m_points);
 
     QPainterPath curvePath;
+    painter.save();
+    painter.setClipRect(rect.adjusted(-kHandleRadius, -kHandleRadius,
+                                      kHandleRadius, kHandleRadius));
     if (!points.isEmpty()) {
         curvePath.moveTo(pointToWidget(points.constFirst()));
         if (!m_curveSmoothingEnabled) {
@@ -505,10 +560,15 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
         painter.setPen(QPen(QColor(240, 246, 252, 200), 1.2));
         painter.drawEllipse(hp, kHandleRadius + (active ? 1.2 : 0.0), kHandleRadius + (active ? 1.2 : 0.0));
     }
+    painter.restore();
 }
 
 void GradingHistogramWidget::mousePressEvent(QMouseEvent* event)
 {
+    if (yAxisRect().contains(event->position()) || xAxisRect().contains(event->position())) {
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::RightButton) {
         if (m_threePointLockEnabled) {
             event->accept();
@@ -582,6 +642,15 @@ void GradingHistogramWidget::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    const bool yHovered = yAxisRect().contains(event->position());
+    const bool xHovered = xAxisRect().contains(event->position());
+    if (yHovered != m_yAxisHovered || xHovered != m_xAxisHovered) {
+        m_yAxisHovered = yHovered;
+        m_xAxisHovered = xHovered;
+        setCursor(yHovered ? Qt::SizeVerCursor
+                           : (xHovered ? Qt::SizeHorCursor : Qt::ArrowCursor));
+        update();
+    }
     QWidget::mouseMoveEvent(event);
 }
 
@@ -602,6 +671,42 @@ void GradingHistogramWidget::leaveEvent(QEvent* event)
     Q_UNUSED(event);
     if (!m_dragging) {
         m_activePoint = -1;
+        m_yAxisHovered = false;
+        m_xAxisHovered = false;
+        unsetCursor();
         update();
     }
+}
+
+void GradingHistogramWidget::wheelEvent(QWheelEvent* event)
+{
+    const QPointF pos = event->position();
+    const qreal steps = event->angleDelta().y() / 120.0;
+    if (qFuzzyIsNull(steps)) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    const qreal factor = std::pow(0.8, steps);
+    if (yAxisRect().contains(pos)) {
+        m_yViewHalfRange = qBound<qreal>(0.01, m_yViewHalfRange * factor, 1.0);
+        update();
+        event->accept();
+        return;
+    }
+    if (xAxisRect().contains(pos)) {
+        const QRectF rect = chartRect();
+        const qreal cursorT = qBound<qreal>(0.0, (pos.x() - rect.left()) / rect.width(), 1.0);
+        const qreal anchor = m_xViewMin + cursorT * (m_xViewMax - m_xViewMin);
+        const qreal newSpan = qBound<qreal>(kMinimumAxisSpan,
+                                            (m_xViewMax - m_xViewMin) * factor,
+                                            1.0);
+        qreal newMin = anchor - cursorT * newSpan;
+        newMin = qBound<qreal>(0.0, newMin, 1.0 - newSpan);
+        m_xViewMin = newMin;
+        m_xViewMax = newMin + newSpan;
+        update();
+        event->accept();
+        return;
+    }
+    QWidget::wheelEvent(event);
 }

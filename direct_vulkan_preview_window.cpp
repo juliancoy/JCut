@@ -2072,10 +2072,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 lastTitleSkipReason = QStringLiteral("title_keyframes_empty");
                 continue;
             }
-            const int64_t localFrame = qBound<int64_t>(
-                0,
-                titleFrame - clip.startFrame,
-                qMax<int64_t>(0, clip.durationFrames - 1));
             const EffectiveVisualEffects effects =
                 evaluateEffectiveVisualEffectsAtPosition(
                     clip,
@@ -2087,7 +2083,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 lastTitleSkipReason = QStringLiteral("title_zero_opacity");
                 continue;
             }
-            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
+                clip, state->currentFramePosition, state->playbackTiming);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
             if (!title.valid || title.text.trimmed().isEmpty() || title.opacity <= 0.001) {
@@ -2107,7 +2104,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             const QString textureKey = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18|%19|%20|%21|%22|%23|%24|%25|%26|%27")
                                            .arg(clip.id)
-                                           .arg(localFrame)
+                                           .arg(titleFrame)
                                            .arg(title.text)
                                            .arg(QString::number(title.x, 'f', 3))
                                            .arg(QString::number(title.y, 'f', 3))
@@ -2567,7 +2564,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 if (drawPreparedTitleOverlayForClip(clip.id, compositeRect)) {
                     drawnTitleOverlayClipIds.insert(clip.id);
                 }
-                if (clip.id == state->selectedClipId) {
+                if (clip.id == state->selectedClipId && state->titleOverlayInteractionOnly) {
                     const int selectionThickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 360);
                     clearBoxOutline(m_devFuncs,
                                     cb,
@@ -2656,7 +2653,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             backgroundGeometry.clipToScreen.mapRect(backgroundGeometry.localRect);
                     }
                     VulkanPipeline::Push backgroundPush{};
-                    m_resources->updateFrameUniform(swapSize);
+                    // Background UVs span the preview canvas, not the whole
+                    // swapchain. Keep the shader aspect and source mapping in
+                    // that same coordinate space so view zoom cannot alter the
+                    // progressive stretch curve.
+                    m_resources->updateFrameUniform(compositeRect.size().toSize());
                     mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
                                               backgroundGeometry.localRect,
                                               swapSize,
@@ -2677,7 +2678,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             render_detail::vulkanBackgroundFillMapping(
                                 effectiveClipGeometry.clipToScreen,
                                 effectiveClipGeometry.localRect,
-                                swapSize));
+                                compositeRect));
                     backgroundPush.opacity = backgroundEffects.opacity;
                     backgroundPush.brightness = backgroundEffects.brightness;
                     backgroundPush.contrast = backgroundEffects.contrast;

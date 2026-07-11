@@ -8,6 +8,7 @@
 #include <QVector>
 
 class QImage;
+class QWheelEvent;
 
 class GradingHistogramWidget : public QWidget
 {
@@ -46,9 +47,12 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
 
 private:
     QRectF chartRect() const;
+    QRectF yAxisRect() const;
+    QRectF xAxisRect() const;
     QPointF pointToWidget(const QPointF& point) const;
     QPointF widgetToPoint(const QPointF& pos) const;
     int nearestPointIndex(const QPointF& pos) const;
@@ -74,4 +78,9 @@ private:
 
     int m_activePoint = -1;
     bool m_dragging = false;
+    qreal m_xViewMin = 0.0;
+    qreal m_xViewMax = 1.0;
+    qreal m_yViewHalfRange = 1.0;
+    bool m_yAxisHovered = false;
+    bool m_xAxisHovered = false;
 };

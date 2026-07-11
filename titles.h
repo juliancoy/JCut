@@ -65,7 +65,10 @@ struct TitleLayoutMetrics {
 };
 
 // Evaluate the title state for a clip at a given local frame (0-based within the clip).
-EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t localFrame);
+EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFrame);
+EvaluatedTitle evaluateTitleAtTimelinePosition(const TimelineClip& clip,
+                                               qreal timelineFramePosition,
+                                               const PlaybackTimingContext& timing);
 EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacityMultiplier);
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale = 1.0);
 

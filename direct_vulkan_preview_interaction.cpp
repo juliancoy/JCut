@@ -698,7 +698,8 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
             if (clip.mediaType == ClipMediaType::Title) {
                 const int64_t localFrame = qMax<int64_t>(0,
                     static_cast<int64_t>(state->currentFramePosition) - clip.startFrame);
-                const EvaluatedTitle evaluated = evaluateTitleAtLocalFrame(clip, localFrame);
+                const EvaluatedTitle evaluated = evaluateTitleAtTimelinePosition(
+                    clip, state->currentFramePosition, state->playbackTiming);
                 TimelineClip::TransformKeyframe keyframe;
                 keyframe.frame = qBound<int64_t>(0, localFrame, qMax<int64_t>(0, clip.durationFrames - 1));
                 keyframe.translationX = evaluated.x;

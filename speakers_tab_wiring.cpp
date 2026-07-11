@@ -111,7 +111,7 @@ void SpeakersTab::wire()
                         onSpeakerCreateTitleClipsClicked();
                         const TimelineClip* updatedClip = m_deps.getSelectedClip
                             ? m_deps.getSelectedClip() : nullptr;
-                        if (!updatedClip || updatedClip->titleKeyframes.isEmpty()) {
+                        if (!updatedClip || !updatedClip->speakerTitleEngineActive) {
                             QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
                             m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(false);
                         }
@@ -134,8 +134,13 @@ void SpeakersTab::wire()
                 });
 
         auto refreshEnabledFlyIn = [this]() {
+            const TimelineClip* selectedClip = m_deps.getSelectedClip
+                ? m_deps.getSelectedClip() : nullptr;
+            const bool hasGeneratedIntroductions =
+                selectedClip && selectedClip->speakerTitleEngineActive;
             if (!m_updating && m_widgets.speakerOverlayCreateTitleClipsButton &&
-                m_widgets.speakerOverlayCreateTitleClipsButton->isChecked()) {
+                (m_widgets.speakerOverlayCreateTitleClipsButton->isChecked() ||
+                 hasGeneratedIntroductions)) {
                 onSpeakerCreateTitleClipsClicked();
             }
             if (!m_updating && m_deps.scheduleSaveState) {
@@ -196,6 +201,10 @@ void SpeakersTab::wire()
                 m_widgets.speakerOverlayTitleExtrudeDepthSpin->setEnabled(enabled);
             if (m_widgets.speakerOverlayTitleBevelScaleSpin)
                 m_widgets.speakerOverlayTitleBevelScaleSpin->setEnabled(enabled);
+        }
+        if (m_widgets.speakerOverlayTitleBackgroundCheckBox) {
+            connect(m_widgets.speakerOverlayTitleBackgroundCheckBox, &QCheckBox::toggled,
+                    this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
         }
     }
     if (m_widgets.speakerSectionMinimumWordsSpin) {

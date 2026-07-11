@@ -724,19 +724,13 @@ void EditorWindow::setupPreviewControls()
         });
     }
     if (m_speakerShowCurrentSpeakerNameCheckBox) {
-        connect(m_speakerShowCurrentSpeakerNameCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_preview) {
-                m_preview->setShowCurrentSpeakerName(checked);
-            }
+        connect(m_speakerShowCurrentSpeakerNameCheckBox, &QCheckBox::toggled, this, [this](bool) {
             scheduleSaveState();
             pushHistorySnapshot();
         });
     }
     if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
-        connect(m_speakerShowCurrentSpeakerOrganizationCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_preview) {
-                m_preview->setShowCurrentSpeakerOrganization(checked);
-            }
+        connect(m_speakerShowCurrentSpeakerOrganizationCheckBox, &QCheckBox::toggled, this, [this](bool) {
             scheduleSaveState();
             pushHistorySnapshot();
         });
@@ -1158,13 +1152,8 @@ void EditorWindow::setupPreviewControls()
         m_preview->setAudioWaveformVisible(m_audioWaveformVisible);
         m_preview->setAudioVisualizationMode(m_audioVisualizationMode);
         m_preview->setLoiaconoSpectrumSettings(m_loiaconoSpectrumSettings);
-        if (m_speakerShowCurrentSpeakerNameCheckBox) {
-            m_preview->setShowCurrentSpeakerName(m_speakerShowCurrentSpeakerNameCheckBox->isChecked());
-        }
-        if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
-            m_preview->setShowCurrentSpeakerOrganization(
-                m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked());
-        }
+        m_preview->setShowCurrentSpeakerName(false);
+        m_preview->setShowCurrentSpeakerOrganization(false);
         if (m_speakerCurrentSpeakerNameTextSizeSpin) {
             m_preview->setCurrentSpeakerNameTextScale(
                 m_speakerCurrentSpeakerNameTextSizeSpin->value() / 100.0);
