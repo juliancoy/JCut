@@ -212,6 +212,11 @@ void TestTranscriptLogic::testSpeechFilterUsesLiveTranscriptBeforeAsyncSave() {
     QCOMPARE(ranges.size(), 1);
     QCOMPARE(ranges.constFirst().startFrame, int64_t(130));
     QCOMPARE(ranges.constFirst().endFrame, int64_t(135));
+
+    engine.clearLiveTranscriptDocuments();
+    const QVector<ExportRangeSegment> diskRanges = engine.transcriptWordExportRanges(
+        {ExportRangeSegment{100, 189}}, {clip}, {}, 0, 0);
+    QVERIFY(diskRanges.isEmpty());
 }
 
 void TestTranscriptLogic::testAudibleTimelineClipsExcludeDisabledOverlappingTrack() {

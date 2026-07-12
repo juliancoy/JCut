@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <QByteArrayList>
+#include <QImage>
 #include <QWidget>
 
 class DirectVulkanPreviewWindow;
@@ -47,6 +48,9 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
 bool directVulkanPreviewWindowUpdatePending(DirectVulkanPreviewWindow* window);
 bool directVulkanPreviewWindowIsValid(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* window);
+void directVulkanPreviewWindowRequestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window);
+QImage directVulkanPreviewWindowLatestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window);
+bool directVulkanPreviewWindowPipelineThumbnailReadbackPending(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowRaise(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowHide(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const QString& title);

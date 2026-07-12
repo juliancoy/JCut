@@ -91,6 +91,10 @@ public:
         QLineEdit* selectedSpeakerPrimaryColorEdit = nullptr;
         QLineEdit* selectedSpeakerSecondaryColorEdit = nullptr;
         QLineEdit* selectedSpeakerAccentColorEdit = nullptr;
+        QCheckBox* selectedSpeakerGradingEnabledCheckBox = nullptr;
+        QDoubleSpinBox* selectedSpeakerBrightnessSpin = nullptr;
+        QDoubleSpinBox* selectedSpeakerContrastSpin = nullptr;
+        QDoubleSpinBox* selectedSpeakerSaturationSpin = nullptr;
         QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
         QListWidget* speakerPlayheadFaceDetectionsList = nullptr;
         QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
@@ -470,6 +474,7 @@ private:
     QPixmap placeholderSpeakerAvatar(const QString& speakerId) const;
     bool saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText);
     bool saveSelectedSpeakerProfileField(const QString& fieldKey, const QString& valueText);
+    bool saveSelectedSpeakerGrading();
     bool deassignTrackFromSpeaker(const QString& speakerId, int trackId);
     bool deassignSelectedSpeakerAssignedTracks();
     void showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos);

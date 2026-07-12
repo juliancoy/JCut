@@ -23,6 +23,7 @@ inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
 inline constexpr float kVulkanEffectModeBackgroundProgressiveEdgeStretch = -3.0f;
 inline constexpr float kVulkanEffectModeBackgroundMirror = -4.0f;
+inline constexpr float kVulkanEffectModeFinalCompositeProgressiveEdgeStretch = -5.0f;
 inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
@@ -53,7 +54,8 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QRectF& outputRect,
                                                   const QSize& textureSize,
                                                   qreal timelineFrame,
-                                                  qreal effectFrame = -1.0);
+                                                  qreal effectFrame = -1.0,
+                                                  const PlaybackTimingContext& timing = {});
 QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         const QRectF& outputRect,
                                         const QSize& textureSize,
@@ -107,6 +109,18 @@ struct VulkanBackgroundFillMapping {
     float signedOutputHeightOverSourceHeight = 1.0f;
     float rotationRadians = 0.0f;
 };
+
+bool vulkanClipSupportsProgressiveEdgeStretchSource(const TimelineClip& clip);
+
+struct VulkanProgressiveEdgeStretchLayerPolicy {
+    bool presetActive = false;
+    bool sourceEligible = false;
+    bool drawBackground = false;
+};
+
+VulkanProgressiveEdgeStretchLayerPolicy vulkanProgressiveEdgeStretchLayerPolicy(
+    const TimelineClip& clip,
+    const QVector<TimelineTrack>& tracks);
 
 VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QTransform& sourceToOutput,

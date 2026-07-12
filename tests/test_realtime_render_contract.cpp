@@ -214,6 +214,8 @@ void TestRealtimeRenderContract::childMaskMatteOwnsIndependentKeyframedGrade()
              "virtual matte saturation must not fall back to the linked source grade");
     QVERIFY2(std::abs(sourceGrade.brightness - matteGrade.brightness) > 0.1,
              "grading the virtual matte must leave the linked source grade independent");
+    QVERIFY2(matte.clipRole != ClipRole::Media,
+             "virtual matte grading must not participate in file-based parent speaker overrides");
 }
 
 void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMatte()

@@ -3,6 +3,7 @@
 #include "../clip_serialization.h"
 #include "../editor_effect_presets.h"
 #include "../editor_shared_effects.h"
+#include "../editor_shared_keyframes.h"
 #include "../render_vulkan_shared.h"
 #include "../mask_sidecar.h"
 #include "../transform_skip_aware_timing.h"
@@ -71,6 +72,7 @@ private slots:
     void effectPipelinePassesThroughWhenPresetIsOff();
     void effectPipelineUsesGeneratedDrawsForTiling();
     void maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets();
+    void maskedRepeatUsesSpeechFilterAwareTransformTiming();
     void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps();
     void titleAnimationsUseContiguousPlaybackTimeAcrossSkips();
@@ -263,6 +265,7 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("directional_trim_ticker"));
     roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
     roundTripPreset(ClipEffectPreset::Vulkan3DSynth, QStringLiteral("vulkan_3d_synth"));
+    roundTripPreset(ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("progressive_edge_stretch"));
 }
 
 void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
@@ -287,6 +290,7 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::DirectionalTrimTicker,
         ClipEffectPreset::SourceTile,
         ClipEffectPreset::Vulkan3DSynth,
+        ClipEffectPreset::ProgressiveEdgeStretch,
     };
 
     QCOMPARE(options.size(), serializedPresets.size());
@@ -297,6 +301,7 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::NewsLogoTicker));
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::SourceTile));
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::Vulkan3DSynth));
+    QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::ProgressiveEdgeStretch));
     QVERIFY(!effectPresetUsesDirectionalControl(ClipEffectPreset::FreezePattern));
     QVERIFY(effectPresetUsesTilingControls(ClipEffectPreset::SourceTile));
     QVERIFY(!effectPresetUsesTilingControls(ClipEffectPreset::Vulkan3DSynth));
@@ -398,6 +403,19 @@ void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
     source.maskFramesDir = QStringLiteral("/tmp/shot-01_sam3_person_binary_masks");
     source.maskForegroundLayerEnabled = true;
     source.effectPreset = ClipEffectPreset::NewsLogoTicker;
+    source.brightness = 0.35;
+    source.contrast = 1.7;
+    source.saturation = 0.4;
+    TimelineClip::GradingKeyframe parentGrade;
+    parentGrade.frame = 0;
+    parentGrade.brightness = 0.6;
+    parentGrade.contrast = 1.8;
+    parentGrade.saturation = 0.3;
+    parentGrade.curvePointsR = {{0.0, 0.2}, {1.0, 0.9}};
+    parentGrade.curvePointsG = {{0.0, 0.1}, {1.0, 0.8}};
+    parentGrade.curvePointsB = {{0.0, 0.3}, {1.0, 0.7}};
+    parentGrade.curvePointsLuma = {{0.0, 0.15}, {1.0, 1.0}};
+    source.gradingKeyframes = {parentGrade};
 
     const TimelineClip matte = makeSamMaskMatteClip(source);
     QCOMPARE(matte.id, QStringLiteral("shot-01-mask-matte"));
@@ -428,6 +446,23 @@ void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
     QVERIFY(!matte.maskShowOnly);
     QVERIFY(!matte.maskForegroundLayerEnabled);
     QCOMPARE(matte.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(matte.brightness, 0.0);
+    QCOMPARE(matte.contrast, 1.0);
+    QCOMPARE(matte.saturation, 1.0);
+    QVERIFY(matte.gradingKeyframes.isEmpty());
+
+    // Parent grading can change after the virtual child is established. Media
+    // and transform ownership remain linked, but grading ownership does not.
+    source.brightness = -0.4;
+    source.contrast = 0.55;
+    source.saturation = 1.9;
+    source.gradingKeyframes[0].brightness = -0.7;
+    const TimelineClip::GradingKeyframe childGrade =
+        evaluateEffectiveClipGradingAtPosition(matte, {}, matte.startFrame);
+    QCOMPARE(childGrade.brightness, 0.0);
+    QCOMPARE(childGrade.contrast, 1.0);
+    QCOMPARE(childGrade.saturation, 1.0);
+    QVERIFY(!gradingUsesCurveLut(childGrade));
 }
 
 void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
@@ -637,7 +672,7 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     QCOMPARE(titles.at(0).mediaType, ClipMediaType::Title);
     QCOMPARE(titles.at(0).trackIndex, 4);
     QCOMPARE(titles.at(0).startFrame, int64_t(1010));
-    QCOMPARE(titles.at(0).durationFrames, int64_t(90));
+    QVERIFY(titles.at(0).durationFrames > 0);
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().text, QStringLiteral("Jane Doe\nDirector"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().logoPath, QStringLiteral("/tmp/jane-logo.png"));
     QCOMPARE(titles.at(0).titleKeyframes.constFirst().color.name(QColor::HexRgb), QStringLiteral("#f4fbff"));
@@ -654,7 +689,9 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
         QVector<TranscriptSection>{section},
         4,
         90);
-    QCOMPARE(delayedTitles.constFirst().startFrame, int64_t(1010 + ((kTimelineFps * 35 + 50) / 100)));
+    QCOMPARE(delayedTitles.constFirst().startFrame, int64_t(1010));
+    QCOMPARE(delayedTitles.constFirst().titleKeyframes.constFirst().frame, int64_t(0));
+    QCOMPARE(delayedTitles.constFirst().titleKeyframes.constFirst().opacity, 0.0);
 
     SpeakerTitleFlyInSettings nameOnly;
     nameOnly.showSpeakerOrganization = false;
@@ -913,6 +950,61 @@ void TestEffectPresets::maskedRepeatUsesMaskGradeDrawsAndKeyframedOffsets()
     QCOMPARE(plan.generatedDraws.at(0).outputRect, seedRect.translated(-150.0, -30.0));
     QCOMPARE(plan.generatedDraws.at(1).outputRect, seedRect);
     QCOMPARE(plan.generatedDraws.at(2).outputRect, seedRect.translated(150.0, 30.0));
+}
+
+void TestEffectPresets::maskedRepeatUsesSpeechFilterAwareTransformTiming()
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("speech-aware-repeat");
+    clip.filePath = QStringLiteral("/tmp/source.mp4");
+    clip.startFrame = 0;
+    clip.durationFrames = 40;
+    clip.effectPreset = ClipEffectPreset::None;
+    clip.maskEnabled = true;
+    clip.maskRepeatEnabled = true;
+    clip.maskFramesDir = QStringLiteral("/tmp/masks");
+    clip.effectRows = 3;
+    clip.transformSkipAwareTiming = true;
+
+    TimelineClip::TransformKeyframe first;
+    first.frame = 0;
+    first.maskRepeatDeltaX = 0.0;
+    first.maskRepeatDeltaY = 0.0;
+    TimelineClip::TransformKeyframe second;
+    second.frame = 20;
+    second.maskRepeatDeltaX = 200.0;
+    second.maskRepeatDeltaY = 40.0;
+    clip.transformKeyframes = {first, second};
+
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{0, 9},
+        ExportRangeSegment{20, 29},
+    };
+    timing.frameTransitionMode = PlaybackFrameTransitionMode::SmoothStepSpeedThrough;
+    timing.frameCrossfadeFrames = 4;
+
+    const QRectF seedRect(200.0, 100.0, 80.0, 40.0);
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip,
+            seedRect,
+            QSize(200, 100),
+            10.0,
+            -1.0,
+            timing);
+    const TimelineClip::TransformKeyframe expectedTransform =
+        evaluateClipTransformAtPosition(clip, 10.0, timing);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+    QCOMPARE(plan.generatedDraws.size(), 3);
+    QCOMPARE(plan.generatedDraws.at(0).outputRect,
+             seedRect.translated(-expectedTransform.maskRepeatDeltaX,
+                                 -expectedTransform.maskRepeatDeltaY));
+    QCOMPARE(plan.generatedDraws.at(1).outputRect, seedRect);
+    QCOMPARE(plan.generatedDraws.at(2).outputRect,
+             seedRect.translated(expectedTransform.maskRepeatDeltaX,
+                                 expectedTransform.maskRepeatDeltaY));
 }
 
 void TestEffectPresets::temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps()

@@ -37,6 +37,7 @@ public:
         QSlider* backgroundFillEdgePixelsSlider = nullptr;
         QCheckBox* backgroundFillEdgeProgressiveCheckBox = nullptr;
         QDoubleSpinBox* backgroundFillEdgePowerSpin = nullptr;
+        QComboBox* backgroundFillStretchSourceCombo = nullptr;
         QLabel* outputRangeSummaryLabel = nullptr;
         QCheckBox* renderUseProxiesCheckBox = nullptr;
         QCheckBox* outputPlaybackCacheFallbackCheckBox = nullptr;

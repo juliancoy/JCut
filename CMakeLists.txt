@@ -365,30 +365,29 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_prepare.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_morph.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask_blur.comp
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/progressive_composite_boundary_tiles.comp
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/progressive_composite_boundary_merge.comp
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/progressive_composite_stretch.vert
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/progressive_composite_stretch.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/scrfd_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_infer_heuristic.comp
 )
 set(JCUT_VULKAN_SHADER_OUTPUTS "")
 if(GLSLANG_VALIDATOR)
+    set(JCUT_VULKAN_SHADER_TARGETS "")
     foreach(shader IN LISTS JCUT_VULKAN_SHADER_SOURCES)
         get_filename_component(shader_name ${shader} NAME)
         set(out_file "${JCUT_VULKAN_SHADER_OUTPUT_DIR}/${shader_name}.spv")
-        add_custom_command(
-            OUTPUT ${out_file}
+        string(MAKE_C_IDENTIFIER "${shader_name}" shader_target_name)
+        add_custom_target(jcut_vulkan_shader_${shader_target_name}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLANG_VALIDATOR} -V "${shader}" -o "${out_file}"
+            BYPRODUCTS "${out_file}"
             DEPENDS "${shader}"
             COMMENT "Compiling Vulkan shader ${shader_name}"
             VERBATIM
         )
+        list(APPEND JCUT_VULKAN_SHADER_TARGETS "jcut_vulkan_shader_${shader_target_name}")
         list(APPEND JCUT_VULKAN_SHADER_OUTPUTS "${out_file}")
     endforeach()
-    add_custom_target(jcut_vulkan_shaders DEPENDS ${JCUT_VULKAN_SHADER_OUTPUTS})
+    add_custom_target(jcut_vulkan_shaders DEPENDS ${JCUT_VULKAN_SHADER_TARGETS})
 else()
     message(WARNING "glslangValidator not found; Vulkan shader SPIR-V build artifacts will not be generated.")
 endif()

@@ -17,6 +17,7 @@
 #include "playback_frame_pipeline.h"
 #include "preview_frame_selection.h"
 #include "preview_view_transform.h"
+#include "render_vulkan_shared.h"
 #include "timeline_cache.h"
 #include "transcript_engine.h"
 
@@ -682,6 +683,12 @@ void VulkanPreviewSurface::setBackgroundFillEdgeProgressive(bool progressive)
 void VulkanPreviewSurface::setBackgroundFillEdgePower(qreal power)
 {
     m_interaction.backgroundFillEdgePower = qBound<qreal>(0.25, power, 8.0);
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setBackgroundFillStretchSourceClipId(const QString& clipId)
+{
+    m_interaction.backgroundFillStretchSourceClipId = clipId.trimmed();
     requestNativeUpdate();
 }
 
@@ -1987,6 +1994,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (status.maskTextureEnabled &&
             status.maskForegroundLayerEnabled &&
             maskMarkerSourceIds.contains(clip.id)) {
+            const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
+                render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, m_interaction.tracks);
+            Q_UNUSED(progressiveStretchPolicy);
             VulkanPreviewClipFrameStatus foregroundStatus = status;
             foregroundStatus.maskClipSource = true;
             foregroundStatus.maskShowOnly = false;
@@ -2418,9 +2428,13 @@ QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& cli
 QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelineSnapshots() const
 {
     QVector<PipelineStageSnapshot> snapshots;
-    const QImage previewImage;
+    QImage previewImage;
     const QImage decoderDiagnosticImage;
     const QJsonObject presenterSnapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
+    if (m_presenter) {
+        m_presenter->requestPipelineTapReadback();
+        previewImage = m_presenter->latestPipelineTapImage();
+    }
     auto playbackCounterForLabel = [this, &presenterSnapshot](const QString& label) -> QJsonObject {
         if (label == QStringLiteral("01 Timeline Input")) {
             return editor::playbackStageMetricToJson(m_timelineInputStageMetric, QStringLiteral("preview"));
@@ -2464,7 +2478,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
         if (label == QStringLiteral("12 FaceDetections Overlay")) {
             return editor::playbackStageMetricToJson(m_overlayPrepStageMetric, QStringLiteral("preview"));
         }
-        if (label == QStringLiteral("14 Presented Surface")) {
+        if (label == QStringLiteral("15 Presented Surface")) {
             return presenterSnapshot.value(QStringLiteral("playback_pipeline_stages"))
                 .toObject()
                 .value(QStringLiteral("presentation"))
@@ -2834,7 +2848,43 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
             false});
     }
 
-    addStage(QStringLiteral("13 Diagnostic Readback"),
+    const bool finalStretchPrepared =
+        presenterSnapshot.value(QStringLiteral("final_composite_stretch_prepared")).toBool(false);
+    const bool finalStretchDrawn =
+        presenterSnapshot.value(QStringLiteral("final_composite_stretch_drawn")).toBool(false);
+    const QString finalStretchReason =
+        presenterSnapshot.value(QStringLiteral("final_composite_stretch_reason")).toString(
+            finalStretchPrepared ? QStringLiteral("prepared") : QStringLiteral("disabled"));
+    addStage(QStringLiteral("13 Final Progressive Edge Stretch"),
+             QStringLiteral("prepared %1 | drawn %2 | source %3 | reason %4")
+                 .arg(finalStretchPrepared ? QStringLiteral("yes") : QStringLiteral("no"))
+                 .arg(finalStretchDrawn ? QStringLiteral("yes") : QStringLiteral("no"))
+                 .arg(presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_label"))
+                          .toString(QStringLiteral("auto/unresolved")))
+                 .arg(finalStretchReason),
+             previewImage,
+             QStringLiteral("composite"),
+             true,
+             finalStretchPrepared,
+             finalStretchDrawn ? QStringLiteral("ready")
+                               : (finalStretchPrepared ? QStringLiteral("blocked")
+                                                       : QStringLiteral("waiting")),
+             QJsonObject{
+                 {QStringLiteral("final_composite_stretch_prepared"), finalStretchPrepared},
+                 {QStringLiteral("final_composite_stretch_drawn"), finalStretchDrawn},
+                 {QStringLiteral("final_composite_stretch_source_clip_id"),
+                  presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_clip_id")).toString()},
+                 {QStringLiteral("final_composite_stretch_source_label"),
+                  presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_label")).toString()},
+                 {QStringLiteral("final_composite_stretch_reason"), finalStretchReason},
+                 {QStringLiteral("pipeline_tap"), QStringLiteral("post_final_progressive_edge_stretch_swapchain")},
+                 {QStringLiteral("thumbnail_source"), previewImage.isNull()
+                      ? QStringLiteral("pending_gpu_diagnostic_readback")
+                      : QStringLiteral("gpu_diagnostic_readback")},
+                 {QStringLiteral("has_image"), !previewImage.isNull()}
+             });
+
+    addStage(QStringLiteral("14 Diagnostic Readback"),
              QStringLiteral("disabled by default | sampled images %1 | failures %2")
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("sampled_image_ready_count")).toDouble()))
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_failures")).toDouble())),
@@ -2855,7 +2905,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
     const bool nativeWindowVisible =
         presenterSnapshot.value(QStringLiteral("native_window_visible")).toBool(false);
     const bool presenterFrameReady = swapchainPresent && nativeWindowVisible && presentedFrameCount > 0;
-    addStage(QStringLiteral("14 Presented Surface"),
+    addStage(QStringLiteral("15 Presented Surface"),
              QStringLiteral("swapchain presenter | final visible frame | presented %1")
                  .arg(presentedFrameCount),
              previewImage,

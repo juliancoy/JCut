@@ -217,6 +217,7 @@ void EditorWindow::bindInspectorWidgets()
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
     m_backgroundFillEffectCombo = m_inspectorPane->backgroundFillEffectCombo();
+    m_backgroundFillStretchSourceCombo = m_inspectorPane->backgroundFillStretchSourceCombo();
     m_backgroundFillOpacitySpin = m_inspectorPane->backgroundFillOpacitySpin();
     m_backgroundFillBrightnessSpin = m_inspectorPane->backgroundFillBrightnessSpin();
     m_backgroundFillSaturationSpin = m_inspectorPane->backgroundFillSaturationSpin();
@@ -1200,17 +1201,8 @@ void EditorWindow::setupPreviewControls()
         connect(m_backgroundFillEffectCombo, &QComboBox::currentIndexChanged, this, [this]() {
             const BackgroundFillEffect effect =
                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
-            const bool progressive = effect == BackgroundFillEffect::ProgressiveEdgeStretch;
-            if (m_backgroundFillEdgeProgressiveCheckBox) {
-                QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
-                m_backgroundFillEdgeProgressiveCheckBox->setChecked(progressive);
-            }
-            if (m_backgroundFillEdgePowerSpin) {
-                m_backgroundFillEdgePowerSpin->setEnabled(progressive);
-            }
             if (m_preview) {
                 m_preview->setBackgroundFillEffect(effect);
-                m_preview->setBackgroundFillEdgeProgressive(progressive);
             }
             scheduleSaveState();
             pushHistorySnapshot();
@@ -1219,8 +1211,6 @@ void EditorWindow::setupPreviewControls()
             const BackgroundFillEffect effect =
                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
             m_preview->setBackgroundFillEffect(effect);
-            m_preview->setBackgroundFillEdgeProgressive(
-                effect == BackgroundFillEffect::ProgressiveEdgeStretch);
         }
     }
 
@@ -1281,20 +1271,8 @@ void EditorWindow::setupPreviewControls()
 
     if (m_backgroundFillEdgeProgressiveCheckBox) {
         connect(m_backgroundFillEdgeProgressiveCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_backgroundFillEffectCombo && checked) {
-                const int progressiveIndex = m_backgroundFillEffectCombo->findData(
-                    backgroundFillEffectToString(BackgroundFillEffect::ProgressiveEdgeStretch));
-                if (progressiveIndex >= 0 &&
-                    m_backgroundFillEffectCombo->currentIndex() != progressiveIndex) {
-                    QSignalBlocker block(m_backgroundFillEffectCombo);
-                    m_backgroundFillEffectCombo->setCurrentIndex(progressiveIndex);
-                }
-            }
             if (m_preview) {
                 m_preview->setBackgroundFillEdgeProgressive(checked);
-                if (checked) {
-                    m_preview->setBackgroundFillEffect(BackgroundFillEffect::ProgressiveEdgeStretch);
-                }
             }
             if (m_backgroundFillEdgePowerSpin) {
                 m_backgroundFillEdgePowerSpin->setEnabled(checked);
@@ -1303,19 +1281,10 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
         if (m_preview) {
-            const bool progressive =
-                m_backgroundFillEdgeProgressiveCheckBox->isChecked() ||
-                (m_backgroundFillEffectCombo &&
-                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()) ==
-                     BackgroundFillEffect::ProgressiveEdgeStretch);
-            m_preview->setBackgroundFillEdgeProgressive(progressive);
+            m_preview->setBackgroundFillEdgeProgressive(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
         }
         if (m_backgroundFillEdgePowerSpin) {
-            m_backgroundFillEdgePowerSpin->setEnabled(
-                m_backgroundFillEdgeProgressiveCheckBox->isChecked() ||
-                (m_backgroundFillEffectCombo &&
-                 backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString()) ==
-                     BackgroundFillEffect::ProgressiveEdgeStretch));
+            m_backgroundFillEdgePowerSpin->setEnabled(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
         }
     }
 
@@ -1329,6 +1298,21 @@ void EditorWindow::setupPreviewControls()
         });
         if (m_preview) {
             m_preview->setBackgroundFillEdgePower(qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0));
+        }
+    }
+
+    if (m_backgroundFillStretchSourceCombo) {
+        connect(m_backgroundFillStretchSourceCombo, &QComboBox::currentIndexChanged, this, [this]() {
+            if (m_preview) {
+                m_preview->setBackgroundFillStretchSourceClipId(
+                    m_backgroundFillStretchSourceCombo->currentData().toString());
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBackgroundFillStretchSourceClipId(
+                m_backgroundFillStretchSourceCombo->currentData().toString());
         }
     }
 

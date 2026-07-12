@@ -703,6 +703,16 @@ void SpeakersTab::wire()
                                       QString(kTranscriptSpeakerAccentColorKey),
                                       QStringLiteral("Accent title color, usually used for borders and highlights."),
                                       true);
+    if (m_widgets.selectedSpeakerGradingEnabledCheckBox) {
+        connect(m_widgets.selectedSpeakerGradingEnabledCheckBox, &QCheckBox::toggled,
+                this, [this](bool) { if (!m_updating && activeCutMutable()) saveSelectedSpeakerGrading(); });
+    }
+    for (QDoubleSpinBox* spin : {m_widgets.selectedSpeakerBrightnessSpin,
+                                 m_widgets.selectedSpeakerContrastSpin,
+                                 m_widgets.selectedSpeakerSaturationSpin}) {
+        if (spin) connect(spin, &QDoubleSpinBox::editingFinished,
+                          this, [this]() { if (!m_updating && activeCutMutable()) saveSelectedSpeakerGrading(); });
+    }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
             QStringLiteral("Mine transcript text for speaker profile names only; organizations stay in the Organization field."));

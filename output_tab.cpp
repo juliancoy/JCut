@@ -365,6 +365,9 @@ void OutputTab::renderFromInspector()
     request.backgroundFillEdgePower = m_widgets.backgroundFillEdgePowerSpin
         ? qBound(0.25, m_widgets.backgroundFillEdgePowerSpin->value(), 8.0)
         : 2.0;
+    request.backgroundFillStretchSourceClipId = m_widgets.backgroundFillStretchSourceCombo
+        ? m_widgets.backgroundFillStretchSourceCombo->currentData().toString().trimmed().toStdString()
+        : std::string();
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
     const double outputSpeed = normalizedExportSpeed(

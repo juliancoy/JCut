@@ -182,6 +182,10 @@ public:
     QLineEdit *selectedSpeakerPrimaryColorEdit() const { return m_selectedSpeakerPrimaryColorEdit; }
     QLineEdit *selectedSpeakerSecondaryColorEdit() const { return m_selectedSpeakerSecondaryColorEdit; }
     QLineEdit *selectedSpeakerAccentColorEdit() const { return m_selectedSpeakerAccentColorEdit; }
+    QCheckBox *selectedSpeakerGradingEnabledCheckBox() const { return m_selectedSpeakerGradingEnabledCheckBox; }
+    QDoubleSpinBox *selectedSpeakerBrightnessSpin() const { return m_selectedSpeakerBrightnessSpin; }
+    QDoubleSpinBox *selectedSpeakerContrastSpin() const { return m_selectedSpeakerContrastSpin; }
+    QDoubleSpinBox *selectedSpeakerSaturationSpin() const { return m_selectedSpeakerSaturationSpin; }
     QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
     QListWidget *speakerPlayheadFaceDetectionsList() const { return m_speakerPlayheadFaceDetectionsList; }
     QCheckBox *speakerShowPlayheadFaceDetectionsCheckBox() const { return m_speakerShowPlayheadFaceDetectionsCheckBox; }
@@ -471,6 +475,7 @@ public:
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
     QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
+    QComboBox *backgroundFillStretchSourceCombo() const { return m_backgroundFillStretchSourceCombo; }
     QDoubleSpinBox *backgroundFillOpacitySpin() const { return m_backgroundFillOpacitySpin; }
     QDoubleSpinBox *backgroundFillBrightnessSpin() const { return m_backgroundFillBrightnessSpin; }
     QDoubleSpinBox *backgroundFillSaturationSpin() const { return m_backgroundFillSaturationSpin; }
@@ -893,6 +898,10 @@ private:
     QLineEdit *m_selectedSpeakerPrimaryColorEdit = nullptr;
     QLineEdit *m_selectedSpeakerSecondaryColorEdit = nullptr;
     QLineEdit *m_selectedSpeakerAccentColorEdit = nullptr;
+    QCheckBox *m_selectedSpeakerGradingEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_selectedSpeakerBrightnessSpin = nullptr;
+    QDoubleSpinBox *m_selectedSpeakerContrastSpin = nullptr;
+    QDoubleSpinBox *m_selectedSpeakerSaturationSpin = nullptr;
     QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;
     QListWidget *m_speakerPlayheadFaceDetectionsList = nullptr;
     QCheckBox *m_speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
@@ -976,6 +985,7 @@ private:
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
+    QComboBox *m_backgroundFillStretchSourceCombo = nullptr;
     QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
     QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;

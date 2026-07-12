@@ -703,6 +703,18 @@ void DirectVulkanPreviewPresenter::requestUpdate()
     }
 }
 
+void DirectVulkanPreviewPresenter::requestPipelineTapReadback()
+{
+    if (m_window) {
+        directVulkanPreviewWindowRequestPipelineThumbnailReadback(m_window);
+    }
+}
+
+QImage DirectVulkanPreviewPresenter::latestPipelineTapImage() const
+{
+    return directVulkanPreviewWindowLatestPipelineThumbnailReadback(m_window);
+}
+
 void DirectVulkanPreviewPresenter::updateTitle()
 {
     if (!m_window || !m_state) {
@@ -1102,7 +1114,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
          m_state ? m_state->transient.hoveredFaceDetectionsTrackId : -1},
         {QStringLiteral("direct_preview_frame_image"), false},
         {QStringLiteral("direct_preview_frame_size"), QString()},
-        {QStringLiteral("pipeline_thumbnail_readback_pending"), false},
+        {QStringLiteral("pipeline_thumbnail_readback_pending"),
+         directVulkanPreviewWindowPipelineThumbnailReadbackPending(m_window)},
         {QStringLiteral("pipeline_thumbnail_readback_requests"), static_cast<double>(m_stats.diagnosticReadbackRequests)},
         {QStringLiteral("pipeline_thumbnail_readback_copies"), static_cast<double>(m_stats.diagnosticReadbackCopies)},
         {QStringLiteral("pipeline_thumbnail_readback_size"), m_stats.lastDiagnosticReadbackSize.isValid()
@@ -1178,6 +1191,11 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("sampled_image_descriptor_count"), m_stats.descriptorSetCount},
         {QStringLiteral("active_clip_handoff_resource_count"), m_stats.activeClipHandoffResourceCount},
         {QStringLiteral("retired_clip_handoff_resource_count"), m_stats.retiredClipHandoffResourceCount},
+        {QStringLiteral("final_composite_stretch_prepared"), m_stats.finalCompositeStretchPrepared},
+        {QStringLiteral("final_composite_stretch_drawn"), m_stats.finalCompositeStretchDrawn},
+        {QStringLiteral("final_composite_stretch_source_clip_id"), m_stats.finalCompositeStretchSourceClipId},
+        {QStringLiteral("final_composite_stretch_source_label"), m_stats.finalCompositeStretchSourceLabel},
+        {QStringLiteral("final_composite_stretch_reason"), m_stats.finalCompositeStretchReason},
         {QStringLiteral("transcript_candidate_count"), m_stats.transcriptCandidateCount},
         {QStringLiteral("transcript_prepared_count"), m_stats.transcriptPreparedCount},
         {QStringLiteral("transcript_drawn_count"), m_stats.transcriptDrawnCount},
@@ -1309,6 +1327,11 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
              : 1.0},
         {QStringLiteral("active_clip_handoff_resource_count"), m_stats.activeClipHandoffResourceCount},
         {QStringLiteral("retired_clip_handoff_resource_count"), m_stats.retiredClipHandoffResourceCount},
+        {QStringLiteral("final_composite_stretch_prepared"), m_stats.finalCompositeStretchPrepared},
+        {QStringLiteral("final_composite_stretch_drawn"), m_stats.finalCompositeStretchDrawn},
+        {QStringLiteral("final_composite_stretch_source_clip_id"), m_stats.finalCompositeStretchSourceClipId},
+        {QStringLiteral("final_composite_stretch_source_label"), m_stats.finalCompositeStretchSourceLabel},
+        {QStringLiteral("final_composite_stretch_reason"), m_stats.finalCompositeStretchReason},
         {QStringLiteral("transcript_candidate_count"), m_stats.transcriptCandidateCount},
         {QStringLiteral("transcript_prepared_count"), m_stats.transcriptPreparedCount},
         {QStringLiteral("transcript_drawn_count"), m_stats.transcriptDrawnCount},

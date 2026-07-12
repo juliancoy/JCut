@@ -45,6 +45,7 @@ enum class ClipEffectPreset {
     DirectionalTrimTicker,
     SourceTile,
     Vulkan3DSynth,
+    ProgressiveEdgeStretch,
 };
 
 enum class ClipTilingPattern {

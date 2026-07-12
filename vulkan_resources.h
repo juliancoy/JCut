@@ -49,7 +49,11 @@ public:
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
     bool uploadMaskCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
     bool beginFrameUploads(size_t frameSlot, size_t frameSlotCount);
-    bool updateFrameUniform(const QSize& outputSize);
+    bool updateFrameUniform(const QSize& outputSize,
+                            const float* backgroundShadows = nullptr,
+                            const float* backgroundMidtones = nullptr,
+                            const float* backgroundHighlights = nullptr);
+    uint32_t frameUniformDynamicOffset() const { return m_frameUniformDynamicOffset; }
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }
     VkDescriptorSet descriptorSet() const { return m_descriptorSets[m_descriptorSetIndex]; }
@@ -114,6 +118,9 @@ private:
     VkBuffer m_frameUniformBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_frameUniformMemory = VK_NULL_HANDLE;
     void* m_frameUniformMapped = nullptr;
+    VkDeviceSize m_frameUniformStride = 0;
+    size_t m_frameUniformRingIndex = 0;
+    uint32_t m_frameUniformDynamicOffset = 0;
 
     VkImage m_textureImage = VK_NULL_HANDLE;
     VkDeviceMemory m_textureMemory = VK_NULL_HANDLE;

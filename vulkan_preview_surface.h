@@ -71,6 +71,7 @@ public:
     void setBackgroundFillEdgePixels(int pixels) override;
     void setBackgroundFillEdgeProgressive(bool progressive) override;
     void setBackgroundFillEdgePower(qreal power) override;
+    void setBackgroundFillStretchSourceClipId(const QString& clipId) override;
     void setPreviewZoom(qreal zoom) override;
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;

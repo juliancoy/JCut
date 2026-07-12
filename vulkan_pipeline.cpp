@@ -198,7 +198,8 @@ void VulkanPipeline::bindAndDraw(VkCommandBuffer commandBuffer,
                                  const VkViewport& viewport,
                                  const VkRect2D& scissor,
                                  VkDescriptorSet descriptorSet,
-                                 const Push& push) const
+                                 const Push& push,
+                                 uint32_t frameUniformDynamicOffset) const
 {
     if (!m_ready || commandBuffer == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE) {
         return;
@@ -212,8 +213,8 @@ void VulkanPipeline::bindAndDraw(VkCommandBuffer commandBuffer,
                                      0,
                                      1,
                                      &descriptorSet,
-                                     0,
-                                     nullptr);
+                                     1,
+                                     &frameUniformDynamicOffset);
     m_funcs->vkCmdPushConstants(commandBuffer,
                                 m_pipelineLayout,
                                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

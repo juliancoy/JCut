@@ -5,6 +5,8 @@
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
 #include "editor_effect_presets.h"
+#include "editor_shared_effects.h"
+#include "editor_shared_media.h"
 #include "transform_skip_aware_timing.h"
 #include "debug_controls.h"
 #include "speaker_export_harness.h"
@@ -123,6 +125,93 @@ QJsonObject resolveClipStateObjectPaths(QJsonObject obj, const QString& rootPath
         }
     }
     return obj;
+}
+
+bool clipSupportsProgressiveEdgeStretchMigration(const TimelineClip& clip,
+                                                 const QVector<TimelineTrack>& tracks)
+{
+    if (clip.clipRole != ClipRole::Media ||
+        (clip.mediaType != ClipMediaType::Image && clip.mediaType != ClipMediaType::Video) ||
+        playbackMediaPathForClip(clip).trimmed().isEmpty()) {
+        return false;
+    }
+    return clipVisualPlaybackEnabled(clip, tracks);
+}
+
+bool migrateLegacyBackgroundProgressiveStretchToClipEffect(
+    QVector<TimelineClip>* clips,
+    const QVector<TimelineTrack>& tracks,
+    const QString& requestedClipId,
+    const QString& selectedClipId,
+    QString* migratedClipId)
+{
+    if (migratedClipId) {
+        migratedClipId->clear();
+    }
+    if (!clips || clips->isEmpty()) {
+        return false;
+    }
+    const QVector<TimelineClip>& currentClips = *clips;
+    for (const TimelineClip& clip : currentClips) {
+        const TimelineClip effective = clipWithTrackEffectSettings(clip, tracks);
+        if (effective.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch &&
+            clipSupportsProgressiveEdgeStretchMigration(clip, tracks)) {
+            if (migratedClipId) {
+                *migratedClipId = clip.id;
+            }
+            return false;
+        }
+    }
+
+    auto findIndexById = [&](const QString& id) -> int {
+        const QString trimmed = id.trimmed();
+        if (trimmed.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < clips->size(); ++i) {
+            if (clips->at(i).id == trimmed) {
+                return i;
+            }
+        }
+        return -1;
+    };
+    auto eligibleIndex = [&](int index) -> int {
+        if (index >= 0 && index < clips->size() &&
+            clipSupportsProgressiveEdgeStretchMigration(clips->at(index), tracks)) {
+            return index;
+        }
+        return -1;
+    };
+
+    int targetIndex = eligibleIndex(findIndexById(requestedClipId));
+    if (targetIndex < 0) {
+        const int selectedIndex = findIndexById(selectedClipId);
+        if (selectedIndex >= 0) {
+            targetIndex = eligibleIndex(selectedIndex);
+            if (targetIndex < 0) {
+                targetIndex = eligibleIndex(findIndexById(clips->at(selectedIndex).linkedSourceClipId));
+            }
+        }
+    }
+    if (targetIndex < 0) {
+        for (int i = 0; i < clips->size(); ++i) {
+            if (clipSupportsProgressiveEdgeStretchMigration(clips->at(i), tracks)) {
+                targetIndex = i;
+                break;
+            }
+        }
+    }
+    if (targetIndex < 0) {
+        return false;
+    }
+
+    TimelineClip& target = (*clips)[targetIndex];
+    target.effectPreset = ClipEffectPreset::ProgressiveEdgeStretch;
+    target.maskRepeatEnabled = false;
+    if (migratedClipId) {
+        *migratedClipId = target.id;
+    }
+    return true;
 }
 
 }
@@ -1038,9 +1127,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
+    const QString savedBackgroundFillEffect =
+        root.value(QStringLiteral("backgroundFillEffect"))
+            .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect));
     BackgroundFillEffect backgroundFillEffect =
-        backgroundFillEffectFromString(root.value(QStringLiteral("backgroundFillEffect"))
-                                           .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect)));
+        backgroundFillEffectFromString(savedBackgroundFillEffect);
+    const QString backgroundFillStretchSourceClipId =
+        root.value(QStringLiteral("backgroundFillStretchSourceClipId")).toString().trimmed();
     const qreal backgroundFillOpacity =
         qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillOpacity")).toDouble(1.0), 1.0);
     const qreal backgroundFillBrightness =
@@ -1049,11 +1142,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillSaturation")).toDouble(1.0), 3.0);
     const int backgroundFillEdgePixels =
         qBound(1, root.value(QStringLiteral("backgroundFillEdgePixels")).toInt(1), 512);
-    const bool backgroundFillEdgeProgressive =
+    bool backgroundFillEdgeProgressive =
         root.value(QStringLiteral("backgroundFillEdgeProgressive")).toBool(false);
-    if (backgroundFillEffect == BackgroundFillEffect::EdgeStretch && backgroundFillEdgeProgressive) {
-        backgroundFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
-    }
+    const QString normalizedSavedBackgroundFillEffect =
+        savedBackgroundFillEffect.trimmed().toLower().replace(QLatin1Char('-'), QLatin1Char('_'));
+    const bool legacyBackgroundProgressiveStretch =
+        backgroundFillEdgeProgressive ||
+        normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_edge_stretch") ||
+        normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_stretch") ||
+        normalizedSavedBackgroundFillEffect == QStringLiteral("edge_stretch_progressive");
     const qreal backgroundFillEdgePower =
         qBound<qreal>(0.25, root.value(QStringLiteral("backgroundFillEdgePower")).toDouble(2.0), 8.0);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
@@ -1525,6 +1622,23 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     markStartup(QStringLiteral("apply_state.tracks_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_track_count"), loadedTracks.size()}});
+    if (legacyBackgroundProgressiveStretch) {
+        QString migratedClipId;
+        const bool migrated = migrateLegacyBackgroundProgressiveStretchToClipEffect(
+            &loadedClips,
+            loadedTracks,
+            backgroundFillStretchSourceClipId,
+            selectedClipId,
+            &migratedClipId);
+        backgroundFillEffect = BackgroundFillEffect::EdgeStretch;
+        backgroundFillEdgeProgressive = false;
+        markStartup(QStringLiteral("apply_state.progressive_edge_stretch_migration"),
+                    QJsonObject{
+                        {QStringLiteral("migrated"), migrated},
+                        {QStringLiteral("clip_id"), migratedClipId},
+                        {QStringLiteral("source"), QStringLiteral("legacy_background_fill")}
+                    });
+    }
     markStartup(QStringLiteral("apply_state.render_sync_parse.begin"));
        const QJsonArray renderSyncMarkers = root.value(QStringLiteral("renderSyncMarkers")).toArray();
     loadedRenderSyncMarkers.reserve(renderSyncMarkers.size());
@@ -1609,6 +1723,27 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             backgroundFillEffectToString(backgroundFillEffect));
         m_backgroundFillEffectCombo->setCurrentIndex(qMax(0, effectIndex));
     }
+    if (m_backgroundFillStretchSourceCombo) {
+        QSignalBlocker block(m_backgroundFillStretchSourceCombo);
+        m_backgroundFillStretchSourceCombo->clear();
+        m_backgroundFillStretchSourceCombo->addItem(
+            QStringLiteral("Auto (Lowest Visible Clip)"), QString());
+        const QVector<TimelineClip> stretchSourceClips =
+            m_timeline ? m_timeline->clips() : QVector<TimelineClip>{};
+        for (const TimelineClip& clip : stretchSourceClips) {
+            if (clip.mediaType == ClipMediaType::Audio ||
+                clip.mediaType == ClipMediaType::Title || clip.id.trimmed().isEmpty()) {
+                continue;
+            }
+            const QString label = clip.label.trimmed().isEmpty()
+                ? clip.id
+                : clip.label;
+            m_backgroundFillStretchSourceCombo->addItem(label, clip.id);
+        }
+        const int sourceIndex = m_backgroundFillStretchSourceCombo->findData(
+            backgroundFillStretchSourceClipId);
+        m_backgroundFillStretchSourceCombo->setCurrentIndex(qMax(0, sourceIndex));
+    }
     if (m_backgroundFillOpacitySpin) {
         QSignalBlocker block(m_backgroundFillOpacitySpin);
         m_backgroundFillOpacitySpin->setValue(backgroundFillOpacity * 100.0);
@@ -1627,16 +1762,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     if (m_backgroundFillEdgeProgressiveCheckBox) {
         QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
-        m_backgroundFillEdgeProgressiveCheckBox->setChecked(
-            backgroundFillEdgeProgressive ||
-            backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch);
+        m_backgroundFillEdgeProgressiveCheckBox->setChecked(backgroundFillEdgeProgressive);
     }
     if (m_backgroundFillEdgePowerSpin) {
         QSignalBlocker block(m_backgroundFillEdgePowerSpin);
         m_backgroundFillEdgePowerSpin->setValue(backgroundFillEdgePower);
-        m_backgroundFillEdgePowerSpin->setEnabled(
-            backgroundFillEdgeProgressive ||
-            backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch);
+        m_backgroundFillEdgePowerSpin->setEnabled(backgroundFillEdgeProgressive);
     }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
@@ -2103,6 +2234,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setBackgroundFillEdgePixels(backgroundFillEdgePixels);
         m_preview->setBackgroundFillEdgeProgressive(backgroundFillEdgeProgressive);
         m_preview->setBackgroundFillEdgePower(backgroundFillEdgePower);
+        m_preview->setBackgroundFillStretchSourceClipId(backgroundFillStretchSourceClipId);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);

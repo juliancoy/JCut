@@ -168,6 +168,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
     result.descriptorSetIndex = static_cast<int>(resources->descriptorSetIndex());
     result.descriptorSetCount = static_cast<int>(resources->descriptorSetCount());
     result.image = handoff->image();
+    result.imageView = external.imageView;
     result.layout = handoff->imageLayout();
     result.size = external.size;
     result.format = handoff->imageFormat();

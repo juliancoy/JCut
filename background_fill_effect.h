@@ -37,7 +37,7 @@ inline BackgroundFillEffect backgroundFillEffectFromString(const QString& value)
     if (normalized == QStringLiteral("progressive_edge_stretch") ||
         normalized == QStringLiteral("progressive_stretch") ||
         normalized == QStringLiteral("edge_stretch_progressive")) {
-        return BackgroundFillEffect::ProgressiveEdgeStretch;
+        return BackgroundFillEffect::EdgeStretch;
     }
     if (normalized == QStringLiteral("mirror") ||
         normalized == QStringLiteral("mirror_cover") ||

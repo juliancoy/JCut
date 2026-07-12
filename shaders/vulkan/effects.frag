@@ -6,8 +6,10 @@ layout(set = 0, binding = 1) uniform sampler2D u_curve_lut;
 layout(set = 0, binding = 2) uniform sampler2D u_mask;
 layout(set = 0, binding = 3) uniform sampler2D u_mask_curve_lut;
 layout(set = 0, binding = 4) uniform FrameUniforms {
-    vec2 outputSize;
-    vec2 inverseOutputSize;
+    vec4 outputSizeAndInverse;
+    vec4 backgroundShadows;
+    vec4 backgroundMidtones;
+    vec4 backgroundHighlights;
 } frame;
 layout(push_constant) uniform Push {
     mat4 u_mvp;
@@ -24,10 +26,41 @@ float lumaOf(vec3 rgb) {
     return dot(rgb, vec3(0.2126, 0.7152, 0.0722));
 }
 
+vec3 applyCurveLut(vec3 rgb, bool maskCurveEnabled) {
+    float rr = maskCurveEnabled
+        ? texture(u_mask_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r
+        : texture(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
+    float gg = maskCurveEnabled
+        ? texture(u_mask_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g
+        : texture(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
+    float bb = maskCurveEnabled
+        ? texture(u_mask_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b
+        : texture(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
+    rgb = vec3(rr, gg, bb);
+    float curveLuma = lumaOf(rgb);
+    float remappedLuma = maskCurveEnabled
+        ? texture(u_mask_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a
+        : texture(u_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a;
+    if (curveLuma > 0.0001) {
+        rgb *= remappedLuma / curveLuma;
+    } else {
+        rgb = vec3(remappedLuma);
+    }
+    return rgb;
+}
+
 vec2 textureInteriorClamp(vec2 uv) {
     vec2 texSize = vec2(textureSize(u_texture, 0));
     vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
-    return clamp(uv, halfTexel, vec2(1.0) - halfTexel);
+    vec2 low = min(halfTexel, vec2(0.5));
+    vec2 high = max(vec2(1.0) - halfTexel, low);
+    return clamp(uv, low, high);
+}
+
+vec2 safeClampRange(vec2 value, vec2 low, vec2 high) {
+    vec2 safeLow = min(low, high);
+    vec2 safeHigh = max(low, high);
+    return clamp(value, safeLow, safeHigh);
 }
 
 vec4 blurredFillSample(vec2 uv) {
@@ -47,13 +80,23 @@ vec4 blurredFillSample(vec2 uv) {
     return sum / max(0.0001, weightSum);
 }
 
-vec4 edgeStretchFillSample(vec2 uv) {
+vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
     vec2 center = pc.u_shadows.xy;
     float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
     float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001
         ? 0.0001
         : pc.u_shadows.w;
-    float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
+    vec2 texSize = vec2(textureSize(u_texture, 0));
+    vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
+    vec2 rawValidMin = pc.u_highlights.xy;
+    vec2 rawValidMax = vec2(pc.u_highlights.z, pc.u_midtones.w);
+    vec2 sampleMin = clamp(min(rawValidMin, rawValidMax), vec2(0.0), vec2(1.0));
+    vec2 sampleMax = clamp(max(rawValidMin, rawValidMax), sampleMin, vec2(1.0));
+    vec2 validSpan = max(sampleMax - sampleMin, vec2(0.0));
+    vec2 sampleSpan = max(validSpan, vec2(1.0) / max(vec2(1.0), texSize));
+    vec2 rawValidSpan = max(abs(rawValidMax - rawValidMin), vec2(1.0) / max(vec2(1.0), texSize));
+    vec2 frameOutputSize = frame.outputSizeAndInverse.xy;
+    float outputAspect = frameOutputSize.x / max(1.0, frameOutputSize.y);
     vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
     float angle = pc.u_midtones.y;
     float cosine = cos(angle);
@@ -62,17 +105,20 @@ vec4 edgeStretchFillSample(vec2 uv) {
                           -sine * delta.x + cosine * delta.y);
     vec2 sourceUv = vec2(unrotated.x * inverseWidth + 0.5,
                          unrotated.y * signedInverseHeight + 0.5);
-    vec2 texSize = vec2(textureSize(u_texture, 0));
-    vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
-    vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
-    vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
-    vec2 validSpan = max(validMax - validMin, halfTexel * 2.0);
-    vec2 edgeSpan = clamp(vec2(max(1.0, pc.u_midtones.x)) /
-                              max(vec2(1.0), texSize * validSpan),
-                          halfTexel,
-                          vec2(1.0) - halfTexel);
+    vec2 originalSourceUv = sourceUv;
+    bool insideClipBounds = originalSourceUv.x >= 0.0 && originalSourceUv.x <= 1.0 &&
+                            originalSourceUv.y >= 0.0 && originalSourceUv.y <= 1.0;
+    vec2 edgePixelBasis = sampleCompositeScreen ? frameOutputSize : texSize * sampleSpan;
+    vec2 edgeSpan = safeClampRange(vec2(max(1.0, pc.u_midtones.x)) /
+                                       max(vec2(1.0), edgePixelBasis),
+                                   halfTexel,
+                                   vec2(1.0) - halfTexel);
     bool progressive = pc.u_highlights.a < -2.5;
     float power = max(0.25, pc.u_midtones.z);
+
+    if (progressive && !sampleCompositeScreen && insideClipBounds) {
+        return vec4(0.0);
+    }
 
     if (progressive && (sourceUv.x < 0.0 || sourceUv.x > 1.0 ||
                         sourceUv.y < 0.0 || sourceUv.y > 1.0)) {
@@ -129,10 +175,47 @@ vec4 edgeStretchFillSample(vec2 uv) {
             sourceUv.y = mix(1.0 - halfTexel.y, 1.0 - edgeSpan.y, fillT);
         }
     }
-    vec2 validHalfTexel = min(halfTexel, validSpan * 0.5);
-    vec2 mappedUv = validMin + sourceUv * validSpan;
+    vec2 sampleHalfTexel = min(halfTexel, sampleSpan * 0.5);
+    if (sampleCompositeScreen) {
+        vec2 clampedLocal = vec2((sourceUv.x - 0.5) / inverseWidth,
+                                 (sourceUv.y - 0.5) / signedInverseHeight);
+        vec2 screenDelta = vec2(cosine * clampedLocal.x - sine * clampedLocal.y,
+                                sine * clampedLocal.x + cosine * clampedLocal.y);
+        vec2 screenUv = vec2(center.x + screenDelta.x / outputAspect,
+                             center.y + screenDelta.y);
+        vec2 compositeUv = rawValidMin + screenUv * rawValidSpan;
+        vec2 sampleLow = sampleMin + sampleHalfTexel;
+        vec2 sampleHigh = sampleMax - sampleHalfTexel;
+        vec2 resolvedUv = safeClampRange(compositeUv, sampleLow, sampleHigh);
+        vec4 resolvedSample = texture(u_texture, resolvedUv);
+        if (resolvedSample.a <= 0.01) {
+            vec2 outside = max(max(-originalSourceUv, originalSourceUv - vec2(1.0)),
+                               vec2(0.0));
+            vec2 inwardStep = vec2(0.0);
+            if (outside.x >= outside.y) {
+                inwardStep.x = originalSourceUv.x < 0.5 ? 1.0 : -1.0;
+            } else {
+                inwardStep.y = originalSourceUv.y < 0.5 ? 1.0 : -1.0;
+            }
+            vec2 onePixel = 1.0 / max(vec2(1.0), frameOutputSize);
+            for (int i = 1; i <= 1024; ++i) {
+                vec2 searchScreenUv = screenUv + inwardStep * onePixel * float(i);
+                vec2 searchUv = safeClampRange(rawValidMin + searchScreenUv * rawValidSpan,
+                                               sampleLow,
+                                               sampleHigh);
+                vec4 searchSample = texture(u_texture, searchUv);
+                if (searchSample.a > 0.01) {
+                    resolvedSample = searchSample;
+                    break;
+                }
+            }
+        }
+        return resolvedSample;
+    }
+
+    vec2 mappedUv = sampleMin + sourceUv * sampleSpan;
     return texture(u_texture,
-                   clamp(mappedUv, validMin + validHalfTexel, validMax - validHalfTexel));
+                   safeClampRange(mappedUv, sampleMin + sampleHalfTexel, sampleMax - sampleHalfTexel));
 }
 
 float mirroredCoord(float t) {
@@ -144,7 +227,8 @@ vec4 mirrorFillSample(vec2 uv) {
     vec2 center = pc.u_shadows.xy;
     float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
     float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001 ? 0.0001 : pc.u_shadows.w;
-    float outputAspect = frame.outputSize.x / max(1.0, frame.outputSize.y);
+    vec2 frameOutputSize = frame.outputSizeAndInverse.xy;
+    float outputAspect = frameOutputSize.x / max(1.0, frameOutputSize.y);
     vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
     float angle = pc.u_midtones.y;
     float cosine = cos(angle);
@@ -161,22 +245,36 @@ vec4 mirrorFillSample(vec2 uv) {
 }
 
 void main() {
-    bool mirrorFill = pc.u_highlights.a < -3.5;
-    bool progressiveEdgeStretchFill = pc.u_highlights.a < -2.5 && !mirrorFill;
-    bool edgeStretchFill = pc.u_highlights.a < -1.5 && !progressiveEdgeStretchFill && !mirrorFill;
+    bool finalCompositeProgressiveEdgeStretchFill = pc.u_highlights.a < -4.5;
+    bool mirrorFill = pc.u_highlights.a < -3.5 && !finalCompositeProgressiveEdgeStretchFill;
+    bool progressiveEdgeStretchFill = pc.u_highlights.a < -2.5 &&
+        !mirrorFill &&
+        !finalCompositeProgressiveEdgeStretchFill;
+    bool edgeStretchFill = pc.u_highlights.a < -1.5 &&
+        !progressiveEdgeStretchFill &&
+        !mirrorFill &&
+        !finalCompositeProgressiveEdgeStretchFill;
     bool blurredFill = pc.u_highlights.a < -0.5 &&
         !edgeStretchFill &&
         !progressiveEdgeStretchFill &&
-        !mirrorFill;
-    bool backgroundFill = mirrorFill || progressiveEdgeStretchFill || edgeStretchFill || blurredFill;
+        !mirrorFill &&
+        !finalCompositeProgressiveEdgeStretchFill;
+    bool backgroundFill = mirrorFill ||
+        progressiveEdgeStretchFill ||
+        edgeStretchFill ||
+        blurredFill ||
+        finalCompositeProgressiveEdgeStretchFill;
     vec4 c = mirrorFill
         ? mirrorFillSample(v_texCoord)
-        : (progressiveEdgeStretchFill || edgeStretchFill
-            ? edgeStretchFillSample(v_texCoord)
+        : (progressiveEdgeStretchFill || edgeStretchFill || finalCompositeProgressiveEdgeStretchFill
+            ? edgeStretchFillSample(v_texCoord, finalCompositeProgressiveEdgeStretchFill)
             : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, v_texCoord)));
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;
+    if (finalCompositeProgressiveEdgeStretchFill && sourceAlpha > 0.01) {
+        sourceAlpha = 1.0;
+    }
     // Some hardware-direct decoder paths provide valid color but undefined/zero alpha.
     // Treat non-black, near-zero-alpha texels as opaque to avoid black preview frames.
     if (sourceAlpha <= 0.0001) {
@@ -225,25 +323,7 @@ void main() {
         bool curveEnabled = (pc.u_shadows.a > 0.5 && pc.u_shadows.a < 1.5) ||
                             maskCurveEnabled;
         if (curveEnabled) {
-            float rr = maskCurveEnabled
-                ? texture(u_mask_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r
-                : texture(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
-            float gg = maskCurveEnabled
-                ? texture(u_mask_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g
-                : texture(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
-            float bb = maskCurveEnabled
-                ? texture(u_mask_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b
-                : texture(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
-            rgb = vec3(rr, gg, bb);
-            float curveLuma = lumaOf(rgb);
-            float remappedLuma = maskCurveEnabled
-                ? texture(u_mask_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a
-                : texture(u_curve_lut, vec2(clamp(curveLuma, 0.0, 1.0), 0.5)).a;
-            if (curveLuma > 0.0001) {
-                rgb *= remappedLuma / curveLuma;
-            } else {
-                rgb = vec3(remappedLuma);
-            }
+            rgb = applyCurveLut(rgb, maskCurveEnabled);
         }
 
         if (synth3d) {
@@ -256,6 +336,21 @@ void main() {
             rgb = clamp(rgb * synthTone * scan, vec3(0.0), vec3(1.0));
             rgb += vec3(0.035, 0.012, 0.055) * smoothstep(0.18, 0.72, radius);
             sourceAlpha *= 1.0 - smoothstep(0.50, 0.74, radius) * 0.34;
+        }
+    } else if (backgroundFill) {
+        float luminance = lumaOf(rgb);
+        float shadowWeight = pow(1.0 - luminance, 2.0);
+        float midtoneWeight = 1.0 - abs(luminance - 0.5) * 2.0;
+        float highlightWeight = pow(luminance, 2.0);
+
+        rgb *= (1.0 + frame.backgroundShadows.rgb * shadowWeight);
+        vec3 midtoneAdjust = frame.backgroundMidtones.rgb * midtoneWeight;
+        rgb.r = pow(max(rgb.r, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.r));
+        rgb.g = pow(max(rgb.g, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.g));
+        rgb.b = pow(max(rgb.b, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.b));
+        rgb += frame.backgroundHighlights.rgb * highlightWeight;
+        if (frame.backgroundShadows.a > 0.5 && frame.backgroundShadows.a < 1.5) {
+            rgb = applyCurveLut(rgb, false);
         }
     }
 

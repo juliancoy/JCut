@@ -344,6 +344,7 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     request.backgroundFillEdgePixels = 32;
     request.backgroundFillEdgeProgressive = true;
     request.backgroundFillEdgePower = 3.5;
+    request.backgroundFillStretchSourceClipId = QStringLiteral("clip-selected");
 
     const jcut::render::RenderRequestCore core = jcut::render::toCoreRenderRequest(request);
 
@@ -355,6 +356,8 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     QCOMPARE(core.backgroundFillEdgePixels, 32);
     QCOMPARE(core.backgroundFillEdgeProgressive, true);
     QCOMPARE(core.backgroundFillEdgePower, 3.5);
+    QCOMPARE(QString::fromStdString(core.backgroundFillStretchSourceClipId),
+             QStringLiteral("clip-selected"));
 }
 
 void TestEditorRuntime::testQtBridgeBuildsDocumentCore()

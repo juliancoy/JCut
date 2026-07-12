@@ -818,6 +818,7 @@ void VulkanTextPipeline::bindAndDraw(VkCommandBuffer commandBuffer,
                                      const VkViewport& viewport,
                                      const VkRect2D& scissor,
                                      VkDescriptorSet descriptorSet,
+                                     uint32_t dynamicUniformOffset,
                                      const Push& push) const
 {
     if (!m_ready || commandBuffer == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE) {
@@ -832,8 +833,8 @@ void VulkanTextPipeline::bindAndDraw(VkCommandBuffer commandBuffer,
                                      0,
                                      1,
                                      &descriptorSet,
-                                     0,
-                                     nullptr);
+                                     1,
+                                     &dynamicUniformOffset);
     vkCmdPushConstants(commandBuffer,
                                 m_pipelineLayout,
                                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -847,6 +848,7 @@ void VulkanTextPipeline::bindAndDrawMesh(VkCommandBuffer commandBuffer,
                                          const VkViewport& viewport,
                                          const VkRect2D& scissor,
                                          VkDescriptorSet descriptorSet,
+                                         uint32_t dynamicUniformOffset,
                                          VkBuffer vertexBuffer,
                                          uint32_t vertexCount,
                                          const Push& push) const
@@ -858,7 +860,7 @@ void VulkanTextPipeline::bindAndDrawMesh(VkCommandBuffer commandBuffer,
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
-                            0, 1, &descriptorSet, 0, nullptr);
+                            0, 1, &descriptorSet, 1, &dynamicUniformOffset);
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
     vkCmdPushConstants(commandBuffer, m_pipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &push);
@@ -2064,7 +2066,12 @@ void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
     push.patternRect[1] = static_cast<float>(uv.y());
     push.patternRect[2] = static_cast<float>(uv.width());
     push.patternRect[3] = static_cast<float>(uv.height());
-    m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
+    m_pipeline->bindAndDraw(commandBuffer,
+                            viewport,
+                            scissor,
+                            m_atlasResources->descriptorSet(),
+                            m_atlasResources->frameUniformDynamicOffset(),
+                            push);
 }
 
 void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
@@ -2110,7 +2117,12 @@ void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
     push.patternRect[1] = static_cast<float>(pattern.y());
     push.patternRect[2] = static_cast<float>(pattern.width());
     push.patternRect[3] = static_cast<float>(pattern.height());
-    m_pipeline->bindAndDraw(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(), push);
+    m_pipeline->bindAndDraw(commandBuffer,
+                            viewport,
+                            scissor,
+                            m_atlasResources->descriptorSet(),
+                            m_atlasResources->frameUniformDynamicOffset(),
+                            push);
 }
 
 bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
@@ -2190,8 +2202,14 @@ bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
     push.material[2] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DYawDegrees));
     push.material[3] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DPitchDegrees));
     push.uvRect[3] = qDegreesToRadians(static_cast<float>(meshTitle.vulkan3DRollDegrees));
-    m_pipeline->bindAndDrawMesh(commandBuffer, viewport, scissor, m_atlasResources->descriptorSet(),
-                                m_titleMeshBuffer, static_cast<uint32_t>(layout.meshVertices.size()), push);
+    m_pipeline->bindAndDrawMesh(commandBuffer,
+                                viewport,
+                                scissor,
+                                m_atlasResources->descriptorSet(),
+                                m_atlasResources->frameUniformDynamicOffset(),
+                                m_titleMeshBuffer,
+                                static_cast<uint32_t>(layout.meshVertices.size()),
+                                push);
     return true;
 }
 

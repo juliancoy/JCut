@@ -128,6 +128,32 @@ QImage rgbaMaskImageForUpload(const QImage &mask) {
   return rgba;
 }
 
+struct FrameUniformData {
+  float outputSizeAndInverse[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 16);
+
+constexpr int kFrameUniformRingCount = 4096;
+
+VkDeviceSize frameUniformStrideForDevice(VkPhysicalDevice physicalDevice)
+{
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+  const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+  VkDeviceSize stride = sizeof(FrameUniformData);
+  if (alignment > 0) {
+    const VkDeviceSize remainder = stride % alignment;
+    if (remainder != 0) {
+      stride += alignment - remainder;
+    }
+  }
+  return stride;
+}
+
 } // namespace
 
 class OffscreenVulkanRendererPrivate {
@@ -505,7 +531,8 @@ public:
 
     VkBufferCreateInfo frameUniformBufferInfo{};
     frameUniformBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    frameUniformBufferInfo.size = sizeof(float) * 4;
+    m_frameUniformStride = frameUniformStrideForDevice(m_physicalDevice);
+    frameUniformBufferInfo.size = m_frameUniformStride * kFrameUniformRingCount;
     frameUniformBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     frameUniformBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(m_device, &frameUniformBufferInfo, nullptr, &m_frameUniformBuffer) != VK_SUCCESS) {
@@ -522,15 +549,15 @@ public:
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (vkAllocateMemory(m_device, &frameUniformAlloc, nullptr, &m_frameUniformMemory) != VK_SUCCESS ||
         vkBindBufferMemory(m_device, m_frameUniformBuffer, m_frameUniformMemory, 0) != VK_SUCCESS ||
-        vkMapMemory(m_device, m_frameUniformMemory, 0, sizeof(float) * 4, 0, &m_frameUniformMapped) != VK_SUCCESS) {
+        vkMapMemory(m_device, m_frameUniformMemory, 0, frameUniformBufferInfo.size, 0, &m_frameUniformMapped) != VK_SUCCESS) {
       return false;
     }
-    const float frameUniformValues[4] = {
-        static_cast<float>(qMax(1, m_outputSize.width())),
-        static_cast<float>(qMax(1, m_outputSize.height())),
-        1.0f / static_cast<float>(qMax(1, m_outputSize.width())),
-        1.0f / static_cast<float>(qMax(1, m_outputSize.height()))};
-    std::memcpy(m_frameUniformMapped, frameUniformValues, sizeof(frameUniformValues));
+    FrameUniformData frameUniformValues;
+    frameUniformValues.outputSizeAndInverse[0] = static_cast<float>(qMax(1, m_outputSize.width()));
+    frameUniformValues.outputSizeAndInverse[1] = static_cast<float>(qMax(1, m_outputSize.height()));
+    frameUniformValues.outputSizeAndInverse[2] = 1.0f / frameUniformValues.outputSizeAndInverse[0];
+    frameUniformValues.outputSizeAndInverse[3] = 1.0f / frameUniformValues.outputSizeAndInverse[1];
+    std::memcpy(m_frameUniformMapped, &frameUniformValues, sizeof(frameUniformValues));
 
     VkDescriptorSetLayoutBinding descriptorBindings[5]{};
     descriptorBindings[0].binding = 0;
@@ -554,7 +581,7 @@ public:
     descriptorBindings[3].descriptorCount = 1;
     descriptorBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     descriptorBindings[4].binding = 4;
-    descriptorBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     descriptorBindings[4].descriptorCount = 1;
     descriptorBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -576,7 +603,7 @@ public:
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount = (1 + kMaxLayerTextures) * 4;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     poolSizes[1].descriptorCount = 1 + kMaxLayerTextures;
 
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
@@ -753,7 +780,7 @@ public:
       di[3].sampler = m_sampler;
       VkDescriptorBufferInfo frameUniformInfo{};
       frameUniformInfo.buffer = m_frameUniformBuffer;
-      frameUniformInfo.range = sizeof(float) * 4;
+      frameUniformInfo.range = sizeof(FrameUniformData);
       VkWriteDescriptorSet writes[5]{};
       for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -768,7 +795,7 @@ public:
       writes[4].dstSet = slot.descriptorSet;
       writes[4].dstBinding = 4;
       writes[4].descriptorCount = 1;
-      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
       writes[4].pBufferInfo = &frameUniformInfo;
       vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
       m_layerSlots.push_back(slot);
@@ -1452,7 +1479,6 @@ public:
     m_maskBlurModule = createShaderModule(
         m_device,
         readBinaryFile(shaderDir + QStringLiteral("/mask_blur.comp.spv")));
-
     if (m_effectsVertModule == VK_NULL_HANDLE ||
         m_effectsFragModule == VK_NULL_HANDLE ||
         m_maskVertModule == VK_NULL_HANDLE ||
@@ -1495,7 +1521,7 @@ public:
     imageInfoDesc[3].sampler = m_sampler;
     VkDescriptorBufferInfo frameUniformInfo{};
     frameUniformInfo.buffer = m_frameUniformBuffer;
-    frameUniformInfo.range = sizeof(float) * 4;
+    frameUniformInfo.range = sizeof(FrameUniformData);
     VkWriteDescriptorSet writes[5]{};
     for (uint32_t binding = 0; binding < 4; ++binding) {
       writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1510,7 +1536,7 @@ public:
     writes[4].dstSet = m_descriptorSet;
     writes[4].dstBinding = 4;
     writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     writes[4].pBufferInfo = &frameUniformInfo;
     vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
 
@@ -2026,7 +2052,6 @@ public:
       vkDestroyShaderModule(m_device, m_maskBlurModule, nullptr);
       m_maskBlurModule = VK_NULL_HANDLE;
     }
-
     if (m_framebuffer != VK_NULL_HANDLE) {
       vkDestroyFramebuffer(m_device, m_framebuffer, nullptr);
       m_framebuffer = VK_NULL_HANDLE;
@@ -2148,11 +2173,19 @@ public:
     float shadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float midtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
     QVector<VulkanEffectPipelinePlan::DrawPass> presetDraws;
     bool presetScissorEnabled = false;
     QRectF presetScissorRect;
+  };
+
+  struct FinalCompositeStretchInput {
+    bool enabled = false;
+    VulkanDrawEffectState effects;
   };
 
   struct TranscriptTextInput {
@@ -2436,6 +2469,7 @@ public:
 
   QImage renderFrameFromLayers(const QVector<LayerInput> &layers,
                                const VulkanTextInputs &textInputs,
+                               const FinalCompositeStretchInput &finalStretch,
                                bool readbackToImage) {
     if (!m_initialized || m_device == VK_NULL_HANDLE ||
         m_commandBuffer == VK_NULL_HANDLE) {
@@ -2463,6 +2497,35 @@ public:
       float midtones[4];
       float highlights[4];
     } push{};
+    auto updateFrameUniformForDraw =
+        [&](const LayerInput* layer = nullptr) -> uint32_t {
+      if (!m_frameUniformMapped || m_frameUniformStride == 0) {
+        return 0u;
+      }
+      FrameUniformData values;
+      values.outputSizeAndInverse[0] = static_cast<float>(qMax(1, m_outputSize.width()));
+      values.outputSizeAndInverse[1] = static_cast<float>(qMax(1, m_outputSize.height()));
+      values.outputSizeAndInverse[2] = 1.0f / values.outputSizeAndInverse[0];
+      values.outputSizeAndInverse[3] = 1.0f / values.outputSizeAndInverse[1];
+      if (layer) {
+        std::memcpy(values.backgroundShadows,
+                    layer->backgroundShadows,
+                    sizeof(values.backgroundShadows));
+        std::memcpy(values.backgroundMidtones,
+                    layer->backgroundMidtones,
+                    sizeof(values.backgroundMidtones));
+        std::memcpy(values.backgroundHighlights,
+                    layer->backgroundHighlights,
+                    sizeof(values.backgroundHighlights));
+      }
+      const VkDeviceSize offset =
+          m_frameUniformStride * static_cast<VkDeviceSize>(m_frameUniformRingIndex);
+      std::memcpy(static_cast<char*>(m_frameUniformMapped) + offset,
+                  &values,
+                  sizeof(values));
+      m_frameUniformRingIndex = (m_frameUniformRingIndex + 1) % kFrameUniformRingCount;
+      return static_cast<uint32_t>(offset);
+    };
     transitionImageLayout(m_commandBuffer, m_colorImage, m_colorImageLayout,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -2470,7 +2533,7 @@ public:
     clearColor.float32[0] = 0.0f;
     clearColor.float32[1] = 0.0f;
     clearColor.float32[2] = 0.0f;
-    clearColor.float32[3] = 1.0f;
+    clearColor.float32[3] = finalStretch.enabled ? 0.0f : 1.0f;
     VkImageSubresourceRange clearRange{};
     clearRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clearRange.baseMipLevel = 0;
@@ -2486,7 +2549,8 @@ public:
     m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkClearValue clearValue{};
-    clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValue.color = {
+        {0.0f, 0.0f, 0.0f, finalStretch.enabled ? 0.0f : 1.0f}};
     VkRenderPassBeginInfo renderPassBeginInfo{};
     renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassBeginInfo.renderPass = m_renderPass;
@@ -2534,7 +2598,7 @@ public:
       di[3].sampler = m_sampler;
       VkDescriptorBufferInfo frameUniformInfo{};
       frameUniformInfo.buffer = m_frameUniformBuffer;
-      frameUniformInfo.range = sizeof(float) * 4;
+      frameUniformInfo.range = sizeof(FrameUniformData);
       VkWriteDescriptorSet writes[5]{};
       for (uint32_t binding = 0; binding < 4; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2549,7 +2613,7 @@ public:
       writes[4].dstSet = slot.descriptorSet;
       writes[4].dstBinding = 4;
       writes[4].descriptorCount = 1;
-      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
       writes[4].pBufferInfo = &frameUniformInfo;
       vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
     };
@@ -2966,9 +3030,6 @@ public:
           continue;
         }
         LayerTextureSlot &slot = m_layerSlots[i];
-        vkCmdBindDescriptorSets(
-            m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 0, nullptr);
         auto drawLayerWithMvp = [&](const float drawMvp[16],
                                     float brightness,
                                     float contrast,
@@ -2978,6 +3039,10 @@ public:
                                     const float midtones[4],
                                     const float highlights[4],
                                     float mode) {
+          const uint32_t frameUniformOffset = updateFrameUniformForDraw(&layer);
+          vkCmdBindDescriptorSets(
+              m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+              m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 1, &frameUniformOffset);
           std::memcpy(push.mvp, drawMvp, sizeof(push.mvp));
           push.brightness = brightness;
           push.contrast = contrast;
@@ -3117,6 +3182,83 @@ public:
             m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
             textInputs.speakerLabel);
       }
+      vkCmdEndRenderPass(m_commandBuffer);
+    }
+
+    if (finalStretch.enabled && !m_layerSlots.isEmpty()) {
+      LayerTextureSlot &slot = m_layerSlots[0];
+      transitionImageLayout(m_commandBuffer, m_colorImage,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      transitionImageLayout(m_commandBuffer, slot.image,
+                            slot.uploaded
+                                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                : VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      VkImageCopy compositeCopy{};
+      compositeCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      compositeCopy.srcSubresource.mipLevel = 0;
+      compositeCopy.srcSubresource.baseArrayLayer = 0;
+      compositeCopy.srcSubresource.layerCount = 1;
+      compositeCopy.dstSubresource = compositeCopy.srcSubresource;
+      compositeCopy.extent = {
+          static_cast<uint32_t>(m_outputSize.width()),
+          static_cast<uint32_t>(m_outputSize.height()),
+          1};
+      vkCmdCopyImage(m_commandBuffer,
+                     m_colorImage,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     slot.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1,
+                     &compositeCopy);
+      transitionImageLayout(m_commandBuffer, slot.image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      slot.uploaded = true;
+      transitionImageLayout(m_commandBuffer, m_colorImage,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      updateLayerDescriptorSet(slot,
+                               slot.view,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+      vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_effectsPipeline);
+      vkCmdSetViewport(m_commandBuffer, 0, 1, &fullViewport);
+      vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
+      const uint32_t frameUniformOffset = updateFrameUniformForDraw();
+      vkCmdBindDescriptorSets(
+          m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+          m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 1, &frameUniformOffset);
+      float fullMvp[16];
+      vulkanMvpForOutputRect(QRectF(QPointF(0.0, 0.0), QSizeF(m_outputSize)),
+                             m_outputSize,
+                             0.0,
+                             fullMvp);
+      std::memcpy(push.mvp, fullMvp, sizeof(push.mvp));
+      push.brightness = finalStretch.effects.brightness;
+      push.contrast = finalStretch.effects.contrast;
+      push.saturation = finalStretch.effects.saturation;
+      push.opacity = finalStretch.effects.opacity;
+      std::copy(std::begin(finalStretch.effects.shadows),
+                std::end(finalStretch.effects.shadows),
+                std::begin(push.shadows));
+      std::copy(std::begin(finalStretch.effects.midtones),
+                std::end(finalStretch.effects.midtones),
+                std::begin(push.midtones));
+      std::copy(std::begin(finalStretch.effects.highlights),
+                std::end(finalStretch.effects.highlights),
+                std::begin(push.highlights));
+      vkCmdPushConstants(m_commandBuffer, m_effectsPipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT |
+                             VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(Push), &push);
+      vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
       vkCmdEndRenderPass(m_commandBuffer);
     }
 
@@ -4028,6 +4170,8 @@ private:
   VkBuffer m_frameUniformBuffer = VK_NULL_HANDLE;
   VkDeviceMemory m_frameUniformMemory = VK_NULL_HANDLE;
   void *m_frameUniformMapped = nullptr;
+  VkDeviceSize m_frameUniformStride = 0;
+  int m_frameUniformRingIndex = 0;
   VkDescriptorSetLayout m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet m_yuvComputeDescriptorSet = VK_NULL_HANDLE;
@@ -4208,6 +4352,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int visualClipCandidates = 0;
   int visualLayersResolved = 0;
   bool backgroundFilled = false;
+  OffscreenVulkanRendererPrivate::FinalCompositeStretchInput finalCompositeStretch;
   int decodePathMissingCount = 0;
   int decodeNullCount = 0;
   int decodeConvertFailCount = 0;
@@ -4218,8 +4363,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   for (const TimelineClip &clip : orderedClips) {
     if (clip.clipRole == ClipRole::MaskMatte &&
         clip.locked &&
-        clip.sourceTransformLocked &&
-        clip.filePath.trimmed().isEmpty()) {
+        clip.sourceTransformLocked) {
       const QString sourceId = clip.linkedSourceClipId.trimmed();
       if (!sourceId.isEmpty()) {
         maskMatteClipBySourceId.insert(sourceId, clip);
@@ -4410,20 +4554,33 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
     const TimelineClip effectClip =
         clipWithTrackEffectSettings(clip, request.tracks);
+    const VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
+        vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks);
+    const bool progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground;
+    const bool globalProgressiveFillSelected =
+        request.backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
+    const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
+    TimelineClip foregroundEffectClip = effectClip;
+    if (progressiveStretchOwnsClipBackground) {
+      foregroundEffectClip.effectPreset = ClipEffectPreset::None;
+      foregroundEffectClip.maskRepeatEnabled = false;
+    }
     const QRectF effectBounds =
-        (effectClip.effectPreset == ClipEffectPreset::SourceTile || effectClip.maskRepeatEnabled)
+        (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile ||
+         foregroundEffectClip.maskRepeatEnabled)
             ? layerGeometry.bounds.intersected(outputRect)
             : outputRect;
     const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
-        effectClip,
+        foregroundEffectClip,
         effectBounds,
         sourceSize,
         timelineFrame,
-        clipEffectPlaybackFramePosition(effectClip, request.clips, generatedEffectClockTimelineFrame,
+        clipEffectPlaybackFramePosition(foregroundEffectClip, request.clips, generatedEffectClockTimelineFrame,
                                         request.playbackTiming,
-                                        request.tracks));
+                                        request.tracks),
+        request.playbackTiming);
     layer.presetDraws = effectPlan.generatedDraws;
-    if (effectClip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
+    if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
       layer.presetScissorEnabled = true;
       layer.presetScissorRect = effectBounds;
     }
@@ -4470,11 +4627,18 @@ QImage OffscreenVulkanRenderer::renderFrame(
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY),
         layer.mvp);
-    if (clipVisible && !backgroundFilled &&
-        shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
+    const bool shouldDrawBackgroundFill =
+        progressiveStretchOwnsClipBackground ||
+        (!globalProgressiveFillSelected &&
+         shouldDrawBlurredFillBackground(sourceSize, request.outputSize));
+    if (clipVisible && (progressiveEdgeStretchEffect || !backgroundFilled) &&
+        shouldDrawBackgroundFill) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
-      const BackgroundFillEffect fillEffect = request.backgroundFillEffect;
+      const BackgroundFillEffect fillEffect =
+          progressiveEdgeStretchEffect
+              ? BackgroundFillEffect::ProgressiveEdgeStretch
+              : request.backgroundFillEffect;
       const VulkanDrawEffectState backgroundEffects =
           vulkanBackgroundFillEffectState(
               fillEffect,
@@ -4506,6 +4670,15 @@ QImage OffscreenVulkanRenderer::renderFrame(
       backgroundLayer.highlights[1] = backgroundEffects.highlights[1];
       backgroundLayer.highlights[2] = backgroundEffects.highlights[2];
       backgroundLayer.highlights[3] = backgroundEffects.highlights[3];
+      std::copy(std::begin(layerEffects.shadows),
+                std::end(layerEffects.shadows),
+                std::begin(backgroundLayer.backgroundShadows));
+      std::copy(std::begin(layerEffects.midtones),
+                std::end(layerEffects.midtones),
+                std::begin(backgroundLayer.backgroundMidtones));
+      std::copy(std::begin(layerEffects.highlights),
+                std::end(layerEffects.highlights),
+                std::begin(backgroundLayer.backgroundHighlights));
       backgroundLayer.frameHandle = frame;
       backgroundLayer.sourceSize = sourceSize;
       backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
@@ -4535,13 +4708,16 @@ QImage OffscreenVulkanRenderer::renderFrame(
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {
         layers.push_back(backgroundLayer);
-        backgroundFilled = true;
+        if (!progressiveStretchOwnsClipBackground) {
+          backgroundFilled = true;
+        }
       }
     }
     if (clipVisible) {
       layers.push_back(layer);
     }
-    if (layer.maskTextureEnabled && layer.maskForegroundLayerEnabled) {
+    if (layer.maskTextureEnabled &&
+        layer.maskForegroundLayerEnabled) {
       OffscreenVulkanRendererPrivate::LayerInput foregroundLayer = layer;
       const bool applyMaskGradeToForeground = foregroundLayer.maskGradeEnabled;
       foregroundLayer.presetDraws.clear();
@@ -4665,7 +4841,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
   }
   const qint64 renderStartMs = QDateTime::currentMSecsSinceEpoch();
   const bool shouldReadbackToImage = (readbackMs != nullptr);
-  const QImage output = d->renderFrameFromLayers(layers, textInputs, shouldReadbackToImage);
+  const QImage output = d->renderFrameFromLayers(layers,
+                                                 textInputs,
+                                                 finalCompositeStretch,
+                                                 shouldReadbackToImage);
   if (compositeMs) {
     *compositeMs = (QDateTime::currentMSecsSinceEpoch() - renderStartMs);
   }

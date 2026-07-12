@@ -20,6 +20,16 @@ constexpr VkDeviceSize kTextureBytes = static_cast<VkDeviceSize>(kTextureWidth *
 constexpr uint32_t kCurveLutWidth = 256;
 constexpr uint32_t kCurveLutHeight = 1;
 constexpr VkDeviceSize kCurveLutBytes = static_cast<VkDeviceSize>(kCurveLutWidth * kCurveLutHeight * 4);
+constexpr size_t kFrameUniformRingCount = 4096;
+
+struct FrameUniformData {
+    float outputSizeAndInverse[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 16);
 
 bool checkedAdd(VkDeviceSize a, VkDeviceSize b, VkDeviceSize* out)
 {
@@ -50,6 +60,18 @@ bool alignUp(VkDeviceSize value, VkDeviceSize alignment, VkDeviceSize* out)
         return true;
     }
     return checkedAdd(value, alignment - remainder, out);
+}
+
+VkDeviceSize frameUniformStrideForDevice(VkPhysicalDevice physicalDevice)
+{
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+    const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+    VkDeviceSize stride = sizeof(FrameUniformData);
+    if (alignment > 0 && !alignUp(stride, alignment, &stride)) {
+        return 0;
+    }
+    return stride;
 }
 
 struct MaskPreparePush {
@@ -115,7 +137,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[4].binding = 4;
-    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
@@ -130,7 +152,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount * 4);
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount);
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -154,9 +176,14 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
         return false;
     }
 
+    m_frameUniformStride = frameUniformStrideForDevice(m_physicalDevice);
+    if (m_frameUniformStride == 0) {
+        destroy();
+        return false;
+    }
     VkBufferCreateInfo uniformBufferInfo{};
     uniformBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    uniformBufferInfo.size = sizeof(float) * 4;
+    uniformBufferInfo.size = m_frameUniformStride * kFrameUniformRingCount;
     uniformBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     uniformBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(m_device, &uniformBufferInfo, nullptr, &m_frameUniformBuffer) != VK_SUCCESS) {
@@ -173,7 +200,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (vkAllocateMemory(m_device, &uniformAlloc, nullptr, &m_frameUniformMemory) != VK_SUCCESS ||
         vkBindBufferMemory(m_device, m_frameUniformBuffer, m_frameUniformMemory, 0) != VK_SUCCESS ||
-        vkMapMemory(m_device, m_frameUniformMemory, 0, sizeof(float) * 4, 0, &m_frameUniformMapped) != VK_SUCCESS) {
+        vkMapMemory(m_device, m_frameUniformMemory, 0, uniformBufferInfo.size, 0, &m_frameUniformMapped) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -414,12 +441,10 @@ bool VulkanResources::createTextureResources()
     imageInfoDesc[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfoDesc[3].imageView = m_maskCurveLutView;
     imageInfoDesc[3].sampler = m_sampler;
-    VkDescriptorBufferInfo frameUniformInfo{};
-    frameUniformInfo.buffer = m_frameUniformBuffer;
-    frameUniformInfo.offset = 0;
-    frameUniformInfo.range = sizeof(float) * 4;
+    std::array<VkDescriptorBufferInfo, VulkanResources::kDescriptorSetCount> frameUniformInfos{};
     std::array<VkWriteDescriptorSet, VulkanResources::kDescriptorSetCount * 5> writes{};
     size_t writeIndex = 0;
+    size_t descriptorIndex = 0;
     for (VkDescriptorSet descriptorSet : m_descriptorSets) {
         if (descriptorSet == VK_NULL_HANDLE) {
             return false;
@@ -433,27 +458,50 @@ bool VulkanResources::createTextureResources()
             writes[writeIndex].pImageInfo = &imageInfoDesc[binding];
             ++writeIndex;
         }
+        frameUniformInfos[descriptorIndex].buffer = m_frameUniformBuffer;
+        frameUniformInfos[descriptorIndex].offset = 0;
+        frameUniformInfos[descriptorIndex].range = sizeof(FrameUniformData);
         writes[writeIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[writeIndex].dstSet = descriptorSet;
         writes[writeIndex].dstBinding = 4;
         writes[writeIndex].descriptorCount = 1;
-        writes[writeIndex].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[writeIndex].pBufferInfo = &frameUniformInfo;
+        writes[writeIndex].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        writes[writeIndex].pBufferInfo = &frameUniformInfos[descriptorIndex];
         ++writeIndex;
+        ++descriptorIndex;
     }
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeIndex), writes.data(), 0, nullptr);
     return true;
 }
 
-bool VulkanResources::updateFrameUniform(const QSize& outputSize)
+bool VulkanResources::updateFrameUniform(const QSize& outputSize,
+                                         const float* backgroundShadows,
+                                         const float* backgroundMidtones,
+                                         const float* backgroundHighlights)
 {
-    if (!m_frameUniformMapped) {
+    if (!m_frameUniformMapped || m_frameUniformStride == 0) {
         return false;
     }
     const float width = static_cast<float>(qMax(1, outputSize.width()));
     const float height = static_cast<float>(qMax(1, outputSize.height()));
-    const float values[4] = {width, height, 1.0f / width, 1.0f / height};
-    std::memcpy(m_frameUniformMapped, values, sizeof(values));
+    FrameUniformData values;
+    values.outputSizeAndInverse[0] = width;
+    values.outputSizeAndInverse[1] = height;
+    values.outputSizeAndInverse[2] = 1.0f / width;
+    values.outputSizeAndInverse[3] = 1.0f / height;
+    if (backgroundShadows) {
+        std::memcpy(values.backgroundShadows, backgroundShadows, sizeof(values.backgroundShadows));
+    }
+    if (backgroundMidtones) {
+        std::memcpy(values.backgroundMidtones, backgroundMidtones, sizeof(values.backgroundMidtones));
+    }
+    if (backgroundHighlights) {
+        std::memcpy(values.backgroundHighlights, backgroundHighlights, sizeof(values.backgroundHighlights));
+    }
+    const VkDeviceSize offset = m_frameUniformStride * m_frameUniformRingIndex;
+    std::memcpy(static_cast<char*>(m_frameUniformMapped) + offset, &values, sizeof(values));
+    m_frameUniformDynamicOffset = static_cast<uint32_t>(offset);
+    m_frameUniformRingIndex = (m_frameUniformRingIndex + 1) % kFrameUniformRingCount;
     return true;
 }
 

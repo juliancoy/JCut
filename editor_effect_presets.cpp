@@ -106,6 +106,7 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("Directional trim ticker"), ClipEffectPreset::DirectionalTrimTicker},
         {QStringLiteral("Source image tiling"), ClipEffectPreset::SourceTile},
         {QStringLiteral("Vulkan 3D Synth"), ClipEffectPreset::Vulkan3DSynth},
+        {QStringLiteral("Progressive edge stretch"), ClipEffectPreset::ProgressiveEdgeStretch},
     };
 }
 
@@ -129,6 +130,7 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::DirectionalTrimTicker:
     case ClipEffectPreset::SourceTile:
     case ClipEffectPreset::Vulkan3DSynth:
+    case ClipEffectPreset::ProgressiveEdgeStretch:
         return true;
     case ClipEffectPreset::None:
     case ClipEffectPreset::PersonOrbit:
@@ -438,6 +440,53 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
     const int64_t sourceEndExclusive =
         sourceStart + qMax<int64_t>(1, qRound64(sourceClip.durationFrames * qMax<qreal>(0.001, sourceClip.playbackRate)));
     const int64_t clipTimelineEnd = sourceClip.startFrame + sourceClip.durationFrames;
+    QVector<ExportRangeSegment> keptSourceRanges;
+    for (const TranscriptSection& transcriptSection : sections) {
+        for (const TranscriptWord& transcriptWord : transcriptSection.words) {
+            if (!transcriptWord.skipped && !transcriptWord.text.trimmed().isEmpty()) {
+                keptSourceRanges.push_back({transcriptWord.startFrame, transcriptWord.endFrame});
+            }
+        }
+    }
+    std::sort(keptSourceRanges.begin(), keptSourceRanges.end(), [](const auto& a, const auto& b) {
+        return a.startFrame < b.startFrame;
+    });
+    QVector<ExportRangeSegment> mergedKeptSourceRanges;
+    for (const ExportRangeSegment& range : std::as_const(keptSourceRanges)) {
+        if (mergedKeptSourceRanges.isEmpty() ||
+            range.startFrame > mergedKeptSourceRanges.constLast().endFrame + 1) {
+            mergedKeptSourceRanges.push_back(range);
+        } else {
+            mergedKeptSourceRanges.last().endFrame =
+                qMax(mergedKeptSourceRanges.constLast().endFrame, range.endFrame);
+        }
+    }
+    const auto rawEndForPlaybackFrames = [&](int64_t introductionSourceFrame,
+                                             int64_t playbackFrames) -> int64_t {
+        int64_t remaining = qMax<int64_t>(1, playbackFrames);
+        int64_t lastMappedEnd = qMin<int64_t>(clipTimelineEnd, sourceClip.startFrame + 1);
+        for (const ExportRangeSegment& range : std::as_const(mergedKeptSourceRanges)) {
+            const int64_t rangeStart = qMax(range.startFrame, introductionSourceFrame);
+            if (range.endFrame < rangeStart) continue;
+            lastMappedEnd = qMin<int64_t>(
+                clipTimelineEnd,
+                sourceClip.startFrame + qCeil(
+                    (range.endFrame - sourceClip.sourceInFrame + 1) /
+                    qMax<qreal>(0.001, sourceClip.playbackRate)));
+            const int64_t availableTimelineFrames = qMax<int64_t>(
+                1, qCeil((range.endFrame - rangeStart + 1) /
+                         qMax<qreal>(0.001, sourceClip.playbackRate)));
+            if (remaining <= availableTimelineFrames) {
+                return qMin<int64_t>(
+                    clipTimelineEnd,
+                    sourceClip.startFrame + qRound64(
+                        (rangeStart - sourceClip.sourceInFrame) /
+                        qMax<qreal>(0.001, sourceClip.playbackRate)) + remaining);
+            }
+            remaining -= availableTimelineFrames;
+        }
+        return lastMappedEnd;
+    };
     QString previousSpeaker;
 
     for (const TranscriptSection& section : sections) {
@@ -459,9 +508,11 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
                 qMax<qreal>(0.001, sourceClip.playbackRate);
             const int64_t startFrame =
                 qBound<int64_t>(sourceClip.startFrame,
-                                sourceClip.startFrame + qRound64(localTimelineFrames) + startDelay,
+                                sourceClip.startFrame + qRound64(localTimelineFrames),
                                 qMax<int64_t>(sourceClip.startFrame, clipTimelineEnd - 1));
-            const int64_t duration = qMin<int64_t>(boundedDuration, qMax<int64_t>(1, clipTimelineEnd - startFrame));
+            const int64_t rawEndFrame = rawEndForPlaybackFrames(
+                word.startFrame, startDelay + boundedDuration);
+            const int64_t duration = qMax<int64_t>(1, rawEndFrame - startFrame);
             const int64_t titleLookupFrame = qMax<int64_t>(
                 word.startFrame,
                 word.startFrame + ((qMax<int64_t>(word.startFrame, word.endFrame) - word.startFrame) / 2));
@@ -549,7 +600,23 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
                 base.dropShadowOpacity = 0.0;
             }
             titleClip.titleKeyframes = {base};
-            applyNewsLowerThirdFlyInPreset(titleClip, settings);
+            TimelineClip animationClip = titleClip;
+            animationClip.durationFrames = qMin<int64_t>(
+                boundedDuration, qMax<int64_t>(1, duration - startDelay));
+            applyNewsLowerThirdFlyInPreset(animationClip, settings);
+            titleClip.titleKeyframes = animationClip.titleKeyframes;
+            if (startDelay > 0 && !titleClip.titleKeyframes.isEmpty()) {
+                TimelineClip::TitleKeyframe waiting = titleClip.titleKeyframes.constFirst();
+                waiting.frame = 0;
+                waiting.opacity = 0.0;
+                waiting.windowOpacity = 0.0;
+                waiting.windowFrameOpacity = 0.0;
+                waiting.dropShadowOpacity = 0.0;
+                for (TimelineClip::TitleKeyframe& keyframe : titleClip.titleKeyframes) {
+                    keyframe.frame = qMin<int64_t>(duration - 1, keyframe.frame + startDelay);
+                }
+                titleClip.titleKeyframes.prepend(waiting);
+            }
             clips.push_back(titleClip);
         }
     }

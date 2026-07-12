@@ -53,6 +53,9 @@ public:
     void invalidateCache();
     void setLiveTranscriptDocument(const QString& transcriptPath,
                                    const QJsonDocument& document);
+    void setActiveLiveTranscriptDocument(const QString& transcriptPath,
+                                         const QJsonDocument& document);
+    void clearLiveTranscriptDocuments();
     void clearLiveTranscriptDocument(const QString& transcriptPath);
 
 private:

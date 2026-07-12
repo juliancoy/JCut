@@ -15,7 +15,36 @@ private slots:
     void testBrightnessCurveLutDoesNotCollapseToWhite();
     void testVulkanBrightnessCurveLutMatchesCpuLut();
     void testVulkanDrawStateDoesNotEnableCurveByDefault();
+    void testSpeakerGradeOverridesRatherThanCombinesWithClipGrade();
 };
+
+void TestGradingKeyframes::testSpeakerGradeOverridesRatherThanCombinesWithClipGrade()
+{
+    TimelineClip::GradingKeyframe master;
+    master.frame = 17;
+    master.brightness = 0.6;
+    master.contrast = 1.8;
+    master.saturation = 0.4;
+    master.opacity = 0.75;
+    master.linearInterpolation = false;
+    master.curvePointsR = {{0.0, 0.2}, {1.0, 0.8}};
+    master.curvePointsLuma = {{0.0, 0.1}, {1.0, 1.0}};
+
+    TimelineClip::GradingKeyframe person;
+    person.brightness = -0.2;
+    person.contrast = 1.1;
+    person.saturation = 1.3;
+
+    const TimelineClip::GradingKeyframe result =
+        gradingWithSpeakerOverride(master, person);
+    QCOMPARE(result.brightness, person.brightness);
+    QCOMPARE(result.contrast, person.contrast);
+    QCOMPARE(result.saturation, person.saturation);
+    QVERIFY(!gradingUsesCurveLut(result));
+    QCOMPARE(result.opacity, master.opacity);
+    QCOMPARE(result.frame, master.frame);
+    QCOMPARE(result.linearInterpolation, master.linearInterpolation);
+}
 
 void TestGradingKeyframes::testCompatibleCurvesInterpolateLinearly()
 {

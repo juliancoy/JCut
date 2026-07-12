@@ -324,6 +324,17 @@ set_tests_properties(test_sam3_resume PROPERTIES
     ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/..:$ENV{PYTHONPATH}"
 )
 
+add_test(
+    NAME test_progressive_edge_stretch_checkerboard
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/progressive_edge_stretch_checkerboard.py
+            --out-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/progressive_edge_stretch_checkerboard
+)
+set_tests_properties(test_progressive_edge_stretch_checkerboard PROPERTIES
+    LABELS "rendering;visual-oracle"
+)
+
 add_executable(test_imgui_standalone_render
     ${CMAKE_CURRENT_SOURCE_DIR}/test_imgui_standalone_render.cpp
 )

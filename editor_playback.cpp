@@ -217,6 +217,15 @@ int64_t EditorWindow::timelineSampleForAudioFeedbackSample(int64_t audioFeedback
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
 {
     if (!m_timeline) return {};
+    QString liveTranscriptPath;
+    QJsonDocument liveTranscriptDocument;
+    if (m_transcriptTab && m_transcriptTab->activeTranscriptDocumentSnapshot(
+            nullptr, &liveTranscriptPath, &liveTranscriptDocument)) {
+        m_transcriptEngine.setActiveLiveTranscriptDocument(
+            liveTranscriptPath, liveTranscriptDocument);
+    } else {
+        m_transcriptEngine.clearLiveTranscriptDocuments();
+    }
     const QString signature = playbackRangeCacheSignature(false);
     if (m_effectivePlaybackRangesCacheSignature == signature) {
         return m_effectivePlaybackRangesCache;

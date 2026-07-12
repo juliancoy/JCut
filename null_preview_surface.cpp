@@ -89,6 +89,7 @@ void NullPreviewSurface::setBackgroundFillSaturation(qreal) { requestRepaint(); 
 void NullPreviewSurface::setBackgroundFillEdgePixels(int) { requestRepaint(); }
 void NullPreviewSurface::setBackgroundFillEdgeProgressive(bool) { requestRepaint(); }
 void NullPreviewSurface::setBackgroundFillEdgePower(qreal) { requestRepaint(); }
+void NullPreviewSurface::setBackgroundFillStretchSourceClipId(const QString&) { requestRepaint(); }
 void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal>(0.1, zoom); requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }

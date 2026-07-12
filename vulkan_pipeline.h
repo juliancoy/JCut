@@ -42,7 +42,8 @@ public:
                      const VkViewport& viewport,
                      const VkRect2D& scissor,
                      VkDescriptorSet descriptorSet,
-                     const Push& push) const;
+                     const Push& push,
+                     uint32_t frameUniformDynamicOffset = 0) const;
 
 private:
     VkShaderModule createShaderModule(const QString& path, QString* errorMessage);

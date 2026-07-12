@@ -55,6 +55,7 @@ nlohmann::json toJson(const RenderRequestCore& request)
         {"backgroundFillEdgePixels", request.backgroundFillEdgePixels},
         {"backgroundFillEdgeProgressive", request.backgroundFillEdgeProgressive},
         {"backgroundFillEdgePower", request.backgroundFillEdgePower},
+        {"backgroundFillStretchSourceClipId", request.backgroundFillStretchSourceClipId},
         {"transcriptPrependMs", request.transcriptPrependMs},
         {"transcriptPostpendMs", request.transcriptPostpendMs},
         {"transcriptOffsetMs", request.transcriptOffsetMs},

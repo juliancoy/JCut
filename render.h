@@ -80,6 +80,7 @@ struct RenderRequest {
     int backgroundFillEdgePixels = 1;
     bool backgroundFillEdgeProgressive = false;
     qreal backgroundFillEdgePower = 2.0;
+    QString backgroundFillStretchSourceClipId;
     bool suppressCompletionDialog = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;

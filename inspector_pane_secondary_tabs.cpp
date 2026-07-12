@@ -177,9 +177,6 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo = new QComboBox(page);
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Edge Stretch"),
                                          backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
-    m_backgroundFillEffectCombo->addItem(
-        QStringLiteral("Progressive Edge Stretch"),
-        backgroundFillEffectToString(BackgroundFillEffect::ProgressiveEdgeStretch));
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Mirror"),
                                          backgroundFillEffectToString(BackgroundFillEffect::Mirror));
     m_backgroundFillEffectCombo->addItem(QStringLiteral("Blur Cover"),
@@ -187,6 +184,13 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo->setCurrentIndex(0);
     m_backgroundFillEffectCombo->setToolTip(QStringLiteral("Background fill effect for preview and render"));
     form->addRow(QStringLiteral("Fill Effect"), m_backgroundFillEffectCombo);
+
+    m_backgroundFillStretchSourceCombo = new QComboBox(page);
+    m_backgroundFillStretchSourceCombo->addItem(QStringLiteral("Auto (Lowest Visible Clip)"),
+                                                 QString());
+    m_backgroundFillStretchSourceCombo->setToolTip(
+        QStringLiteral("Clip geometry used by progressive edge stretch"));
+    form->addRow(QStringLiteral("Stretch Source"), m_backgroundFillStretchSourceCombo);
 
     m_backgroundFillOpacitySpin = new QDoubleSpinBox(page);
     m_backgroundFillOpacitySpin->setRange(0.0, 100.0);

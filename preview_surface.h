@@ -112,6 +112,7 @@ public:
     virtual void setBackgroundFillEdgePixels(int pixels) = 0;
     virtual void setBackgroundFillEdgeProgressive(bool progressive) = 0;
     virtual void setBackgroundFillEdgePower(qreal power) = 0;
+    virtual void setBackgroundFillStretchSourceClipId(const QString& clipId) = 0;
     virtual void setPreviewZoom(qreal zoom) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;

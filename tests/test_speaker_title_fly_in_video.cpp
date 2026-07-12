@@ -124,8 +124,8 @@ void TestSpeakerTitleFlyInVideo::rendersSourceClipSpeakerTitleFlyInVideo()
 
     TranscriptSection section;
     section.startFrame = 0;
-    section.endFrame = 80;
-    section.words.push_back(TranscriptWord{0, 8, QStringLiteral("S1"), QStringLiteral("hello"), false});
+    section.endFrame = 99;
+    section.words.push_back(TranscriptWord{0, 99, QStringLiteral("S1"), QStringLiteral("hello"), false});
 
     const QVector<FlyInVideoCase> cases{
         {QStringLiteral("slide_left"), SpeakerTitleFlyInStyle::SlideFromLeft, 15, 0.72, 0.70},

@@ -1210,6 +1210,13 @@ QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath)
     return runtimeDocument->sections;
 }
 
+QVector<TranscriptSection> transcriptSectionsFromDocument(const QJsonDocument& document) {
+    if (!document.isObject()) {
+        return {};
+    }
+    return buildTranscriptSectionsFromDocument(document);
+}
+
 QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
                                                 const QVector<TranscriptSection>& sections,
                                                 int64_t sourceFrame,
@@ -1388,6 +1395,34 @@ QString transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(const QString&
         return QString();
     }
     return activeSpeakerForSourceFrame(runtimeDocument->sections, sourceFrame).trimmed();
+}
+
+bool transcriptSpeakerGradingForClipFileAtSourceFrame(
+    const QString& clipFilePath,
+    int64_t sourceFrame,
+    TimelineClip::GradingKeyframe* gradingOut)
+{
+    if (!gradingOut) return false;
+    const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+    QJsonDocument document;
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    if (transcriptPath.isEmpty() || !runtimeDocument ||
+        !loadTranscriptJsonCached(transcriptPath, &document) || !document.isObject()) {
+        return false;
+    }
+    const QString speakerId = activeSpeakerForSourceFrame(runtimeDocument->sections, sourceFrame).trimmed();
+    const QJsonObject grading = document.object()
+        .value(QStringLiteral("speaker_profiles")).toObject()
+        .value(speakerId).toObject()
+        .value(QStringLiteral("grading")).toObject();
+    if (speakerId.isEmpty() || !grading.value(QStringLiteral("enabled")).toBool(false)) return false;
+    TimelineClip::GradingKeyframe result;
+    result.brightness = qBound(-2.0, grading.value(QStringLiteral("brightness")).toDouble(0.0), 2.0);
+    result.contrast = qBound(0.0, grading.value(QStringLiteral("contrast")).toDouble(1.0), 4.0);
+    result.saturation = qBound(0.0, grading.value(QStringLiteral("saturation")).toDouble(1.0), 4.0);
+    *gradingOut = result;
+    return true;
 }
 
 bool transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,

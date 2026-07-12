@@ -179,6 +179,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
         !m_widgets.selectedSpeakerPrimaryColorEdit &&
         !m_widgets.selectedSpeakerSecondaryColorEdit &&
         !m_widgets.selectedSpeakerAccentColorEdit &&
+        !m_widgets.selectedSpeakerGradingEnabledCheckBox &&
         !m_widgets.selectedSpeakerFaceDetectionsList &&
         !m_widgets.speakerPlayheadFaceDetectionsList) {
         return;
@@ -216,6 +217,25 @@ void SpeakersTab::updateSelectedSpeakerPanel()
                     profile.value(QString(kTranscriptSpeakerSecondaryColorKey)).toString().trimmed());
         setLineEdit(m_widgets.selectedSpeakerAccentColorEdit,
                     profile.value(QString(kTranscriptSpeakerAccentColorKey)).toString().trimmed());
+        const QJsonObject grading = profile.value(QStringLiteral("grading")).toObject();
+        auto setGradeSpin = [enabled](QDoubleSpinBox* spin, double value) {
+            if (!spin) return;
+            QSignalBlocker blocker(spin);
+            spin->setValue(value);
+            spin->setEnabled(enabled);
+        };
+        if (m_widgets.selectedSpeakerGradingEnabledCheckBox) {
+            QSignalBlocker blocker(m_widgets.selectedSpeakerGradingEnabledCheckBox);
+            m_widgets.selectedSpeakerGradingEnabledCheckBox->setChecked(
+                grading.value(QStringLiteral("enabled")).toBool(false));
+            m_widgets.selectedSpeakerGradingEnabledCheckBox->setEnabled(enabled);
+        }
+        setGradeSpin(m_widgets.selectedSpeakerBrightnessSpin,
+                     grading.value(QStringLiteral("brightness")).toDouble(0.0));
+        setGradeSpin(m_widgets.selectedSpeakerContrastSpin,
+                     grading.value(QStringLiteral("contrast")).toDouble(1.0));
+        setGradeSpin(m_widgets.selectedSpeakerSaturationSpin,
+                     grading.value(QStringLiteral("saturation")).toDouble(1.0));
     };
     if (!clip || !m_transcriptSession.hasObjectDocument()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
@@ -1235,6 +1255,37 @@ bool SpeakersTab::saveSelectedSpeakerProfileField(const QString& fieldKey, const
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
+    return true;
+}
+
+bool SpeakersTab::saveSelectedSpeakerGrading()
+{
+    const QString speakerId = selectedSpeakerId().trimmed();
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) return false;
+    const bool changed = m_transcriptSession.mutateRoot([&](QJsonObject& root) {
+        QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        QJsonObject profile = profiles.value(speakerId).toObject();
+        QJsonObject grading;
+        grading[QStringLiteral("enabled")] = m_widgets.selectedSpeakerGradingEnabledCheckBox &&
+                                              m_widgets.selectedSpeakerGradingEnabledCheckBox->isChecked();
+        grading[QStringLiteral("brightness")] = m_widgets.selectedSpeakerBrightnessSpin
+            ? m_widgets.selectedSpeakerBrightnessSpin->value() : 0.0;
+        grading[QStringLiteral("contrast")] = m_widgets.selectedSpeakerContrastSpin
+            ? m_widgets.selectedSpeakerContrastSpin->value() : 1.0;
+        grading[QStringLiteral("saturation")] = m_widgets.selectedSpeakerSaturationSpin
+            ? m_widgets.selectedSpeakerSaturationSpin->value() : 1.0;
+        if (profile.value(QStringLiteral("grading")).toObject() == grading) return false;
+        profile[QStringLiteral("grading")] = grading;
+        profiles[speakerId] = profile;
+        root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
+        return true;
+    });
+    if (!changed) return true;
+    if (!saveLoadedTranscriptDocument()) return false;
+    if (m_speakerDeps.refreshPreview) m_speakerDeps.refreshPreview();
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
     return true;
 }
 

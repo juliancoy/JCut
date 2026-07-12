@@ -170,6 +170,7 @@ struct PreviewInteractionState {
     int backgroundFillEdgePixels = 1;
     bool backgroundFillEdgeProgressive = false;
     qreal backgroundFillEdgePower = 2.0;
+    QString backgroundFillStretchSourceClipId;
     int clipCount = 0;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;

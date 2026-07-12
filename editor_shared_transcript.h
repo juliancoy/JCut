@@ -62,6 +62,7 @@ bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* edita
 bool ensureEditableTranscriptForSource(const TranscriptSourceKey& source, QString* editablePathOut = nullptr);
 bool ensureEditableTranscriptForClip(const TimelineClip& clip, QString* editablePathOut = nullptr);
 bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut);
+QVector<TranscriptSection> transcriptSectionsFromDocument(const QJsonDocument& document);
 std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath);
 std::shared_ptr<const TranscriptRuntimeDocument> cachedTranscriptRuntimeDocumentMemoryOnly(
     const QString& transcriptPath);
@@ -87,6 +88,9 @@ QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFileP
                                                         int64_t sourceFrame);
 QString transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(const QString& clipFilePath,
                                                                   int64_t sourceFrame);
+bool transcriptSpeakerGradingForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                      int64_t sourceFrame,
+                                                      TimelineClip::GradingKeyframe* gradingOut);
 bool transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
                                                                    int64_t sourceFrame,
                                                                    qreal minConfidence,

@@ -782,6 +782,10 @@ QJsonObject EditorWindow::buildStateJson() const
         m_backgroundFillEffectCombo
             ? m_backgroundFillEffectCombo->currentData().toString()
             : backgroundFillEffectToString(kDefaultBackgroundFillEffect);
+    root[QStringLiteral("backgroundFillStretchSourceClipId")] =
+        m_backgroundFillStretchSourceCombo
+            ? m_backgroundFillStretchSourceCombo->currentData().toString()
+            : QString();
     root[QStringLiteral("backgroundFillOpacity")] =
         m_backgroundFillOpacitySpin
             ? qBound(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)

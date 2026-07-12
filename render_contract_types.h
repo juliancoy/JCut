@@ -35,6 +35,7 @@ struct RenderRequestCore {
     int backgroundFillEdgePixels = 1;
     bool backgroundFillEdgeProgressive = false;
     double backgroundFillEdgePower = 2.0;
+    std::string backgroundFillStretchSourceClipId;
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
     int transcriptOffsetMs = 0;

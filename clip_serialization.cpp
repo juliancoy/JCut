@@ -29,6 +29,8 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("source_tile");
     case ClipEffectPreset::Vulkan3DSynth:
         return QStringLiteral("vulkan_3d_synth");
+    case ClipEffectPreset::ProgressiveEdgeStretch:
+        return QStringLiteral("progressive_edge_stretch");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -80,6 +82,11 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("vulkan_synth") ||
         normalized == QStringLiteral("image_synth")) {
         return ClipEffectPreset::Vulkan3DSynth;
+    }
+    if (normalized == QStringLiteral("progressive_edge_stretch") ||
+        normalized == QStringLiteral("progressive_stretch") ||
+        normalized == QStringLiteral("edge_stretch_progressive")) {
+        return ClipEffectPreset::ProgressiveEdgeStretch;
     }
     return ClipEffectPreset::None;
 }

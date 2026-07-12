@@ -130,6 +130,8 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.backgroundFillEdgePixels = qBound(1, request.backgroundFillEdgePixels, 512);
     qtRequest.backgroundFillEdgeProgressive = request.backgroundFillEdgeProgressive;
     qtRequest.backgroundFillEdgePower = qBound(0.25, request.backgroundFillEdgePower, 8.0);
+    qtRequest.backgroundFillStretchSourceClipId =
+        QString::fromStdString(request.backgroundFillStretchSourceClipId).trimmed();
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;
     qtRequest.transcriptPostpendMs = request.transcriptPostpendMs;
     qtRequest.transcriptOffsetMs = request.transcriptOffsetMs;

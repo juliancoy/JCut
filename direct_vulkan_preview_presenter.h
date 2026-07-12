@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <QJsonObject>
+#include <QImage>
 #include <QPointer>
 #include <QRectF>
 #include <QVulkanInstance>
@@ -67,6 +68,11 @@ struct DirectVulkanPreviewStats {
     int descriptorSetCount = 0;
     int activeClipHandoffResourceCount = 0;
     int retiredClipHandoffResourceCount = 0;
+    bool finalCompositeStretchPrepared = false;
+    bool finalCompositeStretchDrawn = false;
+    QString finalCompositeStretchSourceClipId;
+    QString finalCompositeStretchSourceLabel;
+    QString finalCompositeStretchReason;
     int transcriptCandidateCount = 0;
     int transcriptPreparedCount = 0;
     int transcriptDrawnCount = 0;
@@ -121,6 +127,8 @@ public:
         std::function<void(const QString&)> createKeyframeRequested = {});
 
     void requestUpdate();
+    void requestPipelineTapReadback();
+    QImage latestPipelineTapImage() const;
     void updateTitle();
     QJsonObject pipelineHealthSnapshot() const;
     QJsonObject profilingSnapshot() const;

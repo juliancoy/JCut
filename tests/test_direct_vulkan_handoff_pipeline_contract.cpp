@@ -391,8 +391,16 @@ void TestDirectVulkanHandoffPipelineContract::
       "inactive handoff resources must be retired briefly instead of destroyed "
       "while swapchain frames may still be in flight");
   QVERIFY2(backend.contains(
-               QStringLiteral("ensureClipHandoffResources(status.clipId)")),
-           "direct preview must resolve handoff resources by clip id");
+               QStringLiteral("ensureClipHandoffResources(handoffResourceId)")),
+           "direct preview must resolve handoff resources by effective media owner");
+  QVERIFY2(backend.contains(QStringLiteral("status.maskClipSource && !mediaOwnerId.isEmpty()")) &&
+               backend.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")),
+           "virtual mask children must reuse the parent's sampled-media resource bundle");
+  QVERIFY2(backend.contains(QStringLiteral("if (!status.maskClipSource && !curveLut.isEmpty())")),
+           "mask children must not overwrite the parent's normal grading LUT");
+  QVERIFY2(backend.contains(QStringLiteral("if (!reusesParentMedia &&")) &&
+               backend.contains(QStringLiteral("beginFrameUploads(")),
+           "a child reusing parent media must not rewind the parent's frame upload slot");
   QVERIFY2(backend.contains(QStringLiteral(
                "pruneClipHandoffResources(activeHandoffClipIds)")),
            "direct preview must release per-clip handoff resources when clips "
@@ -572,6 +580,13 @@ void TestDirectVulkanHandoffPipelineContract::
            "speaker labels must be drawn by the Vulkan text renderer");
   QVERIFY2(textRenderer.contains(QStringLiteral("drawTranscriptOverlay")),
            "transcript subtitles must be drawn by the Vulkan text renderer");
+  QVERIFY2(
+      textRenderer.contains(
+          QStringLiteral("1,\n                                     &dynamicUniformOffset")) &&
+          textRenderer.contains(
+              QStringLiteral("m_atlasResources->frameUniformDynamicOffset()")),
+      "Vulkan text descriptor binds must provide the dynamic uniform offset "
+      "required by the shared descriptor layout");
   QVERIFY2(
       textRenderer.contains(QStringLiteral("prepareTranscriptOverlayAtlas")),
       "transcript glyph atlas upload must be available before the render pass");
@@ -1197,10 +1212,25 @@ void TestDirectVulkanHandoffPipelineContract::
 
   const QString vulkanSurface =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
-  QVERIFY2(vulkanSurface.contains(QStringLiteral("13 Diagnostic Readback")) &&
+  QVERIFY2(vulkanSurface.contains(QStringLiteral("13 Final Progressive Edge Stretch")) &&
+               vulkanSurface.contains(QStringLiteral("post_final_progressive_edge_stretch_swapchain")),
+           "pipeline stages must expose final progressive edge stretch as a named reviewable tap");
+  QVERIFY2(vulkanSurface.contains(QStringLiteral("m_presenter->requestPipelineTapReadback()")) &&
+               vulkanSurface.contains(QStringLiteral("m_presenter->latestPipelineTapImage()")),
+           "pipeline stages must request and display the post-pass GPU tap image");
+  QVERIFY2(vulkanSurface.contains(QStringLiteral("14 Diagnostic Readback")) &&
                vulkanSurface.contains(QStringLiteral("diagnostic_disabled")),
            "pipeline stages must report diagnostic readback as opt-in, not as "
            "a hot-path render dependency");
+
+  const QString presenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(presenter.contains(QStringLiteral("final_composite_stretch_prepared")) &&
+               presenter.contains(QStringLiteral("final_composite_stretch_drawn")) &&
+               presenter.contains(QStringLiteral("final_composite_stretch_reason")),
+           "compact /pipeline health must expose final progressive stretch pass state");
+  QVERIFY2(presenter.contains(QStringLiteral("directVulkanPreviewWindowPipelineThumbnailReadbackPending")),
+           "pipeline tap pending state must be reported from the live Vulkan window");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

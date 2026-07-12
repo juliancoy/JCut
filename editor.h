@@ -592,6 +592,7 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QComboBox *m_renderBackendCombo = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
+    QComboBox *m_backgroundFillStretchSourceCombo = nullptr;
     QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
     QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;

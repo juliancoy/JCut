@@ -2348,6 +2348,20 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_selectedSpeakerAccentColorEdit = makeSelectedSpeakerColorEdit(
         QStringLiteral("speakers.selected_speaker.accent_color"),
         QStringLiteral("#56c7ff"));
+    m_selectedSpeakerGradingEnabledCheckBox = new QCheckBox(QStringLiteral("Enable speaker grading"), page);
+    auto makeSpeakerGradeSpin = [page](double minimum, double maximum, double value, const QString& name) {
+        auto* spin = new QDoubleSpinBox(page);
+        spin->setObjectName(name);
+        spin->setRange(minimum, maximum);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.05);
+        spin->setValue(value);
+        spin->setEnabled(false);
+        return spin;
+    };
+    m_selectedSpeakerBrightnessSpin = makeSpeakerGradeSpin(-2.0, 2.0, 0.0, QStringLiteral("speakers.selected_speaker.grading.brightness"));
+    m_selectedSpeakerContrastSpin = makeSpeakerGradeSpin(0.0, 4.0, 1.0, QStringLiteral("speakers.selected_speaker.grading.contrast"));
+    m_selectedSpeakerSaturationSpin = makeSpeakerGradeSpin(0.0, 4.0, 1.0, QStringLiteral("speakers.selected_speaker.grading.saturation"));
     auto *selectedSpeakerProfileForm = new QFormLayout;
     selectedSpeakerProfileForm->setContentsMargins(0, 0, 0, 0);
     selectedSpeakerProfileForm->setHorizontalSpacing(6);
@@ -2358,6 +2372,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     selectedSpeakerProfileForm->addRow(QStringLiteral("Primary Color"), m_selectedSpeakerPrimaryColorEdit);
     selectedSpeakerProfileForm->addRow(QStringLiteral("Secondary Color"), m_selectedSpeakerSecondaryColorEdit);
     selectedSpeakerProfileForm->addRow(QStringLiteral("Accent Color"), m_selectedSpeakerAccentColorEdit);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Speaker Grade"), m_selectedSpeakerGradingEnabledCheckBox);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Brightness +"), m_selectedSpeakerBrightnessSpin);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Contrast ×"), m_selectedSpeakerContrastSpin);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Saturation ×"), m_selectedSpeakerSaturationSpin);
     auto *selectedFaceDetectionsTitle = new QLabel(QStringLiteral("Assigned Tracks"), page);
     styleSectionTitle(selectedFaceDetectionsTitle);
     m_selectedSpeakerFaceDetectionsList = new QListWidget(page);

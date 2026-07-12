@@ -89,11 +89,38 @@ QVector<QRectF> VulkanEffectPipelinePlan::generatedDrawRects() const
     return rects;
 }
 
+bool vulkanClipSupportsProgressiveEdgeStretchSource(const TimelineClip& clip)
+{
+    if (clip.clipRole != ClipRole::Media) {
+        return false;
+    }
+    if (clip.mediaType != ClipMediaType::Image &&
+        clip.mediaType != ClipMediaType::Video) {
+        return false;
+    }
+    return !playbackMediaPathForClip(clip).trimmed().isEmpty();
+}
+
+VulkanProgressiveEdgeStretchLayerPolicy vulkanProgressiveEdgeStretchLayerPolicy(
+    const TimelineClip& clip,
+    const QVector<TimelineTrack>& tracks)
+{
+    VulkanProgressiveEdgeStretchLayerPolicy policy;
+    const TimelineClip effectiveClip =
+        tracks.isEmpty() ? clip : clipWithTrackEffectSettings(clip, tracks);
+    policy.presetActive =
+        effectiveClip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch;
+    policy.sourceEligible = vulkanClipSupportsProgressiveEdgeStretchSource(clip);
+    policy.drawBackground = policy.presetActive && policy.sourceEligible;
+    return policy;
+}
+
 VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QRectF& outputRect,
                                                   const QSize& textureSize,
                                                   qreal timelineFrame,
-                                                  qreal effectFrame)
+                                                  qreal effectFrame,
+                                                  const PlaybackTimingContext& timing)
 {
     VulkanEffectPipelinePlan plan;
     const qreal temporalFrame = effectFrame >= 0.0 ? effectFrame : timelineFrame;
@@ -320,7 +347,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
 
     if (maskedRepeatEnabled) {
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipTransformAtPosition(clip, static_cast<qreal>(clip.startFrame) + temporalFrame);
+            evaluateClipTransformAtPosition(clip, static_cast<qreal>(clip.startFrame) + temporalFrame, timing);
         const qreal repeatX = qBound<qreal>(-100000.0, transform.maskRepeatDeltaX, 100000.0);
         const qreal repeatY = qBound<qreal>(-100000.0, transform.maskRepeatDeltaY, 100000.0);
         const bool hasRepeatStep = !qFuzzyIsNull(repeatX) || !qFuzzyIsNull(repeatY);
@@ -557,8 +584,8 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
     if (effect == BackgroundFillEffect::EdgeStretch ||
         effect == BackgroundFillEffect::ProgressiveEdgeStretch ||
         effect == BackgroundFillEffect::Mirror) {
-        const bool progressive = progressiveEdge ||
-            effect == BackgroundFillEffect::ProgressiveEdgeStretch;
+        Q_UNUSED(progressiveEdge);
+        const bool progressive = effect == BackgroundFillEffect::ProgressiveEdgeStretch;
         state.shadows[0] = mapping.centerXNorm;
         state.shadows[1] = mapping.centerYNorm;
         state.shadows[2] = mapping.outputHeightOverSourceWidth;

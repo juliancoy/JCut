@@ -95,6 +95,7 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.backgroundFillEdgePixels = qBound(1, request.backgroundFillEdgePixels, 512);
     core.backgroundFillEdgeProgressive = request.backgroundFillEdgeProgressive;
     core.backgroundFillEdgePower = qBound(0.25, static_cast<double>(request.backgroundFillEdgePower), 8.0);
+    core.backgroundFillStretchSourceClipId = request.backgroundFillStretchSourceClipId.trimmed().toStdString();
     core.transcriptPrependMs = request.transcriptPrependMs;
     core.transcriptPostpendMs = request.transcriptPostpendMs;
     core.transcriptOffsetMs = request.transcriptOffsetMs;

@@ -60,11 +60,13 @@ public:
                      const VkViewport& viewport,
                      const VkRect2D& scissor,
                      VkDescriptorSet descriptorSet,
+                     uint32_t dynamicUniformOffset,
                      const Push& push) const;
     void bindAndDrawMesh(VkCommandBuffer commandBuffer,
                          const VkViewport& viewport,
                          const VkRect2D& scissor,
                          VkDescriptorSet descriptorSet,
+                         uint32_t dynamicUniformOffset,
                          VkBuffer vertexBuffer,
                          uint32_t vertexCount,
                          const Push& push) const;

@@ -106,6 +106,8 @@ private:
                              VkFormat format);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
     QImage imageFromReadback(const uchar* bytes, const QSize& size, VkFormat format) const;
+    bool ensureCompositeTarget(const QSize& size, VkFormat colorFormat, VkFormat depthFormat);
+    void destroyCompositeTarget();
     struct ClipHandoffResources {
         std::unique_ptr<VulkanResources> resources;
         std::unique_ptr<DirectVulkanFrameHandoffPipeline> pipeline;
@@ -147,6 +149,17 @@ private:
     bool m_playbackStatusOverlayTextureReady = false;
     std::vector<ReadbackSlot> m_readbackSlots;
     std::vector<ReadbackSlot> m_decoderReadbackSlots;
+    VkRenderPass m_compositeRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer m_compositeFramebuffer = VK_NULL_HANDLE;
+    VkImage m_compositeImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_compositeMemory = VK_NULL_HANDLE;
+    VkImageView m_compositeView = VK_NULL_HANDLE;
+    VkImage m_compositeDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_compositeDepthMemory = VK_NULL_HANDLE;
+    VkImageView m_compositeDepthView = VK_NULL_HANDLE;
+    QSize m_compositeSize;
+    VkFormat m_compositeColorFormat = VK_FORMAT_UNDEFINED;
+    VkFormat m_compositeDepthFormat = VK_FORMAT_UNDEFINED;
 };
 
 } // namespace
@@ -1250,11 +1263,13 @@ void DirectVulkanPreviewRenderer::initResources()
 
 DirectVulkanPreviewRenderer::~DirectVulkanPreviewRenderer()
 {
+    destroyCompositeTarget();
     destroyReadbackSlots();
 }
 
 void DirectVulkanPreviewRenderer::releaseResources()
 {
+    destroyCompositeTarget();
     destroyReadbackSlots();
     for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end(); ++it) {
         releaseClipHandoffResources(it.value());
@@ -1434,6 +1449,194 @@ uint32_t DirectVulkanPreviewRenderer::findMemoryType(uint32_t typeBits, VkMemory
         }
     }
     return UINT32_MAX;
+}
+
+void DirectVulkanPreviewRenderer::destroyCompositeTarget()
+{
+    if (!m_devFuncs || !m_window || !m_window->device()) {
+        m_compositeSize = QSize();
+        return;
+    }
+    const VkDevice device = m_window->device();
+    if (m_compositeFramebuffer != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyFramebuffer(device, m_compositeFramebuffer, nullptr);
+        m_compositeFramebuffer = VK_NULL_HANDLE;
+    }
+    if (m_compositeRenderPass != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyRenderPass(device, m_compositeRenderPass, nullptr);
+        m_compositeRenderPass = VK_NULL_HANDLE;
+    }
+    if (m_compositeDepthView != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyImageView(device, m_compositeDepthView, nullptr);
+        m_compositeDepthView = VK_NULL_HANDLE;
+    }
+    if (m_compositeDepthImage != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyImage(device, m_compositeDepthImage, nullptr);
+        m_compositeDepthImage = VK_NULL_HANDLE;
+    }
+    if (m_compositeDepthMemory != VK_NULL_HANDLE) {
+        m_devFuncs->vkFreeMemory(device, m_compositeDepthMemory, nullptr);
+        m_compositeDepthMemory = VK_NULL_HANDLE;
+    }
+    if (m_compositeView != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyImageView(device, m_compositeView, nullptr);
+        m_compositeView = VK_NULL_HANDLE;
+    }
+    if (m_compositeImage != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyImage(device, m_compositeImage, nullptr);
+        m_compositeImage = VK_NULL_HANDLE;
+    }
+    if (m_compositeMemory != VK_NULL_HANDLE) {
+        m_devFuncs->vkFreeMemory(device, m_compositeMemory, nullptr);
+        m_compositeMemory = VK_NULL_HANDLE;
+    }
+    m_compositeSize = QSize();
+    m_compositeColorFormat = VK_FORMAT_UNDEFINED;
+    m_compositeDepthFormat = VK_FORMAT_UNDEFINED;
+}
+
+bool DirectVulkanPreviewRenderer::ensureCompositeTarget(const QSize& size,
+                                                        VkFormat colorFormat,
+                                                        VkFormat depthFormat)
+{
+    if (!m_window || !m_devFuncs || size.isEmpty() || colorFormat == VK_FORMAT_UNDEFINED) {
+        return false;
+    }
+    if (m_compositeFramebuffer != VK_NULL_HANDLE &&
+        m_compositeSize == size &&
+        m_compositeColorFormat == colorFormat &&
+        m_compositeDepthFormat == depthFormat) {
+        return true;
+    }
+    destroyCompositeTarget();
+    const VkDevice device = m_window->device();
+    auto createImage = [&](VkFormat format,
+                           VkImageUsageFlags usage,
+                           VkImageAspectFlags aspect,
+                           VkImage* image,
+                           VkDeviceMemory* memory,
+                           VkImageView* view) -> bool {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent = {static_cast<uint32_t>(std::max(1, size.width())),
+                            static_cast<uint32_t>(std::max(1, size.height())),
+                            1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = usage;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (m_devFuncs->vkCreateImage(device, &imageInfo, nullptr, image) != VK_SUCCESS) {
+            return false;
+        }
+        VkMemoryRequirements requirements{};
+        m_devFuncs->vkGetImageMemoryRequirements(device, *image, &requirements);
+        const uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX) {
+            return false;
+        }
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize = requirements.size;
+        alloc.memoryTypeIndex = memoryType;
+        if (m_devFuncs->vkAllocateMemory(device, &alloc, nullptr, memory) != VK_SUCCESS ||
+            m_devFuncs->vkBindImageMemory(device, *image, *memory, 0) != VK_SUCCESS) {
+            return false;
+        }
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = *image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = aspect;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        return m_devFuncs->vkCreateImageView(device, &viewInfo, nullptr, view) == VK_SUCCESS;
+    };
+    if (!createImage(colorFormat,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT,
+                     &m_compositeImage,
+                     &m_compositeMemory,
+                     &m_compositeView)) {
+        destroyCompositeTarget();
+        return false;
+    }
+    const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
+    if (hasDepth &&
+        !createImage(depthFormat,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT,
+                     &m_compositeDepthImage,
+                     &m_compositeDepthMemory,
+                     &m_compositeDepthView)) {
+        destroyCompositeTarget();
+        return false;
+    }
+
+    VkAttachmentDescription attachments[2]{};
+    attachments[0].format = colorFormat;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference depthRef{};
+    if (hasDepth) {
+        attachments[1].format = depthFormat;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthRef.attachment = 1;
+        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = hasDepth ? 2u : 1u;
+    renderPassInfo.pAttachments = attachments;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    if (m_devFuncs->vkCreateRenderPass(device, &renderPassInfo, nullptr, &m_compositeRenderPass) != VK_SUCCESS) {
+        destroyCompositeTarget();
+        return false;
+    }
+    VkImageView views[2] = {m_compositeView, m_compositeDepthView};
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = m_compositeRenderPass;
+    framebufferInfo.attachmentCount = hasDepth ? 2u : 1u;
+    framebufferInfo.pAttachments = views;
+    framebufferInfo.width = static_cast<uint32_t>(std::max(1, size.width()));
+    framebufferInfo.height = static_cast<uint32_t>(std::max(1, size.height()));
+    framebufferInfo.layers = 1;
+    if (m_devFuncs->vkCreateFramebuffer(device, &framebufferInfo, nullptr, &m_compositeFramebuffer) != VK_SUCCESS) {
+        destroyCompositeTarget();
+        return false;
+    }
+    m_compositeSize = size;
+    m_compositeColorFormat = colorFormat;
+    m_compositeDepthFormat = depthFormat;
+    return true;
 }
 
 void DirectVulkanPreviewRenderer::destroyReadbackSlots()
@@ -1830,9 +2033,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
 
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_window->defaultRenderPass();
-    rp.framebuffer = m_window->currentFramebuffer();
     const QSize swapSize = m_window->swapChainImageSize();
+    const bool useCompositeTarget = false;
+    rp.renderPass = useCompositeTarget ? m_compositeRenderPass : m_window->defaultRenderPass();
+    rp.framebuffer = useCompositeTarget ? m_compositeFramebuffer : m_window->currentFramebuffer();
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                             static_cast<uint32_t>(std::max(1, swapSize.height()))};
@@ -1842,6 +2046,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     VkCommandBuffer cb = m_window->currentCommandBuffer();
     const uint32_t swapchainImageIndex =
         static_cast<uint32_t>(std::max(0, m_window->currentSwapChainImageIndex()));
+    for (ReadbackSlot& slot : m_readbackSlots) {
+        consumeReadbackSlot(&slot);
+    }
     advanceRetiredClipHandoffResources();
     struct DecoderReadbackCandidate {
         VkImage image = VK_NULL_HANDLE;
@@ -1888,18 +2095,42 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!status.active || status.drawSuppressed) {
                 continue;
             }
-            ClipHandoffResources* handoffResources = ensureClipHandoffResources(status.clipId);
+            const QString mediaOwnerId = status.mediaOwnerClipId.trimmed();
+            const QString handoffResourceId =
+                status.maskClipSource && !mediaOwnerId.isEmpty()
+                    ? mediaOwnerId
+                    : status.clipId;
+            ClipHandoffResources* handoffResources = ensureClipHandoffResources(handoffResourceId);
             if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
                 continue;
             }
-            if (!handoffResources->resources->beginFrameUploads(
+            const bool reusesParentMedia =
+                !mediaOwnerId.isEmpty() &&
+                mediaOwnerId != status.clipId &&
+                frameHandoffResults.contains(mediaOwnerId) &&
+                frameHandoffResults.value(mediaOwnerId).imageView != VK_NULL_HANDLE;
+            if (!reusesParentMedia &&
+                !handoffResources->resources->beginFrameUploads(
                     swapchainImageIndex,
                     qMax<size_t>(VulkanResources::kDescriptorSetCount,
                                  static_cast<size_t>(swapchainImageIndex) + 1))) {
                 continue;
             }
             DirectVulkanFrameHandoffPipeline::Result handoffResult;
-            if (status.frame.hasCpuImage() &&
+            if (reusesParentMedia) {
+                const DirectVulkanFrameHandoffPipeline::Result ownerResult =
+                    frameHandoffResults.value(mediaOwnerId);
+                handoffResult = ownerResult;
+                handoffResult.attempted = false;
+                handoffResult.sampledFrameReady = ownerResult.sampledFrameReady;
+                handoffResult.descriptorSet = handoffResult.sampledFrameReady
+                    ? handoffResources->resources->descriptorSet()
+                    : VK_NULL_HANDLE;
+                handoffResult.descriptorSetIndex =
+                    static_cast<int>(handoffResources->resources->descriptorSetIndex());
+                handoffResult.descriptorSetCount =
+                    static_cast<int>(handoffResources->resources->descriptorSetCount());
+            } else if (status.frame.hasCpuImage() &&
                 !status.frame.hasHardwareFrame() &&
                 !status.externalVulkanFrame) {
                 handoffResult.attempted = true;
@@ -2002,7 +2233,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 }
             }
             const QByteArray curveLut = curveLutRgbaBytes(status.grading);
-            if (!curveLut.isEmpty()) {
+            if (!status.maskClipSource && !curveLut.isEmpty()) {
                 const bool uploaded =
                     handoffResources->resources->uploadCurveLut(cb, curveLut);
                 curveLutUploadResults.insert(status.clipId, uploaded);
@@ -2015,7 +2246,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     maskCurveLutUploadResults.insert(status.clipId, uploaded);
                 }
             }
-            if (status.maskTextureEnabled) {
+            if (status.maskTextureEnabled && !reusesParentMedia) {
                 VulkanMaskPreprocessOptions maskOptions;
                 maskOptions.outputSize = status.frameSize;
                 maskOptions.invert = status.maskInvert;
@@ -2025,8 +2256,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 maskUploadResults.insert(
                     status.clipId,
                     handoffResources->resources->uploadMaskTexture(cb, status.maskImage, maskOptions));
+            } else if (status.maskTextureEnabled && reusesParentMedia) {
+                maskUploadResults.insert(
+                    status.clipId,
+                    maskUploadResults.value(mediaOwnerId, false));
             }
             handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
+            if (handoffResult.sampledFrameReady) {
+                handoffResult.descriptorSet = handoffResources->resources->descriptorSet();
+                handoffResult.descriptorSetIndex =
+                    static_cast<int>(handoffResources->resources->descriptorSetIndex());
+                frameHandoffResults.insert(status.clipId, handoffResult);
+            }
         }
         updateClipHandoffResourceStats();
     }
@@ -2518,6 +2759,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     int64_t presentedSourceFrame = -1;
     qint64 handoffAttemptCount = 0;
     qint64 handoffSuccessCount = 0;
+    VulkanPipeline::Push finalCompositeStretchPush{};
+    bool finalCompositeStretchReady = false;
+    QRectF finalCompositeRect;
+    if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+        stats->finalCompositeStretchPrepared = false;
+        stats->finalCompositeStretchDrawn = false;
+        stats->finalCompositeStretchSourceClipId.clear();
+        stats->finalCompositeStretchSourceLabel.clear();
+        stats->finalCompositeStretchReason = useCompositeTarget
+            ? QStringLiteral("not_prepared")
+            : QStringLiteral("disabled");
+    }
     if (state) {
         VkViewport viewport{};
         viewport.x = 0.0f;
@@ -2536,17 +2789,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         const QRectF compositeRect = viewTransform.targetRect();
         const QPointF previewScale = viewTransform.outputScale();
         bool backgroundFilled = false;
+        finalCompositeRect = compositeRect;
         struct PendingMaskForegroundDraw {
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
             VulkanPipeline::Push push;
             VkRect2D scissor{};
+            uint32_t frameUniformDynamicOffset = 0;
         };
         QVector<PendingMaskForegroundDraw> pendingMaskForegroundDraws;
         VkClearValue canvasClear{};
         canvasClear.color.float32[0] = static_cast<float>(std::clamp<double>(base.redF(), 0.0, 1.0));
         canvasClear.color.float32[1] = static_cast<float>(std::clamp<double>(base.greenF(), 0.0, 1.0));
         canvasClear.color.float32[2] = static_cast<float>(std::clamp<double>(base.blueF(), 0.0, 1.0));
-        canvasClear.color.float32[3] = 1.0f;
+        canvasClear.color.float32[3] = useCompositeTarget ? 0.0f : 1.0f;
         clearRect(m_devFuncs, cb, canvasClear, clearRectFromQRect(compositeRect, swapSize));
         VkClearValue canvasBorder{};
         canvasBorder.color.float32[0] = 0.22f;
@@ -2608,6 +2863,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 status && status->frameCrossfadeActive
                     ? frameHandoffResults.value(status->clipId + QStringLiteral("#frameCrossfade"))
                     : DirectVulkanFrameHandoffPipeline::Result{};
+            VulkanResources* sampledResources = nullptr;
+            if (status) {
+                const QString resourceId =
+                    status->maskClipSource && !status->mediaOwnerClipId.trimmed().isEmpty()
+                        ? status->mediaOwnerClipId.trimmed()
+                        : status->clipId;
+                auto resourcesIt = m_clipHandoffResources.constFind(resourceId);
+                if (resourcesIt != m_clipHandoffResources.cend() && resourcesIt.value()) {
+                    sampledResources = resourcesIt.value()->resources.get();
+                }
+            }
             const bool sampledFrameReady =
                 handoffResult.sampledFrameReady && handoffResult.descriptorSet != VK_NULL_HANDLE;
             const bool handoffAttempted = handoffResult.attempted;
@@ -2625,15 +2891,33 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     ++stats->textureDraws;
                     ++stats->activeClipDraws;
                 }
-                if (!backgroundFilled &&
-                    render_detail::shouldDrawBlurredFillBackground(
-                        frameSize.isValid() ? frameSize : clip.sourceFrameSize,
-                        state->outputSize)) {
-                    const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
+                const TimelineClip effectClip =
+                    clipWithTrackEffectSettings(clip, state->tracks);
+                const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
+                    render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks);
+                const bool progressiveEdgeStretchEffect =
+                    progressiveStretchPolicy.drawBackground &&
+                    !(status && status->maskClipSource);
+                const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
+                const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
+                const bool globalProgressiveFillSelected =
+                    fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
+                const bool shouldDrawBackgroundFill =
+                    progressiveStretchOwnsClipBackground ||
+                    (!globalProgressiveFillSelected &&
+                     render_detail::shouldDrawBlurredFillBackground(
+                         frameSize.isValid() ? frameSize : clip.sourceFrameSize,
+                         state->outputSize));
+                if ((progressiveEdgeStretchEffect || !backgroundFilled) &&
+                    shouldDrawBackgroundFill) {
+                    const BackgroundFillEffect effectiveFillEffect =
+                        progressiveEdgeStretchEffect
+                            ? BackgroundFillEffect::ProgressiveEdgeStretch
+                            : fillEffect;
                     const bool fullCanvasFill =
-                        fillEffect == BackgroundFillEffect::EdgeStretch ||
-                        fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
-                        fillEffect == BackgroundFillEffect::Mirror;
+                        effectiveFillEffect == BackgroundFillEffect::EdgeStretch ||
+                        effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+                        effectiveFillEffect == BackgroundFillEffect::Mirror;
                     PreviewClipGeometry backgroundGeometry =
                         fullCanvasFill ? PreviewViewTransform::clipGeometry(
                                              compositeRect,
@@ -2652,21 +2936,52 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         backgroundGeometry.bounds =
                             backgroundGeometry.clipToScreen.mapRect(backgroundGeometry.localRect);
                     }
+                    const bool progressiveRenderSpaceFill =
+                        effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
+                    const QSize renderOutputSize =
+                        state->outputSize.isValid() ? state->outputSize : compositeRect.size().toSize();
+                    const QSize renderSourceSize =
+                        clip.sourceFrameSize.isValid()
+                            ? clip.sourceFrameSize
+                            : (frameSize.isValid() ? frameSize : renderOutputSize);
+                    const QRectF renderOutputRect(QPointF(0.0, 0.0), QSizeF(renderOutputSize));
+                    const QRectF renderFitted = render_detail::fitRectF(renderSourceSize, renderOutputSize);
+                    PreviewClipGeometry renderClipGeometry =
+                        PreviewViewTransform::clipGeometry(
+                            renderFitted,
+                            QPointF(1.0, 1.0),
+                            QPointF(transform.translationX, transform.translationY),
+                            transform.rotation,
+                            QPointF(transform.scaleX, transform.scaleY));
+                    if (status->sampledFrameNeedsYFlip) {
+                        renderClipGeometry.clipToScreen.scale(1.0, -1.0);
+                        renderClipGeometry.bounds =
+                            renderClipGeometry.clipToScreen.mapRect(renderClipGeometry.localRect);
+                    }
+                    const render_detail::VulkanDrawEffectState baseEffects =
+                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
                     VulkanPipeline::Push backgroundPush{};
-                    // Background UVs span the preview canvas, not the whole
-                    // swapchain. Keep the shader aspect and source mapping in
-                    // that same coordinate space so view zoom cannot alter the
-                    // progressive stretch curve.
-                    m_resources->updateFrameUniform(compositeRect.size().toSize());
+                    // Progressive edge stretch is a clip effect, but its scan
+                    // and edge band are defined in render/output pixels.  The
+                    // preview transform only presents the already-defined
+                    // output area; it must not change shader sampling.
+                    uint32_t backgroundFrameUniformOffset = 0;
+                    if (sampledResources &&
+                        sampledResources->updateFrameUniform(progressiveRenderSpaceFill
+                                                                 ? renderOutputSize
+                                                                 : compositeRect.size().toSize(),
+                                                             baseEffects.shadows,
+                                                             baseEffects.midtones,
+                                                             baseEffects.highlights)) {
+                        backgroundFrameUniformOffset = sampledResources->frameUniformDynamicOffset();
+                    }
                     mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
                                               backgroundGeometry.localRect,
                                               swapSize,
                                               backgroundPush.mvp);
-                    const render_detail::VulkanDrawEffectState baseEffects =
-                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
-                            fillEffect,
+                            effectiveFillEffect,
                             baseEffects,
                             static_cast<float>(state->backgroundFillOpacity),
                             static_cast<float>(state->backgroundFillBrightness),
@@ -2675,10 +2990,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             state->backgroundFillEdgeProgressive,
                             static_cast<float>(state->backgroundFillEdgePower),
                             status->frame.validTextureRectNormalized(),
-                            render_detail::vulkanBackgroundFillMapping(
-                                effectiveClipGeometry.clipToScreen,
-                                effectiveClipGeometry.localRect,
-                                compositeRect));
+                            progressiveRenderSpaceFill
+                                ? render_detail::vulkanBackgroundFillMapping(
+                                      renderClipGeometry.clipToScreen,
+                                      renderClipGeometry.localRect,
+                                      renderOutputRect)
+                                : render_detail::vulkanBackgroundFillMapping(
+                                      effectiveClipGeometry.clipToScreen,
+                                      effectiveClipGeometry.localRect,
+                                      compositeRect));
                     backgroundPush.opacity = backgroundEffects.opacity;
                     backgroundPush.brightness = backgroundEffects.brightness;
                     backgroundPush.contrast = backgroundEffects.contrast;
@@ -2707,8 +3027,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                             viewport,
                                             backgroundScissor,
                                             handoffResult.descriptorSet,
-                                            backgroundPush);
-                    backgroundFilled = true;
+                                            backgroundPush,
+                                            backgroundFrameUniformOffset);
+                    if (!progressiveStretchOwnsClipBackground) {
+                        backgroundFilled = true;
+                    }
                 }
                 VulkanPipeline::Push push{};
                 mvpForVulkanClipTransform(effectiveClipGeometry.clipToScreen,
@@ -2767,8 +3090,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                                       static_cast<uint32_t>(std::max(1, swapSize.height()))};
                 }
+                if (sampledResources) {
+                    sampledResources->updateFrameUniform(compositeRect.size().toSize());
+                }
                 auto drawPush = [&](const VulkanPipeline::Push& drawState) {
-                    m_pipeline->bindAndDraw(cb, viewport, scissor, handoffResult.descriptorSet, drawState);
+                    m_pipeline->bindAndDraw(cb,
+                                            viewport,
+                                            scissor,
+                                            handoffResult.descriptorSet,
+                                            drawState,
+                                            sampledResources ? sampledResources->frameUniformDynamicOffset() : 0);
                 };
                 const bool maskReady =
                     status && status->maskTextureEnabled &&
@@ -2783,7 +3114,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     drawPush(maskPush);
                 } else {
                     VulkanPipeline::Push basePush = push;
-                    if (status && status->curveLutApplied &&
+                    if (status && !status->maskClipSource && status->curveLutApplied &&
                         !curveLutUploadResults.value(status->clipId, false)) {
                         basePush.shadows[3] = render_detail::kVulkanEffectModeNormal;
                         if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
@@ -2807,27 +3138,32 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             }
                         }
                     }
-                    const TimelineClip effectClip =
-                        clipWithTrackEffectSettings(clip, state->tracks);
+                    TimelineClip foregroundEffectClip = effectClip;
+                    if (progressiveStretchOwnsClipBackground) {
+                        foregroundEffectClip.effectPreset = ClipEffectPreset::None;
+                        foregroundEffectClip.maskRepeatEnabled = false;
+                    }
                     const QRectF effectBounds =
-                        (effectClip.effectPreset == ClipEffectPreset::SourceTile || effectClip.maskRepeatEnabled)
+                        (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile ||
+                         foregroundEffectClip.maskRepeatEnabled)
                             ? transformedBounds.intersected(compositeRect)
                             : compositeRect;
                     const render_detail::VulkanEffectPipelinePlan effectPlan =
                         render_detail::vulkanEffectPipelinePlan(
-                            effectClip,
+                            foregroundEffectClip,
                             effectBounds,
                             frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                             status ? status->visualTimelineFramePosition : state->currentFramePosition,
                             render_detail::clipEffectPlaybackFramePosition(
-                                effectClip,
+                                foregroundEffectClip,
                                 state->clips,
                                 state->currentFramePosition,
                                 state->playbackTiming,
-                                state->tracks));
+                                state->tracks),
+                            state->playbackTiming);
                     if (effectPlan.usesGeneratedDraws()) {
                         const VkRect2D generatedScissor =
-                            effectClip.effectPreset == ClipEffectPreset::SourceTile
+                            foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile
                                 ? scissorFromQRect(effectBounds, swapSize)
                                 : scissor;
                         for (const render_detail::VulkanEffectPipelinePlan::DrawPass& effectDraw :
@@ -2847,7 +3183,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                      viewport,
                                                      generatedScissor,
                                                      handoffResult.descriptorSet,
-                                                     effectPush);
+                                                     effectPush,
+                                                     sampledResources ? sampledResources->frameUniformDynamicOffset() : 0);
                         }
                     } else {
                         drawPush(basePush);
@@ -2858,11 +3195,24 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         VulkanPipeline::Push crossfadePush = basePush;
                         crossfadePush.opacity *= qBound(
                             0.0f, status->frameCrossfadeOpacity, 1.0f);
+                        uint32_t secondaryFrameUniformOffset = 0;
+                        if (status) {
+                            const QString secondaryKey = status->clipId + QStringLiteral("#frameCrossfade");
+                            auto secondaryResourcesIt = m_clipHandoffResources.constFind(secondaryKey);
+                            if (secondaryResourcesIt != m_clipHandoffResources.cend() &&
+                                secondaryResourcesIt.value() &&
+                                secondaryResourcesIt.value()->resources &&
+                                secondaryResourcesIt.value()->resources->updateFrameUniform(compositeRect.size().toSize())) {
+                                secondaryFrameUniformOffset =
+                                    secondaryResourcesIt.value()->resources->frameUniformDynamicOffset();
+                            }
+                        }
                         m_pipeline->bindAndDraw(cb,
                                                  viewport,
                                                  scissor,
                                                  secondaryHandoffResult.descriptorSet,
-                                                 crossfadePush);
+                                                 crossfadePush,
+                                                 secondaryFrameUniformOffset);
                     }
                     if (maskReady && status->maskGradeEnabled &&
                         !status->maskForegroundLayerEnabled &&
@@ -2928,7 +3278,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         foregroundPush.highlights[2] = 0.0f;
                         foregroundPush.highlights[3] = 1.0f;
                         pendingMaskForegroundDraws.push_back(
-                            PendingMaskForegroundDraw{handoffResult.descriptorSet, foregroundPush, scissor});
+                            PendingMaskForegroundDraw{
+                                handoffResult.descriptorSet,
+                                foregroundPush,
+                                scissor,
+                                sampledResources ? sampledResources->frameUniformDynamicOffset() : 0});
                     }
                 }
             } else {
@@ -2991,7 +3345,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
         for (const PendingMaskForegroundDraw& draw : std::as_const(pendingMaskForegroundDraws)) {
             if (draw.descriptorSet != VK_NULL_HANDLE) {
-                m_pipeline->bindAndDraw(cb, viewport, draw.scissor, draw.descriptorSet, draw.push);
+                m_pipeline->bindAndDraw(cb,
+                                        viewport,
+                                        draw.scissor,
+                                        draw.descriptorSet,
+                                        draw.push,
+                                        draw.frameUniformDynamicOffset);
             }
         }
         qint64 fallbackTranscriptDrawCount = 0;
@@ -3121,6 +3480,79 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
+    if (useCompositeTarget &&
+        m_compositeView != VK_NULL_HANDLE &&
+        m_resources &&
+        m_resources->isReady() &&
+        m_pipeline &&
+        m_pipeline->isReady()) {
+        m_resources->setSampledImage(m_compositeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        m_resources->updateFrameUniform(state && state->outputSize.isValid()
+                                            ? state->outputSize
+                                            : swapSize);
+        VkRenderPassBeginInfo presentPass = rp;
+        presentPass.renderPass = m_window->defaultRenderPass();
+        presentPass.framebuffer = m_window->currentFramebuffer();
+        presentPass.clearValueCount = m_window->depthStencilFormat() == VK_FORMAT_UNDEFINED ? 1u : 2u;
+        presentPass.pClearValues = clearValues;
+        m_devFuncs->vkCmdBeginRenderPass(cb, &presentPass, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport presentViewport{};
+        presentViewport.x = 0.0f;
+        presentViewport.y = 0.0f;
+        presentViewport.width = static_cast<float>(std::max(1, swapSize.width()));
+        presentViewport.height = static_cast<float>(std::max(1, swapSize.height()));
+        presentViewport.minDepth = 0.0f;
+        presentViewport.maxDepth = 1.0f;
+        VkRect2D fullScissor{};
+        fullScissor.offset = {0, 0};
+        fullScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                              static_cast<uint32_t>(std::max(1, swapSize.height()))};
+        VulkanPipeline::Push passthroughPush{};
+        render_detail::vulkanMvpForOutputRect(
+            QRectF(QPointF(0.0, 0.0), QSizeF(swapSize)),
+            swapSize,
+            0.0,
+            passthroughPush.mvp);
+        m_pipeline->bindAndDraw(cb,
+                                presentViewport,
+                                fullScissor,
+                                m_resources->descriptorSet(),
+                                passthroughPush,
+                                m_resources->frameUniformDynamicOffset());
+        if (finalCompositeStretchReady && finalCompositeRect.isValid()) {
+            const VkRect2D compositeScissor = scissorFromQRect(finalCompositeRect, swapSize);
+            m_pipeline->bindAndDraw(cb,
+                                    presentViewport,
+                                    compositeScissor,
+                                    m_resources->descriptorSet(),
+                                    finalCompositeStretchPush,
+                                    m_resources->frameUniformDynamicOffset());
+            if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                stats->finalCompositeStretchDrawn = true;
+                stats->finalCompositeStretchReason = QStringLiteral("drawn");
+            }
+        } else if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+            stats->finalCompositeStretchDrawn = false;
+            stats->finalCompositeStretchReason =
+                finalCompositeStretchReady
+                    ? QStringLiteral("invalid_composite_rect")
+                    : QStringLiteral("not_prepared");
+        }
+        m_devFuncs->vkCmdEndRenderPass(cb);
+        if (m_owner->pipelineThumbnailReadbackPending()) {
+            const int imageIndex = m_window->currentSwapChainImageIndex();
+            if (imageIndex >= 0) {
+                if (static_cast<int>(m_readbackSlots.size()) <= imageIndex) {
+                    m_readbackSlots.resize(static_cast<size_t>(imageIndex + 1));
+                }
+                ReadbackSlot& slot = m_readbackSlots[static_cast<size_t>(imageIndex)];
+                if (ensureReadbackSlot(&slot, swapSize, m_window->colorFormat())) {
+                    recordSwapchainReadback(cb, &slot, swapSize);
+                    m_owner->markPipelineThumbnailReadbackRecorded(swapSize);
+                }
+            }
+        }
+    }
     if (m_owner->stats()) {
         editor::accumulatePlaybackStageMetric(&m_owner->stats()->gpuHandoffStageMetric,
                                       qMax<qint64>(1, handoffAttemptCount),
@@ -3261,6 +3693,23 @@ void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* w
     if (window) {
         window->schedulePreviewUpdate();
     }
+}
+
+void directVulkanPreviewWindowRequestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window)
+{
+    if (window) {
+        window->requestPipelineThumbnailReadback();
+    }
+}
+
+QImage directVulkanPreviewWindowLatestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window)
+{
+    return window ? window->latestVulkanReadbackImage() : QImage();
+}
+
+bool directVulkanPreviewWindowPipelineThumbnailReadbackPending(DirectVulkanPreviewWindow* window)
+{
+    return window && window->pipelineThumbnailReadbackPending();
 }
 
 void directVulkanPreviewWindowRaise(DirectVulkanPreviewWindow* window)

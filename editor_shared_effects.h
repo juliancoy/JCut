@@ -25,6 +25,9 @@ QVector<quint8> gradingCurveLut8(const QVector<QPointF>& points,
 bool gradingCurveDiffersFromIdentity(const QVector<QPointF>& points,
                                      bool smoothingEnabled = true);
 bool gradingUsesCurveLut(const TimelineClip::GradingKeyframe& grade);
+TimelineClip::GradingKeyframe gradingWithSpeakerOverride(
+    const TimelineClip::GradingKeyframe& clipGrade,
+    const TimelineClip::GradingKeyframe& speakerGrade);
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);
 QImage applyMaskFeather(const QImage& source, qreal featherRadius,
                         qreal featherGamma = 1.0, int featherFalloff = 0);

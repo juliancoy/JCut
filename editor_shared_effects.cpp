@@ -2,6 +2,7 @@
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
+#include "editor_shared_transcript.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QCache>
@@ -346,6 +347,12 @@ TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtFrame(const Timeline
                                                                   const QVector<TimelineTrack>& tracks,
                                                                   int64_t timelineFrame) {
     TimelineClip::GradingKeyframe grade = evaluateClipGradingAtFrame(clip, timelineFrame);
+    TimelineClip::GradingKeyframe speakerGrade;
+    const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(clip, timelineFrame, {});
+    if (clip.clipRole == ClipRole::Media &&
+        transcriptSpeakerGradingForClipFileAtSourceFrame(clip.filePath, sourceFrame, &speakerGrade)) {
+        grade = gradingWithSpeakerOverride(grade, speakerGrade);
+    }
     grade.opacity = evaluateEffectiveClipOpacityAtFrame(clip, tracks, timelineFrame);
     return grade;
 }
@@ -354,8 +361,28 @@ TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtPosition(const Timel
                                                                      const QVector<TimelineTrack>& tracks,
                                                                      qreal timelineFramePosition) {
     TimelineClip::GradingKeyframe grade = evaluateClipGradingAtPosition(clip, timelineFramePosition);
+    TimelineClip::GradingKeyframe speakerGrade;
+    const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(clip, timelineFramePosition, {});
+    if (clip.clipRole == ClipRole::Media &&
+        transcriptSpeakerGradingForClipFileAtSourceFrame(clip.filePath, sourceFrame, &speakerGrade)) {
+        grade = gradingWithSpeakerOverride(grade, speakerGrade);
+    }
     grade.opacity = evaluateEffectiveClipOpacityAtPosition(clip, tracks, timelineFramePosition);
     return grade;
+}
+
+TimelineClip::GradingKeyframe gradingWithSpeakerOverride(
+    const TimelineClip::GradingKeyframe& clipGrade,
+    const TimelineClip::GradingKeyframe& speakerGrade)
+{
+    TimelineClip::GradingKeyframe result = speakerGrade;
+    // Per-person grading is an override layer, not an adjustment stacked on
+    // the master or virtual-child grade. Preserve only temporal/compositing
+    // metadata that is not part of the color transform.
+    result.frame = clipGrade.frame;
+    result.linearInterpolation = clipGrade.linearInterpolation;
+    result.opacity = clipGrade.opacity;
+    return result;
 }
 
 TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {
