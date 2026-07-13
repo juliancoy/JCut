@@ -83,6 +83,14 @@ QIcon sequenceFolderIcon(const QSize& size = QSize(48, 48))
 class SequenceAwareIconProvider final : public QFileIconProvider
 {
 public:
+    SequenceAwareIconProvider()
+    {
+        // Network-backed and generated-media directories can make platform theme
+        // icon lookup unexpectedly expensive. JCut supplies its own sequence icon,
+        // so custom directory icons are unnecessary here.
+        setOptions(QFileIconProvider::DontUseCustomDirectoryIcons);
+    }
+
     QIcon icon(const QFileInfo& info) const override
     {
         if (info.isDir() && isImageSequencePath(info.absoluteFilePath())) {
@@ -544,7 +552,14 @@ QWidget *ExplorerPane::buildUi()
     connect(m_folderPickerButton, &QPushButton::clicked, this, &ExplorerPane::chooseExplorerRoot);
     connect(m_refreshExplorerButton, &QToolButton::clicked, this, [this]()
     {
+        const QStringList expandedPaths = currentExpandedExplorerPaths();
+
+        // With filesystem watching disabled, changing the root away and back asks
+        // QFileSystemModel's gatherer for a fresh snapshot. Calling setRootPath()
+        // repeatedly with the same path is otherwise a no-op.
+        m_fsModel->setRootPath(QString());
         setExplorerRootPath(m_currentRootPath, true);
+        restoreExpandedExplorerPaths(expandedPaths);
     });
 
     return pane;
@@ -558,6 +573,11 @@ QWidget *ExplorerPane::buildTreePage()
     layout->setSpacing(8);
 
     m_fsModel = new QFileSystemModel(this);
+    // Media processing jobs can create thousands of files beneath the selected
+    // root. Delivering every filesystem notification to the GUI thread causes
+    // repeated MIME and icon resolution and can monopolize a CPU core. The media
+    // browser is intentionally snapshot-based; users can reload it explicitly.
+    m_fsModel->setOption(QFileSystemModel::DontWatchForChanges, true);
     m_fsModel->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot);
     m_fsModel->setIconProvider(new SequenceAwareIconProvider);
 

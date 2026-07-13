@@ -116,6 +116,20 @@ void EffectsTab::wire()
         connect(m_widgets.effectPresetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &EffectsTab::onEffectPresetChanged);
     }
+    const QVector<QSpinBox*> integerEffectControls{
+        m_widgets.differenceReferenceFramesSpin, m_widgets.temporalEchoCountSpin,
+        m_widgets.temporalEchoSpacingSpin};
+    for (QSpinBox* spin : integerEffectControls) {
+        if (spin) connect(spin, qOverload<int>(&QSpinBox::valueChanged),
+                          this, &EffectsTab::onEffectControlChanged);
+    }
+    const QVector<QDoubleSpinBox*> realEffectControls{
+        m_widgets.differenceThresholdSpin, m_widgets.differenceSoftnessSpin,
+        m_widgets.temporalEchoDecaySpin};
+    for (QDoubleSpinBox* spin : realEffectControls) {
+        if (spin) connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                          this, &EffectsTab::onEffectControlChanged);
+    }
     if (m_widgets.effectRowsSpin) {
         connect(m_widgets.effectRowsSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &EffectsTab::onEffectControlChanged);
@@ -257,43 +271,73 @@ void EffectsTab::refresh()
         const ClipEffectPreset trackPreset =
             selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None;
         const bool trackEffectActive = selectedTrack && trackPreset != ClipEffectPreset::None;
+        const bool progressiveEdgePreset = trackPreset == ClipEffectPreset::ProgressiveEdgeStretch;
         if (m_widgets.effectRowsSpin) {
             m_widgets.effectRowsSpin->setValue(selectedTrack ? selectedTrack->effectRows : 32);
             m_widgets.effectRowsSpin->setEnabled(trackEffectActive);
+            m_widgets.effectRowsSpin->setSuffix(progressiveEdgePreset ? QStringLiteral(" px") : QString());
+            m_widgets.effectRowsSpin->setToolTip(
+                progressiveEdgePreset
+                    ? QStringLiteral("Width of the source edge-pixel band used by progressive edge stretch.")
+                    : QStringLiteral("Rows, copies, or repeat steps."));
         }
         if (m_widgets.effectSpeedSpin) {
             m_widgets.effectSpeedSpin->setValue(selectedTrack ? selectedTrack->effectSpeed : 1.0);
-            m_widgets.effectSpeedSpin->setEnabled(trackEffectActive);
+            m_widgets.effectSpeedSpin->setEnabled(trackEffectActive && !progressiveEdgePreset);
         }
         if (m_widgets.effectScaleSpin) {
             m_widgets.effectScaleSpin->setValue(selectedTrack ? selectedTrack->effectScale : 1.0);
             m_widgets.effectScaleSpin->setEnabled(trackEffectActive);
+            m_widgets.effectScaleSpin->setToolTip(
+                progressiveEdgePreset
+                    ? QStringLiteral("Curve power for the progressive transition from clip edge to canvas edge.")
+                    : QStringLiteral("Scale multiplier for the selected effect."));
         }
         if (m_widgets.effectAlternateDirectionCheck) {
             m_widgets.effectAlternateDirectionCheck->setChecked(!selectedTrack || selectedTrack->effectAlternateDirection);
-            m_widgets.effectAlternateDirectionCheck->setEnabled(
-                selectedTrack && effectPresetUsesDirectionalControl(trackPreset));
+            m_widgets.effectAlternateDirectionCheck->setEnabled(trackEffectActive && !progressiveEdgePreset);
         }
         if (m_widgets.effectSpeechSyncCheck) {
             m_widgets.effectSpeechSyncCheck->setChecked(false);
             m_widgets.effectSpeechSyncCheck->setEnabled(false);
         }
+        if (m_widgets.differenceReferenceFramesSpin) {
+            m_widgets.differenceReferenceFramesSpin->setValue(selectedTrack ? selectedTrack->differenceReferenceFrames : 1);
+            m_widgets.differenceReferenceFramesSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.differenceThresholdSpin) {
+            m_widgets.differenceThresholdSpin->setValue(selectedTrack ? selectedTrack->differenceThreshold : 0.10);
+            m_widgets.differenceThresholdSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.differenceSoftnessSpin) {
+            m_widgets.differenceSoftnessSpin->setValue(selectedTrack ? selectedTrack->differenceSoftness : 0.05);
+            m_widgets.differenceSoftnessSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.temporalEchoCountSpin) {
+            m_widgets.temporalEchoCountSpin->setValue(selectedTrack ? selectedTrack->temporalEchoCount : 4);
+            m_widgets.temporalEchoCountSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.temporalEchoSpacingSpin) {
+            m_widgets.temporalEchoSpacingSpin->setValue(selectedTrack ? selectedTrack->temporalEchoSpacingFrames : 2);
+            m_widgets.temporalEchoSpacingSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.temporalEchoDecaySpin) {
+            m_widgets.temporalEchoDecaySpin->setValue(selectedTrack ? selectedTrack->temporalEchoDecay : 0.65);
+            m_widgets.temporalEchoDecaySpin->setEnabled(trackEffectActive);
+        }
         if (m_widgets.tilingPatternCombo) {
             m_widgets.tilingPatternCombo->setCurrentIndex(comboIndexForTilingPattern(
                 m_widgets.tilingPatternCombo,
                 selectedTrack ? selectedTrack->tilingPattern : ClipTilingPattern::Grid));
-            m_widgets.tilingPatternCombo->setEnabled(
-                selectedTrack && effectPresetUsesTilingControls(trackPreset));
+            m_widgets.tilingPatternCombo->setEnabled(trackEffectActive);
         }
         if (m_widgets.tilingSpacingSpin) {
             m_widgets.tilingSpacingSpin->setValue(selectedTrack ? selectedTrack->tilingSpacing : 1.0);
-            m_widgets.tilingSpacingSpin->setEnabled(
-                selectedTrack && effectPresetUsesTilingControls(trackPreset));
+            m_widgets.tilingSpacingSpin->setEnabled(trackEffectActive);
         }
         if (m_widgets.tilingWrapCheck) {
             m_widgets.tilingWrapCheck->setChecked(!selectedTrack || selectedTrack->tilingWrap);
-            m_widgets.tilingWrapCheck->setEnabled(
-                selectedTrack && effectPresetUsesTilingControls(trackPreset));
+            m_widgets.tilingWrapCheck->setEnabled(trackEffectActive);
         }
         m_updating = false;
         return;
@@ -351,6 +395,12 @@ void EffectsTab::refresh()
     if (m_widgets.effectSpeechSyncCheck) {
         m_widgets.effectSpeechSyncCheck->setChecked(clip->effectSkipAwareTiming);
     }
+    if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setValue(clip->differenceReferenceFrames);
+    if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setValue(clip->differenceThreshold);
+    if (m_widgets.differenceSoftnessSpin) m_widgets.differenceSoftnessSpin->setValue(clip->differenceSoftness);
+    if (m_widgets.temporalEchoCountSpin) m_widgets.temporalEchoCountSpin->setValue(clip->temporalEchoCount);
+    if (m_widgets.temporalEchoSpacingSpin) m_widgets.temporalEchoSpacingSpin->setValue(clip->temporalEchoSpacingFrames);
+    if (m_widgets.temporalEchoDecaySpin) m_widgets.temporalEchoDecaySpin->setValue(clip->temporalEchoDecay);
     if (m_widgets.tilingPatternCombo) {
         m_widgets.tilingPatternCombo->setCurrentIndex(
             comboIndexForTilingPattern(
@@ -432,27 +482,42 @@ void EffectsTab::refresh()
                                     clip->mediaType == ClipMediaType::Video;
     const ClipEffectPreset clipPreset = clip->effectPreset;
     const bool imagePresetActive = clipPreset != ClipEffectPreset::None;
+    const bool progressiveEdgePreset = clipPreset == ClipEffectPreset::ProgressiveEdgeStretch;
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
     }
     if (m_widgets.effectRowsSpin) {
         m_widgets.effectRowsSpin->setEnabled((imagePresetCapable && imagePresetActive) || maskRepeatActive);
+        m_widgets.effectRowsSpin->setSuffix(progressiveEdgePreset ? QStringLiteral(" px") : QString());
+        m_widgets.effectRowsSpin->setToolTip(
+            progressiveEdgePreset
+                ? QStringLiteral("Width of the source edge-pixel band used by progressive edge stretch.")
+                : QStringLiteral("Rows, copies, or repeat steps."));
     }
     if (m_widgets.effectSpeedSpin) {
-        m_widgets.effectSpeedSpin->setEnabled(imagePresetCapable && imagePresetActive);
+        m_widgets.effectSpeedSpin->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
     }
     if (m_widgets.effectScaleSpin) {
         m_widgets.effectScaleSpin->setEnabled(imagePresetCapable && imagePresetActive);
+        m_widgets.effectScaleSpin->setToolTip(
+            progressiveEdgePreset
+                ? QStringLiteral("Curve power for the progressive transition from clip edge to canvas edge.")
+                : QStringLiteral("Scale multiplier for the selected effect."));
     }
     if (m_widgets.effectAlternateDirectionCheck) {
-        m_widgets.effectAlternateDirectionCheck->setEnabled(
-            imagePresetCapable && effectPresetUsesDirectionalControl(clipPreset));
+        m_widgets.effectAlternateDirectionCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
     }
     if (m_widgets.effectSpeechSyncCheck) {
-        m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive);
+        m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
     }
+    if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setEnabled(imagePresetActive);
+    if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setEnabled(imagePresetActive);
+    if (m_widgets.differenceSoftnessSpin) m_widgets.differenceSoftnessSpin->setEnabled(imagePresetActive);
+    if (m_widgets.temporalEchoCountSpin) m_widgets.temporalEchoCountSpin->setEnabled(imagePresetActive);
+    if (m_widgets.temporalEchoSpacingSpin) m_widgets.temporalEchoSpacingSpin->setEnabled(imagePresetActive);
+    if (m_widgets.temporalEchoDecaySpin) m_widgets.temporalEchoDecaySpin->setEnabled(imagePresetActive);
     const bool tilingControlsActive =
-        imagePresetCapable && effectPresetUsesTilingControls(clipPreset);
+        imagePresetCapable && imagePresetActive;
     if (m_widgets.tilingPatternCombo) {
         m_widgets.tilingPatternCombo->setEnabled(tilingControlsActive);
     }
@@ -524,6 +589,12 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         m_widgets.maskRepeatDeltaXSpin ? m_widgets.maskRepeatDeltaXSpin->value() : 160.0;
     const double maskRepeatDeltaY =
         m_widgets.maskRepeatDeltaYSpin ? m_widgets.maskRepeatDeltaYSpin->value() : 0.0;
+    const int differenceReferenceFrames = m_widgets.differenceReferenceFramesSpin ? m_widgets.differenceReferenceFramesSpin->value() : 1;
+    const double differenceThreshold = m_widgets.differenceThresholdSpin ? m_widgets.differenceThresholdSpin->value() : 0.10;
+    const double differenceSoftness = m_widgets.differenceSoftnessSpin ? m_widgets.differenceSoftnessSpin->value() : 0.05;
+    const int temporalEchoCount = m_widgets.temporalEchoCountSpin ? m_widgets.temporalEchoCountSpin->value() : 4;
+    const int temporalEchoSpacingFrames = m_widgets.temporalEchoSpacingSpin ? m_widgets.temporalEchoSpacingSpin->value() : 2;
+    const double temporalEchoDecay = m_widgets.temporalEchoDecaySpin ? m_widgets.temporalEchoDecaySpin->value() : 0.65;
 
     bool updated = false;
     if (selectedClip &&
@@ -536,11 +607,17 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
             clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
             clip.effectPreset = preset;
-            clip.effectRows = qBound(1, rows, 96);
+            clip.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
             clip.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             clip.effectScale = qBound<qreal>(0.1, scale, 8.0);
             clip.effectAlternateDirection = alternate;
             clip.effectSkipAwareTiming = speechSync;
+            clip.differenceReferenceFrames = qBound(1, differenceReferenceFrames, 300);
+            clip.differenceThreshold = qBound<qreal>(0.0, differenceThreshold, 1.0);
+            clip.differenceSoftness = qBound<qreal>(0.0, differenceSoftness, 1.0);
+            clip.temporalEchoCount = qBound(1, temporalEchoCount, 12);
+            clip.temporalEchoSpacingFrames = qBound(1, temporalEchoSpacingFrames, 120);
+            clip.temporalEchoDecay = qBound<qreal>(0.0, temporalEchoDecay, 1.0);
             clip.tilingPattern = tilingPattern;
             clip.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
             clip.tilingWrap = tilingWrap;
@@ -548,10 +625,16 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0) {
         updated = m_deps.updateTrackByIndex(targetTrackIndex, [=](TimelineTrack& track) {
             track.effectPreset = preset;
-            track.effectRows = qBound(1, rows, 96);
+            track.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
             track.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             track.effectScale = qBound<qreal>(0.1, scale, 8.0);
             track.effectAlternateDirection = alternate;
+            track.differenceReferenceFrames = qBound(1, differenceReferenceFrames, 300);
+            track.differenceThreshold = qBound<qreal>(0.0, differenceThreshold, 1.0);
+            track.differenceSoftness = qBound<qreal>(0.0, differenceSoftness, 1.0);
+            track.temporalEchoCount = qBound(1, temporalEchoCount, 12);
+            track.temporalEchoSpacingFrames = qBound(1, temporalEchoSpacingFrames, 120);
+            track.temporalEchoDecay = qBound<qreal>(0.0, temporalEchoDecay, 1.0);
             track.tilingPattern = tilingPattern;
             track.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
             track.tilingWrap = tilingWrap;

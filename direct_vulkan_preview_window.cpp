@@ -2088,6 +2088,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (status.frameCrossfadeActive) {
                 activeHandoffClipIds.insert(status.clipId + QStringLiteral("#frameCrossfade"));
             }
+            if (status.differenceMatteEnabled) {
+                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#differenceReference"));
+            }
+            for (int i = 0; i < status.temporalEchoFrames.size(); ++i) {
+                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#temporalEcho%1").arg(i));
+            }
         }
         pruneClipHandoffResources(activeHandoffClipIds);
         updateClipHandoffResourceStats();
@@ -2096,10 +2102,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 continue;
             }
             const QString mediaOwnerId = status.mediaOwnerClipId.trimmed();
-            const QString handoffResourceId =
-                status.maskClipSource && !mediaOwnerId.isEmpty()
-                    ? mediaOwnerId
-                    : status.clipId;
+            // A virtual mask child may reuse the parent's decoded image, but
+            // it must own a descriptor set so its mask and curve bindings
+            // cannot alter the parent's draw.
+            const QString handoffResourceId = status.clipId;
             ClipHandoffResources* handoffResources = ensureClipHandoffResources(handoffResourceId);
             if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
                 continue;
@@ -2109,8 +2115,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 mediaOwnerId != status.clipId &&
                 frameHandoffResults.contains(mediaOwnerId) &&
                 frameHandoffResults.value(mediaOwnerId).imageView != VK_NULL_HANDLE;
-            if (!reusesParentMedia &&
-                !handoffResources->resources->beginFrameUploads(
+            if (!handoffResources->resources->beginFrameUploads(
                     swapchainImageIndex,
                     qMax<size_t>(VulkanResources::kDescriptorSetCount,
                                  static_cast<size_t>(swapchainImageIndex) + 1))) {
@@ -2122,7 +2127,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     frameHandoffResults.value(mediaOwnerId);
                 handoffResult = ownerResult;
                 handoffResult.attempted = false;
-                handoffResult.sampledFrameReady = ownerResult.sampledFrameReady;
+                handoffResult.sampledFrameReady = ownerResult.sampledFrameReady &&
+                    handoffResources->resources->setSampledImage(ownerResult.imageView,
+                                                                  ownerResult.layout);
                 handoffResult.descriptorSet = handoffResult.sampledFrameReady
                     ? handoffResources->resources->descriptorSet()
                     : VK_NULL_HANDLE;
@@ -2174,6 +2181,46 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     m_owner ? m_owner->stats() : nullptr);
             }
             frameHandoffResults.insert(status.clipId, handoffResult);
+            const auto prepareAuxiliaryFrame = [&](const QString& key, const editor::FrameHandle& frame) {
+                if (frame.isNull()) return;
+                ClipHandoffResources* auxiliaryResources = ensureClipHandoffResources(key);
+                if (!auxiliaryResources || !auxiliaryResources->resources || !auxiliaryResources->pipeline ||
+                    !auxiliaryResources->resources->beginFrameUploads(
+                        swapchainImageIndex,
+                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                     static_cast<size_t>(swapchainImageIndex) + 1))) return;
+                VulkanPreviewClipFrameStatus auxiliaryStatus = status;
+                auxiliaryStatus.clipId = key;
+                auxiliaryStatus.frame = frame;
+                auxiliaryStatus.frameSize = frame.size();
+                auxiliaryStatus.hasFrame = true;
+                auxiliaryStatus.externalVulkanFrame = false;
+                DirectVulkanFrameHandoffPipeline::Result result;
+                if (frame.hasCpuImage() && !frame.hasHardwareFrame()) {
+                    result.attempted = true;
+                    result.sampledFrameReady = auxiliaryResources->resources->uploadImageTexture(cb, frame.cpuImage());
+                    result.descriptorSet = result.sampledFrameReady
+                        ? auxiliaryResources->resources->descriptorSet() : VK_NULL_HANDLE;
+                    result.imageView = auxiliaryResources->resources->sampledImageView();
+                    result.layout = auxiliaryResources->resources->sampledImageLayout();
+                    result.size = {frame.size().width(), frame.size().height()};
+                    result.format = VK_FORMAT_R8G8B8A8_UNORM;
+                } else {
+                    result = auxiliaryResources->pipeline->record(
+                        cb, swapchainImageIndex, auxiliaryStatus,
+                        auxiliaryResources->resources.get(), m_owner ? m_owner->stats() : nullptr);
+                }
+                frameHandoffResults.insert(key, result);
+                auxiliaryResources->resources->ensureAuxiliaryImagesReadable(cb);
+            };
+            if (status.differenceMatteEnabled) {
+                prepareAuxiliaryFrame(status.clipId + QStringLiteral("#differenceReference"),
+                                      status.differenceReferenceFrame);
+            }
+            for (int i = 0; i < status.temporalEchoFrames.size(); ++i) {
+                prepareAuxiliaryFrame(status.clipId + QStringLiteral("#temporalEcho%1").arg(i),
+                                      status.temporalEchoFrames.at(i));
+            }
             if (status.frameCrossfadeActive &&
                 !status.frameCrossfadeFrame.isNull()) {
                 const QString secondaryHandoffKey =
@@ -2246,7 +2293,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     maskCurveLutUploadResults.insert(status.clipId, uploaded);
                 }
             }
-            if (status.maskTextureEnabled && !reusesParentMedia) {
+            if (status.maskTextureEnabled) {
                 VulkanMaskPreprocessOptions maskOptions;
                 maskOptions.outputSize = status.frameSize;
                 maskOptions.invert = status.maskInvert;
@@ -2256,10 +2303,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 maskUploadResults.insert(
                     status.clipId,
                     handoffResources->resources->uploadMaskTexture(cb, status.maskImage, maskOptions));
-            } else if (status.maskTextureEnabled && reusesParentMedia) {
-                maskUploadResults.insert(
-                    status.clipId,
-                    maskUploadResults.value(mediaOwnerId, false));
             }
             handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
             if (handoffResult.sampledFrameReady) {
@@ -2326,8 +2369,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
                 clip, state->currentFramePosition, state->playbackTiming);
-            const EvaluatedTitle title =
-                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
+            const EvaluatedTitle title = fitTitleToOutput(
+                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity)),
+                state->outputSize);
             if (!title.valid || title.text.trimmed().isEmpty() || title.opacity <= 0.001) {
                 lastTitleSkipReason = QStringLiteral("title_evaluated_invisible");
                 continue;
@@ -2373,14 +2417,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                            .arg(QString::number(title.windowFrameWidth, 'f', 3));
             bool textureReady = titleResources->textureReady &&
                                 titleResources->textureKey == textureKey;
+            if (!titleResources->resources->beginFrameUploads(
+                    swapchainImageIndex,
+                    qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                 static_cast<size_t>(swapchainImageIndex) + 1))) {
+                lastTitleSkipReason = QStringLiteral("title_upload_frame_slot_unavailable");
+                continue;
+            }
             if (!textureReady) {
-                if (!titleResources->resources->beginFrameUploads(
-                        swapchainImageIndex,
-                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
-                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
-                    lastTitleSkipReason = QStringLiteral("title_upload_frame_slot_unavailable");
-                    continue;
-                }
                 const render_detail::OverlayImage titleImage =
                     render_detail::overlayRenderBackend().renderTitleOverlay(
                         state->outputSize,
@@ -2390,7 +2434,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                titleResources->resources->uploadImageTexture(cb, titleImage);
                 titleResources->textureReady = textureReady;
                 titleResources->textureKey = textureReady ? textureKey : QString();
+            } else {
+                textureReady = titleResources->resources->setSampledImage(
+                    titleResources->resources->sampledImageView(),
+                    titleResources->resources->sampledImageLayout());
             }
+            titleResources->resources->ensureAuxiliaryImagesReadable(cb);
             if (!textureReady ||
                 titleResources->resources->descriptorSet() == VK_NULL_HANDLE) {
                 lastTitleSkipReason = QStringLiteral("title_texture_upload_failed");
@@ -2612,7 +2661,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           .arg(preparedTemporalDebugLabel ? 1 : 0)
                                           .arg(textPrepCacheHit ? 1 : 0));
     }
-    m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    bool renderPassBegun = false;
+    const auto beginRenderPass = [&]() {
+        if (!renderPassBegun) {
+            m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+            renderPassBegun = true;
+        }
+    };
+    const bool directAudioMode = state && state->viewMode == PreviewSurface::ViewMode::Audio;
+    if (!directAudioMode) beginRenderPass();
     auto drawPreparedOverlay = [&](const PreparedOverlayTexture& overlay) {
         if (!overlay.ready ||
             !overlay.resources ||
@@ -2736,7 +2793,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     };
     bool audioWaitingForWaveform = false;
     if (renderDirectVulkanAudioFrame(
-            DirectVulkanAudioRenderContext{state, m_devFuncs, m_audioTab.get(), cb, swapSize},
+            DirectVulkanAudioRenderContext{
+                state, m_devFuncs, m_audioTab.get(), cb, swapSize, beginRenderPass},
             &audioWaitingForWaveform)) {
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
         m_devFuncs->vkCmdEndRenderPass(cb);
@@ -2756,6 +2814,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
         return;
     }
+    beginRenderPass();
     int64_t presentedSourceFrame = -1;
     qint64 handoffAttemptCount = 0;
     qint64 handoffSuccessCount = 0;
@@ -2865,10 +2924,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     : DirectVulkanFrameHandoffPipeline::Result{};
             VulkanResources* sampledResources = nullptr;
             if (status) {
-                const QString resourceId =
-                    status->maskClipSource && !status->mediaOwnerClipId.trimmed().isEmpty()
-                        ? status->mediaOwnerClipId.trimmed()
-                        : status->clipId;
+                const QString resourceId = status->clipId;
                 auto resourcesIt = m_clipHandoffResources.constFind(resourceId);
                 if (resourcesIt != m_clipHandoffResources.cend() && resourcesIt.value()) {
                     sampledResources = resourcesIt.value()->resources.get();
@@ -2979,6 +3035,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                               backgroundGeometry.localRect,
                                               swapSize,
                                               backgroundPush.mvp);
+                    const int edgePixels =
+                        progressiveEdgeStretchEffect
+                            ? qBound(1, effectClip.effectRows, 512)
+                            : state->backgroundFillEdgePixels;
+                    const qreal edgePower =
+                        progressiveEdgeStretchEffect
+                            ? qBound<qreal>(0.25, effectClip.effectScale, 8.0)
+                            : state->backgroundFillEdgePower;
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
                             effectiveFillEffect,
@@ -2986,9 +3050,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             static_cast<float>(state->backgroundFillOpacity),
                             static_cast<float>(state->backgroundFillBrightness),
                             static_cast<float>(state->backgroundFillSaturation),
-                            state->backgroundFillEdgePixels,
+                            edgePixels,
                             state->backgroundFillEdgeProgressive,
-                            static_cast<float>(state->backgroundFillEdgePower),
+                            static_cast<float>(edgePower),
                             status->frame.validTextureRectNormalized(),
                             progressiveRenderSpaceFill
                                 ? render_detail::vulkanBackgroundFillMapping(
@@ -3104,6 +3168,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 const bool maskReady =
                     status && status->maskTextureEnabled &&
                     maskUploadResults.value(status->clipId, false);
+                // A virtual mask clip is an explicitly masked overlay, never a
+                // second ordinary media layer. If its matte is unavailable for
+                // this frame, fail closed instead of grading the entire source
+                // rectangle. The parent remains independently drawable.
+                if (status->maskClipSource && !maskReady) {
+                    if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                        stats->lastUnsupportedEffect = QStringLiteral("mask_texture_unavailable");
+                    }
+                    continue;
+                }
                 if (maskReady && status->maskShowOnly) {
                     VulkanPipeline::Push maskPush = push;
                     maskPush.brightness = 0.0f;
@@ -3136,6 +3210,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                     stats->lastUnsupportedEffect = QStringLiteral("mask_curve_lut_upload_failed");
                                 }
                             }
+                        }
+                    }
+                    if (status && status->differenceMatteEnabled && sampledResources) {
+                        const auto referenceResult = frameHandoffResults.value(
+                            status->clipId + QStringLiteral("#differenceReference"));
+                        if (referenceResult.sampledFrameReady && referenceResult.imageView != VK_NULL_HANDLE &&
+                            sampledResources->bindAuxiliaryImage(referenceResult.imageView, referenceResult.layout)) {
+                            basePush.shadows[3] = render_detail::kVulkanEffectModeDifferenceMatte;
+                            basePush.midtones[3] = static_cast<float>(qBound<qreal>(0.0, status->differenceThreshold, 1.0));
+                            basePush.highlights[3] = static_cast<float>(qBound<qreal>(0.0, status->differenceSoftness, 1.0));
                         }
                     }
                     TimelineClip foregroundEffectClip = effectClip;
@@ -3188,6 +3272,25 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         }
                     } else {
                         drawPush(basePush);
+                    }
+                    if (status && !status->temporalEchoFrames.isEmpty()) {
+                        for (int echoIndex = 0; echoIndex < status->temporalEchoFrames.size(); ++echoIndex) {
+                            const QString echoKey = status->clipId + QStringLiteral("#temporalEcho%1").arg(echoIndex);
+                            const auto echoResult = frameHandoffResults.value(echoKey);
+                            if (!echoResult.sampledFrameReady || echoResult.descriptorSet == VK_NULL_HANDLE) continue;
+                            VulkanPipeline::Push echoPush = push;
+                            echoPush.opacity *= static_cast<float>(std::pow(
+                                qBound<qreal>(0.0, status->temporalEchoDecay, 1.0), echoIndex + 1));
+                            auto echoResourcesIt = m_clipHandoffResources.constFind(echoKey);
+                            uint32_t echoUniformOffset = 0;
+                            if (echoResourcesIt != m_clipHandoffResources.cend() && echoResourcesIt.value() &&
+                                echoResourcesIt.value()->resources &&
+                                echoResourcesIt.value()->resources->updateFrameUniform(compositeRect.size().toSize())) {
+                                echoUniformOffset = echoResourcesIt.value()->resources->frameUniformDynamicOffset();
+                            }
+                            m_pipeline->bindAndDraw(cb, viewport, scissor, echoResult.descriptorSet,
+                                                    echoPush, echoUniformOffset);
+                        }
                     }
                     if (status && status->frameCrossfadeActive &&
                         secondaryHandoffResult.sampledFrameReady &&

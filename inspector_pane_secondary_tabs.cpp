@@ -18,7 +18,6 @@
 #include <QListView>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTextBrowser>
@@ -185,13 +184,6 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillEffectCombo->setToolTip(QStringLiteral("Background fill effect for preview and render"));
     form->addRow(QStringLiteral("Fill Effect"), m_backgroundFillEffectCombo);
 
-    m_backgroundFillStretchSourceCombo = new QComboBox(page);
-    m_backgroundFillStretchSourceCombo->addItem(QStringLiteral("Auto (Lowest Visible Clip)"),
-                                                 QString());
-    m_backgroundFillStretchSourceCombo->setToolTip(
-        QStringLiteral("Clip geometry used by progressive edge stretch"));
-    form->addRow(QStringLiteral("Stretch Source"), m_backgroundFillStretchSourceCombo);
-
     m_backgroundFillOpacitySpin = new QDoubleSpinBox(page);
     m_backgroundFillOpacitySpin->setRange(0.0, 100.0);
     m_backgroundFillOpacitySpin->setDecimals(0);
@@ -218,35 +210,6 @@ QWidget *InspectorPane::buildOutputTab()
     m_backgroundFillSaturationSpin->setValue(100.0);
     m_backgroundFillSaturationSpin->setToolTip(QStringLiteral("Saturation multiplier for the background fill effect"));
     form->addRow(QStringLiteral("Fill Saturation"), m_backgroundFillSaturationSpin);
-
-    auto *edgePixelsRow = new QHBoxLayout;
-    m_backgroundFillEdgePixelsSlider = new QSlider(Qt::Horizontal, page);
-    m_backgroundFillEdgePixelsSlider->setRange(1, 512);
-    m_backgroundFillEdgePixelsSlider->setValue(1);
-    m_backgroundFillEdgePixelsSlider->setToolTip(QStringLiteral("Number of source-edge pixels stretched into the fill area"));
-    auto *edgePixelsValueLabel = new QLabel(QStringLiteral("1 px"), page);
-    edgePixelsValueLabel->setMinimumWidth(48);
-    edgePixelsValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    QObject::connect(m_backgroundFillEdgePixelsSlider, &QSlider::valueChanged, edgePixelsValueLabel,
-                     [edgePixelsValueLabel](int value) {
-        edgePixelsValueLabel->setText(QStringLiteral("%1 px").arg(value));
-    });
-    edgePixelsRow->addWidget(m_backgroundFillEdgePixelsSlider, 1);
-    edgePixelsRow->addWidget(edgePixelsValueLabel);
-    form->addRow(QStringLiteral("Edge Pixels"), edgePixelsRow);
-
-    m_backgroundFillEdgeProgressiveCheckBox = new QCheckBox(QStringLiteral("Progressive Stretch"), page);
-    m_backgroundFillEdgeProgressiveCheckBox->setToolTip(
-        QStringLiteral("Use a curved transition through the selected edge pixel band"));
-    m_backgroundFillEdgeProgressiveCheckBox->hide();
-
-    m_backgroundFillEdgePowerSpin = new QDoubleSpinBox(page);
-    m_backgroundFillEdgePowerSpin->setRange(0.25, 8.0);
-    m_backgroundFillEdgePowerSpin->setDecimals(2);
-    m_backgroundFillEdgePowerSpin->setSingleStep(0.25);
-    m_backgroundFillEdgePowerSpin->setValue(2.0);
-    m_backgroundFillEdgePowerSpin->setToolTip(QStringLiteral("Power curve for progressive edge stretch"));
-    form->addRow(QStringLiteral("Edge Curve"), m_backgroundFillEdgePowerSpin);
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 

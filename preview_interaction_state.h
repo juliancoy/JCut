@@ -121,6 +121,12 @@ struct VulkanPreviewClipFrameStatus {
     QString missingReason;
     QString effectsPath;
     editor::FrameHandle frame;
+    bool differenceMatteEnabled = false;
+    qreal differenceThreshold = 0.10;
+    qreal differenceSoftness = 0.05;
+    editor::FrameHandle differenceReferenceFrame;
+    QVector<editor::FrameHandle> temporalEchoFrames;
+    qreal temporalEchoDecay = 0.65;
     qreal visualTimelineFramePosition = 0.0;
     bool frameCrossfadeActive = false;
     int64_t frameCrossfadeTimelineFrame = -1;

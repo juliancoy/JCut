@@ -145,6 +145,7 @@ public:
     QDoubleSpinBox *speakerOverlayRotationYSpin() const { return m_speakerOverlayRotationYSpin; }
     QDoubleSpinBox *speakerOverlayRotationZSpin() const { return m_speakerOverlayRotationZSpin; }
     QSpinBox *speakerOverlayTitleFontSizeSpin() const { return m_speakerOverlayTitleFontSizeSpin; }
+    QCheckBox *speakerOverlayTitleAutoFitCheckBox() const { return m_speakerOverlayTitleAutoFitCheckBox; }
     QSpinBox *speakerOverlayTitleBoxWidthSpin() const { return m_speakerOverlayTitleBoxWidthSpin; }
     QComboBox *speakerOverlayTitleTextMaterialCombo() const { return m_speakerOverlayTitleTextMaterialCombo; }
     QComboBox *speakerOverlayTitleBorderMaterialCombo() const { return m_speakerOverlayTitleBorderMaterialCombo; }
@@ -265,6 +266,12 @@ public:
     QDoubleSpinBox *maskRepeatDeltaXSpin() const { return m_maskRepeatDeltaXSpin; }
     QDoubleSpinBox *maskRepeatDeltaYSpin() const { return m_maskRepeatDeltaYSpin; }
     QComboBox *effectPresetCombo() const { return m_effectPresetCombo; }
+    QSpinBox *differenceReferenceFramesSpin() const { return m_differenceReferenceFramesSpin; }
+    QDoubleSpinBox *differenceThresholdSpin() const { return m_differenceThresholdSpin; }
+    QDoubleSpinBox *differenceSoftnessSpin() const { return m_differenceSoftnessSpin; }
+    QSpinBox *temporalEchoCountSpin() const { return m_temporalEchoCountSpin; }
+    QSpinBox *temporalEchoSpacingSpin() const { return m_temporalEchoSpacingSpin; }
+    QDoubleSpinBox *temporalEchoDecaySpin() const { return m_temporalEchoDecaySpin; }
     QSpinBox *effectRowsSpin() const { return m_effectRowsSpin; }
     QDoubleSpinBox *effectSpeedSpin() const { return m_effectSpeedSpin; }
     QDoubleSpinBox *effectScaleSpin() const { return m_effectScaleSpin; }
@@ -278,6 +285,7 @@ public:
     QLineEdit *maskFramesDirEdit() const { return m_maskFramesDirEdit; }
     QComboBox *maskSidecarCombo() const { return m_maskSidecarCombo; }
     QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
+    QPushButton *maskNewPromptButton() const { return m_maskNewPromptButton; }
     QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
@@ -475,13 +483,9 @@ public:
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
     QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
-    QComboBox *backgroundFillStretchSourceCombo() const { return m_backgroundFillStretchSourceCombo; }
     QDoubleSpinBox *backgroundFillOpacitySpin() const { return m_backgroundFillOpacitySpin; }
     QDoubleSpinBox *backgroundFillBrightnessSpin() const { return m_backgroundFillBrightnessSpin; }
     QDoubleSpinBox *backgroundFillSaturationSpin() const { return m_backgroundFillSaturationSpin; }
-    QSlider *backgroundFillEdgePixelsSlider() const { return m_backgroundFillEdgePixelsSlider; }
-    QCheckBox *backgroundFillEdgeProgressiveCheckBox() const { return m_backgroundFillEdgeProgressiveCheckBox; }
-    QDoubleSpinBox *backgroundFillEdgePowerSpin() const { return m_backgroundFillEdgePowerSpin; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
@@ -598,6 +602,12 @@ private:
     QDoubleSpinBox *m_effectScaleSpin = nullptr;
     QCheckBox *m_effectAlternateDirectionCheck = nullptr;
     QCheckBox *m_effectSpeechSyncCheck = nullptr;
+    QSpinBox *m_differenceReferenceFramesSpin = nullptr;
+    QDoubleSpinBox *m_differenceThresholdSpin = nullptr;
+    QDoubleSpinBox *m_differenceSoftnessSpin = nullptr;
+    QSpinBox *m_temporalEchoCountSpin = nullptr;
+    QSpinBox *m_temporalEchoSpacingSpin = nullptr;
+    QDoubleSpinBox *m_temporalEchoDecaySpin = nullptr;
     QComboBox *m_tilingPatternCombo = nullptr;
     QDoubleSpinBox *m_tilingSpacingSpin = nullptr;
     QCheckBox *m_tilingWrapCheck = nullptr;
@@ -606,6 +616,7 @@ private:
     QLineEdit *m_maskFramesDirEdit = nullptr;
     QComboBox *m_maskSidecarCombo = nullptr;
     QPushButton *m_maskBrowseButton = nullptr;
+    QPushButton *m_maskNewPromptButton = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskDilateSpin = nullptr;
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
@@ -861,6 +872,7 @@ private:
     QDoubleSpinBox *m_speakerOverlayRotationYSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayRotationZSpin = nullptr;
     QSpinBox *m_speakerOverlayTitleFontSizeSpin = nullptr;
+    QCheckBox *m_speakerOverlayTitleAutoFitCheckBox = nullptr;
     QSpinBox *m_speakerOverlayTitleBoxWidthSpin = nullptr;
     QComboBox *m_speakerOverlayTitleTextMaterialCombo = nullptr;
     QComboBox *m_speakerOverlayTitleBorderMaterialCombo = nullptr;
@@ -985,13 +997,9 @@ private:
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
-    QComboBox *m_backgroundFillStretchSourceCombo = nullptr;
     QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
     QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
-    QSlider *m_backgroundFillEdgePixelsSlider = nullptr;
-    QCheckBox *m_backgroundFillEdgeProgressiveCheckBox = nullptr;
-    QDoubleSpinBox *m_backgroundFillEdgePowerSpin = nullptr;
 
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;

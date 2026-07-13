@@ -31,6 +31,30 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("vulkan_3d_synth");
     case ClipEffectPreset::ProgressiveEdgeStretch:
         return QStringLiteral("progressive_edge_stretch");
+    case ClipEffectPreset::DifferenceMatte:
+        return QStringLiteral("difference_matte");
+    case ClipEffectPreset::TemporalEcho:
+        return QStringLiteral("temporal_echo");
+    case ClipEffectPreset::MirrorRing:
+        return QStringLiteral("mirror_ring");
+    case ClipEffectPreset::Tessellation:
+        return QStringLiteral("tessellation");
+    case ClipEffectPreset::Kaleidoscope: return QStringLiteral("kaleidoscope");
+    case ClipEffectPreset::HexagonalPrism: return QStringLiteral("hexagonal_prism");
+    case ClipEffectPreset::Droste: return QStringLiteral("droste");
+    case ClipEffectPreset::PolarTunnel: return QStringLiteral("polar_tunnel");
+    case ClipEffectPreset::TinyPlanet: return QStringLiteral("tiny_planet");
+    case ClipEffectPreset::InfiniteMirror: return QStringLiteral("infinite_mirror");
+    case ClipEffectPreset::QuadMirror: return QStringLiteral("quad_mirror");
+    case ClipEffectPreset::SlitScan: return QStringLiteral("slit_scan");
+    case ClipEffectPreset::DisplacementMap: return QStringLiteral("displacement_map");
+    case ClipEffectPreset::TwirlVortex: return QStringLiteral("twirl_vortex");
+    case ClipEffectPreset::RippleShockwave: return QStringLiteral("ripple_shockwave");
+    case ClipEffectPreset::PixelSorting: return QStringLiteral("pixel_sorting");
+    case ClipEffectPreset::DatamoshGlitch: return QStringLiteral("datamosh_glitch");
+    case ClipEffectPreset::RgbSplit: return QStringLiteral("rgb_split");
+    case ClipEffectPreset::HalftoneMosaic: return QStringLiteral("halftone_mosaic");
+    case ClipEffectPreset::GlassRefraction: return QStringLiteral("glass_refraction");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -88,6 +112,35 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("edge_stretch_progressive")) {
         return ClipEffectPreset::ProgressiveEdgeStretch;
     }
+    if (normalized == QStringLiteral("difference_matte") || normalized == QStringLiteral("difference")) {
+        return ClipEffectPreset::DifferenceMatte;
+    }
+    if (normalized == QStringLiteral("temporal_echo") || normalized == QStringLiteral("echo") ||
+        normalized == QStringLiteral("trails")) {
+        return ClipEffectPreset::TemporalEcho;
+    }
+    if (normalized == QStringLiteral("mirror_ring") || normalized == QStringLiteral("mirror ring")) {
+        return ClipEffectPreset::MirrorRing;
+    }
+    if (normalized == QStringLiteral("tessellation") || normalized == QStringLiteral("tessellate")) {
+        return ClipEffectPreset::Tessellation;
+    }
+    if (normalized == QStringLiteral("kaleidoscope")) return ClipEffectPreset::Kaleidoscope;
+    if (normalized == QStringLiteral("hexagonal_prism")) return ClipEffectPreset::HexagonalPrism;
+    if (normalized == QStringLiteral("droste")) return ClipEffectPreset::Droste;
+    if (normalized == QStringLiteral("polar_tunnel")) return ClipEffectPreset::PolarTunnel;
+    if (normalized == QStringLiteral("tiny_planet")) return ClipEffectPreset::TinyPlanet;
+    if (normalized == QStringLiteral("infinite_mirror")) return ClipEffectPreset::InfiniteMirror;
+    if (normalized == QStringLiteral("quad_mirror")) return ClipEffectPreset::QuadMirror;
+    if (normalized == QStringLiteral("slit_scan")) return ClipEffectPreset::SlitScan;
+    if (normalized == QStringLiteral("displacement_map")) return ClipEffectPreset::DisplacementMap;
+    if (normalized == QStringLiteral("twirl_vortex")) return ClipEffectPreset::TwirlVortex;
+    if (normalized == QStringLiteral("ripple_shockwave")) return ClipEffectPreset::RippleShockwave;
+    if (normalized == QStringLiteral("pixel_sorting")) return ClipEffectPreset::PixelSorting;
+    if (normalized == QStringLiteral("datamosh_glitch")) return ClipEffectPreset::DatamoshGlitch;
+    if (normalized == QStringLiteral("rgb_split")) return ClipEffectPreset::RgbSplit;
+    if (normalized == QStringLiteral("halftone_mosaic")) return ClipEffectPreset::HalftoneMosaic;
+    if (normalized == QStringLiteral("glass_refraction")) return ClipEffectPreset::GlassRefraction;
     return ClipEffectPreset::None;
 }
 
@@ -477,6 +530,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("translationX")] = keyframe.translationX;
             keyframeObj[QStringLiteral("translationY")] = keyframe.translationY;
             keyframeObj[QStringLiteral("fontSize")] = keyframe.fontSize;
+            keyframeObj[QStringLiteral("autoFitToOutput")] = keyframe.autoFitToOutput;
             keyframeObj[QStringLiteral("opacity")] = keyframe.opacity;
             keyframeObj[QStringLiteral("fontFamily")] = keyframe.fontFamily;
             keyframeObj[QStringLiteral("bold")] = keyframe.bold;
@@ -603,6 +657,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("effectSpeed")] = clip.effectSpeed;
         obj[QStringLiteral("effectScale")] = clip.effectScale;
         obj[QStringLiteral("effectAlternateDirection")] = clip.effectAlternateDirection;
+        obj[QStringLiteral("differenceReferenceFrames")] = clip.differenceReferenceFrames;
+        obj[QStringLiteral("differenceThreshold")] = clip.differenceThreshold;
+        obj[QStringLiteral("differenceSoftness")] = clip.differenceSoftness;
+        obj[QStringLiteral("temporalEchoCount")] = clip.temporalEchoCount;
+        obj[QStringLiteral("temporalEchoSpacingFrames")] = clip.temporalEchoSpacingFrames;
+        obj[QStringLiteral("temporalEchoDecay")] = clip.temporalEchoDecay;
         obj[QStringLiteral("tilingPattern")] = tilingPatternToJson(clip.tilingPattern);
         obj[QStringLiteral("tilingSpacing")] = clip.tilingSpacing;
         obj[QStringLiteral("tilingWrap")] = clip.tilingWrap;
@@ -1089,13 +1149,21 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaY")).toDouble(0.0), 100000.0);
         clip.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
-        clip.effectRows = qBound(1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
+        clip.effectRows = qBound(1,
+                                 obj.value(QStringLiteral("effectRows")).toInt(32),
+                                 clip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
         clip.effectSpeed =
             qBound<qreal>(-8.0, obj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
         clip.effectScale =
             qBound<qreal>(0.1, obj.value(QStringLiteral("effectScale")).toDouble(1.0), 8.0);
         clip.effectAlternateDirection =
             obj.value(QStringLiteral("effectAlternateDirection")).toBool(true);
+        clip.differenceReferenceFrames = qBound(1, obj.value(QStringLiteral("differenceReferenceFrames")).toInt(1), 300);
+        clip.differenceThreshold = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceThreshold")).toDouble(0.10), 1.0);
+        clip.differenceSoftness = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceSoftness")).toDouble(0.05), 1.0);
+        clip.temporalEchoCount = qBound(1, obj.value(QStringLiteral("temporalEchoCount")).toInt(4), 12);
+        clip.temporalEchoSpacingFrames = qBound(1, obj.value(QStringLiteral("temporalEchoSpacingFrames")).toInt(2), 120);
+        clip.temporalEchoDecay = qBound<qreal>(0.0, obj.value(QStringLiteral("temporalEchoDecay")).toDouble(0.65), 1.0);
         clip.tilingPattern =
             tilingPatternFromJson(obj.value(QStringLiteral("tilingPattern")).toString(QStringLiteral("grid")));
         clip.tilingSpacing =
@@ -1150,6 +1218,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.translationX = keyframeObj.value(QStringLiteral("translationX")).toDouble(0.0);
             keyframe.translationY = keyframeObj.value(QStringLiteral("translationY")).toDouble(0.0);
             keyframe.fontSize = keyframeObj.value(QStringLiteral("fontSize")).toDouble(48.0);
+            keyframe.autoFitToOutput = keyframeObj.value(QStringLiteral("autoFitToOutput")).toBool(false);
             keyframe.opacity = keyframeObj.value(QStringLiteral("opacity")).toDouble(1.0);
             keyframe.fontFamily = keyframeObj.value(QStringLiteral("fontFamily")).toString(kDefaultFontFamily);
             keyframe.bold = keyframeObj.value(QStringLiteral("bold")).toBool(true);

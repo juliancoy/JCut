@@ -60,7 +60,7 @@ private slots:
     void clipSerializationMigratesLegacyEffectSpeechSync();
     void clipSerializationPersistsArpeggiatorEffectPresets();
     void effectPresetMetadataCoversSerializedSynthPresets();
-    void trackEffectSettingsOverlayOntoClipForRenderPipeline();
+    void trackEffectSettingsDoNotLeakIntoChildClips();
     void clipSerializationPersistsGeneratedClipRoleState();
     void samMaskMatteFactoryKeepsSourceTimingLocked();
     void samMaskMatteNormalizerRepairsLegacyTimelineState();
@@ -129,6 +129,12 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.tilingPattern = ClipTilingPattern::SpiralXY;
     clip.tilingSpacing = 1.4;
     clip.tilingWrap = false;
+    clip.differenceReferenceFrames = 17;
+    clip.differenceThreshold = 0.22;
+    clip.differenceSoftness = 0.04;
+    clip.temporalEchoCount = 7;
+    clip.temporalEchoSpacingFrames = 3;
+    clip.temporalEchoDecay = 0.58;
 
     const QJsonObject json = editor::clipToJson(clip);
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
@@ -143,6 +149,8 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("tilingPattern")).toString(), QStringLiteral("spiral"));
     QVERIFY(std::abs(json.value(QStringLiteral("tilingSpacing")).toDouble() - 1.4) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("tilingWrap")).toBool(), false);
+    QCOMPARE(json.value(QStringLiteral("differenceReferenceFrames")).toInt(), 17);
+    QCOMPARE(json.value(QStringLiteral("temporalEchoCount")).toInt(), 7);
 
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.maskForegroundLayerEnabled, true);
@@ -161,6 +169,12 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.tilingPattern, ClipTilingPattern::SpiralXY);
     QVERIFY(std::abs(loaded.tilingSpacing - 1.4) < 0.000001);
     QCOMPARE(loaded.tilingWrap, false);
+    QCOMPARE(loaded.differenceReferenceFrames, 17);
+    QVERIFY(std::abs(loaded.differenceThreshold - 0.22) < 0.000001);
+    QVERIFY(std::abs(loaded.differenceSoftness - 0.04) < 0.000001);
+    QCOMPARE(loaded.temporalEchoCount, 7);
+    QCOMPARE(loaded.temporalEchoSpacingFrames, 3);
+    QVERIFY(std::abs(loaded.temporalEchoDecay - 0.58) < 0.000001);
 }
 
 void TestEffectPresets::textExtrudeModesSerializeAndMigrate()
@@ -266,6 +280,26 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
     roundTripPreset(ClipEffectPreset::Vulkan3DSynth, QStringLiteral("vulkan_3d_synth"));
     roundTripPreset(ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("progressive_edge_stretch"));
+    roundTripPreset(ClipEffectPreset::DifferenceMatte, QStringLiteral("difference_matte"));
+    roundTripPreset(ClipEffectPreset::TemporalEcho, QStringLiteral("temporal_echo"));
+    roundTripPreset(ClipEffectPreset::MirrorRing, QStringLiteral("mirror_ring"));
+    roundTripPreset(ClipEffectPreset::Tessellation, QStringLiteral("tessellation"));
+    roundTripPreset(ClipEffectPreset::Kaleidoscope, QStringLiteral("kaleidoscope"));
+    roundTripPreset(ClipEffectPreset::HexagonalPrism, QStringLiteral("hexagonal_prism"));
+    roundTripPreset(ClipEffectPreset::Droste, QStringLiteral("droste"));
+    roundTripPreset(ClipEffectPreset::PolarTunnel, QStringLiteral("polar_tunnel"));
+    roundTripPreset(ClipEffectPreset::TinyPlanet, QStringLiteral("tiny_planet"));
+    roundTripPreset(ClipEffectPreset::InfiniteMirror, QStringLiteral("infinite_mirror"));
+    roundTripPreset(ClipEffectPreset::QuadMirror, QStringLiteral("quad_mirror"));
+    roundTripPreset(ClipEffectPreset::SlitScan, QStringLiteral("slit_scan"));
+    roundTripPreset(ClipEffectPreset::DisplacementMap, QStringLiteral("displacement_map"));
+    roundTripPreset(ClipEffectPreset::TwirlVortex, QStringLiteral("twirl_vortex"));
+    roundTripPreset(ClipEffectPreset::RippleShockwave, QStringLiteral("ripple_shockwave"));
+    roundTripPreset(ClipEffectPreset::PixelSorting, QStringLiteral("pixel_sorting"));
+    roundTripPreset(ClipEffectPreset::DatamoshGlitch, QStringLiteral("datamosh_glitch"));
+    roundTripPreset(ClipEffectPreset::RgbSplit, QStringLiteral("rgb_split"));
+    roundTripPreset(ClipEffectPreset::HalftoneMosaic, QStringLiteral("halftone_mosaic"));
+    roundTripPreset(ClipEffectPreset::GlassRefraction, QStringLiteral("glass_refraction"));
 }
 
 void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
@@ -291,6 +325,26 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::SourceTile,
         ClipEffectPreset::Vulkan3DSynth,
         ClipEffectPreset::ProgressiveEdgeStretch,
+        ClipEffectPreset::DifferenceMatte,
+        ClipEffectPreset::TemporalEcho,
+        ClipEffectPreset::MirrorRing,
+        ClipEffectPreset::Tessellation,
+        ClipEffectPreset::Kaleidoscope,
+        ClipEffectPreset::HexagonalPrism,
+        ClipEffectPreset::Droste,
+        ClipEffectPreset::PolarTunnel,
+        ClipEffectPreset::TinyPlanet,
+        ClipEffectPreset::InfiniteMirror,
+        ClipEffectPreset::QuadMirror,
+        ClipEffectPreset::SlitScan,
+        ClipEffectPreset::DisplacementMap,
+        ClipEffectPreset::TwirlVortex,
+        ClipEffectPreset::RippleShockwave,
+        ClipEffectPreset::PixelSorting,
+        ClipEffectPreset::DatamoshGlitch,
+        ClipEffectPreset::RgbSplit,
+        ClipEffectPreset::HalftoneMosaic,
+        ClipEffectPreset::GlassRefraction,
     };
 
     QCOMPARE(options.size(), serializedPresets.size());
@@ -309,7 +363,7 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QCOMPARE(tilingPatternUiOptions().size(), 6);
 }
 
-void TestEffectPresets::trackEffectSettingsOverlayOntoClipForRenderPipeline()
+void TestEffectPresets::trackEffectSettingsDoNotLeakIntoChildClips()
 {
     TimelineClip clip;
     clip.trackIndex = 1;
@@ -325,16 +379,24 @@ void TestEffectPresets::trackEffectSettingsOverlayOntoClipForRenderPipeline()
     tracks[1].tilingPattern = ClipTilingPattern::Diamond;
     tracks[1].tilingSpacing = 1.25;
     tracks[1].tilingWrap = false;
+    tracks[1].differenceReferenceFrames = 9;
+    tracks[1].differenceThreshold = 0.31;
+    tracks[1].differenceSoftness = 0.08;
+    tracks[1].temporalEchoCount = 6;
+    tracks[1].temporalEchoSpacingFrames = 5;
+    tracks[1].temporalEchoDecay = 0.44;
 
     const TimelineClip effective = clipWithTrackEffectSettings(clip, tracks);
-    QCOMPARE(effective.effectPreset, ClipEffectPreset::SourceTile);
-    QCOMPARE(effective.effectRows, 7);
-    QVERIFY(std::abs(effective.effectSpeed - 0.25) < 0.000001);
-    QVERIFY(std::abs(effective.effectScale - 1.5) < 0.000001);
-    QCOMPARE(effective.effectAlternateDirection, false);
-    QCOMPARE(effective.tilingPattern, ClipTilingPattern::Diamond);
-    QVERIFY(std::abs(effective.tilingSpacing - 1.25) < 0.000001);
-    QCOMPARE(effective.tilingWrap, false);
+    QCOMPARE(effective.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(effective.effectRows, 3);
+    QCOMPARE(effective.effectSpeed, clip.effectSpeed);
+    QCOMPARE(effective.effectScale, clip.effectScale);
+    QCOMPARE(effective.effectAlternateDirection, clip.effectAlternateDirection);
+    QCOMPARE(effective.tilingPattern, clip.tilingPattern);
+    QCOMPARE(effective.tilingSpacing, clip.tilingSpacing);
+    QCOMPARE(effective.tilingWrap, clip.tilingWrap);
+    QCOMPARE(effective.differenceReferenceFrames, clip.differenceReferenceFrames);
+    QCOMPARE(effective.temporalEchoCount, clip.temporalEchoCount);
     QCOMPARE(clip.effectPreset, ClipEffectPreset::None);
     QCOMPARE(clip.effectRows, 3);
 }
@@ -863,7 +925,17 @@ void TestEffectPresets::speakerTitleFlyInsKeepOrganizationSeparateAndIndependent
         QCOMPARE(keyframe.windowWidth, 940.0);
         QVERIFY(!keyframe.windowEnabled);
         QVERIFY(!keyframe.windowFrameEnabled);
+        QVERIFY(keyframe.autoFitToOutput);
     }
+
+    TimelineClip::TitleKeyframe longKeyframe = source.titleKeyframes.constFirst();
+    longKeyframe.text = QStringLiteral("Cornelius Hairston — International Professionals Association");
+    TimelineClip fittedClip;
+    fittedClip.titleKeyframes = {longKeyframe};
+    const EvaluatedTitle fitted = fitTitleToOutput(
+        evaluateTitleAtLocalFrame(fittedClip, 0), QSize(300, 500));
+    QVERIFY(fitted.fontSize < longKeyframe.fontSize);
+    QVERIFY(measureTitleLayout(fitted).width <= 270.5);
 
     bool sawRequestedFontSize = false;
     for (const TimelineClip::TitleKeyframe& keyframe : source.titleKeyframes) {

@@ -27,6 +27,7 @@
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QSlider>
 #include <QSplitter>
 #include <QSpinBox>
@@ -464,11 +465,13 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), content);
     m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current"), content);
     m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), content);
+    m_gradingPreviewCheckBox->setObjectName(QStringLiteral("grading.preview"));
     m_gradingAutoScrollCheckBox->setChecked(true);
     m_gradingFollowCurrentCheckBox->setChecked(true);
     m_gradingPreviewCheckBox->setChecked(true);
     m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), content);
     m_gradingResetButton = new QPushButton(QStringLiteral("Reset Grading"), content);
+    m_gradingResetButton->setObjectName(QStringLiteral("grading.reset"));
     m_gradingResetButton->setToolTip(QStringLiteral("Reset the current grading values and curves to neutral."));
     m_gradingNormalizeCurvesButton = new QPushButton(QStringLiteral("Distribute Brightness"), content);
     m_gradingNormalizeCurvesButton->setToolTip(QStringLiteral(
@@ -582,7 +585,16 @@ QWidget *InspectorPane::buildOpacityTab()
 QWidget *InspectorPane::buildEffectsTab()
 {
     auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    auto *scrollArea = new QScrollArea(page);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    pageLayout->addWidget(scrollArea);
+    auto *content = new QWidget(scrollArea);
+    auto *layout = createTabLayout(content);
+    scrollArea->setWidget(content);
     layout->addWidget(createTabHeading(QStringLiteral("Effects"), page));
 
     m_effectsPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
@@ -673,15 +685,35 @@ QWidget *InspectorPane::buildEffectsTab()
     presetForm->setContentsMargins(0, 0, 0, 0);
     presetForm->setSpacing(6);
     m_effectPresetCombo = new QComboBox(page);
+    QString previousGroup;
     for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.group != previousGroup) {
+            if (!previousGroup.isEmpty()) {
+                m_effectPresetCombo->insertSeparator(m_effectPresetCombo->count());
+            }
+            m_effectPresetCombo->addItem(option.group);
+            const int headingIndex = m_effectPresetCombo->count() - 1;
+            if (auto* model = qobject_cast<QStandardItemModel*>(m_effectPresetCombo->model())) {
+                if (QStandardItem* heading = model->item(headingIndex)) {
+                    heading->setEnabled(false);
+                    QFont font = heading->font();
+                    font.setBold(true);
+                    heading->setFont(font);
+                }
+            }
+        }
         m_effectPresetCombo->addItem(option.label, static_cast<int>(option.preset));
+        m_effectPresetCombo->setItemData(m_effectPresetCombo->count() - 1,
+                                         option.group,
+                                         Qt::ToolTipRole);
+        previousGroup = option.group;
     }
     presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
 
     m_effectRowsSpin = new QSpinBox(page);
-    m_effectRowsSpin->setRange(1, 96);
+    m_effectRowsSpin->setRange(1, 512);
     m_effectRowsSpin->setValue(32);
-    m_effectRowsSpin->setToolTip(QStringLiteral("Rows, copies, or repeat steps."));
+    m_effectRowsSpin->setToolTip(QStringLiteral("Rows, copies, repeat steps, or edge pixels for progressive edge stretch."));
     presetForm->addRow(QStringLiteral("Copies"), m_effectRowsSpin);
 
     m_effectSpeedSpin = new QDoubleSpinBox(page);
@@ -706,12 +738,56 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectSpeechSyncCheck->setToolTip(
         QStringLiteral("Drive moving effect patterns from speech-filter timing so skipped gaps do not create visible jumps."));
     presetForm->addRow(QString(), m_effectSpeechSyncCheck);
+    presetSection.body->addLayout(presetForm);
+    layout->addWidget(presetSection.container);
+
+    auto temporalSection = createDisclosureSection(content, QStringLiteral("Temporal & Difference"), false);
+    auto *temporalForm = new QFormLayout();
+    temporalForm->setContentsMargins(0, 0, 0, 0);
+    temporalForm->setSpacing(6);
+
+    m_differenceReferenceFramesSpin = new QSpinBox(page);
+    m_differenceReferenceFramesSpin->setRange(1, 300);
+    m_differenceReferenceFramesSpin->setValue(1);
+    m_differenceReferenceFramesSpin->setSuffix(QStringLiteral(" frames"));
+    temporalForm->addRow(QStringLiteral("Difference reference"), m_differenceReferenceFramesSpin);
+    auto makeUnitEffectSpin = [page](double value) {
+        auto* spin = new QDoubleSpinBox(page);
+        spin->setRange(0.0, 1.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.01);
+        spin->setValue(value);
+        spin->setKeyboardTracking(false);
+        return spin;
+    };
+    m_differenceThresholdSpin = makeUnitEffectSpin(0.10);
+    temporalForm->addRow(QStringLiteral("Difference threshold"), m_differenceThresholdSpin);
+    m_differenceSoftnessSpin = makeUnitEffectSpin(0.05);
+    temporalForm->addRow(QStringLiteral("Difference softness"), m_differenceSoftnessSpin);
+    m_temporalEchoCountSpin = new QSpinBox(page);
+    m_temporalEchoCountSpin->setRange(1, 12);
+    m_temporalEchoCountSpin->setValue(4);
+    temporalForm->addRow(QStringLiteral("Echo frames"), m_temporalEchoCountSpin);
+    m_temporalEchoSpacingSpin = new QSpinBox(page);
+    m_temporalEchoSpacingSpin->setRange(1, 120);
+    m_temporalEchoSpacingSpin->setValue(2);
+    m_temporalEchoSpacingSpin->setSuffix(QStringLiteral(" frames"));
+    temporalForm->addRow(QStringLiteral("Echo spacing"), m_temporalEchoSpacingSpin);
+    m_temporalEchoDecaySpin = makeUnitEffectSpin(0.65);
+    temporalForm->addRow(QStringLiteral("Echo decay"), m_temporalEchoDecaySpin);
+    temporalSection.body->addLayout(temporalForm);
+    layout->addWidget(temporalSection.container);
+
+    auto tilingSection = createDisclosureSection(content, QStringLiteral("Tiling & Repetition"), false);
+    auto *tilingForm = new QFormLayout();
+    tilingForm->setContentsMargins(0, 0, 0, 0);
+    tilingForm->setSpacing(6);
 
     m_tilingPatternCombo = new QComboBox(page);
     for (const TilingPatternUiOption& option : tilingPatternUiOptions()) {
         m_tilingPatternCombo->addItem(option.label, static_cast<int>(option.pattern));
     }
-    presetForm->addRow(QStringLiteral("Pattern"), m_tilingPatternCombo);
+    tilingForm->addRow(QStringLiteral("Pattern"), m_tilingPatternCombo);
 
     m_tilingSpacingSpin = new QDoubleSpinBox(page);
     m_tilingSpacingSpin->setRange(0.1, 8.0);
@@ -719,13 +795,13 @@ QWidget *InspectorPane::buildEffectsTab()
     m_tilingSpacingSpin->setSingleStep(0.1);
     m_tilingSpacingSpin->setValue(1.0);
     m_tilingSpacingSpin->setToolTip(QStringLiteral("Spacing multiplier between repeated source images."));
-    presetForm->addRow(QStringLiteral("Tiling Spacing"), m_tilingSpacingSpin);
+    tilingForm->addRow(QStringLiteral("Spacing"), m_tilingSpacingSpin);
 
     m_tilingWrapCheck = new QCheckBox(QStringLiteral("Wrap across bounds"), page);
     m_tilingWrapCheck->setChecked(true);
-    presetForm->addRow(QString(), m_tilingWrapCheck);
-    presetSection.body->addLayout(presetForm);
-    layout->addWidget(presetSection.container);
+    tilingForm->addRow(QString(), m_tilingWrapCheck);
+    tilingSection.body->addLayout(tilingForm);
+    layout->addWidget(tilingSection.container);
 
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(
@@ -779,6 +855,11 @@ QWidget *InspectorPane::buildMasksTab()
     sourceRow->addWidget(m_maskBrowseButton);
     sourceForm->addRow(QStringLiteral("Mask Sidecar"), sourceRow);
     layout->addLayout(sourceForm);
+    m_maskNewPromptButton = new QPushButton(QStringLiteral("New Prompt Mask…"), page);
+    m_maskNewPromptButton->setObjectName(QStringLiteral("masks.new_prompt"));
+    m_maskNewPromptButton->setToolTip(QStringLiteral(
+        "Generate a separate SAM mask sidecar and optionally union it with the current mask."));
+    layout->addWidget(m_maskNewPromptButton);
 
     auto makePixelsSpin = [page](double maxValue, double step) {
         auto *spin = new QDoubleSpinBox(page);
@@ -2103,6 +2184,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerOverlayTitleFontSizeSpin->setValue(48);
     m_speakerOverlayTitleFontSizeSpin->setToolTip(
         QStringLiteral("Set the generated speaker title text size independently from the title box width."));
+    m_speakerOverlayTitleAutoFitCheckBox = new QCheckBox(
+        QStringLiteral("Auto-size Title to Safe Area"), page);
+    m_speakerOverlayTitleAutoFitCheckBox->setChecked(true);
+    m_speakerOverlayTitleAutoFitCheckBox->setToolTip(
+        QStringLiteral("Reduce long speaker titles as needed so text and 3D geometry fit within the output safe area."));
     m_speakerOverlayTitleBoxWidthSpin = new QSpinBox(page);
     m_speakerOverlayTitleBoxWidthSpin->setRange(0, 4000);
     m_speakerOverlayTitleBoxWidthSpin->setSingleStep(20);
@@ -2793,6 +2879,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->setHorizontalSpacing(8);
     currentSpeakerTextSizeLayout->setVerticalSpacing(4);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Title Font Size"), m_speakerOverlayTitleFontSizeSpin);
+    currentSpeakerTextSizeLayout->addRow(m_speakerOverlayTitleAutoFitCheckBox);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Title Box Width"), m_speakerOverlayTitleBoxWidthSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Title Material"), m_speakerOverlayTitleTextMaterialCombo);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Border Material"), m_speakerOverlayTitleBorderMaterialCombo);

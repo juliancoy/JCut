@@ -782,10 +782,7 @@ QJsonObject EditorWindow::buildStateJson() const
         m_backgroundFillEffectCombo
             ? m_backgroundFillEffectCombo->currentData().toString()
             : backgroundFillEffectToString(kDefaultBackgroundFillEffect);
-    root[QStringLiteral("backgroundFillStretchSourceClipId")] =
-        m_backgroundFillStretchSourceCombo
-            ? m_backgroundFillStretchSourceCombo->currentData().toString()
-            : QString();
+    root[QStringLiteral("backgroundFillStretchSourceClipId")] = QString();
     root[QStringLiteral("backgroundFillOpacity")] =
         m_backgroundFillOpacitySpin
             ? qBound(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)
@@ -798,14 +795,9 @@ QJsonObject EditorWindow::buildStateJson() const
         m_backgroundFillSaturationSpin
             ? qBound(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
             : 1.0;
-    root[QStringLiteral("backgroundFillEdgePixels")] =
-        m_backgroundFillEdgePixelsSlider ? qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512) : 1;
-    root[QStringLiteral("backgroundFillEdgeProgressive")] =
-        m_backgroundFillEdgeProgressiveCheckBox ? m_backgroundFillEdgeProgressiveCheckBox->isChecked() : false;
-    root[QStringLiteral("backgroundFillEdgePower")] =
-        m_backgroundFillEdgePowerSpin
-            ? qBound(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0)
-            : 2.0;
+    root[QStringLiteral("backgroundFillEdgePixels")] = 1;
+    root[QStringLiteral("backgroundFillEdgeProgressive")] = false;
+    root[QStringLiteral("backgroundFillEdgePower")] = 2.0;
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
@@ -840,6 +832,8 @@ QJsonObject EditorWindow::buildStateJson() const
         settings[QStringLiteral("rotationY")] = decimal(m_inspectorPane->speakerOverlayRotationYSpin(), 0.0);
         settings[QStringLiteral("rotationZ")] = decimal(m_inspectorPane->speakerOverlayRotationZSpin(), 0.0);
         settings[QStringLiteral("fontSize")] = integer(m_inspectorPane->speakerOverlayTitleFontSizeSpin(), 48);
+        settings[QStringLiteral("autoFitToOutput")] = m_inspectorPane->speakerOverlayTitleAutoFitCheckBox()
+            ? m_inspectorPane->speakerOverlayTitleAutoFitCheckBox()->isChecked() : true;
         settings[QStringLiteral("boxWidth")] = integer(m_inspectorPane->speakerOverlayTitleBoxWidthSpin(), 720);
         settings[QStringLiteral("textMaterial")] = combo(m_inspectorPane->speakerOverlayTitleTextMaterialCombo());
         settings[QStringLiteral("borderMaterial")] = combo(m_inspectorPane->speakerOverlayTitleBorderMaterialCombo());
@@ -950,8 +944,9 @@ QJsonObject EditorWindow::buildStateJson() const
         m_gradingFollowCurrentCheckBox ? m_gradingFollowCurrentCheckBox->isChecked() : true;
     root[QStringLiteral("gradingAutoScroll")] =
         m_gradingAutoScrollCheckBox ? m_gradingAutoScrollCheckBox->isChecked() : true;
-    root[QStringLiteral("gradingPreview")] =
-        m_bypassGradingCheckBox ? m_bypassGradingCheckBox->isChecked() : true;
+    // Legacy compatibility field. Per-track gradingPreviewEnabled is the
+    // source of truth; a global false would incorrectly couple every track.
+    root[QStringLiteral("gradingPreview")] = true;
     root[QStringLiteral("keyframesFollowCurrent")] =
         m_keyframesFollowCurrentCheckBox ? m_keyframesFollowCurrentCheckBox->isChecked() : true;
     root[QStringLiteral("keyframesAutoScroll")] =
@@ -1099,6 +1094,7 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("name")] = track.name;
             trackObj[QStringLiteral("height")] = track.height;
             trackObj[QStringLiteral("visualMode")] = trackVisualModeToString(track.visualMode);
+            trackObj[QStringLiteral("gradingPreviewEnabled")] = track.gradingPreviewEnabled;
             trackObj[QStringLiteral("audioEnabled")] = track.audioEnabled;
             trackObj[QStringLiteral("audioBusId")] = track.audioBusId;
             trackObj[QStringLiteral("audioGain")] = track.audioGain;
@@ -1107,6 +1103,12 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("audioWaveformVisible")] = track.audioWaveformVisible;
             trackObj[QStringLiteral("effectPreset")] = effectPresetToJson(track.effectPreset);
             trackObj[QStringLiteral("effectRows")] = track.effectRows;
+            trackObj[QStringLiteral("differenceReferenceFrames")] = track.differenceReferenceFrames;
+            trackObj[QStringLiteral("differenceThreshold")] = track.differenceThreshold;
+            trackObj[QStringLiteral("differenceSoftness")] = track.differenceSoftness;
+            trackObj[QStringLiteral("temporalEchoCount")] = track.temporalEchoCount;
+            trackObj[QStringLiteral("temporalEchoSpacingFrames")] = track.temporalEchoSpacingFrames;
+            trackObj[QStringLiteral("temporalEchoDecay")] = track.temporalEchoDecay;
             trackObj[QStringLiteral("effectSpeed")] = track.effectSpeed;
             trackObj[QStringLiteral("effectScale")] = track.effectScale;
             trackObj[QStringLiteral("effectAlternateDirection")] = track.effectAlternateDirection;

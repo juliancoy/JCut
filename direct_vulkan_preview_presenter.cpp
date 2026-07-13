@@ -396,6 +396,21 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
 {
     m_instance = std::make_unique<QVulkanInstance>();
     m_instance->setApiVersion(QVersionNumber(1, 1));
+    if (qEnvironmentVariableIntValue("JCUT_VULKAN_VALIDATION") != 0) {
+        const QByteArray validationLayer("VK_LAYER_KHRONOS_validation");
+        const auto supportedLayers = m_instance->supportedLayers();
+        const bool validationAvailable = std::any_of(
+            supportedLayers.cbegin(), supportedLayers.cend(),
+            [&validationLayer](const QVulkanLayer& layer) {
+                return layer.name == validationLayer;
+            });
+        if (validationAvailable) {
+            m_instance->setLayers({validationLayer});
+            qDebug() << "[vulkan-preview] enabling Vulkan validation layer";
+        } else {
+            qWarning() << "[vulkan-preview] Vulkan validation requested but unavailable";
+        }
+    }
     // Use Qt's platform-provided WSI extension list. On X11 this must include
     // VK_KHR_surface plus the matching xcb/xlib surface extension before
     // QVulkanWindow can create its embedded native surface.
@@ -418,6 +433,9 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     addExtension(QByteArrayLiteral("VK_KHR_xcb_surface"));
     addExtension(QByteArrayLiteral("VK_KHR_xlib_surface"));
     addExtension(QByteArrayLiteral("VK_KHR_wayland_surface"));
+    if (qEnvironmentVariableIntValue("JCUT_VULKAN_VALIDATION") != 0) {
+        addExtension(QByteArrayLiteral("VK_EXT_debug_utils"));
+    }
     m_instance->setExtensions(requestedExtensions);
     qDebug().noquote() << QStringLiteral("[vulkan-preview] requested instance extensions=%1")
                               .arg(QString::fromLatin1(requestedExtensions.join(',')));

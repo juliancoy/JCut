@@ -34,6 +34,8 @@ JCut is a desktop, timeline-based video editor focused on fast iterative editing
 - Alpha-mask feathering enable/disable
 - Feather radius and gamma controls
 - Visual-only applicability checks (e.g., alpha-capable clips)
+- GPU difference matte against a configurable earlier source frame, with threshold and softness controls
+- GPU temporal echo/trails with configurable history count, frame spacing, and exponential decay
 
 ### Corrections
 - Polygon-based correction masks over preview

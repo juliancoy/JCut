@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
       VIDEO_MODE=1
       shift
       ;;
-    --binary-mask-dir|--centers-json|--frames-dir|--chunks-dir|--sam2-checkpoint|--mobilesam-checkpoint)
+    --binary-mask-dir|--union-mask-dir|--combined-binary-mask-dir|--centers-json|--frames-dir|--chunks-dir|--sam2-checkpoint|--mobilesam-checkpoint)
       if [[ $# -lt 2 || "${2:-}" == --* ]]; then
         echo "ERROR: $1 requires a path value" >&2
         exit 2
@@ -478,7 +478,7 @@ docker.pop("container_id", None)
 docker.update({
     "container_name": container_name,
     "image": image_name,
-    "restart_policy": "always",
+    "restart_policy": "on-failure",
     "log_command": ["docker", "logs", "-f", container_name],
 })
 process["type"] = "docker"
@@ -494,10 +494,10 @@ PY
 
 DOCKER_LIFECYCLE_ARGS=(--rm)
 if [[ -n "$JOB_HOST" ]]; then
-  # Durable app-launched jobs must survive Docker daemon restarts and host
-  # interruptions. They cannot use --rm because Docker restart policies require
-  # the container record to persist.
-  DOCKER_LIFECYCLE_ARGS=(--restart always)
+  # App-launched jobs retain their container record and retry after a process
+  # failure. A successful run must remain stopped so completed jobs do not need
+  # to hold a container open indefinitely.
+  DOCKER_LIFECYCLE_ARGS=(--restart on-failure)
 fi
 
 DOCKER_RUN_ARGS=(
@@ -578,13 +578,7 @@ run_container() {
     echo "$cmd"
     docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash
   else
-    if [[ -n "$JOB_CONTAINER" ]]; then
-      local wrapped_cmd
-      wrapped_cmd="$cmd; rc=\$?; if [ \"\$rc\" -eq 0 ]; then echo '[jcut] SAM3 completed; holding container so Docker restart policy does not rerun completed work.'; exec sleep infinity; fi; exit \"\$rc\""
-      docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$wrapped_cmd"
-    else
-      docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$cmd"
-    fi
+    docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE_NAME" /bin/bash -lc "$cmd"
   fi
 }
 

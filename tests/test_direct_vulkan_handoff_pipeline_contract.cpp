@@ -16,6 +16,8 @@ private slots:
   void graphicsPipelinesDeclareDisabledDepthStencilState();
   void directPreviewTransitionsAuxiliarySampledImagesBeforeDraw();
   void directPreviewUsesPerClipHandoffDescriptors();
+  void descriptorUpdatesFollowAcquiredSwapchainOwnership();
+  void maskChildrenFailClosedWithoutAMatte();
   void directPreviewRequiresHardwarePayloadsFromCache();
   void handoffPipelineRejectsCpuOnlyFrames();
   void strictDisplayabilityDoesNotAcceptCpuFallback();
@@ -94,6 +96,41 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(recordIndex < beginRenderPassIndex,
            "handoff transfer/compute recording must happen before "
            "vkCmdBeginRenderPass");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    maskChildrenFailClosedWithoutAMatte() {
+  const QString source =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!source.isEmpty(),
+           "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(source.contains(QStringLiteral(
+               "if (status->maskClipSource && !maskReady)")),
+           "a mask child without a ready matte must not fall back to a full-frame draw");
+  QVERIFY2(source.contains(QStringLiteral("mask_texture_unavailable")),
+           "missing mask textures must be exposed in renderer diagnostics");
+  QVERIFY2(!source.contains(QStringLiteral(
+               "maskUploadResults.value(mediaOwnerId, false)")),
+           "mask children may reuse parent media, but must upload their own matte");
+  QVERIFY2(source.contains(QStringLiteral(
+               "const QString handoffResourceId = status.clipId")),
+           "mask children must own descriptor resources independently of parent media");
+  QVERIFY2(source.contains(QStringLiteral(
+               "setSampledImage(ownerResult.imageView")),
+           "mask children must reuse only the parent's decoded image view");
+  const QString trackPreviewSources = readSourceFiles({
+      QStringLiteral("editor_inspector_bindings.cpp"),
+      QStringLiteral("vulkan_preview_surface.cpp"),
+      QStringLiteral("project_state.cpp")});
+  QVERIFY2(trackPreviewSources.contains(QStringLiteral(
+               "track.gradingPreviewEnabled = checked")),
+           "the grading Preview control must update the selected clip's track");
+  QVERIFY2(trackPreviewSources.contains(QStringLiteral(
+               "gradingPreviewEnabledForTrack")),
+           "preview rendering must evaluate grading visibility per track");
+  QVERIFY2(trackPreviewSources.contains(QStringLiteral(
+               "trackObj[QStringLiteral(\"gradingPreviewEnabled\")]")),
+           "per-track grading Preview state must persist with the timeline");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -392,15 +429,15 @@ void TestDirectVulkanHandoffPipelineContract::
       "while swapchain frames may still be in flight");
   QVERIFY2(backend.contains(
                QStringLiteral("ensureClipHandoffResources(handoffResourceId)")),
-           "direct preview must resolve handoff resources by effective media owner");
-  QVERIFY2(backend.contains(QStringLiteral("status.maskClipSource && !mediaOwnerId.isEmpty()")) &&
-               backend.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")),
-           "virtual mask children must reuse the parent's sampled-media resource bundle");
+           "direct preview must resolve handoff resources by clip identity");
+  QVERIFY2(backend.contains(QStringLiteral("const QString handoffResourceId = status.clipId")) &&
+               backend.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")) &&
+               backend.contains(QStringLiteral("handoffResources->resources->setSampledImage(ownerResult.imageView")),
+           "virtual mask children must reuse the parent's sampled image through a child-owned descriptor bundle");
   QVERIFY2(backend.contains(QStringLiteral("if (!status.maskClipSource && !curveLut.isEmpty())")),
            "mask children must not overwrite the parent's normal grading LUT");
-  QVERIFY2(backend.contains(QStringLiteral("if (!reusesParentMedia &&")) &&
-               backend.contains(QStringLiteral("beginFrameUploads(")),
-           "a child reusing parent media must not rewind the parent's frame upload slot");
+  QVERIFY2(backend.contains(QStringLiteral("if (!handoffResources->resources->beginFrameUploads(")),
+           "every clip-owned descriptor bundle must select the acquired frame upload slot");
   QVERIFY2(backend.contains(QStringLiteral(
                "pruneClipHandoffResources(activeHandoffClipIds)")),
            "direct preview must release per-clip handoff resources when clips "
@@ -462,6 +499,38 @@ void TestDirectVulkanHandoffPipelineContract::
       resources.contains(
           QStringLiteral("static constexpr size_t kDescriptorSetCount")),
       "descriptor ring depth must be visible to the presenter lifetime policy");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    descriptorUpdatesFollowAcquiredSwapchainOwnership() {
+  const QString resources = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  QVERIFY2(!resources.isEmpty(), "vulkan_resources.cpp must be readable");
+  QVERIFY2(resources.contains(QStringLiteral(
+               "m_descriptorSetIndex = frameSlot % m_descriptorSets.size()")),
+           "descriptor selection must follow the acquired swapchain image");
+  QVERIFY2(!resources.contains(QStringLiteral(
+               "m_descriptorSetIndex = (m_descriptorSetIndex + 1) % m_descriptorSets.size()")),
+           "sampled-image updates must not rotate onto a potentially pending descriptor set");
+  QVERIFY2(resources.contains(QStringLiteral(
+               "write.dstSet = m_descriptorSets[m_descriptorSetIndex]")),
+           "mask recreation must update only the descriptor set owned by the current frame");
+  QVERIFY2(resources.contains(QStringLiteral(
+               "VUID-vkUpdateDescriptorSets-None-03047")),
+           "the in-flight descriptor update regression must remain documented at the fix");
+
+  const QString textRenderer = readSourceFile(QStringLiteral("vulkan_text_renderer.cpp"));
+  QVERIFY2(textRenderer.contains(QStringLiteral(
+               "m_atlasResources->setSampledImage(")) &&
+               textRenderer.contains(QStringLiteral(
+                   "m_atlasResources->sampledImageView()")),
+           "an unchanged glyph atlas must still be rebound to the acquired frame's descriptor set");
+
+  const QString preview = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString audio = readSourceFile(QStringLiteral("direct_vulkan_preview_audio.cpp"));
+  QVERIFY2(preview.contains(QStringLiteral("const bool directAudioMode")) &&
+               preview.contains(QStringLiteral("if (!directAudioMode) beginRenderPass()")) &&
+               audio.contains(QStringLiteral("if (context.beginRenderPass) context.beginRenderPass()")),
+           "audio uploads and compute dispatches must finish before the preview render pass begins");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -2281,7 +2350,7 @@ void TestDirectVulkanHandoffPipelineContract::
           effects.contains(QStringLiteral("clip->effectSkipAwareTiming")) &&
           effects.contains(QStringLiteral("clip.effectSkipAwareTiming = speechSync")) &&
           effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(false)")) &&
-          effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive)")) &&
+          effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset)")) &&
           effects.contains(QStringLiteral("preset != ClipEffectPreset::None")),
       "Effects tab must round-trip the checkbox through the effect-specific "
       "effectSkipAwareTiming render flag and only enable it for active "
@@ -2318,7 +2387,7 @@ void TestDirectVulkanHandoffPipelineContract::
           offscreen.contains(QStringLiteral("generatedEffectClockTimelineFrame")) &&
           offscreen.contains(QStringLiteral("const qreal transformClockTimelineFrame = generatedEffectClockTimelineFrame")) &&
           offscreen.contains(QStringLiteral("transformClockTimelineFrame,\n            request.renderSyncMarkers")) &&
-          offscreen.contains(QStringLiteral("clipEffectPlaybackFramePosition(effectClip, request.clips, generatedEffectClockTimelineFrame")),
+          offscreen.contains(QStringLiteral("clipEffectPlaybackFramePosition(foregroundEffectClip, request.clips, generatedEffectClockTimelineFrame")),
       "export must carry a separate effect timeline frame so moving patterns "
       "and transforms do not freeze or jump when visual sampling traverses a "
       "speech-filter gap");

@@ -263,6 +263,46 @@ bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcrip
         return false;
     }
 
+    // Runtime transform evaluation can resolve this path several times per frame.
+    // Parsing multi-megabyte continuity artifacts just to choose a path is both
+    // redundant and particularly harmful on the GUI thread. Cache the answer by
+    // artifact metadata so a completed or atomically replaced artifact invalidates
+    // the entry immediately without requiring a timer or manual invalidation.
+    const QFileInfo transcriptInfo(trimmedPath);
+    const QString artifactBase = transcriptInfo.dir().filePath(transcriptInfo.completeBaseName());
+    const QStringList artifactPaths{
+        artifactBase + QStringLiteral("_facestream.bin"),
+        artifactBase + QStringLiteral("_facedetections.bin"),
+        artifactBase + QStringLiteral("_facedetections_processed.bin"),
+        artifactBase + QStringLiteral("_identity.bin"),
+    };
+    QString metadataSignature;
+    metadataSignature.reserve(192);
+    for (const QString& artifactPath : artifactPaths) {
+        const QFileInfo artifactInfo(artifactPath);
+        metadataSignature += QStringLiteral("%1:%2:%3|")
+                                 .arg(artifactInfo.exists() ? 1 : 0)
+                                 .arg(artifactInfo.exists() ? artifactInfo.size() : -1)
+                                 .arg(artifactInfo.exists()
+                                          ? artifactInfo.lastModified().toMSecsSinceEpoch()
+                                          : -1);
+    }
+
+    struct PayloadCacheEntry {
+        QString metadataSignature;
+        bool hasUsablePayload = false;
+    };
+    static QMutex payloadCacheMutex;
+    static QHash<QString, PayloadCacheEntry> payloadCache;
+    {
+        QMutexLocker locker(&payloadCacheMutex);
+        const auto cached = payloadCache.constFind(transcriptInfo.absoluteFilePath());
+        if (cached != payloadCache.cend() &&
+            cached->metadataSignature == metadataSignature) {
+            return cached->hasUsablePayload;
+        }
+    }
+
     editor::TranscriptEngine engine;
     auto hasByClipPayload = [](const QJsonObject& root) {
         const QJsonObject byClip =
@@ -273,12 +313,22 @@ bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcrip
         return !root.value(QStringLiteral("continuity_facestreams_by_clip")).toObject().isEmpty();
     };
 
+    bool hasUsablePayload = false;
     QJsonObject artifactRoot;
-    if (engine.loadFacestreamProcessedArtifact(trimmedPath, &artifactRoot) && hasByClipPayload(artifactRoot)) {
-        return true;
+    if (engine.loadFacestreamProcessedArtifact(trimmedPath, &artifactRoot) &&
+        hasByClipPayload(artifactRoot)) {
+        hasUsablePayload = true;
+    } else {
+        artifactRoot = QJsonObject{};
+        hasUsablePayload = engine.loadFacestreamArtifact(trimmedPath, &artifactRoot) &&
+                           hasByClipPayload(artifactRoot);
     }
-    artifactRoot = QJsonObject{};
-    return engine.loadFacestreamArtifact(trimmedPath, &artifactRoot) && hasByClipPayload(artifactRoot);
+    {
+        QMutexLocker locker(&payloadCacheMutex);
+        payloadCache.insert(transcriptInfo.absoluteFilePath(),
+                            PayloadCacheEntry{metadataSignature, hasUsablePayload});
+    }
+    return hasUsablePayload;
 }
 
 struct SpeakerTrackingKeyframe {

@@ -33,6 +33,12 @@ public:
         QDoubleSpinBox* effectScaleSpin = nullptr;
         QCheckBox* effectAlternateDirectionCheck = nullptr;
         QCheckBox* effectSpeechSyncCheck = nullptr;
+        QSpinBox* differenceReferenceFramesSpin = nullptr;
+        QDoubleSpinBox* differenceThresholdSpin = nullptr;
+        QDoubleSpinBox* differenceSoftnessSpin = nullptr;
+        QSpinBox* temporalEchoCountSpin = nullptr;
+        QSpinBox* temporalEchoSpacingSpin = nullptr;
+        QDoubleSpinBox* temporalEchoDecaySpin = nullptr;
         QComboBox* tilingPatternCombo = nullptr;
         QDoubleSpinBox* tilingSpacingSpin = nullptr;
         QCheckBox* tilingWrapCheck = nullptr;

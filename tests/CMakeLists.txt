@@ -39,6 +39,7 @@ set(EDITOR_TEST_TARGETS
     test_track_avatar_geometry
     test_facefind_window
     test_vulkan_direct_render_parity
+    test_progressive_edge_stretch_render_path
     test_facedetections_preview_smoke
     test_preview_face_track_click_policy
     test_facestream_overlay_snapshot
@@ -55,10 +56,10 @@ set(EDITOR_TEST_TARGETS
 # gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
 function(_jcut_assign_tier_labels target_name)
     set(_labels "logic")
-    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
         list(APPEND _labels "decode")
     endif()
-    if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+    if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
         list(APPEND _labels "gpu-soft")
     endif()
     if(target_name MATCHES "^(test_no_proxy_hardware_playback_contract)$")

@@ -478,7 +478,8 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     auto* promptLabel = new QLabel(QStringLiteral("Prompt"), &preflight);
     preflightLayout->addWidget(promptLabel);
 
-    auto* promptEdit = new QLineEdit(QStringLiteral("FACE"), &preflight);
+    auto* promptEdit = new QLineEdit(
+        QStringLiteral("a microphone mounted on a microphone stand"), &preflight);
     promptEdit->setClearButtonEnabled(true);
     promptEdit->selectAll();
     preflightLayout->addWidget(promptEdit);
@@ -570,6 +571,19 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         QStringLiteral("Write per-frame PNG mattes for video processing. White pixels are detected regions; black pixels are background."));
     preflightLayout->addWidget(binaryMasksCheckBox);
 
+    const QString currentMaskDir = clip->maskFramesDir.trimmed();
+    const bool canUnionWithCurrentMask = !currentMaskDir.isEmpty() &&
+        !QDir(currentMaskDir).entryList(
+            QStringList{QStringLiteral("frame_*.png")}, QDir::Files, QDir::Name).isEmpty();
+    auto* unionCurrentMaskCheckBox = new QCheckBox(
+        QStringLiteral("Union with current mask"), &preflight);
+    unionCurrentMaskCheckBox->setChecked(canUnionWithCurrentMask);
+    unionCurrentMaskCheckBox->setEnabled(canUnionWithCurrentMask);
+    unionCurrentMaskCheckBox->setToolTip(canUnionWithCurrentMask
+        ? QStringLiteral("Keep the new prompt as a separate sidecar and also create a third sidecar containing current OR new.")
+        : QStringLiteral("The selected clip does not have an existing binary-mask sidecar to combine."));
+    preflightLayout->addWidget(unionCurrentMaskCheckBox);
+
     auto* videoModeCheckBox =
         new QCheckBox(QStringLiteral("Run SAM video mode"), &preflight);
     videoModeCheckBox->setChecked(false);
@@ -633,16 +647,20 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     });
     connect(cancelPreflightButton, &QPushButton::clicked, &preflight, &QDialog::reject);
     connect(videoModeCheckBox, &QCheckBox::toggled, &preflight,
-            [binaryMasksCheckBox, maskPreviewFramesCheckBox, extractFpsSpin, frameFormatCombo](bool checked) {
+            [binaryMasksCheckBox, unionCurrentMaskCheckBox, canUnionWithCurrentMask,
+             maskPreviewFramesCheckBox, extractFpsSpin, frameFormatCombo](bool checked) {
         binaryMasksCheckBox->setEnabled(!checked);
+        unionCurrentMaskCheckBox->setEnabled(!checked && canUnionWithCurrentMask);
         maskPreviewFramesCheckBox->setEnabled(!checked);
         extractFpsSpin->setEnabled(!checked);
         frameFormatCombo->setEnabled(!checked);
         if (checked) {
             binaryMasksCheckBox->setChecked(false);
+            unionCurrentMaskCheckBox->setChecked(false);
             maskPreviewFramesCheckBox->setChecked(false);
         } else {
             binaryMasksCheckBox->setChecked(true);
+            unionCurrentMaskCheckBox->setChecked(canUnionWithCurrentMask);
         }
     });
     connect(runPreflightButton, &QPushButton::clicked, &preflight, [&preflight, promptEdit, cacheEdit, runtimeCacheEdit]() {
@@ -666,6 +684,8 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     const QString prompt = promptEdit->text().trimmed();
     const bool useVideoMode = videoModeCheckBox->isChecked();
     const bool writeBinaryMasks = !useVideoMode && binaryMasksCheckBox->isChecked();
+    const bool unionWithCurrentMask =
+        writeBinaryMasks && canUnionWithCurrentMask && unionCurrentMaskCheckBox->isChecked();
     const bool writeMaskPreviewFrames = !useVideoMode && maskPreviewFramesCheckBox->isChecked();
     const bool exportCentersJson = centersJsonCheckBox->isChecked();
     const bool runDockerAsRoot = rootModeCheckBox->isChecked();
@@ -792,6 +812,16 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     const QString binaryMasksPath =
         inputInfo.dir().absoluteFilePath(QStringLiteral("%1_binary_masks")
                                              .arg(samPromptOutputStem));
+    QString currentMaskComponent = QFileInfo(currentMaskDir).fileName();
+    currentMaskComponent.remove(QStringLiteral("%1_sam3_").arg(inputInfo.completeBaseName()));
+    currentMaskComponent.remove(QStringLiteral("_binary_masks"));
+    const QString combinedMasksPath = unionWithCurrentMask
+        ? inputInfo.dir().absoluteFilePath(
+              QStringLiteral("%1_sam3_%2_or_%3_binary_masks")
+                  .arg(inputInfo.completeBaseName(),
+                       jcut::jobs::sanitizedJobComponent(currentMaskComponent),
+                       jcut::jobs::sanitizedJobComponent(prompt)))
+        : QString();
     const QString defaultOutputPath =
         inputInfo.dir().absoluteFilePath(QStringLiteral("%1.mp4")
                                              .arg(samPromptOutputStem));
@@ -800,6 +830,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         {QStringLiteral("manifest"), samManifestPath},
         {QStringLiteral("centers_json"), exportCentersJson ? centersPath : QString()},
         {QStringLiteral("binary_masks_dir"), writeBinaryMasks ? binaryMasksPath : QString()},
+        {QStringLiteral("combined_binary_masks_dir"), combinedMasksPath},
         {QStringLiteral("default_output_video"), defaultOutputPath},
         {QStringLiteral("model_cache"), modelCachePath},
         {QStringLiteral("runtime_cache"), runtimeCachePath},
@@ -810,6 +841,8 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         {QStringLiteral("extract_frames"), !useVideoMode},
         {QStringLiteral("stream_extract"), !useVideoMode},
         {QStringLiteral("binary_masks"), writeBinaryMasks},
+        {QStringLiteral("union_with_current_mask"), unionWithCurrentMask},
+        {QStringLiteral("union_mask_dir"), unionWithCurrentMask ? currentMaskDir : QString()},
         {QStringLiteral("mask_preview_frames"), writeMaskPreviewFrames},
         {QStringLiteral("centers_json"), exportCentersJson},
         {QStringLiteral("docker_root_mode"), runDockerAsRoot},
@@ -1043,6 +1076,10 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     if (writeBinaryMasks) {
         launchCommand << QStringLiteral("--binary-mask-dir") << binaryMasksPath;
     }
+    if (unionWithCurrentMask) {
+        launchCommand << QStringLiteral("--union-mask-dir") << currentMaskDir
+                      << QStringLiteral("--combined-binary-mask-dir") << combinedMasksPath;
+    }
     if (writeMaskPreviewFrames) {
         launchCommand << QStringLiteral("--write-mask-preview-frames");
     }
@@ -1068,9 +1105,11 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         return;
     }
     if (writeBinaryMasks && m_timeline) {
-        if (m_timeline->updateClipById(clipId, [binaryMasksPath](TimelineClip& timelineClip) {
+        const QString selectedMaskPath =
+            unionWithCurrentMask ? combinedMasksPath : binaryMasksPath;
+        if (m_timeline->updateClipById(clipId, [selectedMaskPath](TimelineClip& timelineClip) {
                 timelineClip.maskEnabled = true;
-                timelineClip.maskFramesDir = binaryMasksPath;
+                timelineClip.maskFramesDir = selectedMaskPath;
             })) {
             if (m_preview) {
                 m_preview->setTimelineTracks(m_timeline->tracks());

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from PIL import Image
 from sam3_resume import FrameResumeState, center_frames_from_jsonl, frame_indices_from_files
+from mask_union import save_binary_mask_outputs
 try:
     from tqdm import tqdm
 except Exception:  # pragma: no cover - optional
@@ -738,6 +739,8 @@ def run_video_as_frames(
     use_tqdm: bool = True,
     job_dir: Path | None = None,
     binary_mask_dir: Path | None = None,
+    union_mask_dir: Path | None = None,
+    combined_mask_dir: Path | None = None,
     compile_model: bool = False,
 ):
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -751,6 +754,9 @@ def run_video_as_frames(
     if binary_mask_dir is not None:
         binary_mask_dir.mkdir(parents=True, exist_ok=True)
         write_jcut_frame_index_map(input_path, binary_mask_dir / "jcut_frame_map.tsv")
+    if combined_mask_dir is not None:
+        combined_mask_dir.mkdir(parents=True, exist_ok=True)
+        write_jcut_frame_index_map(input_path, combined_mask_dir / "jcut_frame_map.tsv")
 
     source_ext = intermediate_frames_format
     output_ext = frames_format
@@ -766,14 +772,21 @@ def run_video_as_frames(
     centers_f = None
     smooth_state = {}
 
+    completed_binary_mask_frames = (
+        frame_indices_from_files(binary_mask_dir, "frame_*.png")
+        if binary_mask_dir is not None
+        else set()
+    )
+    if combined_mask_dir is not None:
+        completed_binary_mask_frames &= frame_indices_from_files(
+            combined_mask_dir, "frame_*.png"
+        )
     resume_state = FrameResumeState(
         require_centers=centers_path is not None,
         require_binary_masks=binary_mask_dir is not None,
         require_output_frames=write_output_frames and not produce_output_video,
         produce_output_video=produce_output_video,
-        binary_mask_frames=frame_indices_from_files(binary_mask_dir, "frame_*.png")
-        if binary_mask_dir is not None
-        else set(),
+        binary_mask_frames=completed_binary_mask_frames,
         output_frames=frame_indices_from_files(out_frames_dir, f"frame_*.{output_ext}")
         if write_output_frames and not produce_output_video
         else set(),
@@ -966,7 +979,13 @@ def run_video_as_frames(
                     mask_frame = binary_mask_dir / f"{frame_path.stem}.png"
                     mask_image = render_binary_mask(image_rgb.shape[:2], masks_np)
                     pending_writes.append(
-                        write_pool.submit(save_frame_image, mask_frame, mask_image, "L")
+                        write_pool.submit(
+                            save_binary_mask_outputs,
+                            mask_frame,
+                            mask_image,
+                            union_mask_dir,
+                            combined_mask_dir,
+                        )
                     )
                 maybe_drain_futures(pending_writes, limit=pending_write_limit)
                 if centers_f is not None:
@@ -1097,7 +1116,13 @@ def run_video_as_frames(
                 mask_frame = binary_mask_dir / f"{frame_path.stem}.png"
                 mask_image = render_binary_mask(image_rgb.shape[:2], masks_np)
                 pending_writes.append(
-                    write_pool.submit(save_frame_image, mask_frame, mask_image, "L")
+                    write_pool.submit(
+                        save_binary_mask_outputs,
+                        mask_frame,
+                        mask_image,
+                        union_mask_dir,
+                        combined_mask_dir,
+                    )
                 )
             maybe_drain_futures(pending_writes, limit=pending_write_limit)
             if centers_f is not None:
@@ -1543,6 +1568,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--union-mask-dir",
+        default=None,
+        help="Existing binary-mask directory to OR with the newly generated mask.",
+    )
+    parser.add_argument(
+        "--combined-binary-mask-dir",
+        default=None,
+        help="Output directory for the OR-combined binary mask frames.",
+    )
+    parser.add_argument(
         "--write-mask-preview-frames",
         action="store_true",
         help=(
@@ -1720,6 +1755,12 @@ def main():
         if args.extract_frames and not args.child_run:
             frames_dir = Path(args.frames_dir) if args.frames_dir else None
             binary_mask_dir = Path(args.binary_mask_dir) if args.binary_mask_dir else None
+            union_mask_dir = Path(args.union_mask_dir) if args.union_mask_dir else None
+            combined_mask_dir = (
+                Path(args.combined_binary_mask_dir)
+                if args.combined_binary_mask_dir
+                else None
+            )
             run_video_as_frames(
                 input_path,
                 args.prompt,
@@ -1742,6 +1783,8 @@ def main():
                 use_tqdm=args.tqdm,
                 job_dir=job_dir,
                 binary_mask_dir=binary_mask_dir,
+                union_mask_dir=union_mask_dir,
+                combined_mask_dir=combined_mask_dir,
                 compile_model=args.compile_model,
             )
         elif args.chunk_seconds is not None and not args.child_run:

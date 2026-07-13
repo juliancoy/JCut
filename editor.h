@@ -592,13 +592,9 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QComboBox *m_renderBackendCombo = nullptr;
     QComboBox *m_backgroundFillEffectCombo = nullptr;
-    QComboBox *m_backgroundFillStretchSourceCombo = nullptr;
     QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
     QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
-    QSlider *m_backgroundFillEdgePixelsSlider = nullptr;
-    QCheckBox *m_backgroundFillEdgeProgressiveCheckBox = nullptr;
-    QDoubleSpinBox *m_backgroundFillEdgePowerSpin = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;

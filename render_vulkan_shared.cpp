@@ -333,6 +333,38 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                             std::sin(static_cast<qreal>(i) * 1.57079632679) * stepY;
             addDraw(QRectF(x, y, tileW, tileH));
         }
+    } else if (clip.effectPreset == ClipEffectPreset::MirrorRing ||
+               clip.effectPreset == ClipEffectPreset::Tessellation) {
+        VulkanEffectPipelinePlan::DrawPass pass;
+        pass.outputRect = outputRect;
+        pass.shaderMode = clip.effectPreset == ClipEffectPreset::MirrorRing
+            ? kVulkanEffectModeMirrorRing
+            : kVulkanEffectModeTessellation;
+        draws.push_back(pass);
+    } else if (clip.effectPreset >= ClipEffectPreset::Kaleidoscope &&
+               clip.effectPreset <= ClipEffectPreset::GlassRefraction) {
+        VulkanEffectPipelinePlan::DrawPass pass;
+        pass.outputRect = outputRect;
+        switch (clip.effectPreset) {
+        case ClipEffectPreset::Kaleidoscope: pass.shaderMode = kVulkanEffectModeKaleidoscope; break;
+        case ClipEffectPreset::HexagonalPrism: pass.shaderMode = kVulkanEffectModeHexagonalPrism; break;
+        case ClipEffectPreset::Droste: pass.shaderMode = kVulkanEffectModeDroste; break;
+        case ClipEffectPreset::PolarTunnel: pass.shaderMode = kVulkanEffectModePolarTunnel; break;
+        case ClipEffectPreset::TinyPlanet: pass.shaderMode = kVulkanEffectModeTinyPlanet; break;
+        case ClipEffectPreset::InfiniteMirror: pass.shaderMode = kVulkanEffectModeInfiniteMirror; break;
+        case ClipEffectPreset::QuadMirror: pass.shaderMode = kVulkanEffectModeQuadMirror; break;
+        case ClipEffectPreset::SlitScan: pass.shaderMode = kVulkanEffectModeSlitScan; break;
+        case ClipEffectPreset::DisplacementMap: pass.shaderMode = kVulkanEffectModeDisplacementMap; break;
+        case ClipEffectPreset::TwirlVortex: pass.shaderMode = kVulkanEffectModeTwirlVortex; break;
+        case ClipEffectPreset::RippleShockwave: pass.shaderMode = kVulkanEffectModeRippleShockwave; break;
+        case ClipEffectPreset::PixelSorting: pass.shaderMode = kVulkanEffectModePixelSorting; break;
+        case ClipEffectPreset::DatamoshGlitch: pass.shaderMode = kVulkanEffectModeDatamoshGlitch; break;
+        case ClipEffectPreset::RgbSplit: pass.shaderMode = kVulkanEffectModeRgbSplit; break;
+        case ClipEffectPreset::HalftoneMosaic: pass.shaderMode = kVulkanEffectModeHalftoneMosaic; break;
+        case ClipEffectPreset::GlassRefraction: pass.shaderMode = kVulkanEffectModeGlassRefraction; break;
+        default: break;
+        }
+        draws.push_back(pass);
     } else if (clip.effectPreset == ClipEffectPreset::Vulkan3DSynth) {
         draws += vulkanSynth3DDrawPasses(VulkanSynth3DParams{
             .outputRect = outputRect,

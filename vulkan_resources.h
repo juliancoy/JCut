@@ -48,6 +48,7 @@ public:
     bool ensureAuxiliaryImagesReadable(VkCommandBuffer commandBuffer);
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
     bool uploadMaskCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
+    bool bindAuxiliaryImage(VkImageView view, VkImageLayout layout);
     bool beginFrameUploads(size_t frameSlot, size_t frameSlotCount);
     bool updateFrameUniform(const QSize& outputSize,
                             const float* backgroundShadows = nullptr,
@@ -60,6 +61,8 @@ public:
     size_t descriptorSetIndex() const { return m_descriptorSetIndex; }
     size_t descriptorSetCount() const { return m_descriptorSets.size(); }
     bool isReady() const { return m_initialized; }
+    VkImageView sampledImageView() const { return m_textureView; }
+    VkImageLayout sampledImageLayout() const { return m_textureLayout; }
 
 private:
     bool createTextureResources();

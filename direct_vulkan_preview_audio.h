@@ -5,6 +5,7 @@
 #include <QList>
 #include <QSize>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -25,6 +26,7 @@ struct DirectVulkanAudioRenderContext {
     jcut::VulkanAudioTab* audioTab = nullptr;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     QSize swapchainSize;
+    std::function<void()> beginRenderPass;
 };
 
 struct DirectVulkanAudioOverlayWidgets {

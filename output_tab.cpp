@@ -356,18 +356,10 @@ void OutputTab::renderFromInspector()
     request.backgroundFillSaturation = m_widgets.backgroundFillSaturationSpin
         ? qBound(0.0, m_widgets.backgroundFillSaturationSpin->value() / 100.0, 3.0)
         : 1.0;
-    request.backgroundFillEdgePixels = m_widgets.backgroundFillEdgePixelsSlider
-        ? qBound(1, m_widgets.backgroundFillEdgePixelsSlider->value(), 512)
-        : 1;
-    request.backgroundFillEdgeProgressive =
-        m_widgets.backgroundFillEdgeProgressiveCheckBox &&
-        m_widgets.backgroundFillEdgeProgressiveCheckBox->isChecked();
-    request.backgroundFillEdgePower = m_widgets.backgroundFillEdgePowerSpin
-        ? qBound(0.25, m_widgets.backgroundFillEdgePowerSpin->value(), 8.0)
-        : 2.0;
-    request.backgroundFillStretchSourceClipId = m_widgets.backgroundFillStretchSourceCombo
-        ? m_widgets.backgroundFillStretchSourceCombo->currentData().toString().trimmed().toStdString()
-        : std::string();
+    request.backgroundFillEdgePixels = 1;
+    request.backgroundFillEdgeProgressive = false;
+    request.backgroundFillEdgePower = 2.0;
+    request.backgroundFillStretchSourceClipId.clear();
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
     const double outputSpeed = normalizedExportSpeed(

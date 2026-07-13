@@ -353,6 +353,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
 
     const QList<TimelineClip> activeAudioClips = activeAudioClipsForState(state);
     if (activeAudioClips.isEmpty()) {
+        if (context.beginRenderPass) context.beginRenderPass();
         return true;
     }
 
@@ -611,6 +612,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
     }
     const qreal selectivePeakLinear = std::pow(
         10.0, qBound<qreal>(-36.0, state->audioDynamics.selectiveNormalizePeakDb, 0.0) / 20.0);
+    if (context.beginRenderPass) context.beginRenderPass();
     context.audioTab->draw(context.commandBuffer,
                            context.swapchainSize,
                            panel,

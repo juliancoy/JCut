@@ -1298,8 +1298,12 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
                                  QStringLiteral("Select a clip with a transcript first."));
         return;
     }
-    const QString transcriptPath = m_transcriptSession.transcriptPath().trimmed();
-    if (transcriptPath.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+    QString transcriptPath;
+    QJsonDocument transcriptDocument;
+    const bool hasTranscriptSnapshot = m_speakerDeps.getActiveTranscriptSnapshot &&
+        m_speakerDeps.getActiveTranscriptSnapshot(&transcriptPath, &transcriptDocument);
+    transcriptPath = transcriptPath.trimmed();
+    if (!hasTranscriptSnapshot || transcriptPath.isEmpty() || !transcriptDocument.isObject()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Animated Speaker Introductions"),
                              QStringLiteral("No loaded transcript is available for the selected clip."));
@@ -1312,7 +1316,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
         return;
     }
 
-    const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
+    const QVector<TranscriptSection> sections = transcriptSectionsFromDocument(transcriptDocument);
     SpeakerTitleFlyInSettings flyInSettings;
     if (m_widgets.speakerOverlayFlyInStyleCombo) {
         bool ok = false;
@@ -1363,6 +1367,9 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_widgets.speakerOverlayTitleFontSizeSpin) {
         flyInSettings.titleFontSize = m_widgets.speakerOverlayTitleFontSizeSpin->value();
     }
+    flyInSettings.titleAutoFitToOutput =
+        !m_widgets.speakerOverlayTitleAutoFitCheckBox ||
+        m_widgets.speakerOverlayTitleAutoFitCheckBox->isChecked();
     if (m_widgets.speakerOverlayTitleBoxWidthSpin) {
         flyInSettings.titleBoxWidth = m_widgets.speakerOverlayTitleBoxWidthSpin->value();
     }

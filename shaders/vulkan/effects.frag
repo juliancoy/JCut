@@ -264,14 +264,103 @@ void main() {
         edgeStretchFill ||
         blurredFill ||
         finalCompositeProgressiveEdgeStretchFill;
+    bool mirrorRing = pc.u_shadows.a > 5.5 && pc.u_shadows.a < 6.5;
+    bool tessellation = pc.u_shadows.a > 6.5 && pc.u_shadows.a < 7.5;
+    int artisticMode = int(floor(pc.u_shadows.a + 0.5));
+    vec2 effectUv = v_texCoord;
+    if (mirrorRing) {
+        vec2 p = v_texCoord - vec2(0.5);
+        float radius = length(p) * 2.0;
+        float angle = atan(p.y, p.x);
+        const float sectors = 12.0;
+        float wedge = 6.28318530718 / sectors;
+        angle = abs(mod(angle + wedge * 0.5, wedge) - wedge * 0.5);
+        effectUv = vec2(0.5) + vec2(cos(angle), sin(angle)) * mirroredCoord(radius) * 0.5;
+    } else if (tessellation) {
+        const float tileScale = 6.0;
+        vec2 tile = v_texCoord * tileScale;
+        vec2 cell = floor(tile);
+        vec2 local = fract(tile);
+        if (mod(cell.x + cell.y, 2.0) > 0.5) local.x = 1.0 - local.x;
+        if (local.x + local.y > 1.0) local = vec2(1.0) - local.yx;
+        effectUv = vec2(local.x + 0.5 * local.y, 0.86602540378 * local.y);
+    } else if (artisticMode == 8) { // Kaleidoscope
+        vec2 p = v_texCoord - 0.5;
+        float r = length(p);
+        float wedge = 6.28318530718 / 16.0;
+        float a = abs(mod(atan(p.y, p.x) + wedge * 0.5, wedge) - wedge * 0.5);
+        effectUv = 0.5 + vec2(cos(a), sin(a)) * r;
+    } else if (artisticMode == 9) { // Hexagonal prism
+        vec2 p = v_texCoord * 5.0;
+        vec2 q = vec2(p.x - p.y * 0.5, p.y * 0.8660254);
+        vec2 h = abs(fract(q) - 0.5);
+        effectUv = 0.5 + vec2(h.x + h.y * 0.5, h.y) * 0.85;
+    } else if (artisticMode == 10) { // Droste recursion
+        vec2 p = v_texCoord - 0.5;
+        float r = max(length(p), 0.0001);
+        float a = atan(p.y, p.x) + log(r) * 0.7;
+        float rr = exp(fract(log(r) / log(2.0)) * log(2.0)) * 0.24;
+        effectUv = 0.5 + vec2(cos(a), sin(a)) * rr;
+    } else if (artisticMode == 11) { // Polar tunnel
+        vec2 p = v_texCoord - 0.5;
+        effectUv = vec2(fract(atan(p.y, p.x) / 6.2831853 + 0.5), fract(0.16 / max(length(p), 0.025)));
+    } else if (artisticMode == 12) { // Tiny planet
+        vec2 p = v_texCoord - 0.5;
+        effectUv = vec2(fract(atan(p.y, p.x) / 6.2831853 + 0.5), clamp(1.15 - length(p) * 1.75, 0.0, 1.0));
+    } else if (artisticMode == 13) { // Infinite mirror
+        vec2 p = v_texCoord - 0.5;
+        float band = fract(-log2(max(max(abs(p.x), abs(p.y)), 0.001)));
+        effectUv = 0.5 + normalize(p + vec2(0.0001)) * band * 0.48;
+    } else if (artisticMode == 14) { // Quad mirror
+        effectUv = 0.5 + abs(v_texCoord - 0.5);
+    } else if (artisticMode == 15) { // Slit scan
+        float band = floor(v_texCoord.y * 96.0);
+        effectUv.x = mirroredCoord(v_texCoord.x + sin(band * 0.37) * 0.22);
+    } else if (artisticMode == 16) { // Procedural displacement map
+        vec2 wave = vec2(sin(v_texCoord.y * 31.0), cos(v_texCoord.x * 27.0)) * 0.025;
+        effectUv = v_texCoord + wave;
+    } else if (artisticMode == 17) { // Twirl / vortex
+        vec2 p = v_texCoord - 0.5;
+        float a = atan(p.y, p.x) + (1.0 - smoothstep(0.0, 0.72, length(p))) * 5.0;
+        effectUv = 0.5 + vec2(cos(a), sin(a)) * length(p);
+    } else if (artisticMode == 18) { // Ripple / shockwave
+        vec2 p = v_texCoord - 0.5;
+        effectUv = v_texCoord + normalize(p + vec2(0.0001)) * sin(length(p) * 70.0) * 0.018;
+    } else if (artisticMode == 19) { // Pixel sorting
+        float column = floor(v_texCoord.x * 160.0);
+        effectUv.y = fract(v_texCoord.y + fract(sin(column * 91.73) * 43758.5) * 0.45);
+    } else if (artisticMode == 20) { // Datamosh / glitch blocks
+        vec2 block = floor(v_texCoord * vec2(24.0, 14.0));
+        float hash = fract(sin(dot(block, vec2(12.9898, 78.233))) * 43758.5453);
+        effectUv.x = mirroredCoord(v_texCoord.x + step(0.68, hash) * (hash - 0.5) * 0.35);
+    } else if (artisticMode == 22) { // Halftone mosaic sampling
+        effectUv = (floor(v_texCoord * 120.0) + 0.5) / 120.0;
+    } else if (artisticMode == 23) { // Glass / refraction
+        vec2 cell = floor(v_texCoord * 18.0);
+        vec2 local = fract(v_texCoord * 18.0) - 0.5;
+        float hash = fract(sin(dot(cell, vec2(41.7, 289.1))) * 43758.5);
+        effectUv = v_texCoord + normalize(local + vec2(0.001)) * (hash - 0.5) * 0.035;
+    }
     vec4 c = mirrorFill
         ? mirrorFillSample(v_texCoord)
         : (progressiveEdgeStretchFill || edgeStretchFill || finalCompositeProgressiveEdgeStretchFill
             ? edgeStretchFillSample(v_texCoord, finalCompositeProgressiveEdgeStretchFill)
-            : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, v_texCoord)));
+            : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, textureInteriorClamp(effectUv))));
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;
+    if (artisticMode == 21) { // RGB split / chromatic aberration
+        vec2 radial = (v_texCoord - 0.5) * 0.035;
+        rgb.r = texture(u_texture, textureInteriorClamp(v_texCoord + radial)).r;
+        rgb.b = texture(u_texture, textureInteriorClamp(v_texCoord - radial)).b;
+    } else if (artisticMode == 22) {
+        float lum = lumaOf(rgb);
+        vec2 dotUv = fract(v_texCoord * 120.0) - 0.5;
+        float ink = 1.0 - smoothstep(sqrt(max(lum, 0.0)) * 0.48,
+                                     sqrt(max(lum, 0.0)) * 0.48 + 0.08,
+                                     length(dotUv));
+        rgb = vec3(ink);
+    }
     if (finalCompositeProgressiveEdgeStretchFill && sourceAlpha > 0.01) {
         sourceAlpha = 1.0;
     }
@@ -303,6 +392,18 @@ void main() {
     }
 
     bool synth3d = pc.u_shadows.a > 3.5 && pc.u_shadows.a < 4.5;
+    bool differenceMatte = pc.u_shadows.a > 4.5 && pc.u_shadows.a < 5.5;
+    if (differenceMatte) {
+        vec3 referenceRgb = texture(u_mask, v_texCoord).rgb;
+        float difference = max(max(abs(rgb.r - referenceRgb.r),
+                                   abs(rgb.g - referenceRgb.g)),
+                               abs(rgb.b - referenceRgb.b));
+        float threshold = clamp(pc.u_midtones.a, 0.0, 1.0);
+        float softness = max(0.00001, clamp(pc.u_highlights.a, 0.0, 1.0));
+        float matte = smoothstep(threshold - softness, threshold + softness, difference);
+        outColor = vec4(vec3(matte), pc.u_opacity);
+        return;
+    }
 
     if (!backgroundFill) {
         float luminance = lumaOf(rgb);
@@ -318,7 +419,7 @@ void main() {
         rgb += pc.u_highlights.rgb * highlightWeight;
 
         bool maskOverlay = pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
-        bool maskOnly = pc.u_shadows.a > 2.5;
+        bool maskOnly = pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;
         bool maskCurveEnabled = maskOverlay && pc.u_midtones.a < -0.5;
         bool curveEnabled = (pc.u_shadows.a > 0.5 && pc.u_shadows.a < 1.5) ||
                             maskCurveEnabled;
@@ -359,10 +460,15 @@ void main() {
     rgb = mix(vec3(luma), rgb, pc.u_saturation);
     rgb = clamp(rgb, vec3(0.0), vec3(1.0));
 
-    bool maskOverlay = pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
-    bool maskOnly = pc.u_shadows.a > 2.5;
+    bool maskOverlay = !backgroundFill && pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
+    bool maskOnly = !backgroundFill && pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;
     if (maskOverlay || maskOnly) {
         float maskValue = clamp(texture(u_mask, v_texCoord).r, 0.0, 1.0);
+        // Quantized binary mattes and GPU filtering can leave sub-code-value
+        // residue in nominally black regions. Gamma falloff below 1.0 would
+        // amplify that residue into a visible full-frame grade. Keep the zero
+        // region exact while retaining the intentionally feathered boundary.
+        maskValue = maskValue <= (1.0 / 255.0) ? 0.0 : maskValue;
         float packedFalloff = max(pc.u_highlights.a, 0.1);
         int falloff = int(floor(packedFalloff / 10.0));
         float power = clamp(packedFalloff - float(falloff) * 10.0, 0.1, 5.0);

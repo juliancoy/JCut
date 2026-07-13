@@ -113,6 +113,14 @@ void MaskTab::wire()
             apply(true);
         });
     }
+    if (m_widgets.newPromptButton) {
+        connect(m_widgets.newPromptButton, &QPushButton::clicked, this, [this]() {
+            const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+            if (clip && m_deps.generatePromptMask) {
+                m_deps.generatePromptMask(clip->id);
+            }
+        });
+    }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
                              m_widgets.shadowEnabledCheck}) {
@@ -301,6 +309,7 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.framesDirEdit),
                             static_cast<QWidget*>(m_widgets.sidecarCombo),
                             static_cast<QWidget*>(m_widgets.browseButton),
+                            static_cast<QWidget*>(m_widgets.newPromptButton),
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),
                             static_cast<QWidget*>(m_widgets.featherPowerSpin),

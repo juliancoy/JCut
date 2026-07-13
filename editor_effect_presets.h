@@ -5,6 +5,7 @@
 struct EffectPresetUiOption {
     QString label;
     ClipEffectPreset preset = ClipEffectPreset::None;
+    QString group;
 };
 
 struct TilingPatternUiOption {
@@ -47,6 +48,7 @@ struct SpeakerTitleFlyInSettings {
     qreal rotationStartYDegrees = 0.0;
     qreal rotationStartZDegrees = 0.0;
     qreal titleFontSize = 48.0;
+    bool titleAutoFitToOutput = true;
     qreal titleBoxWidth = 720.0;
     bool titleBackgroundEnabled = true;
     bool showSpeakerName = true;

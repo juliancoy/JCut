@@ -1140,8 +1140,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         qBound<qreal>(-1.0, root.value(QStringLiteral("backgroundFillBrightness")).toDouble(0.0), 1.0);
     const qreal backgroundFillSaturation =
         qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillSaturation")).toDouble(1.0), 3.0);
-    const int backgroundFillEdgePixels =
-        qBound(1, root.value(QStringLiteral("backgroundFillEdgePixels")).toInt(1), 512);
     bool backgroundFillEdgeProgressive =
         root.value(QStringLiteral("backgroundFillEdgeProgressive")).toBool(false);
     const QString normalizedSavedBackgroundFillEffect =
@@ -1151,8 +1149,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_edge_stretch") ||
         normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_stretch") ||
         normalizedSavedBackgroundFillEffect == QStringLiteral("edge_stretch_progressive");
-    const qreal backgroundFillEdgePower =
-        qBound<qreal>(0.25, root.value(QStringLiteral("backgroundFillEdgePower")).toDouble(2.0), 8.0);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
@@ -1598,6 +1594,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                    !obj.value(QStringLiteral("visualEnabled")).toBool(true)) {
             track.visualMode = TrackVisualMode::Hidden;
         }
+        track.gradingPreviewEnabled =
+            obj.value(QStringLiteral("gradingPreviewEnabled")).toBool(gradingPreview);
         track.audioEnabled = obj.value(QStringLiteral("audioEnabled")).toBool(true);
         track.audioBusId = obj.value(QStringLiteral("audioBusId")).toString();
         track.audioGain = qBound<qreal>(0.0, obj.value(QStringLiteral("audioGain")).toDouble(1.0), 4.0);
@@ -1606,7 +1604,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.audioWaveformVisible = obj.value(QStringLiteral("audioWaveformVisible")).toBool(true);
         track.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
-        track.effectRows = qBound(1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
+        track.effectRows = qBound(1,
+                                  obj.value(QStringLiteral("effectRows")).toInt(32),
+                                  track.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
+        track.differenceReferenceFrames = qBound(1, obj.value(QStringLiteral("differenceReferenceFrames")).toInt(1), 300);
+        track.differenceThreshold = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceThreshold")).toDouble(0.10), 1.0);
+        track.differenceSoftness = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceSoftness")).toDouble(0.05), 1.0);
+        track.temporalEchoCount = qBound(1, obj.value(QStringLiteral("temporalEchoCount")).toInt(4), 12);
+        track.temporalEchoSpacingFrames = qBound(1, obj.value(QStringLiteral("temporalEchoSpacingFrames")).toInt(2), 120);
+        track.temporalEchoDecay = qBound<qreal>(0.0, obj.value(QStringLiteral("temporalEchoDecay")).toDouble(0.65), 1.0);
         track.effectSpeed =
             qBound<qreal>(-8.0, obj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
         track.effectScale =
@@ -1723,27 +1729,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             backgroundFillEffectToString(backgroundFillEffect));
         m_backgroundFillEffectCombo->setCurrentIndex(qMax(0, effectIndex));
     }
-    if (m_backgroundFillStretchSourceCombo) {
-        QSignalBlocker block(m_backgroundFillStretchSourceCombo);
-        m_backgroundFillStretchSourceCombo->clear();
-        m_backgroundFillStretchSourceCombo->addItem(
-            QStringLiteral("Auto (Lowest Visible Clip)"), QString());
-        const QVector<TimelineClip> stretchSourceClips =
-            m_timeline ? m_timeline->clips() : QVector<TimelineClip>{};
-        for (const TimelineClip& clip : stretchSourceClips) {
-            if (clip.mediaType == ClipMediaType::Audio ||
-                clip.mediaType == ClipMediaType::Title || clip.id.trimmed().isEmpty()) {
-                continue;
-            }
-            const QString label = clip.label.trimmed().isEmpty()
-                ? clip.id
-                : clip.label;
-            m_backgroundFillStretchSourceCombo->addItem(label, clip.id);
-        }
-        const int sourceIndex = m_backgroundFillStretchSourceCombo->findData(
-            backgroundFillStretchSourceClipId);
-        m_backgroundFillStretchSourceCombo->setCurrentIndex(qMax(0, sourceIndex));
-    }
     if (m_backgroundFillOpacitySpin) {
         QSignalBlocker block(m_backgroundFillOpacitySpin);
         m_backgroundFillOpacitySpin->setValue(backgroundFillOpacity * 100.0);
@@ -1755,19 +1740,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_backgroundFillSaturationSpin) {
         QSignalBlocker block(m_backgroundFillSaturationSpin);
         m_backgroundFillSaturationSpin->setValue(backgroundFillSaturation * 100.0);
-    }
-    if (m_backgroundFillEdgePixelsSlider) {
-        QSignalBlocker block(m_backgroundFillEdgePixelsSlider);
-        m_backgroundFillEdgePixelsSlider->setValue(backgroundFillEdgePixels);
-    }
-    if (m_backgroundFillEdgeProgressiveCheckBox) {
-        QSignalBlocker block(m_backgroundFillEdgeProgressiveCheckBox);
-        m_backgroundFillEdgeProgressiveCheckBox->setChecked(backgroundFillEdgeProgressive);
-    }
-    if (m_backgroundFillEdgePowerSpin) {
-        QSignalBlocker block(m_backgroundFillEdgePowerSpin);
-        m_backgroundFillEdgePowerSpin->setValue(backgroundFillEdgePower);
-        m_backgroundFillEdgePowerSpin->setEnabled(backgroundFillEdgeProgressive);
     }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
@@ -1863,6 +1835,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         setDecimal(m_inspectorPane->speakerOverlayRotationYSpin(), QStringLiteral("rotationY"));
         setDecimal(m_inspectorPane->speakerOverlayRotationZSpin(), QStringLiteral("rotationZ"));
         setInteger(m_inspectorPane->speakerOverlayTitleFontSizeSpin(), QStringLiteral("fontSize"));
+        if (QCheckBox* autoFit = m_inspectorPane->speakerOverlayTitleAutoFitCheckBox()) {
+            QSignalBlocker block(autoFit);
+            autoFit->setChecked(speakerTitleSettings.value(QStringLiteral("autoFitToOutput")).toBool(true));
+        }
         setInteger(m_inspectorPane->speakerOverlayTitleBoxWidthSpin(), QStringLiteral("boxWidth"));
         setCombo(m_inspectorPane->speakerOverlayTitleTextMaterialCombo(), QStringLiteral("textMaterial"));
         setCombo(m_inspectorPane->speakerOverlayTitleBorderMaterialCombo(), QStringLiteral("borderMaterial"));
@@ -2173,7 +2149,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_transcriptFollowCurrentWordCheckBox) { QSignalBlocker block(m_transcriptFollowCurrentWordCheckBox); m_transcriptFollowCurrentWordCheckBox->setChecked(transcriptFollowCurrentWord); }
     if (m_gradingFollowCurrentCheckBox) { QSignalBlocker block(m_gradingFollowCurrentCheckBox); m_gradingFollowCurrentCheckBox->setChecked(gradingFollowCurrent); }
     if (m_gradingAutoScrollCheckBox) { QSignalBlocker block(m_gradingAutoScrollCheckBox); m_gradingAutoScrollCheckBox->setChecked(gradingAutoScroll); }
-    if (m_bypassGradingCheckBox) { QSignalBlocker block(m_bypassGradingCheckBox); m_bypassGradingCheckBox->setChecked(gradingPreview); }
+    if (m_bypassGradingCheckBox) { QSignalBlocker block(m_bypassGradingCheckBox); m_bypassGradingCheckBox->setChecked(true); }
     if (m_keyframesFollowCurrentCheckBox) { QSignalBlocker block(m_keyframesFollowCurrentCheckBox); m_keyframesFollowCurrentCheckBox->setChecked(keyframesFollowCurrent); }
     if (m_keyframesAutoScrollCheckBox) { QSignalBlocker block(m_keyframesAutoScrollCheckBox); m_keyframesAutoScrollCheckBox->setChecked(keyframesAutoScroll); }
     if (m_inspectorPane && m_inspectorPane->correctionsEnabledCheck()) {
@@ -2231,10 +2207,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setBackgroundFillOpacity(backgroundFillOpacity);
         m_preview->setBackgroundFillBrightness(backgroundFillBrightness);
         m_preview->setBackgroundFillSaturation(backgroundFillSaturation);
-        m_preview->setBackgroundFillEdgePixels(backgroundFillEdgePixels);
-        m_preview->setBackgroundFillEdgeProgressive(backgroundFillEdgeProgressive);
-        m_preview->setBackgroundFillEdgePower(backgroundFillEdgePower);
-        m_preview->setBackgroundFillStretchSourceClipId(backgroundFillStretchSourceClipId);
+        m_preview->setBackgroundFillEdgePixels(1);
+        m_preview->setBackgroundFillEdgeProgressive(false);
+        m_preview->setBackgroundFillEdgePower(2.0);
+        m_preview->setBackgroundFillStretchSourceClipId(QString());
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);
@@ -2264,7 +2240,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setCurrentSpeakerShadowEnabled(previewCurrentSpeakerShadowEnabled);
         m_preview->setCurrentSpeakerShadowColor(m_speakerCurrentSpeakerShadowColor);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
-        m_preview->setBypassGrading(!gradingPreview);
+        // Grading preview is owned by each timeline track. Keep the legacy
+        // runtime-wide bypass disabled so one track cannot suppress another.
+        m_preview->setBypassGrading(false);
         m_previewAudioDynamics = loadedAudioDynamics;
         m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
     }

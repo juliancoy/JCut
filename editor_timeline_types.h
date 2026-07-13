@@ -46,6 +46,26 @@ enum class ClipEffectPreset {
     SourceTile,
     Vulkan3DSynth,
     ProgressiveEdgeStretch,
+    DifferenceMatte,
+    TemporalEcho,
+    MirrorRing,
+    Tessellation,
+    Kaleidoscope,
+    HexagonalPrism,
+    Droste,
+    PolarTunnel,
+    TinyPlanet,
+    InfiniteMirror,
+    QuadMirror,
+    SlitScan,
+    DisplacementMap,
+    TwirlVortex,
+    RippleShockwave,
+    PixelSorting,
+    DatamoshGlitch,
+    RgbSplit,
+    HalftoneMosaic,
+    GlassRefraction,
 };
 
 enum class ClipTilingPattern {
@@ -124,6 +144,7 @@ struct TimelineClip {
         qreal translationX = 0.0;
         qreal translationY = 0.0;
         qreal fontSize = 48.0;
+        bool autoFitToOutput = false;
         qreal opacity = 1.0;
 #ifdef __APPLE__
         QString fontFamily = QStringLiteral("Helvetica Neue");
@@ -366,6 +387,12 @@ struct TimelineClip {
     qreal effectSpeed = 1.0;
     qreal effectScale = 1.0;
     bool effectAlternateDirection = true;
+    int differenceReferenceFrames = 1;
+    qreal differenceThreshold = 0.10;
+    qreal differenceSoftness = 0.05;
+    int temporalEchoCount = 4;
+    int temporalEchoSpacingFrames = 2;
+    qreal temporalEchoDecay = 0.65;
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;
@@ -376,6 +403,7 @@ struct TimelineTrack {
     QString name;
     int height = 72;
     TrackVisualMode visualMode = TrackVisualMode::Enabled;
+    bool gradingPreviewEnabled = true;
     bool audioEnabled = true;
     QString audioBusId;
     qreal audioGain = 1.0;
@@ -387,6 +415,12 @@ struct TimelineTrack {
     qreal effectSpeed = 1.0;
     qreal effectScale = 1.0;
     bool effectAlternateDirection = true;
+    int differenceReferenceFrames = 1;
+    qreal differenceThreshold = 0.10;
+    qreal differenceSoftness = 0.05;
+    int temporalEchoCount = 4;
+    int temporalEchoSpacingFrames = 2;
+    qreal temporalEchoDecay = 0.65;
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;

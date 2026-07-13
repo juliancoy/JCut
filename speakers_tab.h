@@ -69,6 +69,7 @@ public:
         QDoubleSpinBox* speakerOverlayRotationYSpin = nullptr;
         QDoubleSpinBox* speakerOverlayRotationZSpin = nullptr;
         QSpinBox* speakerOverlayTitleFontSizeSpin = nullptr;
+        QCheckBox* speakerOverlayTitleAutoFitCheckBox = nullptr;
         QSpinBox* speakerOverlayTitleBoxWidthSpin = nullptr;
         QCheckBox* speakerOverlayTitleBackgroundCheckBox = nullptr;
         QComboBox* speakerOverlayTitleTextMaterialCombo = nullptr;
@@ -150,6 +151,7 @@ public:
         std::function<GeneratedClipPlacementResult(const QString&, const QVector<TimelineClip>&)> replaceSpeakerTitleClips;
         std::function<bool(const QString&)> selectClipById;
         std::function<QSize()> getOutputSize;
+        std::function<bool(QString*, QJsonDocument*)> getActiveTranscriptSnapshot;
         std::function<void()> refreshPreview;
         std::function<void(const QSet<int>&)> setPreviewAssignedFaceTrackIds;
         std::function<void(const QString&)> setPreviewMode;

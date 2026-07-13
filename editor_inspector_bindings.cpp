@@ -217,13 +217,9 @@ void EditorWindow::bindInspectorWidgets()
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
     m_backgroundFillEffectCombo = m_inspectorPane->backgroundFillEffectCombo();
-    m_backgroundFillStretchSourceCombo = m_inspectorPane->backgroundFillStretchSourceCombo();
     m_backgroundFillOpacitySpin = m_inspectorPane->backgroundFillOpacitySpin();
     m_backgroundFillBrightnessSpin = m_inspectorPane->backgroundFillBrightnessSpin();
     m_backgroundFillSaturationSpin = m_inspectorPane->backgroundFillSaturationSpin();
-    m_backgroundFillEdgePixelsSlider = m_inspectorPane->backgroundFillEdgePixelsSlider();
-    m_backgroundFillEdgeProgressiveCheckBox = m_inspectorPane->backgroundFillEdgeProgressiveCheckBox();
-    m_backgroundFillEdgePowerSpin = m_inspectorPane->backgroundFillEdgePowerSpin();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
@@ -664,12 +660,16 @@ void EditorWindow::setupPreviewControls()
             if (!m_timeline) {
                 return;
             }
-            const QString clipId = m_timeline->selectedClipId();
-            if (clipId.isEmpty()) return;
-            m_timeline->updateClipById(clipId, [checked](TimelineClip& clip) {
-                clip.gradingPreviewEnabled = checked;
-            });
-            if (m_preview) m_preview->setTimelineClips(m_timeline->clips());
+            const TimelineClip* selected = m_timeline->selectedClip();
+            if (!selected || selected->trackIndex < 0) return;
+            const int trackIndex = selected->trackIndex;
+            if (!m_timeline->updateTrackByIndex(trackIndex, [checked](TimelineTrack& track) {
+                    track.gradingPreviewEnabled = checked;
+                })) return;
+            if (m_preview) {
+                m_preview->setTimelineTracks(m_timeline->tracks());
+                m_preview->setTimelineClips(m_timeline->clips());
+            }
             updateTransportLabels();
             scheduleSaveState();
             pushHistorySnapshot();
@@ -1256,64 +1256,10 @@ void EditorWindow::setupPreviewControls()
         }
     }
 
-    if (m_backgroundFillEdgePixelsSlider) {
-        connect(m_backgroundFillEdgePixelsSlider, &QSlider::valueChanged, this, [this](int value) {
-            if (m_preview) {
-                m_preview->setBackgroundFillEdgePixels(qBound(1, value, 512));
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillEdgePixels(qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512));
-        }
-    }
-
-    if (m_backgroundFillEdgeProgressiveCheckBox) {
-        connect(m_backgroundFillEdgeProgressiveCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-            if (m_preview) {
-                m_preview->setBackgroundFillEdgeProgressive(checked);
-            }
-            if (m_backgroundFillEdgePowerSpin) {
-                m_backgroundFillEdgePowerSpin->setEnabled(checked);
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillEdgeProgressive(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
-        }
-        if (m_backgroundFillEdgePowerSpin) {
-            m_backgroundFillEdgePowerSpin->setEnabled(m_backgroundFillEdgeProgressiveCheckBox->isChecked());
-        }
-    }
-
-    if (m_backgroundFillEdgePowerSpin) {
-        connect(m_backgroundFillEdgePowerSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-            if (m_preview) {
-                m_preview->setBackgroundFillEdgePower(qBound<qreal>(0.25, value, 8.0));
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillEdgePower(qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0));
-        }
-    }
-
-    if (m_backgroundFillStretchSourceCombo) {
-        connect(m_backgroundFillStretchSourceCombo, &QComboBox::currentIndexChanged, this, [this]() {
-            if (m_preview) {
-                m_preview->setBackgroundFillStretchSourceClipId(
-                    m_backgroundFillStretchSourceCombo->currentData().toString());
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillStretchSourceClipId(
-                m_backgroundFillStretchSourceCombo->currentData().toString());
-        }
+    if (m_preview) {
+        m_preview->setBackgroundFillEdgePixels(1);
+        m_preview->setBackgroundFillEdgeProgressive(false);
+        m_preview->setBackgroundFillEdgePower(2.0);
     }
 
     if (m_inspectorPane->restartDecodersButton()) {

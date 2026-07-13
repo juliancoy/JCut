@@ -861,11 +861,15 @@ void EditorWindow::refreshTimelineSelectionInspectorViews()
     }
     if (m_bypassGradingCheckBox) {
         const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr;
+        const TimelineTrack* track =
+            clip && m_timeline && clip->trackIndex >= 0 && clip->trackIndex < m_timeline->tracks().size()
+                ? &m_timeline->tracks().at(clip->trackIndex)
+                : nullptr;
         QSignalBlocker blocker(m_bypassGradingCheckBox);
         m_bypassGradingCheckBox->setEnabled(clip && clipHasVisuals(*clip));
-        m_bypassGradingCheckBox->setChecked(clip ? clip->gradingPreviewEnabled : false);
+        m_bypassGradingCheckBox->setChecked(track ? track->gradingPreviewEnabled : false);
         m_bypassGradingCheckBox->setToolTip(QStringLiteral(
-            "Show this clip's grading in the editor preview. Export grading is unchanged."));
+            "Show grading for this track in the editor preview. Export grading is unchanged."));
     }
     if (m_effectsTab) {
         m_effectsTab->refresh();
@@ -933,8 +937,6 @@ void EditorWindow::createOutputTab()
             m_exportStartSpin, m_exportEndSpin,
             m_outputFormatCombo, m_backgroundFillEffectCombo, m_backgroundFillOpacitySpin,
             m_backgroundFillBrightnessSpin, m_backgroundFillSaturationSpin,
-            m_backgroundFillEdgePixelsSlider, m_backgroundFillEdgeProgressiveCheckBox,
-            m_backgroundFillEdgePowerSpin, m_backgroundFillStretchSourceCombo,
             m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
             m_outputPlaybackCacheFallbackCheckBox, m_outputLeadPrefetchEnabledCheckBox,
             m_outputLeadPrefetchCountSpin, m_outputPlaybackWindowAheadSpin, m_outputVisibleQueueReserveSpin,
@@ -1319,6 +1321,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerOverlayRotationYSpin(),
             m_inspectorPane->speakerOverlayRotationZSpin(),
             m_inspectorPane->speakerOverlayTitleFontSizeSpin(),
+            m_inspectorPane->speakerOverlayTitleAutoFitCheckBox(),
             m_inspectorPane->speakerOverlayTitleBoxWidthSpin(),
             m_inspectorPane->speakerCurrentSpeakerBackgroundVisibleCheckBox(),
             m_inspectorPane->speakerOverlayTitleTextMaterialCombo(),
@@ -1450,6 +1453,10 @@ void EditorWindow::createSpeakersTab()
             },
             [this]() -> QSize {
                 return m_preview ? m_preview->outputSize() : QSize(1080, 1920);
+            },
+            [this](QString* pathOut, QJsonDocument* documentOut) -> bool {
+                return m_transcriptTab && m_transcriptTab->activeTranscriptDocumentSnapshot(
+                    nullptr, pathOut, documentOut);
             },
             [this]() {
                 if (!m_preview || !m_timeline) {
@@ -1680,6 +1687,12 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->effectScaleSpin(),
             m_inspectorPane->effectAlternateDirectionCheck(),
             m_inspectorPane->effectSpeechSyncCheck(),
+            m_inspectorPane->differenceReferenceFramesSpin(),
+            m_inspectorPane->differenceThresholdSpin(),
+            m_inspectorPane->differenceSoftnessSpin(),
+            m_inspectorPane->temporalEchoCountSpin(),
+            m_inspectorPane->temporalEchoSpacingSpin(),
+            m_inspectorPane->temporalEchoDecaySpin(),
             m_inspectorPane->tilingPatternCombo(),
             m_inspectorPane->tilingSpacingSpin(),
             m_inspectorPane->tilingWrapCheck(),
@@ -1718,6 +1731,7 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskFramesDirEdit(),
             m_inspectorPane->maskSidecarCombo(),
             m_inspectorPane->maskBrowseButton(),
+            m_inspectorPane->maskNewPromptButton(),
             m_inspectorPane->maskShapeFeatherSpin(),
             m_inspectorPane->maskShapeFeatherFalloffCombo(),
             m_inspectorPane->maskShapeFeatherPowerSpin(),
@@ -1748,7 +1762,8 @@ void EditorWindow::createMaskTab()
                     QStringLiteral("Choose Mask Frames Directory"),
                     currentPath.trimmed().isEmpty() ? QDir::homePath() : currentPath,
                     QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-            }});
+            },
+            [this](const QString& clipId) { openSamDetectorWindow(clipId); }});
     m_maskTab->wire();
 }
 

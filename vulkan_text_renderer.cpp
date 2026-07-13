@@ -1049,7 +1049,7 @@ bool VulkanTextRenderer::buildTitleAtlasAndLayout(const QSize& outputSize,
         return fail(QStringLiteral("title_invalid_input"));
     }
 
-    const int pixelSize = qBound(8, static_cast<int>(std::round(title.fontSize)), 220);
+    const int pixelSize = qBound(1, static_cast<int>(std::round(title.fontSize)), 220);
     FaceGuard face;
     if (!loadFace(title.fontFamily, title.bold, pixelSize, &face)) {
         return fail(QStringLiteral("title_font_load_failed"));
@@ -1872,7 +1872,14 @@ bool VulkanTextRenderer::ensureAtlasUploaded(VkCommandBuffer commandBuffer, cons
         return fail(QStringLiteral("text_atlas_invalid"));
     }
     if (m_uploadedAtlasKey == atlas.key) {
-        return true;
+        // beginFrameUploads() selects the descriptor owned by the acquired
+        // swapchain image. Rebind the persistent atlas for that set even when
+        // no pixels changed; otherwise only the set used for the original
+        // upload is valid and the remaining sets still sample the undefined
+        // placeholder texture.
+        return m_atlasResources->setSampledImage(
+            m_atlasResources->sampledImageView(),
+            m_atlasResources->sampledImageLayout());
     }
     if (!m_atlasResources->uploadImageTexture(commandBuffer, atlas.image)) {
         return fail(QStringLiteral("text_atlas_upload_failed"));

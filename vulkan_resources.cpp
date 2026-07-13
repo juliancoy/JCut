@@ -22,6 +22,23 @@ constexpr uint32_t kCurveLutHeight = 1;
 constexpr VkDeviceSize kCurveLutBytes = static_cast<VkDeviceSize>(kCurveLutWidth * kCurveLutHeight * 4);
 constexpr size_t kFrameUniformRingCount = 4096;
 
+void nameVulkanImage(VkDevice device, VkImage image, const QByteArray& name)
+{
+    if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE ||
+        qEnvironmentVariableIntValue("JCUT_VULKAN_VALIDATION") == 0) {
+        return;
+    }
+    const auto setName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+    if (!setName) return;
+    VkDebugUtilsObjectNameInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    info.objectType = VK_OBJECT_TYPE_IMAGE;
+    info.objectHandle = reinterpret_cast<uint64_t>(image);
+    info.pObjectName = name.constData();
+    setName(device, &info);
+}
+
 struct FrameUniformData {
     float outputSizeAndInverse[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -412,6 +429,14 @@ bool VulkanResources::createTextureResources()
                          &m_maskWorkImage, &m_maskWorkMemory, &m_maskWorkView)) {
         return false;
     }
+    const QByteArray resourceName = QByteArray("VulkanResources[") +
+        QByteArray::number(reinterpret_cast<quintptr>(this), 16) + ']';
+    nameVulkanImage(m_device, m_textureImage, resourceName + ".texture");
+    nameVulkanImage(m_device, m_curveLutImage, resourceName + ".curveLut");
+    nameVulkanImage(m_device, m_maskCurveLutImage, resourceName + ".maskCurveLut");
+    nameVulkanImage(m_device, m_maskRawImage, resourceName + ".maskRaw");
+    nameVulkanImage(m_device, m_maskImage, resourceName + ".mask");
+    nameVulkanImage(m_device, m_maskWorkImage, resourceName + ".maskWork");
     m_maskLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -723,16 +748,36 @@ bool VulkanResources::ensureMaskImages(const QSize& size)
     maskInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     maskInfo.imageView = m_maskView;
     maskInfo.sampler = m_sampler;
-    std::array<VkWriteDescriptorSet, VulkanResources::kDescriptorSetCount> writes{};
-    for (size_t i = 0; i < m_descriptorSets.size(); ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = m_descriptorSets[i];
-        writes[i].dstBinding = 2;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &maskInfo;
-    }
-    vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    // beginFrameUploads() selects the descriptor set owned by the acquired
+    // swapchain image. Other sets can still be referenced by submitted frames,
+    // so updating the whole ring here violates VUID-vkUpdateDescriptorSets-None-03047
+    // and can leave the GPU sampling a destroyed image after mask recreation.
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_descriptorSets[m_descriptorSetIndex];
+    write.dstBinding = 2;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &maskInfo;
+    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+    return true;
+}
+
+bool VulkanResources::bindAuxiliaryImage(VkImageView view, VkImageLayout layout)
+{
+    if (view == VK_NULL_HANDLE || m_sampler == VK_NULL_HANDLE) return false;
+    VkDescriptorImageInfo info{};
+    info.imageLayout = layout;
+    info.imageView = view;
+    info.sampler = m_sampler;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_descriptorSets[m_descriptorSetIndex];
+    write.dstBinding = 2;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
     return true;
 }
 
@@ -825,6 +870,10 @@ bool VulkanResources::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
 {
     m_stagingRing.frameSlotCount = qMax<size_t>(1, frameSlotCount);
     m_stagingRing.frameSlot = frameSlot % m_stagingRing.frameSlotCount;
+    // QVulkanWindow waits for the acquired swapchain image before calling
+    // startNextFrame(). Keep the descriptor ring on that same ownership model;
+    // independently rotating it can select a set that another frame still uses.
+    m_descriptorSetIndex = frameSlot % m_descriptorSets.size();
     const VkDeviceSize slotBytes = m_stagingRing.frameSlotBytes > 0
                                       ? m_stagingRing.frameSlotBytes
                                       : m_stagingRing.capacity / qMax<VkDeviceSize>(
@@ -833,6 +882,9 @@ bool VulkanResources::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
                     slotBytes,
                     &m_stagingRing.writeOffset)) {
         return false;
+    }
+    if (m_maskView != VK_NULL_HANDLE && m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        bindAuxiliaryImage(m_maskView, m_maskLayout);
     }
     return true;
 }
@@ -1505,7 +1557,6 @@ bool VulkanResources::setSampledImage(VkImageView imageView, VkImageLayout image
     if (!m_initialized || imageView == VK_NULL_HANDLE || m_descriptorSets[m_descriptorSetIndex] == VK_NULL_HANDLE) {
         return false;
     }
-    m_descriptorSetIndex = (m_descriptorSetIndex + 1) % m_descriptorSets.size();
     VkDescriptorImageInfo imageInfoDesc{};
     imageInfoDesc.imageLayout = imageLayout;
     imageInfoDesc.imageView = imageView;
@@ -1650,6 +1701,31 @@ bool VulkanResources::ensureAuxiliaryImagesReadable(VkCommandBuffer commandBuffe
     transitionIfUndefined(m_curveLutImage, m_curveLutLayout);
     transitionIfUndefined(m_maskImage, m_maskLayout);
     transitionIfUndefined(m_maskCurveLutImage, m_maskCurveLutLayout);
+
+    const VkImageView views[] = {m_curveLutView, m_maskView, m_maskCurveLutView};
+    const VkImageLayout layouts[] = {m_curveLutLayout, m_maskLayout, m_maskCurveLutLayout};
+    VkDescriptorImageInfo imageInfos[3]{};
+    VkWriteDescriptorSet writes[3]{};
+    uint32_t writeCount = 0;
+    for (uint32_t index = 0; index < 3; ++index) {
+        if (views[index] == VK_NULL_HANDLE ||
+            layouts[index] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            continue;
+        }
+        imageInfos[writeCount].imageLayout = layouts[index];
+        imageInfos[writeCount].imageView = views[index];
+        imageInfos[writeCount].sampler = m_sampler;
+        writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeCount].dstSet = m_descriptorSets[m_descriptorSetIndex];
+        writes[writeCount].dstBinding = index + 1;
+        writes[writeCount].descriptorCount = 1;
+        writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[writeCount].pImageInfo = &imageInfos[writeCount];
+        ++writeCount;
+    }
+    if (writeCount > 0) {
+        vkUpdateDescriptorSets(m_device, writeCount, writes, 0, nullptr);
+    }
     return true;
 }
 

@@ -5,6 +5,7 @@
 #include "editor.h"
 #include "facedetections_artifact_utils.h"
 #include "json_io_utils.h"
+#include "timeline_widget.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -1221,6 +1222,21 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     }
                 } else if (op == QStringLiteral("set")) {
                     ok = applyGenericSet(widget, &operationError);
+                } else if (op == QStringLiteral("timeline_select_clip")) {
+                    auto* timeline = qobject_cast<TimelineWidget*>(widget);
+                    const QString clipId = effectiveBody.value(QStringLiteral("clipId"))
+                                               .toString().trimmed();
+                    if (!timeline) {
+                        operationError = QStringLiteral("target is not a TimelineWidget");
+                    } else if (clipId.isEmpty()) {
+                        operationError = QStringLiteral("missing clipId");
+                    } else {
+                        timeline->setSelectedClipId(clipId);
+                        ok = timeline->selectedClipId() == clipId;
+                        if (!ok) {
+                            operationError = QStringLiteral("timeline clip not found");
+                        }
+                    }
                 } else if (op == QStringLiteral("tab_select")) {
                     auto* tabWidget = qobject_cast<QTabWidget*>(widget);
                     if (!tabWidget) {

@@ -3,7 +3,6 @@
 #include <QObject>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
-#include <QSlider>
 #include <QComboBox>
 #include <QLabel>
 #include <QPushButton>
@@ -34,10 +33,6 @@ public:
         QDoubleSpinBox* backgroundFillOpacitySpin = nullptr;
         QDoubleSpinBox* backgroundFillBrightnessSpin = nullptr;
         QDoubleSpinBox* backgroundFillSaturationSpin = nullptr;
-        QSlider* backgroundFillEdgePixelsSlider = nullptr;
-        QCheckBox* backgroundFillEdgeProgressiveCheckBox = nullptr;
-        QDoubleSpinBox* backgroundFillEdgePowerSpin = nullptr;
-        QComboBox* backgroundFillStretchSourceCombo = nullptr;
         QLabel* outputRangeSummaryLabel = nullptr;
         QCheckBox* renderUseProxiesCheckBox = nullptr;
         QCheckBox* outputPlaybackCacheFallbackCheckBox = nullptr;

@@ -31,6 +31,7 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFr
     result.x = kf.translationX;
     result.y = kf.translationY;
     result.fontSize = kf.fontSize;
+    result.autoFitToOutput = kf.autoFitToOutput;
     result.opacity = kf.opacity;
     result.fontFamily = kf.fontFamily;
     result.bold = kf.bold;
@@ -129,6 +130,38 @@ EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacit
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale)
 {
     return render_detail::measureOverlayTitleLayout(title, fontScale);
+}
+
+EvaluatedTitle fitTitleToOutput(const EvaluatedTitle& title,
+                                const QSize& outputSize,
+                                qreal safeWidthFraction,
+                                qreal safeHeightFraction)
+{
+    if (!title.valid || !title.autoFitToOutput || !outputSize.isValid()) return title;
+    EvaluatedTitle fitted = title;
+    const qreal safeWidth = outputSize.width() * qBound<qreal>(0.25, safeWidthFraction, 1.0);
+    const qreal safeHeight = outputSize.height() * qBound<qreal>(0.25, safeHeightFraction, 1.0);
+    const qreal padding = fitted.windowEnabled || fitted.windowFrameEnabled
+        ? qMax<qreal>(0.0, fitted.windowPadding) * 2.0 : 0.0;
+    const qreal extrusionSafety = fitted.vulkan3DEnabled ? 0.88 : 1.0;
+    const TitleLayoutMetrics metrics = measureTitleLayout(fitted);
+    const qreal widthScale = metrics.width > 0.0
+        ? qMax<qreal>(0.01, (safeWidth - padding) / metrics.width) : 1.0;
+    const qreal heightScale = metrics.height > 0.0
+        ? qMax<qreal>(0.01, (safeHeight - padding) / metrics.height) : 1.0;
+    const qreal scale = qMin<qreal>(1.0, qMin(widthScale, heightScale) * extrusionSafety);
+    fitted.fontSize = qMax<qreal>(1.0, fitted.fontSize * scale);
+    const TitleLayoutMetrics fittedMetrics = measureTitleLayout(fitted);
+    const qreal correction = qMin(
+        fittedMetrics.width > 0.0 ? (safeWidth - padding) / fittedMetrics.width : 1.0,
+        fittedMetrics.height > 0.0 ? (safeHeight - padding) / fittedMetrics.height : 1.0);
+    if (correction < 1.0) {
+        fitted.fontSize = qMax<qreal>(1.0, fitted.fontSize * correction * 0.98);
+    }
+    if (fitted.windowWidth > 0.0) {
+        fitted.windowWidth = qMin(fitted.windowWidth, safeWidth);
+    }
+    return fitted;
 }
 
 TimelineClip createDefaultTitleClip(int64_t startFrame, int trackIndex, int64_t durationFrames)

@@ -48,6 +48,16 @@ constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
 
+bool gradingPreviewEnabledForTrack(const TimelineClip& clip,
+                                   const QVector<TimelineTrack>& tracks)
+{
+    if (clip.trackIndex >= 0 && clip.trackIndex < tracks.size()) {
+        return tracks.at(clip.trackIndex).gradingPreviewEnabled;
+    }
+    // Compatibility for malformed/legacy timelines without an owning track.
+    return clip.gradingPreviewEnabled;
+}
+
 QString cacheRegistrationKeyForClip(const TimelineClip& clip)
 {
     const QString decodePath = interactivePreviewMediaPathForClip(clip);
@@ -1813,7 +1823,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.visualTimelineFramePosition = visualFramePosition;
         status.active = true;
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
-        status.gradingBypassed = m_bypassGrading;
+        const bool trackGradingPreviewEnabled =
+            gradingPreviewEnabledForTrack(clip, m_interaction.tracks);
+        status.gradingBypassed = m_bypassGrading || !trackGradingPreviewEnabled;
         status.correctionsEnabled = m_correctionsEnabled;
         status.transform = evaluateClipRenderTransformWithSourceLockAtPosition(
             clip,
@@ -1844,7 +1856,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             visualFramePosition,
             m_interaction.renderSyncMarkers,
             m_interaction.playbackTiming);
-        if (m_bypassGrading || !clip.gradingPreviewEnabled) {
+        if (m_bypassGrading || !trackGradingPreviewEnabled) {
             effects.grading = TimelineClip::GradingKeyframe{};
         }
         if (!m_correctionsEnabled) {
@@ -1946,6 +1958,35 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             approxCount += status.exact ? 0 : 1;
             hardwareCount += status.hardwareFrame ? 1 : 0;
             cpuCount += status.cpuImage ? 1 : 0;
+            const TimelineClip effectClip = clipWithTrackEffectSettings(clip, m_interaction.tracks);
+            auto auxiliaryFrame = [&](int64_t frameNumber) {
+                FrameHandle result = usePlaybackPipeline
+                    ? m_playbackPipeline->getFrame(clip.id, frameNumber)
+                    : m_cache->getCachedFrame(clip.id, frameNumber);
+                if (result.isNull()) result = m_cache->getBestCachedFrame(clip.id, frameNumber);
+                if (result.isNull()) {
+                    m_cache->requestFrame(clip.id, frameNumber, [this](FrameHandle) {
+                        queueFrameStatusRefresh(false);
+                    });
+                }
+                return result;
+            };
+            if (!staticImageClip && effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
+                const int64_t referenceFrame = qMax<int64_t>(
+                    0, requestFrame - qBound(1, effectClip.differenceReferenceFrames, 300));
+                status.differenceReferenceFrame = auxiliaryFrame(referenceFrame);
+                status.differenceMatteEnabled = !status.differenceReferenceFrame.isNull();
+                status.differenceThreshold = qBound<qreal>(0.0, effectClip.differenceThreshold, 1.0);
+                status.differenceSoftness = qBound<qreal>(0.0, effectClip.differenceSoftness, 1.0);
+            } else if (!staticImageClip && effectClip.effectPreset == ClipEffectPreset::TemporalEcho) {
+                status.temporalEchoDecay = qBound<qreal>(0.0, effectClip.temporalEchoDecay, 1.0);
+                const int count = qBound(1, effectClip.temporalEchoCount, 12);
+                const int spacing = qBound(1, effectClip.temporalEchoSpacingFrames, 120);
+                for (int i = 1; i <= count; ++i) {
+                    const FrameHandle echo = auxiliaryFrame(qMax<int64_t>(0, requestFrame - i * spacing));
+                    if (!echo.isNull()) status.temporalEchoFrames.push_back(echo);
+                }
+            }
             if (secondaryClipActive && secondaryRequestFrame >= 0) {
                 FrameHandle secondaryFrame = usePlaybackPipeline
                     ? m_playbackPipeline->getPresentationFrame(clip.id, secondaryRequestFrame)
@@ -2042,7 +2083,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                             visualFramePosition,
                             m_interaction.renderSyncMarkers,
                             m_interaction.playbackTiming);
-                    if (m_bypassGrading || !clip.gradingPreviewEnabled) {
+                    if (m_bypassGrading ||
+                        !gradingPreviewEnabledForTrack(clip, m_interaction.tracks)) {
                         matteEffects.grading = TimelineClip::GradingKeyframe{};
                     }
                     markerStatus.grading = matteEffects.grading;

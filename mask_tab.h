@@ -24,6 +24,7 @@ public:
         QLineEdit* framesDirEdit = nullptr;
         QComboBox* sidecarCombo = nullptr;
         QPushButton* browseButton = nullptr;
+        QPushButton* newPromptButton = nullptr;
         QDoubleSpinBox* featherSpin = nullptr;
         QComboBox* featherFalloffCombo = nullptr;
         QDoubleSpinBox* featherPowerSpin = nullptr;
@@ -50,6 +51,7 @@ public:
         std::function<void()> pushHistorySnapshot;
         std::function<bool(const TimelineClip&)> clipHasVisuals;
         std::function<QString(QWidget*, const QString&)> chooseMaskDirectory;
+        std::function<void(const QString&)> generatePromptMask;
     };
 
     explicit MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);

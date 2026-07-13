@@ -607,13 +607,14 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
 }
 
 OverlayImage renderTitleOverlayImageSoftware(const QSize& imageSize,
-                                             const EvaluatedTitle& title,
+                                             const EvaluatedTitle& inputTitle,
                                              const QSize& outputSize)
 {
     if (!imageSize.isValid()) {
         return {};
     }
     OverlayImage titleImage = makeOverlayImage(imageSize);
+    const EvaluatedTitle title = fitTitleToOutput(inputTitle, outputSize);
     if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
         return titleImage;
     }

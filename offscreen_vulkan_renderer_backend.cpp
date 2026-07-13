@@ -208,6 +208,8 @@ public:
     bool maskUploaded = false;
     std::shared_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff>
         hardwareFrameHandoff;
+    std::shared_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff>
+        referenceFrameHandoff;
   };
   ~OffscreenVulkanRendererPrivate() { release(); }
 
@@ -2146,8 +2148,10 @@ public:
     QSize maskSourceSize;
     OverlayImage overlayImage;
     editor::FrameHandle frameHandle;
+    editor::FrameHandle referenceFrameHandle;
     QSize sourceSize;
     bool preferHardwareDirect = false;
+    bool differenceMatteEnabled = false;
     bool maskTextureEnabled = false;
     bool maskClipSource = false;
     bool maskShowOnly = false;
@@ -2575,14 +2579,16 @@ public:
     const VkDeviceSize layerImageBytes =
         static_cast<VkDeviceSize>(m_outputSize.width()) *
         static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
-    const VkDeviceSize layerStagingSize = (layerImageBytes * 2) + kCurveLutBytes;
+    const VkDeviceSize layerStagingSize = (layerImageBytes * 2) + (kCurveLutBytes * 2);
     auto layerHasRenderableSource = [](const LayerInput &layer) {
       return !layer.overlayImage.isNull() || !layer.image.isNull() ||
              !layer.frameHandle.isNull();
     };
     auto updateLayerDescriptorSet = [&](LayerTextureSlot &slot,
                                         VkImageView sourceView,
-                                        VkImageLayout sourceLayout) {
+                                        VkImageLayout sourceLayout,
+                                        VkImageView auxiliaryView = VK_NULL_HANDLE,
+                                        VkImageLayout auxiliaryLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
       VkDescriptorImageInfo di[4]{};
       di[0].imageLayout = sourceLayout;
       di[0].imageView = sourceView;
@@ -2591,7 +2597,8 @@ public:
       di[1].imageView = slot.curveLutView;
       di[1].sampler = m_sampler;
       di[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      di[2].imageView = slot.maskView;
+      di[2].imageView = auxiliaryView != VK_NULL_HANDLE ? auxiliaryView : slot.maskView;
+      di[2].imageLayout = auxiliaryView != VK_NULL_HANDLE ? auxiliaryLayout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[2].sampler = m_sampler;
       di[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       di[3].imageView = slot.maskCurveLutView;
@@ -2842,6 +2849,8 @@ public:
       struct PreparedBatchLayer {
         VkImageView view = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkImageView auxiliaryView = VK_NULL_HANDLE;
+        VkImageLayout auxiliaryLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       };
       QVector<PreparedBatchLayer> preparedLayers(batchCount);
       for (int i = 0; i < batchCount; ++i) {
@@ -2856,6 +2865,37 @@ public:
                                 &preparedLayers[i].layout)) {
           vkEndCommandBuffer(m_commandBuffer);
           return QImage();
+        }
+        if (layer.differenceMatteEnabled && layer.referenceFrameHandle.hasHardwareFrame()) {
+          if (!slot.referenceFrameHandoff) {
+            auto handoff = std::make_shared<jcut::vulkan_detector::VulkanDetectorFrameHandoff>();
+            jcut::vulkan_detector::VulkanDeviceContext context;
+            context.physicalDevice = m_physicalDevice;
+            context.device = m_device;
+            context.queue = m_graphicsQueue;
+            context.queueFamilyIndex = m_graphicsQueueFamily;
+            std::string error;
+            if (handoff->initialize(context, &error)) {
+              slot.referenceFrameHandoff = handoff;
+            } else {
+              qWarning().noquote() << QStringLiteral("[vulkan-compose] difference reference handoff initialization failed: %1")
+                                         .arg(QString::fromStdString(error));
+            }
+          }
+          if (!slot.referenceFrameHandoff) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          std::string error;
+          if (!slot.referenceFrameHandoff->uploadFrame(layer.referenceFrameHandle, false, nullptr, &error)) {
+            qWarning().noquote() << QStringLiteral("[vulkan-compose] difference reference handoff failed: %1")
+                                       .arg(QString::fromStdString(error));
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          const auto external = slot.referenceFrameHandoff->externalImage();
+          preparedLayers[i].auxiliaryView = external.imageView;
+          preparedLayers[i].auxiliaryLayout = external.imageLayout;
         }
 
         const QByteArray curveBytes =
@@ -2936,7 +2976,38 @@ public:
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         slot.maskCurveUploaded = true;
-        if (layer.maskTextureEnabled) {
+        if (layer.differenceMatteEnabled && !layer.referenceFrameHandle.hasHardwareFrame()) {
+          QImage reference = layer.referenceFrameHandle.hasCpuImage()
+              ? layer.referenceFrameHandle.cpuImage()
+              : frameHandleToCpuImage(layer.referenceFrameHandle);
+          if (reference.isNull()) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          reference = reference.convertToFormat(QImage::Format_RGBA8888);
+          const VkDeviceSize referenceOffset = stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
+          if (!writeRgbaImageToStagingTopLeft(reference, referenceOffset)) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
+          transitionImageLayout(m_commandBuffer, slot.maskImage, slot.maskLayout,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+          slot.maskLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+          VkBufferImageCopy region{};
+          region.bufferOffset = referenceOffset;
+          region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.imageSubresource.layerCount = 1;
+          region.imageExtent = {static_cast<uint32_t>(reference.width()),
+                                static_cast<uint32_t>(reference.height()), 1};
+          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer, slot.maskImage,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+          transitionImageLayout(m_commandBuffer, slot.maskImage,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          slot.maskLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+          slot.maskUploaded = true;
+          preparedLayers[i].auxiliaryView = slot.maskView;
+        } else if (layer.maskTextureEnabled) {
           QImage maskUpload = layer.maskImage;
           if (maskUpload.isNull()) {
             vkEndCommandBuffer(m_commandBuffer);
@@ -3015,7 +3086,9 @@ public:
           slot.maskUploaded = true;
         }
         updateLayerDescriptorSet(slot, preparedLayers[i].view,
-                                 preparedLayers[i].layout);
+                                 preparedLayers[i].layout,
+                                 preparedLayers[i].auxiliaryView,
+                                 preparedLayers[i].auxiliaryLayout);
       }
 
       vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
@@ -4411,8 +4484,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
       }
       const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
           clip, static_cast<qreal>(timelineFrame), request.playbackTiming);
-      const EvaluatedTitle title = composeTitleWithOpacity(
-          evaluatedTitle, static_cast<qreal>(grade.opacity));
+      const EvaluatedTitle title = fitTitleToOutput(
+          composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity)),
+          request.outputSize);
       if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
         continue;
       }
@@ -4554,6 +4628,20 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
     const TimelineClip effectClip =
         clipWithTrackEffectSettings(clip, request.tracks);
+    if (effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
+      const int64_t referenceFrameNumber =
+          qMax<int64_t>(0, localFrame - qBound(1, effectClip.differenceReferenceFrames, 300));
+      layer.referenceFrameHandle = decodeRenderFrame(
+          decodePath, referenceFrameNumber, decoders, asyncDecoder, asyncFrameCache,
+          context.forceSoftwareDecode, context.preferHardwareFrames);
+      if (!layer.referenceFrameHandle.isNull()) {
+        layer.differenceMatteEnabled = true;
+        layer.shadows[3] = kVulkanEffectModeDifferenceMatte;
+        layer.midtones[3] = static_cast<float>(qBound<qreal>(0.0, effectClip.differenceThreshold, 1.0));
+        layer.highlights[3] = static_cast<float>(qBound<qreal>(0.0, effectClip.differenceSoftness, 1.0));
+        layer.maskTextureEnabled = false;
+      }
+    }
     const VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
         vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks);
     const bool progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground;
@@ -4639,6 +4727,14 @@ QImage OffscreenVulkanRenderer::renderFrame(
           progressiveEdgeStretchEffect
               ? BackgroundFillEffect::ProgressiveEdgeStretch
               : request.backgroundFillEffect;
+      const int edgePixels =
+          progressiveEdgeStretchEffect
+              ? qBound(1, effectClip.effectRows, 512)
+              : request.backgroundFillEdgePixels;
+      const qreal edgePower =
+          progressiveEdgeStretchEffect
+              ? qBound<qreal>(0.25, effectClip.effectScale, 8.0)
+              : request.backgroundFillEdgePower;
       const VulkanDrawEffectState backgroundEffects =
           vulkanBackgroundFillEffectState(
               fillEffect,
@@ -4646,9 +4742,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
               static_cast<float>(request.backgroundFillOpacity),
               static_cast<float>(request.backgroundFillBrightness),
               static_cast<float>(request.backgroundFillSaturation),
-              request.backgroundFillEdgePixels,
+              edgePixels,
               request.backgroundFillEdgeProgressive,
-              static_cast<float>(request.backgroundFillEdgePower),
+              static_cast<float>(edgePower),
               frame.validTextureRectNormalized(),
               vulkanBackgroundFillMapping(
                   layerGeometry.clipToScreen,
@@ -4680,8 +4776,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
                 std::end(layerEffects.highlights),
                 std::begin(backgroundLayer.backgroundHighlights));
       backgroundLayer.frameHandle = frame;
+      backgroundLayer.image = layer.image;
       backgroundLayer.sourceSize = sourceSize;
       backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
+      if (!layer.cacheKey.isEmpty()) {
+        backgroundLayer.cacheKey =
+            layer.cacheKey + QStringLiteral(":progressive_background");
+      }
 
       const bool fullCanvasFill =
           fillEffect == BackgroundFillEffect::EdgeStretch ||
@@ -4715,6 +4816,32 @@ QImage OffscreenVulkanRenderer::renderFrame(
     }
     if (clipVisible) {
       layers.push_back(layer);
+      if (effectClip.effectPreset == ClipEffectPreset::TemporalEcho) {
+        const int echoCount = qBound(1, effectClip.temporalEchoCount, 12);
+        const int spacing = qBound(1, effectClip.temporalEchoSpacingFrames, 120);
+        const qreal decay = qBound<qreal>(0.0, effectClip.temporalEchoDecay, 1.0);
+        for (int echoIndex = 1; echoIndex <= echoCount; ++echoIndex) {
+          const int64_t echoFrameNumber = qMax<int64_t>(0, localFrame - echoIndex * spacing);
+          const editor::FrameHandle echoFrame = decodeRenderFrame(
+              decodePath, echoFrameNumber, decoders, asyncDecoder, asyncFrameCache,
+              context.forceSoftwareDecode, context.preferHardwareFrames);
+          if (echoFrame.isNull()) continue;
+          OffscreenVulkanRendererPrivate::LayerInput echoLayer = layer;
+          echoLayer.frameHandle = echoFrame;
+          echoLayer.referenceFrameHandle = {};
+          echoLayer.differenceMatteEnabled = false;
+          echoLayer.image = echoFrame.hasCpuImage() ? echoFrame.cpuImage() : QImage();
+          echoLayer.sourceSize = echoFrame.size();
+          echoLayer.preferHardwareDirect = echoFrame.hasHardwareFrame();
+          echoLayer.cacheKey.clear();
+          echoLayer.presetDraws.clear();
+          echoLayer.maskTextureEnabled = false;
+          echoLayer.opacity = static_cast<float>(qBound<qreal>(0.0, grade.opacity * std::pow(decay, echoIndex), 1.0));
+          echoLayer.shadows[3] = echoLayer.curveLutApplied
+              ? kVulkanEffectModeCurve : kVulkanEffectModeNormal;
+          layers.push_back(echoLayer);
+        }
+      }
     }
     if (layer.maskTextureEnabled &&
         layer.maskForegroundLayerEnabled) {
@@ -4754,8 +4881,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (!clip.titleKeyframes.isEmpty()) {
       const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
           clip, static_cast<qreal>(timelineFrame), request.playbackTiming);
-      const EvaluatedTitle title = composeTitleWithOpacity(
-          evaluatedTitle, static_cast<qreal>(grade.opacity));
+      const EvaluatedTitle title = fitTitleToOutput(
+          composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity)),
+          request.outputSize);
       if (title.valid && !title.text.isEmpty() && title.opacity > 0.001) {
         textInputs.title3D.push_back(title);
       }

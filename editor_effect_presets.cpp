@@ -97,16 +97,41 @@ int appendGeneratedTrack(QVector<TimelineTrack>& tracks, const QString& trackBas
 QVector<EffectPresetUiOption> effectPresetUiOptions()
 {
     return {
-        {QStringLiteral("Off"), ClipEffectPreset::None},
-        {QStringLiteral("Logo ticker rows"), ClipEffectPreset::NewsLogoTicker},
-        {QStringLiteral("Encircle person"), ClipEffectPreset::PersonOrbit},
-        {QStringLiteral("Alternating motion background"), ClipEffectPreset::AlternatingMotionBackground},
-        {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern},
-        {QStringLiteral("Step repeater"), ClipEffectPreset::StepRepeat},
-        {QStringLiteral("Directional trim ticker"), ClipEffectPreset::DirectionalTrimTicker},
-        {QStringLiteral("Source image tiling"), ClipEffectPreset::SourceTile},
-        {QStringLiteral("Vulkan 3D Synth"), ClipEffectPreset::Vulkan3DSynth},
-        {QStringLiteral("Progressive edge stretch"), ClipEffectPreset::ProgressiveEdgeStretch},
+        {QStringLiteral("Off"), ClipEffectPreset::None, QStringLiteral("General")},
+
+        {QStringLiteral("Mirror ring"), ClipEffectPreset::MirrorRing, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Kaleidoscope"), ClipEffectPreset::Kaleidoscope, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Quad mirror"), ClipEffectPreset::QuadMirror, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Infinite mirror"), ClipEffectPreset::InfiniteMirror, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Tessellation"), ClipEffectPreset::Tessellation, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Hexagonal prism"), ClipEffectPreset::HexagonalPrism, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Droste"), ClipEffectPreset::Droste, QStringLiteral("Mirror & Geometry")},
+
+        {QStringLiteral("Polar tunnel"), ClipEffectPreset::PolarTunnel, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Tiny planet"), ClipEffectPreset::TinyPlanet, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Twirl / vortex"), ClipEffectPreset::TwirlVortex, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Ripple / shockwave"), ClipEffectPreset::RippleShockwave, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Displacement map"), ClipEffectPreset::DisplacementMap, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Glass / refraction"), ClipEffectPreset::GlassRefraction, QStringLiteral("Warp & Distort")},
+        {QStringLiteral("Progressive edge stretch"), ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("Warp & Distort")},
+
+        {QStringLiteral("Temporal echo"), ClipEffectPreset::TemporalEcho, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Slit scan"), ClipEffectPreset::SlitScan, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Step repeater"), ClipEffectPreset::StepRepeat, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source image tiling"), ClipEffectPreset::SourceTile, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Logo ticker rows"), ClipEffectPreset::NewsLogoTicker, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Directional trim ticker"), ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Alternating motion background"), ClipEffectPreset::AlternatingMotionBackground, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Encircle person"), ClipEffectPreset::PersonOrbit, QStringLiteral("Time & Repeat")},
+
+        {QStringLiteral("Pixel sorting"), ClipEffectPreset::PixelSorting, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("Datamosh / glitch blocks"), ClipEffectPreset::DatamoshGlitch, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("RGB split / chromatic aberration"), ClipEffectPreset::RgbSplit, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("Halftone mosaic"), ClipEffectPreset::HalftoneMosaic, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("Vulkan 3D Synth"), ClipEffectPreset::Vulkan3DSynth, QStringLiteral("Glitch & Stylize")},
+
+        {QStringLiteral("Difference matte"), ClipEffectPreset::DifferenceMatte, QStringLiteral("Keying & Matte")},
     };
 }
 
@@ -136,6 +161,26 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::PersonOrbit:
     case ClipEffectPreset::FreezePattern:
     case ClipEffectPreset::StepRepeat:
+    case ClipEffectPreset::DifferenceMatte:
+    case ClipEffectPreset::TemporalEcho:
+    case ClipEffectPreset::MirrorRing:
+    case ClipEffectPreset::Tessellation:
+    case ClipEffectPreset::Kaleidoscope:
+    case ClipEffectPreset::HexagonalPrism:
+    case ClipEffectPreset::Droste:
+    case ClipEffectPreset::PolarTunnel:
+    case ClipEffectPreset::TinyPlanet:
+    case ClipEffectPreset::InfiniteMirror:
+    case ClipEffectPreset::QuadMirror:
+    case ClipEffectPreset::SlitScan:
+    case ClipEffectPreset::DisplacementMap:
+    case ClipEffectPreset::TwirlVortex:
+    case ClipEffectPreset::RippleShockwave:
+    case ClipEffectPreset::PixelSorting:
+    case ClipEffectPreset::DatamoshGlitch:
+    case ClipEffectPreset::RgbSplit:
+    case ClipEffectPreset::HalftoneMosaic:
+    case ClipEffectPreset::GlassRefraction:
     default:
         return false;
     }
@@ -556,6 +601,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             base.text = title.trimmed();
             base.translationY = 0.68;
             base.fontSize = qBound<qreal>(12.0, settings.titleFontSize, 220.0);
+            base.autoFitToOutput = settings.titleAutoFitToOutput;
             base.color = QColor(QStringLiteral("#f7fbff"));
             if (speakerProfile.primaryColor.isValid()) {
                 base.color = speakerProfile.primaryColor;

@@ -583,14 +583,9 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.backgroundFillSaturation = m_backgroundFillSaturationSpin
         ? qBound<qreal>(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
         : 1.0;
-    request.backgroundFillEdgePixels = m_backgroundFillEdgePixelsSlider
-        ? qBound(1, m_backgroundFillEdgePixelsSlider->value(), 512)
-        : 1;
-    request.backgroundFillEdgeProgressive =
-        m_backgroundFillEdgeProgressiveCheckBox && m_backgroundFillEdgeProgressiveCheckBox->isChecked();
-    request.backgroundFillEdgePower = m_backgroundFillEdgePowerSpin
-        ? qBound<qreal>(0.25, m_backgroundFillEdgePowerSpin->value(), 8.0)
-        : 2.0;
+    request.backgroundFillEdgePixels = 1;
+    request.backgroundFillEdgeProgressive = false;
+    request.backgroundFillEdgePower = 2.0;
     // Speaker introductions are rendered exclusively as transcript-owned
     // title clips. The retired current-speaker overlay must never enter export.
     request.showCurrentSpeakerName = false;

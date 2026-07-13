@@ -206,6 +206,10 @@ void SpeakersTab::wire()
             connect(m_widgets.speakerOverlayTitleBackgroundCheckBox, &QCheckBox::toggled,
                     this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
         }
+        if (m_widgets.speakerOverlayTitleAutoFitCheckBox) {
+            connect(m_widgets.speakerOverlayTitleAutoFitCheckBox, &QCheckBox::toggled,
+                    this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
+        }
     }
     if (m_widgets.speakerSectionMinimumWordsSpin) {
         connect(m_widgets.speakerSectionMinimumWordsSpin,

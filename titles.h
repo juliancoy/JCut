@@ -17,6 +17,7 @@ struct EvaluatedTitle {
     qreal x = 0.0;
     qreal y = 0.0;
     qreal fontSize = 48.0;
+    bool autoFitToOutput = false;
     qreal opacity = 1.0;
     QString fontFamily = kDefaultFontFamily;
     bool bold = true;
@@ -71,6 +72,10 @@ EvaluatedTitle evaluateTitleAtTimelinePosition(const TimelineClip& clip,
                                                const PlaybackTimingContext& timing);
 EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacityMultiplier);
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale = 1.0);
+EvaluatedTitle fitTitleToOutput(const EvaluatedTitle& title,
+                                const QSize& outputSize,
+                                qreal safeWidthFraction = 0.90,
+                                qreal safeHeightFraction = 0.86);
 
 // Create a default title clip ready for insertion into the timeline.
 // Returns a TimelineClip with ClipMediaType::Title, one default TitleKeyframe,

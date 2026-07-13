@@ -12,6 +12,30 @@ class VulkanDirectRenderParityTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void temporalEffectsUseZeroCopyVulkanContracts()
+    {
+        QCOMPARE(render_detail::kVulkanEffectModeDifferenceMatte, 5.0f);
+        QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+        QVERIFY2(shader.open(QIODevice::ReadOnly), "Unable to open Vulkan effects shader.");
+        const QString shaderSource = QString::fromUtf8(shader.readAll());
+        QVERIFY(shaderSource.contains(QStringLiteral("texture(u_mask, v_texCoord).rgb")));
+        QVERIFY(shaderSource.contains(QStringLiteral("smoothstep(threshold - softness")));
+
+        QFile preview(QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
+        QVERIFY2(preview.open(QIODevice::ReadOnly), "Unable to open direct Vulkan preview source.");
+        const QString previewSource = QString::fromUtf8(preview.readAll());
+        QVERIFY(previewSource.contains(QStringLiteral("#differenceReference")));
+        QVERIFY(previewSource.contains(QStringLiteral("#temporalEcho%1")));
+        QVERIFY(previewSource.contains(QStringLiteral("bindAuxiliaryImage")));
+
+        QFile exportRenderer(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
+        QVERIFY2(exportRenderer.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer source.");
+        const QString exportSource = QString::fromUtf8(exportRenderer.readAll());
+        QVERIFY(exportSource.contains(QStringLiteral("referenceFrameHandoff->uploadFrame")));
+        QVERIFY(exportSource.contains(QStringLiteral("effectPreset == ClipEffectPreset::TemporalEcho")));
+        QVERIFY(exportSource.contains(QStringLiteral("context.preferHardwareFrames")));
+    }
+
     void sharedRenderStateBuildsVulkanPushValues()
     {
         TimelineClip::GradingKeyframe grade;
@@ -239,8 +263,8 @@ private slots:
             ClipEffectPreset::ProgressiveEdgeStretch;
         const render_detail::VulkanProgressiveEdgeStretchLayerPolicy trackPolicy =
             render_detail::vulkanProgressiveEdgeStretchLayerPolicy(trackDriven, progressiveTracks);
-        QVERIFY(trackPolicy.presetActive);
-        QVERIFY(trackPolicy.drawBackground);
+        QVERIFY(!trackPolicy.presetActive);
+        QVERIFY(!trackPolicy.drawBackground);
         TimelineClip independentMask = maskMatte;
         independentMask.effectPreset = ClipEffectPreset::None;
         const render_detail::VulkanProgressiveEdgeStretchLayerPolicy independentMaskPolicy =
@@ -437,12 +461,13 @@ private slots:
                  "Direct Vulkan presenter must use the output background fill brightness.");
         QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillSaturation)")),
                  "Direct Vulkan presenter must use the output background fill saturation.");
-        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgePixels")),
-                 "Direct Vulkan presenter must use the output background fill edge pixel band.");
+        QVERIFY2(source.contains(QStringLiteral("progressiveEdgeStretchEffect")) &&
+                     source.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")),
+                 "Direct Vulkan presenter must use clip effect rows as the progressive edge pixel band.");
         QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgeProgressive")),
                  "Direct Vulkan presenter must use the output background fill progressive mode.");
-        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgePower")),
-                 "Direct Vulkan presenter must use the output background fill edge curve.");
+        QVERIFY2(source.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
+                 "Direct Vulkan presenter must use clip effect scale as the progressive edge curve.");
         QVERIFY2(source.contains(QStringLiteral("effectiveFillEffect == BackgroundFillEffect::EdgeStretch")),
                  "Direct Vulkan presenter must default through the edge-stretch background path.");
         QVERIFY2(source.contains(QStringLiteral("render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks)")),
@@ -510,6 +535,9 @@ private slots:
                  "Offscreen clip-basis progressive stretch must not be suppressed by an earlier global background fill.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("if (!progressiveStretchOwnsClipBackground)")),
                  "Offscreen global background fill guard must not consume clip-owned progressive stretch effects.");
+        QVERIFY2(offscreenSource.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")) &&
+                     offscreenSource.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
+                 "Offscreen renderer must source progressive edge parameters from the selected clip effect.");
 
         QFile editor(QStringLiteral(JCUT_SOURCE_DIR "/editor.cpp"));
         QVERIFY2(editor.open(QIODevice::ReadOnly), "Unable to open editor source.");
