@@ -376,7 +376,9 @@ void TimelineRenderer::paint(QPainter* painter) {
                 ? QStringLiteral("Title") : clip.titleKeyframes.constFirst().text;
             clipTitle = QStringLiteral("T  %1").arg(titleText);
         } else if (clip.clipRole == ClipRole::MaskMatte) {
-            clipTitle = QStringLiteral("Z  %1").arg(clip.label);
+            clipTitle = QStringLiteral("↳  %1  ·  Z %2")
+                            .arg(clip.label)
+                            .arg(effectiveClipZLevel(clip));
         } else if (audioOnly) {
             clipTitle = QStringLiteral("AUDIO  %1").arg(clip.label);
         } else {

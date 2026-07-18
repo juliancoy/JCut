@@ -3168,6 +3168,34 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 const bool maskReady =
                     status && status->maskTextureEnabled &&
                     maskUploadResults.value(status->clipId, false);
+                const auto drawMaskShadow = [&](const VulkanPipeline::Push& maskedPush) {
+                    if (!maskReady || !status || !status->maskDropShadowEnabled ||
+                        status->maskDropShadowOpacity <= 0.0) {
+                        return;
+                    }
+                    VulkanPipeline::Push shadowPush = maskedPush;
+                    shadowPush.mvp[12] += static_cast<float>(
+                        2.0 * status->maskDropShadowOffsetX /
+                        std::max(1, swapSize.width()));
+                    shadowPush.mvp[13] += static_cast<float>(
+                        2.0 * status->maskDropShadowOffsetY /
+                        std::max(1, swapSize.height()));
+                    shadowPush.brightness = 0.0f;
+                    shadowPush.contrast = 1.0f;
+                    shadowPush.saturation = 1.0f;
+                    shadowPush.opacity *= static_cast<float>(
+                        std::clamp(status->maskDropShadowOpacity, 0.0, 1.0));
+                    shadowPush.shadows[0] = 0.0f;
+                    shadowPush.shadows[1] = 0.0f;
+                    shadowPush.shadows[2] = 0.0f;
+                    shadowPush.shadows[3] = render_detail::kVulkanEffectModeMaskShadow;
+                    shadowPush.midtones[0] = 0.0f;
+                    shadowPush.midtones[1] = 0.0f;
+                    shadowPush.midtones[2] = 0.0f;
+                    shadowPush.midtones[3] = static_cast<float>(
+                        std::clamp(status->maskDropShadowRadius, 0.0, 200.0));
+                    drawPush(shadowPush);
+                };
                 // A virtual mask clip is an explicitly masked overlay, never a
                 // second ordinary media layer. If its matte is unavailable for
                 // this frame, fail closed instead of grading the entire source
@@ -3197,6 +3225,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     }
                     if (maskReady && status->maskClipSource) {
                         basePush.shadows[3] = render_detail::kVulkanEffectModeMaskGrade;
+                        basePush.opacity *= static_cast<float>(
+                            std::clamp(status->maskOpacity, 0.0, 1.0));
                         basePush.midtones[3] = 0.0f;
                         if (status->maskGradeEnabled) {
                             basePush.brightness = static_cast<float>(status->maskGradeBrightness);
@@ -3211,6 +3241,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 }
                             }
                         }
+                        drawMaskShadow(basePush);
                     }
                     if (status && status->differenceMatteEnabled && sampledResources) {
                         const auto referenceResult = frameHandoffResults.value(
@@ -3254,7 +3285,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                              effectPlan.generatedDraws) {
                             VulkanPipeline::Push effectPush = basePush;
                             effectPush.opacity *= effectDraw.opacityMultiplier;
+                            if (effectDraw.shaderMode == render_detail::kVulkanEffectModeMaskGrade &&
+                                status && !status->maskClipSource) {
+                                effectPush.opacity *= static_cast<float>(
+                                    std::clamp(status->maskOpacity, 0.0, 1.0));
+                            }
                             if (!status || !status->maskClipSource) {
+                                effectPush.shadows[3] = effectDraw.shaderMode;
+                            }
+                            if (effectDraw.shaderMode >= render_detail::kVulkanEffectModeSpeakerMaskDilation &&
+                                effectDraw.shaderMode <= render_detail::kVulkanEffectModeSpeakerMaskDilationRings) {
+                                std::copy_n(effectDraw.palette, 3, effectPush.shadows);
+                                std::copy_n(effectDraw.palette + 3, 3, effectPush.midtones);
+                                std::copy_n(effectDraw.palette + 6, 3, effectPush.highlights);
                                 effectPush.shadows[3] = effectDraw.shaderMode;
                             }
                             render_detail::vulkanMvpForOutputRectMaybeFlippedY(
@@ -3263,12 +3306,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 effectDraw.rotationDegrees,
                                 status && status->sampledFrameNeedsYFlip,
                                 effectPush.mvp);
+                            uint32_t effectUniformOffset =
+                                sampledResources ? sampledResources->frameUniformDynamicOffset() : 0;
+                            if (sampledResources && sampledResources->updateFrameUniform(
+                                    swapSize, nullptr, nullptr, nullptr, effectDraw.effectParams)) {
+                                effectUniformOffset = sampledResources->frameUniformDynamicOffset();
+                            }
                             m_pipeline->bindAndDraw(cb,
                                                      viewport,
                                                      generatedScissor,
                                                      handoffResult.descriptorSet,
                                                      effectPush,
-                                                     sampledResources ? sampledResources->frameUniformDynamicOffset() : 0);
+                                                     effectUniformOffset);
                         }
                     } else {
                         drawPush(basePush);
@@ -3358,7 +3407,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         foregroundPush.saturation = applyMaskGradeToForeground
                             ? static_cast<float>(status->maskGradeSaturation)
                             : 1.0f;
-                        foregroundPush.opacity = 1.0f;
+                        foregroundPush.opacity = static_cast<float>(
+                            std::clamp(status->maskOpacity, 0.0, 1.0));
                         foregroundPush.shadows[0] = 0.0f;
                         foregroundPush.shadows[1] = 0.0f;
                         foregroundPush.shadows[2] = 0.0f;
@@ -3379,7 +3429,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         foregroundPush.highlights[0] = 0.0f;
                         foregroundPush.highlights[1] = 0.0f;
                         foregroundPush.highlights[2] = 0.0f;
-                        foregroundPush.highlights[3] = 1.0f;
+                        foregroundPush.highlights[3] = push.highlights[3];
+                        drawMaskShadow(foregroundPush);
                         pendingMaskForegroundDraws.push_back(
                             PendingMaskForegroundDraw{
                                 handoffResult.descriptorSet,

@@ -286,6 +286,7 @@ public:
     QComboBox *maskSidecarCombo() const { return m_maskSidecarCombo; }
     QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
     QPushButton *maskNewPromptButton() const { return m_maskNewPromptButton; }
+    QSpinBox *maskZLevelSpin() const { return m_maskZLevelSpin; }
     QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
@@ -408,6 +409,7 @@ public:
     QCheckBox *audioShowWaveformCheckBox() const { return m_audioShowWaveformCheckBox; }
     QCheckBox *audioWaveformPreviewProcessedCheckBox() const { return m_audioWaveformPreviewProcessedCheckBox; }
     QComboBox *audioVisualizationModeCombo() const { return m_audioVisualizationModeCombo; }
+    QComboBox *audioBufferFramesCombo() const { return m_audioBufferFramesCombo; }
     QPushButton *loiaconoSpectrumSettingsButton() const { return m_loiaconoSpectrumSettingsButton; }
     QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
@@ -617,6 +619,7 @@ private:
     QComboBox *m_maskSidecarCombo = nullptr;
     QPushButton *m_maskBrowseButton = nullptr;
     QPushButton *m_maskNewPromptButton = nullptr;
+    QSpinBox *m_maskZLevelSpin = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskDilateSpin = nullptr;
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
@@ -752,6 +755,7 @@ private:
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QComboBox *m_audioVisualizationModeCombo = nullptr;
+    QComboBox *m_audioBufferFramesCombo = nullptr;
     QPushButton *m_loiaconoSpectrumSettingsButton = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;

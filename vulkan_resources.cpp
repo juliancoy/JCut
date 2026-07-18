@@ -44,9 +44,10 @@ struct FrameUniformData {
     float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 16);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 20);
 
 bool checkedAdd(VkDeviceSize a, VkDeviceSize b, VkDeviceSize* out)
 {
@@ -502,7 +503,8 @@ bool VulkanResources::createTextureResources()
 bool VulkanResources::updateFrameUniform(const QSize& outputSize,
                                          const float* backgroundShadows,
                                          const float* backgroundMidtones,
-                                         const float* backgroundHighlights)
+                                         const float* backgroundHighlights,
+                                         const float* effectParams)
 {
     if (!m_frameUniformMapped || m_frameUniformStride == 0) {
         return false;
@@ -522,6 +524,9 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
     }
     if (backgroundHighlights) {
         std::memcpy(values.backgroundHighlights, backgroundHighlights, sizeof(values.backgroundHighlights));
+    }
+    if (effectParams) {
+        std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
     }
     const VkDeviceSize offset = m_frameUniformStride * m_frameUniformRingIndex;
     std::memcpy(static_cast<char*>(m_frameUniformMapped) + offset, &values, sizeof(values));

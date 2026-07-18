@@ -10,6 +10,7 @@
 #include <QList>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSlider>
 #include <QSignalBlocker>
 #include <QShortcut>
@@ -121,6 +122,7 @@ void EditorWindow::bindInspectorWidgets()
     m_audioSpeakerHoverModalCheckBox = m_inspectorPane->audioSpeakerHoverModalCheckBox();
     m_audioShowWaveformCheckBox = m_inspectorPane->audioShowWaveformCheckBox();
     m_audioVisualizationModeCombo = m_inspectorPane->audioVisualizationModeCombo();
+    m_audioBufferFramesCombo = m_inspectorPane->audioBufferFramesCombo();
     m_loiaconoSpectrumSettingsButton = m_inspectorPane->loiaconoSpectrumSettingsButton();
     m_audioWaveformPreviewProcessedCheckBox = m_inspectorPane->audioWaveformPreviewProcessedCheckBox();
     m_audioNormalizeEnabledCheckBox = m_inspectorPane->audioNormalizeEnabledCheckBox();
@@ -485,6 +487,24 @@ void EditorWindow::setupSpeechFilterControls()
                 m_playbackAudioWarpModeCombo->itemData(index).toString());
             setPlaybackAudioWarpMode(mode);
         });
+    }
+    if (m_audioBufferFramesCombo) {
+        QSettings settings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"));
+        const int savedFrames = settings.value(QStringLiteral("audio/bufferFrames"), 1024).toInt();
+        int index = m_audioBufferFramesCombo->findData(savedFrames);
+        if (index < 0) {
+            index = m_audioBufferFramesCombo->findData(1024);
+        }
+        m_audioBufferFramesCombo->setCurrentIndex(index);
+        connect(m_audioBufferFramesCombo, &QComboBox::currentIndexChanged, this,
+                [this](int selectedIndex) {
+                    if (!m_audioBufferFramesCombo || selectedIndex < 0) {
+                        return;
+                    }
+                    QSettings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"))
+                        .setValue(QStringLiteral("audio/bufferFrames"),
+                                  m_audioBufferFramesCombo->itemData(selectedIndex).toInt());
+                });
     }
 
     connect(m_clipPlaybackRateSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {

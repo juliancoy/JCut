@@ -43,6 +43,7 @@ private slots:
   void contiguousTranscriptSectionsCanHoldMultipleTracks();
   void trackAssignmentDoesNotCreateFaceBoxKeyframes();
   void maskMorphControlsUseWideSliderInputs();
+  void maskDropShadowAndFalloffReachPreviewAndExport();
   void startupRestoresSpeechFilterRouting();
   void speechFilterPassthroughModePersistsAsPassThroughState();
   void speechFilterFadeParametersOnlyShowWhenRelevant();
@@ -2217,6 +2218,34 @@ void TestDirectVulkanHandoffPipelineContract::
                "    };")),
            "mask refresh must allow restored spin-box values to notify paired "
            "sliders while m_updating suppresses clip writes");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    maskDropShadowAndFalloffReachPreviewAndExport() {
+  const QString shader = readSourceFile(QStringLiteral("shaders/vulkan/effects.frag"));
+  const QString preview = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString previewState = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!shader.isEmpty() && !preview.isEmpty() &&
+               !previewState.isEmpty() && !exportBackend.isEmpty(),
+           "Vulkan mask rendering sources must be readable");
+
+  QVERIFY2(shader.contains(QStringLiteral("softMaskShadow")) &&
+               shader.contains(QStringLiteral("maskShadow")) &&
+               shader.contains(QStringLiteral("pc.u_midtones.a")),
+           "the Vulkan mask shader must render a soft mask-derived shadow");
+  QVERIFY2(previewState.contains(QStringLiteral("status.maskDropShadowEnabled")) &&
+               preview.contains(QStringLiteral("drawMaskShadow")) &&
+               preview.contains(QStringLiteral("kVulkanEffectModeMaskShadow")),
+           "live Vulkan preview must propagate and draw mask-shadow controls");
+  QVERIFY2(exportBackend.contains(QStringLiteral("maskDropShadowDraw")) &&
+               exportBackend.contains(QStringLiteral("kVulkanEffectModeMaskShadow")) &&
+               exportBackend.contains(QStringLiteral("packedMaskFalloff")),
+           "Vulkan export must render the same shadow and continuous-alpha falloff as preview");
+  QVERIFY2(preview.contains(QStringLiteral("status->maskOpacity")) &&
+               exportBackend.contains(QStringLiteral("layer.maskOpacity")),
+           "mask opacity must reach both preview and export masked draws");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

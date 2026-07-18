@@ -14,17 +14,17 @@
 Generated clips should be normal `TimelineClip` entries with additional semantic metadata:
 
 - `clipRole = media`: ordinary user media.
-- `clipRole = mask_matte`: a generated SAM mask/matte companion for another clip.
+- `clipRole = mask_matte`: a generated mask/matte companion for another clip.
 - `clipRole = effect_synth`: a procedural synthesizer clip that renders repeated, transformed, or generated imagery.
 - `clipRole = speaker_title`: a generated lower-third/title clip derived from transcript speaker changes.
 
-Generated clips must keep a stable `linkedSourceClipId` pointing at the source clip. For SAM masks, `generatedFromMaskId` records the mask artifact identity or mask frames directory. `syncLockedToSource` means timeline edits should treat the generated clip as a temporal follower of the source clip.
+Generated clips must keep a stable `linkedSourceClipId` pointing at the source clip. For rotoscope masks, `generatedFromMaskId` records the mask artifact identity or mask frames directory. `syncLockedToSource` means timeline edits should treat the generated clip as a temporal follower of the source clip.
 
 The important rule is that generated clips are not a second copy of decoded media with independent timing. They are a synchronized expression of the same source timing, with their own rendering role.
 
 ## SAM Mask Clips
 
-Each clip with a SAM mask should be expressible as a paired mask/matte clip:
+Each clip with a rotoscope mask should be expressible as a paired mask/matte clip:
 
 - Same `filePath`, media type, source FPS, source duration, source-in, playback rate, start frame, and duration as the original.
 - Same transform timing unless the user explicitly detaches it.
@@ -71,8 +71,8 @@ Existing transcript overlay speaker-title logic is useful for live overlay rende
 ## Implementation Notes
 
 - Persist clip role and source-link metadata before building complex UI. That keeps project files forward-compatible.
-- Use `makeSamMaskMatteClip` as the construction contract for generated SAM matte clips: same media/timing as source, visual-only, linked back to the source clip, and rendered as the original source clipped by the mask.
-- Use the timeline context menu's Generated Clips commands to create/update SAM mask mattes and create alternating motion background synth clips.
+- Use `makeMaskMatteClip` as the construction contract for generated matte clips: same media/timing as source, visual-only, linked back to the source clip, and rendered as the original source clipped by the mask.
+- Use the timeline context menu's Generated Clips commands to create/update mask mattes and create alternating motion background synth clips.
 - Use the timeline context menu's Transcript command to create/update transcript-derived speaker title clips.
 - Keep generated clip timing deterministic and based on the source clip, not wall clock.
 - Do not duplicate media caches unnecessarily; generated clips should share decode identity where possible.
@@ -83,7 +83,7 @@ Existing transcript overlay speaker-title logic is useful for live overlay rende
 
 1. Done: persist generated clip roles, source links, and sync-lock metadata.
 2. Done: add the alternating motion background preset to the existing effect preset system.
-3. Done: add a command that creates synchronized SAM mask/matte clips from clips with `maskFramesDir`.
+3. Done: add a command that creates synchronized mask/matte clips from clips with `maskFramesDir`.
 4. Done: add effect synth clip creation UI and track placement rules.
 5. Done: generate speaker lower-thirds from transcript speaker introductions.
 6. Remaining: add blend modes, starting with multiply, to Direct Vulkan preview and export.

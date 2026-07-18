@@ -1564,7 +1564,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (loadedMaskArchitectureVersion < kCurrentMaskArchitectureVersion) {
         migrateLegacyMaskGradingToMattes(loadedClips);
     }
-    normalizeSamMaskMatteClips(loadedClips);
+    normalizeMaskMatteClips(loadedClips);
 
     if (!startupMarking && !m_restoringHistory && !loadedClips.isEmpty()) {
         QElapsedTimer relocateTimer;
@@ -1587,6 +1587,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         const QJsonObject obj = tracks.at(i).toObject();
         TimelineTrack track;
         track.name = obj.value(QStringLiteral("name")).toString(QStringLiteral("Track %1").arg(i + 1));
+        track.generatedChildTrack = obj.value(QStringLiteral("generatedChildTrack")).toBool(false);
+        track.parentClipId = obj.value(QStringLiteral("parentClipId")).toString();
+        track.childClipId = obj.value(QStringLiteral("childClipId")).toString();
         track.height = qMax(28, obj.value(QStringLiteral("height")).toInt(72));
         if (obj.contains(QStringLiteral("visualMode"))) {
             track.visualMode = trackVisualModeFromString(obj.value(QStringLiteral("visualMode")).toString());
@@ -1624,6 +1627,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.tilingSpacing =
             qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
         track.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
+        track.effectParameterSets = obj.value(QStringLiteral("effectParameterSets")).toObject();
         loadedTracks.push_back(track);
     }
     markStartup(QStringLiteral("apply_state.tracks_parse.end"),

@@ -39,6 +39,7 @@ class TimelineWidget final : public QWidget {
     Q_OBJECT
 public:
     enum class ToolMode { Select, Razor };
+    enum class TrackViewMode { ParentChild, Precedence };
 
     explicit TimelineWidget(QWidget* parent = nullptr);
 
@@ -50,6 +51,9 @@ public:
 
     const QVector<TimelineClip>& clips() const { return m_clips; }
     const QVector<TimelineTrack>& tracks() const { return m_tracks; }
+
+    TrackViewMode trackViewMode() const { return m_trackViewMode; }
+    void setTrackViewMode(TrackViewMode mode);
 
     void setClips(const QVector<TimelineClip>& clips);
     void setTracks(const QVector<TimelineTrack>& tracks);
@@ -63,6 +67,7 @@ public:
     void setSelectedTrackIndex(int trackIndex);
 
     bool updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater);
+    bool createOrReplaceMaskZMarker(const QString& clipId, bool selectMarker = true);
     bool deleteSelectedClip();
     bool deleteClipById(const QString& clipId);
     bool splitSelectedClipAtFrame(int64_t frame);
@@ -131,6 +136,7 @@ public:
     std::function<void(const QString&)> generateFaceDetectionsRequested;
     std::function<void(const QString&)> deleteFaceDetectionsRequested;
     std::function<void(const QString&)> detectRequested;
+    std::function<void(const QString&)> birefnetRequested;
     std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
     std::function<void()> toolModeChanged;
@@ -151,6 +157,7 @@ protected:
     void paintEvent(QPaintEvent*) override;
 
 private:
+    void reorderTracksForView();
     struct ClipSelectionState {
         QSet<QString> ids;
         QString primaryId;
@@ -314,6 +321,7 @@ private:
     int m_exportRangeDragSegmentIndex = -1;
     bool m_exportRangeMouseGrabbed = false;
     ToolMode m_toolMode = ToolMode::Select;
+    TrackViewMode m_trackViewMode = TrackViewMode::ParentChild;
     int64_t m_razorHoverFrame = -1;
     bool m_audioTabWaveformsVisible = false;
 };

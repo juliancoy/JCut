@@ -27,12 +27,17 @@ void main()
 
     int r = max(pc.radius, 0);
     float total = 0.0;
-    int count = 0;
+    float weightTotal = 0.0;
+    // Treat the requested radius as the useful three-sigma support. Gaussian
+    // feathering avoids the flat plateau and visible shoulders of a box blur.
+    float sigma = max(float(r) / 3.0, 0.5);
     for (int i = -r; i <= r; ++i) {
         ivec2 offset = pc.horizontal != 0 ? ivec2(i, 0) : ivec2(0, i);
-        total += sampleMask(coord + offset);
-        ++count;
+        float distance = float(i);
+        float weight = exp(-0.5 * distance * distance / (sigma * sigma));
+        total += sampleMask(coord + offset) * weight;
+        weightTotal += weight;
     }
-    float value = count > 0 ? total / float(count) : sampleMask(coord);
+    float value = weightTotal > 0.0 ? total / weightTotal : sampleMask(coord);
     imageStore(u_output_mask, coord, vec4(value, value, value, 1.0));
 }

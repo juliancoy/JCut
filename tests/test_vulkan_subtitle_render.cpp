@@ -197,6 +197,7 @@ private slots:
     void testOffscreenVulkanTitleTextPixels();
     void testOffscreenVulkanImageTextureOrientation();
     void testOffscreenVulkanTickerPresetDrawsRepeatedImagePixels();
+    void testOffscreenVulkanContinuousMaskOpacityAndShadow();
 };
 
 void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels_data()
@@ -558,6 +559,119 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTickerPresetDrawsRepeatedImage
     QVERIFY2(rowsWithLogoPixels >= 6,
              qPrintable(QStringLiteral("Expected ticker logo pixels across rows, got %1 rows")
                             .arg(rowsWithLogoPixels)));
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow()
+{
+    const QSize outputSize(128, 128);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString backgroundPath = dir.filePath(QStringLiteral("background.png"));
+    const QString subjectPath = dir.filePath(QStringLiteral("subject.png"));
+    QImage background(64, 64, QImage::Format_RGBA8888);
+    background.fill(QColor(255, 255, 255, 255));
+    QImage subject(64, 64, QImage::Format_RGBA8888);
+    subject.fill(QColor(240, 32, 32, 255));
+    QVERIFY(background.save(backgroundPath));
+    QVERIFY(subject.save(subjectPath));
+
+    const QString maskDir = dir.filePath(QStringLiteral("subject_birefnet_alpha_masks"));
+    QVERIFY(QDir().mkpath(maskDir));
+    QImage mask(64, 64, QImage::Format_Grayscale8);
+    mask.fill(0);
+    for (int y = 16; y < 32; ++y) {
+        uchar* row = mask.scanLine(y);
+        for (int x = 16; x < 24; ++x) row[x] = 255;
+        for (int x = 24; x < 32; ++x) row[x] = 128;
+    }
+    QVERIFY(mask.save(QDir(maskDir).filePath(QStringLiteral("frame_000001.png"))));
+
+    TimelineClip backgroundClip = makeImageClip(backgroundPath);
+    backgroundClip.id = QStringLiteral("mask-shadow-background");
+    backgroundClip.trackIndex = 0;
+    TimelineClip sourceClip = makeImageClip(subjectPath);
+    sourceClip.id = QStringLiteral("mask-shadow-source");
+    sourceClip.trackIndex = 1;
+    sourceClip.videoEnabled = false;
+    sourceClip.maskEnabled = true;
+    sourceClip.maskFramesDir = maskDir;
+    sourceClip.maskForegroundLayerEnabled = true;
+    sourceClip.maskOpacity = 0.5;
+    sourceClip.maskDropShadowEnabled = true;
+    sourceClip.maskDropShadowRadius = 0.0;
+    sourceClip.maskDropShadowOffsetX = 24.0;
+    sourceClip.maskDropShadowOffsetY = 0.0;
+    sourceClip.maskDropShadowOpacity = 0.8;
+    TimelineClip markerClip = sourceClip;
+    markerClip.id = QStringLiteral("mask-shadow-marker");
+    markerClip.clipRole = ClipRole::MaskMatte;
+    markerClip.linkedSourceClipId = sourceClip.id;
+    markerClip.locked = true;
+    markerClip.sourceTransformLocked = true;
+    markerClip.videoEnabled = true;
+    markerClip.maskForegroundLayerEnabled = false;
+    markerClip.trackIndex = 2;
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+    RenderRequest request;
+    request.outputPath = QStringLiteral("test://vulkan-continuous-mask-shadow");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.correctionsEnabled = true;
+    request.clips = QVector<TimelineClip>{backgroundClip, markerClip, sourceClip};
+    request.exportStartFrame = 0;
+    request.exportEndFrame = 0;
+
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    render_detail::OffscreenRenderFrame output;
+    QVERIFY2(renderer.renderFrameToOutput(request, 0, decoders, nullptr, &asyncCache,
+                                          orderedClips, &output, true, nullptr,
+                                          &decodeMs, &textureMs, &compositeMs, &readbackMs),
+             "Offscreen Vulkan renderer failed to render continuous mask fixture");
+
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+    QVERIFY(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs));
+    QImage rendered(reinterpret_cast<const uchar*>(bgra.constData()),
+                    outputSize.width(), outputSize.height(), outputSize.width() * 4,
+                    QImage::Format_ARGB32);
+
+    const QColor backgroundPixel = rendered.pixelColor(8, 8);
+    const QColor foregroundPixel = rendered.pixelColor(40, 40);
+    const QColor softAlphaPixel = rendered.pixelColor(54, 40);
+    const QColor shadowPixel = rendered.pixelColor(68, 40);
+    QVERIFY2(backgroundPixel.red() > 245 && backgroundPixel.green() > 245,
+             "unmasked background must remain white");
+    QVERIFY2(foregroundPixel.red() > 230 &&
+                 foregroundPixel.green() > 100 && foregroundPixel.green() < 180,
+             qPrintable(QStringLiteral("mask opacity did not blend foreground: %1,%2,%3")
+                            .arg(foregroundPixel.red()).arg(foregroundPixel.green())
+                            .arg(foregroundPixel.blue())));
+    QVERIFY2(softAlphaPixel.red() > 235 &&
+                 softAlphaPixel.green() > 175 && softAlphaPixel.green() < 225,
+             qPrintable(QStringLiteral("continuous alpha was quantized: %1,%2,%3")
+                            .arg(softAlphaPixel.red()).arg(softAlphaPixel.green())
+                            .arg(softAlphaPixel.blue())));
+    QVERIFY2(shadowPixel.red() > 110 && shadowPixel.red() < 200 &&
+                 qAbs(shadowPixel.red() - shadowPixel.green()) < 6,
+             qPrintable(QStringLiteral("mask shadow was not composited: %1,%2,%3")
+                            .arg(shadowPixel.red()).arg(shadowPixel.green())
+                            .arg(shadowPixel.blue())));
 }
 
 QTEST_MAIN(TestVulkanSubtitleRender)

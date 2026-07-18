@@ -541,6 +541,11 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
 void EditorWindow::setupAudioEngine()
 {
     m_audioEngine = std::make_unique<AudioEngine>();
+    const int bufferFrames =
+        QSettings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"))
+            .value(QStringLiteral("audio/bufferFrames"), 1024)
+            .toInt();
+    m_audioEngine->setBufferFrames(bufferFrames);
     m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
     m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
     m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);

@@ -98,6 +98,23 @@ private slots:
     QVERIFY(jcut::jobs::dockerContainerIsRunning(*match));
   }
 
+  void stableDockerNamesAreReadableAndCollisionResistant() {
+    const QString first = jcut::jobs::stableDockerContainerName(
+        QStringLiteral("BiRefNet"),
+        QStringLiteral("/project/one/.jcut_jobs/birefnet_BiRefNet-matting_My Video"));
+    const QString repeated = jcut::jobs::stableDockerContainerName(
+        QStringLiteral("BiRefNet"),
+        QStringLiteral("/project/one/.jcut_jobs/birefnet_BiRefNet-matting_My Video"));
+    const QString otherProject = jcut::jobs::stableDockerContainerName(
+        QStringLiteral("BiRefNet"),
+        QStringLiteral("/project/two/.jcut_jobs/birefnet_BiRefNet-matting_My Video"));
+
+    QCOMPARE(first, repeated);
+    QVERIFY(first.startsWith(QStringLiteral("jcut-birefnet-birefnet-matting-my-video-")));
+    QVERIFY(QRegularExpression(QStringLiteral("^[a-z0-9][a-z0-9_.-]+$")).match(first).hasMatch());
+    QVERIFY(first != otherProject);
+  }
+
   void recoversDockerContainerFromSamJobRootInCommand() {
     const QJsonObject manifest{
         {QStringLiteral("operation"), QStringLiteral("sam3")},
@@ -121,6 +138,32 @@ private slots:
         jcut::jobs::findDockerContainerForManifest(manifest, containers);
     QVERIFY(match != nullptr);
     QCOMPARE(match->name, QStringLiteral("adoring_hofstadter"));
+  }
+
+  void recoversLegacyBiRefNetContainerFromOutputMount() {
+    const QJsonObject manifest{
+        {QStringLiteral("operation"), QStringLiteral("birefnet")},
+        {QStringLiteral("artifacts"),
+         QJsonObject{{QStringLiteral("alpha_masks_dir"),
+                      QStringLiteral("/media/project/clip_birefnet_alpha_masks")}}},
+    };
+    jcut::jobs::DockerContainerInfo container{
+        QStringLiteral("abc123"),
+        QStringLiteral("eloquent_morse"),
+        QStringLiteral("jcut-birefnet:cu126"),
+        QStringLiteral("Up 3 hours"),
+        QStringLiteral("running"),
+        QStringLiteral("python /workspace/birefnet_run.py"),
+        QJsonObject(),
+    };
+    container.mounts.insert(QStringLiteral("/output"),
+                            QStringLiteral("/media/project/clip_birefnet_alpha_masks"));
+
+    const QVector<jcut::jobs::DockerContainerInfo> containers{container};
+    const jcut::jobs::DockerContainerInfo* match =
+        jcut::jobs::findDockerContainerForManifest(manifest, containers);
+    QVERIFY(match != nullptr);
+    QCOMPARE(match->name, QStringLiteral("eloquent_morse"));
   }
 };
 

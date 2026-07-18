@@ -9,6 +9,42 @@
 #include <QClipboard>
 #include <QJsonArray>
 
+#include <algorithm>
+
+bool TimelineWidget::createOrReplaceMaskZMarker(const QString& clipId, bool selectMarker)
+{
+    int sourceIndex = -1;
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].id == clipId && m_clips[i].clipRole != ClipRole::MaskMatte) {
+            sourceIndex = i;
+            break;
+        }
+    }
+    if (sourceIndex < 0 || !clipHasVisuals(m_clips[sourceIndex]) ||
+        !m_clips[sourceIndex].maskEnabled ||
+        m_clips[sourceIndex].maskFramesDir.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const QString selectedSidecarId =
+        editor::masks::stableMaskSidecarId(m_clips.at(sourceIndex).maskFramesDir);
+    reconcileMaskMatteChildrenFromDisk(m_clips);
+    const QVector<TimelineClip> reconciledClips = m_clips;
+    setClips(reconciledClips);
+    if (selectMarker) {
+        const auto child = std::find_if(m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+            return clip.clipRole == ClipRole::MaskMatte &&
+                   clip.linkedSourceClipId == clipId &&
+                   (clip.generatedFromMaskId == selectedSidecarId ||
+                    editor::masks::stableMaskSidecarId(clip.maskFramesDir) == selectedSidecarId);
+        });
+        if (child != m_clips.cend()) setSelectedClipId(child->id);
+    }
+    if (clipsChanged) clipsChanged();
+    update();
+    return true;
+}
+
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const int clipIndex = clipIndexAt(event->pos());
     const QString clickedClipId = clipIndex >= 0 ? m_clips[clipIndex].id : QString();
@@ -64,6 +100,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* propertiesAction = nullptr;
     QAction* refreshMetadataAction = nullptr;
     QAction* detectAction = nullptr;
+    QAction* birefnetAction = nullptr;
     QAction* transcribeAction = nullptr;
     QAction* deleteTranscriptAction = nullptr;
     QAction* useProxyAction = nullptr;
@@ -159,8 +196,15 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].maskEnabled &&
             !m_clips[clipIndex].maskFramesDir.trimmed().isEmpty());
-        detectAction = menu.addAction(QStringLiteral("Detect"));
+        QMenu* rotoscopeMenu = menu.addMenu(QStringLiteral("Rotoscope"));
+        detectAction = rotoscopeMenu->addAction(QStringLiteral("Run SAM 3..."));
+        detectAction->setToolTip(QStringLiteral("Select a subject with a text prompt and generate binary mask frames."));
+        birefnetAction = rotoscopeMenu->addAction(QStringLiteral("Run BiRefNet..."));
+        birefnetAction->setToolTip(QStringLiteral("Preview and generate an automatic continuous-alpha foreground matte."));
         detectAction->setEnabled(
+            m_clips[clipIndex].mediaType == ClipMediaType::Video &&
+            !m_clips[clipIndex].filePath.trimmed().isEmpty());
+        birefnetAction->setEnabled(
             m_clips[clipIndex].mediaType == ClipMediaType::Video &&
             !m_clips[clipIndex].filePath.trimmed().isEmpty());
         QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
@@ -566,31 +610,6 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         m_clips.push_back(clip);
         return clip.id;
     };
-    auto placeGeneratedClipOnNewTrack =
-        [&](TimelineClip clip, const QString& trackBaseName, int preferredTrack) {
-            auto clipIdExists = [this](const QString& id) {
-                for (const TimelineClip& existingClip : m_clips) {
-                    if (existingClip.id == id) {
-                        return true;
-                    }
-                }
-                return false;
-            };
-            if (clip.id.trimmed().isEmpty() || clipIdExists(clip.id)) {
-                clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            }
-
-            const int targetTrack = qBound(0, preferredTrack, trackCount());
-            insertTrackAt(targetTrack);
-            m_tracks[targetTrack].name = nextGeneratedTrackName(trackBaseName);
-            m_tracks[targetTrack].audioEnabled = false;
-            m_tracks[targetTrack].audioWaveformVisible = false;
-
-            clip.trackIndex = targetTrack;
-            normalizeClipTiming(clip);
-            m_clips.push_back(clip);
-            return clip.id;
-        };
     auto finishGeneratedClipMutation = [this](const QString& primarySelection) {
         normalizeTrackIndices();
         sortClips();
@@ -604,17 +623,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     };
     if (selected == generateSamMaskMatteAction) {
         if (clipIndex >= 0) {
-            const TimelineClip source = m_clips[clipIndex];
-            removeGeneratedClipsForSource(source.id, ClipRole::MaskMatte);
-            updateClipById(source.id, [](TimelineClip& clip) {
-                clip.maskForegroundLayerEnabled = true;
-                clip.maskShowOnly = false;
-            });
-            TimelineClip matte = makeSamMaskMatteClip(m_clips[clipIndex]);
-            const QString matteId =
-                placeGeneratedClipOnNewTrack(matte, QStringLiteral("Mask Mattes"), source.trackIndex);
-            normalizeSamMaskMatteClips(m_clips);
-            finishGeneratedClipMutation(matteId);
+            createOrReplaceMaskZMarker(m_clips[clipIndex].id);
         }
         return;
     }
@@ -648,6 +657,13 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == detectAction) {
         if (detectRequested && clipIndex >= 0) {
             detectRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    if (selected == birefnetAction) {
+        if (birefnetRequested && clipIndex >= 0) {
+            birefnetRequested(m_clips[clipIndex].id);
         }
         return;
     }

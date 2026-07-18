@@ -1032,6 +1032,22 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
                                           ? QStringLiteral("normal")
                                           : QStringLiteral("crashed")));
             });
+    connect(process,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this,
+            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+                if (exitStatus != QProcess::NormalExit || exitCode != 0 || !m_timeline) return;
+                // A successful AI job may have produced more than the selected
+                // sidecar. Reconcile every sibling mask directory into its own
+                // generated child track immediately.
+                m_timeline->setClips(m_timeline->clips());
+                if (m_preview) {
+                    m_preview->setTimelineTracks(m_timeline->tracks());
+                    m_preview->setTimelineClips(m_timeline->clips());
+                }
+                if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Masks"));
+                scheduleSaveState();
+            });
     connect(backgroundButton, &QPushButton::clicked, dialog, [dialog,
                                                               process,
                                                               keepRunningOnClose,

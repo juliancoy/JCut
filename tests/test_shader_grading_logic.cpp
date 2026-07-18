@@ -17,6 +17,7 @@ private slots:
     void testVulkanShaderAppliesLumaCurveAsLumaScale();
     void testVulkanShaderHasSeparateMaskCurveLut();
     void testVulkanMaskPreprocessShadersExist();
+    void testVulkanMaskPrepareUsesBilinearResampling();
     void testVulkanMaskMorphShaderUsesMinMax();
     void testVulkanMaskBlurShaderIsSeparable();
     void testVulkanRenderersLoadRawMasksForGpuPreprocess();
@@ -25,6 +26,7 @@ private slots:
     void testNv12HandoffShaderStoresCanonicalRgba();
     void testCpuLumaCurvePreservesChroma();
     void testCpuMaskCurveGradesOnlyMaskedPixels();
+    void testCpuMaskMatteCompositesOpacityAndShadow();
 };
 
 void TestShaderGradingLogic::testGlShaderUsesSafePowForMidtones()
@@ -112,6 +114,19 @@ void TestShaderGradingLogic::testVulkanMaskPreprocessShadersExist()
     }
 }
 
+void TestShaderGradingLogic::testVulkanMaskPrepareUsesBilinearResampling()
+{
+    QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/mask_prepare.comp"));
+    QVERIFY2(shaderFile.open(QIODevice::ReadOnly), "Unable to open mask prepare shader.");
+    const QString shader = QString::fromUtf8(shaderFile.readAll());
+
+    QVERIFY2(shader.contains(QStringLiteral("bilinearMaskValue")) &&
+                 shader.contains(QStringLiteral("mix(top, bottom, fraction.y)")),
+             "Mask scaling must preserve continuous alpha with bilinear reconstruction.");
+    QVERIFY2(shader.contains(QStringLiteral("- vec2(0.5)")),
+             "Mask scaling must map between texel centers.");
+}
+
 void TestShaderGradingLogic::testVulkanMaskMorphShaderUsesMinMax()
 {
     QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/mask_morph.comp"));
@@ -134,8 +149,9 @@ void TestShaderGradingLogic::testVulkanMaskBlurShaderIsSeparable()
 
     QVERIFY2(shader.contains(QStringLiteral("pc.horizontal")),
              "Mask blur shader must expose horizontal/vertical passes.");
-    QVERIFY2(shader.contains(QStringLiteral("total / float(count)")),
-             "Mask blur shader must average samples on GPU.");
+    QVERIFY2(shader.contains(QStringLiteral("exp(-0.5")) &&
+                 shader.contains(QStringLiteral("total / weightTotal")),
+             "Mask blur shader must use a normalized Gaussian kernel on GPU.");
 }
 
 void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
@@ -329,6 +345,39 @@ void TestShaderGradingLogic::testCpuMaskCurveGradesOnlyMaskedPixels()
     QVERIFY2(maskedPixel != normalPixel,
              "Mask curve grading did not change the fully masked pixel.");
     QCOMPARE(unmaskedPixel, normalPixel);
+}
+
+void TestShaderGradingLogic::testCpuMaskMatteCompositesOpacityAndShadow()
+{
+    QTemporaryDir maskDir;
+    QVERIFY(maskDir.isValid());
+    QImage mask(5, 1, QImage::Format_Grayscale8);
+    mask.fill(0);
+    mask.scanLine(0)[1] = 255;
+    QVERIFY(mask.save(maskDir.filePath(QStringLiteral("frame_000001.png"))));
+
+    QImage source(5, 1, QImage::Format_ARGB32);
+    source.fill(qRgba(240, 220, 200, 255));
+    TimelineClip clip;
+    clip.mediaType = ClipMediaType::Video;
+    clip.clipRole = ClipRole::MaskMatte;
+    clip.maskEnabled = true;
+    clip.maskFramesDir = maskDir.path();
+    clip.maskOpacity = 0.5;
+    clip.maskDropShadowEnabled = true;
+    clip.maskDropShadowRadius = 0.0;
+    clip.maskDropShadowOffsetX = 2.0;
+    clip.maskDropShadowOffsetY = 0.0;
+    clip.maskDropShadowOpacity = 0.5;
+
+    const QImage result = applyClipMaskEffectsToImage(
+        source, clip, 0, TimelineClip::GradingKeyframe{}).convertToFormat(QImage::Format_ARGB32);
+    QCOMPARE(qAlpha(result.pixel(0, 0)), 0);
+    QVERIFY(qAlpha(result.pixel(1, 0)) >= 126 && qAlpha(result.pixel(1, 0)) <= 129);
+    QVERIFY(qAlpha(result.pixel(3, 0)) >= 126 && qAlpha(result.pixel(3, 0)) <= 129);
+    QCOMPARE(qRed(result.pixel(3, 0)), 0);
+    QCOMPARE(qGreen(result.pixel(3, 0)), 0);
+    QCOMPARE(qBlue(result.pixel(3, 0)), 0);
 }
 
 QTEST_MAIN(TestShaderGradingLogic)

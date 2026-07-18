@@ -4,8 +4,8 @@
 
 #include <QComboBox>
 #include <QDir>
-#include <QFileInfo>
 #include <QSignalBlocker>
+#include <QSpinBox>
 
 MaskTab::MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : QObject(parent)
@@ -25,43 +25,11 @@ TabEditCallbacks maskEditCallbacks(const MaskTab::Dependencies& deps)
     };
 }
 
-bool maskDirHasFrames(const QFileInfo& info)
-{
-    if (!info.exists() || !info.isDir()) {
-        return false;
-    }
-    QDir dir(info.absoluteFilePath());
-    return !dir.entryList(QStringList{QStringLiteral("frame_*.png")}, QDir::Files, QDir::Name)
-                .isEmpty();
-}
-
 QString autoMaskFramesDirForClip(const TimelineClip& clip)
 {
-    const QFileInfo mediaInfo(clip.filePath);
-    const QString stem = mediaInfo.completeBaseName();
-    if (stem.trimmed().isEmpty()) {
-        return QString();
-    }
-
-    const QDir mediaDir = mediaInfo.dir();
-    const QString exactPerson = mediaDir.absoluteFilePath(
-        QStringLiteral("%1_sam3_person_binary_masks").arg(stem));
-    QFileInfo exactPersonInfo(exactPerson);
-    if (maskDirHasFrames(exactPersonInfo)) {
-        return exactPersonInfo.absoluteFilePath();
-    }
-
-    const QFileInfoList candidates = mediaDir.entryInfoList(
-        QStringList{QStringLiteral("%1_sam3_*_binary_masks").arg(stem)},
-        QDir::Dirs | QDir::NoDotAndDotDot,
-        QDir::Time);
-    for (const QFileInfo& candidate : candidates) {
-        if (maskDirHasFrames(candidate)) {
-            return candidate.absoluteFilePath();
-        }
-    }
-
-    return QString();
+    const QVector<editor::masks::MaskSidecar> sidecars =
+        editor::masks::discoverMaskSidecars(clip);
+    return sidecars.isEmpty() ? QString() : sidecars.constFirst().directory;
 }
 
 }
@@ -120,6 +88,12 @@ void MaskTab::wire()
                 m_deps.generatePromptMask(clip->id);
             }
         });
+    }
+    if (m_widgets.zLevelSpin) {
+        connect(m_widgets.zLevelSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int) { apply(false); });
+        connect(m_widgets.zLevelSpin, &QSpinBox::editingFinished,
+                this, [this]() { apply(true); });
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
@@ -201,6 +175,10 @@ void MaskTab::refresh()
     }
 
     if (validClip) {
+        if (m_widgets.zLevelSpin) {
+            QSignalBlocker blocker(m_widgets.zLevelSpin);
+            m_widgets.zLevelSpin->setValue(effectiveClipZLevel(*clip));
+        }
         setCheck(m_widgets.enabledCheck, effectiveMaskEnabled);
         if (m_widgets.framesDirEdit) {
             QSignalBlocker blocker(m_widgets.framesDirEdit);
@@ -212,10 +190,15 @@ void MaskTab::refresh()
             const QVector<editor::masks::MaskSidecar> sidecars =
                 editor::masks::discoverMaskSidecars(*clip);
             for (const editor::masks::MaskSidecar& sidecar : sidecars) {
+                const QString kind = sidecar.sourceType.contains(
+                                         QStringLiteral("continuous_alpha"),
+                                         Qt::CaseInsensitive)
+                    ? QStringLiteral("soft alpha")
+                    : QStringLiteral("binary");
                 const QString coverage = sidecar.firstFrame >= 0
-                    ? QStringLiteral("%1 frames · %2–%3")
-                          .arg(sidecar.frameCount).arg(sidecar.firstFrame).arg(sidecar.lastFrame)
-                    : QStringLiteral("%1 frames").arg(sidecar.frameCount);
+                    ? QStringLiteral("%1 · %2 frames · %3–%4")
+                          .arg(kind).arg(sidecar.frameCount).arg(sidecar.firstFrame).arg(sidecar.lastFrame)
+                    : QStringLiteral("%1 · %2 frames").arg(kind).arg(sidecar.frameCount);
                 m_widgets.sidecarCombo->addItem(
                     QStringLiteral("%1 (%2)").arg(sidecar.displayName, coverage),
                     sidecar.directory);
@@ -276,6 +259,10 @@ void MaskTab::apply(bool pushHistory)
 
     const QString id = selectedClip->id;
     const bool updated = m_deps.updateClipById(id, [this](TimelineClip& clip) {
+        if (m_widgets.zLevelSpin) {
+            clip.zLevel = m_widgets.zLevelSpin->value();
+            clip.zLevelUserSet = true;
+        }
         clip.maskEnabled = m_widgets.enabledCheck && m_widgets.enabledCheck->isChecked();
         clip.maskFramesDir = m_widgets.framesDirEdit ? m_widgets.framesDirEdit->text().trimmed() : QString();
         clip.maskFeather = m_widgets.featherSpin ? m_widgets.featherSpin->value() : 0.0;
@@ -310,6 +297,7 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.sidecarCombo),
                             static_cast<QWidget*>(m_widgets.browseButton),
                             static_cast<QWidget*>(m_widgets.newPromptButton),
+                            static_cast<QWidget*>(m_widgets.zLevelSpin),
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),
                             static_cast<QWidget*>(m_widgets.featherPowerSpin),

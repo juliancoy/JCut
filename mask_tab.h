@@ -11,6 +11,7 @@
 #include "editor_shared.h"
 
 class QComboBox;
+class QSpinBox;
 
 class MaskTab : public QObject
 {
@@ -25,6 +26,7 @@ public:
         QComboBox* sidecarCombo = nullptr;
         QPushButton* browseButton = nullptr;
         QPushButton* newPromptButton = nullptr;
+        QSpinBox* zLevelSpin = nullptr;
         QDoubleSpinBox* featherSpin = nullptr;
         QComboBox* featherFalloffCombo = nullptr;
         QDoubleSpinBox* featherPowerSpin = nullptr;

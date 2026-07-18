@@ -1,6 +1,7 @@
 #include "processing_job_docker.h"
 
 #include <QFileInfo>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -92,6 +93,15 @@ void attachLabels(QVector<DockerContainerInfo>* containers)
         const QJsonObject config = inspected.value(QStringLiteral("Config")).toObject();
         const QJsonObject state = inspected.value(QStringLiteral("State")).toObject();
         container.labels = config.value(QStringLiteral("Labels")).toObject();
+        const QJsonArray mounts = inspected.value(QStringLiteral("Mounts")).toArray();
+        for (const QJsonValue& value : mounts) {
+            const QJsonObject mount = value.toObject();
+            const QString destination = mount.value(QStringLiteral("Destination")).toString();
+            const QString source = mount.value(QStringLiteral("Source")).toString();
+            if (!destination.isEmpty() && !source.isEmpty()) {
+                container.mounts.insert(destination, source);
+            }
+        }
         const QJsonArray cmd = config.value(QStringLiteral("Cmd")).toArray();
         if (!cmd.isEmpty()) {
             QStringList parts;
@@ -113,6 +123,38 @@ void attachLabels(QVector<DockerContainerInfo>* containers)
 }
 
 } // namespace
+
+QString stableDockerContainerName(const QString& operation, const QString& jobRoot)
+{
+    QString operationPart = operation.trimmed().toLower();
+    operationPart.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+                          QStringLiteral("-"));
+    operationPart.remove(QRegularExpression(QStringLiteral("^-+|-+$")));
+    if (operationPart.isEmpty()) {
+        operationPart = QStringLiteral("job");
+    }
+
+    const QString absoluteJobRoot = QFileInfo(jobRoot).absoluteFilePath();
+    QString readable = QFileInfo(absoluteJobRoot).fileName().toLower();
+    const QString redundantPrefix = operationPart + QLatin1Char('_');
+    if (readable.startsWith(redundantPrefix)) {
+        readable.remove(0, redundantPrefix.size());
+    }
+    readable.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+                     QStringLiteral("-"));
+    readable.remove(QRegularExpression(QStringLiteral("^-+|-+$")));
+    if (readable.isEmpty()) {
+        readable = QStringLiteral("job");
+    }
+    readable = readable.left(72);
+    readable.remove(QRegularExpression(QStringLiteral("-+$")));
+
+    const QString digest = QString::fromLatin1(
+        QCryptographicHash::hash(absoluteJobRoot.toUtf8(), QCryptographicHash::Sha256)
+            .toHex()
+            .left(10));
+    return QStringLiteral("jcut-%1-%2-%3").arg(operationPart, readable, digest);
+}
 
 QVector<DockerContainerInfo> listDockerContainers(QString* errorOut)
 {
@@ -228,6 +270,24 @@ const DockerContainerInfo* findDockerContainerForManifest(
         for (const DockerContainerInfo& container : containers) {
             if (container.image.startsWith(QStringLiteral("sam3"), Qt::CaseInsensitive) &&
                 container.command.contains(leaf)) {
+                return &container;
+            }
+        }
+    }
+
+    if (operation.compare(QStringLiteral("birefnet"), Qt::CaseInsensitive) == 0) {
+        const QString outputPath = manifest.value(QStringLiteral("artifacts"))
+                                       .toObject()
+                                       .value(QStringLiteral("alpha_masks_dir"))
+                                       .toString();
+        for (const DockerContainerInfo& container : containers) {
+            const QString mountedOutput =
+                container.mounts.value(QStringLiteral("/output")).toString();
+            if (container.image.startsWith(QStringLiteral("jcut-birefnet"),
+                                           Qt::CaseInsensitive) &&
+                !outputPath.isEmpty() && !mountedOutput.isEmpty() &&
+                QFileInfo(mountedOutput).absoluteFilePath() ==
+                    QFileInfo(outputPath).absoluteFilePath()) {
                 return &container;
             }
         }

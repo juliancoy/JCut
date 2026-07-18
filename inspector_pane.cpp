@@ -650,12 +650,12 @@ QWidget *InspectorPane::buildEffectsTab()
     layout->addLayout(featherGroup);
     
     auto maskLayerSection = createDisclosureSection(page, QStringLiteral("Person Layer"), true);
-    m_maskForegroundLayerCheck = new QCheckBox(QStringLiteral("SAM mask is foreground layer"), page);
+    m_maskForegroundLayerCheck = new QCheckBox(QStringLiteral("Mask is foreground layer"), page);
     m_maskForegroundLayerCheck->setToolTip(QStringLiteral("Draw masked person pixels as a later Vulkan pass."));
     maskLayerSection.body->addWidget(m_maskForegroundLayerCheck);
     m_maskRepeatEnabledCheck = new QCheckBox(QStringLiteral("Repeat masked source"), page);
     m_maskRepeatEnabledCheck->setToolTip(
-        QStringLiteral("Repeat the source image through the processed SAM mask channel."));
+        QStringLiteral("Repeat the source image through the processed mask channel."));
     maskLayerSection.body->addWidget(m_maskRepeatEnabledCheck);
     auto *maskRepeatForm = new QFormLayout;
     maskRepeatForm->setContentsMargins(0, 0, 0, 0);
@@ -806,7 +806,7 @@ QWidget *InspectorPane::buildEffectsTab()
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(
         "Image presets render as repeated Vulkan draws from the clip texture. "
-        "For SAM cutouts, enable the foreground layer on the masked clip and place effect images below it in the timeline."), page);
+        "For rotoscoped cutouts, enable the foreground layer on the masked clip and place effect images below it in the timeline."), page);
     infoLabel->setWordWrap(true);
     infoLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
     layout->addWidget(infoLabel);
@@ -837,6 +837,16 @@ QWidget *InspectorPane::buildMasksTab()
     m_maskClipLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(m_maskClipLabel);
 
+    auto *layerForm = new QFormLayout;
+    m_maskZLevelSpin = new QSpinBox(page);
+    m_maskZLevelSpin->setObjectName(QStringLiteral("masks.z_level"));
+    m_maskZLevelSpin->setRange(-10000, 10000);
+    m_maskZLevelSpin->setKeyboardTracking(false);
+    m_maskZLevelSpin->setToolTip(QStringLiteral(
+        "Explicit compositing order. Higher Z-levels draw in front; timeline nesting does not change this value."));
+    layerForm->addRow(QStringLiteral("Z-Level"), m_maskZLevelSpin);
+    layout->addLayout(layerForm);
+
     m_maskEnabledCheck = new QCheckBox(QStringLiteral("Enable mask processing"), page);
     layout->addWidget(m_maskEnabledCheck);
 
@@ -844,7 +854,7 @@ QWidget *InspectorPane::buildMasksTab()
     auto *sourceRow = new QHBoxLayout;
     m_maskFramesDirEdit = new QLineEdit(page);
     m_maskFramesDirEdit->setClearButtonEnabled(true);
-    m_maskFramesDirEdit->setPlaceholderText(QStringLiteral("SAM binary mask frames directory"));
+    m_maskFramesDirEdit->setPlaceholderText(QStringLiteral("Mask or continuous-alpha frames directory"));
     m_maskBrowseButton = new QPushButton(QStringLiteral("Browse"), page);
     m_maskFramesDirEdit->setVisible(false);
     m_maskSidecarCombo = new QComboBox(page);
@@ -855,7 +865,7 @@ QWidget *InspectorPane::buildMasksTab()
     sourceRow->addWidget(m_maskBrowseButton);
     sourceForm->addRow(QStringLiteral("Mask Sidecar"), sourceRow);
     layout->addLayout(sourceForm);
-    m_maskNewPromptButton = new QPushButton(QStringLiteral("New Prompt Mask…"), page);
+    m_maskNewPromptButton = new QPushButton(QStringLiteral("New SAM Prompt Mask…"), page);
     m_maskNewPromptButton->setObjectName(QStringLiteral("masks.new_prompt"));
     m_maskNewPromptButton->setToolTip(QStringLiteral(
         "Generate a separate SAM mask sidecar and optionally union it with the current mask."));

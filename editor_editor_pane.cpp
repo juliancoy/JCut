@@ -279,6 +279,9 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->detectRequested = [this](const QString& clipId) {
         openSamDetectorWindow(clipId);
     };
+    m_timeline->birefnetRequested = [this](const QString& clipId) {
+        openBiRefNetDetectorWindow(clipId);
+    };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
         const TimelineClip *clip = nullptr;

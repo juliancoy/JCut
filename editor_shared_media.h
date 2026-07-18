@@ -65,6 +65,9 @@ bool clipAudioPlaybackEnabled(const TimelineClip& clip);
 QVector<TimelineClip> audibleTimelineClips(const QVector<TimelineClip>& clips,
                                            const QVector<TimelineTrack>& tracks);
 bool clipHasAlpha(const TimelineClip& clip);
+int effectiveClipZLevel(const TimelineClip& clip);
+bool clipCompositingOrderLess(const TimelineClip& left, const TimelineClip& right);
+QVector<TimelineClip> clipsInCompositingOrder(const QVector<TimelineClip>& clips);
 
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);
 qreal effectiveFpsForClip(const TimelineClip& clip);

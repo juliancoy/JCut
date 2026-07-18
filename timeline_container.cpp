@@ -58,6 +58,19 @@ void TimelineContainer::setupLayout()
     placeholderLayout->addWidget(placeholderLabel);
     placeholderLayout->addStretch();
 
+    m_trackViewButton = new QToolButton(m_topLeftPlaceholder);
+    m_trackViewButton->setObjectName(QStringLiteral("timeline.track_view_mode"));
+    m_trackViewButton->setCheckable(true);
+    m_trackViewButton->setText(QStringLiteral("Tree"));
+    m_trackViewButton->setToolTip(
+        QStringLiteral("Parent-child track view (click for Z-value precedence view)"));
+    m_trackViewButton->setAutoRaise(true);
+    m_trackViewButton->setStyleSheet(QStringLiteral(
+        "QToolButton { color: #9aacbf; padding: 2px 5px; border: 1px solid #344252; border-radius: 4px; }"
+        "QToolButton:hover { color: #eef4fa; background: #24303c; }"
+        "QToolButton:checked { color: #7fc4ff; background: #24384d; border-color: #527ba3; }"));
+    placeholderLayout->addWidget(m_trackViewButton);
+
     m_gridLayout->addWidget(m_topLeftPlaceholder, 0, 0);
 
     // === TOP RIGHT: Transport controls ===
@@ -114,6 +127,16 @@ void TimelineContainer::connectSignals()
             this, &TimelineContainer::onTrackSidebarWidthResizeRequested);
 
     if (m_timeline) {
+        connect(m_trackViewButton, &QToolButton::toggled, this, [this](bool precedenceView) {
+            if (!m_timeline || !m_trackViewButton) return;
+            m_trackViewButton->setText(precedenceView ? QStringLiteral("Z") : QStringLiteral("Tree"));
+            m_trackViewButton->setToolTip(precedenceView
+                ? QStringLiteral("Tracks by Z-value precedence (click for parent-child view)")
+                : QStringLiteral("Parent-child track view (click for Z-value precedence view)"));
+            m_timeline->setTrackViewMode(precedenceView
+                ? TimelineWidget::TrackViewMode::Precedence
+                : TimelineWidget::TrackViewMode::ParentChild);
+        });
         m_timeline->clipsChanged = [this]() {
             syncTracksFromTimeline();
         };
@@ -146,6 +169,7 @@ void TimelineContainer::syncTracksFromTimeline()
         info.audioEnabled = timelineTrack.audioEnabled;
         info.hasVisual = m_timeline->trackHasVisualClips(i);
         info.hasAudio = m_timeline->trackHasAudioClips(i);
+        info.generatedChildTrack = timelineTrack.generatedChildTrack;
         info.top = m_timeline->trackTop(i);
         info.height = m_timeline->trackHeight(i);
         tracks.append(info);

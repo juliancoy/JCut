@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "mask_sidecar.h"
 
 struct EffectPresetUiOption {
     QString label;
@@ -18,9 +19,13 @@ QVector<TilingPatternUiOption> tilingPatternUiOptions();
 bool effectPresetUsesDirectionalControl(ClipEffectPreset preset);
 bool effectPresetUsesTilingControls(ClipEffectPreset preset);
 
-TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip);
+TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip);
+TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
+                               const editor::masks::MaskSidecar& sidecar,
+                               int zLevel);
 bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips);
-bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips);
+bool normalizeMaskMatteClips(QVector<TimelineClip>& clips);
+bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips);
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex);
 TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex);
 

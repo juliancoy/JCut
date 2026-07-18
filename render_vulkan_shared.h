@@ -38,6 +38,12 @@ inline constexpr float kVulkanEffectModeDatamoshGlitch = 20.0f;
 inline constexpr float kVulkanEffectModeRgbSplit = 21.0f;
 inline constexpr float kVulkanEffectModeHalftoneMosaic = 22.0f;
 inline constexpr float kVulkanEffectModeGlassRefraction = 23.0f;
+inline constexpr float kVulkanEffectModeSobelEdges = 24.0f;
+inline constexpr float kVulkanEffectModeNeonGlow = 25.0f;
+inline constexpr float kVulkanEffectModeSpeakerMaskDilation = 26.0f;
+inline constexpr float kVulkanEffectModeSpeakerMaskDilationPulse = 27.0f;
+inline constexpr float kVulkanEffectModeSpeakerMaskDilationRings = 28.0f;
+inline constexpr float kVulkanEffectModeMaskShadow = 29.0f;
 inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
 inline constexpr float kVulkanEffectModeBackgroundProgressiveEdgeStretch = -3.0f;
@@ -60,6 +66,10 @@ struct VulkanEffectPipelinePlan {
         float opacityMultiplier = 1.0f;
         float shaderMode = kVulkanEffectModeNormal;
         qreal depthSortKey = 0.0;
+        float palette[9] = {1.0f, 0.0f, 0.0f,
+                            0.0f, 1.0f, 0.0f,
+                            1.0f, 1.0f, 0.0f};
+        float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     };
 
     Mode mode = Mode::PassThrough;

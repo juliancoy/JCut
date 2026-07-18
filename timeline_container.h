@@ -57,6 +57,7 @@ private:
     // Top row widgets
     QWidget *m_topLeftPlaceholder = nullptr;
     QWidget *m_transportWidget = nullptr;
+    QToolButton *m_trackViewButton = nullptr;
     
     // Bottom row widgets  
     QSplitter *m_bottomSplitter = nullptr;

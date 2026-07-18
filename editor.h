@@ -123,6 +123,7 @@ private:
     void loadState();
     void openTranscriptionWindow(const QString &filePath, const QString &label);
     void openSamDetectorWindow(const QString& clipId);
+    void openBiRefNetDetectorWindow(const QString& clipId);
     void scheduleTranscriptTextCompanionBackfill();
     void scheduleDeferredHistoryLoad(const QString& projectId);
     void applyDeferredStartupPanelState(const QJsonObject& root,
@@ -542,6 +543,7 @@ private:
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
     QComboBox *m_audioVisualizationModeCombo = nullptr;
+    QComboBox *m_audioBufferFramesCombo = nullptr;
     QPushButton *m_loiaconoSpectrumSettingsButton = nullptr;
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;

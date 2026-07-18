@@ -3,6 +3,7 @@
 #include "background_fill_effect.h"
 #include "editor_shared_effects.h"
 #include "editor_shared_keyframes.h"
+#include "editor_shared_transcript.h"
 #include "transform_skip_aware_timing.h"
 #include "vulkan_effect_synth.h"
 
@@ -14,6 +15,41 @@
 
 namespace render_detail {
 namespace {
+
+float shaderModeForSinglePassPreset(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::Kaleidoscope: return kVulkanEffectModeKaleidoscope;
+    case ClipEffectPreset::HexagonalPrism: return kVulkanEffectModeHexagonalPrism;
+    case ClipEffectPreset::Droste: return kVulkanEffectModeDroste;
+    case ClipEffectPreset::PolarTunnel: return kVulkanEffectModePolarTunnel;
+    case ClipEffectPreset::TinyPlanet: return kVulkanEffectModeTinyPlanet;
+    case ClipEffectPreset::InfiniteMirror: return kVulkanEffectModeInfiniteMirror;
+    case ClipEffectPreset::QuadMirror: return kVulkanEffectModeQuadMirror;
+    case ClipEffectPreset::SlitScan: return kVulkanEffectModeSlitScan;
+    case ClipEffectPreset::DisplacementMap: return kVulkanEffectModeDisplacementMap;
+    case ClipEffectPreset::TwirlVortex: return kVulkanEffectModeTwirlVortex;
+    case ClipEffectPreset::RippleShockwave: return kVulkanEffectModeRippleShockwave;
+    case ClipEffectPreset::PixelSorting: return kVulkanEffectModePixelSorting;
+    case ClipEffectPreset::DatamoshGlitch: return kVulkanEffectModeDatamoshGlitch;
+    case ClipEffectPreset::RgbSplit: return kVulkanEffectModeRgbSplit;
+    case ClipEffectPreset::HalftoneMosaic: return kVulkanEffectModeHalftoneMosaic;
+    case ClipEffectPreset::GlassRefraction: return kVulkanEffectModeGlassRefraction;
+    case ClipEffectPreset::SobelEdges: return kVulkanEffectModeSobelEdges;
+    case ClipEffectPreset::NeonGlow: return kVulkanEffectModeNeonGlow;
+    case ClipEffectPreset::SpeakerMaskDilation: return kVulkanEffectModeSpeakerMaskDilation;
+    case ClipEffectPreset::SpeakerMaskDilationPulse: return kVulkanEffectModeSpeakerMaskDilationPulse;
+    case ClipEffectPreset::SpeakerMaskDilationRings: return kVulkanEffectModeSpeakerMaskDilationRings;
+    default: return -1.0f;
+    }
+}
+
+bool isSpeakerMaskDilationPreset(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::SpeakerMaskDilation ||
+           preset == ClipEffectPreset::SpeakerMaskDilationPulse ||
+           preset == ClipEffectPreset::SpeakerMaskDilationRings;
+}
 
 QString effectClockContinuityKey(const TimelineClip& clip)
 {
@@ -341,28 +377,33 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
             ? kVulkanEffectModeMirrorRing
             : kVulkanEffectModeTessellation;
         draws.push_back(pass);
-    } else if (clip.effectPreset >= ClipEffectPreset::Kaleidoscope &&
-               clip.effectPreset <= ClipEffectPreset::GlassRefraction) {
+    } else if (const float shaderMode = shaderModeForSinglePassPreset(clip.effectPreset);
+               shaderMode >= 0.0f) {
         VulkanEffectPipelinePlan::DrawPass pass;
         pass.outputRect = outputRect;
-        switch (clip.effectPreset) {
-        case ClipEffectPreset::Kaleidoscope: pass.shaderMode = kVulkanEffectModeKaleidoscope; break;
-        case ClipEffectPreset::HexagonalPrism: pass.shaderMode = kVulkanEffectModeHexagonalPrism; break;
-        case ClipEffectPreset::Droste: pass.shaderMode = kVulkanEffectModeDroste; break;
-        case ClipEffectPreset::PolarTunnel: pass.shaderMode = kVulkanEffectModePolarTunnel; break;
-        case ClipEffectPreset::TinyPlanet: pass.shaderMode = kVulkanEffectModeTinyPlanet; break;
-        case ClipEffectPreset::InfiniteMirror: pass.shaderMode = kVulkanEffectModeInfiniteMirror; break;
-        case ClipEffectPreset::QuadMirror: pass.shaderMode = kVulkanEffectModeQuadMirror; break;
-        case ClipEffectPreset::SlitScan: pass.shaderMode = kVulkanEffectModeSlitScan; break;
-        case ClipEffectPreset::DisplacementMap: pass.shaderMode = kVulkanEffectModeDisplacementMap; break;
-        case ClipEffectPreset::TwirlVortex: pass.shaderMode = kVulkanEffectModeTwirlVortex; break;
-        case ClipEffectPreset::RippleShockwave: pass.shaderMode = kVulkanEffectModeRippleShockwave; break;
-        case ClipEffectPreset::PixelSorting: pass.shaderMode = kVulkanEffectModePixelSorting; break;
-        case ClipEffectPreset::DatamoshGlitch: pass.shaderMode = kVulkanEffectModeDatamoshGlitch; break;
-        case ClipEffectPreset::RgbSplit: pass.shaderMode = kVulkanEffectModeRgbSplit; break;
-        case ClipEffectPreset::HalftoneMosaic: pass.shaderMode = kVulkanEffectModeHalftoneMosaic; break;
-        case ClipEffectPreset::GlassRefraction: pass.shaderMode = kVulkanEffectModeGlassRefraction; break;
-        default: break;
+        pass.shaderMode = shaderMode;
+        pass.effectParams[0] = static_cast<float>(qBound<qreal>(0.1, clip.effectScale, 8.0));
+        pass.effectParams[1] = static_cast<float>(qBound(1, clip.effectRows, 96));
+        pass.effectParams[2] = static_cast<float>(temporalFrame * qBound<qreal>(-8.0, clip.effectSpeed, 8.0));
+        pass.effectParams[3] = static_cast<float>(qBound<qreal>(0.1, clip.tilingSpacing, 8.0));
+        if (isSpeakerMaskDilationPreset(clip.effectPreset)) {
+            const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+            const std::shared_ptr<const TranscriptRuntimeDocument> document =
+                loadTranscriptRuntimeDocument(transcriptPath);
+            const int64_t sourceFrame = qMax<int64_t>(0, clip.sourceInFrame + qRound64(temporalFrame));
+            const SpeakerProfile profile = document
+                ? transcriptSpeakerProfileForSourceFrame(
+                      transcriptPath, document->sections, sourceFrame)
+                : SpeakerProfile{};
+            const QColor colors[3] = {
+                profile.primaryColor.isValid() ? profile.primaryColor : QColor(Qt::red),
+                profile.secondaryColor.isValid() ? profile.secondaryColor : QColor(Qt::green),
+                profile.accentColor.isValid() ? profile.accentColor : QColor(Qt::yellow)};
+            for (int color = 0; color < 3; ++color) {
+                pass.palette[color * 3] = colors[color].redF();
+                pass.palette[color * 3 + 1] = colors[color].greenF();
+                pass.palette[color * 3 + 2] = colors[color].blueF();
+            }
         }
         draws.push_back(pass);
     } else if (clip.effectPreset == ClipEffectPreset::Vulkan3DSynth) {

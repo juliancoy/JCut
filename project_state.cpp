@@ -1092,6 +1092,9 @@ QJsonObject EditorWindow::buildStateJson() const
         {
             QJsonObject trackObj;
             trackObj[QStringLiteral("name")] = track.name;
+            trackObj[QStringLiteral("generatedChildTrack")] = track.generatedChildTrack;
+            trackObj[QStringLiteral("parentClipId")] = track.parentClipId;
+            trackObj[QStringLiteral("childClipId")] = track.childClipId;
             trackObj[QStringLiteral("height")] = track.height;
             trackObj[QStringLiteral("visualMode")] = trackVisualModeToString(track.visualMode);
             trackObj[QStringLiteral("gradingPreviewEnabled")] = track.gradingPreviewEnabled;
@@ -1115,6 +1118,7 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("tilingPattern")] = tilingPatternToJson(track.tilingPattern);
             trackObj[QStringLiteral("tilingSpacing")] = track.tilingSpacing;
             trackObj[QStringLiteral("tilingWrap")] = track.tilingWrap;
+            trackObj[QStringLiteral("effectParameterSets")] = track.effectParameterSets;
             tracks.push_back(trackObj);
         }
     }

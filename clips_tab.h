@@ -26,6 +26,7 @@ public:
         std::function<void()> pushHistorySnapshot;
         std::function<void()> scheduleSaveState;
         std::function<void(const QString&)> detectClip;
+        std::function<void(const QString&)> birefnetClip;
     };
 
     explicit ClipsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);

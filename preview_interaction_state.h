@@ -108,6 +108,11 @@ struct VulkanPreviewClipFrameStatus {
     bool maskShowOnly = false;
     bool maskGradeEnabled = false;
     qreal maskOpacity = 1.0;
+    bool maskDropShadowEnabled = false;
+    qreal maskDropShadowRadius = 12.0;
+    qreal maskDropShadowOffsetX = 0.0;
+    qreal maskDropShadowOffsetY = 4.0;
+    qreal maskDropShadowOpacity = 0.45;
     qreal maskGradeBrightness = 0.0;
     qreal maskGradeContrast = 1.0;
     qreal maskGradeSaturation = 1.0;

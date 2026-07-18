@@ -40,7 +40,7 @@ void InspectorPane::configureInspectorTabs()
         {"Grade", QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
         {"Opacity", QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
         {"Effects", QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
-        {"Masks", QStyle::SP_FileDialogDetailedView, "Masks: SAM mask source, shape filters, shadow, and masked-area grade"},
+        {"Masks", QStyle::SP_FileDialogDetailedView, "Masks: rotoscope sidecar, shape filters, shadow, and masked-area grade"},
         {"Corrections", QStyle::SP_DriveFDIcon, "Corrections: draw polygon erase masks for visual artifacts"},
         {"Titles", QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
         {"Sync", QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},

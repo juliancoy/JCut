@@ -215,7 +215,7 @@ bool updateClipAndNormalizeMaskMattes(
         return false;
     }
     QVector<TimelineClip> clips = timeline->clips();
-    if (normalizeSamMaskMatteClips(clips)) {
+    if (normalizeMaskMatteClips(clips)) {
         timeline->setClips(clips);
     }
     return true;
@@ -1732,6 +1732,7 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskSidecarCombo(),
             m_inspectorPane->maskBrowseButton(),
             m_inspectorPane->maskNewPromptButton(),
+            m_inspectorPane->maskZLevelSpin(),
             m_inspectorPane->maskShapeFeatherSpin(),
             m_inspectorPane->maskShapeFeatherFalloffCombo(),
             m_inspectorPane->maskShapeFeatherPowerSpin(),
@@ -1747,7 +1748,7 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskShadowOffsetYSpin(),
             m_inspectorPane->maskShadowOpacitySpin()},
         MaskTab::Dependencies{
-            [this]() { return sourceClipForSelectedMaskMatte(m_timeline); },
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
                 return updateClipAndNormalizeMaskMattes(m_timeline, id, updater);
             },
@@ -1938,7 +1939,8 @@ void EditorWindow::createClipsTab()
             },
             [this]() { pushHistorySnapshot(); },
             [this]() { scheduleSaveState(); },
-            [this](const QString& clipId) { openSamDetectorWindow(clipId); }});
+            [this](const QString& clipId) { openSamDetectorWindow(clipId); },
+            [this](const QString& clipId) { openBiRefNetDetectorWindow(clipId); }});
     m_clipsTab->wire();
 }
 

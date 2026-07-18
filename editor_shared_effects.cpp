@@ -774,9 +774,8 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
 
     QImage original = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
-    QImage base = generatedMaskMatte
-                      ? applyClipGrade(original, clipGrade).convertToFormat(QImage::Format_ARGB32_Premultiplied)
-                      : original;
+    QImage base = applyClipGrade(original, clipGrade)
+                      .convertToFormat(QImage::Format_ARGB32_Premultiplied);
     QImage output(base.size(), QImage::Format_ARGB32_Premultiplied);
     output.fill(Qt::transparent);
 
@@ -800,22 +799,52 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
         painter.end();
     }
 
-    QPainter painter(&output);
-    painter.drawImage(0, 0, base);
-    painter.end();
     if (generatedMaskMatte) {
-        for (int y = 0; y < output.height(); ++y) {
+        QImage foreground = base.convertToFormat(QImage::Format_ARGB32);
+        const qreal opacity = qBound<qreal>(0.0, clip.maskOpacity, 1.0);
+        for (int y = 0; y < foreground.height(); ++y) {
             const uchar* maskRow = mask.constScanLine(y);
-            QRgb* dstRow = reinterpret_cast<QRgb*>(output.scanLine(y));
-            for (int x = 0; x < output.width(); ++x) {
+            QRgb* dstRow = reinterpret_cast<QRgb*>(foreground.scanLine(y));
+            for (int x = 0; x < foreground.width(); ++x) {
                 dstRow[x] = qRgba(qRed(dstRow[x]),
                                   qGreen(dstRow[x]),
                                   qBlue(dstRow[x]),
-                                  qBound(0, qRound(qAlpha(dstRow[x]) * (maskRow[x] / 255.0)), 255));
+                                  qBound(0, qRound(qAlpha(dstRow[x]) *
+                                                  (maskRow[x] / 255.0) * opacity), 255));
+            }
+        }
+        QPainter foregroundPainter(&output);
+        foregroundPainter.drawImage(0, 0, foreground);
+        foregroundPainter.end();
+    } else {
+        QPainter basePainter(&output);
+        basePainter.drawImage(0, 0, base);
+        basePainter.end();
+    }
+    if (!generatedMaskMatte && clip.maskGradeEnabled) {
+        const QImage maskedGrade = applyClipGrade(original, maskGradeForClip(clip))
+                                       .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const qreal opacity = qBound<qreal>(0.0, clip.maskOpacity, 1.0);
+        for (int y = 0; y < output.height(); ++y) {
+            const uchar* maskRow = mask.constScanLine(y);
+            const QRgb* gradeRow = reinterpret_cast<const QRgb*>(maskedGrade.constScanLine(y));
+            QRgb* dstRow = reinterpret_cast<QRgb*>(output.scanLine(y));
+            for (int x = 0; x < output.width(); ++x) {
+                const qreal amount = (maskRow[x] / 255.0) * opacity;
+                if (amount <= 0.0) continue;
+                const QRgb basePixel = dstRow[x];
+                const QRgb gradePixel = gradeRow[x];
+                auto mixChannel = [amount](int baseValue, int gradeValue) {
+                    return qBound(0, qRound(baseValue + (gradeValue - baseValue) * amount), 255);
+                };
+                dstRow[x] = qRgba(mixChannel(qRed(basePixel), qRed(gradePixel)),
+                                  mixChannel(qGreen(basePixel), qGreen(gradePixel)),
+                                  mixChannel(qBlue(basePixel), qBlue(gradePixel)),
+                                  mixChannel(qAlpha(basePixel), qAlpha(gradePixel)));
             }
         }
     }
-    return output;
+    return output.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects) {

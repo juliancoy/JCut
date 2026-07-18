@@ -3,12 +3,14 @@
 #include "timeline_fps.h"
 
 #include <QColor>
+#include <QJsonObject>
 #include <QPointF>
 #include <QSize>
 #include <QString>
 #include <QVector>
 
 #include <cstdint>
+#include <limits>
 
 enum class ClipMediaType {
     Unknown,
@@ -66,6 +68,11 @@ enum class ClipEffectPreset {
     RgbSplit,
     HalftoneMosaic,
     GlassRefraction,
+    SobelEdges,
+    NeonGlow,
+    SpeakerMaskDilation,
+    SpeakerMaskDilationPulse,
+    SpeakerMaskDilationRings,
 };
 
 enum class ClipTilingPattern {
@@ -85,6 +92,7 @@ enum class ClipRole {
 };
 
 struct TimelineClip {
+    static constexpr int kAutomaticZLevel = std::numeric_limits<int>::min();
     static constexpr int kGradingCurveLutSize = 256;
     static constexpr int kSpeakerFramingSmoothingMaxFrames = 500;
     static constexpr int kSpeakerFramingGapHoldMaxFrames = 240;
@@ -311,6 +319,11 @@ struct TimelineClip {
     int64_t durationFrames = 90;
     int64_t durationSubframeSamples = 0;
     int trackIndex = 0;
+    // Compositing order is intentionally independent from timeline layout.
+    // Automatic preserves legacy track-based stacking until a clip is assigned
+    // an explicit level. Higher levels are drawn later (in front).
+    int zLevel = kAutomaticZLevel;
+    bool zLevelUserSet = false;
     qreal playbackRate = 1.0;
     bool videoEnabled = true;
     bool audioEnabled = true;
@@ -396,11 +409,17 @@ struct TimelineClip {
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;
+    QJsonObject effectParameterSets;
     QVector<CorrectionPolygon> correctionPolygons;
 };
 
 struct TimelineTrack {
     QString name;
+    // Generated child tracks remain independently controllable, but are
+    // grouped beneath the source clip's track in the timeline hierarchy.
+    bool generatedChildTrack = false;
+    QString parentClipId;
+    QString childClipId;
     int height = 72;
     TrackVisualMode visualMode = TrackVisualMode::Enabled;
     bool gradingPreviewEnabled = true;
@@ -424,4 +443,5 @@ struct TimelineTrack {
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;
+    QJsonObject effectParameterSets;
 };

@@ -4,6 +4,8 @@
 
 #include <QSignalBlocker>
 #include <QDir>
+#include <QFormLayout>
+#include <QLabel>
 #include <QtGlobal>
 #include <memory>
 
@@ -62,6 +64,136 @@ int comboIndexForTilingPattern(const QComboBox* combo, ClipTilingPattern pattern
     }
     const int index = combo->findData(static_cast<int>(pattern));
     return index >= 0 ? index : combo->findData(static_cast<int>(ClipTilingPattern::Grid));
+}
+
+template <typename Owner>
+QJsonObject effectParameters(const Owner& owner)
+{
+    return QJsonObject{{QStringLiteral("rows"), owner.effectRows},
+                       {QStringLiteral("speed"), owner.effectSpeed},
+                       {QStringLiteral("scale"), owner.effectScale},
+                       {QStringLiteral("alternate"), owner.effectAlternateDirection},
+                       {QStringLiteral("differenceReference"), owner.differenceReferenceFrames},
+                       {QStringLiteral("differenceThreshold"), owner.differenceThreshold},
+                       {QStringLiteral("differenceSoftness"), owner.differenceSoftness},
+                       {QStringLiteral("echoCount"), owner.temporalEchoCount},
+                       {QStringLiteral("echoSpacing"), owner.temporalEchoSpacingFrames},
+                       {QStringLiteral("echoDecay"), owner.temporalEchoDecay},
+                       {QStringLiteral("pattern"), static_cast<int>(owner.tilingPattern)},
+                       {QStringLiteral("spacing"), owner.tilingSpacing},
+                       {QStringLiteral("wrap"), owner.tilingWrap}};
+}
+
+template <typename Owner>
+void restoreEffectParameters(Owner& owner, const QJsonObject& values)
+{
+    if (values.isEmpty()) return;
+    owner.effectRows = qBound(1, values.value(QStringLiteral("rows")).toInt(32), 96);
+    owner.effectSpeed = qBound<qreal>(-8.0, values.value(QStringLiteral("speed")).toDouble(1.0), 8.0);
+    owner.effectScale = qBound<qreal>(0.1, values.value(QStringLiteral("scale")).toDouble(1.0), 8.0);
+    owner.effectAlternateDirection = values.value(QStringLiteral("alternate")).toBool(true);
+    owner.differenceReferenceFrames = qBound(1, values.value(QStringLiteral("differenceReference")).toInt(1), 300);
+    owner.differenceThreshold = qBound<qreal>(0.0, values.value(QStringLiteral("differenceThreshold")).toDouble(0.1), 1.0);
+    owner.differenceSoftness = qBound<qreal>(0.0, values.value(QStringLiteral("differenceSoftness")).toDouble(0.05), 1.0);
+    owner.temporalEchoCount = qBound(1, values.value(QStringLiteral("echoCount")).toInt(4), 12);
+    owner.temporalEchoSpacingFrames = qBound(1, values.value(QStringLiteral("echoSpacing")).toInt(2), 120);
+    owner.temporalEchoDecay = qBound<qreal>(0.0, values.value(QStringLiteral("echoDecay")).toDouble(0.65), 1.0);
+    owner.tilingPattern = static_cast<ClipTilingPattern>(values.value(QStringLiteral("pattern")).toInt(0));
+    owner.tilingSpacing = qBound<qreal>(0.1, values.value(QStringLiteral("spacing")).toDouble(1.0), 8.0);
+    owner.tilingWrap = values.value(QStringLiteral("wrap")).toBool(true);
+}
+
+QString presetParameterKey(ClipEffectPreset preset)
+{
+    return QString::number(static_cast<int>(preset));
+}
+
+void setFormFieldVisible(QWidget* field, bool visible)
+{
+    if (!field) return;
+    field->setVisible(visible);
+    QWidget* root = field->window();
+    const QList<QFormLayout*> forms = root->findChildren<QFormLayout*>();
+    for (QFormLayout* form : forms) {
+        if (QWidget* label = form->labelForField(field)) label->setVisible(visible);
+    }
+}
+
+void setFormFieldLabel(QWidget* field, const QString& text)
+{
+    if (!field) return;
+    const QList<QFormLayout*> forms = field->window()->findChildren<QFormLayout*>();
+    for (QFormLayout* form : forms) {
+        if (QLabel* label = qobject_cast<QLabel*>(form->labelForField(field))) label->setText(text);
+    }
+}
+
+bool speakerMaskDilationPreset(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::SpeakerMaskDilation ||
+           preset == ClipEffectPreset::SpeakerMaskDilationPulse ||
+           preset == ClipEffectPreset::SpeakerMaskDilationRings;
+}
+
+void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets, ClipEffectPreset preset)
+{
+    const bool commonParameters =
+        preset == ClipEffectPreset::NewsLogoTicker ||
+        preset == ClipEffectPreset::PersonOrbit ||
+        preset == ClipEffectPreset::AlternatingMotionBackground ||
+        preset == ClipEffectPreset::FreezePattern ||
+        preset == ClipEffectPreset::StepRepeat ||
+        preset == ClipEffectPreset::DirectionalTrimTicker ||
+        preset == ClipEffectPreset::SourceTile ||
+        preset == ClipEffectPreset::Vulkan3DSynth ||
+        preset == ClipEffectPreset::ProgressiveEdgeStretch ||
+        preset == ClipEffectPreset::SobelEdges ||
+        preset == ClipEffectPreset::NeonGlow ||
+        speakerMaskDilationPreset(preset);
+    const bool edge = preset == ClipEffectPreset::SobelEdges;
+    const bool neon = preset == ClipEffectPreset::NeonGlow;
+    const bool speakerMask = speakerMaskDilationPreset(preset);
+    const bool difference = preset == ClipEffectPreset::DifferenceMatte;
+    const bool echo = preset == ClipEffectPreset::TemporalEcho;
+    const bool tiling = preset == ClipEffectPreset::SourceTile ||
+                        preset == ClipEffectPreset::Tessellation ||
+                        preset == ClipEffectPreset::HexagonalPrism || speakerMask;
+    if (widgets.effectRowsSpin) {
+        widgets.effectRowsSpin->setRange(1, edge || neon ? 4 : (speakerMask ? 8 : 96));
+    }
+    if (widgets.effectScaleSpin) {
+        widgets.effectScaleSpin->setRange(0.1, speakerMask ? 1.0 : 8.0);
+    }
+    setFormFieldLabel(widgets.effectRowsSpin,
+                      edge ? QStringLiteral("Sample radius")
+                           : neon ? QStringLiteral("Glow radius")
+                                  : speakerMask ? QStringLiteral("Dilation radius")
+                                                : QStringLiteral("Copies"));
+    setFormFieldLabel(widgets.effectSpeedSpin,
+                      neon ? QStringLiteral("Hue speed")
+                           : speakerMask ? QStringLiteral("Color cycle speed")
+                                         : QStringLiteral("Speed"));
+    setFormFieldLabel(widgets.effectScaleSpin,
+                      edge ? QStringLiteral("Edge strength")
+                           : neon ? QStringLiteral("Glow intensity")
+                                  : speakerMask ? QStringLiteral("Opacity")
+                                                : QStringLiteral("Scale"));
+    setFormFieldLabel(widgets.tilingSpacingSpin,
+                      speakerMask ? QStringLiteral("Color spacing") : QStringLiteral("Spacing"));
+    setFormFieldVisible(widgets.effectRowsSpin, commonParameters);
+    setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge);
+    setFormFieldVisible(widgets.effectScaleSpin, commonParameters);
+    setFormFieldVisible(widgets.effectAlternateDirectionCheck, commonParameters && !edge && !neon && !speakerMask);
+    setFormFieldVisible(widgets.effectSpeechSyncCheck, commonParameters && !edge && !neon && !speakerMask);
+    setFormFieldVisible(widgets.differenceReferenceFramesSpin, difference);
+    setFormFieldVisible(widgets.differenceThresholdSpin, difference);
+    setFormFieldVisible(widgets.differenceSoftnessSpin, difference);
+    setFormFieldVisible(widgets.temporalEchoCountSpin, echo);
+    setFormFieldVisible(widgets.temporalEchoSpacingSpin, echo);
+    setFormFieldVisible(widgets.temporalEchoDecaySpin, echo);
+    setFormFieldVisible(widgets.tilingPatternCombo, tiling);
+    setFormFieldVisible(widgets.tilingSpacingSpin, tiling);
+    setFormFieldVisible(widgets.tilingWrapCheck, tiling);
 }
 }
 
@@ -339,6 +471,7 @@ void EffectsTab::refresh()
             m_widgets.tilingWrapCheck->setChecked(!selectedTrack || selectedTrack->tilingWrap);
             m_widgets.tilingWrapCheck->setEnabled(trackEffectActive);
         }
+        updatePresetParameterVisibility(m_widgets, trackPreset);
         m_updating = false;
         return;
     }
@@ -456,21 +589,21 @@ void EffectsTab::refresh()
             hasAlpha && (!m_widgets.maskFeatherEnabledCheck ||
                          m_widgets.maskFeatherEnabledCheck->isChecked()));
     }
-    const bool hasSamMask = clip->maskEnabled && !clip->maskFramesDir.trimmed().isEmpty();
+    const bool hasMask = clip->maskEnabled && !clip->maskFramesDir.trimmed().isEmpty();
     if (m_widgets.maskForegroundLayerCheck) {
-        m_widgets.maskForegroundLayerCheck->setEnabled(hasSamMask);
+        m_widgets.maskForegroundLayerCheck->setEnabled(hasMask);
         m_widgets.maskForegroundLayerCheck->setToolTip(
-            hasSamMask
-                ? QStringLiteral("Draw the SAM-selected person again as a Vulkan foreground layer.")
-                : QStringLiteral("Requires an enabled SAM mask in the Masks tab."));
+            hasMask
+                ? QStringLiteral("Draw the rotoscoped subject again as a Vulkan foreground layer.")
+                : QStringLiteral("Requires an enabled mask in the Masks tab."));
     }
-    const bool maskRepeatActive = hasSamMask && clip->maskRepeatEnabled;
+    const bool maskRepeatActive = hasMask && clip->maskRepeatEnabled;
     if (m_widgets.maskRepeatEnabledCheck) {
-        m_widgets.maskRepeatEnabledCheck->setEnabled(hasSamMask);
+        m_widgets.maskRepeatEnabledCheck->setEnabled(hasMask);
         m_widgets.maskRepeatEnabledCheck->setToolTip(
-            hasSamMask
-                ? QStringLiteral("Repeat source pixels through the processed SAM mask channel.")
-                : QStringLiteral("Requires an enabled SAM mask in the Masks tab."));
+            hasMask
+                ? QStringLiteral("Repeat source pixels through the processed mask channel.")
+                : QStringLiteral("Requires an enabled mask in the Masks tab."));
     }
     if (m_widgets.maskRepeatDeltaXSpin) {
         m_widgets.maskRepeatDeltaXSpin->setEnabled(maskRepeatActive);
@@ -527,6 +660,7 @@ void EffectsTab::refresh()
     if (m_widgets.tilingWrapCheck) {
         m_widgets.tilingWrapCheck->setEnabled(tilingControlsActive);
     }
+    updatePresetParameterVisibility(m_widgets, clipPreset);
     m_updating = false;
 }
 
@@ -602,11 +736,16 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         selectedClip->clipRole != ClipRole::EffectSynth &&
         m_deps.clipHasVisuals(*selectedClip)) {
         updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
+            const ClipEffectPreset previousPreset = clip.effectPreset;
+            clip.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(clip);
             clip.maskForegroundLayerEnabled = foreground;
             clip.maskRepeatEnabled = maskRepeatEnabled;
             clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
             clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
             clip.effectPreset = preset;
+            if (preset != previousPreset) {
+                restoreEffectParameters(clip, clip.effectParameterSets.value(presetParameterKey(preset)).toObject());
+            } else {
             clip.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
             clip.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             clip.effectScale = qBound<qreal>(0.1, scale, 8.0);
@@ -621,10 +760,17 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             clip.tilingPattern = tilingPattern;
             clip.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
             clip.tilingWrap = tilingWrap;
+            }
+            clip.effectParameterSets[presetParameterKey(preset)] = effectParameters(clip);
         });
     } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0) {
         updated = m_deps.updateTrackByIndex(targetTrackIndex, [=](TimelineTrack& track) {
+            const ClipEffectPreset previousPreset = track.effectPreset;
+            track.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(track);
             track.effectPreset = preset;
+            if (preset != previousPreset) {
+                restoreEffectParameters(track, track.effectParameterSets.value(presetParameterKey(preset)).toObject());
+            } else {
             track.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
             track.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             track.effectScale = qBound<qreal>(0.1, scale, 8.0);
@@ -638,6 +784,8 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             track.tilingPattern = tilingPattern;
             track.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
             track.tilingWrap = tilingWrap;
+            }
+            track.effectParameterSets[presetParameterKey(preset)] = effectParameters(track);
         });
     }
 

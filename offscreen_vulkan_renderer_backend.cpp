@@ -133,9 +133,10 @@ struct FrameUniformData {
   float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 16);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 20);
 
 constexpr int kFrameUniformRingCount = 4096;
 
@@ -2161,12 +2162,19 @@ public:
     int maskErodeRadius = 0;
     int maskDilateRadius = 0;
     int maskBlurRadius = 0;
+    float maskFeatherGamma = 1.0f;
+    int maskFeatherFalloff = 0;
     QString cacheKey;
     QByteArray curveLutRgba = identityCurveLutBytes();
     QByteArray maskCurveLutRgba = identityCurveLutBytes();
     bool curveLutApplied = false;
     bool maskCurveLutApplied = false;
     float maskOpacity = 1.0f;
+    bool maskDropShadowDraw = false;
+    float maskDropShadowRadius = 12.0f;
+    float maskDropShadowOffsetX = 0.0f;
+    float maskDropShadowOffsetY = 4.0f;
+    float maskDropShadowOpacity = 0.45f;
     float maskBrightness = 0.0f;
     float maskContrast = 1.0f;
     float maskSaturation = 1.0f;
@@ -2502,7 +2510,7 @@ public:
       float highlights[4];
     } push{};
     auto updateFrameUniformForDraw =
-        [&](const LayerInput* layer = nullptr) -> uint32_t {
+        [&](const LayerInput* layer = nullptr, const float* effectParams = nullptr) -> uint32_t {
       if (!m_frameUniformMapped || m_frameUniformStride == 0) {
         return 0u;
       }
@@ -2521,6 +2529,9 @@ public:
         std::memcpy(values.backgroundHighlights,
                     layer->backgroundHighlights,
                     sizeof(values.backgroundHighlights));
+      }
+      if (effectParams) {
+        std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
       }
       const VkDeviceSize offset =
           m_frameUniformStride * static_cast<VkDeviceSize>(m_frameUniformRingIndex);
@@ -3111,8 +3122,9 @@ public:
                                     const float shadows[4],
                                     const float midtones[4],
                                     const float highlights[4],
-                                    float mode) {
-          const uint32_t frameUniformOffset = updateFrameUniformForDraw(&layer);
+                                    float mode,
+                                    const float* effectParams = nullptr) {
+          const uint32_t frameUniformOffset = updateFrameUniformForDraw(&layer, effectParams);
           vkCmdBindDescriptorSets(
               m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
               m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 1, &frameUniformOffset);
@@ -3157,6 +3169,32 @@ public:
                            highlights,
                            mode);
         };
+        const float packedMaskFalloff = static_cast<float>(
+            layer.maskFeatherFalloff * 10) + layer.maskFeatherGamma;
+        float maskHighlights[4];
+        std::copy_n(layer.highlights, 4, maskHighlights);
+        maskHighlights[3] = packedMaskFalloff;
+        if (layer.maskTextureEnabled && layer.maskDropShadowDraw &&
+            layer.maskDropShadowOpacity > 0.0f) {
+          float shadowMvp[16];
+          std::copy_n(layer.mvp, 16, shadowMvp);
+          shadowMvp[12] += 2.0f * layer.maskDropShadowOffsetX /
+                           static_cast<float>(std::max(1, m_outputSize.width()));
+          shadowMvp[13] += 2.0f * layer.maskDropShadowOffsetY /
+                           static_cast<float>(std::max(1, m_outputSize.height()));
+          float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+          float shadowMidtones[4] = {0.0f, 0.0f, 0.0f,
+                                     layer.maskDropShadowRadius};
+          drawLayerWithMvp(shadowMvp,
+                           0.0f,
+                           1.0f,
+                           1.0f,
+                           layer.opacity * layer.maskDropShadowOpacity,
+                           neutral,
+                           shadowMidtones,
+                           maskHighlights,
+                           kVulkanEffectModeMaskShadow);
+        }
         if (layer.maskTextureEnabled && layer.maskShowOnly) {
           drawLayer(0.0f,
                     1.0f,
@@ -3164,7 +3202,7 @@ public:
                     layer.maskOpacity,
                     layer.shadows,
                     layer.midtones,
-                    layer.highlights,
+                    maskHighlights,
                     kVulkanEffectModeMaskOnly);
           continue;
         }
@@ -3183,15 +3221,34 @@ public:
             const float drawMode = layer.maskClipSource
                                        ? kVulkanEffectModeMaskGrade
                                        : drawPass.shaderMode;
+            float drawShadows[4];
+            float drawMidtones[4];
+            float drawHighlights[4];
+            std::copy_n(layer.shadows, 4, drawShadows);
+            std::copy_n(layer.midtones, 4, drawMidtones);
+            std::copy_n(layer.highlights, 4, drawHighlights);
+            if (drawMode == kVulkanEffectModeMaskGrade) {
+              drawHighlights[3] = packedMaskFalloff;
+            }
+            if (drawMode >= kVulkanEffectModeSpeakerMaskDilation &&
+                drawMode <= kVulkanEffectModeSpeakerMaskDilationRings) {
+              std::copy_n(drawPass.palette, 3, drawShadows);
+              std::copy_n(drawPass.palette + 3, 3, drawMidtones);
+              std::copy_n(drawPass.palette + 6, 3, drawHighlights);
+            }
             drawLayerWithMvp(presetMvp,
                              layer.brightness,
                              layer.contrast,
                              layer.saturation,
-                             layer.opacity * drawPass.opacityMultiplier,
-                             layer.shadows,
-                             layer.midtones,
-                             layer.highlights,
-                             drawMode);
+                             layer.opacity * drawPass.opacityMultiplier *
+                                 (drawMode == kVulkanEffectModeMaskGrade && !layer.maskClipSource
+                                      ? layer.maskOpacity
+                                      : 1.0f),
+                             drawShadows,
+                             drawMidtones,
+                             drawHighlights,
+                             drawMode,
+                             drawPass.effectParams);
           }
           if (layer.presetScissorEnabled) {
             vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
@@ -3206,7 +3263,9 @@ public:
                     layer.opacity,
                     layer.shadows,
                     layer.midtones,
-                    layer.highlights,
+                    drawMode == kVulkanEffectModeMaskGrade
+                        ? maskHighlights
+                        : layer.highlights,
                     drawMode);
         }
         if (layer.maskTextureEnabled && layer.maskGradeEnabled && !layer.maskForegroundLayerEnabled) {
@@ -3215,13 +3274,15 @@ public:
                                    layer.maskCurveLutApplied
                                        ? kVulkanMaskGradeUseSelectedCurveLut
                                        : 0.0f};
+          float maskGradeHighlights[4] = {0.0f, 0.0f, 0.0f,
+                                          packedMaskFalloff};
           drawLayer(layer.maskBrightness,
                     layer.maskContrast,
                     layer.maskSaturation,
                     layer.maskOpacity,
                     neutral,
                     maskMidtones,
-                    neutral,
+                    maskGradeHighlights,
                     kVulkanEffectModeMaskGrade);
         }
       }
@@ -4373,43 +4434,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
   layers.reserve((orderedClips.size() * 2) + 1);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayers;
-  QSet<QString> maskMarkerSourceIds;
-  for (const TimelineClip &clip : orderedClips) {
-    if (clip.clipRole == ClipRole::MaskMatte &&
-        clip.locked &&
-        clip.sourceTransformLocked &&
-        clipVisualPlaybackEnabled(clip, request.tracks) &&
-        timelineFrame >= clip.startFrame &&
-        timelineFrame < clip.startFrame + clip.durationFrames) {
-      const QString sourceId = clip.linkedSourceClipId.trimmed();
-      if (!sourceId.isEmpty()) {
-        maskMarkerSourceIds.insert(sourceId);
-      }
-    }
-  }
-  QHash<QString, OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayerBySourceId;
-  QHash<QString, TimelineClip> maskMatteClipBySourceId;
-  QVector<QPair<int, QString>> pendingMaskMarkerInsertions;
-  const auto applyMaskMatteGrade = [&](OffscreenVulkanRendererPrivate::LayerInput& layer,
-                                       const TimelineClip& matteClip) {
-    const TimelineClip::GradingKeyframe grade = request.bypassGrading
-        ? TimelineClip::GradingKeyframe{}
-        : evaluateEffectiveClipGradingAtPosition(
-              matteClip, request.tracks, static_cast<qreal>(timelineFrame));
-    const VulkanDrawEffectState effects = vulkanDrawEffectStateForGrade(grade);
-    layer.brightness = effects.brightness;
-    layer.contrast = effects.contrast;
-    layer.saturation = effects.saturation;
-    layer.opacity = effects.opacity;
-    std::copy(std::begin(effects.shadows), std::end(effects.shadows), layer.shadows);
-    std::copy(std::begin(effects.midtones), std::end(effects.midtones), layer.midtones);
-    std::copy(std::begin(effects.highlights), std::end(effects.highlights), layer.highlights);
-    layer.shadows[3] = kVulkanEffectModeMaskGrade;
-    layer.midtones[3] = gradingUsesCurveLut(grade)
-        ? kVulkanMaskGradeUseSelectedCurveLut : 0.0f;
-    layer.maskCurveLutRgba = curveLutBytesForGrade(grade);
-    layer.maskCurveLutApplied = gradingUsesCurveLut(grade);
-  };
   bool hasTranscriptCandidate = false;
   const QVector<TimelineClip> transcriptOverlayClips =
       sortedTranscriptOverlayClips(request.clips, request.tracks);
@@ -4434,34 +4458,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QRectF transcriptLayerBounds;
   OffscreenVulkanRendererPrivate::VulkanTextInputs textInputs;
   for (const TimelineClip &clip : orderedClips) {
-    if (clip.clipRole == ClipRole::MaskMatte &&
-        clip.locked &&
-        clip.sourceTransformLocked) {
-      const QString sourceId = clip.linkedSourceClipId.trimmed();
-      if (!sourceId.isEmpty()) {
-        maskMatteClipBySourceId.insert(sourceId, clip);
-      }
-      if (foregroundMaskLayerBySourceId.contains(sourceId) &&
-          timelineFrame >= clip.startFrame &&
-          timelineFrame < clip.startFrame + clip.durationFrames) {
-        OffscreenVulkanRendererPrivate::LayerInput matteLayer =
-            foregroundMaskLayerBySourceId.value(sourceId);
-        applyMaskMatteGrade(matteLayer, clip);
-        layers.push_back(matteLayer);
-      } else if (!sourceId.isEmpty() &&
-                 timelineFrame >= clip.startFrame &&
-                 timelineFrame < clip.startFrame + clip.durationFrames) {
-        pendingMaskMarkerInsertions.push_back(qMakePair(layers.size(), sourceId));
-      }
-      continue;
-    }
     if (timelineFrame < clip.startFrame ||
         timelineFrame >= clip.startFrame + clip.durationFrames) {
       continue;
     }
     const bool clipVisible = clipVisualPlaybackEnabled(clip, request.tracks);
-    const bool maskMediaProvider = maskMarkerSourceIds.contains(clip.id);
-    if (!clipVisible && !maskMediaProvider) {
+    if (!clipVisible) {
       continue;
     }
     EffectiveVisualEffects effects =
@@ -4559,7 +4561,18 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskErodeRadius = qRound(qMax<qreal>(0.0, clip.maskErode));
         layer.maskDilateRadius = qRound(qMax<qreal>(0.0, clip.maskDilate));
         layer.maskBlurRadius = qRound(qMax<qreal>(clip.maskFeather, clip.maskBlur));
+        layer.maskFeatherGamma = static_cast<float>(
+            qBound<qreal>(0.1, clip.maskFeatherGamma, 5.0));
+        layer.maskFeatherFalloff = qBound(0, clip.maskFeatherFalloff, 5);
         layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, clip.maskOpacity, 1.0));
+        layer.maskDropShadowRadius = static_cast<float>(
+            qBound<qreal>(0.0, clip.maskDropShadowRadius, 200.0));
+        layer.maskDropShadowOffsetX = static_cast<float>(clip.maskDropShadowOffsetX);
+        layer.maskDropShadowOffsetY = static_cast<float>(clip.maskDropShadowOffsetY);
+        layer.maskDropShadowOpacity = static_cast<float>(
+            qBound<qreal>(0.0, clip.maskDropShadowOpacity, 1.0));
+        layer.maskDropShadowDraw = generatedMaskMatte &&
+            clip.maskDropShadowEnabled && layer.maskDropShadowOpacity > 0.0f;
         layer.maskBrightness = static_cast<float>(clip.maskGradeBrightness);
         layer.maskContrast = static_cast<float>(clip.maskGradeContrast);
         layer.maskSaturation = static_cast<float>(clip.maskGradeSaturation);
@@ -4575,6 +4588,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskCurveLutRgba = curveLutBytesForGrade(maskGrade);
         layer.maskCurveLutApplied = gradingUsesCurveLut(maskGrade);
       }
+    }
+    // A generated matte is never allowed to fall back to a full-frame copy
+    // when its sidecar has no sample for this frame.
+    if (generatedMaskMatte && !layer.maskTextureEnabled) {
+      continue;
     }
     const VulkanDrawEffectState layerEffects = vulkanDrawEffectStateForGrade(grade);
     layer.opacity = layerEffects.opacity;
@@ -4599,6 +4617,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
                            : kVulkanEffectModeNormal;
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     if (generatedMaskMatte) {
+      layer.opacity *= layer.maskOpacity;
       layer.maskCurveLutRgba = layer.curveLutRgba;
       layer.maskCurveLutApplied = layer.curveLutApplied;
       layer.midtones[3] = layer.curveLutApplied
@@ -4850,7 +4869,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
       foregroundLayer.presetDraws.clear();
       foregroundLayer.maskShowOnly = false;
       foregroundLayer.maskGradeEnabled = false;
-      foregroundLayer.opacity = 1.0f;
+      foregroundLayer.opacity = layer.maskOpacity;
+      foregroundLayer.maskDropShadowDraw =
+          clip.maskDropShadowEnabled && layer.maskDropShadowOpacity > 0.0f;
       foregroundLayer.brightness =
           applyMaskGradeToForeground ? layer.maskBrightness : 0.0f;
       foregroundLayer.contrast =
@@ -4871,12 +4892,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
       foregroundLayer.highlights[0] = 0.0f;
       foregroundLayer.highlights[1] = 0.0f;
       foregroundLayer.highlights[2] = 0.0f;
-      foregroundLayer.highlights[3] = 1.0f;
-      if (maskMarkerSourceIds.contains(clip.id)) {
-        foregroundMaskLayerBySourceId.insert(clip.id, foregroundLayer);
-      } else {
-        foregroundMaskLayers.push_back(foregroundLayer);
-      }
+      foregroundLayer.highlights[3] = static_cast<float>(
+          foregroundLayer.maskFeatherFalloff * 10) +
+          foregroundLayer.maskFeatherGamma;
+      foregroundMaskLayers.push_back(foregroundLayer);
     }
     if (!clip.titleKeyframes.isEmpty()) {
       const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
@@ -4889,21 +4908,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
       }
     }
     ++visualLayersResolved;
-  }
-  std::sort(pendingMaskMarkerInsertions.begin(),
-            pendingMaskMarkerInsertions.end(),
-            [](const QPair<int, QString>& a, const QPair<int, QString>& b) {
-              return a.first > b.first;
-            });
-  for (const QPair<int, QString>& pending : std::as_const(pendingMaskMarkerInsertions)) {
-    if (foregroundMaskLayerBySourceId.contains(pending.second) &&
-        maskMatteClipBySourceId.contains(pending.second)) {
-      OffscreenVulkanRendererPrivate::LayerInput matteLayer =
-          foregroundMaskLayerBySourceId.value(pending.second);
-      const TimelineClip& matteClip = maskMatteClipBySourceId.value(pending.second);
-      applyMaskMatteGrade(matteLayer, matteClip);
-      layers.insert(qBound(0, pending.first, layers.size()), matteLayer);
-    }
   }
   layers += foregroundMaskLayers;
   if (hasTranscriptCandidate) {

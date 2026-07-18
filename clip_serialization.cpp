@@ -55,6 +55,11 @@ QString effectPresetToJson(ClipEffectPreset preset)
     case ClipEffectPreset::RgbSplit: return QStringLiteral("rgb_split");
     case ClipEffectPreset::HalftoneMosaic: return QStringLiteral("halftone_mosaic");
     case ClipEffectPreset::GlassRefraction: return QStringLiteral("glass_refraction");
+    case ClipEffectPreset::SobelEdges: return QStringLiteral("sobel_edges");
+    case ClipEffectPreset::NeonGlow: return QStringLiteral("neon_glow");
+    case ClipEffectPreset::SpeakerMaskDilation: return QStringLiteral("speaker_mask_dilation");
+    case ClipEffectPreset::SpeakerMaskDilationPulse: return QStringLiteral("speaker_mask_dilation_pulse");
+    case ClipEffectPreset::SpeakerMaskDilationRings: return QStringLiteral("speaker_mask_dilation_rings");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -141,6 +146,11 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
     if (normalized == QStringLiteral("rgb_split")) return ClipEffectPreset::RgbSplit;
     if (normalized == QStringLiteral("halftone_mosaic")) return ClipEffectPreset::HalftoneMosaic;
     if (normalized == QStringLiteral("glass_refraction")) return ClipEffectPreset::GlassRefraction;
+    if (normalized == QStringLiteral("sobel_edges") || normalized == QStringLiteral("sorbel_edges")) return ClipEffectPreset::SobelEdges;
+    if (normalized == QStringLiteral("neon_glow")) return ClipEffectPreset::NeonGlow;
+    if (normalized == QStringLiteral("speaker_mask_dilation")) return ClipEffectPreset::SpeakerMaskDilation;
+    if (normalized == QStringLiteral("speaker_mask_dilation_pulse")) return ClipEffectPreset::SpeakerMaskDilationPulse;
+    if (normalized == QStringLiteral("speaker_mask_dilation_rings")) return ClipEffectPreset::SpeakerMaskDilationRings;
     return ClipEffectPreset::None;
 }
 
@@ -382,6 +392,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("durationFrames")] = static_cast<qint64>(clip.durationFrames);
         obj[QStringLiteral("durationSubframeSamples")] = static_cast<qint64>(clip.durationSubframeSamples);
         obj[QStringLiteral("trackIndex")] = clip.trackIndex;
+        obj[QStringLiteral("zLevel")] = effectiveClipZLevel(clip);
+        obj[QStringLiteral("zLevelUserSet")] = clip.zLevelUserSet;
         obj[QStringLiteral("playbackRate")] = clip.playbackRate;
         obj[QStringLiteral("videoEnabled")] = clip.videoEnabled;
         obj[QStringLiteral("audioEnabled")] = clip.audioEnabled;
@@ -666,6 +678,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("tilingPattern")] = tilingPatternToJson(clip.tilingPattern);
         obj[QStringLiteral("tilingSpacing")] = clip.tilingSpacing;
         obj[QStringLiteral("tilingWrap")] = clip.tilingWrap;
+        obj[QStringLiteral("effectParameterSets")] = clip.effectParameterSets;
         QJsonArray correctionPolygons;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
             if (polygon.pointsNormalized.size() < 3) {
@@ -731,6 +744,10 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.durationFrames = obj.value(QStringLiteral("durationFrames")).toVariant().toLongLong();
         clip.durationSubframeSamples = obj.value(QStringLiteral("durationSubframeSamples")).toVariant().toLongLong();
         clip.trackIndex = obj.value(QStringLiteral("trackIndex")).toInt(-1);
+        clip.zLevel = obj.contains(QStringLiteral("zLevel"))
+            ? obj.value(QStringLiteral("zLevel")).toInt()
+            : TimelineClip::kAutomaticZLevel;
+        clip.zLevelUserSet = obj.value(QStringLiteral("zLevelUserSet")).toBool(false);
         clip.playbackRate = obj.value(QStringLiteral("playbackRate")).toDouble(1.0);
         clip.videoEnabled = obj.value(QStringLiteral("videoEnabled")).toBool(true);
         clip.audioEnabled = obj.value(QStringLiteral("audioEnabled")).toBool(true);
@@ -1169,6 +1186,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.tilingSpacing =
             qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
         clip.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
+        clip.effectParameterSets = obj.value(QStringLiteral("effectParameterSets")).toObject();
         if (clip.clipRole == ClipRole::MaskMatte) {
             clip.maskShowOnly = false;
         }

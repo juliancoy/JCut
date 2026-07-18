@@ -14,9 +14,11 @@ struct DockerContainerInfo {
     QString state;
     QString command;
     QJsonObject labels;
+    QJsonObject mounts;
 };
 
 QVector<DockerContainerInfo> listDockerContainers(QString* errorOut = nullptr);
+QString stableDockerContainerName(const QString& operation, const QString& jobRoot);
 QString dockerContainerNameFromManifest(const QJsonObject& manifest);
 QString dockerContainerIdFromManifest(const QJsonObject& manifest);
 QString dockerContainerIdentifier(const DockerContainerInfo& container);

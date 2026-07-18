@@ -249,7 +249,7 @@ over about 16.7 minutes, but larger mismatch usually means an FPS assumption,
 sample-rate interpretation, trim, or prior export changed one stream. Diagnose
 those causes before adding creative edits.
 
-Generated timeline followers, such as locked SAM mask matte clips, are not A/V
+Generated timeline followers, such as locked rotoscope mask matte clips, are not A/V
 streams. Timing diagnostics must exclude them from stream counts and drift
 analysis; they inherit timing from their linked source clip.
 

@@ -3,6 +3,7 @@
 #include "timeline_fps.h"
 
 #include <QHash>
+#include <QFileInfo>
 #include <QUuid>
 
 #include <algorithm>
@@ -130,6 +131,12 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("RGB split / chromatic aberration"), ClipEffectPreset::RgbSplit, QStringLiteral("Glitch & Stylize")},
         {QStringLiteral("Halftone mosaic"), ClipEffectPreset::HalftoneMosaic, QStringLiteral("Glitch & Stylize")},
         {QStringLiteral("Vulkan 3D Synth"), ClipEffectPreset::Vulkan3DSynth, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("Sobel edge filter"), ClipEffectPreset::SobelEdges, QStringLiteral("Glitch & Stylize")},
+        {QStringLiteral("Neon glow"), ClipEffectPreset::NeonGlow, QStringLiteral("Glitch & Stylize")},
+
+        {QStringLiteral("Speaker mask dilation"), ClipEffectPreset::SpeakerMaskDilation, QStringLiteral("Speaker Mask")},
+        {QStringLiteral("Speaker mask dilation pulse"), ClipEffectPreset::SpeakerMaskDilationPulse, QStringLiteral("Speaker Mask")},
+        {QStringLiteral("Speaker mask dilation rings"), ClipEffectPreset::SpeakerMaskDilationRings, QStringLiteral("Speaker Mask")},
 
         {QStringLiteral("Difference matte"), ClipEffectPreset::DifferenceMatte, QStringLiteral("Keying & Matte")},
     };
@@ -181,6 +188,11 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::RgbSplit:
     case ClipEffectPreset::HalftoneMosaic:
     case ClipEffectPreset::GlassRefraction:
+    case ClipEffectPreset::SobelEdges:
+    case ClipEffectPreset::NeonGlow:
+    case ClipEffectPreset::SpeakerMaskDilation:
+    case ClipEffectPreset::SpeakerMaskDilationPulse:
+    case ClipEffectPreset::SpeakerMaskDilationRings:
     default:
         return false;
     }
@@ -191,7 +203,7 @@ bool effectPresetUsesTilingControls(ClipEffectPreset preset)
     return preset == ClipEffectPreset::SourceTile;
 }
 
-TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
+TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
 {
     TimelineClip maskClip = sourceClip;
     const QString sourceId = sourceClip.id.trimmed();
@@ -205,7 +217,7 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.syncLockedToSource = true;
     maskClip.sourceTransformLocked = true;
     maskClip.label = sourceClip.label.trimmed().isEmpty()
-                         ? QStringLiteral("SAM Mask Matte")
+                         ? QStringLiteral("Mask Matte")
                          : QStringLiteral("%1 Mask Matte").arg(sourceClip.label.trimmed());
     maskClip.locked = true;
     maskClip.videoEnabled = true;
@@ -243,10 +255,38 @@ TimelineClip makeSamMaskMatteClip(const TimelineClip& sourceClip)
         maskClip.gradingKeyframes = {grade};
     }
     maskClip.maskGradeEnabled = false;
+    maskClip.trackIndex = sourceClip.trackIndex;
+    maskClip.zLevel = effectiveClipZLevel(sourceClip) + 1;
+    maskClip.zLevelUserSet = false;
     return maskClip;
 }
 
-bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
+TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
+                               const editor::masks::MaskSidecar& sidecar,
+                               int zLevel)
+{
+    TimelineClip maskClip = makeMaskMatteClip(sourceClip);
+    const QString sourceId = sourceClip.id.trimmed();
+    maskClip.id = QStringLiteral("%1-mask-%2").arg(
+        sourceId.isEmpty() ? QStringLiteral("generated") : sourceId,
+        sidecar.id);
+    maskClip.generatedFromMaskId = sidecar.id;
+    maskClip.maskFramesDir = sidecar.directory;
+    maskClip.maskEnabled = sidecar.isValid();
+    maskClip.trackIndex = sourceClip.trackIndex;
+    maskClip.zLevel = zLevel;
+    const QString sourceLabel = sourceClip.label.trimmed().isEmpty()
+        ? QFileInfo(sourceClip.filePath).completeBaseName()
+        : sourceClip.label.trimmed();
+    maskClip.label = QStringLiteral("%1 · %2 Mask").arg(
+        sourceLabel,
+        sidecar.displayName.trimmed().isEmpty()
+            ? QStringLiteral("Generated")
+            : sidecar.displayName.trimmed());
+    return maskClip;
+}
+
+bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
 {
     QHash<QString, int> sourceIndexById;
     for (int i = 0; i < clips.size(); ++i) {
@@ -292,7 +332,9 @@ bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
         }
 
         TimelineClip& source = clips[sourceIndexById.value(sourceId)];
-        assignIfChanged(source.maskForegroundLayerEnabled, true);
+        // A generated matte is an independent child layer. The source remains
+        // an ordinary full-frame layer and supplies decoded media only.
+        assignIfChanged(source.maskForegroundLayerEnabled, false);
         assignIfChanged(source.maskShowOnly, false);
 
         assignIfChanged(clip.filePath, source.filePath);
@@ -321,17 +363,16 @@ bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
             clip.transformKeyframes = source.transformKeyframes;
             changed = true;
         }
-        assignIfChanged(clip.maskEnabled, source.maskEnabled && !source.maskFramesDir.trimmed().isEmpty());
-        assignIfChanged(clip.maskFramesDir, source.maskFramesDir);
-        assignIfChanged(clip.generatedFromMaskId, source.maskFramesDir.trimmed());
-        assignIfChanged(clip.maskFeather, source.maskFeather);
-        assignIfChanged(clip.maskFeatherGamma, source.maskFeatherGamma);
-        assignIfChanged(clip.maskFeatherFalloff, source.maskFeatherFalloff);
-        assignIfChanged(clip.maskDilate, source.maskDilate);
-        assignIfChanged(clip.maskErode, source.maskErode);
-        assignIfChanged(clip.maskBlur, source.maskBlur);
-        assignIfChanged(clip.maskInvert, source.maskInvert);
-        assignIfChanged(clip.maskOpacity, source.maskOpacity);
+        if (clip.maskFramesDir.trimmed().isEmpty()) {
+            assignIfChanged(clip.maskFramesDir, source.maskFramesDir);
+        }
+        assignIfChanged(clip.maskEnabled, !clip.maskFramesDir.trimmed().isEmpty());
+        if (clip.generatedFromMaskId.trimmed().isEmpty()) {
+            assignIfChanged(clip.generatedFromMaskId, clip.maskFramesDir.trimmed());
+        }
+        if (clip.zLevel == TimelineClip::kAutomaticZLevel) {
+            assignIfChanged(clip.zLevel, effectiveClipZLevel(source) + 1);
+        }
         const bool migrateLegacyMaskGrade = source.maskGradeEnabled || clip.maskGradeEnabled;
         if (migrateLegacyMaskGrade) {
             const TimelineClip& legacy = source.maskGradeEnabled ? source : clip;
@@ -354,16 +395,75 @@ bool normalizeSamMaskMatteClips(QVector<TimelineClip>& clips)
             changed = true;
         }
         assignIfChanged(clip.maskGradeEnabled, false);
-        assignIfChanged(clip.maskDropShadowEnabled, source.maskDropShadowEnabled);
-        assignIfChanged(clip.maskDropShadowRadius, source.maskDropShadowRadius);
-        assignIfChanged(clip.maskDropShadowOffsetX, source.maskDropShadowOffsetX);
-        assignIfChanged(clip.maskDropShadowOffsetY, source.maskDropShadowOffsetY);
-        assignIfChanged(clip.maskDropShadowOpacity, source.maskDropShadowOpacity);
-        assignIfChanged(clip.maskRepeatEnabled, source.maskRepeatEnabled);
-        assignIfChanged(clip.maskRepeatDeltaX, source.maskRepeatDeltaX);
-        assignIfChanged(clip.maskRepeatDeltaY, source.maskRepeatDeltaY);
     }
 
+    return changed;
+}
+
+bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips)
+{
+    bool changed = normalizeMaskMatteClips(clips);
+    const QVector<TimelineClip> snapshot = clips;
+    for (const TimelineClip& source : snapshot) {
+        if (source.clipRole != ClipRole::Media ||
+            source.mediaType != ClipMediaType::Video ||
+            source.id.trimmed().isEmpty() ||
+            source.filePath.trimmed().isEmpty()) {
+            continue;
+        }
+        const QVector<editor::masks::MaskSidecar> sidecars =
+            editor::masks::discoverMaskSidecars(source);
+        int nextZ = effectiveClipZLevel(source) + 1;
+        for (const editor::masks::MaskSidecar& sidecar : sidecars) {
+            auto existing = std::find_if(clips.begin(), clips.end(), [&](const TimelineClip& clip) {
+                if (clip.clipRole != ClipRole::MaskMatte ||
+                    clip.linkedSourceClipId.trimmed() != source.id.trimmed()) {
+                    return false;
+                }
+                return clip.generatedFromMaskId.trimmed() == sidecar.id ||
+                       editor::masks::stableMaskSidecarId(clip.maskFramesDir) == sidecar.id;
+            });
+            if (existing == clips.end()) {
+                clips.push_back(makeMaskMatteClip(source, sidecar, nextZ));
+                changed = true;
+            } else {
+                if (existing->maskFramesDir != sidecar.directory) {
+                    existing->maskFramesDir = sidecar.directory;
+                    changed = true;
+                }
+                if (existing->generatedFromMaskId != sidecar.id) {
+                    existing->generatedFromMaskId = sidecar.id;
+                    changed = true;
+                }
+                if (!existing->zLevelUserSet && existing->zLevel != nextZ) {
+                    existing->zLevel = nextZ;
+                    changed = true;
+                }
+                // Replace only the old generated label. A user-supplied label
+                // remains untouched, while migrated children become
+                // distinguishable when more than one disk sidecar exists.
+                const bool hasLegacyGeneratedLabel =
+                    existing->id.endsWith(QStringLiteral("-mask-matte")) ||
+                    existing->label.trimmed().endsWith(QStringLiteral(" Mask Matte"));
+                if (hasLegacyGeneratedLabel) {
+                    const QString sourceLabel = source.label.trimmed().isEmpty()
+                        ? QFileInfo(source.filePath).completeBaseName()
+                        : source.label.trimmed();
+                    const QString desiredLabel = QStringLiteral("%1 · %2 Mask").arg(
+                        sourceLabel,
+                        sidecar.displayName.trimmed().isEmpty()
+                            ? QStringLiteral("Generated")
+                            : sidecar.displayName.trimmed());
+                    if (existing->label != desiredLabel) {
+                        existing->label = desiredLabel;
+                        changed = true;
+                    }
+                }
+            }
+            ++nextZ;
+        }
+    }
+    changed = normalizeMaskMatteClips(clips) || changed;
     return changed;
 }
 
@@ -374,7 +474,7 @@ bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips)
         hasLegacyGrade = hasLegacyGrade || clip.maskGradeEnabled;
     }
     if (!hasLegacyGrade) return false;
-    return normalizeSamMaskMatteClips(clips);
+    return normalizeMaskMatteClips(clips);
 }
 
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex)

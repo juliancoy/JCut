@@ -35,12 +35,7 @@ QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& 
             overlayClips.push_back(clip);
         }
     }
-    std::sort(overlayClips.begin(), overlayClips.end(), [](const TimelineClip& a, const TimelineClip& b) {
-        if (a.trackIndex == b.trackIndex) {
-            return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
-        }
-        return a.trackIndex > b.trackIndex;
-    });
+    std::stable_sort(overlayClips.begin(), overlayClips.end(), clipCompositingOrderLess);
     return overlayClips;
 }
 

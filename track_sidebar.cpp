@@ -229,14 +229,15 @@ void TrackSidebar::paintEvent(QPaintEvent *) {
         painter.setFont(nameFont);
 
         const QRect audioRect = trackAudioToggleRect(track);
-        QRect nameRect(labelRect.left() + 10,
+        const int hierarchyIndent = m_tracks[track].generatedChildTrack ? 14 : 0;
+        QRect nameRect(labelRect.left() + 10 + hierarchyIndent,
                        labelRect.top(),
-                       qMax(24, audioRect.left() - labelRect.left() - 18),
+                       qMax(24, audioRect.left() - labelRect.left() - 18 - hierarchyIndent),
                        labelRect.height());
 
-        const QString trackLabel = QStringLiteral("%1. %2")
-                                       .arg(track + 1)
-                                       .arg(m_tracks[track].name);
+        const QString trackLabel = m_tracks[track].generatedChildTrack
+            ? m_tracks[track].name
+            : QStringLiteral("%1. %2").arg(track + 1).arg(m_tracks[track].name);
         painter.drawText(nameRect,
                          Qt::AlignLeft | Qt::AlignVCenter,
                          painter.fontMetrics().elidedText(trackLabel, Qt::ElideRight, nameRect.width()));

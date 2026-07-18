@@ -198,12 +198,19 @@ void ClipsTab::onCustomContextMenuRequested(const QPoint& pos) {
 
     QMenu menu(m_widgets.clipsTable);
     QAction* selectAction = menu.addAction(QStringLiteral("Select Clip"));
-    QAction* detectAction = menu.addAction(QStringLiteral("Detect"));
+    QMenu* rotoscopeMenu = menu.addMenu(QStringLiteral("Rotoscope"));
+    QAction* detectAction = rotoscopeMenu->addAction(QStringLiteral("Run SAM 3..."));
+    QAction* birefnetAction = rotoscopeMenu->addAction(QStringLiteral("Run BiRefNet..."));
     detectAction->setEnabled(
         clip &&
         clip->mediaType == ClipMediaType::Video &&
         !clip->filePath.trimmed().isEmpty() &&
         static_cast<bool>(m_deps.detectClip));
+    birefnetAction->setEnabled(
+        clip &&
+        clip->mediaType == ClipMediaType::Video &&
+        !clip->filePath.trimmed().isEmpty() &&
+        static_cast<bool>(m_deps.birefnetClip));
     QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
 
     QAction* selected = menu.exec(m_widgets.clipsTable->viewport()->mapToGlobal(pos));
@@ -214,6 +221,10 @@ void ClipsTab::onCustomContextMenuRequested(const QPoint& pos) {
     } else if (selected == detectAction) {
         if (m_deps.detectClip) {
             m_deps.detectClip(clipId);
+        }
+    } else if (selected == birefnetAction) {
+        if (m_deps.birefnetClip) {
+            m_deps.birefnetClip(clipId);
         }
     } else if (selected == deleteAction) {
         if (m_deps.deleteClipById) {

@@ -137,6 +137,14 @@ QWidget* InspectorPane::buildAudioTab()
                                            static_cast<int>(PreviewSurface::AudioVisualizationMode::Spectrum));
     m_loiaconoSpectrumSettingsButton = new QPushButton(QStringLiteral("Settings..."), content);
 
+    m_audioBufferFramesCombo = new QComboBox(content);
+    for (const int frames : {64, 128, 256, 512, 1024, 2048, 4096}) {
+        m_audioBufferFramesCombo->addItem(QString::number(frames), frames);
+    }
+    m_audioBufferFramesCombo->setToolTip(
+        QStringLiteral("Audio output buffer size. Smaller values reduce latency; larger values improve playback stability. Changes apply on the next launch."));
+    m_audioBufferFramesCombo->setAccessibleName(QStringLiteral("Audio buffer frames"));
+
     m_audioWaveformPreviewProcessedCheckBox =
         new QCheckBox(QStringLiteral("Processed Preview"), content);
     m_audioWaveformPreviewProcessedCheckBox->setChecked(true);
@@ -288,6 +296,7 @@ QWidget* InspectorPane::buildAudioTab()
     auto* playbackForm = new QFormLayout;
     configureForm(playbackForm);
     addFormRow(playbackForm, QStringLiteral("Treatment"), m_playbackAudioWarpModeCombo);
+    addFormRow(playbackForm, QStringLiteral("Buffer Frames"), m_audioBufferFramesCombo);
     auto* treatmentDescription = new QLabel(
         QStringLiteral("Harmonic Speech Isolation uses two Rubber Band stages to attenuate non-harmonic speech content without changing playback timing. The first use prepares cached audio; playback starts when it is ready."),
         content);

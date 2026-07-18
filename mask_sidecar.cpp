@@ -5,10 +5,62 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 
+#include <algorithm>
+
 namespace editor::masks {
+
+namespace {
+
+bool looksLikeGeneratedMaskDirectory(const QFileInfo& directory, const QString& mediaStem)
+{
+    const QString name = directory.fileName();
+    if (!name.startsWith(mediaStem + QLatin1Char('_'), Qt::CaseInsensitive)) {
+        return false;
+    }
+    const QString suffix = name.mid(mediaStem.size() + 1).toLower();
+    return suffix.contains(QStringLiteral("mask")) ||
+           suffix.contains(QStringLiteral("matte")) ||
+           suffix.contains(QStringLiteral("segment")) ||
+           suffix.contains(QStringLiteral("alpha")) ||
+           QFileInfo(QDir(directory.absoluteFilePath()).filePath(
+               QStringLiteral("jcut_alpha.json"))).exists();
+}
+
+QString displayNameForDirectory(QString name, const QString& mediaStem)
+{
+    const QString mediaPrefix = mediaStem + QLatin1Char('_');
+    if (!mediaStem.isEmpty() && name.startsWith(mediaPrefix, Qt::CaseInsensitive)) {
+        name.remove(0, mediaPrefix.size());
+    }
+    for (const QString& generator : {QStringLiteral("sam3_"),
+                                     QStringLiteral("sam2_"),
+                                     QStringLiteral("birefnet_"),
+                                     QStringLiteral("ai_")}) {
+        if (name.startsWith(generator, Qt::CaseInsensitive)) {
+            name.remove(0, generator.size());
+            break;
+        }
+    }
+    for (const QString& suffix : {QStringLiteral("_binary_masks"),
+                                  QStringLiteral("_alpha_masks"),
+                                  QStringLiteral("_masks"),
+                                  QStringLiteral("_mask"),
+                                  QStringLiteral("_mattes"),
+                                  QStringLiteral("_matte")}) {
+        if (name.endsWith(suffix, Qt::CaseInsensitive)) {
+            name.chop(suffix.size());
+            break;
+        }
+    }
+    return name.replace(QLatin1Char('_'), QLatin1Char(' ')).trimmed();
+}
+
+} // namespace
 
 QString stableMaskSidecarId(const QString& directory)
 {
@@ -31,12 +83,14 @@ MaskSidecar inspectMaskSidecar(const QString& directory, const QString& mediaSte
     sidecar.directory = dir.absolutePath();
     sidecar.id = stableMaskSidecarId(sidecar.directory);
     sidecar.frameCount = frames.size();
-    sidecar.displayName = dirInfo.fileName();
-    const QString prefix = mediaStem + QStringLiteral("_sam3_");
-    if (!mediaStem.isEmpty() && sidecar.displayName.startsWith(prefix)) {
-        sidecar.displayName.remove(0, prefix.size());
+    sidecar.displayName = displayNameForDirectory(dirInfo.fileName(), mediaStem);
+    QFile metadataFile(dir.filePath(QStringLiteral("jcut_alpha.json")));
+    if (metadataFile.open(QIODevice::ReadOnly)) {
+        const QJsonObject metadata = QJsonDocument::fromJson(metadataFile.readAll()).object();
+        const QString sourceType = metadata.value(QStringLiteral("source_type")).toString();
+        if (!sourceType.isEmpty()) sidecar.sourceType = sourceType;
     }
-    sidecar.displayName.remove(QStringLiteral("_binary_masks"));
+    if (sidecar.displayName.isEmpty()) sidecar.displayName = QStringLiteral("Generated mask");
 
     const QRegularExpression framePattern(QStringLiteral("^frame_(\\d+)\\.png$"));
     for (const QString& frameName : frames) {
@@ -56,9 +110,10 @@ QVector<MaskSidecar> discoverMaskSidecars(const TimelineClip& clip)
     if (stem.isEmpty()) return {};
     QVector<MaskSidecar> result;
     QSet<QString> ids;
-    const QFileInfoList candidates = mediaInfo.dir().entryInfoList(
-        QStringList{QStringLiteral("%1_sam3_*_binary_masks").arg(stem)},
-        QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+    const QFileInfoList siblingDirectories = mediaInfo.dir().entryInfoList(
+        QStringList{QStringLiteral("%1_*").arg(stem)},
+        QDir::Dirs | QDir::NoDotAndDotDot,
+        QDir::Name | QDir::IgnoreCase);
     auto append = [&](const QString& path) {
         MaskSidecar sidecar = inspectMaskSidecar(path, stem);
         if (sidecar.isValid() && !ids.contains(sidecar.id)) {
@@ -67,7 +122,15 @@ QVector<MaskSidecar> discoverMaskSidecars(const TimelineClip& clip)
         }
     };
     append(clip.maskFramesDir);
-    for (const QFileInfo& candidate : candidates) append(candidate.absoluteFilePath());
+    for (const QFileInfo& candidate : siblingDirectories) {
+        if (looksLikeGeneratedMaskDirectory(candidate, stem)) {
+            append(candidate.absoluteFilePath());
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const MaskSidecar& left, const MaskSidecar& right) {
+        const int nameOrder = QString::localeAwareCompare(left.displayName, right.displayName);
+        return nameOrder == 0 ? left.id < right.id : nameOrder < 0;
+    });
     return result;
 }
 

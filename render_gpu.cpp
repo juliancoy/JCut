@@ -13,12 +13,7 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
             visual.push_back(clip);
         }
     }
-    std::sort(visual.begin(), visual.end(), [](const TimelineClip& a, const TimelineClip& b) {
-        if (a.trackIndex == b.trackIndex) {
-            return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
-        }
-        return a.trackIndex > b.trackIndex;
-    });
+    std::stable_sort(visual.begin(), visual.end(), clipCompositingOrderLess);
     return visual;
 }
 

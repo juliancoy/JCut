@@ -332,6 +332,27 @@ void AudioEngine::setBackgroundDecodeSuppressed(bool suppressed) {
   m_decodeCondition.notify_all();
 }
 
+void AudioEngine::setBufferFrames(int frames) {
+  // RtAudio may adjust the requested size for the active device, but keeping
+  // the request power-of-two makes latency choices predictable across hosts.
+  constexpr int kMinBufferFrames = 64;
+  constexpr int kMaxBufferFrames = 4096;
+  const bool valid = frames >= kMinBufferFrames && frames <= kMaxBufferFrames &&
+                     (frames & (frames - 1)) == 0;
+  if (!valid) {
+    frames = 1024;
+  }
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  if (!m_initialized) {
+    m_periodFrames = frames;
+  }
+}
+
+int AudioEngine::bufferFrames() const {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  return m_periodFrames;
+}
+
 bool AudioEngine::initialize() {
   std::lock_guard<std::mutex> lock(m_stateMutex);
   if (m_initialized) {

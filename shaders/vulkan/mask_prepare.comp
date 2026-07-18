@@ -17,6 +17,21 @@ float maskValueAt(ivec2 srcCoord)
     return texelFetch(u_input_mask, clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0))), 0).r;
 }
 
+float bilinearMaskValue(vec2 srcPosition)
+{
+    // Work in texel-center coordinates.  This preserves continuous alpha when
+    // mask artifacts and render targets have different resolutions instead of
+    // turning diagonal and curved boundaries into nearest-neighbour steps.
+    vec2 basePosition = floor(srcPosition);
+    vec2 fraction = srcPosition - basePosition;
+    ivec2 base = ivec2(basePosition);
+    float top = mix(maskValueAt(base), maskValueAt(base + ivec2(1, 0)), fraction.x);
+    float bottom = mix(maskValueAt(base + ivec2(0, 1)),
+                       maskValueAt(base + ivec2(1, 1)),
+                       fraction.x);
+    return mix(top, bottom, fraction.y);
+}
+
 void main()
 {
     ivec2 dstCoord = ivec2(gl_GlobalInvocationID.xy);
@@ -25,9 +40,8 @@ void main()
     }
 
     vec2 dstUv = (vec2(dstCoord) + vec2(0.5)) / vec2(max(pc.outputSize, ivec2(1)));
-    ivec2 srcCoord = ivec2(floor(dstUv * vec2(max(pc.inputSize, ivec2(1)))));
-    srcCoord = clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0)));
-    float value = maskValueAt(srcCoord);
+    vec2 srcPosition = dstUv * vec2(max(pc.inputSize, ivec2(1))) - vec2(0.5);
+    float value = bilinearMaskValue(srcPosition);
     if (pc.invert != 0) {
         value = 1.0 - value;
     }

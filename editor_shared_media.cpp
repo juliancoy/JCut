@@ -1,4 +1,5 @@
 #include "editor_shared_media.h"
+#include "editor_shared_timing.h"
 #include "debug_controls.h"
 
 #include <QFile>
@@ -994,6 +995,40 @@ bool clipContributesVisualMedia(const TimelineClip& clip,
            (relationships
                 ? relationships->hasVisibleChild(clip, clips, tracks)
                 : clipHasVisibleChild(clip, clips, tracks));
+}
+
+int effectiveClipZLevel(const TimelineClip& clip)
+{
+    if (clip.zLevel != TimelineClip::kAutomaticZLevel) {
+        return clip.zLevel;
+    }
+    // Legacy timelines used lower track indices as foreground layers.
+    return -qMax(0, clip.trackIndex) * 100;
+}
+
+bool clipCompositingOrderLess(const TimelineClip& left, const TimelineClip& right)
+{
+    const int leftZ = effectiveClipZLevel(left);
+    const int rightZ = effectiveClipZLevel(right);
+    if (leftZ != rightZ) {
+        return leftZ < rightZ;
+    }
+    if (left.trackIndex != right.trackIndex) {
+        return left.trackIndex > right.trackIndex;
+    }
+    const int64_t leftStart = clipTimelineStartSamples(left);
+    const int64_t rightStart = clipTimelineStartSamples(right);
+    if (leftStart != rightStart) {
+        return leftStart < rightStart;
+    }
+    return left.id < right.id;
+}
+
+QVector<TimelineClip> clipsInCompositingOrder(const QVector<TimelineClip>& clips)
+{
+    QVector<TimelineClip> ordered = clips;
+    std::stable_sort(ordered.begin(), ordered.end(), clipCompositingOrderLess);
+    return ordered;
 }
 
 bool clipAudioPlaybackEnabled(const TimelineClip& clip) {

@@ -520,8 +520,8 @@ private slots:
         const QString offscreenSource = QString::fromUtf8(offscreen.readAll());
         QVERIFY2(offscreenSource.contains(QStringLiteral("vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks)")),
                  "Offscreen renderer must use the shared progressive edge stretch layer policy.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("backgroundLayer.backgroundShadows")) &&
-                     offscreenSource.contains(QStringLiteral("updateFrameUniformForDraw(&layer)")) &&
+  QVERIFY2(offscreenSource.contains(QStringLiteral("backgroundLayer.backgroundShadows")) &&
+               offscreenSource.contains(QStringLiteral("updateFrameUniformForDraw(&layer")) &&
                      offscreenSource.contains(QStringLiteral("VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC")),
                  "Offscreen renderer must pass background grading through per-draw dynamic uniforms.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground")),

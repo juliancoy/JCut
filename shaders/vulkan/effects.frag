@@ -10,6 +10,7 @@ layout(set = 0, binding = 4) uniform FrameUniforms {
     vec4 backgroundShadows;
     vec4 backgroundMidtones;
     vec4 backgroundHighlights;
+    vec4 effectParams; // x=intensity/scale, y=count/radius, z=animation phase, w=spacing
 } frame;
 layout(push_constant) uniform Push {
     mat4 u_mvp;
@@ -47,6 +48,26 @@ vec3 applyCurveLut(vec3 rgb, bool maskCurveEnabled) {
         rgb = vec3(remappedLuma);
     }
     return rgb;
+}
+
+float softMaskShadow(vec2 uv, float radiusPixels) {
+    vec2 texel = 1.0 / max(vec2(1.0), vec2(textureSize(u_mask, 0)));
+    vec2 nearOffset = texel * min(max(radiusPixels, 0.0), 96.0) * 0.35;
+    vec2 farOffset = texel * min(max(radiusPixels, 0.0), 96.0) * 0.75;
+    float value = texture(u_mask, uv).r * 0.20;
+    value += texture(u_mask, uv + vec2( nearOffset.x, 0.0)).r * 0.08;
+    value += texture(u_mask, uv + vec2(-nearOffset.x, 0.0)).r * 0.08;
+    value += texture(u_mask, uv + vec2(0.0,  nearOffset.y)).r * 0.08;
+    value += texture(u_mask, uv + vec2(0.0, -nearOffset.y)).r * 0.08;
+    value += texture(u_mask, uv + vec2( nearOffset.x,  nearOffset.y)).r * 0.05;
+    value += texture(u_mask, uv + vec2(-nearOffset.x,  nearOffset.y)).r * 0.05;
+    value += texture(u_mask, uv + vec2( nearOffset.x, -nearOffset.y)).r * 0.05;
+    value += texture(u_mask, uv + vec2(-nearOffset.x, -nearOffset.y)).r * 0.05;
+    value += texture(u_mask, uv + vec2( farOffset.x, 0.0)).r * 0.04;
+    value += texture(u_mask, uv + vec2(-farOffset.x, 0.0)).r * 0.04;
+    value += texture(u_mask, uv + vec2(0.0,  farOffset.y)).r * 0.04;
+    value += texture(u_mask, uv + vec2(0.0, -farOffset.y)).r * 0.04;
+    return clamp(value / 0.88, 0.0, 1.0);
 }
 
 vec2 textureInteriorClamp(vec2 uv) {
@@ -349,6 +370,51 @@ void main() {
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;
+    if (artisticMode == 24 || artisticMode == 25) {
+        float sampleRadius = clamp(frame.effectParams.y, 1.0, 4.0);
+        vec2 texel = sampleRadius / vec2(textureSize(u_texture, 0));
+        float tl = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2(-1.0, -1.0))).rgb);
+        float tc = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2( 0.0, -1.0))).rgb);
+        float tr = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2( 1.0, -1.0))).rgb);
+        float ml = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2(-1.0,  0.0))).rgb);
+        float mr = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2( 1.0,  0.0))).rgb);
+        float bl = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2(-1.0,  1.0))).rgb);
+        float bc = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2( 0.0,  1.0))).rgb);
+        float br = lumaOf(texture(u_texture, textureInteriorClamp(v_texCoord + texel * vec2( 1.0,  1.0))).rgb);
+        float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
+        float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+        float edge = clamp(length(vec2(gx, gy)) * max(0.1, frame.effectParams.x), 0.0, 1.0);
+        if (artisticMode == 24) {
+            rgb = vec3(edge);
+        } else {
+            vec3 neon = 0.5 + 0.5 * cos(vec3(0.0, 2.1, 4.2) + edge * 8.0 + frame.effectParams.z * 0.03);
+            rgb = clamp(rgb * 0.18 + neon * edge * max(0.1, frame.effectParams.x), 0.0, 1.0);
+        }
+    } else if (artisticMode >= 26 && artisticMode <= 28) {
+        vec2 texel = 1.0 / vec2(textureSize(u_mask, 0));
+        float centerMask = texture(u_mask, v_texCoord).r;
+        float nearest = 99.0;
+        for (int y = -8; y <= 8; ++y) {
+            for (int x = -8; x <= 8; ++x) {
+                float sampleMask = texture(u_mask, textureInteriorClamp(v_texCoord + vec2(x, y) * texel)).r;
+                if (sampleMask > 0.5) nearest = min(nearest, length(vec2(x, y)));
+            }
+        }
+        float radius = clamp(frame.effectParams.y, 1.0, 8.0);
+        float dilation = 1.0 - smoothstep(radius - 1.0, radius, nearest);
+        float outline = dilation * (1.0 - centerMask);
+        int colorIndex = 0;
+        float cycle = frame.effectParams.z * 0.04;
+        float spacing = max(1.0, frame.effectParams.w * 8.0);
+        if (artisticMode == 26) colorIndex = int(mod(floor(gl_FragCoord.x / spacing + cycle), 3.0));
+        if (artisticMode == 27) colorIndex = int(mod(floor((gl_FragCoord.x + gl_FragCoord.y) / spacing + cycle), 3.0));
+        if (artisticMode == 28) colorIndex = int(mod(floor(nearest / max(1.0, spacing * 0.25) + cycle), 3.0));
+        vec3 paletteColor = colorIndex == 0 ? pc.u_shadows.rgb
+                           : (colorIndex == 1 ? pc.u_midtones.rgb : pc.u_highlights.rgb);
+        float dilationOpacity = clamp(frame.effectParams.x, 0.0, 1.0);
+        rgb = mix(rgb, paletteColor, outline * dilationOpacity);
+        sourceAlpha = max(sourceAlpha, outline * dilationOpacity);
+    }
     if (artisticMode == 21) { // RGB split / chromatic aberration
         vec2 radial = (v_texCoord - 0.5) * 0.035;
         rgb.r = texture(u_texture, textureInteriorClamp(v_texCoord + radial)).r;
@@ -459,6 +525,13 @@ void main() {
     float luma = lumaOf(rgb);
     rgb = mix(vec3(luma), rgb, pc.u_saturation);
     rgb = clamp(rgb, vec3(0.0), vec3(1.0));
+
+    bool maskShadow = !backgroundFill && pc.u_shadows.a > 28.5 && pc.u_shadows.a < 29.5;
+    if (maskShadow) {
+        float shadowAlpha = softMaskShadow(v_texCoord, pc.u_midtones.a) * pc.u_opacity;
+        outColor = vec4(0.0, 0.0, 0.0, clamp(shadowAlpha, 0.0, 1.0));
+        return;
+    }
 
     bool maskOverlay = !backgroundFill && pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
     bool maskOnly = !backgroundFill && pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;

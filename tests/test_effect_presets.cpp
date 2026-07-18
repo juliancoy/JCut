@@ -57,13 +57,16 @@ private slots:
     void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
     void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
+    void genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels();
+    void birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata();
+    void birefnetUxExposesExplicitContextActionsAndPreview();
     void clipSerializationMigratesLegacyEffectSpeechSync();
     void clipSerializationPersistsArpeggiatorEffectPresets();
     void effectPresetMetadataCoversSerializedSynthPresets();
     void trackEffectSettingsDoNotLeakIntoChildClips();
     void clipSerializationPersistsGeneratedClipRoleState();
-    void samMaskMatteFactoryKeepsSourceTimingLocked();
-    void samMaskMatteNormalizerRepairsLegacyTimelineState();
+    void maskMatteFactoryKeepsSourceTimingLocked();
+    void maskMatteNormalizerRepairsLegacyTimelineState();
     void alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip();
     void sourceTilingFactoryCreatesVisualOnlySynthClip();
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
@@ -135,6 +138,11 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.temporalEchoCount = 7;
     clip.temporalEchoSpacingFrames = 3;
     clip.temporalEchoDecay = 0.58;
+    clip.effectParameterSets.insert(
+        QString::number(static_cast<int>(ClipEffectPreset::NeonGlow)),
+        QJsonObject{{QStringLiteral("rows"), 11},
+                    {QStringLiteral("speed"), 2.5},
+                    {QStringLiteral("scale"), 1.75}});
 
     const QJsonObject json = editor::clipToJson(clip);
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
@@ -175,6 +183,11 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.temporalEchoCount, 7);
     QCOMPARE(loaded.temporalEchoSpacingFrames, 3);
     QVERIFY(std::abs(loaded.temporalEchoDecay - 0.58) < 0.000001);
+    const QJsonObject neonParameters = loaded.effectParameterSets
+        .value(QString::number(static_cast<int>(ClipEffectPreset::NeonGlow))).toObject();
+    QCOMPARE(neonParameters.value(QStringLiteral("rows")).toInt(), 11);
+    QCOMPARE(neonParameters.value(QStringLiteral("speed")).toDouble(), 2.5);
+    QCOMPARE(neonParameters.value(QStringLiteral("scale")).toDouble(), 1.75);
 }
 
 void TestEffectPresets::textExtrudeModesSerializeAndMigrate()
@@ -246,6 +259,145 @@ void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()
              editor::masks::stableMaskSidecarId(sidecarDir));
 }
 
+void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString mediaPath = temp.filePath(QStringLiteral("shot.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.close();
+
+    const QString samDir = temp.filePath(QStringLiteral("shot_sam3_person_binary_masks"));
+    const QString genericDir = temp.filePath(QStringLiteral("shot_custom_ai_microphone_mattes"));
+    for (const QString& directory : {samDir, genericDir}) {
+        QVERIFY(QDir().mkpath(directory));
+        QFile frame(QDir(directory).filePath(QStringLiteral("frame_000001.png")));
+        QVERIFY(frame.open(QIODevice::WriteOnly));
+        frame.write("png");
+    }
+
+    TimelineClip source;
+    source.id = QStringLiteral("shot");
+    source.filePath = mediaPath;
+    source.label = QStringLiteral("Shot");
+    source.mediaType = ClipMediaType::Video;
+    source.trackIndex = 4;
+    source.zLevel = 30;
+    source.durationFrames = 120;
+    QVector<TimelineClip> clips{source};
+
+    QVERIFY(reconcileMaskMatteChildrenFromDisk(clips));
+    QCOMPARE(clips.size(), 3);
+    QVector<TimelineClip> children;
+    for (const TimelineClip& clip : std::as_const(clips)) {
+        if (clip.clipRole == ClipRole::MaskMatte) children.push_back(clip);
+    }
+    QCOMPARE(children.size(), 2);
+    std::sort(children.begin(), children.end(), [](const TimelineClip& left, const TimelineClip& right) {
+        return left.zLevel < right.zLevel;
+    });
+    QCOMPARE(children.at(0).trackIndex, source.trackIndex);
+    QCOMPARE(children.at(1).trackIndex, source.trackIndex);
+    QCOMPARE(children.at(0).linkedSourceClipId, source.id);
+    QCOMPARE(children.at(1).linkedSourceClipId, source.id);
+    QCOMPARE(children.at(0).zLevel, 31);
+    QCOMPARE(children.at(1).zLevel, 32);
+    QVERIFY(children.at(0).id != children.at(1).id);
+    QVERIFY(!reconcileMaskMatteChildrenFromDisk(clips));
+    QCOMPARE(clips.size(), 3);
+
+    children[0].zLevel = 90;
+    const QJsonObject serialized = editor::clipToJson(children[0]);
+    QCOMPARE(serialized.value(QStringLiteral("zLevel")).toInt(), 90);
+    QCOMPARE(editor::clipFromJson(serialized).zLevel, 90);
+}
+
+void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString mediaPath = temp.filePath(QStringLiteral("portrait.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.close();
+    const QString sidecarDir = temp.filePath(QStringLiteral("portrait_birefnet_alpha_masks"));
+    QVERIFY(QDir().mkpath(sidecarDir));
+    QFile frame(QDir(sidecarDir).filePath(QStringLiteral("frame_000001.png")));
+    QVERIFY(frame.open(QIODevice::WriteOnly));
+    frame.write("png");
+    frame.close();
+    QFile metadata(QDir(sidecarDir).filePath(QStringLiteral("jcut_alpha.json")));
+    QVERIFY(metadata.open(QIODevice::WriteOnly));
+    metadata.write("{\"source_type\":\"birefnet_continuous_alpha\",\"continuous_alpha\":true}");
+    metadata.close();
+
+    TimelineClip clip;
+    clip.filePath = mediaPath;
+    const auto sidecars = editor::masks::discoverMaskSidecars(clip);
+    QCOMPARE(sidecars.size(), 1);
+    QCOMPARE(sidecars.constFirst().displayName, QStringLiteral("alpha"));
+    QCOMPARE(sidecars.constFirst().sourceType, QStringLiteral("birefnet_continuous_alpha"));
+}
+
+void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
+{
+    auto readSource = [](const QString& relativePath) {
+        QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + relativePath);
+        if (!file.open(QIODevice::ReadOnly)) return QString();
+        return QString::fromUtf8(file.readAll());
+    };
+    const QString timelineMenu = readSource(QStringLiteral("timeline_widget_context_menu.cpp"));
+    const QString clipsMenu = readSource(QStringLiteral("clips_tab.cpp"));
+    const QString editor = readSource(QStringLiteral("editor_birefnet.cpp"));
+    const QString runner = readSource(QStringLiteral("birefnet_run.py"));
+    const QString maskTab = readSource(QStringLiteral("mask_tab.cpp"));
+    const QString inspector = readSource(QStringLiteral("inspector_pane.cpp"));
+
+    QVERIFY2(timelineMenu.contains(QStringLiteral("Rotoscope")) &&
+                 timelineMenu.contains(QStringLiteral("Run SAM 3...")) &&
+                 timelineMenu.contains(QStringLiteral("Run BiRefNet...")),
+             "Timeline right-click must expose explicit SAM and BiRefNet actions.");
+    QVERIFY2(clipsMenu.contains(QStringLiteral("Run BiRefNet...")),
+             "Clips-table right-click must expose BiRefNet.");
+    QVERIFY2(editor.contains(QStringLiteral("Preview Frame %1")) &&
+                 editor.contains(QStringLiteral("Composite Check")) &&
+                 editor.contains(QStringLiteral("preview_source.png")) &&
+                 editor.contains(QStringLiteral("Live result")) &&
+                 editor.contains(QStringLiteral("jcut_live_preview.png")),
+             "BiRefNet preflight must provide a visual source/alpha/composite preview.");
+    QVERIFY2(runner.contains(QStringLiteral("--frame-index")) &&
+                 runner.contains(QStringLiteral("preview_source.png")) &&
+                 runner.contains(QStringLiteral("--live-preview")) &&
+                 runner.contains(QStringLiteral("live_preview_strip")),
+             "BiRefNet runner must support bounded and live source/alpha/composite previews.");
+    QVERIFY2(editor.contains(QStringLiteral("Alpha tolerance")) &&
+                 editor.contains(QStringLiteral("alpha_tolerance")) &&
+                 runner.contains(QStringLiteral("--alpha-tolerance")) &&
+                 runner.contains(QStringLiteral("apply_alpha_tolerance")),
+             "BiRefNet alpha tolerance must be exposed consistently in preview and generation.");
+    QVERIFY2(runner.contains(QStringLiteral("torch.OutOfMemoryError")) &&
+                 runner.contains(QStringLiteral("jcut_error.json")) &&
+                 runner.contains(QStringLiteral("JCUT_BIREFNET_ERROR_JSON=")) &&
+                 runner.contains(QStringLiteral("completed_frames_preserved")),
+             "BiRefNet must emit a structured, resumable CUDA OOM failure.");
+    QVERIFY2(editor.contains(QStringLiteral("GPU Memory Exhausted")) &&
+                 editor.contains(QStringLiteral("possible_memory_kill")) &&
+                 editor.contains(QStringLiteral("exitCode == 137")) &&
+                 editor.contains(QStringLiteral("error_kind")) &&
+                 editor.contains(QStringLiteral("error_frame_index")),
+             "BiRefNet UI and manifests must classify OOM and ambiguous SIGKILL failures.");
+    QVERIFY2(editor.contains(QStringLiteral("Create a Mask Z Marker when generation finishes")) &&
+                 editor.contains(QStringLiteral("createOrReplaceMaskZMarker")),
+             "A completed BiRefNet run must offer an immediately usable downstream mask layer.");
+    QVERIFY2(maskTab.contains(QStringLiteral("discoverMaskSidecars(clip)")) &&
+                 maskTab.contains(QStringLiteral("soft alpha")),
+             "The Masks tab must auto-discover and identify continuous-alpha sidecars.");
+    QVERIFY2(!inspector.contains(QStringLiteral("SAM mask is foreground layer")) &&
+                 !inspector.contains(QStringLiteral("SAM binary mask frames directory")),
+             "Shared downstream mask controls must not be branded as SAM-only.");
+}
+
 void TestEffectPresets::clipSerializationMigratesLegacyEffectSpeechSync()
 {
     TimelineClip clip;
@@ -300,6 +452,11 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::RgbSplit, QStringLiteral("rgb_split"));
     roundTripPreset(ClipEffectPreset::HalftoneMosaic, QStringLiteral("halftone_mosaic"));
     roundTripPreset(ClipEffectPreset::GlassRefraction, QStringLiteral("glass_refraction"));
+    roundTripPreset(ClipEffectPreset::SobelEdges, QStringLiteral("sobel_edges"));
+    roundTripPreset(ClipEffectPreset::NeonGlow, QStringLiteral("neon_glow"));
+    roundTripPreset(ClipEffectPreset::SpeakerMaskDilation, QStringLiteral("speaker_mask_dilation"));
+    roundTripPreset(ClipEffectPreset::SpeakerMaskDilationPulse, QStringLiteral("speaker_mask_dilation_pulse"));
+    roundTripPreset(ClipEffectPreset::SpeakerMaskDilationRings, QStringLiteral("speaker_mask_dilation_rings"));
 }
 
 void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
@@ -345,6 +502,11 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::RgbSplit,
         ClipEffectPreset::HalftoneMosaic,
         ClipEffectPreset::GlassRefraction,
+        ClipEffectPreset::SobelEdges,
+        ClipEffectPreset::NeonGlow,
+        ClipEffectPreset::SpeakerMaskDilation,
+        ClipEffectPreset::SpeakerMaskDilationPulse,
+        ClipEffectPreset::SpeakerMaskDilationRings,
     };
 
     QCOMPARE(options.size(), serializedPresets.size());
@@ -361,6 +523,22 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QVERIFY(!effectPresetUsesTilingControls(ClipEffectPreset::Vulkan3DSynth));
 
     QCOMPARE(tilingPatternUiOptions().size(), 6);
+
+    TimelineClip parameterized;
+    parameterized.effectPreset = ClipEffectPreset::NeonGlow;
+    parameterized.effectRows = 3;
+    parameterized.effectScale = 2.25;
+    parameterized.effectSpeed = 1.5;
+    parameterized.tilingSpacing = 1.75;
+    const auto neonPlan = render_detail::vulkanEffectPipelinePlan(
+        parameterized, QRectF(0, 0, 1920, 1080), QSize(1920, 1080), 20.0, 12.0);
+    QVERIFY(neonPlan.usesGeneratedDraws());
+    QCOMPARE(neonPlan.generatedDraws.constFirst().shaderMode,
+             render_detail::kVulkanEffectModeNeonGlow);
+    QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[0], 2.25f);
+    QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[1], 3.0f);
+    QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[2], 18.0f);
+    QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[3], 1.75f);
 }
 
 void TestEffectPresets::trackEffectSettingsDoNotLeakIntoChildClips()
@@ -441,7 +619,7 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     QVERIFY(!editor::clipFromJson(legacyJson).sourceTransformLocked);
 }
 
-void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
+void TestEffectPresets::maskMatteFactoryKeepsSourceTimingLocked()
 {
     TimelineClip source;
     source.id = QStringLiteral("shot-01");
@@ -479,7 +657,7 @@ void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
     parentGrade.curvePointsLuma = {{0.0, 0.15}, {1.0, 1.0}};
     source.gradingKeyframes = {parentGrade};
 
-    const TimelineClip matte = makeSamMaskMatteClip(source);
+    const TimelineClip matte = makeMaskMatteClip(source);
     QCOMPARE(matte.id, QStringLiteral("shot-01-mask-matte"));
     QCOMPARE(matte.clipRole, ClipRole::MaskMatte);
     QCOMPARE(matte.linkedSourceClipId, source.id);
@@ -527,7 +705,7 @@ void TestEffectPresets::samMaskMatteFactoryKeepsSourceTimingLocked()
     QVERIFY(!gradingUsesCurveLut(childGrade));
 }
 
-void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
+void TestEffectPresets::maskMatteNormalizerRepairsLegacyTimelineState()
 {
     TimelineClip source;
     source.id = QStringLiteral("shot-01");
@@ -579,10 +757,10 @@ void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
     matte.transformKeyframes.clear();
 
     QVector<TimelineClip> clips{source, matte};
-    QVERIFY(normalizeSamMaskMatteClips(clips));
+    QVERIFY(normalizeMaskMatteClips(clips));
 
     QVERIFY(!clips[0].maskShowOnly);
-    QVERIFY(clips[0].maskForegroundLayerEnabled);
+    QVERIFY(!clips[0].maskForegroundLayerEnabled);
     QCOMPARE(clips[1].startFrame, clips[0].startFrame);
     QCOMPARE(clips[1].sourceInFrame, clips[0].sourceInFrame);
     QCOMPARE(clips[1].durationFrames, clips[0].durationFrames);
@@ -592,11 +770,11 @@ void TestEffectPresets::samMaskMatteNormalizerRepairsLegacyTimelineState()
     QVERIFY(!clips[1].maskForegroundLayerEnabled);
     QCOMPARE(clips[1].maskFramesDir, clips[0].maskFramesDir);
     QCOMPARE(clips[1].generatedFromMaskId, clips[0].maskFramesDir);
-    QCOMPARE(clips[1].maskFeather, clips[0].maskFeather);
-    QCOMPARE(clips[1].maskDilate, clips[0].maskDilate);
+    QCOMPARE(clips[1].maskFeather, 99.0);
+    QCOMPARE(clips[1].maskDilate, 99.0);
     QCOMPARE(clips[1].maskErode, clips[0].maskErode);
     QCOMPARE(clips[1].maskBlur, clips[0].maskBlur);
-    QCOMPARE(clips[1].maskOpacity, clips[0].maskOpacity);
+    QCOMPARE(clips[1].maskOpacity, 1.0);
     QVERIFY(!clips[0].maskGradeEnabled);
     QVERIFY(!clips[1].maskGradeEnabled);
     QCOMPARE(clips[1].gradingKeyframes.size(), 1);

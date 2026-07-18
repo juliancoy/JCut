@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "editor_effect_presets.h"
 #include "timeline_layout.h"
 #include "timeline_renderer.h"
 #include "titles.h"
@@ -329,6 +330,128 @@ void TimelineWidget::selectClipWithModifiers(const QString& clipId, Qt::Keyboard
 
 void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     m_clips = clips;
+    for (TimelineClip& clip : m_clips) {
+        if (clip.zLevel == TimelineClip::kAutomaticZLevel) {
+            clip.zLevel = effectiveClipZLevel(clip);
+        }
+    }
+    reconcileMaskMatteChildrenFromDisk(m_clips);
+    ensureTrackCount(trackCount());
+
+    QHash<int, int> clipCountByTrack;
+    QHash<QString, int> sourceTrackById;
+    for (const TimelineClip& clip : std::as_const(m_clips)) {
+        ++clipCountByTrack[clip.trackIndex];
+        if (clip.clipRole != ClipRole::MaskMatte && !clip.id.trimmed().isEmpty()) {
+            sourceTrackById.insert(clip.id.trimmed(), clip.trackIndex);
+        }
+    }
+    for (TimelineClip& child : m_clips) {
+        if (child.clipRole != ClipRole::MaskMatte) continue;
+        const int sourceTrack = sourceTrackById.value(child.linkedSourceClipId.trimmed(), -1);
+        if (sourceTrack < 0) continue;
+        const bool dedicatedExistingTrack =
+            child.trackIndex >= 0 && child.trackIndex < m_tracks.size() &&
+            child.trackIndex != sourceTrack &&
+            clipCountByTrack.value(child.trackIndex) == 1;
+        if (!dedicatedExistingTrack) {
+            TimelineTrack childTrack;
+            childTrack.height = 44;
+            childTrack.audioEnabled = false;
+            childTrack.audioWaveformVisible = false;
+            m_tracks.push_back(childTrack);
+            child.trackIndex = m_tracks.size() - 1;
+        }
+        TimelineTrack& track = m_tracks[child.trackIndex];
+        track.generatedChildTrack = true;
+        track.parentClipId = child.linkedSourceClipId.trimmed();
+        track.childClipId = child.id;
+        track.name = QStringLiteral("↳ %1").arg(child.label);
+        track.height = qBound(kMinTrackHeight, track.height, 56);
+        track.audioEnabled = false;
+        track.audioWaveformVisible = false;
+    }
+
+    // Keep child tracks adjacent to their source track without using that
+    // layout position as compositing order.
+    QVector<int> baseTracks;
+    QHash<int, QVector<int>> childTracksBySourceTrack;
+    QSet<int> placedChildTracks;
+    for (int trackIndex = 0; trackIndex < m_tracks.size(); ++trackIndex) {
+        const TimelineTrack& track = m_tracks.at(trackIndex);
+        if (!track.generatedChildTrack) {
+            baseTracks.push_back(trackIndex);
+            continue;
+        }
+        const int sourceTrack = sourceTrackById.value(track.parentClipId.trimmed(), -1);
+        if (sourceTrack >= 0) childTracksBySourceTrack[sourceTrack].push_back(trackIndex);
+    }
+    QVector<int> desiredTrackOrder;
+    desiredTrackOrder.reserve(m_tracks.size());
+    for (const int baseTrack : std::as_const(baseTracks)) {
+        desiredTrackOrder.push_back(baseTrack);
+        QVector<int> children = childTracksBySourceTrack.value(baseTrack);
+        std::sort(children.begin(), children.end(), [this](int leftTrack, int rightTrack) {
+            const auto childForTrack = [this](int trackIndex) -> const TimelineClip* {
+                for (const TimelineClip& clip : m_clips) {
+                    if (clip.trackIndex == trackIndex && clip.clipRole == ClipRole::MaskMatte) return &clip;
+                }
+                return nullptr;
+            };
+            const TimelineClip* left = childForTrack(leftTrack);
+            const TimelineClip* right = childForTrack(rightTrack);
+            if (!left || !right) return leftTrack < rightTrack;
+            const int labelOrder = QString::localeAwareCompare(left->label, right->label);
+            return labelOrder == 0 ? left->id < right->id : labelOrder < 0;
+        });
+        for (const int childTrack : std::as_const(children)) {
+            desiredTrackOrder.push_back(childTrack);
+            placedChildTracks.insert(childTrack);
+        }
+    }
+    for (int trackIndex = 0; trackIndex < m_tracks.size(); ++trackIndex) {
+        if (m_tracks.at(trackIndex).generatedChildTrack && !placedChildTracks.contains(trackIndex)) {
+            desiredTrackOrder.push_back(trackIndex);
+        }
+    }
+    if (desiredTrackOrder.size() == m_tracks.size()) {
+        QVector<TimelineTrack> reorderedTracks;
+        reorderedTracks.reserve(m_tracks.size());
+        QHash<int, int> newIndexByOldIndex;
+        for (const int oldIndex : std::as_const(desiredTrackOrder)) {
+            newIndexByOldIndex.insert(oldIndex, reorderedTracks.size());
+            reorderedTracks.push_back(m_tracks.at(oldIndex));
+        }
+        for (TimelineClip& clip : m_clips) {
+            clip.trackIndex = newIndexByOldIndex.value(clip.trackIndex, clip.trackIndex);
+        }
+        m_selectedTrackIndex = newIndexByOldIndex.value(m_selectedTrackIndex, m_selectedTrackIndex);
+        m_tracks = reorderedTracks;
+    }
+    // Version-1 mask mattes occupied synthetic top-level tracks. Once their
+    // clips are nested back into the source track, remove only those known
+    // empty compatibility tracks and remap the remaining indices.
+    for (int trackIndex = m_tracks.size() - 1; trackIndex >= 0; --trackIndex) {
+        const bool legacyMaskTrack =
+            m_tracks.at(trackIndex).name.trimmed().startsWith(
+                QStringLiteral("Mask Mattes"), Qt::CaseInsensitive);
+        const bool occupied = std::any_of(
+            m_clips.cbegin(), m_clips.cend(), [trackIndex](const TimelineClip& clip) {
+                return clip.trackIndex == trackIndex;
+            });
+        if (!legacyMaskTrack || occupied) {
+            continue;
+        }
+        m_tracks.removeAt(trackIndex);
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex > trackIndex) --clip.trackIndex;
+        }
+        if (m_selectedTrackIndex > trackIndex) --m_selectedTrackIndex;
+        else if (m_selectedTrackIndex == trackIndex) m_selectedTrackIndex = -1;
+    }
+    // setClips establishes the hierarchy first; restore the user's alternate
+    // row view after child-track discovery and compatibility cleanup.
+    reorderTracksForView();
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     static constexpr qint64 kAudioSourceVerifyReuseWindowMs = 10000;
     for (TimelineClip& clip : m_clips) {
@@ -375,12 +498,99 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
 void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
     m_tracks = tracks;
     ensureTrackCount(trackCount());
+    reorderTracksForView();
     normalizeExportRange();
     updateMinimumTimelineHeight();
     if (trackLayoutChanged) {
         trackLayoutChanged();
     }
     update();
+}
+
+void TimelineWidget::setTrackViewMode(TrackViewMode mode) {
+    if (m_trackViewMode == mode) {
+        return;
+    }
+    m_trackViewMode = mode;
+    reorderTracksForView();
+    sortClips();
+    updateMinimumTimelineHeight();
+    if (selectionChanged) selectionChanged();
+    if (clipsChanged) clipsChanged();
+    if (trackLayoutChanged) trackLayoutChanged();
+    update();
+}
+
+void TimelineWidget::reorderTracksForView() {
+    if (m_tracks.size() < 2) {
+        return;
+    }
+
+    QVector<int> order;
+    order.reserve(m_tracks.size());
+
+    if (m_trackViewMode == TrackViewMode::Precedence) {
+        QVector<int> highestZByTrack(m_tracks.size(), std::numeric_limits<int>::min());
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (clip.trackIndex >= 0 && clip.trackIndex < highestZByTrack.size()) {
+                highestZByTrack[clip.trackIndex] =
+                    qMax(highestZByTrack.at(clip.trackIndex), effectiveClipZLevel(clip));
+            }
+        }
+        for (int i = 0; i < m_tracks.size(); ++i) order.push_back(i);
+        std::stable_sort(order.begin(), order.end(), [&highestZByTrack](int left, int right) {
+            return highestZByTrack.at(left) > highestZByTrack.at(right);
+        });
+    } else {
+        QHash<QString, int> sourceTrackById;
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (clip.clipRole != ClipRole::MaskMatte && !clip.id.trimmed().isEmpty()) {
+                sourceTrackById.insert(clip.id.trimmed(), clip.trackIndex);
+            }
+        }
+        QHash<int, QVector<int>> childrenBySourceTrack;
+        QSet<int> placedChildren;
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            const TimelineTrack& track = m_tracks.at(i);
+            if (!track.generatedChildTrack) continue;
+            const int sourceTrack = sourceTrackById.value(track.parentClipId.trimmed(), -1);
+            if (sourceTrack >= 0) childrenBySourceTrack[sourceTrack].push_back(i);
+        }
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            if (m_tracks.at(i).generatedChildTrack) continue;
+            order.push_back(i);
+            const QVector<int> children = childrenBySourceTrack.value(i);
+            for (const int childTrack : children) {
+                order.push_back(childTrack);
+                placedChildren.insert(childTrack);
+            }
+        }
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            if (m_tracks.at(i).generatedChildTrack && !placedChildren.contains(i)) order.push_back(i);
+        }
+    }
+
+    if (order.size() != m_tracks.size()) {
+        return;
+    }
+    bool alreadyOrdered = true;
+    for (int i = 0; i < order.size(); ++i) alreadyOrdered = alreadyOrdered && order.at(i) == i;
+    if (alreadyOrdered) {
+        return;
+    }
+
+    QVector<TimelineTrack> reorderedTracks;
+    reorderedTracks.reserve(m_tracks.size());
+    QHash<int, int> newIndexByOldIndex;
+    for (const int oldIndex : std::as_const(order)) {
+        newIndexByOldIndex.insert(oldIndex, reorderedTracks.size());
+        reorderedTracks.push_back(m_tracks.at(oldIndex));
+    }
+    for (TimelineClip& clip : m_clips) {
+        clip.trackIndex = newIndexByOldIndex.value(clip.trackIndex, clip.trackIndex);
+    }
+    m_selectedTrackIndex = newIndexByOldIndex.value(m_selectedTrackIndex, m_selectedTrackIndex);
+    m_tracks = reorderedTracks;
 }
 
 const TimelineClip* TimelineWidget::selectedClip() const {

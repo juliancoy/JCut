@@ -431,7 +431,7 @@ void VulkanPreviewSurface::setSelectedClipId(const QString& clipId)
 
 void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
-    m_interaction.clips = clips;
+    m_interaction.clips = clipsInCompositingOrder(clips);
     ++m_timelineClipRevision;
     m_clipParentChildRelationships.rebuild(m_interaction.clips, m_timelineClipRevision);
     m_interaction.clipCount = clips.size();
@@ -1718,7 +1718,6 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             }
         }
     }
-    QHash<QString, VulkanPreviewClipFrameStatus> maskForegroundStatusBySourceId;
     int exactCount = 0;
     int approxCount = 0;
     int missingCount = 0;
@@ -1736,7 +1735,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (!directVulkanPreviewSupportsClip(clip)) {
             continue;
         }
-        if (!visualClipActiveAtSample(clip,
+        const bool activeAsMediaProvider =
+            maskMarkerSourceIds.contains(clip.id) &&
+            visualFramePosition >= static_cast<qreal>(clip.startFrame) &&
+            visualFramePosition < static_cast<qreal>(clip.startFrame + clip.durationFrames);
+        if (!activeAsMediaProvider &&
+            !visualClipActiveAtSample(clip,
                                       m_interaction.tracks,
                                       visualSample,
                                       visualFramePosition,
@@ -1926,6 +1930,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskShowOnly = clip.maskShowOnly;
                     status.maskGradeEnabled = false;
                     status.maskOpacity = clip.maskOpacity;
+                    status.maskDropShadowEnabled = clip.maskDropShadowEnabled;
+                    status.maskDropShadowRadius = clip.maskDropShadowRadius;
+                    status.maskDropShadowOffsetX = clip.maskDropShadowOffsetX;
+                    status.maskDropShadowOffsetY = clip.maskDropShadowOffsetY;
+                    status.maskDropShadowOpacity = clip.maskDropShadowOpacity;
                     status.maskGradeBrightness = clip.maskGradeBrightness;
                     status.maskGradeContrast = clip.maskGradeContrast;
                     status.maskGradeSaturation = clip.maskGradeSaturation;
@@ -2032,45 +2041,51 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             status.decodePath = QStringLiteral("missing");
             ++missingCount;
         }
-        if (status.maskTextureEnabled &&
-            status.maskForegroundLayerEnabled &&
-            maskMarkerSourceIds.contains(clip.id)) {
-            const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
-                render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, m_interaction.tracks);
-            Q_UNUSED(progressiveStretchPolicy);
-            VulkanPreviewClipFrameStatus foregroundStatus = status;
-            foregroundStatus.maskClipSource = true;
-            foregroundStatus.maskShowOnly = false;
-            foregroundStatus.maskForegroundLayerEnabled = false;
-            foregroundStatus.maskOpacity = 1.0;
-            maskForegroundStatusBySourceId.insert(clip.id, foregroundStatus);
-            status.maskForegroundLayerEnabled = false;
-            status.maskGradeEnabled = false;
-        }
         statuses.push_back(status);
     }
 
-    if (!maskForegroundStatusBySourceId.isEmpty()) {
+    if (!maskMarkerSourceIds.isEmpty()) {
         QHash<QString, VulkanPreviewClipFrameStatus> statusByClipId;
         for (const VulkanPreviewClipFrameStatus& status : std::as_const(statuses)) {
             statusByClipId.insert(status.clipId, status);
         }
         QVector<VulkanPreviewClipFrameStatus> orderedStatuses;
-        orderedStatuses.reserve(statuses.size() + maskForegroundStatusBySourceId.size());
+        orderedStatuses.reserve(statuses.size() + maskMarkerSourceIds.size());
         QSet<QString> emittedClipIds;
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.clipRole == ClipRole::MaskMatte &&
                 clip.locked &&
                 clip.sourceTransformLocked) {
                 const QString sourceId = clip.linkedSourceClipId.trimmed();
-                if (maskForegroundStatusBySourceId.contains(sourceId) &&
+                if (statusByClipId.contains(sourceId) &&
                     clip.startFrame <= visualFramePosition &&
                     visualFramePosition < clip.startFrame + clip.durationFrames) {
-                    VulkanPreviewClipFrameStatus markerStatus = maskForegroundStatusBySourceId.value(sourceId);
+                    VulkanPreviewClipFrameStatus markerStatus = statusByClipId.value(sourceId);
                     markerStatus.clipId = clip.id;
                     markerStatus.label = clip.label;
                     markerStatus.mediaOwnerClipId = sourceId;
                     markerStatus.effectsOwnerClipId = clip.id;
+                    markerStatus.maskImage = rawClipMaskImage(
+                        clip, qMax<int64_t>(0, markerStatus.presentedSourceFrame));
+                    markerStatus.maskTextureEnabled = !markerStatus.maskImage.isNull();
+                    markerStatus.maskClipSource = true;
+                    markerStatus.maskForegroundLayerEnabled = false;
+                    markerStatus.maskShowOnly = false;
+                    markerStatus.maskOpacity = clip.maskOpacity;
+                    markerStatus.maskDropShadowEnabled = clip.maskDropShadowEnabled;
+                    markerStatus.maskDropShadowRadius = clip.maskDropShadowRadius;
+                    markerStatus.maskDropShadowOffsetX = clip.maskDropShadowOffsetX;
+                    markerStatus.maskDropShadowOffsetY = clip.maskDropShadowOffsetY;
+                    markerStatus.maskDropShadowOpacity = clip.maskDropShadowOpacity;
+                    markerStatus.maskFeather = clip.maskFeather;
+                    markerStatus.maskFeatherGamma = clip.maskFeatherGamma;
+                    markerStatus.maskFeatherFalloff = clip.maskFeatherFalloff;
+                    markerStatus.maskDilate = clip.maskDilate;
+                    markerStatus.maskErode = clip.maskErode;
+                    markerStatus.maskBlur = clip.maskBlur;
+                    markerStatus.maskInvert = clip.maskInvert;
+                    markerStatus.drawSuppressed = false;
+                    markerStatus.missingReason.clear();
                     // The marker reuses the linked source's decoded frame and
                     // mask texture, but visual effects belong to the child
                     // Mask Matte itself. Cloning the entire source status here
@@ -2101,6 +2116,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskFeather = matteEffects.maskFeather;
                     markerStatus.maskFeatherGamma = matteEffects.maskFeatherGamma;
                     markerStatus.maskFeatherFalloff = matteEffects.maskFeatherFalloff;
+                    if (matteEffects.grading.opacity <= 0.001) {
+                        markerStatus.drawSuppressed = true;
+                        markerStatus.missingReason = QStringLiteral("skipped_zero_opacity");
+                    }
+                    if (!markerStatus.maskTextureEnabled) {
+                        markerStatus.drawSuppressed = true;
+                        markerStatus.missingReason = QStringLiteral("mask_texture_unavailable");
+                    }
                     orderedStatuses.push_back(markerStatus);
                 }
                 continue;

@@ -97,6 +97,10 @@ public:
 
   void setBackgroundDecodeSuppressed(bool suppressed);
 
+  void setBufferFrames(int frames);
+
+  int bufferFrames() const;
+
   bool initialize();
 
   void shutdown();
@@ -538,7 +542,7 @@ private:
 
   static constexpr int m_sampleRate = 48000;
   static constexpr int m_channelCount = 2;
-  static constexpr int m_periodFrames = 1024;
+  int m_periodFrames = 1024; // guarded by m_stateMutex; immutable while initialized
   static constexpr int m_initialDecodeSeconds = 2;
   static constexpr int64_t kInitialDecodeFrames =
       static_cast<int64_t>(m_sampleRate) * m_initialDecodeSeconds;

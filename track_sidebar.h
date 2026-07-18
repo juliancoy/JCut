@@ -12,6 +12,7 @@ struct TrackInfo {
     bool audioEnabled = true;
     bool hasVisual = false;
     bool hasAudio = false;
+    bool generatedChildTrack = false;
     int top = 0; // Track top position relative to the TimelineWidget origin
     int height = 72;  // Default track height, should match TimelineWidget::kDefaultTrackHeight
 };
