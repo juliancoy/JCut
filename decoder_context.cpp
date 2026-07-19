@@ -13,6 +13,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
+#include <QWaitCondition>
 
 #include <limits>
 #include <mutex>
@@ -27,6 +28,55 @@ constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 
 constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at the default timeline FPS
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
 constexpr qint64 kNoVideoWarningThrottleMs = 15000;
+
+enum class HardwareProbeState { Probing, Supported, Unsupported };
+
+QMutex& hardwareProbeMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+
+QWaitCondition& hardwareProbeCondition() {
+    static QWaitCondition condition;
+    return condition;
+}
+
+QHash<QString, HardwareProbeState>& hardwareProbeStates() {
+    static QHash<QString, HardwareProbeState> states;
+    return states;
+}
+
+bool beginHardwareProbe(const QString& path, bool& ownsProbe) {
+    QMutexLocker lock(&hardwareProbeMutex());
+    auto& states = hardwareProbeStates();
+    while (states.value(path, HardwareProbeState::Supported) == HardwareProbeState::Probing) {
+        hardwareProbeCondition().wait(&hardwareProbeMutex());
+    }
+
+    const auto existing = states.constFind(path);
+    if (existing != states.cend()) {
+        ownsProbe = false;
+        return existing.value() == HardwareProbeState::Supported;
+    }
+
+    states.insert(path, HardwareProbeState::Probing);
+    ownsProbe = true;
+    return true;
+}
+
+void finishHardwareProbe(const QString& path, bool supported, bool& ownsProbe) {
+    if (!ownsProbe) {
+        return;
+    }
+    {
+        QMutexLocker lock(&hardwareProbeMutex());
+        hardwareProbeStates().insert(
+            path,
+            supported ? HardwareProbeState::Supported : HardwareProbeState::Unsupported);
+        ownsProbe = false;
+    }
+    hardwareProbeCondition().wakeAll();
+}
 
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsanBuild = true;
@@ -358,7 +408,55 @@ bool DecoderContext::initCodec() {
         }
     }
     if (!decoder) {
-        decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+        const AVCodec* defaultDecoder = avcodec_find_decoder(stream->codecpar->codec_id);
+        const AVCodec* bestDecoder = nullptr;
+        int bestScore = std::numeric_limits<int>::min();
+        int candidateCount = 0;
+        void* iterator = nullptr;
+        while (const AVCodec* candidate = av_codec_iterate(&iterator)) {
+            if (!av_codec_is_decoder(candidate) ||
+                candidate->id != stream->codecpar->codec_id) {
+                continue;
+            }
+
+            ++candidateCount;
+            int usableHardwareConfigs = 0;
+            for (int i = 0;; ++i) {
+                const AVCodecHWConfig* config = avcodec_get_hw_config(candidate, i);
+                if (!config) {
+                    break;
+                }
+                if (!(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+                    continue;
+                }
+                if (!m_sharedHwDevices ||
+                    m_sharedHwDevices->contains(static_cast<int>(config->device_type))) {
+                    ++usableHardwareConfigs;
+                }
+            }
+
+            // Prefer FFmpeg's canonical decoder, then implementations with a
+            // usable device-context path. Dedicated hardware-only wrappers are
+            // not selected merely because they happen to be registered first.
+            int score = usableHardwareConfigs * 10;
+            if (candidate == defaultDecoder) {
+                score += 1000;
+            }
+            if (candidate->capabilities & AV_CODEC_CAP_EXPERIMENTAL) {
+                score -= 100;
+            }
+            if (!bestDecoder || score > bestScore) {
+                bestDecoder = candidate;
+                bestScore = score;
+            }
+        }
+        decoder = bestDecoder ? bestDecoder : defaultDecoder;
+        if (debugDecodeEnabled()) {
+            qDebug() << "Decoder selection queried" << candidateCount
+                     << "registered implementations for codec"
+                     << stream->codecpar->codec_id << "and selected"
+                     << (decoder ? decoder->name : "none");
+        }
     }
 
     if (!decoder) {
@@ -687,6 +785,10 @@ QVector<FrameHandle> DecoderContext::decodeThroughFrame(int64_t targetFrame) {
         return {FrameHandle::createCpuFrame(m_stillImage, 0, m_path)};
     }
 
+    if (m_hardwareDecodeUnavailable) {
+        return {};
+    }
+
     if (m_info.durationFrames > 0) {
         targetFrame = qBound<int64_t>(0, targetFrame, m_info.durationFrames - 1);
     } else {
@@ -738,6 +840,14 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         return decodedFrames;
     }
 
+    bool ownsHardwareProbe = false;
+    if (m_info.hardwareAccelerated &&
+        !beginHardwareProbe(m_path, ownsHardwareProbe)) {
+        m_hardwareDecodeUnavailable = true;
+        m_eof = true;
+        return decodedFrames;
+    }
+
     AVFrame* frame = av_frame_alloc();
     AVPacket* packet = av_packet_alloc();
     if (!frame || !packet) {
@@ -747,6 +857,7 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         if (packet) {
             av_packet_free(&packet);
         }
+        finishHardwareProbe(m_path, true, ownsHardwareProbe);
         return decodedFrames;
     }
 
@@ -755,9 +866,11 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         qWarning() << "Video stream missing during decode for" << m_path;
         av_frame_free(&frame);
         av_packet_free(&packet);
+        finishHardwareProbe(m_path, true, ownsHardwareProbe);
         return decodedFrames;
     }
 
+    bool hardwareDecodeFailed = false;
     auto receiveAvailableFrames = [&, this](bool& reachedTarget) {
         while (true) {
             const int ret = avcodec_receive_frame(m_codecCtx, frame);
@@ -765,7 +878,10 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
                 break;
             }
             if (ret < 0) {
-                break;
+                if (m_info.hardwareAccelerated) {
+                    hardwareDecodeFailed = true;
+                }
+                return false;
             }
 
             int64_t pts = frame->best_effort_timestamp != AV_NOPTS_VALUE ? frame->best_effort_timestamp : frame->pts;
@@ -775,6 +891,7 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
             }
 
             m_lastDecodedFrame = currentFrame;
+            finishHardwareProbe(m_path, true, ownsHardwareProbe);
             FrameHandle decodedFrame = convertToFrame(frame, currentFrame);
             if (decodedFrames.size() >= kMaxReturnedVideoBatchFrames) {
                 decodedFrames.removeFirst();
@@ -787,6 +904,7 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
                 break;
             }
         }
+        return true;
     };
 
     bool reachedTarget = false;
@@ -809,18 +927,36 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
             break;
         }
         if (sendRet < 0) {
+            if (m_info.hardwareAccelerated) {
+                hardwareDecodeFailed = true;
+                break;
+            }
             continue;
         }
 
-        receiveAvailableFrames(reachedTarget);
+        if (!receiveAvailableFrames(reachedTarget)) {
+            break;
+        }
     }
 
-    if (!reachedTarget) {
+    if (!reachedTarget && !hardwareDecodeFailed) {
         const int flushRet = avcodec_send_packet(m_codecCtx, nullptr);
         if (flushRet >= 0 || flushRet == AVERROR_EOF) {
             receiveAvailableFrames(reachedTarget);
         }
         m_eof = true;
+    }
+
+    if (hardwareDecodeFailed) {
+        qWarning() << "Selected hardware decoder cannot decode stream" << m_path
+                   << "— software fallback is disabled; select software decode explicitly";
+        m_hardwareDecodeUnavailable = true;
+        m_eof = true;
+        finishHardwareProbe(m_path, false, ownsHardwareProbe);
+    } else {
+        // A clean packet/EOF path is sufficient to release other workers even
+        // when this particular request did not require an output frame.
+        finishHardwareProbe(m_path, true, ownsHardwareProbe);
     }
 
     av_frame_free(&frame);

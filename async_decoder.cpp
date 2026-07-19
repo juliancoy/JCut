@@ -10,6 +10,7 @@
 #include <QDeadlineTimer>
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QMutexLocker>
@@ -50,6 +51,8 @@ struct AsyncDecoder::LaneState {
         std::atomic<int64_t> cancelBeforeFrame{std::numeric_limits<int64_t>::min()};
         std::atomic<uint64_t> generation{0};
         std::unique_ptr<DecoderContext> context;
+        bool sourceMissing = false;
+        bool missingErrorReported = false;
     };
 
     explicit LaneState(int laneIndex)
@@ -445,7 +448,23 @@ VideoStreamInfo AsyncDecoder::getVideoInfo(const QString& path) {
 
     auto it = m_infoCache.find(path);
     if (it != m_infoCache.end() && it.value().requestedDecodeMode == requestedDecodeMode) {
-        return it.value();
+        if (it.value().isValid || !QFileInfo::exists(path)) {
+            return it.value();
+        }
+        // The source was unavailable when cached but has since appeared.
+        m_infoCache.erase(it);
+    }
+
+    VideoStreamInfo unavailableInfo;
+    unavailableInfo.path = path;
+    unavailableInfo.requestedDecodeMode = requestedDecodeMode;
+
+    // Metadata probing is commonly called from UI setup and refresh paths.
+    // Cache an unavailable local source just like valid metadata so a stale
+    // project cannot synchronously reopen the same missing file every frame.
+    if (!QFileInfo::exists(path)) {
+        m_infoCache[path] = unavailableInfo;
+        return unavailableInfo;
     }
 
     DecoderContext ctx(path);
@@ -456,7 +475,8 @@ VideoStreamInfo AsyncDecoder::getVideoInfo(const QString& path) {
         return info;
     }
 
-    return VideoStreamInfo();
+    m_infoCache[path] = unavailableInfo;
+    return unavailableInfo;
 }
 
 void AsyncDecoder::preloadFile(const QString& path) {
@@ -658,7 +678,25 @@ void AsyncDecoder::runLane(LaneState* lane) {
              request.frameNumber < state->cancelBeforeFrame.load());
 
         if (!request.isExpired() && !cancelled) {
-            if (!state->context) {
+            // A missing local source is a stable project-state error, not a
+            // transient decoder failure.  Do not repeatedly hand it to
+            // FFmpeg on every preview refresh.  A cheap existence check lets
+            // decoding recover automatically if the user restores the file.
+            if (state->sourceMissing && QFileInfo::exists(request.filePath)) {
+                state->sourceMissing = false;
+                state->missingErrorReported = false;
+            }
+
+            if (!state->context && !state->sourceMissing &&
+                !QFileInfo::exists(request.filePath)) {
+                state->sourceMissing = true;
+                if (!state->missingErrorReported) {
+                    errorMessage = QStringLiteral("Input file does not exist");
+                    state->missingErrorReported = true;
+                }
+            }
+
+            if (!state->context && !state->sourceMissing) {
                 // Pass the shared device map so the context borrows a ref
                 // rather than calling av_hwdevice_ctx_create().
                 QMutexLocker hwLock(&m_sharedHwMutex);
@@ -691,6 +729,13 @@ void AsyncDecoder::runLane(LaneState* lane) {
                     }
                 } else {
                     frame = state->context->decodeFrame(request.frameNumber);
+                }
+                if (frame.isNull() && state->context->hardwareDecodeUnavailable()) {
+                    QMutexLocker failureLock(&m_hardwareFailureMutex);
+                    if (!m_reportedHardwareFailures.contains(request.filePath)) {
+                        m_reportedHardwareFailures.insert(request.filePath);
+                        errorMessage = QStringLiteral("hardware_decode_unsupported");
+                    }
                 }
             }
         }

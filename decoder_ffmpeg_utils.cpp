@@ -179,8 +179,11 @@ VideoDecoderThreadingPolicy applyVideoDecoderThreadingPolicy(AVCodecContext* cod
     }
 
     if (hardwareEnabled) {
-        codecCtx->thread_count = 0;
-        codecCtx->thread_type = FF_THREAD_FRAME;
+        // Hardware decoders provide their own parallelism. FFmpeg frame
+        // threading clones the codec context, redundantly initializes the
+        // same hardware stream once per CPU thread, and amplifies a single
+        // capability rejection into a log/error storm.
+        applySingleThreadPolicy();
         return policy;
     }
 

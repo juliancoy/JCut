@@ -1,4 +1,5 @@
 #include "vulkan_audio_tab.h"
+#include "vulkan_shader_paths.h"
 
 #include <QFile>
 #include <QVulkanFunctions>
@@ -182,7 +183,7 @@ bool VulkanAudioTab::initialize(VkPhysicalDevice physicalDevice,
         return false;
     }
 
-    const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
+    const QString shaderDir = jcutVulkanShaderDirectory();
     m_vertShader = createShaderModule(shaderDir + QStringLiteral("/audio_waveform.vert.spv"), errorMessage);
     m_fragShader = createShaderModule(shaderDir + QStringLiteral("/audio_waveform.frag.spv"), errorMessage);
     m_waveformComputeShader = createShaderModule(shaderDir + QStringLiteral("/audio_waveform_process.comp.spv"), errorMessage);

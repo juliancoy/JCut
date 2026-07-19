@@ -7,6 +7,9 @@ set(EDITOR_TEST_TARGETS
     test_frame_handle
     test_memory_budget
     test_async_decoder
+    test_explorer_pane
+    test_media_drag_drop
+    test_media_root_contract
     test_timeline_cache
     test_integration
     test_transcript_logic
@@ -90,6 +93,29 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+set_tests_properties(test_explorer_pane PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;JCUT_DIRECTORY_DIALOG_BACKEND=qt;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+set_tests_properties(test_media_drag_drop PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+target_sources(test_explorer_pane PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../explorer_pane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../media_drag_payload.cpp
+)
+target_sources(test_media_drag_drop PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../media_drag_payload.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_layout.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_context_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_input.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_layout.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_model.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_paint.cpp
+)
 
 target_sources(test_editor_runtime
     PRIVATE
@@ -179,13 +205,14 @@ target_link_libraries(test_vulkan_subtitle_render
         Qt6::Test
         Vulkan::Vulkan
 )
-if(CUDA_DRIVER_LIBRARY)
+if(JCUT_HAS_CUDA_DRIVER)
     target_link_libraries(test_vulkan_subtitle_render PRIVATE ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(test_vulkan_subtitle_render PRIVATE ${CUDA_DRIVER_INCLUDE_DIR})
 endif()
 target_compile_definitions(test_vulkan_subtitle_render
     PRIVATE
         JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
-        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${CUDA_DRIVER_LIBRARY}>,1,0>
+        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${JCUT_HAS_CUDA_DRIVER}>,1,0>
 )
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(test_vulkan_subtitle_render jcut_vulkan_shaders)

@@ -10,6 +10,7 @@
 #include "render_vulkan_shared.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
+#include "vulkan_shader_paths.h"
 #include "vulkan_text_renderer.h"
 
 #include <QDateTime>
@@ -1445,7 +1446,7 @@ public:
       return false;
     }
 
-    const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
+    const QString shaderDir = jcutVulkanShaderDirectory();
     m_effectsVertModule = createShaderModule(
         m_device,
         readBinaryFile(shaderDir + QStringLiteral("/effects.vert.spv")));

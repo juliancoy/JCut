@@ -1,4 +1,5 @@
 #include "vulkan_pipeline.h"
+#include "vulkan_shader_paths.h"
 
 #include <QFile>
 #include <QVulkanFunctions>
@@ -28,7 +29,7 @@ bool VulkanPipeline::initialize(VkDevice device,
     m_device = device;
     m_funcs = funcs;
 
-    const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
+    const QString shaderDir = jcutVulkanShaderDirectory();
     m_vertShader = createShaderModule(shaderDir + QStringLiteral("/effects.vert.spv"), errorMessage);
     m_fragShader = createShaderModule(shaderDir + QStringLiteral("/effects.frag.spv"), errorMessage);
     if (m_vertShader == VK_NULL_HANDLE || m_fragShader == VK_NULL_HANDLE) {

@@ -27,6 +27,8 @@ RTAUDIO_SUBMODULE_PATH="rtaudio"
 RTAUDIO_SRC_DIR="${SCRIPT_DIR}/rtaudio"
 CPPMONETIZE_SUBMODULE_PATH="external/CPPMonetize"
 CPPMONETIZE_SRC_DIR="${SCRIPT_DIR}/external/CPPMonetize"
+EARCUT_SUBMODULE_PATH="external/earcut.hpp"
+EARCUT_SRC_DIR="${SCRIPT_DIR}/external/earcut.hpp"
 RUBBERBAND_SUBMODULE_PATH="external/rubberband"
 RUBBERBAND_SRC_DIR="${SCRIPT_DIR}/external/rubberband"
 RUBBERBAND_BUILD_DIR="${SCRIPT_DIR}/.deps/rubberband-build"
@@ -35,6 +37,11 @@ RUBBERBAND_PKGCONFIG_DIR="${RUBBERBAND_INSTALL_DIR}/lib/pkgconfig"
 RUBBERBAND_PKGCONFIG_FILE="${RUBBERBAND_PKGCONFIG_DIR}/rubberband.pc"
 RUBBERBAND_VERSION_FILE="${RUBBERBAND_INSTALL_DIR}/.build-version"
 QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
+CURL_DEV_DIR="${SCRIPT_DIR}/.deps/libcurl-dev"
+CURL_INCLUDE_DIR=""
+CURL_LIBRARY=""
+GLFW_INSTALL_DIR="${SCRIPT_DIR}/.deps/glfw-install"
+GLFW_PKGCONFIG_DIR=""
 ASAN="OFF"
 FFMPEG_PROFILE="auto"
 FFMPEG_ONLY="no"
@@ -264,7 +271,8 @@ ensure_ffmpeg_installed() {
         --disable-static \
         --disable-programs \
         --disable-doc \
-        --disable-debug
+        --disable-debug \
+        --disable-vulkan
     )
 
     if [[ "${FFMPEG_PROFILE}" == "safe" || "${FFMPEG_PROFILE}" == "safe-noasm" ]]; then
@@ -384,11 +392,34 @@ ensure_qt_private_headers() {
         return 0
     fi
 
-    local qt_version="6.4.2"
+    local qt_version=""
+    local qt_package_version=""
     local qt_headers="/usr/include/x86_64-linux-gnu/qt6"
     if command -v qmake6 >/dev/null 2>&1; then
         qt_version="$(qmake6 -query QT_VERSION)"
         qt_headers="$(qmake6 -query QT_INSTALL_HEADERS)"
+    elif command -v qtpaths6 >/dev/null 2>&1; then
+        qt_version="$(qtpaths6 --qt-version)"
+        qt_headers="$(qtpaths6 --query QT_INSTALL_HEADERS)"
+    elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core; then
+        qt_version="$(pkg-config --modversion Qt6Core)"
+        qt_headers="$(pkg-config --variable=includedir Qt6Core)"
+    fi
+
+    if command -v dpkg-query >/dev/null 2>&1; then
+        qt_package_version="$(dpkg-query -W -f='${Version}' qt6-base-dev 2>/dev/null || true)"
+        if [[ -z "${qt_version}" && "${qt_package_version}" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            qt_version="${BASH_REMATCH[1]}"
+        fi
+    fi
+
+    if [[ -z "${qt_version}" ]]; then
+        cat >&2 <<'EOF'
+Unable to determine the installed Qt development version.
+Install the public and private development packages from the same repository:
+  sudo apt-get install qt6-base-dev qt6-base-private-dev
+EOF
+        exit 1
     fi
 
     local required_header="${qt_headers}/QtGui/${qt_version}/QtGui/private/qrhi_p.h"
@@ -407,14 +438,27 @@ EOF
     fi
 
     local package_name="qt6-base-private-dev"
-    local apt_dir="${SCRIPT_DIR}/.deps/apt"
+    local apt_dir="${SCRIPT_DIR}/.deps/apt/${package_name}-${qt_version}"
     mkdir -p "${apt_dir}" "${QT_PRIVATE_DEV_DIR}"
 
-    echo "Qt private headers missing; downloading ${package_name} into ${SCRIPT_DIR}/.deps..."
-    (
+    local package_spec="${package_name}"
+    if [[ -n "${qt_package_version}" ]]; then
+        package_spec="${package_name}=${qt_package_version}"
+    fi
+
+    echo "Qt ${qt_version} private headers missing; downloading ${package_spec} into ${SCRIPT_DIR}/.deps..."
+    if ! (
         cd "${apt_dir}"
-        apt-get download "${package_name}"
-    )
+        apt-get download "${package_spec}"
+    ); then
+        cat >&2 <<EOF
+Unable to download ${package_spec}. The installed Qt development package may no
+longer be available from your configured APT repositories. Refresh or correct
+the repositories, then install matching packages together:
+  sudo apt-get install qt6-base-dev qt6-base-private-dev
+EOF
+        exit 1
+    fi
 
     local deb_file=""
     deb_file="$(find "${apt_dir}" -maxdepth 1 -type f -name "${package_name}_*.deb" | sort | tail -n1)"
@@ -425,9 +469,138 @@ EOF
 
     dpkg-deb -x "${deb_file}" "${QT_PRIVATE_DEV_DIR}"
     if [[ ! -f "${local_required_header}" ]]; then
-        echo "Extracted ${package_name}, but ${local_required_header} was not found." >&2
+        local downloaded_package_version=""
+        downloaded_package_version="$(dpkg-deb -f "${deb_file}" Version 2>/dev/null || true)"
+        cat >&2 <<EOF
+Downloaded ${package_name} ${downloaded_package_version}, but it does not provide the
+Qt ${qt_version} private header expected at:
+  ${local_required_header}
+
+The installed Qt development files and your configured APT repositories do not match.
+Install matching packages from the same repository:
+  sudo apt-get install qt6-base-dev qt6-base-private-dev
+EOF
         exit 1
     fi
+}
+
+ensure_curl_development_files() {
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcurl; then
+        return 0
+    fi
+
+    if [[ "${UNAME_S}" != "Linux" ]] || \
+       ! command -v apt-get >/dev/null 2>&1 || \
+       ! command -v dpkg-deb >/dev/null 2>&1 || \
+       ! command -v dpkg-architecture >/dev/null 2>&1; then
+        cat >&2 <<'EOF'
+The libcurl development files are required but missing.
+On Debian or Ubuntu, install them with:
+  sudo apt-get install libcurl4-openssl-dev
+EOF
+        exit 1
+    fi
+
+    local multiarch=""
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+    CURL_INCLUDE_DIR="${CURL_DEV_DIR}/usr/include/${multiarch}"
+    CURL_LIBRARY="/usr/lib/${multiarch}/libcurl.so.4"
+    if [[ -f "${CURL_INCLUDE_DIR}/curl/curl.h" && -f "${CURL_LIBRARY}" ]]; then
+        return 0
+    fi
+
+    local package_name="libcurl4-openssl-dev"
+    local apt_dir="${SCRIPT_DIR}/.deps/apt/${package_name}"
+    mkdir -p "${apt_dir}" "${CURL_DEV_DIR}"
+
+    echo "libcurl development files missing; downloading ${package_name} into ${SCRIPT_DIR}/.deps..."
+    if ! (
+        cd "${apt_dir}"
+        apt-get download "${package_name}"
+    ); then
+        cat >&2 <<EOF
+Unable to download ${package_name}. Install it from your configured repository:
+  sudo apt-get install ${package_name}
+EOF
+        exit 1
+    fi
+
+    local deb_file=""
+    deb_file="$(find "${apt_dir}" -maxdepth 1 -type f -name "${package_name}_*.deb" | sort | tail -n1)"
+    if [[ -z "${deb_file}" ]]; then
+        echo "Failed to download ${package_name}." >&2
+        exit 1
+    fi
+
+    dpkg-deb -x "${deb_file}" "${CURL_DEV_DIR}"
+    if [[ ! -f "${CURL_INCLUDE_DIR}/curl/curl.h" || ! -f "${CURL_LIBRARY}" ]]; then
+        cat >&2 <<EOF
+The downloaded ${package_name} is incompatible with the installed libcurl runtime.
+Install matching runtime and development packages together:
+  sudo apt-get install libcurl4t64 ${package_name}
+EOF
+        exit 1
+    fi
+}
+
+ensure_glfw_installed() {
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists glfw3; then
+        return 0
+    fi
+
+    if [[ "${UNAME_S}" != "Linux" ]] || \
+       ! command -v apt-get >/dev/null 2>&1 || \
+       ! command -v dpkg-deb >/dev/null 2>&1 || \
+       ! command -v dpkg-architecture >/dev/null 2>&1; then
+        cat >&2 <<'EOF'
+GLFW development files are required but missing.
+On Debian or Ubuntu, install them with:
+  sudo apt-get install libglfw3-dev
+EOF
+        exit 1
+    fi
+
+    local multiarch=""
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+    GLFW_PKGCONFIG_DIR="${GLFW_INSTALL_DIR}/usr/lib/${multiarch}/pkgconfig"
+    local glfw_pc="${GLFW_PKGCONFIG_DIR}/glfw3.pc"
+    if [[ -f "${glfw_pc}" && -f "${GLFW_INSTALL_DIR}/usr/lib/${multiarch}/libglfw.so.3" ]]; then
+        sed -i \
+            -e "s|^prefix=.*$|prefix=${GLFW_INSTALL_DIR}/usr|" \
+            -e 's|^includedir=/usr/include$|includedir=${prefix}/include|' \
+            -e "s|^libdir=/usr/lib/${multiarch}$|libdir=\${prefix}/lib/${multiarch}|" \
+            "${glfw_pc}"
+        return 0
+    fi
+
+    local apt_dir="${SCRIPT_DIR}/.deps/apt/glfw"
+    mkdir -p "${apt_dir}" "${GLFW_INSTALL_DIR}"
+    echo "GLFW missing; downloading libglfw3 and libglfw3-dev into ${SCRIPT_DIR}/.deps..."
+    if ! (
+        cd "${apt_dir}"
+        apt-get download libglfw3 libglfw3-dev
+    ); then
+        cat >&2 <<'EOF'
+Unable to download GLFW. Install its runtime and development package together:
+  sudo apt-get install libglfw3-dev
+EOF
+        exit 1
+    fi
+
+    local deb_file=""
+    while IFS= read -r deb_file; do
+        dpkg-deb -x "${deb_file}" "${GLFW_INSTALL_DIR}"
+    done < <(find "${apt_dir}" -maxdepth 1 -type f \( -name 'libglfw3_*.deb' -o -name 'libglfw3-dev_*.deb' \) | sort)
+
+    if [[ ! -f "${glfw_pc}" || ! -f "${GLFW_INSTALL_DIR}/usr/lib/${multiarch}/libglfw.so.3" ]]; then
+        echo "Downloaded GLFW packages did not contain the expected development files." >&2
+        exit 1
+    fi
+    sed -i \
+        -e "s|^prefix=.*$|prefix=${GLFW_INSTALL_DIR}/usr|" \
+        -e 's|^includedir=/usr/include$|includedir=${prefix}/include|' \
+        -e "s|^libdir=/usr/lib/${multiarch}$|libdir=\${prefix}/lib/${multiarch}|" \
+        "${glfw_pc}"
 }
 
 for arg in "$@"; do
@@ -471,6 +644,7 @@ resolve_ffmpeg_profile
 ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}" "configure"
 ensure_submodule_checkout "${RTAUDIO_SUBMODULE_PATH}" "${RTAUDIO_SRC_DIR}" "CMakeLists.txt"
 ensure_submodule_checkout "${CPPMONETIZE_SUBMODULE_PATH}" "${CPPMONETIZE_SRC_DIR}" "CMakeLists.txt"
+ensure_submodule_checkout "${EARCUT_SUBMODULE_PATH}" "${EARCUT_SRC_DIR}" "include/mapbox/earcut.hpp"
 ensure_submodule_checkout "${RUBBERBAND_SUBMODULE_PATH}" "${RUBBERBAND_SRC_DIR}" "meson.build"
 if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
     ensure_submodule_checkout "${NVCODEC_SUBMODULE_PATH}" "${NVCODEC_SRC_DIR}" "Makefile"
@@ -482,9 +656,11 @@ if [[ "${FFMPEG_ONLY}" == "yes" ]]; then
     exit 0
 fi
 ensure_rubberband_installed
+ensure_curl_development_files
+ensure_glfw_installed
 ensure_qt_private_headers
 
-export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}:${RUBBERBAND_PKGCONFIG_DIR}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}:${RUBBERBAND_PKGCONFIG_DIR}${GLFW_PKGCONFIG_DIR:+:${GLFW_PKGCONFIG_DIR}}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
 if [[ "${CMAKE_GENERATOR}" == "Ninja" ]]; then
     BUILD_DIR_BASE="${SCRIPT_DIR}/build"
@@ -546,6 +722,17 @@ cmake_configure_args=(
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
     -DWITH_VULKAN=ON
 )
+if [[ -n "${CURL_INCLUDE_DIR}" ]]; then
+    cmake_configure_args+=(
+        -DCURL_INCLUDE_DIR="${CURL_INCLUDE_DIR}"
+        -DCURL_LIBRARY="${CURL_LIBRARY}"
+    )
+fi
+if [[ -n "${GLFW_PKGCONFIG_DIR}" ]]; then
+    cmake_configure_args+=(
+        '-UGLFW_*'
+    )
+fi
 if [[ -n "${JCUT_QT_PREFIX:-}" ]]; then
     cmake_configure_args+=(
         -DCMAKE_PREFIX_PATH="${JCUT_QT_PREFIX}"

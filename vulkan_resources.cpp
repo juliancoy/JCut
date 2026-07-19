@@ -1,4 +1,5 @@
 #include "vulkan_resources.h"
+#include "vulkan_shader_paths.h"
 
 #include <QVulkanFunctions>
 
@@ -8,10 +9,6 @@
 #include <array>
 #include <cstring>
 #include <limits>
-
-#ifndef JCUT_VULKAN_SHADER_DIR
-#define JCUT_VULKAN_SHADER_DIR ""
-#endif
 
 namespace {
 constexpr uint32_t kTextureWidth = 64;
@@ -1138,7 +1135,7 @@ bool VulkanResources::createMaskComputeResources()
         return false;
     }
 
-    const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
+    const QString shaderDir = jcutVulkanShaderDirectory();
     m_maskPrepareModule = createShaderModule(shaderDir + QStringLiteral("/mask_prepare.comp.spv"));
     m_maskMorphModule = createShaderModule(shaderDir + QStringLiteral("/mask_morph.comp.spv"));
     m_maskBlurModule = createShaderModule(shaderDir + QStringLiteral("/mask_blur.comp.spv"));

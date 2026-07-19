@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=JCut
+Comment=Timeline-based video editor
+Exec=jcut %F
+Icon=io.github.jcut.JCut
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/x-matroska;video/quicktime;audio/mpeg;audio/x-wav;
+StartupNotify=true
+StartupWMClass=JCut

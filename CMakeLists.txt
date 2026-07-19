@@ -41,6 +41,13 @@ if(JCUT_QT_NETWORK_DISABLED_FEATURES MATCHES "(^|;)ssl(;|$)")
 endif()
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_library(CUDA_DRIVER_LIBRARY cuda)
+find_path(CUDA_DRIVER_INCLUDE_DIR cuda.h
+    PATH_SUFFIXES include include/cuda)
+if(CUDA_DRIVER_LIBRARY AND CUDA_DRIVER_INCLUDE_DIR)
+    set(JCUT_HAS_CUDA_DRIVER ON)
+else()
+    set(JCUT_HAS_CUDA_DRIVER OFF)
+endif()
 
 function(jcut_fix_qt_private_target target_name)
     if(NOT TARGET "${target_name}")
@@ -190,7 +197,8 @@ function(jcut_force_bundled_ffmpeg_runtime target_name)
 endfunction()
 
 set(MOTIVE3D_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d")
-set(EDITOR_OPTIONAL_INCLUDE_DIRS "")
+set(EDITOR_OPTIONAL_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/earcut.hpp/include")
 if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
     list(APPEND EDITOR_OPTIONAL_INCLUDE_DIRS
         "${MOTIVE3D_INCLUDE_DIR}/glm"
@@ -430,8 +438,9 @@ target_link_libraries(editor_core
 if(TARGET PkgConfig::RUBBERBAND)
     target_link_libraries(editor_core PUBLIC PkgConfig::RUBBERBAND)
 endif()
-if(CUDA_DRIVER_LIBRARY)
+if(JCUT_HAS_CUDA_DRIVER)
     target_link_libraries(editor_core PUBLIC ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(editor_core PUBLIC ${CUDA_DRIVER_INCLUDE_DIR})
     target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=1)
 else()
     target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=0)
@@ -454,7 +463,6 @@ endif()
 target_compile_definitions(editor_core
     PUBLIC
         QT_DEPRECATED_WARNINGS
-        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
         JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
         JCUT_HAVE_RUBBERBAND=${JCUT_HAVE_RUBBERBAND}
 )
@@ -639,13 +647,13 @@ target_link_libraries(jcut_editor_runtime
         editor_test_support
         Vulkan::Vulkan
 )
-if(CUDA_DRIVER_LIBRARY)
+if(JCUT_HAS_CUDA_DRIVER)
     target_link_libraries(jcut_editor_runtime PUBLIC ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(jcut_editor_runtime PUBLIC ${CUDA_DRIVER_INCLUDE_DIR})
 endif()
 target_compile_definitions(jcut_editor_runtime
     PUBLIC
-        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
-        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${CUDA_DRIVER_LIBRARY}>,1,0>
+        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${JCUT_HAS_CUDA_DRIVER}>,1,0>
 )
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_editor_runtime jcut_vulkan_shaders)
@@ -687,6 +695,29 @@ set_target_properties(editor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 jcut_force_bundled_ffmpeg_runtime(editor)
+
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+    set_target_properties(editor PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+    )
+    install(TARGETS editor
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+    if(JCUT_VULKAN_SHADER_OUTPUTS)
+        install(FILES ${JCUT_VULKAN_SHADER_OUTPUTS}
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/jcut/shaders"
+        )
+    endif()
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/io.github.jcut.JCut.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+    )
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/io.github.jcut.JCut.svg"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+    )
+endif()
 
 add_executable(jcut_imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/jcut_imgui_main.cpp
@@ -775,9 +806,6 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
             "LINKER:--no-as-needed")
     endif()
 endif()
-target_compile_definitions(jcut_vulkan_zero_copy_video_preprocess PRIVATE
-    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
-)
 set_target_properties(jcut_vulkan_zero_copy_video_preprocess PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
@@ -846,8 +874,9 @@ target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
     PkgConfig::FONT_RENDER
     PkgConfig::GLFW
 )
-if(CUDA_DRIVER_LIBRARY)
+if(JCUT_HAS_CUDA_DRIVER)
     target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(jcut_vulkan_facedetections_offscreen PRIVATE ${CUDA_DRIVER_INCLUDE_DIR})
     target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=1)
 else()
     target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=0)
@@ -868,7 +897,6 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE
     JCUT_FACESTREAM_OFFSCREEN_STANDALONE=1
-    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
     JCUT_HAVE_OPENCV_CONTRIB=0
     JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
     JCUT_HAVE_OPENCV=0

@@ -1147,6 +1147,15 @@ void VulkanPreviewSurface::ensureFramePipeline()
     if (!m_decoder->initialize()) {
         return;
     }
+    QObject::connect(m_decoder.get(),
+                     &editor::AsyncDecoder::error,
+                     m_pipelineOwner.get(),
+                     [this](const QString& path, const QString& message) {
+                         if (message == QStringLiteral("hardware_decode_unsupported") &&
+                             hardwareDecodeConversionRequested) {
+                             hardwareDecodeConversionRequested(path);
+                         }
+                     });
     if (editor::MemoryBudget* budget = m_decoder->memoryBudget()) {
         budget->setMaxCpuMemory(kVulkanPreviewCpuCacheBytes);
         budget->setMaxGpuMemory(kVulkanPreviewGpuCacheBytes);

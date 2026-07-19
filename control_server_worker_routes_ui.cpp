@@ -1582,16 +1582,6 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                   : sourceWidget->objectName(),
                               QString::fromLatin1(sourceWidget->metaObject()->className()))}
                 });
-                // Give renderer paths (including Vulkan presenter containers) a paint tick before capture.
-                sourceWidget->update();
-                sourceWidget->repaint();
-                QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
-                steps.push_back(QJsonObject{
-                    {QStringLiteral("name"), QStringLiteral("prepare_paint")},
-                    {QStringLiteral("ok"), true},
-                    {QStringLiteral("detail"), QStringLiteral("update+repaint+processEvents")}
-                });
-
                 auto savePixmap = [](const QPixmap& pixmap, QByteArray* output) {
                     if (!output || pixmap.isNull()) {
                         return false;
@@ -1604,10 +1594,11 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 // QWidget::grab() does not reliably include embedded native windows
                 // such as the direct QVulkanWindow preview. Capture the composited
                 // screen rectangle first so diagnostics reflect what the user sees.
+                // QWidget::screen() safely resolves the screen through the widget's
+                // top-level window. Calling windowHandle() or winId() on a child can
+                // create a native child window and is invalid for QScreen::grabWindow
+                // on platforms such as Wayland.
                 QScreen* screen = sourceWidget->screen();
-                if (!screen && sourceWidget->windowHandle()) {
-                    screen = sourceWidget->windowHandle()->screen();
-                }
                 if (!screen) {
                     screen = QGuiApplication::primaryScreen();
                 }
@@ -1645,28 +1636,6 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     {QStringLiteral("ok"), sourceSaved},
                     {QStringLiteral("bytes"), static_cast<qint64>(bytes.size())}
                 });
-
-                if (bytes.isEmpty() && sourceWidget->winId() != 0) {
-                    if (screen) {
-                        const QPixmap nativePixmap = screen->grabWindow(sourceWidget->winId());
-                        QByteArray nativeBytes;
-                        const bool nativeSaved = savePixmap(nativePixmap, &nativeBytes);
-                        steps.push_back(QJsonObject{
-                            {QStringLiteral("name"), QStringLiteral("capture_native_winid")},
-                            {QStringLiteral("ok"), nativeSaved},
-                            {QStringLiteral("bytes"), static_cast<qint64>(nativeBytes.size())}
-                        });
-                        if (!nativeBytes.isEmpty()) {
-                            bytes = nativeBytes;
-                        }
-                    } else {
-                        steps.push_back(QJsonObject{
-                            {QStringLiteral("name"), QStringLiteral("capture_native_winid")},
-                            {QStringLiteral("ok"), false},
-                            {QStringLiteral("detail"), QStringLiteral("no screen available")}
-                        });
-                    }
-                }
 
                 if (bytes.isEmpty() && sourceWidget != m_window) {
                     QByteArray fallbackBytes;

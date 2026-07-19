@@ -556,40 +556,25 @@ void EditorWindow::refreshProjectsList()
 
 void EditorWindow::changeMediaRoot(const QString &path)
 {
-    if (!m_projectManager || path.trimmed().isEmpty()) {
+    if (!m_explorerPane || path.trimmed().isEmpty()) {
         return;
     }
 
-    const QString previousRoot = m_projectManager->rootDirPath();
     const QString requestedRoot = QFileInfo(path).absoluteFilePath();
-    if (QDir(previousRoot).absolutePath() == QDir(requestedRoot).absolutePath()) {
-        if (m_explorerPane) {
-            m_explorerPane->setInitialRootPath(previousRoot);
-        }
-        refreshProjectsList();
+    const QFileInfo requestedInfo(requestedRoot);
+    if (!requestedInfo.exists() || !requestedInfo.isDir()) {
+        return;
+    }
+    if (QDir(m_explorerPane->currentRootPath()).absolutePath() ==
+        QDir(requestedRoot).absolutePath()) {
         return;
     }
 
-    stopPlaybackWithReason(QStringLiteral("media_root_changed"));
-    flushStateSaveNow();
-    flushHistorySaveNow();
-    m_stateSaveTimer.stop();
-    m_historySaveTimer.stop();
-    m_pendingSaveAfterLoad = false;
-    m_pendingSaveAfterPlayback = false;
-
-    if (!m_projectManager->changeRootDirPath(path)) {
-        refreshProjectsList();
-        return;
-    }
-
-    m_lastSavedState.clear();
-    m_historyEntries = QJsonArray();
-    m_historyIndex = -1;
-
-    loadState();
-    refreshProjectsList();
-    refreshCurrentInspectorTab();
+    // The media browser root belongs to project state.  It must not mutate
+    // ProjectManager's storage root or reload/switch the active project.
+    m_explorerPane->setInitialRootPath(requestedRoot);
+    scheduleSaveState();
+    pushHistorySnapshot();
 }
 
 void EditorWindow::switchToProject(const QString &projectId)

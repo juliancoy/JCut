@@ -1,4 +1,5 @@
 #include "vulkan_detector_frame_handoff.h"
+#include "vulkan_shader_paths.h"
 #include "render_internal.h"
 
 #include <QElapsedTimer>
@@ -9,10 +10,6 @@
 #include <cstring>
 #include <unistd.h>
 #include <vector>
-
-#ifndef JCUT_VULKAN_SHADER_DIR
-#define JCUT_VULKAN_SHADER_DIR ""
-#endif
 
 #if !defined(JCUT_HAS_CUDA_DRIVER)
 #define JCUT_HAS_CUDA_DRIVER 0
@@ -59,7 +56,7 @@ jcut::core::SizeI toSizeI(const QSize& size)
 
 QByteArray readShader(const QString& name)
 {
-    QFile file(QStringLiteral(JCUT_VULKAN_SHADER_DIR) + QLatin1Char('/') + name);
+    QFile file(QDir(jcutVulkanShaderDirectory()).filePath(name));
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }

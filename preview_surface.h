@@ -179,6 +179,7 @@ public:
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
     std::function<void(const QString&)> createKeyframeRequested;
+    std::function<void(const QString&)> hardwareDecodeConversionRequested;
     std::function<void(int64_t)> playbackSampleRequested;
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;

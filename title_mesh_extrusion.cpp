@@ -12,7 +12,7 @@
 #include FT_OUTLINE_H
 #include <fontconfig/fontconfig.h>
 
-#include "../motive3d/external/mapbox/earcut.hpp"
+#include <mapbox/earcut.hpp>
 
 namespace {
 

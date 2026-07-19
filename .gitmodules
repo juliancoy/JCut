@@ -31,3 +31,6 @@
 [submodule "sam3"]
 	path = sam3
 	url = https://github.com/juliancoy/sam3.git
+[submodule "external/earcut.hpp"]
+	path = external/earcut.hpp
+	url = https://github.com/mapbox/earcut.hpp.git

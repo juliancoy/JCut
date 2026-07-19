@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QTemporaryFile>
+#include <QSignalSpy>
 #include <atomic>
 #include "../async_decoder.h"
 
@@ -12,6 +13,7 @@ private slots:
     void testInitialization();
     void testVideoInfo();
     void testInvalidFile();
+    void testMissingFileFailureIsReportedOnce();
     void testRequestFrame();
     void testCancelRequests();
     void testMultipleRequests();
@@ -29,8 +31,16 @@ void TestAsyncDecoder::testVideoInfo() {
     decoder.initialize();
     
     // Test with non-existent file
-    VideoStreamInfo info = decoder.getVideoInfo("/nonexistent/file.mp4");
+    const QString missingPath = QStringLiteral("/nonexistent/file.mp4");
+    VideoStreamInfo info = decoder.getVideoInfo(missingPath);
     QVERIFY(!info.isValid);
+    QCOMPARE(info.path, missingPath);
+
+    // Repeated UI metadata queries must return the cached unavailable result
+    // without repeatedly constructing an FFmpeg decoder for the same path.
+    const VideoStreamInfo cachedInfo = decoder.getVideoInfo(missingPath);
+    QVERIFY(!cachedInfo.isValid);
+    QCOMPARE(cachedInfo.path, missingPath);
     decoder.shutdown();
 }
 
@@ -50,6 +60,25 @@ void TestAsyncDecoder::testInvalidFile() {
     QTRY_VERIFY_WITH_TIMEOUT(callbackCalled, 1000);
     QVERIFY(callbackCalled);
     QVERIFY(receivedFrame.isNull());
+    decoder.shutdown();
+}
+
+void TestAsyncDecoder::testMissingFileFailureIsReportedOnce() {
+    AsyncDecoder decoder;
+    QVERIFY(decoder.initialize());
+    QSignalSpy errorSpy(&decoder, &AsyncDecoder::error);
+    std::atomic<int> callbackCount{0};
+
+    const QString missingPath = QStringLiteral("/nonexistent/jcut/repeated-source.mp4");
+    for (int i = 0; i < 4; ++i) {
+        decoder.requestFrame(missingPath, i, 100, 1000,
+            [&callbackCount](FrameHandle) { ++callbackCount; });
+        QTRY_COMPARE_WITH_TIMEOUT(callbackCount.load(), i + 1, 1000);
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(errorSpy.count(), 1, 1000);
+    QCOMPARE(errorSpy.at(0).at(0).toString(), missingPath);
+    QCOMPARE(errorSpy.at(0).at(1).toString(), QStringLiteral("Input file does not exist"));
     decoder.shutdown();
 }
 

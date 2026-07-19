@@ -1,12 +1,15 @@
 #include "editor.h"
 #include "debug_controls.h"
+#include "decoder_context.h"
 #include "speaker_export_harness.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontInfo>
@@ -20,6 +23,65 @@
 #include <cstring>
 
 namespace {
+
+int runDecoderCli(const QString& videoPath) {
+    const QFileInfo source(videoPath);
+    if (!source.isFile()) {
+        qCritical().noquote() << QStringLiteral("Decoder test input is not a file: %1")
+                                     .arg(videoPath);
+        return 2;
+    }
+
+    editor::DecoderContext decoder(source.absoluteFilePath());
+    if (!decoder.initialize()) {
+        qCritical().noquote() << QStringLiteral("Decoder initialization failed: %1")
+                                     .arg(source.absoluteFilePath());
+        return 3;
+    }
+
+    const editor::VideoStreamInfo& info = decoder.info();
+    qInfo().noquote()
+        << QStringLiteral("decoder video=%1 codec=%2 mode=%3 path=%4 interop=%5 "
+                          "hardware=%6 size=%7x%8 fps=%9 frames=%10")
+               .arg(source.absoluteFilePath(),
+                    info.codecName,
+                    info.requestedDecodeMode,
+                    info.decodePath,
+                    info.interopPath,
+                    info.hardwareAccelerated ? QStringLiteral("true") : QStringLiteral("false"))
+               .arg(info.frameSize.width())
+               .arg(info.frameSize.height())
+               .arg(info.fps, 0, 'f', 3)
+               .arg(info.durationFrames);
+
+    const int64_t sampleCount =
+        qBound<int64_t>(int64_t{1}, info.durationFrames, int64_t{30});
+    int decodedCount = 0;
+    int hardwareFrameCount = 0;
+    QElapsedTimer timer;
+    timer.start();
+    for (int64_t frameNumber = 0; frameNumber < sampleCount; ++frameNumber) {
+        const editor::FrameHandle frame = decoder.decodeFrame(frameNumber);
+        if (frame.isNull()) {
+            qCritical().noquote()
+                << QStringLiteral("decoder frame=%1 result=null").arg(frameNumber);
+            break;
+        }
+        ++decodedCount;
+        if (frame.hasHardwareFrame()) {
+            ++hardwareFrameCount;
+        }
+    }
+
+    qInfo().noquote()
+        << QStringLiteral("decoder result=%1 decoded=%2/%3 hardware_frames=%4 elapsed_ms=%5")
+               .arg(decodedCount == sampleCount ? QStringLiteral("pass") : QStringLiteral("fail"))
+               .arg(decodedCount)
+               .arg(sampleCount)
+               .arg(hardwareFrameCount)
+               .arg(timer.elapsed());
+    return decodedCount == sampleCount ? 0 : 4;
+}
 
 bool zeroCopyPreferredEnvironmentDetected() {
     return zeroCopyInteropEnvironmentDetected();
@@ -105,17 +167,24 @@ void applyPreferredApplicationFont()
 int main(int argc, char **argv)
 {
     bool runHeadlessSpeakerHarness = false;
+    bool runDecoderTest = false;
     for (int i = 1; i < argc; ++i) {
         if (qstrcmp(argv[i], "--speaker-export-harness") == 0) {
             runHeadlessSpeakerHarness = true;
-            break;
+        }
+        if (qstrcmp(argv[i], "--video") == 0 ||
+            qstrncmp(argv[i], "--video=", 8) == 0) {
+            runDecoderTest = true;
         }
     }
-    if (runHeadlessSpeakerHarness &&
+    if ((runHeadlessSpeakerHarness || runDecoderTest) &&
         qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
         qEnvironmentVariableIsEmpty("DISPLAY") &&
         qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+    if (runDecoderTest) {
+        qputenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE", "1");
     }
 
     QApplication app(argc, argv);
@@ -126,7 +195,7 @@ int main(int argc, char **argv)
 
     std::unique_ptr<QLockFile> lockFile;
     const bool runUiAutomationHarness = qEnvironmentVariableIsSet("JCUT_UI_AUTOMATION");
-    if (!runHeadlessSpeakerHarness && !runUiAutomationHarness) {
+    if (!runHeadlessSpeakerHarness && !runDecoderTest && !runUiAutomationHarness) {
         // Single instance enforcement is for the interactive editor only.
         // Headless and UI automation harnesses must run alongside the UI and each other.
         const QString lockPath = QDir::tempPath() + QStringLiteral("/PanelTalkEditor.lock");
@@ -159,6 +228,10 @@ int main(int argc, char **argv)
                                          QStringLiteral("Enable decode debug logging"));
     QCommandLineOption debugAllOption(QStringLiteral("debug-all"),
                                       QStringLiteral("Enable all debug logging"));
+    QCommandLineOption videoOption(
+        QStringList{QStringLiteral("video")},
+        QStringLiteral("Test the decoder in isolation using the selected video, then exit."),
+        QStringLiteral("path"));
     QCommandLineOption controlPortOption(
         QStringList{QStringLiteral("control-port")},
         QStringLiteral("Control server port."),
@@ -210,6 +283,7 @@ int main(int argc, char **argv)
     parser.addOption(debugCacheOption);
     parser.addOption(debugDecodeOption);
     parser.addOption(debugAllOption);
+    parser.addOption(videoOption);
     parser.addOption(controlPortOption);
     parser.addOption(noRestOption);
     parser.addOption(restVulkanDiagnosticsOption);
@@ -246,6 +320,10 @@ int main(int argc, char **argv)
         if (parser.isSet(debugDecodeOption)) {
             editor::setDebugDecodeEnabled(true);
         }
+    }
+
+    if (parser.isSet(videoOption)) {
+        return runDecoderCli(parser.value(videoOption));
     }
 
     bool portOk = false;

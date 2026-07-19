@@ -62,13 +62,40 @@ Useful build flags:
 ## Run
 
 ```bash
-./build/editor
+./build/jcut
 ```
 
 If your shell environment injects conflicting snap libraries, use:
 
 ```bash
 ./run_editor.sh
+```
+
+## Linux distribution
+
+Create a relocatable AppDir and compressed distribution archive with:
+
+```bash
+./scripts/package_linux.sh
+```
+
+The outputs are written to `dist/`:
+
+- `JCut-<architecture>.AppDir/` is the unpacked application bundle.
+- `JCut-<architecture>.tar.gz` is the portable archive for distribution.
+- `JCut-<architecture>.AppImage` is also produced when `appimagetool` is installed.
+
+The packaging script invokes `./build.sh`, bundles the Qt runtime and plugins,
+copies the compiled Vulkan shaders, collects non-system shared-library
+dependencies, and rewrites runtime search paths to be relative to the bundle.
+The target system must still provide a compatible Linux kernel, glibc, graphics
+driver, Vulkan loader, and audio/display services. For widest compatibility,
+produce release artifacts on the oldest Linux distribution supported by JCut.
+
+For packaging-only iteration after a successful build, use:
+
+```bash
+./scripts/package_linux.sh --skip-build
 ```
 
 ## Tests

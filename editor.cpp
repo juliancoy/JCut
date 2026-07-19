@@ -138,6 +138,18 @@ bool clipSupportsProgressiveEdgeStretchMigration(const TimelineClip& clip,
     return clipVisualPlaybackEnabled(clip, tracks);
 }
 
+bool hasUsableConfiguredProxy(const QVector<TimelineClip>& clips)
+{
+    for (const TimelineClip& clip : clips) {
+        if (clip.mediaType == ClipMediaType::Video &&
+            clip.useProxy &&
+            !playbackProxyPathForClip(clip).isEmpty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool migrateLegacyBackgroundProgressiveStretchToClipEffect(
     QVector<TimelineClip>* clips,
     const QVector<TimelineTrack>& tracks,
@@ -1123,7 +1135,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         previewVulkanPresenterPreference = QStringLiteral("embedded");
     }
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
-    const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
+    bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
@@ -1558,6 +1570,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     markStartup(QStringLiteral("apply_state.timeline_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_clip_count"), loadedClips.size()}});
+    if (!renderUseProxies && hasUsableConfiguredProxy(loadedClips)) {
+        renderUseProxies = true;
+        markStartup(QStringLiteral("apply_state.proxy_playback_restored"),
+                    QJsonObject{{QStringLiteral("reason"), QStringLiteral("usable_clip_proxy_configured")}});
+    }
     constexpr int kCurrentMaskArchitectureVersion = 2;
     const int loadedMaskArchitectureVersion =
         root.value(QStringLiteral("maskArchitectureVersion")).toInt(1);
@@ -2512,11 +2529,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     refreshAiIntegrationState();
     markStartup(QStringLiteral("apply_state.end"));
     
-    // Use the projects root from editor.config if available, otherwise use the saved media root
-    const QString projectsRoot = m_projectManager ? m_projectManager->rootDirPath() : QString();
-    const QString mediaRoot = (!projectsRoot.isEmpty() && QDir(projectsRoot).exists()) 
-        ? projectsRoot 
-        : resolvedRootPath;
+    // Media browsing is project state and is independent from the directory
+    // where ProjectManager stores projects.  Preserve the user's saved media
+    // root when restoring the project.
+    const QString mediaRoot = resolvedRootPath;
     
     QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges, root, expandedExplorerPaths]() {
         if (m_explorerPane) {

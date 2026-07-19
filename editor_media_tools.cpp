@@ -1,5 +1,7 @@
 #include "editor.h"
 #include "auto_sync_plan.h"
+#include "decoder_context.h"
+#include "decoder_ffmpeg_utils.h"
 #include "processing_job_manifest.h"
 #include <QApplication>
 #include <QDialog>
@@ -16,6 +18,7 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -36,9 +39,16 @@
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <functional>
+#include <limits>
+#include <memory>
 #include <system_error>
 #include <thread>
 #include <vector>
+
+extern "C" {
+#include <libavutil/opt.h>
+}
 
 using namespace editor;
 
@@ -126,6 +136,601 @@ bool directoryHasEntries(const QString& path) {
     }
     return std::filesystem::directory_iterator(fsPath, ec) !=
            std::filesystem::directory_iterator();
+}
+
+struct ProxyGenerationResult {
+    bool success = false;
+    bool canceled = false;
+    QString message;
+    int framesWritten = 0;
+};
+
+struct AvFormatContextDeleter {
+    void operator()(AVFormatContext* value) const
+    {
+        if (!value) {
+            return;
+        }
+        if (value->pb && value->oformat && !(value->oformat->flags & AVFMT_NOFILE)) {
+            avio_closep(&value->pb);
+        }
+        avformat_free_context(value);
+    }
+};
+
+struct AvCodecContextDeleter {
+    void operator()(AVCodecContext* value) const
+    {
+        avcodec_free_context(&value);
+    }
+};
+
+struct AvFrameDeleter {
+    void operator()(AVFrame* value) const
+    {
+        av_frame_free(&value);
+    }
+};
+
+struct AvPacketDeleter {
+    void operator()(AVPacket* value) const
+    {
+        av_packet_free(&value);
+    }
+};
+
+struct SwsContextDeleter {
+    void operator()(SwsContext* value) const
+    {
+        sws_freeContext(value);
+    }
+};
+
+QImage proxyScaledImage(const QImage& source)
+{
+    if (source.isNull()) {
+        return QImage();
+    }
+    QImage image = source;
+    if (image.width() > 1280) {
+        const int scaledHeight = qMax(1, qRound(static_cast<qreal>(image.height()) *
+                                                (1280.0 / static_cast<qreal>(image.width()))));
+        image = image.scaled(1280,
+                             scaledHeight,
+                             Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    if (image.hasAlphaChannel()) {
+        return image.convertToFormat(QImage::Format_RGBA8888);
+    }
+    return image.convertToFormat(QImage::Format_RGB888);
+}
+
+QSize evenProxyVideoSize(const QSize& size)
+{
+    return QSize(qMax(2, size.width() & ~1),
+                 qMax(2, size.height() & ~1));
+}
+
+QString proxyFramePath(const QString& outputDir, int frameNumber, bool hasAlpha)
+{
+    return QDir(outputDir).absoluteFilePath(
+        QStringLiteral("frame_%1.%2")
+            .arg(frameNumber, 6, 10, QLatin1Char('0'))
+            .arg(hasAlpha ? QStringLiteral("png") : QStringLiteral("jpg")));
+}
+
+bool flushProxyEncoder(AVCodecContext* codecContext,
+                       AVFormatContext* formatContext,
+                       AVStream* stream,
+                       QString* errorOut)
+{
+    const int sendResult = avcodec_send_frame(codecContext, nullptr);
+    if (sendResult < 0) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to flush proxy encoder: %1").arg(avErrToString(sendResult));
+        }
+        return false;
+    }
+
+    std::unique_ptr<AVPacket, AvPacketDeleter> packet(av_packet_alloc());
+    if (!packet) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to allocate proxy flush packet.");
+        }
+        return false;
+    }
+
+    for (;;) {
+        const int receiveResult = avcodec_receive_packet(codecContext, packet.get());
+        if (receiveResult == AVERROR(EAGAIN) || receiveResult == AVERROR_EOF) {
+            return true;
+        }
+        if (receiveResult < 0) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Failed to receive proxy flush packet: %1")
+                                .arg(avErrToString(receiveResult));
+            }
+            return false;
+        }
+        av_packet_rescale_ts(packet.get(), codecContext->time_base, stream->time_base);
+        packet->stream_index = stream->index;
+        const int writeResult = av_interleaved_write_frame(formatContext, packet.get());
+        av_packet_unref(packet.get());
+        if (writeResult < 0) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Failed to write proxy flush packet: %1")
+                                .arg(avErrToString(writeResult));
+            }
+            return false;
+        }
+    }
+}
+
+ProxyGenerationResult generateImageSequenceProxyWithLibraries(
+    const QString& sourcePath,
+    const QStringList& sequenceFrames,
+    bool imageSequenceSource,
+    const QString& outputPath,
+    const MediaProbeResult& sourceProbe,
+    int resumeNextFrameNumber,
+    const std::shared_ptr<std::atomic_bool>& cancelFlag,
+    const std::function<void(const QString&)>& log,
+    const std::function<void(int)>& progress)
+{
+    ProxyGenerationResult result;
+    const bool hasAlpha = sourceProbe.hasAlpha;
+    if (resumeNextFrameNumber <= 1) {
+        const QFileInfo outputInfo(outputPath);
+        if (outputInfo.exists()) {
+            bool removed = false;
+            if (outputInfo.isDir()) {
+                QDir staleDir(outputPath);
+                removed = staleDir.removeRecursively();
+            } else {
+                removed = QFile::remove(outputPath);
+            }
+            if (!removed) {
+                result.message = QStringLiteral("Failed to remove existing proxy output: %1")
+                                     .arg(QDir::toNativeSeparators(outputPath));
+                return result;
+            }
+        }
+    }
+    QDir outputDir(outputPath);
+    if (!outputDir.exists() && !outputDir.mkpath(QStringLiteral("."))) {
+        result.message = QStringLiteral("Failed to create proxy directory: %1").arg(outputPath);
+        return result;
+    }
+
+    const int startFrameNumber = qMax(1, resumeNextFrameNumber);
+    const int startIndex = startFrameNumber - 1;
+    int totalFrames = 0;
+    if (imageSequenceSource) {
+        totalFrames = sequenceFrames.size();
+    } else if (sourceProbe.durationFrames > 0) {
+        totalFrames = static_cast<int>(qMin<int64_t>(sourceProbe.durationFrames, std::numeric_limits<int>::max()));
+    }
+    if (totalFrames <= 0) {
+        totalFrames = 1;
+    }
+    if (startIndex >= totalFrames) {
+        result.success = true;
+        result.message = QStringLiteral("Proxy already contains all expected frames.");
+        progress(100);
+        return result;
+    }
+
+    log(QStringLiteral("Internal proxy generation\n"));
+    log(QStringLiteral("Source: %1\n").arg(QDir::toNativeSeparators(sourcePath)));
+    log(QStringLiteral("Output: %1\n").arg(QDir::toNativeSeparators(outputPath)));
+    log(QStringLiteral("Decode: explicit software path for video sources\n"));
+    log(QStringLiteral("Format: %1 image sequence\n").arg(hasAlpha ? QStringLiteral("PNG") : QStringLiteral("JPEG")));
+
+    std::unique_ptr<editor::DecoderContext> decoder;
+    if (!imageSequenceSource) {
+        decoder = std::make_unique<editor::DecoderContext>(sourcePath, nullptr, true);
+        if (!decoder->initialize()) {
+            result.message = QStringLiteral("Failed to initialize software decoder for proxy source.");
+            return result;
+        }
+        if (decoder->info().durationFrames > 0) {
+            totalFrames = static_cast<int>(qMin<int64_t>(decoder->info().durationFrames,
+                                                        std::numeric_limits<int>::max()));
+        }
+        log(QStringLiteral("Decoder: %1 (%2)\n")
+                .arg(decoder->info().codecName, decoder->info().decodePath));
+    }
+
+    for (int frameIndex = startIndex; frameIndex < totalFrames; ++frameIndex) {
+        if (cancelFlag && cancelFlag->load()) {
+            result.canceled = true;
+            result.message = QStringLiteral("Proxy generation canceled.");
+            return result;
+        }
+
+        QImage image;
+        if (imageSequenceSource) {
+            if (frameIndex >= sequenceFrames.size()) {
+                break;
+            }
+            image = QImage(sequenceFrames[frameIndex]);
+        } else {
+            const editor::FrameHandle frame = decoder->decodeFrame(frameIndex);
+            if (frame.isNull() || !frame.hasCpuImage()) {
+                result.message = QStringLiteral("Software decoder returned no frame at source frame %1.")
+                                     .arg(frameIndex);
+                return result;
+            }
+            image = frame.cpuImage();
+        }
+
+        image = proxyScaledImage(image);
+        if (image.isNull()) {
+            result.message = QStringLiteral("Failed to prepare proxy frame %1.").arg(frameIndex + 1);
+            return result;
+        }
+
+        const QString framePath = proxyFramePath(outputPath, frameIndex + 1, hasAlpha);
+        const bool saved = hasAlpha
+                               ? image.save(framePath, "PNG")
+                               : image.save(framePath, "JPG", 90);
+        if (!saved) {
+            result.message = QStringLiteral("Failed to write proxy frame: %1")
+                                 .arg(QDir::toNativeSeparators(framePath));
+            return result;
+        }
+        ++result.framesWritten;
+
+        if (result.framesWritten == 1 || result.framesWritten % 15 == 0) {
+            log(QStringLiteral("Wrote frame %1/%2\n").arg(frameIndex + 1).arg(totalFrames));
+        }
+        const int pct = qBound(0,
+                               qRound((static_cast<double>(frameIndex + 1) /
+                                       static_cast<double>(qMax(1, totalFrames))) * 100.0),
+                               100);
+        progress(pct);
+    }
+
+    result.success = true;
+    result.message = QStringLiteral("Proxy generation finished. Frames written: %1.")
+                         .arg(result.framesWritten);
+    progress(100);
+    return result;
+}
+
+const AVCodec* proxyVideoEncoderForFormat(ProxyFormat format, QString* labelOut)
+{
+    if (format == ProxyFormat::H264) {
+        if (const AVCodec* codec = avcodec_find_encoder_by_name("libx264")) {
+            if (labelOut) {
+                *labelOut = QStringLiteral("libx264");
+            }
+            return codec;
+        }
+        if (const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_H264)) {
+            if (labelOut) {
+                *labelOut = QStringLiteral("h264");
+            }
+            return codec;
+        }
+        if (const AVCodec* codec = avcodec_find_encoder_by_name("libopenh264")) {
+            if (labelOut) {
+                *labelOut = QStringLiteral("libopenh264");
+            }
+            return codec;
+        }
+        if (const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4)) {
+            if (labelOut) {
+                *labelOut = QStringLiteral("mpeg4");
+            }
+            return codec;
+        }
+        return nullptr;
+    }
+
+    if (format == ProxyFormat::MJPEG) {
+        if (labelOut) {
+            *labelOut = QStringLiteral("mjpeg");
+        }
+        return avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    }
+
+    return nullptr;
+}
+
+ProxyGenerationResult generateVideoContainerProxyWithLibraries(
+    const QString& sourcePath,
+    const QString& outputPath,
+    ProxyFormat format,
+    const MediaProbeResult& sourceProbe,
+    const std::shared_ptr<std::atomic_bool>& cancelFlag,
+    const std::function<void(const QString&)>& log,
+    const std::function<void(int)>& progress)
+{
+    ProxyGenerationResult result;
+    if (format != ProxyFormat::H264 && format != ProxyFormat::MJPEG) {
+        result.message = QStringLiteral("Unsupported container proxy format.");
+        return result;
+    }
+    if (sourceProbe.hasAlpha) {
+        result.message = QStringLiteral("Container proxies for alpha sources are not supported; use PNG image sequence proxy.");
+        return result;
+    }
+
+    const QFileInfo outputInfo(outputPath);
+    if (!outputInfo.dir().exists() && !outputInfo.dir().mkpath(QStringLiteral("."))) {
+        result.message = QStringLiteral("Failed to create proxy output directory: %1")
+                             .arg(QDir::toNativeSeparators(outputInfo.dir().absolutePath()));
+        return result;
+    }
+    if (outputInfo.exists()) {
+        bool removed = outputInfo.isDir() ? QDir(outputPath).removeRecursively()
+                                          : QFile::remove(outputPath);
+        if (!removed) {
+            result.message = QStringLiteral("Failed to remove existing proxy output: %1")
+                                 .arg(QDir::toNativeSeparators(outputPath));
+            return result;
+        }
+    }
+
+    std::unique_ptr<editor::DecoderContext> decoder =
+        std::make_unique<editor::DecoderContext>(sourcePath, nullptr, true);
+    if (!decoder->initialize()) {
+        result.message = QStringLiteral("Failed to initialize software decoder for proxy source.");
+        return result;
+    }
+
+    int totalFrames = sourceProbe.durationFrames > 0
+                          ? static_cast<int>(qMin<int64_t>(sourceProbe.durationFrames,
+                                                           std::numeric_limits<int>::max()))
+                          : 0;
+    if (decoder->info().durationFrames > 0) {
+        totalFrames = static_cast<int>(qMin<int64_t>(decoder->info().durationFrames,
+                                                    std::numeric_limits<int>::max()));
+    }
+    if (totalFrames <= 0) {
+        totalFrames = 1;
+    }
+
+    const editor::FrameHandle firstFrame = decoder->decodeFrame(0);
+    if (firstFrame.isNull() || !firstFrame.hasCpuImage()) {
+        result.message = QStringLiteral("Software decoder returned no first frame for proxy source.");
+        return result;
+    }
+    QImage firstImage = proxyScaledImage(firstFrame.cpuImage());
+    if (firstImage.isNull()) {
+        result.message = QStringLiteral("Failed to prepare first proxy frame.");
+        return result;
+    }
+    const QSize outputSize = evenProxyVideoSize(firstImage.size());
+    if (outputSize != firstImage.size()) {
+        firstImage = firstImage.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+
+    AVFormatContext* rawFormatContext = nullptr;
+    const QByteArray outputPathBytes = QFile::encodeName(outputPath);
+    const int allocResult = avformat_alloc_output_context2(&rawFormatContext,
+                                                           nullptr,
+                                                           nullptr,
+                                                           outputPathBytes.constData());
+    if (allocResult < 0 || !rawFormatContext) {
+        result.message = QStringLiteral("Failed to create proxy output context: %1").arg(avErrToString(allocResult));
+        return result;
+    }
+    std::unique_ptr<AVFormatContext, AvFormatContextDeleter> formatContext(rawFormatContext);
+
+    QString encoderLabel;
+    const AVCodec* codec = proxyVideoEncoderForFormat(format, &encoderLabel);
+    if (!codec) {
+        result.message = format == ProxyFormat::H264
+                             ? QStringLiteral("No H.264-compatible software encoder is available in bundled FFmpeg.")
+                             : QStringLiteral("No MJPEG encoder is available in bundled FFmpeg.");
+        return result;
+    }
+
+    AVStream* stream = avformat_new_stream(formatContext.get(), codec);
+    if (!stream) {
+        result.message = QStringLiteral("Failed to create proxy video stream.");
+        return result;
+    }
+
+    std::unique_ptr<AVCodecContext, AvCodecContextDeleter> codecContext(avcodec_alloc_context3(codec));
+    if (!codecContext) {
+        result.message = QStringLiteral("Failed to allocate proxy encoder context.");
+        return result;
+    }
+
+    const int proxyFps =
+        qMax(1, qRound(sourceProbe.fps > 0.001 ? sourceProbe.fps : static_cast<double>(kTimelineFps)));
+    codecContext->codec_id = codec->id;
+    codecContext->codec_type = AVMEDIA_TYPE_VIDEO;
+    codecContext->width = outputSize.width();
+    codecContext->height = outputSize.height();
+    codecContext->time_base = AVRational{1, proxyFps};
+    codecContext->framerate = AVRational{proxyFps, 1};
+    codecContext->gop_size = proxyFps;
+    codecContext->max_b_frames = 0;
+    codecContext->pix_fmt = format == ProxyFormat::MJPEG ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_YUV420P;
+    codecContext->bit_rate = format == ProxyFormat::MJPEG ? 40'000'000 : 8'000'000;
+    if (formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
+        codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+
+    if (format == ProxyFormat::H264) {
+        av_opt_set(codecContext->priv_data, "preset", "veryfast", 0);
+        av_opt_set(codecContext->priv_data, "crf", "18", 0);
+    } else {
+        codecContext->color_range = AVCOL_RANGE_JPEG;
+    }
+
+    const int openResult = avcodec_open2(codecContext.get(), codec, nullptr);
+    if (openResult < 0) {
+        result.message = QStringLiteral("Failed to open proxy encoder %1: %2")
+                             .arg(encoderLabel, avErrToString(openResult));
+        return result;
+    }
+    if (avcodec_parameters_from_context(stream->codecpar, codecContext.get()) < 0) {
+        result.message = QStringLiteral("Failed to copy proxy encoder parameters.");
+        return result;
+    }
+    stream->time_base = codecContext->time_base;
+
+    if (!(formatContext->oformat->flags & AVFMT_NOFILE)) {
+        const int ioResult = avio_open(&formatContext->pb, outputPathBytes.constData(), AVIO_FLAG_WRITE);
+        if (ioResult < 0) {
+            result.message = QStringLiteral("Failed to open proxy output file: %1").arg(avErrToString(ioResult));
+            return result;
+        }
+    }
+    const int headerResult = avformat_write_header(formatContext.get(), nullptr);
+    if (headerResult < 0) {
+        result.message = QStringLiteral("Failed to write proxy header: %1").arg(avErrToString(headerResult));
+        return result;
+    }
+
+    std::unique_ptr<AVFrame, AvFrameDeleter> frame(av_frame_alloc());
+    std::unique_ptr<AVPacket, AvPacketDeleter> packet(av_packet_alloc());
+    if (!frame || !packet) {
+        result.message = QStringLiteral("Failed to allocate proxy frame/packet.");
+        return result;
+    }
+    frame->format = codecContext->pix_fmt;
+    frame->width = codecContext->width;
+    frame->height = codecContext->height;
+    if (av_frame_get_buffer(frame.get(), 32) < 0) {
+        result.message = QStringLiteral("Failed to allocate proxy frame buffer.");
+        return result;
+    }
+
+    std::unique_ptr<SwsContext, SwsContextDeleter> scaleContext(
+        sws_getContext(outputSize.width(),
+                       outputSize.height(),
+                       AV_PIX_FMT_RGB24,
+                       outputSize.width(),
+                       outputSize.height(),
+                       codecContext->pix_fmt,
+                       SWS_BILINEAR,
+                       nullptr,
+                       nullptr,
+                       nullptr));
+    if (!scaleContext) {
+        result.message = QStringLiteral("Failed to create proxy color converter.");
+        return result;
+    }
+
+    log(QStringLiteral("Internal container proxy generation\n"));
+    log(QStringLiteral("Source: %1\n").arg(QDir::toNativeSeparators(sourcePath)));
+    log(QStringLiteral("Output: %1\n").arg(QDir::toNativeSeparators(outputPath)));
+    log(QStringLiteral("Decode: explicit software path\n"));
+    log(QStringLiteral("Encode: %1 software encoder, %2x%3 @ %4 fps\n")
+            .arg(encoderLabel)
+            .arg(outputSize.width())
+            .arg(outputSize.height())
+            .arg(proxyFps));
+    log(QStringLiteral("Audio: original media remains the audio source during proxy playback\n"));
+
+    for (int frameIndex = 0; frameIndex < totalFrames; ++frameIndex) {
+        if (cancelFlag && cancelFlag->load()) {
+            result.canceled = true;
+            result.message = QStringLiteral("Proxy generation canceled.");
+            return result;
+        }
+
+        QImage image;
+        if (frameIndex == 0) {
+            image = firstImage;
+        } else {
+            const editor::FrameHandle decoded = decoder->decodeFrame(frameIndex);
+            if (decoded.isNull() || !decoded.hasCpuImage()) {
+                result.message = QStringLiteral("Software decoder returned no frame at source frame %1.")
+                                     .arg(frameIndex);
+                return result;
+            }
+            image = proxyScaledImage(decoded.cpuImage());
+            if (image.size() != outputSize) {
+                image = image.scaled(outputSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            }
+        }
+        if (image.format() != QImage::Format_RGB888) {
+            image = image.convertToFormat(QImage::Format_RGB888);
+        }
+        if (image.isNull()) {
+            result.message = QStringLiteral("Failed to prepare proxy frame %1.").arg(frameIndex + 1);
+            return result;
+        }
+
+        if (av_frame_make_writable(frame.get()) < 0) {
+            result.message = QStringLiteral("Failed to make proxy frame writable.");
+            return result;
+        }
+        const uint8_t* sourceData[4] = {image.constBits(), nullptr, nullptr, nullptr};
+        int sourceLinesize[4] = {static_cast<int>(image.bytesPerLine()), 0, 0, 0};
+        if (sws_scale(scaleContext.get(),
+                      sourceData,
+                      sourceLinesize,
+                      0,
+                      outputSize.height(),
+                      frame->data,
+                      frame->linesize) <= 0) {
+            result.message = QStringLiteral("Failed to convert proxy frame %1.").arg(frameIndex + 1);
+            return result;
+        }
+
+        frame->pts = frameIndex;
+        const int sendResult = avcodec_send_frame(codecContext.get(), frame.get());
+        if (sendResult < 0) {
+            result.message = QStringLiteral("Failed to submit proxy frame %1: %2")
+                                 .arg(frameIndex + 1)
+                                 .arg(avErrToString(sendResult));
+            return result;
+        }
+        for (;;) {
+            const int receiveResult = avcodec_receive_packet(codecContext.get(), packet.get());
+            if (receiveResult == AVERROR(EAGAIN) || receiveResult == AVERROR_EOF) {
+                break;
+            }
+            if (receiveResult < 0) {
+                result.message = QStringLiteral("Failed to receive proxy packet: %1")
+                                     .arg(avErrToString(receiveResult));
+                return result;
+            }
+            av_packet_rescale_ts(packet.get(), codecContext->time_base, stream->time_base);
+            packet->stream_index = stream->index;
+            const int writeResult = av_interleaved_write_frame(formatContext.get(), packet.get());
+            av_packet_unref(packet.get());
+            if (writeResult < 0) {
+                result.message = QStringLiteral("Failed to write proxy packet: %1")
+                                     .arg(avErrToString(writeResult));
+                return result;
+            }
+        }
+
+        ++result.framesWritten;
+        if (result.framesWritten == 1 || result.framesWritten % 15 == 0) {
+            log(QStringLiteral("Encoded frame %1/%2\n").arg(frameIndex + 1).arg(totalFrames));
+        }
+        progress(qBound(0,
+                        qRound((static_cast<double>(frameIndex + 1) /
+                                static_cast<double>(qMax(1, totalFrames))) * 100.0),
+                        100));
+    }
+
+    QString flushError;
+    if (!flushProxyEncoder(codecContext.get(), formatContext.get(), stream, &flushError)) {
+        result.message = flushError;
+        return result;
+    }
+    const int trailerResult = av_write_trailer(formatContext.get());
+    if (trailerResult < 0) {
+        result.message = QStringLiteral("Failed to finalize proxy output: %1").arg(avErrToString(trailerResult));
+        return result;
+    }
+    result.success = true;
+    result.message = QStringLiteral("Proxy generation finished. Frames encoded: %1.")
+                         .arg(result.framesWritten);
+    progress(100);
+    return result;
 }
 
 bool moveDirectoryEntry(const std::filesystem::path& source,
@@ -1204,14 +1809,6 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
         return;
     }
 
-    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    if (ffmpegPath.isEmpty())
-    {
-        QMessageBox::warning(this, QStringLiteral("Create Proxy Failed"),
-                             QStringLiteral("ffmpeg was not found in PATH."));
-        return;
-    }
-
     const bool imageSequenceProxy = isImageSequencePath(clip->filePath);
     const QStringList sequenceFrames = imageSequenceProxy ? imageSequenceFramePaths(clip->filePath) : QStringList{};
     if (imageSequenceProxy && sequenceFrames.isEmpty())
@@ -1297,7 +1894,7 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
 
-    auto *title = new QLabel(QStringLiteral("ffmpeg proxy for %1").arg(QDir::toNativeSeparators(clip->filePath)), dialog);
+    auto *title = new QLabel(QStringLiteral("Internal proxy for %1").arg(QDir::toNativeSeparators(clip->filePath)), dialog);
     title->setWordWrap(true);
     layout->addWidget(title);
 
@@ -1306,18 +1903,22 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
     formatRow->addWidget(new QLabel(QStringLiteral("Format:"), dialog));
     auto *formatCombo = new QComboBox(dialog);
     formatCombo->addItem(QStringLiteral("Image Sequence (JPEG)"), static_cast<int>(ProxyFormat::ImageSequence));
-    formatCombo->addItem(QStringLiteral("H.264 (MP4)"), static_cast<int>(ProxyFormat::H264));
+    if (!continueGeneration && !sourceProbe.hasAlpha) {
+        formatCombo->addItem(QStringLiteral("H.264 (MP4)"), static_cast<int>(ProxyFormat::H264));
 #ifndef __APPLE__
-    formatCombo->addItem(QStringLiteral("Motion JPEG (MOV)"), static_cast<int>(ProxyFormat::MJPEG));
+        formatCombo->addItem(QStringLiteral("Motion JPEG (MOV)"), static_cast<int>(ProxyFormat::MJPEG));
 #endif
-    formatCombo->setCurrentIndex(0);
-    if (continueGeneration) {
-        formatCombo->setCurrentIndex(0);
-        formatCombo->setEnabled(false);
     }
+    formatCombo->setCurrentIndex(0);
+    formatCombo->setEnabled(!continueGeneration && formatCombo->count() > 1);
     formatRow->addWidget(formatCombo);
     formatRow->addStretch(1);
     layout->addLayout(formatRow);
+
+    auto *progressBar = new QProgressBar(dialog);
+    progressBar->setRange(0, 100);
+    progressBar->setValue(0);
+    layout->addWidget(progressBar);
 
     auto *output = new QPlainTextEdit(dialog);
     output->setReadOnly(true);
@@ -1334,168 +1935,52 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
     auto *buttonRow = new QHBoxLayout;
     buttonRow->setContentsMargins(0, 0, 0, 0);
     buttonRow->setSpacing(8);
+    auto *cancelButton = new QPushButton(QStringLiteral("Cancel"), dialog);
     auto *closeButton = new QPushButton(QStringLiteral("Close"), dialog);
+    closeButton->setEnabled(false);
+    buttonRow->addWidget(cancelButton);
     buttonRow->addStretch(1);
     buttonRow->addWidget(closeButton);
     layout->addLayout(buttonRow);
 
-    auto *process = new QProcess(dialog);
-    process->setProcessChannelMode(QProcess::MergedChannels);
-    process->setWorkingDirectory(QDir::currentPath());
-
-    std::unique_ptr<QTemporaryFile> sequenceListFile;
-    QStringList arguments = {
-        QStringLiteral("-y"),
-        QStringLiteral("-hide_banner")};
-
-    if (imageSequenceProxy)
-    {
-        sequenceListFile = std::make_unique<QTemporaryFile>(QDir::temp().filePath(QStringLiteral("editor_sequence_proxy_XXXXXX.txt")));
-        sequenceListFile->setAutoRemove(false);
-        if (!sequenceListFile->open())
-        {
-            QMessageBox::warning(this, QStringLiteral("Create Proxy Failed"),
-                                 QStringLiteral("Unable to create a temporary ffmpeg input list for the image sequence."));
-            return;
-        }
-
-        QTextStream stream(sequenceListFile.get());
-        int sequenceStartIndex = 0;
-        if (continueGeneration) {
-            sequenceStartIndex = qBound(0, resumeNextFrameNumber - 1, qMax(0, sequenceFrames.size() - 1));
-        }
-
-        for (int i = sequenceStartIndex; i < sequenceFrames.size(); ++i)
-        {
-            const QString& framePath = sequenceFrames[i];
-            QString escapedFramePath = QFileInfo(framePath).absoluteFilePath();
-            escapedFramePath.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
-             stream << "file '" << escapedFramePath << "'\n";
-             stream << "duration " << QString::number(1.0 / sourceProbe.fps, 'f', 6) << '\n';
-        }
-        if (sequenceStartIndex < sequenceFrames.size())
-        {
-            QString escapedFramePath = QFileInfo(sequenceFrames.constLast()).absoluteFilePath();
-            escapedFramePath.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
-            stream << "file '" << escapedFramePath << "'\n";
-        }
-        stream.flush();
-        sequenceListFile->flush();
-
-        arguments << QStringLiteral("-f") << QStringLiteral("concat")
-                  << QStringLiteral("-safe") << QStringLiteral("0")
-                  << QStringLiteral("-i") << sequenceListFile->fileName();
-    }
-    else
-    {
-        const auto selectedFormat = static_cast<ProxyFormat>(
-            formatCombo->currentData().toInt());
-
-        if (continueGeneration) {
-            const qreal seekSeconds = qMax<qreal>(0.0, static_cast<qreal>(resumeNextFrameNumber - 1) /
-                                                           static_cast<qreal>(qMax(1, qRound(sourceProbe.fps))));
-            arguments << QStringLiteral("-ss")
-                      << QString::number(static_cast<double>(seekSeconds), 'f', 6);
-        }
-
-        arguments << QStringLiteral("-i") << QFileInfo(clip->filePath).absoluteFilePath()
-                  << QStringLiteral("-map") << QStringLiteral("0:v:0");
-
-        // Image sequences are video-only — no audio stream mapping.
-        // For video containers, map the first audio stream.
-        if (selectedFormat != ProxyFormat::ImageSequence) {
-#ifdef __APPLE__
-            arguments << QStringLiteral("-map") << QStringLiteral("0:a:0?");
-#else
-            arguments << QStringLiteral("-map") << QStringLiteral("0:a?");
-#endif
-        }
-#ifdef __APPLE__
-        arguments << QStringLiteral("-ignore_unknown");
-#endif
-    }
-
-    const auto proxyFormat = static_cast<ProxyFormat>(
-        formatCombo->currentData().toInt());
+    const auto proxyFormat = static_cast<ProxyFormat>(formatCombo->currentData().toInt());
     const QString finalOutputPath = defaultProxyOutputPath(*clip, &sourceProbe, proxyFormat);
     const int proxyFps =
         qMax(1, qRound(sourceProbe.fps > 0.001 ? sourceProbe.fps : static_cast<double>(kTimelineFps)));
-    const bool normalizeToCfr = !imageSequenceProxy;
-    QStringList baseVideoFilters;
-    if (normalizeToCfr) {
-        baseVideoFilters << QStringLiteral("fps=%1").arg(proxyFps);
-    }
-    baseVideoFilters << QStringLiteral("scale='min(1280,iw)':-2");
-
-    const bool alphaProxy = sourceProbe.hasAlpha;
-    if (proxyFormat == ProxyFormat::ImageSequence)
+    if (!continueGeneration && finalOutputPath != overwriteTarget && QFileInfo::exists(finalOutputPath))
     {
-        // Image sequence proxy: extract frames as numbered JPEG files into a directory.
-        // The directory serves as an image-sequence clip in the editor.
-        const QDir outDir(finalOutputPath);
-        if (!outDir.exists()) {
-            outDir.mkpath(QStringLiteral("."));
-        }
-        arguments << QStringLiteral("-vf") << baseVideoFilters.join(QStringLiteral(","));
-        if (continueGeneration && resumeNextFrameNumber > 1) {
-            arguments << QStringLiteral("-start_number") << QString::number(resumeNextFrameNumber);
-        }
-        if (alphaProxy) {
-            arguments << QStringLiteral("-pix_fmt") << QStringLiteral("rgba")
-                      << QStringLiteral("%1/frame_%06d.png").arg(QDir(finalOutputPath).absolutePath());
-        } else {
-            arguments << QStringLiteral("-q:v") << QStringLiteral("3")
-                      << QStringLiteral("%1/frame_%06d.jpg").arg(QDir(finalOutputPath).absolutePath());
-        }
-    }
-    else
-    {
-        if (alphaProxy) {
-            arguments << QStringLiteral("-vf") << baseVideoFilters.join(QStringLiteral(","));
-            arguments << QStringLiteral("-c:v") << QStringLiteral("png")
-                      << QStringLiteral("-pix_fmt") << QStringLiteral("rgba");
-        } else if (proxyFormat == ProxyFormat::H264) {
-            arguments << QStringLiteral("-vf") << baseVideoFilters.join(QStringLiteral(","))
-                      << QStringLiteral("-c:v") << QStringLiteral("libx264")
-                      << QStringLiteral("-crf") << QStringLiteral("18")
-                      << QStringLiteral("-preset") << QStringLiteral("ultrafast")
-                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
-        } else {
-            // MJPEG
-            arguments << QStringLiteral("-vf") << baseVideoFilters.join(QStringLiteral(","))
-                      << QStringLiteral("-c:v") << QStringLiteral("mjpeg")
-                      << QStringLiteral("-q:v") << QStringLiteral("3")
-                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuvj420p");
-        }
-        if (!imageSequenceProxy) {
-            arguments << QStringLiteral("-c:a") << QStringLiteral("pcm_s16le")
-                      << QStringLiteral("-b:a") << QStringLiteral("1536k");
-        }
-        arguments << QFileInfo(finalOutputPath).absoluteFilePath();
+        const auto response = QMessageBox::question(
+            this,
+            QStringLiteral("Overwrite Proxy"),
+            QStringLiteral("A proxy already exists:\n%1\n\nOverwrite it?")
+                .arg(QDir::toNativeSeparators(finalOutputPath)),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (response != QMessageBox::Yes) return;
     }
 
     {
-        const QString commandPreview = QStringLiteral("%1 %2")
-                                           .arg(QDir::toNativeSeparators(ffmpegPath),
-                                                arguments.join(QLatin1Char(' ')));
         QMessageBox confirm(this);
         confirm.setIcon(QMessageBox::Information);
-        confirm.setWindowTitle(QStringLiteral("Confirm Proxy Command"));
-        confirm.setText(QStringLiteral("Run ffmpeg to create this proxy?"));
+        confirm.setWindowTitle(QStringLiteral("Confirm Proxy Generation"));
+        const QString formatLabel =
+            proxyFormat == ProxyFormat::H264
+                ? QStringLiteral("H.264 MP4")
+                : (proxyFormat == ProxyFormat::MJPEG
+                       ? QStringLiteral("Motion JPEG MOV")
+                       : QStringLiteral("image-sequence"));
+        confirm.setText(QStringLiteral("Create an internal %1 proxy?").arg(formatLabel));
         confirm.setInformativeText(
-            QStringLiteral("Source VFR: %1\nCFR normalization: %2 (%3 fps)\nMode: %4")
+            QStringLiteral("No external ffmpeg executable is required.\n"
+                           "Video sources are decoded through the explicit software proxy path.\n"
+                           "Source VFR: %1\nProxy FPS: %2\nMode: %3")
                 .arg(sourceIsVfr ? QStringLiteral("Yes") : QStringLiteral("No"))
-                .arg(normalizeToCfr ? QStringLiteral("Enabled") : QStringLiteral("Disabled"))
                 .arg(proxyFps)
                 .arg(continueGeneration ? QStringLiteral("Continue from frame %1").arg(resumeNextFrameNumber)
                                         : QStringLiteral("Full regeneration")));
-        confirm.setDetailedText(commandPreview);
         confirm.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
         confirm.setDefaultButton(QMessageBox::Yes);
         if (confirm.exec() != QMessageBox::Yes) {
-            if (sequenceListFile) {
-                QFile::remove(sequenceListFile->fileName());
-            }
             return;
         }
     }
@@ -1507,34 +1992,107 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
         output->insertPlainText(text);
         if (autoScrollBox->isChecked()) output->moveCursor(QTextCursor::End);
     };
-        connect(process, &QProcess::readyReadStandardOutput, dialog, [process, appendOutput]()
-            { appendOutput(QString::fromLocal8Bit(process->readAllStandardOutput())); });
-    connect(process, &QProcess::started, dialog, [appendOutput, ffmpegPath, arguments]()
-            {
-                appendOutput(QStringLiteral("$ %1 %2\n")
-                                 .arg(QDir::toNativeSeparators(ffmpegPath),
-                                      arguments.join(QLatin1Char(' '))));
-            });
-    connect(process, &QProcess::errorOccurred, dialog, [appendOutput](QProcess::ProcessError error)
-            { appendOutput(QStringLiteral("\n[process error] %1\n").arg(static_cast<int>(error))); });
-    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), dialog,
+
+    auto cancelFlag = std::make_shared<std::atomic_bool>(false);
+    connect(cancelButton, &QPushButton::clicked, dialog, [cancelFlag, appendOutput, cancelButton]() {
+        cancelFlag->store(true);
+        cancelButton->setEnabled(false);
+        appendOutput(QStringLiteral("\n[cancel requested]\n"));
+    });
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+    connect(dialog, &QDialog::finished, dialog, [cancelFlag](int) {
+        cancelFlag->store(true);
+    });
+
+    dialog->show();
+
+    QPointer<QDialog> dialogPtr(dialog);
+    QPointer<QProgressBar> progressPtr(progressBar);
+    QPointer<QPushButton> closeButtonPtr(closeButton);
+    QPointer<QPushButton> cancelButtonPtr(cancelButton);
+    std::thread([this,
+                 dialogPtr,
+                 cancelFlag,
+                 appendOutput,
+                 progressPtr,
+                 closeButtonPtr,
+                 cancelButtonPtr,
+                 clipId,
+                 sourcePath = QFileInfo(clip->filePath).absoluteFilePath(),
+                 sequenceFrames,
+                 imageSequenceProxy,
+                 outputPath = finalOutputPath,
+                 proxyFormat,
+                 existingProxyPath,
+                 sourceProbe,
+                 resumeNextFrameNumber]() {
+        auto uiLog = [dialogPtr, appendOutput](const QString& text) {
+            if (!dialogPtr) {
+                return;
+            }
+            QMetaObject::invokeMethod(dialogPtr,
+                                      [appendOutput, text]() { appendOutput(text); },
+                                      Qt::QueuedConnection);
+        };
+        auto uiProgress = [dialogPtr, progressPtr](int value) {
+            if (!dialogPtr || !progressPtr) {
+                return;
+            }
+            QMetaObject::invokeMethod(dialogPtr,
+                                      [progressPtr, value]() {
+                                          if (progressPtr) {
+                                              progressPtr->setValue(value);
+                                          }
+                                      },
+                                      Qt::QueuedConnection);
+        };
+
+        const ProxyGenerationResult generation =
+            proxyFormat == ProxyFormat::ImageSequence
+                ? generateImageSequenceProxyWithLibraries(sourcePath,
+                                                          sequenceFrames,
+                                                          imageSequenceProxy,
+                                                          outputPath,
+                                                          sourceProbe,
+                                                          resumeNextFrameNumber,
+                                                          cancelFlag,
+                                                          uiLog,
+                                                          uiProgress)
+                : generateVideoContainerProxyWithLibraries(sourcePath,
+                                                           outputPath,
+                                                           proxyFormat,
+                                                           sourceProbe,
+                                                           cancelFlag,
+                                                           uiLog,
+                                                           uiProgress);
+
+        if (!dialogPtr) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            dialogPtr,
             [this,
              clipId,
-             outputPath = finalOutputPath,
+             outputPath,
              existingProxyPath,
-             appendOutput,
              sourceFps = sourceProbe.fps,
              sourceDurationFrames = sourceProbe.durationFrames,
-             sequenceListPath = sequenceListFile ? sequenceListFile->fileName() : QString()](int exitCode, QProcess::ExitStatus exitStatus)
-            {
-                appendOutput(QStringLiteral("\n[process finished] exitCode=%1 status=%2\n")
-                                 .arg(exitCode)
-                                 .arg(exitStatus == QProcess::NormalExit ? QStringLiteral("normal") : QStringLiteral("crashed")));
-                if (!sequenceListPath.isEmpty())
-                {
-                    QFile::remove(sequenceListPath);
+             appendOutput,
+             closeButtonPtr,
+             cancelButtonPtr,
+             generation]() {
+                if (cancelButtonPtr) {
+                    cancelButtonPtr->setEnabled(false);
                 }
-                if (exitStatus != QProcess::NormalExit || exitCode != 0 || !QFileInfo::exists(outputPath))
+                if (closeButtonPtr) {
+                    closeButtonPtr->setEnabled(true);
+                }
+                appendOutput(QStringLiteral("\n[%1] %2\n")
+                                 .arg(generation.success ? QStringLiteral("finished")
+                                                         : (generation.canceled ? QStringLiteral("canceled")
+                                                                                : QStringLiteral("failed")),
+                                      generation.message));
+                if (!generation.success || !QFileInfo::exists(outputPath))
                 {
                     return;
                 }
@@ -1542,13 +2100,19 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
                     existingProxyPath != outputPath &&
                     QFileInfo::exists(existingProxyPath))
                 {
-                    QFile::remove(existingProxyPath);
+                    const QFileInfo existingInfo(existingProxyPath);
+                    if (existingInfo.isDir()) {
+                        QDir(existingProxyPath).removeRecursively();
+                    } else {
+                        QFile::remove(existingProxyPath);
+                    }
                 }
                 if (!m_timeline->updateClipById(
                         clipId,
                         [outputPath, sourceFps, sourceDurationFrames](TimelineClip &updatedClip)
                         {
                             updatedClip.proxyPath = outputPath;
+                            updatedClip.useProxy = true;
                             if (sourceFps > 0.001) {
                                 const bool hadLegacyTimelineFps =
                                     qAbs(updatedClip.sourceFps - static_cast<qreal>(kTimelineFps)) <= 0.001;
@@ -1574,23 +2138,14 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
                 {
                     m_timeline->clipsChanged();
                 }
-            });
-    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
-    connect(dialog, &QDialog::finished, dialog, [process, sequenceListPath = sequenceListFile ? sequenceListFile->fileName() : QString()](int)
-            {
-                if (process->state() != QProcess::NotRunning)
-                {
-                    process->kill();
-                    process->waitForFinished(1000);
+                if (m_renderUseProxiesCheckBox && !m_renderUseProxiesCheckBox->isChecked()) {
+                    m_renderUseProxiesCheckBox->setChecked(true);
+                    appendOutput(QStringLiteral("Enabled proxy playback for preview.\n"));
                 }
-                if (!sequenceListPath.isEmpty())
-                {
-                    QFile::remove(sequenceListPath);
-                }
-            });
-
-    process->start(ffmpegPath, arguments);
-    dialog->show();
+                scheduleSaveState();
+            },
+            Qt::QueuedConnection);
+    }).detach();
 }
 
 void EditorWindow::requestAutoSyncForSelection(const QSet<QString>& selectedClipIds)

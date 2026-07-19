@@ -324,6 +324,69 @@ void EditorWindow::connectTimelineSignals()
 
 void EditorWindow::connectPreviewSignals()
 {
+    m_preview->hardwareDecodeConversionRequested = [this](const QString& path) {
+        if (!m_timeline) {
+            return;
+        }
+        TimelineClip matchingClip;
+        bool foundMatchingClip = false;
+        for (const TimelineClip& clip : m_timeline->clips()) {
+            if (QFileInfo(clip.filePath).absoluteFilePath() ==
+                QFileInfo(path).absoluteFilePath()) {
+                matchingClip = clip;
+                foundMatchingClip = true;
+                break;
+            }
+        }
+        if (!foundMatchingClip) {
+            return;
+        }
+
+        const QString existingProxyPath = playbackProxyPathForClip(matchingClip);
+        QMessageBox prompt(this);
+        prompt.setIcon(QMessageBox::Warning);
+        prompt.setWindowTitle(QStringLiteral("Video Cannot Be Hardware Decoded"));
+        prompt.setText(QStringLiteral("The selected GPU cannot decode %1.")
+                           .arg(QFileInfo(path).fileName()));
+        QPushButton* useExistingProxyButton = nullptr;
+        if (!existingProxyPath.isEmpty()) {
+            prompt.setInformativeText(
+                QStringLiteral("A usable editing proxy already exists. Use it for preview playback? "
+                               "The original video will not be modified, and software decoding "
+                               "will not be enabled automatically."));
+            useExistingProxyButton =
+                prompt.addButton(QStringLiteral("Use Existing Proxy"), QMessageBox::AcceptRole);
+        } else {
+            prompt.setInformativeText(
+                QStringLiteral("Create an editing proxy in a portable format? "
+                               "The original video will not be modified, and software decoding "
+                               "will not be enabled automatically."));
+        }
+        QPushButton* convertButton =
+            prompt.addButton(existingProxyPath.isEmpty()
+                                 ? QStringLiteral("Create Editing Proxy...")
+                                 : QStringLiteral("Create New Proxy..."),
+                             QMessageBox::AcceptRole);
+        prompt.addButton(QStringLiteral("Not Now"), QMessageBox::RejectRole);
+        prompt.setDefaultButton(useExistingProxyButton ? useExistingProxyButton : convertButton);
+        prompt.exec();
+        if (prompt.clickedButton() == useExistingProxyButton) {
+            if (m_timeline->updateClipById(matchingClip.id, [](TimelineClip& clip) {
+                    clip.useProxy = true;
+                })) {
+                if (m_timeline->clipsChanged) {
+                    m_timeline->clipsChanged();
+                }
+            }
+            if (m_renderUseProxiesCheckBox && !m_renderUseProxiesCheckBox->isChecked()) {
+                m_renderUseProxiesCheckBox->setChecked(true);
+            }
+            scheduleSaveState();
+        } else if (prompt.clickedButton() == convertButton) {
+            createProxyForClip(matchingClip.id);
+        }
+    };
+
     m_preview->selectionRequested = [this](const QString &clipId) {
         if (m_timeline) m_timeline->setSelectedClipId(clipId);
     };

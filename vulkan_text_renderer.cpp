@@ -4,6 +4,7 @@
 #include "titles.h"
 #include "transcript_overlay_cache_key.h"
 #include "vulkan_clear_helpers.h"
+#include "vulkan_shader_paths.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -613,7 +614,7 @@ bool VulkanTextPipeline::initialize(VkDevice device,
     }
     m_device = device;
 
-    const QString shaderDir = QStringLiteral(JCUT_VULKAN_SHADER_DIR);
+    const QString shaderDir = jcutVulkanShaderDirectory();
     m_vertShader = createShaderModule(shaderDir + QStringLiteral("/text.vert.spv"), errorMessage);
     m_fragShader = createShaderModule(shaderDir + QStringLiteral("/text.frag.spv"), errorMessage);
     m_meshVertShader = createShaderModule(shaderDir + QStringLiteral("/title_mesh.vert.spv"), errorMessage);

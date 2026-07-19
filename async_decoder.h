@@ -241,6 +241,8 @@ private:
 
     QMutex m_infoCacheMutex;
     QHash<QString, VideoStreamInfo> m_infoCache;
+    QMutex m_hardwareFailureMutex;
+    QSet<QString> m_reportedHardwareFailures;
     NullCallbackCounters m_nullCallbackCounters;
     DecodeTimingCounters m_decodeTimingCounters;
 };

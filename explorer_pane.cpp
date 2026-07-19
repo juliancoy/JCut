@@ -1,6 +1,7 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
 #include "decoder_ffmpeg_utils.h"
+#include "media_drag_payload.h"
 #include "preview_surface.h"
 #include "render.h"
 
@@ -9,6 +10,7 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDrag>
 #include <QEvent>
@@ -17,6 +19,7 @@
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -29,15 +32,19 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPersistentModelIndex>
 #include <QProcess>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTextCursor>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QStyle>
+
+#include <functional>
 
 extern "C"
 {
@@ -48,6 +55,90 @@ extern "C"
 }
 
 namespace {
+
+bool useQtDirectoryDialogForCurrentPlatform(bool hasNativePreview)
+{
+    const QString override = qEnvironmentVariable("JCUT_DIRECTORY_DIALOG_BACKEND")
+                                 .trimmed().toLower();
+    if (override == QStringLiteral("qt")) {
+        return true;
+    }
+    if (override == QStringLiteral("native")) {
+        return false;
+    }
+    return hasNativePreview &&
+           QGuiApplication::platformName().startsWith(QStringLiteral("wayland"),
+                                                       Qt::CaseInsensitive);
+}
+
+} // namespace
+
+namespace {
+
+void executeMediaDrag(QWidget* source, const QString& path)
+{
+    const QFileInfo info(path);
+    if (!source || !info.exists() ||
+        (!info.isFile() && !isImageSequencePath(info.absoluteFilePath()))) {
+        return;
+    }
+    QMimeData* mimeData = editor::createMediaDragMimeData(info.absoluteFilePath());
+    if (!mimeData) {
+        return;
+    }
+    auto* drag = new QDrag(source);
+    drag->setMimeData(mimeData);
+    drag->exec(Qt::CopyAction, Qt::CopyAction);
+}
+
+class MediaTreeView final : public QTreeView
+{
+public:
+    using QTreeView::QTreeView;
+    std::function<QString(const QModelIndex&)> dragPath;
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        m_pressedIndex = indexAt(event->position().toPoint());
+        QTreeView::mousePressEvent(event);
+    }
+
+    void startDrag(Qt::DropActions) override
+    {
+        const QModelIndex index = m_pressedIndex.isValid() ? QModelIndex(m_pressedIndex)
+                                                           : currentIndex();
+        executeMediaDrag(this, dragPath ? dragPath(index) : QString());
+    }
+
+private:
+    QPersistentModelIndex m_pressedIndex;
+};
+
+class MediaListWidget final : public QListWidget
+{
+public:
+    using QListWidget::QListWidget;
+    std::function<QString(const QModelIndex&)> dragPath;
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        m_pressedIndex = indexAt(event->position().toPoint());
+        QListWidget::mousePressEvent(event);
+    }
+
+    void startDrag(Qt::DropActions) override
+    {
+        const QModelIndex index = m_pressedIndex.isValid() ? QModelIndex(m_pressedIndex)
+                                                           : currentIndex();
+        executeMediaDrag(this, dragPath ? dragPath(index) : QString());
+    }
+
+private:
+    QPersistentModelIndex m_pressedIndex;
+};
+
 QIcon sequenceFolderIcon(const QSize& size = QSize(48, 48))
 {
     QPixmap pixmap(size);
@@ -217,6 +308,10 @@ void ThumbnailWorker::generateThumbnail(const QString &filePath, const QString &
         }
     }
 
+    if (!image.isNull() && (image.width() > 640 || image.height() > 360)) {
+        image = image.scaled(QSize(640, 360), Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
     emit thumbnailReady(filePath, cacheKey, image);
 }
 
@@ -396,38 +491,9 @@ bool ExplorerPane::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == (m_tree ? m_tree->viewport() : nullptr))
     {
-        if (event->type() == QEvent::MouseButtonPress)
+        if (event->type() == QEvent::MouseMove && m_tree && m_fsModel)
         {
             const auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton)
-            {
-                m_treeDragStartPos = mouseEvent->pos();
-            }
-        }
-        else if (event->type() == QEvent::MouseMove && m_tree && m_fsModel)
-        {
-            const auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->buttons() & Qt::LeftButton)
-            {
-                if ((mouseEvent->pos() - m_treeDragStartPos).manhattanLength() >= QApplication::startDragDistance())
-                {
-                    const QModelIndex index = m_tree->indexAt(m_treeDragStartPos);
-                    if (index.isValid())
-                    {
-                        const QFileInfo info = m_fsModel->fileInfo(index);
-                        if (info.exists() && (info.isFile() || isImageSequencePath(info.absoluteFilePath())))
-                        {
-                            hideExplorerHoverPreview();
-                            auto *mimeData = new QMimeData;
-                            mimeData->setUrls({QUrl::fromLocalFile(info.absoluteFilePath())});
-                            auto *drag = new QDrag(m_tree);
-                            drag->setMimeData(mimeData);
-                            drag->exec(Qt::CopyAction);
-                            return true;
-                        }
-                    }
-                }
-            }
             if (!mouseEvent->buttons().testFlag(Qt::LeftButton))
             {
                 const QModelIndex index = m_tree->indexAt(mouseEvent->pos());
@@ -452,38 +518,9 @@ bool ExplorerPane::eventFilter(QObject *watched, QEvent *event)
     }
     else if (watched == (m_galleryList ? m_galleryList->viewport() : nullptr))
     {
-        if (event->type() == QEvent::MouseButtonPress)
+        if (event->type() == QEvent::MouseMove && m_galleryList)
         {
             const auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton)
-            {
-                m_galleryDragStartPos = mouseEvent->pos();
-            }
-        }
-        else if (event->type() == QEvent::MouseMove && m_galleryList)
-        {
-            const auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->buttons() & Qt::LeftButton)
-            {
-                if ((mouseEvent->pos() - m_galleryDragStartPos).manhattanLength() >= QApplication::startDragDistance())
-                {
-                    QListWidgetItem *item = m_galleryList->itemAt(m_galleryDragStartPos);
-                    if (item)
-                    {
-                        const QFileInfo info(item->data(Qt::UserRole).toString());
-                        if (info.exists() && (info.isFile() || isImageSequencePath(info.absoluteFilePath())))
-                        {
-                            hideExplorerHoverPreview();
-                            auto *mimeData = new QMimeData;
-                            mimeData->setUrls({QUrl::fromLocalFile(info.absoluteFilePath())});
-                            auto *drag = new QDrag(m_galleryList);
-                            drag->setMimeData(mimeData);
-                            drag->exec(Qt::CopyAction);
-                            return true;
-                        }
-                    }
-                }
-            }
             if (!mouseEvent->buttons().testFlag(Qt::LeftButton))
             {
                 QListWidgetItem *item = m_galleryList->itemAt(mouseEvent->pos());
@@ -530,6 +567,7 @@ QWidget *ExplorerPane::buildUi()
     toolbar->setSpacing(8);
 
     m_folderPickerButton = new QPushButton(QStringLiteral("Media Root..."), pane);
+    m_folderPickerButton->setObjectName(QStringLiteral("explorer.media_root_button"));
     m_folderPickerButton->setToolTip(QStringLiteral("Set media root"));
     m_refreshExplorerButton = new QToolButton(pane);
     m_refreshExplorerButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
@@ -581,7 +619,8 @@ QWidget *ExplorerPane::buildTreePage()
     m_fsModel->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot);
     m_fsModel->setIconProvider(new SequenceAwareIconProvider);
 
-    m_tree = new QTreeView(page);
+    auto* mediaTree = new MediaTreeView(page);
+    m_tree = mediaTree;
     m_tree->setModel(m_fsModel);
     m_tree->setHeaderHidden(false);
     m_tree->header()->setStretchLastSection(true);
@@ -590,6 +629,13 @@ QWidget *ExplorerPane::buildTreePage()
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tree->setDragEnabled(true);
     m_tree->setDragDropMode(QAbstractItemView::DragOnly);
+    m_tree->setDefaultDropAction(Qt::CopyAction);
+    mediaTree->dragPath = [this](const QModelIndex& index) {
+        if (!m_fsModel) {
+            return QString();
+        }
+        return index.isValid() ? m_fsModel->filePath(index) : QString();
+    };
     m_tree->setSortingEnabled(true);
     m_tree->sortByColumn(0, Qt::AscendingOrder);
     m_tree->setMouseTracking(true);
@@ -672,7 +718,8 @@ QWidget *ExplorerPane::buildGalleryPage()
     topRow->addWidget(m_galleryTitleLabel, 1);
     layout->addLayout(topRow);
 
-    m_galleryList = new QListWidget(page);
+    auto* mediaList = new MediaListWidget(page);
+    m_galleryList = mediaList;
     m_galleryList->setViewMode(QListView::IconMode);
     m_galleryList->setResizeMode(QListView::Adjust);
     m_galleryList->setMovement(QListView::Static);
@@ -680,6 +727,10 @@ QWidget *ExplorerPane::buildGalleryPage()
     m_galleryList->setSpacing(8);
     m_galleryList->setDragEnabled(true);
     m_galleryList->setDragDropMode(QAbstractItemView::DragOnly);
+    m_galleryList->setDefaultDropAction(Qt::CopyAction);
+    mediaList->dragPath = [](const QModelIndex& index) {
+        return index.isValid() ? index.data(Qt::UserRole).toString() : QString();
+    };
     m_galleryList->setMouseTracking(true);
     m_galleryList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_galleryList->viewport()->installEventFilter(this);
@@ -873,17 +924,59 @@ void ExplorerPane::setExplorerGalleryPath(const QString &folderPath, bool emitSi
 
 void ExplorerPane::chooseExplorerRoot()
 {
-    const QString startPath = m_currentRootPath.isEmpty() ? QDir::currentPath() : m_currentRootPath;
-    const QString selected = QFileDialog::getExistingDirectory(
-        this,
-        QStringLiteral("Select Media Folder"),
-        startPath,
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-
-    if (!selected.isEmpty())
-    {
-        emit folderRootChosen(QDir(selected).absolutePath());
+    if (m_rootDirectoryDialog) {
+        m_rootDirectoryDialog->raise();
+        m_rootDirectoryDialog->activateWindow();
+        return;
     }
+
+    const QString startPath = m_currentRootPath.isEmpty() ? QDir::currentPath() : m_currentRootPath;
+    auto* dialog = new QFileDialog(this, QStringLiteral("Select Media Folder"), startPath);
+    m_rootDirectoryDialog = dialog;
+    dialog->setObjectName(QStringLiteral("explorer.media_root_dialog"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setFileMode(QFileDialog::Directory);
+    dialog->setAcceptMode(QFileDialog::AcceptOpen);
+    dialog->setLabelText(QFileDialog::Accept, QStringLiteral("Select Folder"));
+    dialog->setOption(QFileDialog::ShowDirsOnly, true);
+    dialog->setOption(QFileDialog::DontResolveSymlinks, true);
+    // With an embedded native preview surface, Wayland's portal-backed picker
+    // can retain one full-window wl_shm backing buffer per preview update.
+    // Other platforms keep their native picker. The environment override is
+    // intentionally narrow and primarily supports deterministic UI tests.
+    dialog->setOption(QFileDialog::DontUseNativeDialog,
+                      useQtDirectoryDialogForCurrentPlatform(m_preview != nullptr));
+    const QPointer<QFileDialog> guardedDialog(dialog);
+    const auto enableSelectFolder = [guardedDialog]() {
+        if (!guardedDialog) {
+            return;
+        }
+        if (auto* buttons = guardedDialog->findChild<QDialogButtonBox*>()) {
+            if (QPushButton* accept = buttons->button(QDialogButtonBox::Open)) {
+                accept->setEnabled(true);
+            }
+        }
+    };
+    connect(dialog, &QFileDialog::directoryEntered, dialog,
+            [enableSelectFolder](const QString&) {
+                QTimer::singleShot(0, enableSelectFolder);
+            });
+    QTimer::singleShot(0, dialog, enableSelectFolder);
+
+    connect(dialog, &QFileDialog::accepted, this, [this, dialog]() {
+        // Directory mode represents the folder currently being viewed.
+        // selectedFiles() may retain the constructor's start directory after
+        // navigation, so it is not authoritative for this workflow.
+        const QString selectedPath = dialog->directory().absolutePath();
+        if (!selectedPath.isEmpty()) {
+            emit folderRootChosen(QDir(selectedPath).absolutePath());
+        }
+    });
+    connect(dialog, &QObject::destroyed, this, [this]() {
+        m_rootDirectoryDialog = nullptr;
+    });
+    dialog->open();
 }
 
 QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
@@ -917,6 +1010,10 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
             } else {
                 QImage image(firstFrame);
                 if (!image.isNull()) {
+                    if (image.width() > 640 || image.height() > 360) {
+                        image = image.scaled(QSize(640, 360), Qt::KeepAspectRatio,
+                                             Qt::SmoothTransformation);
+                    }
                     pixmap = QPixmap::fromImage(image);
                 }
             }
@@ -961,6 +1058,10 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
         suffix == QStringLiteral("jpeg"))
     {
         QImage image(filePath);
+        if (!image.isNull() && (image.width() > 640 || image.height() > 360)) {
+            image = image.scaled(QSize(640, 360), Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        }
         const QPixmap pixmap = image.isNull() ? QPixmap() : QPixmap::fromImage(image);
         if (!pixmap.isNull())
         {
@@ -971,7 +1072,9 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
 
     // Video thumbnails are generated asynchronously.
     // Request generation if not already pending.
-    if (!m_pendingThumbnails.contains(cacheKey))
+    // Keep only one decode in flight. Pointer movement can cross dozens of
+    // rows per second; queuing all of them delays the currently hovered item.
+    if (m_pendingThumbnails.isEmpty())
     {
         m_pendingThumbnails.insert(cacheKey);
         QMetaObject::invokeMethod(m_thumbnailWorker, "generateThumbnail",
@@ -1154,12 +1257,20 @@ void ExplorerPane::hideExplorerHoverPreview()
 void ExplorerPane::onThumbnailReady(const QString &filePath, const QString &cacheKey, const QImage &image)
 {
     m_pendingThumbnails.remove(cacheKey);
-    if (image.isNull())
-        return;
-    m_previewPixmapCache.insert(cacheKey, QPixmap::fromImage(image));
-    // If we're still hovering the same file, show the preview now
-    if (m_hoverFilePath == filePath)
+    if (!image.isNull()) {
+        // At 640x360 this caps the cache near 28 MiB plus Qt overhead.
+        while (m_previewPixmapCache.size() >= 32) {
+            m_previewPixmapCache.erase(m_previewPixmapCache.begin());
+        }
+        m_previewPixmapCache.insert(cacheKey, QPixmap::fromImage(image));
+    }
+    if (m_hoverFilePath == filePath && !image.isNull()) {
         showExplorerHoverPreview(filePath);
+    } else if (!m_hoverFilePath.isEmpty() && m_hoverFilePath != filePath) {
+        // The pointer moved while this job was running. Queue only the newest
+        // requested file instead of processing the stale intermediate paths.
+        showExplorerHoverPreview(m_hoverFilePath);
+    }
 }
 
 void ExplorerPane::showExplorerHoverPreview(const QString &filePath)

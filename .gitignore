@@ -1,6 +1,7 @@
 build
 build-asan
 build-ncnn
+dist
 *.o
 perf.*
 CMakeFiles

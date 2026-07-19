@@ -1,14 +1,11 @@
 #include "vulkan_zero_copy_face_detector.h"
+#include "vulkan_shader_paths.h"
 
 #include <QFile>
 #include <QtGlobal>
 
 #include <array>
 #include <cstring>
-
-#ifndef JCUT_VULKAN_SHADER_DIR
-#define JCUT_VULKAN_SHADER_DIR ""
-#endif
 
 namespace jcut::vulkan_detector {
 namespace {
@@ -50,7 +47,7 @@ struct FaceInferencePushConstants {
 
 QByteArray readShader(const QString& name)
 {
-    QFile file(QStringLiteral(JCUT_VULKAN_SHADER_DIR) + QLatin1Char('/') + name);
+    QFile file(QDir(jcutVulkanShaderDirectory()).filePath(name));
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }

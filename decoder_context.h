@@ -50,6 +50,7 @@ public:
     }
 
     bool isHardwareAccelerated() const { return m_hwDeviceCtx != nullptr; }
+    bool hardwareDecodeUnavailable() const { return m_hardwareDecodeUnavailable; }
 
 private:
     bool openInput();
@@ -102,6 +103,7 @@ private:
     bool m_preferHardwareFrames = false;
     bool m_loggedAlphaProbe = false;
     bool m_forceSoftwareDecode = false;
+    bool m_hardwareDecodeUnavailable = false;
 
     // Optional pointer into AsyncDecoder's shared device map (not owned).
     const QHash<int, AVBufferRef*>* m_sharedHwDevices = nullptr;

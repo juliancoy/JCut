@@ -11,8 +11,10 @@
 #include <QMutex>
 #include <QImage>
 #include <QSet>
+#include <QPointer>
 
 class QFileSystemModel;
+class QFileDialog;
 class QTreeView;
 class QListWidget;
 class QListWidgetItem;
@@ -91,6 +93,7 @@ private:
     QPushButton *m_folderPickerButton = nullptr;
     QToolButton *m_refreshExplorerButton = nullptr;
     QToolButton *m_galleryBackButton = nullptr;
+    QPointer<QFileDialog> m_rootDirectoryDialog;
     QLabel *m_rootPathLabel = nullptr;
     QLabel *m_galleryTitleLabel = nullptr;
 
