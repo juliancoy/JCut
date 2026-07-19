@@ -369,6 +369,13 @@ int main(int argc, char **argv)
         return editor::runSpeakerExportHarness(config);
     }
 
+    if (qEnvironmentVariableIsEmpty("JCUT_GPU_PREFERENCE")) {
+        QSettings settings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"));
+        qputenv("JCUT_GPU_PREFERENCE",
+                settings.value(QStringLiteral("graphics/gpuPreference"), QStringLiteral("auto"))
+                    .toString().toUtf8());
+    }
+
     editor::EditorWindow window(controlPort);
     window.show();
     return app.exec();

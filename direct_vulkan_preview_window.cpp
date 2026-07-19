@@ -1,6 +1,7 @@
 #include <execinfo.h>
 #include "background_fill_effect.h"
 #include "direct_vulkan_preview_backend.h"
+#include "gpu_selection.h"
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_config.h"
 #include "direct_vulkan_preview_geometry.h"
@@ -187,8 +188,8 @@ public:
     }
 
     void setInteractionCallbacks(std::function<void(const QString&)> selectionRequested,
-                                 std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
                                  std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+                                 std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> transformRequested = {},
                                  std::function<void(int64_t)> playbackSampleRequested = {},
                                  std::function<void(const QString&, qreal, qreal)> correctionPointRequested = {},
                                  std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
@@ -199,8 +200,8 @@ public:
                                  std::function<void(const QString&)> createKeyframeRequested = {})
     {
         m_selectionRequested = std::move(selectionRequested);
-        m_resizeRequested = std::move(resizeRequested);
         m_moveRequested = std::move(moveRequested);
+        m_transformRequested = std::move(transformRequested);
         m_playbackSampleRequested = std::move(playbackSampleRequested);
         m_correctionPointRequested = std::move(correctionPointRequested);
         m_speakerPointRequested = std::move(speakerPointRequested);
@@ -739,7 +740,7 @@ protected:
                         m_moveRequested(clipId, transform.translationX, transform.translationY, true);
                     }
                 }
-            } else if (m_resizeRequested && !clipId.isEmpty()) {
+            } else if (m_transformRequested && !clipId.isEmpty()) {
                 if (activeInfoIsTranscript) {
                     const QSizeF size =
                         m_state->transient.transcriptOverrideActive &&
@@ -749,24 +750,26 @@ protected:
                             ? m_state->transient.transcriptSizeOverride
                             : QSizeF(activeInfo.bounds.width() / qMax<qreal>(0.0001, previewScale.x()),
                                      activeInfo.bounds.height() / qMax<qreal>(0.0001, previewScale.y()));
-                    if (m_moveRequested) {
-                        const QPointF translation =
-                            m_state->transient.transcriptOverrideActive &&
-                                    m_state->transient.transcriptOverrideClipId == clipId
-                                ? m_state->transient.transcriptTranslationOverride
-                                : m_state->transient.dragOriginTranscriptTranslation;
-                        m_moveRequested(clipId, translation.x(), translation.y(), true);
-                    }
-                    const qreal width = size.width();
-                    const qreal height = size.height();
-                    m_resizeRequested(clipId, width, height, true);
+                    const QPointF translation =
+                        m_state->transient.transcriptOverrideActive &&
+                                m_state->transient.transcriptOverrideClipId == clipId
+                            ? m_state->transient.transcriptTranslationOverride
+                            : m_state->transient.dragOriginTranscriptTranslation;
+                    m_transformRequested(clipId,
+                                         translation.x(),
+                                         translation.y(),
+                                         size.width(),
+                                         size.height(),
+                                         true);
                 } else {
                     const TimelineClip::TransformKeyframe transform =
                         currentTransformForVulkanClip(m_state, clipId);
-                    if (m_moveRequested) {
-                        m_moveRequested(clipId, transform.translationX, transform.translationY, false);
-                    }
-                    m_resizeRequested(clipId, transform.scaleX, transform.scaleY, true);
+                    m_transformRequested(clipId,
+                                         transform.translationX,
+                                         transform.translationY,
+                                         transform.scaleX,
+                                         transform.scaleY,
+                                         true);
                 }
             }
             m_state->transient.dragMode = PreviewDragMode::None;
@@ -1153,8 +1156,8 @@ private:
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> m_faceStreamBoxFocusClearRequested;
     std::function<void(const QString&)> m_faceStreamBoxClickStatus;
     std::function<void(const QString&)> m_createKeyframeRequested;
-    std::function<void(const QString&, qreal, qreal, bool)> m_resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> m_moveRequested;
+    std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> m_transformRequested;
     QImage m_latestVulkanReadbackImage;
     QImage m_latestDecoderDiagnosticImage;
     bool m_pipelineThumbnailReadbackPending = false;
@@ -3778,6 +3781,17 @@ void directVulkanPreviewWindowSetVulkanInstance(DirectVulkanPreviewWindow* windo
 {
     if (window) {
         window->setVulkanInstance(instance);
+        const auto devices = window->availablePhysicalDevices();
+        const QString preference = editor::gpu::preference();
+        const int selectedIndex = editor::gpu::chooseVulkanDevice(devices);
+        if (selectedIndex >= 0) {
+            window->setPhysicalDeviceIndex(selectedIndex);
+            qInfo() << "[vulkan-preview] selected physical GPU" << selectedIndex
+                    << devices[selectedIndex].deviceName << "preference=" << preference;
+        } else {
+            qWarning() << "[vulkan-preview] requested GPU class unavailable; using Qt default. preference="
+                       << preference;
+        }
     }
 }
 
@@ -3805,8 +3819,8 @@ void directVulkanPreviewWindowResize(DirectVulkanPreviewWindow* window, const QS
 void directVulkanPreviewWindowSetInteractionCallbacks(
     DirectVulkanPreviewWindow* window,
     std::function<void(const QString&)> selectionRequested,
-    std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+    std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> transformRequested,
     std::function<void(int64_t)> playbackSampleRequested,
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested,
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
@@ -3820,8 +3834,8 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
         return;
     }
     window->setInteractionCallbacks(std::move(selectionRequested),
-                                    std::move(resizeRequested),
                                     std::move(moveRequested),
+                                    std::move(transformRequested),
                                     std::move(playbackSampleRequested),
                                     std::move(correctionPointRequested),
                                     std::move(speakerPointRequested),

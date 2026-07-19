@@ -5,6 +5,7 @@
 #include "decode_trace.h"
 #include "decoder_ffmpeg_utils.h"
 #include "decoder_image_io.h"
+#include "gpu_selection.h"
 #include "timeline_fps.h"
 
 #include <QDateTime>
@@ -13,6 +14,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
+#include <QStringList>
 #include <QWaitCondition>
 
 #include <limits>
@@ -412,6 +414,7 @@ bool DecoderContext::initCodec() {
         const AVCodec* bestDecoder = nullptr;
         int bestScore = std::numeric_limits<int>::min();
         int candidateCount = 0;
+        QStringList decoderCandidates;
         void* iterator = nullptr;
         while (const AVCodec* candidate = av_codec_iterate(&iterator)) {
             if (!av_codec_is_decoder(candidate) ||
@@ -421,6 +424,7 @@ bool DecoderContext::initCodec() {
 
             ++candidateCount;
             int usableHardwareConfigs = 0;
+            QStringList hardwareTypes;
             for (int i = 0;; ++i) {
                 const AVCodecHWConfig* config = avcodec_get_hw_config(candidate, i);
                 if (!config) {
@@ -433,7 +437,14 @@ bool DecoderContext::initCodec() {
                     m_sharedHwDevices->contains(static_cast<int>(config->device_type))) {
                     ++usableHardwareConfigs;
                 }
+                const char* typeName = av_hwdevice_get_type_name(config->device_type);
+                if (typeName) hardwareTypes.append(QString::fromLatin1(typeName));
             }
+            decoderCandidates.append(QStringLiteral("%1[%2]")
+                                         .arg(QString::fromLatin1(candidate->name),
+                                              hardwareTypes.isEmpty()
+                                                  ? QStringLiteral("software")
+                                                  : hardwareTypes.join(QLatin1Char(','))));
 
             // Prefer FFmpeg's canonical decoder, then implementations with a
             // usable device-context path. Dedicated hardware-only wrappers are
@@ -452,6 +463,11 @@ bool DecoderContext::initCodec() {
         }
         decoder = bestDecoder ? bestDecoder : defaultDecoder;
         if (debugDecodeEnabled()) {
+            qDebug().noquote() << QStringLiteral("Decoder scan for %1: %2; selected=%3")
+                                      .arg(m_path,
+                                           decoderCandidates.join(QStringLiteral(", ")),
+                                           decoder ? QString::fromLatin1(decoder->name)
+                                                   : QStringLiteral("none"));
             qDebug() << "Decoder selection queried" << candidateCount
                      << "registered implementations for codec"
                      << stream->codecpar->codec_id << "and selected"
@@ -595,7 +611,7 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         return false;
     }
 
-    static const AVHWDeviceType kPreferredDevices[] = {
+    AVHWDeviceType preferredDevices[] = {
 #ifdef __APPLE__
         AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
 #elif defined(_WIN32)
@@ -606,7 +622,13 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         AV_HWDEVICE_TYPE_VAAPI,
     };
 
-    for (AVHWDeviceType type : kPreferredDevices) {
+#if defined(Q_OS_LINUX)
+    if (gpu::requestedVendorId() != 0x10de) {
+        std::swap(preferredDevices[0], preferredDevices[1]);
+    }
+#endif
+
+    for (AVHWDeviceType type : preferredDevices) {
         const AVCodecHWConfig* selectedConfig = nullptr;
         for (int i = 0;; ++i) {
             const AVCodecHWConfig* config = avcodec_get_hw_config(decoder, i);
@@ -628,14 +650,10 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
 #if defined(Q_OS_LINUX)
         QByteArray devicePath;
         if (type == AV_HWDEVICE_TYPE_VAAPI) {
-            static const char* kRenderNodes[] = {
-                "/dev/dri/renderD128",
-                "/dev/dri/renderD129",
-                "/dev/dri/renderD130",
-            };
-            for (const char* candidate : kRenderNodes) {
-                if (QFile::exists(QString::fromLatin1(candidate))) {
-                    devicePath = QByteArray(candidate);
+            const QStringList renderNodes = gpu::linuxVaapiRenderNodes();
+            for (const QString& candidate : renderNodes) {
+                if (QFile::exists(candidate)) {
+                    devicePath = candidate.toLocal8Bit();
                     deviceName = devicePath.constData();
                     break;
                 }

@@ -203,14 +203,19 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
                     selectionRequested(clipId);
                 }
             },
-            [this](const QString& clipId, qreal scaleX, qreal scaleY, bool finalize) {
-                if (resizeRequested) {
-                    resizeRequested(clipId, scaleX, scaleY, finalize);
-                }
-            },
             [this](const QString& clipId, qreal x, qreal y, bool finalize) {
                 if (moveRequested) {
                     moveRequested(clipId, x, y, finalize);
+                }
+            },
+            [this](const QString& clipId,
+                   qreal x,
+                   qreal y,
+                   qreal scaleX,
+                   qreal scaleY,
+                   bool finalize) {
+                if (transformRequested) {
+                    transformRequested(clipId, x, y, scaleX, scaleY, finalize);
                 }
             },
             [this](int64_t samplePosition) {

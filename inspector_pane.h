@@ -391,6 +391,7 @@ public:
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
     QCheckBox *previewShowSpeakerTrackPointsCheckBox() const { return m_previewShowSpeakerTrackPointsCheckBox; }
     QComboBox *previewVulkanPresenterCombo() const { return m_previewVulkanPresenterCombo; }
+    QComboBox *previewGpuCombo() const { return m_previewGpuCombo; }
     QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
     QPushButton *previewZoomResetButton() const { return m_previewZoomResetButton; }
     QCheckBox *previewPlaybackCacheFallbackCheckBox() const { return m_previewPlaybackCacheFallbackCheckBox; }
@@ -735,6 +736,7 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
+    QComboBox *m_previewGpuCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

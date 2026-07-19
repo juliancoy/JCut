@@ -49,6 +49,7 @@ RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
 RUN_FACE_BENCH="no"
+BUILD_TARGET=""
 
 ensure_submodule_checkout() {
     local submodule_path="$1"
@@ -603,7 +604,17 @@ EOF
         "${glfw_pc}"
 }
 
+expect_build_target="no"
 for arg in "$@"; do
+    if [[ "${expect_build_target}" == "yes" ]]; then
+        if [[ -z "${arg}" || "${arg}" == --* ]]; then
+            echo "--target requires a non-empty target name" >&2
+            exit 1
+        fi
+        BUILD_TARGET="${arg}"
+        expect_build_target="no"
+        continue
+    fi
     case "$arg" in
         --asan)
             ASAN="ON"
@@ -619,6 +630,16 @@ for arg in "$@"; do
             ;;
         --with-tests)
             ;;
+        --target)
+            expect_build_target="yes"
+            ;;
+        --target=*)
+            BUILD_TARGET="${arg#--target=}"
+            if [[ -z "${BUILD_TARGET}" ]]; then
+                echo "--target requires a non-empty target name" >&2
+                exit 1
+            fi
+            ;;
         --ninja)
             CMAKE_GENERATOR="Ninja"
             ;;
@@ -633,11 +654,15 @@ for arg in "$@"; do
             ;;
         *)
             echo "Unknown argument: $arg" >&2
-            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia|--ffmpeg-safe] [--ffmpeg-only] [--with-tests] [--ninja|--make] [--run] [--headless-face-bench]" >&2
+            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia|--ffmpeg-safe] [--ffmpeg-only] [--with-tests] [--target NAME] [--ninja|--make] [--run] [--headless-face-bench]" >&2
             exit 1
             ;;
     esac
 done
+if [[ "${expect_build_target}" == "yes" ]]; then
+    echo "--target requires a non-empty target name" >&2
+    exit 1
+fi
 
 resolve_ffmpeg_profile
 
@@ -722,6 +747,13 @@ cmake_configure_args=(
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
     -DWITH_VULKAN=ON
 )
+if command -v ccache >/dev/null 2>&1; then
+    ccache_path="$(command -v ccache)"
+    cmake_configure_args+=(
+        -DCMAKE_C_COMPILER_LAUNCHER="${ccache_path}"
+        -DCMAKE_CXX_COMPILER_LAUNCHER="${ccache_path}"
+    )
+fi
 if [[ -n "${CURL_INCLUDE_DIR}" ]]; then
     cmake_configure_args+=(
         -DCURL_INCLUDE_DIR="${CURL_INCLUDE_DIR}"
@@ -759,7 +791,11 @@ else
 fi
 cmake "${cmake_configure_args[@]}"
 
-cmake --build "${BUILD_DIR}" -j
+cmake_build_args=(--build "${BUILD_DIR}" -j)
+if [[ -n "${BUILD_TARGET}" ]]; then
+    cmake_build_args+=(--target "${BUILD_TARGET}")
+fi
+cmake "${cmake_build_args[@]}"
 
 # Fix for snap library conflicts (snap's libpthread is incompatible with system glibc)
 # Preload system libpthread to avoid snap version being picked up

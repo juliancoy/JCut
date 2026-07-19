@@ -12,17 +12,17 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QComboBox>
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
-#include <QEventLoop>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QImage>
 #include <QLabel>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QDir>
 #include <QJsonArray>
@@ -43,6 +43,13 @@ namespace {
 constexpr int kFaceDetectionsControlMinWorkers = 1;
 constexpr int kFaceDetectionsControlMaxWorkers = 10;
 constexpr int kFaceDetectionsControlDefaultBenchmarkFrames = 480;
+
+struct ScreenshotCapture {
+    QImage image;
+    QString sourceEffective;
+    QJsonArray steps;
+    qint64 uiElapsedMs = 0;
+};
 
 QString normalizedFaceDetectionsLaunchProfile(const QJsonObject& control)
 {
@@ -87,6 +94,37 @@ bool boolControlValue(const QJsonObject& control,
 bool offscreenPlatformActive()
 {
     return QGuiApplication::platformName().compare(QStringLiteral("offscreen"), Qt::CaseInsensitive) == 0;
+}
+
+bool compositorScreenCaptureSupported()
+{
+    const QString platform = QGuiApplication::platformName().trimmed().toLower();
+    return platform != QStringLiteral("wayland") &&
+           platform != QStringLiteral("offscreen") &&
+           platform != QStringLiteral("minimal");
+}
+
+QImage renderWidgetToImage(QWidget* widget)
+{
+    if (!widget || widget->size().isEmpty()) {
+        return {};
+    }
+    const qreal devicePixelRatio = widget->devicePixelRatioF();
+    const QSize pixelSize(qMax(1, qRound(widget->width() * devicePixelRatio)),
+                          qMax(1, qRound(widget->height() * devicePixelRatio)));
+    QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) {
+        return {};
+    }
+    image.setDevicePixelRatio(devicePixelRatio);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    widget->render(&painter,
+                   QPoint(),
+                   QRegion(),
+                   QWidget::DrawWindowBackground | QWidget::DrawChildren);
+    painter.end();
+    return image;
 }
 
 QString widgetTextForSelector(QWidget* widget) {
@@ -1550,29 +1588,27 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         const bool includeSteps = queryBool(query, QStringLiteral("include_steps")) ||
                                   queryBool(query, QStringLiteral("debug")) ||
                                   queryBool(query, QStringLiteral("trace"));
-        QJsonObject capture;
+        ScreenshotCapture capture;
         const int screenshotInvokeTimeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
         if (!invokeOnUiThread(m_window, screenshotInvokeTimeoutMs, &capture, [this, query]() {
                 QElapsedTimer timer;
                 timer.start();
-                QJsonArray steps;
-                QByteArray bytes;
+                ScreenshotCapture result;
                 QWidget* sourceWidget = resolveScreenshotSource(m_window, query);
                 if (!sourceWidget) {
-                    steps.push_back(QJsonObject{
+                    result.steps.push_back(QJsonObject{
                         {QStringLiteral("name"), QStringLiteral("resolve_source")},
                         {QStringLiteral("ok"), false},
                         {QStringLiteral("detail"), QStringLiteral("no source widget")}
                     });
-                    return QJsonObject{
-                        {QStringLiteral("ok"), false},
-                        {QStringLiteral("source_effective"), QStringLiteral("none")},
-                        {QStringLiteral("steps"), steps},
-                        {QStringLiteral("elapsed_ms"), timer.elapsed()},
-                        {QStringLiteral("png_base64"), QString()}
-                    };
+                    result.sourceEffective = QStringLiteral("none");
+                    result.uiElapsedMs = timer.elapsed();
+                    return result;
                 }
-                steps.push_back(QJsonObject{
+                result.sourceEffective = sourceWidget->objectName().isEmpty()
+                    ? QStringLiteral("window")
+                    : sourceWidget->objectName();
+                result.steps.push_back(QJsonObject{
                     {QStringLiteral("name"), QStringLiteral("resolve_source")},
                     {QStringLiteral("ok"), true},
                     {QStringLiteral("detail"),
@@ -1582,18 +1618,11 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                   : sourceWidget->objectName(),
                               QString::fromLatin1(sourceWidget->metaObject()->className()))}
                 });
-                auto savePixmap = [](const QPixmap& pixmap, QByteArray* output) {
-                    if (!output || pixmap.isNull()) {
-                        return false;
-                    }
-                    QBuffer pixmapBuffer(output);
-                    pixmapBuffer.open(QIODevice::WriteOnly);
-                    return pixmap.save(&pixmapBuffer, "PNG");
-                };
-
-                // QWidget::grab() does not reliably include embedded native windows
-                // such as the direct QVulkanWindow preview. Capture the composited
-                // screen rectangle first so diagnostics reflect what the user sees.
+                // A compositor capture includes embedded native windows such as the
+                // direct QVulkanWindow preview. Use it only on platforms where Qt
+                // supports root-window capture; Wayland otherwise retains large
+                // QPixmap-backed shared-memory buffers. The fallback below renders
+                // directly into heap-backed QImage storage.
                 // QWidget::screen() safely resolves the screen through the widget's
                 // top-level window. Calling windowHandle() or winId() on a child can
                 // create a native child window and is invalid for QScreen::grabWindow
@@ -1602,70 +1631,78 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 if (!screen) {
                     screen = QGuiApplication::primaryScreen();
                 }
-                if (screen) {
+                const bool useCompositorCapture = screen && compositorScreenCaptureSupported();
+                if (useCompositorCapture) {
                     const QPoint topLeft = sourceWidget->mapToGlobal(QPoint(0, 0));
-                    QByteArray screenBytes;
-                    const bool screenSaved = savePixmap(
-                        screen->grabWindow(0,
-                                           topLeft.x(),
-                                           topLeft.y(),
-                                           sourceWidget->width(),
-                                           sourceWidget->height()),
-                        &screenBytes);
-                    steps.push_back(QJsonObject{
+                    result.image = screen->grabWindow(0,
+                                                      topLeft.x(),
+                                                      topLeft.y(),
+                                                      sourceWidget->width(),
+                                                      sourceWidget->height())
+                                       .toImage();
+                    result.steps.push_back(QJsonObject{
                         {QStringLiteral("name"), QStringLiteral("capture_screen_rect")},
-                        {QStringLiteral("ok"), screenSaved},
-                        {QStringLiteral("bytes"), static_cast<qint64>(screenBytes.size())}
+                        {QStringLiteral("ok"), !result.image.isNull()},
+                        {QStringLiteral("width"), result.image.width()},
+                        {QStringLiteral("height"), result.image.height()}
                     });
-                    if (!screenBytes.isEmpty()) {
-                        bytes = screenBytes;
-                    }
                 } else {
-                    steps.push_back(QJsonObject{
+                    result.steps.push_back(QJsonObject{
                         {QStringLiteral("name"), QStringLiteral("capture_screen_rect")},
                         {QStringLiteral("ok"), false},
-                        {QStringLiteral("detail"), QStringLiteral("no screen available")}
+                        {QStringLiteral("skipped"), true},
+                        {QStringLiteral("detail"), screen
+                             ? QStringLiteral("unsupported by the active Qt platform")
+                             : QStringLiteral("no screen available")}
                     });
                 }
 
-                QBuffer buffer(&bytes);
-                buffer.open(QIODevice::WriteOnly);
-                const bool sourceSaved = bytes.isEmpty() && sourceWidget->grab().save(&buffer, "PNG");
-                steps.push_back(QJsonObject{
+                const bool sourceCaptureNeeded = result.image.isNull();
+                if (sourceCaptureNeeded) {
+                    result.image = renderWidgetToImage(sourceWidget);
+                }
+                result.steps.push_back(QJsonObject{
                     {QStringLiteral("name"), QStringLiteral("capture_source")},
-                    {QStringLiteral("ok"), sourceSaved},
-                    {QStringLiteral("bytes"), static_cast<qint64>(bytes.size())}
+                    {QStringLiteral("ok"), sourceCaptureNeeded && !result.image.isNull()},
+                    {QStringLiteral("skipped"), !sourceCaptureNeeded},
+                    {QStringLiteral("storage"), QStringLiteral("heap_qimage")},
+                    {QStringLiteral("width"), result.image.width()},
+                    {QStringLiteral("height"), result.image.height()}
                 });
 
-                if (bytes.isEmpty() && sourceWidget != m_window) {
-                    QByteArray fallbackBytes;
-                    QBuffer fallbackBuffer(&fallbackBytes);
-                    fallbackBuffer.open(QIODevice::WriteOnly);
-                    const bool fallbackSaved = m_window->grab().save(&fallbackBuffer, "PNG");
-                    steps.push_back(QJsonObject{
+                if (result.image.isNull() && sourceWidget != m_window) {
+                    result.image = renderWidgetToImage(m_window);
+                    result.steps.push_back(QJsonObject{
                         {QStringLiteral("name"), QStringLiteral("capture_fallback_window")},
-                        {QStringLiteral("ok"), fallbackSaved},
-                        {QStringLiteral("bytes"), static_cast<qint64>(fallbackBytes.size())}
+                        {QStringLiteral("ok"), !result.image.isNull()},
+                        {QStringLiteral("storage"), QStringLiteral("heap_qimage")},
+                        {QStringLiteral("width"), result.image.width()},
+                        {QStringLiteral("height"), result.image.height()}
                     });
-                    if (!fallbackBytes.isEmpty()) {
-                        bytes = fallbackBytes;
-                    }
                 }
-                return QJsonObject{
-                    {QStringLiteral("ok"), !bytes.isEmpty()},
-                    {QStringLiteral("source_effective"),
-                     sourceWidget->objectName().isEmpty() ? QStringLiteral("window")
-                                                          : sourceWidget->objectName()},
-                    {QStringLiteral("steps"), steps},
-                    {QStringLiteral("elapsed_ms"), timer.elapsed()},
-                    {QStringLiteral("png_base64"), QString::fromLatin1(bytes.toBase64())}
-                };
+                result.uiElapsedMs = timer.elapsed();
+                return result;
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for screenshot"));
             return true;
         }
-        const QByteArray pngBytes =
-            QByteArray::fromBase64(capture.value(QStringLiteral("png_base64")).toString().toLatin1());
+        QElapsedTimer encodeTimer;
+        encodeTimer.start();
+        QByteArray pngBytes;
+        if (!capture.image.isNull()) {
+            QBuffer buffer(&pngBytes);
+            buffer.open(QIODevice::WriteOnly);
+            if (!capture.image.save(&buffer, "PNG")) {
+                pngBytes.clear();
+            }
+        }
+        const qint64 encodeElapsedMs = encodeTimer.elapsed();
+        capture.steps.push_back(QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("encode_png")},
+            {QStringLiteral("ok"), !pngBytes.isEmpty()},
+            {QStringLiteral("bytes"), static_cast<qint64>(pngBytes.size())},
+            {QStringLiteral("elapsed_ms"), encodeElapsedMs}
+        });
         if (pngBytes.isEmpty()) {
             writeError(socket, 500, QStringLiteral("failed to capture screenshot"));
             return true;
@@ -1675,9 +1712,11 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("source_requested"),
                  query.queryItemValue(QStringLiteral("source"), QUrl::FullyDecoded)},
-                {QStringLiteral("source_effective"), capture.value(QStringLiteral("source_effective")).toString()},
-                {QStringLiteral("elapsed_ms"), capture.value(QStringLiteral("elapsed_ms")).toInteger(0)},
-                {QStringLiteral("steps"), capture.value(QStringLiteral("steps")).toArray()},
+                {QStringLiteral("source_effective"), capture.sourceEffective},
+                {QStringLiteral("elapsed_ms"), capture.uiElapsedMs + encodeElapsedMs},
+                {QStringLiteral("ui_capture_elapsed_ms"), capture.uiElapsedMs},
+                {QStringLiteral("encode_elapsed_ms"), encodeElapsedMs},
+                {QStringLiteral("steps"), capture.steps},
                 {QStringLiteral("profile_cached"), m_lastProfileSnapshot},
                 {QStringLiteral("png_base64"), QString::fromLatin1(pngBytes.toBase64())}
             });

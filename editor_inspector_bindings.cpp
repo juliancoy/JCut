@@ -63,6 +63,7 @@ void EditorWindow::bindInspectorWidgets()
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
+    m_previewGpuCombo = m_inspectorPane->previewGpuCombo();
     m_speakerShowContiguousSectionsCheckBox =
         m_inspectorPane->speakerShowContiguousSectionsCheckBox();
     m_speakerApplyTrackToAllMatchingSectionsCheckBox =
@@ -945,6 +946,21 @@ void EditorWindow::setupPreviewControls()
                     }
                     m_previewVulkanPresenterPreference = presenterMode;
                     qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", m_previewVulkanPresenterPreference.toUtf8());
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
+    if (m_previewGpuCombo) {
+        connect(m_previewGpuCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this](int index) {
+                    const QString preference = m_previewGpuCombo->itemData(index).toString();
+                    if (preference.isEmpty()) return;
+                    m_gpuPreference = preference;
+                    qputenv("JCUT_GPU_PREFERENCE", preference.toUtf8());
+                    QSettings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"))
+                        .setValue(QStringLiteral("graphics/gpuPreference"), preference);
                     scheduleSaveState();
                     pushHistorySnapshot();
                 });

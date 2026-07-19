@@ -4,6 +4,7 @@
 #include "decode_trace.h"
 #include "decoder_context.h"
 #include "decoder_image_io.h"
+#include "gpu_selection.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -1013,7 +1014,7 @@ void AsyncDecoder::initSharedHwDevices() {
     // instead of calling av_hwdevice_ctx_create() themselves.
     // This reduces CUDA context count from O(workers × files) → O(1).
 
-    static const AVHWDeviceType kTypes[] = {
+    AVHWDeviceType types[] = {
 #ifdef __APPLE__
         AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
 #elif defined(_WIN32)
@@ -1023,23 +1024,24 @@ void AsyncDecoder::initSharedHwDevices() {
         AV_HWDEVICE_TYPE_CUDA,
         AV_HWDEVICE_TYPE_VAAPI,
     };
+#if defined(Q_OS_LINUX)
+    if (gpu::requestedVendorId() != 0x10de) {
+        std::swap(types[0], types[1]);
+    }
+#endif
 
     QMutexLocker lock(&m_sharedHwMutex);
 
-    for (AVHWDeviceType type : kTypes) {
+    for (AVHWDeviceType type : types) {
         const char* deviceName = nullptr;
 
 #if defined(Q_OS_LINUX)
         QByteArray devicePath;
         if (type == AV_HWDEVICE_TYPE_VAAPI) {
-            static const char* kRenderNodes[] = {
-                "/dev/dri/renderD128",
-                "/dev/dri/renderD129",
-                "/dev/dri/renderD130",
-            };
-            for (const char* candidate : kRenderNodes) {
-                if (QFile::exists(QString::fromLatin1(candidate))) {
-                    devicePath = QByteArray(candidate);
+            const QStringList renderNodes = gpu::linuxVaapiRenderNodes();
+            for (const QString& candidate : renderNodes) {
+                if (QFile::exists(candidate)) {
+                    devicePath = candidate.toLocal8Bit();
                     deviceName = devicePath.constData();
                     break;
                 }

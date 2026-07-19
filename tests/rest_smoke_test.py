@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import signal
@@ -783,7 +784,37 @@ def main() -> int:
         screenshot_path: str | None = None
         if not args.offscreen:
             diagnostics.phase = "screenshot"
-            screenshot = request("/screenshot", timeout=5.0)
+            screenshot_result = request("/screenshot?include_steps=1", timeout=5.0)
+            if not isinstance(screenshot_result, dict) or not screenshot_result.get("ok"):
+                raise TestFailure("screenshot diagnostics request failed")
+            step_names = {
+                step.get("name")
+                for step in screenshot_result.get("steps", [])
+                if isinstance(step, dict)
+            }
+            if "encode_png" not in step_names:
+                raise TestFailure("screenshot diagnostics did not report off-UI PNG encoding")
+            forbidden_steps = {"prepare_paint", "capture_native_winid"} & step_names
+            if forbidden_steps:
+                raise TestFailure(
+                    f"screenshot used unsafe UI capture steps: {sorted(forbidden_steps)}"
+                )
+            if "ui_capture_elapsed_ms" not in screenshot_result or "encode_elapsed_ms" not in screenshot_result:
+                raise TestFailure("screenshot diagnostics omitted capture/encoding timings")
+            source_steps = [
+                step
+                for step in screenshot_result.get("steps", [])
+                if isinstance(step, dict) and step.get("name") == "capture_source"
+            ]
+            if any(
+                not step.get("skipped") and step.get("storage") != "heap_qimage"
+                for step in source_steps
+            ):
+                raise TestFailure("widget screenshot capture did not use heap-backed QImage storage")
+            try:
+                screenshot = base64.b64decode(screenshot_result.get("png_base64", ""), validate=True)
+            except (ValueError, TypeError) as exc:
+                raise TestFailure(f"screenshot returned invalid PNG base64: {exc}") from exc
             screenshot_file = Path(args.screenshot_out)
             screenshot_file.parent.mkdir(parents=True, exist_ok=True)
             screenshot_file.write_bytes(screenshot)

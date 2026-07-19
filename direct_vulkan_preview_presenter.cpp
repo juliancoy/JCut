@@ -452,8 +452,6 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_placeholder->setFocusPolicy(Qt::StrongFocus);
     m_placeholder->setMinimumSize(160, 120);
     m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
-    m_placeholder->setAttribute(Qt::WA_NativeWindow, true);
-    m_placeholder->winId();
     m_stack = new QStackedLayout(m_placeholder.get());
     m_stack->setContentsMargins(0, 0, 0, 0);
 
@@ -591,8 +589,8 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
 
 void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     std::function<void(const QString&)> selectionRequested,
-    std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+    std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> transformRequested,
     std::function<void(int64_t)> playbackSampleRequested,
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested,
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
@@ -608,8 +606,8 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     directVulkanPreviewWindowSetInteractionCallbacks(
         m_window,
         std::move(selectionRequested),
-        std::move(resizeRequested),
         std::move(moveRequested),
+        std::move(transformRequested),
         std::move(playbackSampleRequested),
         std::move(correctionPointRequested),
         std::move(speakerPointRequested),

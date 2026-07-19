@@ -1,4 +1,5 @@
 #include "export_vulkan_preview_widget.h"
+#include "gpu_selection.h"
 
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
@@ -209,6 +210,9 @@ ExportVulkanPreviewWidget::ExportVulkanPreviewWidget(QWidget* parent)
 
     auto* window = new ExportVulkanPreviewWindow;
     window->setVulkanInstance(m_instance.get());
+    const auto devices = window->availablePhysicalDevices();
+    const int selectedGpu = editor::gpu::chooseVulkanDevice(devices);
+    if (selectedGpu >= 0) window->setPhysicalDeviceIndex(selectedGpu);
     m_window = window;
     m_container = QWidget::createWindowContainer(window, this);
     if (!m_container) {

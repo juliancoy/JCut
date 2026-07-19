@@ -467,44 +467,6 @@ void EditorWindow::connectPreviewSignals()
         scheduleSaveState();
         pushHistorySnapshot();
     };
-    m_preview->resizeRequested = [this](const QString &clipId, qreal scaleX, qreal scaleY, bool finalize) {
-        if (!m_timeline) return;
-        const int64_t currentFrame = m_timeline->currentFrame();
-        const bool playing = playbackActive();
-        const int64_t keyframeTimelineFrame =
-            resolvePreviewDragKeyframeTimelineFrame(
-                m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
-        const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
-        if (playing && !finalize && !transcriptOverlaySelected) {
-            QVector<TimelineClip> previewClips = m_timeline->clips();
-            bool previewUpdated = false;
-            for (TimelineClip& clip : previewClips) {
-                if (clip.id != clipId) {
-                    continue;
-                }
-                previewUpdated = stagePreviewResize(
-                    clip, keyframeTimelineFrame, scaleX, scaleY);
-                break;
-            }
-            if (!previewUpdated) return;
-            refreshPreviewTimeline(m_preview, m_timeline, previewClips);
-            return;
-        }
-
-        const bool updated = m_timeline->updateClipById(clipId, [keyframeTimelineFrame, scaleX, scaleY, transcriptOverlaySelected](TimelineClip &clip) {
-            commitPreviewResize(
-                clip,
-                keyframeTimelineFrame,
-                scaleX,
-                scaleY,
-                transcriptOverlaySelected);
-        });
-        if (!updated) return;
-        refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());
-        refreshPreviewTransformInspectorViews();
-        scheduleSaveState();
-        if (finalize) pushHistorySnapshot();
-    };
     m_preview->moveRequested = [this](const QString &clipId, qreal translationX, qreal translationY, bool finalize) {
         if (!m_timeline) return;
         const int64_t currentFrame = m_timeline->currentFrame();
@@ -543,6 +505,66 @@ void EditorWindow::connectPreviewSignals()
         scheduleSaveState();
         if (finalize) pushHistorySnapshot();
     };
+    m_preview->transformRequested =
+        [this](const QString &clipId,
+               qreal translationX,
+               qreal translationY,
+               qreal scaleX,
+               qreal scaleY,
+               bool finalize) {
+            if (!m_timeline) return;
+            const int64_t currentFrame = m_timeline->currentFrame();
+            const bool playing = playbackActive();
+            const int64_t keyframeTimelineFrame =
+                resolvePreviewDragKeyframeTimelineFrame(
+                    m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
+            const bool transcriptOverlaySelected =
+                m_preview && m_preview->selectedOverlayIsTranscript();
+            if (playing && !finalize && !transcriptOverlaySelected) {
+                QVector<TimelineClip> previewClips = m_timeline->clips();
+                bool previewUpdated = false;
+                for (TimelineClip& clip : previewClips) {
+                    if (clip.id != clipId) {
+                        continue;
+                    }
+                    previewUpdated = commitPreviewTransform(
+                        clip,
+                        keyframeTimelineFrame,
+                        translationX,
+                        translationY,
+                        scaleX,
+                        scaleY,
+                        transcriptOverlaySelected);
+                    break;
+                }
+                if (!previewUpdated) return;
+                refreshPreviewTimeline(m_preview, m_timeline, previewClips);
+                return;
+            }
+
+            const bool updated = m_timeline->updateClipById(
+                clipId,
+                [keyframeTimelineFrame,
+                 translationX,
+                 translationY,
+                 scaleX,
+                 scaleY,
+                 transcriptOverlaySelected](TimelineClip &clip) {
+                    commitPreviewTransform(
+                        clip,
+                        keyframeTimelineFrame,
+                        translationX,
+                        translationY,
+                        scaleX,
+                        scaleY,
+                        transcriptOverlaySelected);
+                });
+            if (!updated) return;
+            refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());
+            refreshPreviewTransformInspectorViews();
+            scheduleSaveState();
+            if (finalize) pushHistorySnapshot();
+        };
 }
 
 QWidget *EditorWindow::buildEditorPane()

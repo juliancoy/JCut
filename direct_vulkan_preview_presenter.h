@@ -115,8 +115,8 @@ public:
     QString backendName() const;
     void setInteractionCallbacks(
         std::function<void(const QString&)> selectionRequested,
-        std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
         std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+        std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> transformRequested = {},
         std::function<void(int64_t)> playbackSampleRequested = {},
         std::function<void(const QString&, qreal, qreal)> correctionPointRequested = {},
         std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},

@@ -1,4 +1,6 @@
 #include "inspector_pane.h"
+#include "gpu_selection.h"
+#include <QVulkanInstance>
 
 #include "background_fill_effect.h"
 #include "debug_controls.h"
@@ -266,6 +268,23 @@ QWidget *InspectorPane::buildPreviewTab()
                        "Direct uses a separate native Vulkan window. Requires restart."));
     auto *vulkanPresenterForm = new QFormLayout();
     vulkanPresenterForm->addRow(QStringLiteral("Vulkan Presenter"), m_previewVulkanPresenterCombo);
+
+    m_previewGpuCombo = new QComboBox(page);
+    m_previewGpuCombo->addItem(QStringLiteral("Automatic (Prefer Intel Iris)"), QStringLiteral("auto"));
+    QVulkanInstance gpuProbeInstance;
+    if (gpuProbeInstance.create()) {
+        QVulkanWindow gpuProbeWindow;
+        gpuProbeWindow.setVulkanInstance(&gpuProbeInstance);
+        const auto devices = gpuProbeWindow.availablePhysicalDevices();
+        for (const auto& device : devices) {
+            m_previewGpuCombo->addItem(
+                QString::fromUtf8(device.deviceName),
+                editor::gpu::deviceKey(device.vendorID, device.deviceID));
+        }
+    }
+    m_previewGpuCombo->setToolTip(
+        QStringLiteral("Physical GPU used for Vulkan rendering and preferred video decoding. Requires restart."));
+    vulkanPresenterForm->addRow(QStringLiteral("GPU"), m_previewGpuCombo);
 
     // Zoom control section
     auto *zoomSectionLabel = new QLabel(QStringLiteral("Zoom"), page);

@@ -1123,6 +1123,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             .toString(qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER", QStringLiteral("direct")))
             .trimmed()
             .toLower();
+    QString gpuPreference = qEnvironmentVariable("JCUT_GPU_PREFERENCE", QStringLiteral("auto"))
+                                .trimmed().toLower();
+    if (!gpuPreference.startsWith(QStringLiteral("pci:"))) {
+        gpuPreference = QStringLiteral("auto");
+    }
     if (renderBackendPreference == QStringLiteral("vulkan") && previewVulkanPresenterPreference.isEmpty()) {
         previewVulkanPresenterPreference = QStringLiteral("direct");
     }
@@ -1431,6 +1436,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                                     ? QStringLiteral("vulkan")
                                     : renderBackendPreference;
     m_previewVulkanPresenterPreference = previewVulkanPresenterPreference;
+    m_gpuPreference = gpuPreference;
     qputenv("JCUT_RENDER_BACKEND", m_renderBackendPreference.toUtf8());
     qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", m_previewVulkanPresenterPreference.toUtf8());
     const QString aiSelectedModel = root.value(QStringLiteral("aiSelectedModel")).toString(QStringLiteral("deepseek-chat"));
@@ -1800,6 +1806,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         if (presenterIndex >= 0) {
             m_previewVulkanPresenterCombo->setCurrentIndex(presenterIndex);
         }
+    }
+    if (m_previewGpuCombo) {
+        QSignalBlocker block(m_previewGpuCombo);
+        const int gpuIndex = m_previewGpuCombo->findData(m_gpuPreference);
+        if (gpuIndex >= 0) m_previewGpuCombo->setCurrentIndex(gpuIndex);
     }
     if (m_speakerShowFaceDetectionsBoxesCheckBox) {
         QSignalBlocker block(m_speakerShowFaceDetectionsBoxesCheckBox);

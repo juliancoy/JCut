@@ -13,15 +13,6 @@ int64_t resolvePreviewDragKeyframeTimelineFrame(QHash<QString, int64_t>& anchorF
                                                 bool playing,
                                                 bool finalize);
 bool createPreviewKeyframeAtTimelineFrame(TimelineClip& clip, int64_t timelineFrame);
-bool stagePreviewResize(TimelineClip& clip,
-                        int64_t keyframeTimelineFrame,
-                        qreal scaleX,
-                        qreal scaleY);
-bool commitPreviewResize(TimelineClip& clip,
-                         int64_t keyframeTimelineFrame,
-                         qreal scaleX,
-                         qreal scaleY,
-                         bool transcriptOverlaySelected);
 bool stagePreviewMove(TimelineClip& clip,
                       int64_t keyframeTimelineFrame,
                       qreal translationX,
@@ -31,3 +22,10 @@ bool commitPreviewMove(TimelineClip& clip,
                        qreal translationX,
                        qreal translationY,
                        bool transcriptOverlaySelected);
+bool commitPreviewTransform(TimelineClip& clip,
+                            int64_t keyframeTimelineFrame,
+                            qreal translationX,
+                            qreal translationY,
+                            qreal scaleX,
+                            qreal scaleY,
+                            bool transcriptOverlaySelected);

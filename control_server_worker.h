@@ -246,7 +246,7 @@ private:
     qint64 m_idleProjectRefreshIntervalMs = 8000;
     qint64 m_idleHistoryRefreshIntervalMs = 8000;
     qint64 m_idleUiTreeRefreshIntervalMs = 12000;
-    qint64 m_screenshotMinIntervalMs = 250;
+    qint64 m_screenshotMinIntervalMs = 1000;
     qint64 m_uiRefreshCooldownAfterTimeoutMs = 750;
     qint64 m_frameTraceSampleCap = 300;
     qint64 m_freezeEventCap = 64;

@@ -209,10 +209,10 @@ bool createPreviewKeyframeAtTimelineFrame(TimelineClip& clip, int64_t timelineFr
     return upsertStoredTransformKeyframe(clip, keyframe);
 }
 
-bool stagePreviewResize(TimelineClip& clip,
-                        int64_t keyframeTimelineFrame,
-                        qreal scaleX,
-                        qreal scaleY) {
+static bool stagePreviewResize(TimelineClip& clip,
+                               int64_t keyframeTimelineFrame,
+                               qreal scaleX,
+                               qreal scaleY) {
     return upsertVisualTransformKeyframe(
         clip,
         keyframeTimelineFrame,
@@ -224,11 +224,11 @@ bool stagePreviewResize(TimelineClip& clip,
         });
 }
 
-bool commitPreviewResize(TimelineClip& clip,
-                         int64_t keyframeTimelineFrame,
-                         qreal scaleX,
-                         qreal scaleY,
-                         bool transcriptOverlaySelected) {
+static bool commitPreviewResize(TimelineClip& clip,
+                                int64_t keyframeTimelineFrame,
+                                qreal scaleX,
+                                qreal scaleY,
+                                bool transcriptOverlaySelected) {
     if (transcriptOverlaySelected &&
         clipSupportsTranscriptOverlayPreviewEdits(clip)) {
         clip.transcriptOverlay.boxWidth = qMax<qreal>(
@@ -282,4 +282,32 @@ bool commitPreviewMove(TimelineClip& clip,
             keyframe.translationX = translationX - clip.baseTranslationX;
             keyframe.translationY = translationY - clip.baseTranslationY;
         });
+}
+
+bool commitPreviewTransform(TimelineClip& clip,
+                            int64_t keyframeTimelineFrame,
+                            qreal translationX,
+                            qreal translationY,
+                            qreal scaleX,
+                            qreal scaleY,
+                            bool transcriptOverlaySelected) {
+    if (transcriptOverlaySelected &&
+        clipSupportsTranscriptOverlayPreviewEdits(clip)) {
+        clip.transcriptOverlay.translationX = translationX;
+        clip.transcriptOverlay.translationY = translationY;
+        clip.transcriptOverlay.useManualPlacement = true;
+        clip.transcriptOverlay.boxWidth = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth,
+            scaleX);
+        clip.transcriptOverlay.boxHeight = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight,
+            scaleY);
+        return true;
+    }
+
+    bool updated = commitPreviewMove(
+        clip, keyframeTimelineFrame, translationX, translationY, false);
+    updated = commitPreviewResize(
+        clip, keyframeTimelineFrame, scaleX, scaleY, false) || updated;
+    return updated;
 }

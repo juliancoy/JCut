@@ -498,6 +498,7 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
+    QComboBox *m_previewGpuCombo = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
     QCheckBox *m_speakerApplyTrackToAllMatchingSectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
@@ -797,6 +798,7 @@ private:
     QString m_previewViewMode = QStringLiteral("video");
     QString m_renderBackendPreference = QStringLiteral("vulkan");
     QString m_previewVulkanPresenterPreference = QStringLiteral("embedded");
+    QString m_gpuPreference = QStringLiteral("auto");
     bool m_aiIntegrationEnabled = false;
     QString m_aiIntegrationStatus;
     QString m_aiServiceUrl;
