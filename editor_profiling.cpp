@@ -732,9 +732,7 @@ QJsonObject EditorWindow::playbackConfigSnapshot() const
         {QStringLiteral("audio_warp_mode"), playbackAudioWarpModeToString(config.audioWarpMode)},
         {QStringLiteral("playback_loop_enabled"), config.loopEnabled},
         {QStringLiteral("playback_audio_warmup_pending"), m_playbackAudioWarmupPending},
-        {QStringLiteral("playback_video_warmup_pending"), m_playbackVideoWarmupPending},
         {QStringLiteral("retiming_audio_for_playback"), m_retimingAudioForPlayback},
-        {QStringLiteral("start_playback_after_audio_warmup"), m_startPlaybackAfterAudioWarmup},
         {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}
     };
 }

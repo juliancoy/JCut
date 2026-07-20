@@ -72,6 +72,76 @@ constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
 
 using namespace jcut::direct_vulkan_preview;
 
+bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& transient,
+                                        PreviewDragMode dragMode,
+                                        const QPointF& surfacePosition,
+                                        const QPointF& previewScale,
+                                        bool clipPixelSizeIsKnown,
+                                        TimelineClip::TransformKeyframe* transformOut)
+{
+    if (!transformOut ||
+        (dragMode != PreviewDragMode::ResizeX &&
+         dragMode != PreviewDragMode::ResizeY &&
+         dragMode != PreviewDragMode::ResizeBoth) ||
+        transient.dragOriginBounds.width() <= 1.0 ||
+        transient.dragOriginBounds.height() <= 1.0) {
+        return false;
+    }
+
+    qreal scaleX = transient.dragOriginTransform.scaleX;
+    qreal scaleY = transient.dragOriginTransform.scaleY;
+    if (dragMode == PreviewDragMode::ResizeX ||
+        dragMode == PreviewDragMode::ResizeBoth) {
+        const qreal factorX =
+            (transient.dragOriginBounds.width() +
+             (surfacePosition.x() - transient.dragOriginPos.x())) /
+            transient.dragOriginBounds.width();
+        scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * factorX);
+    }
+    if (dragMode == PreviewDragMode::ResizeY ||
+        dragMode == PreviewDragMode::ResizeBoth) {
+        const qreal factorY =
+            (transient.dragOriginBounds.height() +
+             (surfacePosition.y() - transient.dragOriginPos.y())) /
+            transient.dragOriginBounds.height();
+        scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * factorY);
+    }
+    if (dragMode == PreviewDragMode::ResizeBoth) {
+        const qreal factorX =
+            (transient.dragOriginBounds.width() +
+             (surfacePosition.x() - transient.dragOriginPos.x())) /
+            transient.dragOriginBounds.width();
+        const qreal factorY =
+            (transient.dragOriginBounds.height() +
+             (surfacePosition.y() - transient.dragOriginPos.y())) /
+            transient.dragOriginBounds.height();
+        const qreal uniformFactor =
+            std::abs(factorX) >= std::abs(factorY) ? factorX : factorY;
+        scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * uniformFactor);
+        scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * uniformFactor);
+    }
+
+    const QPointF translation = PreviewViewTransform::translationForAnchoredResize(
+        QPointF(transient.dragOriginTransform.translationX, transient.dragOriginTransform.translationY),
+        QPointF(transient.dragOriginTransform.scaleX, transient.dragOriginTransform.scaleY),
+        QPointF(scaleX, scaleY),
+        transient.dragOriginBounds,
+        (dragMode == PreviewDragMode::ResizeX
+             ? PreviewResizeAnchor::Left
+             : (dragMode == PreviewDragMode::ResizeY
+                    ? PreviewResizeAnchor::Top
+                    : PreviewResizeAnchor::TopLeft)),
+        clipPixelSizeIsKnown ? previewScale : QPointF(1.0, 1.0));
+
+    TimelineClip::TransformKeyframe transform = transient.dragOriginTransform;
+    transform.scaleX = scaleX;
+    transform.scaleY = scaleY;
+    transform.translationX = translation.x();
+    transform.translationY = translation.y();
+    *transformOut = transform;
+    return true;
+}
+
 class DirectVulkanPreviewRenderer final : public QVulkanWindowRenderer {
 public:
     DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner, QVulkanWindow* window)
@@ -500,6 +570,24 @@ protected:
                     m_selectionRequested(hitClipId);
                 }
             }
+            // A title should be draggable with the same gesture that selects it.
+            // Previously this branch returned immediately after selection, so an
+            // unselected title required a click followed by a second click-drag.
+            VulkanInteractionOverlayInfo hitInfo;
+            if (clipIdIsTitleForVulkan(m_state, hitClipId) &&
+                lookupVulkanInteractionInfo(infos, hitClipId, &hitInfo) &&
+                hitInfo.bounds.contains(surfacePosition)) {
+                transient.dragMode = PreviewDragMode::Move;
+                transient.dragOriginPos = surfacePosition;
+                transient.dragOriginTransform =
+                    currentTransformForVulkanClip(m_state, hitClipId);
+                transient.dragOriginBounds = hitInfo.bounds;
+                transient.dragOriginTranscriptTranslation = QPointF();
+                transient.transformOverrideActive = false;
+                transient.transformOverrideClipId.clear();
+                transient.transcriptOverrideActive = false;
+                transient.transcriptOverrideClipId.clear();
+            }
             schedulePreviewUpdate();
             updatePreviewCursor(surfacePosition);
             event->accept();
@@ -649,54 +737,17 @@ protected:
             m_state->transient.transcriptTranslationOverride = translation;
             m_state->transient.transcriptSizeOverride = QSizeF(width, height);
         } else {
-            qreal scaleX = transient.dragOriginTransform.scaleX;
-            qreal scaleY = transient.dragOriginTransform.scaleY;
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeX ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
-                const qreal factorX = (transient.dragOriginBounds.width() +
-                                       (surfacePosition.x() - transient.dragOriginPos.x())) /
-                                      transient.dragOriginBounds.width();
-                scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * factorX);
+            TimelineClip::TransformKeyframe overrideTransform;
+            if (computeVulkanVisualResizeTransform(transient,
+                                                   m_state->transient.dragMode,
+                                                   surfacePosition,
+                                                   previewScale,
+                                                   activeInfo.clipPixelSize.isValid(),
+                                                   &overrideTransform)) {
+                m_state->transient.transformOverrideActive = true;
+                m_state->transient.transformOverrideClipId = clipId;
+                m_state->transient.transformOverride = overrideTransform;
             }
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeY ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
-                const qreal factorY = (transient.dragOriginBounds.height() +
-                                       (surfacePosition.y() - transient.dragOriginPos.y())) /
-                                      transient.dragOriginBounds.height();
-                scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * factorY);
-            }
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
-                const qreal factorX = (transient.dragOriginBounds.width() +
-                                       (surfacePosition.x() - transient.dragOriginPos.x())) /
-                                      transient.dragOriginBounds.width();
-                const qreal factorY = (transient.dragOriginBounds.height() +
-                                       (surfacePosition.y() - transient.dragOriginPos.y())) /
-                                      transient.dragOriginBounds.height();
-                const qreal uniformFactor =
-                    std::abs(factorX) >= std::abs(factorY) ? factorX : factorY;
-                scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * uniformFactor);
-                scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * uniformFactor);
-            }
-
-            const QPointF translation = PreviewViewTransform::translationForAnchoredResize(
-                QPointF(transient.dragOriginTransform.translationX, transient.dragOriginTransform.translationY),
-                QPointF(transient.dragOriginTransform.scaleX, transient.dragOriginTransform.scaleY),
-                QPointF(scaleX, scaleY),
-                transient.dragOriginBounds,
-                (m_state->transient.dragMode == PreviewDragMode::ResizeX
-                     ? PreviewResizeAnchor::Left
-                     : (m_state->transient.dragMode == PreviewDragMode::ResizeY
-                            ? PreviewResizeAnchor::Top
-                            : PreviewResizeAnchor::TopLeft)),
-                activeInfo.clipPixelSize.isValid() ? previewScale : QPointF(1.0, 1.0));
-            TimelineClip::TransformKeyframe overrideTransform = transient.dragOriginTransform;
-            overrideTransform.scaleX = scaleX;
-            overrideTransform.scaleY = scaleY;
-            overrideTransform.translationX = translation.x();
-            overrideTransform.translationY = translation.y();
-            m_state->transient.transformOverrideActive = true;
-            m_state->transient.transformOverrideClipId = clipId;
-            m_state->transient.transformOverride = overrideTransform;
         }
         schedulePreviewUpdate();
         event->accept();
@@ -762,8 +813,46 @@ protected:
                                          size.height(),
                                          true);
                 } else {
-                    const TimelineClip::TransformKeyframe transform =
-                        currentTransformForVulkanClip(m_state, clipId);
+                    bool hasResizeOverride =
+                        m_state->transient.transformOverrideActive &&
+                        m_state->transient.transformOverrideClipId == clipId;
+                    TimelineClip::TransformKeyframe transform =
+                        hasResizeOverride
+                            ? m_state->transient.transformOverride
+                            : TimelineClip::TransformKeyframe();
+                    if (!hasResizeOverride) {
+                        hasResizeOverride = computeVulkanVisualResizeTransform(
+                            m_state->transient,
+                            m_state->transient.dragMode,
+                            PreviewViewTransform::pointForWindowPoint(
+                                this,
+                                event->position(),
+                                PreviewSurfaceCoordinateSpace::DeviceSurface),
+                            previewScale,
+                            activeInfo.clipPixelSize.isValid(),
+                            &transform);
+                    }
+                    if (!hasResizeOverride) {
+                        qWarning().noquote()
+                            << QStringLiteral("[preview-transform-release] ok=false reason=missing_resize_override clip=%1 drag_mode=%2")
+                                   .arg(clipId)
+                                   .arg(static_cast<int>(m_state->transient.dragMode));
+                        m_state->transient.dragMode = PreviewDragMode::None;
+                        m_state->transient.dragOriginBounds = QRectF();
+                        m_state->transient.dragOriginTranscriptTranslation = QPointF();
+                        clearVulkanDragOverrides(m_state);
+                        schedulePreviewUpdate();
+                        event->accept();
+                        return;
+                    }
+                    qInfo().noquote()
+                        << QStringLiteral("[preview-transform-release] ok=true clip=%1 drag_mode=%2 tx=%3 ty=%4 sx=%5 sy=%6")
+                               .arg(clipId)
+                               .arg(static_cast<int>(m_state->transient.dragMode))
+                               .arg(transform.translationX, 0, 'f', 3)
+                               .arg(transform.translationY, 0, 'f', 3)
+                               .arg(transform.scaleX, 0, 'f', 4)
+                               .arg(transform.scaleY, 0, 'f', 4);
                     m_transformRequested(clipId,
                                          transform.translationX,
                                          transform.translationY,

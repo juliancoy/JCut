@@ -328,7 +328,7 @@ private:
     bool needsPitchPreservingPlaybackAudio() const;
     void updateAudioDriftRetime(bool reset = false);
     void reconcileActivePlaybackAudioState(bool alignRunningAudioToPlayhead = false);
-    void requestPlaybackAudioWarmup(bool startWhenReady);
+    void requestPlaybackAudioWarmup();
     void updatePlaybackStatusOverlay();
     void updateRubberBandProgressDialog(
         const AudioEngine::TimeStretchProgressSnapshot& progress,
@@ -760,10 +760,8 @@ private:
     qreal m_exportPlaybackSpeed = 1.0;
     QString m_lastPlaybackStopReason = QStringLiteral("none");
     bool m_playbackAudioWarmupPending = false;
-    bool m_playbackVideoWarmupPending = false;
     bool m_retimingAudioForPlayback = false;
     QPointer<QProgressDialog> m_rubberBandProgressDialog;
-    bool m_startPlaybackAfterAudioWarmup = false;
     int m_playbackAudioWarmupRequestId = 0;
     qreal m_audioDriftRetimeMultiplier = 1.0;
     int64_t m_lastAudioDriftHardResyncMs = 0;
@@ -838,6 +836,7 @@ private:
     mutable QVector<ExportRangeSegment> m_effectiveTranscriptNormalizeRangesCache;
 
     std::atomic<qint64> m_fastCurrentFrame{0};
+    std::atomic<qint64> m_stateRevision{0};
     std::atomic<bool> m_fastPlaybackActive{false};
     std::atomic<qint64> m_lastMainThreadHeartbeatMs{0};
     std::atomic<qint64> m_lastPlayheadAdvanceMs{0};

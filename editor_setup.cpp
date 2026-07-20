@@ -379,8 +379,8 @@ void EditorWindow::setupHeartbeat()
         m_lastMainThreadHeartbeatMs.store(nowMs());
         const bool rubberBandGenerationActive =
             m_audioEngine && m_audioEngine->timeStretchGenerationActive();
-        if (m_playbackAudioWarmupPending || m_playbackVideoWarmupPending ||
-            m_retimingAudioForPlayback || rubberBandGenerationActive ||
+        if (m_playbackAudioWarmupPending || m_retimingAudioForPlayback ||
+            rubberBandGenerationActive ||
             m_rubberBandProgressDialog) {
             updatePlaybackStatusOverlay();
         }
@@ -452,6 +452,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("pid"), static_cast<qint64>(QCoreApplication::applicationPid())},
                 {QStringLiteral("current_frame"), m_fastCurrentFrame.load()},
+                {QStringLiteral("state_revision"), m_stateRevision.load()},
                 {QStringLiteral("playback_active"), playbackIsActive && !playbackStalled},
                 {QStringLiteral("playback_timer_active"), playbackTimerActive},
                 {QStringLiteral("playback_stalled"), playbackStalled},

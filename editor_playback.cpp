@@ -20,18 +20,6 @@ extern "C" {
 
 namespace editor {
 
-namespace {
-bool shouldSkipBlockingAudioWarmup(PlaybackAudioWarpMode runtimeWarpMode,
-                                   qreal effectiveWarpRate,
-                                   bool needsPitchPreservingAudio)
-{
-    return playbackAudioWarpModeUsesTimeStretch(runtimeWarpMode) &&
-           !needsPitchPreservingAudio &&
-           qAbs(effectiveWarpRate - 1.0) < 0.0001;
-}
-
-}
-
 void EditorWindow::advanceFrame()
 {
     if (!m_timeline) return;
@@ -43,32 +31,18 @@ void EditorWindow::advanceFrame()
                                   QStringLiteral("advance_frame"));
     const qint64 tickNowMs = nowMs();
     const bool pitchPreservingAudioRequired = needsPitchPreservingPlaybackAudio();
-    const bool audioBlocked =
-        pitchPreservingAudioRequired && m_audioEngine && m_audioEngine->playbackAudioBlocked();
     const bool audioReady =
         !pitchPreservingAudioRequired ||
         (m_audioEngine && m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame()));
-    if (pitchPreservingAudioRequired && (audioBlocked || !audioReady)) {
+    if (pitchPreservingAudioRequired && !audioReady) {
         editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
                                       0,
                                       0,
                                       1,
                                       QStringLiteral("source_unavailable"),
-                                      audioBlocked
-                                          ? QStringLiteral("audio_blocked")
-                                          : QStringLiteral("retimed_audio_not_ready"));
-        if (debugPlaybackWarnEnabled()) {
-            qWarning().noquote()
-                << QStringLiteral("[PLAYBACK WARN] transport playback waiting while pitch-preserving audio warms: %1")
-                       .arg(audioBlocked
-                                ? QStringLiteral("audio_blocked")
-                                : QStringLiteral("retimed_audio_not_ready"));
-        }
-        requestPlaybackAudioWarmup(false);
+                                      QStringLiteral("retimed_audio_not_ready"));
+        requestPlaybackAudioWarmup();
         updatePlaybackStatusOverlay();
-        m_lastTimelineAdvanceTickMs = tickNowMs;
-        m_timelineAdvanceCarrySamples = 0.0;
-        return;
     }
 
     editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
@@ -917,12 +891,13 @@ void EditorWindow::setPlaybackSpeed(qreal speed)
     if (pitchPreservingPlaybackRequiresAudioGate(config.audioWarpMode,
                                                 normalizedPlaybackSpeed(speed),
                                                 true)) {
-        requestPlaybackAudioWarmup(wasPlaying);
+        if (wasPlaying || !m_playbackAudioWarmupPending) {
+            requestPlaybackAudioWarmup();
+        }
     } else if (m_playbackAudioWarmupPending) {
         ++m_playbackAudioWarmupRequestId;
         m_playbackAudioWarmupPending = false;
         m_retimingAudioForPlayback = false;
-        m_startPlaybackAfterAudioWarmup = false;
         updateTransportLabels();
     }
 }
@@ -941,12 +916,13 @@ void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
     config.audioWarpMode = mode;
     applyPlaybackRuntimeConfig(config);
     if (pitchPreservingPlaybackRequiresAudioGate(mode, m_playbackSpeed, true)) {
-        requestPlaybackAudioWarmup(wasPlaying);
+        if (wasPlaying || !m_playbackAudioWarmupPending) {
+            requestPlaybackAudioWarmup();
+        }
     } else if (m_playbackAudioWarmupPending) {
         ++m_playbackAudioWarmupRequestId;
         m_playbackAudioWarmupPending = false;
         m_retimingAudioForPlayback = false;
-        m_startPlaybackAfterAudioWarmup = false;
         updateTransportLabels();
     }
 }
@@ -1045,19 +1021,8 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
                 !m_audioEngine->playbackAudioReadyForFrame(currentFrame)) {
                 m_audioEngine->stop();
                 updateAudioDriftRetime(true);
-                requestPlaybackAudioWarmup(false);
+                requestPlaybackAudioWarmup();
                 return;
-            }
-            if (!needsPitchPreservingAudio &&
-                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
-                                               effectiveAudioWarpRate(),
-                                               needsPitchPreservingAudio) &&
-                !m_audioEngine->warmPlaybackAudio(
-                    currentFrame,
-                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] continuing system-clock transport playback without warmed audio at frame %1")
-                           .arg(currentFrame);
             }
             m_audioEngine->seek(currentFrame);
             const int64_t anchorSample = frameToSamples(currentFrame);
@@ -1067,19 +1032,8 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
-                requestPlaybackAudioWarmup(false);
+                requestPlaybackAudioWarmup();
                 return;
-            }
-            if (!needsPitchPreservingAudio &&
-                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
-                                               effectiveAudioWarpRate(),
-                                               needsPitchPreservingAudio) &&
-                !m_audioEngine->warmPlaybackAudio(
-                    m_timeline->currentFrame(),
-                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] continuing system-clock transport playback without warmed audio at frame %1")
-                           .arg(m_timeline->currentFrame());
             }
             m_audioEngine->start(m_timeline->currentFrame());
             const int64_t anchorSample = frameToSamples(m_timeline->currentFrame());
@@ -1092,19 +1046,18 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
     }
 }
 
-void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
+void EditorWindow::requestPlaybackAudioWarmup()
 {
     if (!m_audioEngine || !m_timeline) {
-        if (startWhenReady) {
-            setPlaybackActive(true);
-        }
         return;
     }
 
     if (!needsPitchPreservingPlaybackAudio()) {
-        if (startWhenReady) {
-            setPlaybackActive(true);
-        }
+        ++m_playbackAudioWarmupRequestId;
+        m_playbackAudioWarmupPending = false;
+        m_retimingAudioForPlayback = false;
+        updateTransportLabels();
+        updatePlaybackStatusOverlay();
         return;
     }
 
@@ -1114,16 +1067,13 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
         m_retimingAudioForPlayback = false;
         updateTransportLabels();
         updatePlaybackStatusOverlay();
-        if (startWhenReady) {
-            setPlaybackActive(true);
+        if (playbackActive()) {
+            reconcileActivePlaybackAudioState(true);
         }
         return;
     }
 
     if (m_playbackAudioWarmupPending) {
-        if (startWhenReady) {
-            m_startPlaybackAfterAudioWarmup = true;
-        }
         updateTransportLabels();
         updatePlaybackStatusOverlay();
         return;
@@ -1132,7 +1082,6 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
     const bool sidecarMissing = m_audioEngine->playbackAudioNeedsRetimingForFrame(frame);
     m_playbackAudioWarmupPending = true;
     m_retimingAudioForPlayback = sidecarMissing;
-    m_startPlaybackAfterAudioWarmup = startWhenReady;
     const int requestId = ++m_playbackAudioWarmupRequestId;
     updateTransportLabels();
     updatePlaybackStatusOverlay();
@@ -1150,26 +1099,21 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
                     return;
                 }
 
-                const bool shouldStart = m_startPlaybackAfterAudioWarmup;
                 m_playbackAudioWarmupPending = false;
                 m_retimingAudioForPlayback = false;
-                m_startPlaybackAfterAudioWarmup = false;
                 updateTransportLabels();
                 updatePlaybackStatusOverlay();
 
                 if (!ready) {
-                    m_lastPlaybackStopReason = QStringLiteral("audio_not_ready");
                     qWarning().noquote()
-                        << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for re-timed audio at frame %1 timed out")
+                        << QStringLiteral("[PLAYBACK WARN] audio follower could not warm re-timed audio at frame %1; system-clock transport continues")
                                .arg(frame);
                     updateTransportLabels();
                     updatePlaybackStatusOverlay();
                     return;
                 }
 
-                if (shouldStart) {
-                    setPlaybackActive(true);
-                } else if (playbackActive()) {
+                if (playbackActive()) {
                     reconcileActivePlaybackAudioState(true);
                 }
             });
@@ -1207,17 +1151,13 @@ void EditorWindow::updatePlaybackStatusOverlay()
                 : QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%)").arg(percent);
         } else if (m_playbackAudioWarmupPending) {
             text = QStringLiteral("Loading re-timed audio (%1%)").arg(percent);
-        } else if (!audioReady && m_lastPlaybackStopReason == QStringLiteral("audio_not_ready")) {
-            text = QStringLiteral("Playback waiting: loading precomputed %1% audio").arg(percent);
+        } else if (!audioReady) {
+            text = QStringLiteral("Audio pending: loading precomputed %1% audio").arg(percent);
         }
     }
     if (text.isEmpty()) {
-        if (m_playbackVideoWarmupPending) {
-            text = QStringLiteral("Playback waiting: buffering video frames");
-        } else if (m_lastPlaybackStopReason == QStringLiteral("video_not_ready")) {
-            text = QStringLiteral("Playback waiting: video frames are still buffering");
-        } else if (playbackActive() && m_audioEngine &&
-                   m_audioEngine->audioOutputUnavailableForPlayback()) {
+        if (playbackActive() && m_audioEngine &&
+            m_audioEngine->audioOutputUnavailableForPlayback()) {
             text = m_audioEngine->audioOutputStatusText();
         }
     }
@@ -1390,26 +1330,6 @@ void EditorWindow::setPlaybackActive(bool playing)
         if (m_preview) {
             m_preview->setCurrentPlaybackSample(playbackStartSample);
         }
-        if (m_preview) {
-            m_playbackVideoWarmupPending = true;
-            updateTransportLabels();
-            updatePlaybackStatusOverlay();
-            const bool videoLookaheadReady =
-                m_preview->warmPlaybackLookahead(m_playbackStartLookaheadFrames,
-                                                 m_playbackStartLookaheadTimeoutMs);
-            m_playbackVideoWarmupPending = false;
-            if (!videoLookaheadReady) {
-                m_lastPlaybackStopReason = QStringLiteral("video_not_ready");
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
-                           .arg(m_playbackStartLookaheadFrames);
-                updateTransportLabels();
-                updatePlaybackStatusOverlay();
-                return;
-            }
-            updatePlaybackStatusOverlay();
-        }
-
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setTranscriptNormalizeRanges(
@@ -1437,40 +1357,23 @@ void EditorWindow::setPlaybackActive(bool playing)
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(playbackStartFrame)) {
-                m_lastPlaybackStopReason = QStringLiteral("audio_not_ready");
-                requestPlaybackAudioWarmup(true);
+                requestPlaybackAudioWarmup();
                 qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for re-timed audio at frame %1")
+                    << QStringLiteral("[PLAYBACK WARN] audio follower waiting for re-timed audio at frame %1; system-clock transport starts now")
                            .arg(playbackStartFrame);
-                updateTransportLabels();
-                updatePlaybackStatusOverlay();
-                return;
-            }
-            if (!needsPitchPreservingAudio &&
-                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
-                                               effectiveAudioWarpRate(),
-                                               needsPitchPreservingAudio) &&
-                !m_audioEngine->warmPlaybackAudio(
-                    playbackStartFrame,
-                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for audio at frame %1 timed out")
-                           .arg(playbackStartFrame);
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] continuing system-clock transport playback without warmed audio at frame %1")
-                           .arg(playbackStartFrame);
-            }
-            m_audioEngine->start(playbackStartFrame);
-            const int64_t anchorSample = frameToSamples(playbackStartFrame);
-            m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
-            m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
-            if (!m_startupReadinessAudioStarted.exchange(true)) {
-                startupReadinessMark(QStringLiteral("audio.start.invoked"),
-                                     QJsonObject{{QStringLiteral("frame"),
-                                                  static_cast<qint64>(playbackStartFrame)},
-                                                 {QStringLiteral("warp_mode"),
-                                                  playbackAudioWarpModeToString(runtimeWarpMode)},
-                                                 {QStringLiteral("speed"), m_playbackSpeed}});
+            } else {
+                m_audioEngine->start(playbackStartFrame);
+                const int64_t anchorSample = frameToSamples(playbackStartFrame);
+                m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+                m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
+                if (!m_startupReadinessAudioStarted.exchange(true)) {
+                    startupReadinessMark(QStringLiteral("audio.start.invoked"),
+                                         QJsonObject{{QStringLiteral("frame"),
+                                                      static_cast<qint64>(playbackStartFrame)},
+                                                     {QStringLiteral("warp_mode"),
+                                                      playbackAudioWarpModeToString(runtimeWarpMode)},
+                                                     {QStringLiteral("speed"), m_playbackSpeed}});
+                }
             }
         }
         if (m_preview) {

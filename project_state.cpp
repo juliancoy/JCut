@@ -48,6 +48,7 @@ void stripHeavyStateSnapshot(QJsonObject* snapshot)
     }
 
     snapshot->remove(QString(kHistoryTranscriptDocumentsKey));
+    snapshot->remove(QStringLiteral("stateRevision"));
 
     QJsonArray timeline = snapshot->value(QStringLiteral("timeline")).toArray();
     for (int i = 0; i < timeline.size(); ++i) {
@@ -716,6 +717,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("explorerGalleryPath")] = mediaGalleryPath;
     root[QStringLiteral("currentFrame")] =
         static_cast<qint64>(m_timeline ? m_timeline->currentFrame() : 0);
+    root[QStringLiteral("stateRevision")] = m_stateRevision.load();
     root[QStringLiteral("playing")] = m_playbackTimer.isActive();
     root[QStringLiteral("selectedClipId")] =
         m_timeline ? m_timeline->selectedClipId() : QString();
@@ -1118,6 +1120,7 @@ void EditorWindow::scheduleSaveState()
     {
         return;
     }
+    m_stateRevision.fetch_add(1);
     if (playbackActive())
     {
         // Avoid synchronous state serialization work while the playback loop is active.

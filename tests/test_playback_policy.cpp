@@ -406,9 +406,9 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
              "runtime playback policy changes");
     QVERIFY2(playback.contains(QStringLiteral("int64_t playbackStartFrame")) &&
                  playback.contains(QStringLiteral("m_audioEngine->start(playbackStartFrame)")) &&
-                 playback.contains(QStringLiteral("m_audioEngine->warmPlaybackAudio(\n                    playbackStartFrame")),
+                 playback.contains(QStringLiteral("requestPlaybackAudioWarmup()")),
              "playback start must use one transport-derived start frame for audio "
-             "warmup and stream start");
+             "follower startup or asynchronous warmup");
     QVERIFY2(playback.contains(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) &&
                  playback.indexOf(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) <
                      playback.indexOf(QStringLiteral("int64_t playbackStartFrame")) &&
@@ -428,16 +428,18 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
     QVERIFY2(!playback.contains(QStringLiteral("playbackActive() && ") + removedSelectableClockHook + QStringLiteral("()")),
              "retimed-audio warmup must not restore a selectable audio clock "
              "playback path");
-    QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")) &&
-                 playback.contains(QStringLiteral("startup gated: waiting for re-timed audio")) &&
+    QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup()")) &&
+                 playback.contains(QStringLiteral("audio follower waiting for re-timed audio")) &&
                  playback.contains(QStringLiteral("reconcileActivePlaybackAudioState(true)")),
-             "missing pitch-preserving audio at playback start must gate "
-             "startup and begin playback when ready");
-    QVERIFY2(playback.contains(QStringLiteral("transport playback waiting while pitch-preserving audio warms")) &&
-                 playback.contains(QStringLiteral("m_timelineAdvanceCarrySamples = 0.0")) &&
-                 playback.contains(QStringLiteral("return;")),
-             "active playback must visibly hold the transport while required "
-             "pitch-preserving audio warms");
+             "missing pitch-preserving audio at playback start must warm as an "
+             "audio follower and attach when ready");
+    QVERIFY2(!playback.contains(QStringLiteral("startup gated: waiting for audio")) &&
+                 !playback.contains(QStringLiteral("startup gated: waiting for re-timed audio")) &&
+                 !playback.contains(QStringLiteral("transport playback waiting while pitch-preserving audio warms")),
+             "audio readiness must not gate or hold the system-clock transport");
+    QVERIFY2(!playback.contains(QStringLiteral("warmPlaybackLookahead(")) &&
+                 !playback.contains(QStringLiteral("video_not_ready")),
+             "video decoder lookahead readiness must not gate system-clock playback startup");
     QVERIFY2(playback.contains(QStringLiteral("audioOutputUnavailableForPlayback()")) &&
                  playback.contains(QStringLiteral("audioOutputStatusText()")),
              "playback overlay must distinguish audio-output failures from "

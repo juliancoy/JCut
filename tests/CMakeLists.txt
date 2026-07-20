@@ -26,6 +26,7 @@ set(EDITOR_TEST_TARGETS
     test_processing_job_manifest
     test_transform_skip_aware_timing
     test_preview_geometry
+    test_preview_edit_helpers
     test_waveform_service
     test_shader_grading_logic
     test_media_color_passthrough
@@ -93,6 +94,11 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+target_sources(test_preview_edit_helpers PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../editor_preview_edit_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../editor_transform_keyframe_ops.cpp
+)
 
 set_tests_properties(test_explorer_pane PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;JCUT_DIRECTORY_DIALOG_BACKEND=qt;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"

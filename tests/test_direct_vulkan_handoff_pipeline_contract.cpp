@@ -1482,19 +1482,19 @@ void TestDirectVulkanHandoffPipelineContract::
       "audio");
   QVERIFY2(playback.contains(QStringLiteral(
                "playbackAudioReadyForFrame(m_timeline->currentFrame())")),
-           "playback startup must gate on the exact retimed audio needed at "
-           "the current frame");
+           "playback must inspect exact retimed-audio readiness at the "
+           "current frame");
   QVERIFY2(
-      playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")) &&
+      playback.contains(QStringLiteral("requestPlaybackAudioWarmup()")) &&
           playback.contains(QStringLiteral(
-              "startup gated: waiting for re-timed audio")),
-      "missing retimed audio at startup must enter warmup/generation and "
-      "start playback only after it is ready");
+              "audio follower waiting for re-timed audio")),
+      "missing retimed audio at startup must enter warmup/generation as an "
+      "audio follower without delaying transport start");
   QVERIFY2(
-      playback.contains(QStringLiteral(
+      !playback.contains(QStringLiteral(
           "transport playback waiting while pitch-preserving audio warms")),
-      "active playback must visibly wait when required retimed audio is not "
-      "ready");
+      "active playback must not hold the system transport when required "
+      "retimed audio is not ready");
   QVERIFY2(
       playback.contains(QStringLiteral("Audio being generated")),
       "preview overlay must make retimed audio generation visible to the user");

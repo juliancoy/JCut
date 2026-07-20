@@ -4,27 +4,83 @@
 #include "editor_transform_keyframe_ops.h"
 #include "titles.h"
 
+#include <QDebug>
 #include <QtGlobal>
 
-#include <functional>
-
 namespace {
-bool upsertVisualTransformKeyframe(
-    TimelineClip& clip,
-    int64_t keyframeTimelineFrame,
-    const std::function<void(TimelineClip::TransformKeyframe&)>& mutate) {
+TimelineClip::TransformKeyframe identityVisualTransformKeyframe() {
+    TimelineClip::TransformKeyframe keyframe;
+    keyframe.frame = 0;
+    keyframe.translationX = 0.0;
+    keyframe.translationY = 0.0;
+    keyframe.rotation = 0.0;
+    keyframe.scaleX = 1.0;
+    keyframe.scaleY = 1.0;
+    keyframe.linearInterpolation = true;
+    keyframe.maskRepeatDeltaX = 0.0;
+    keyframe.maskRepeatDeltaY = 0.0;
+    return keyframe;
+}
+
+bool applyStaticPreviewVisualTransform(TimelineClip& clip,
+                                       qreal translationX,
+                                       qreal translationY,
+                                       qreal scaleX,
+                                       qreal scaleY,
+                                       bool updateScale) {
     if (!clipHasVisuals(clip)) {
         return false;
     }
-    const TimelineClip::TransformKeyframe offset =
+
+    clip.baseTranslationX = translationX;
+    clip.baseTranslationY = translationY;
+    if (updateScale) {
+        clip.baseScaleX = sanitizeScaleValue(scaleX);
+        clip.baseScaleY = sanitizeScaleValue(scaleY);
+    }
+
+    clip.transformKeyframes.clear();
+    clip.transformKeyframes.push_back(identityVisualTransformKeyframe());
+    normalizeClipTransformKeyframes(clip);
+    return true;
+}
+
+bool upsertPreviewVisualTransformKeyframe(TimelineClip& clip,
+                                          int64_t keyframeTimelineFrame,
+                                          qreal translationX,
+                                          qreal translationY,
+                                          qreal scaleX,
+                                          qreal scaleY) {
+    if (!clipHasVisuals(clip)) {
+        return false;
+    }
+
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        keyframeTimelineFrame - clip.startFrame,
+        qMax<int64_t>(0, clip.durationFrames - 1));
+    if (localFrame > 0) {
+        bool hasFrameZero = false;
+        for (const TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
+            if (existing.frame == 0) {
+                hasFrameZero = true;
+                break;
+            }
+        }
+        if (!hasFrameZero) {
+            clip.transformKeyframes.push_back(identityVisualTransformKeyframe());
+        }
+    }
+
+    TimelineClip::TransformKeyframe keyframe =
         evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-    const int64_t keyframeFrame =
-        qBound<int64_t>(0,
-                        keyframeTimelineFrame - clip.startFrame,
-                        qMax<int64_t>(0, clip.durationFrames - 1));
-    TimelineClip::TransformKeyframe keyframe = offset;
-    keyframe.frame = keyframeFrame;
-    mutate(keyframe);
+    keyframe.frame = localFrame;
+    keyframe.translationX = translationX - clip.baseTranslationX;
+    keyframe.translationY = translationY - clip.baseTranslationY;
+    keyframe.scaleX =
+        sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
+    keyframe.scaleY =
+        sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
 
     return upsertStoredTransformKeyframe(clip, keyframe);
 }
@@ -209,39 +265,6 @@ bool createPreviewKeyframeAtTimelineFrame(TimelineClip& clip, int64_t timelineFr
     return upsertStoredTransformKeyframe(clip, keyframe);
 }
 
-static bool stagePreviewResize(TimelineClip& clip,
-                               int64_t keyframeTimelineFrame,
-                               qreal scaleX,
-                               qreal scaleY) {
-    return upsertVisualTransformKeyframe(
-        clip,
-        keyframeTimelineFrame,
-        [&](TimelineClip::TransformKeyframe& keyframe) {
-            keyframe.scaleX =
-                sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
-            keyframe.scaleY =
-                sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
-        });
-}
-
-static bool commitPreviewResize(TimelineClip& clip,
-                                int64_t keyframeTimelineFrame,
-                                qreal scaleX,
-                                qreal scaleY,
-                                bool transcriptOverlaySelected) {
-    if (transcriptOverlaySelected &&
-        clipSupportsTranscriptOverlayPreviewEdits(clip)) {
-        clip.transcriptOverlay.boxWidth = qMax<qreal>(
-            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth,
-            scaleX);
-        clip.transcriptOverlay.boxHeight = qMax<qreal>(
-            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight,
-            scaleY);
-        return true;
-    }
-    return stagePreviewResize(clip, keyframeTimelineFrame, scaleX, scaleY);
-}
-
 bool stagePreviewMove(TimelineClip& clip,
                       int64_t keyframeTimelineFrame,
                       qreal translationX,
@@ -250,13 +273,14 @@ bool stagePreviewMove(TimelineClip& clip,
         return stagePreviewTitleMoveKeyframe(
             clip, keyframeTimelineFrame, translationX, translationY);
     }
-    return upsertVisualTransformKeyframe(
+    Q_UNUSED(keyframeTimelineFrame);
+    return applyStaticPreviewVisualTransform(
         clip,
-        keyframeTimelineFrame,
-        [&](TimelineClip::TransformKeyframe& keyframe) {
-            keyframe.translationX = translationX - clip.baseTranslationX;
-            keyframe.translationY = translationY - clip.baseTranslationY;
-        });
+        translationX,
+        translationY,
+        clip.baseScaleX,
+        clip.baseScaleY,
+        false);
 }
 
 bool commitPreviewMove(TimelineClip& clip,
@@ -275,13 +299,21 @@ bool commitPreviewMove(TimelineClip& clip,
         return commitPreviewTitleMoveKeyframe(
             clip, keyframeTimelineFrame, translationX, translationY);
     }
-    return upsertVisualTransformKeyframe(
+    const bool updated = applyStaticPreviewVisualTransform(
         clip,
-        keyframeTimelineFrame,
-        [&](TimelineClip::TransformKeyframe& keyframe) {
-            keyframe.translationX = translationX - clip.baseTranslationX;
-            keyframe.translationY = translationY - clip.baseTranslationY;
-        });
+        translationX,
+        translationY,
+        clip.baseScaleX,
+        clip.baseScaleY,
+        false);
+    qInfo().noquote()
+        << QStringLiteral("[preview-move-commit] ok=%1 clip=%2 mode=static_base frame=%3 tx=%4 ty=%5")
+               .arg(updated ? QStringLiteral("true") : QStringLiteral("false"),
+                    clip.id,
+                    QString::number(keyframeTimelineFrame),
+                    QString::number(translationX, 'f', 3),
+                    QString::number(translationY, 'f', 3));
+    return updated;
 }
 
 bool commitPreviewTransform(TimelineClip& clip,
@@ -305,9 +337,21 @@ bool commitPreviewTransform(TimelineClip& clip,
         return true;
     }
 
-    bool updated = commitPreviewMove(
-        clip, keyframeTimelineFrame, translationX, translationY, false);
-    updated = commitPreviewResize(
-        clip, keyframeTimelineFrame, scaleX, scaleY, false) || updated;
+    const bool updated = upsertPreviewVisualTransformKeyframe(
+        clip,
+        keyframeTimelineFrame,
+        translationX,
+        translationY,
+        scaleX,
+        scaleY);
+    qInfo().noquote()
+        << QStringLiteral("[preview-transform-commit] ok=%1 clip=%2 mode=temporal_keyframe frame=%3 tx=%4 ty=%5 sx=%6 sy=%7")
+               .arg(updated ? QStringLiteral("true") : QStringLiteral("false"),
+                    clip.id,
+                    QString::number(keyframeTimelineFrame),
+                    QString::number(translationX, 'f', 3),
+                    QString::number(translationY, 'f', 3),
+                    QString::number(scaleX, 'f', 4),
+                    QString::number(scaleY, 'f', 4));
     return updated;
 }

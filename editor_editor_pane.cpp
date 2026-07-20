@@ -520,6 +520,18 @@ void EditorWindow::connectPreviewSignals()
                     m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
             const bool transcriptOverlaySelected =
                 m_preview && m_preview->selectedOverlayIsTranscript();
+            qInfo().noquote()
+                << QStringLiteral("[preview-transform-request] clip=%1 current_frame=%2 keyframe_frame=%3 finalize=%4 playing=%5 tx=%6 ty=%7 sx=%8 sy=%9 transcript=%10")
+                       .arg(clipId,
+                            QString::number(currentFrame),
+                            QString::number(keyframeTimelineFrame),
+                            finalize ? QStringLiteral("true") : QStringLiteral("false"),
+                            playing ? QStringLiteral("true") : QStringLiteral("false"),
+                            QString::number(translationX, 'f', 3),
+                            QString::number(translationY, 'f', 3),
+                            QString::number(scaleX, 'f', 4),
+                            QString::number(scaleY, 'f', 4),
+                            transcriptOverlaySelected ? QStringLiteral("true") : QStringLiteral("false"));
             if (playing && !finalize && !transcriptOverlaySelected) {
                 QVector<TimelineClip> previewClips = m_timeline->clips();
                 bool previewUpdated = false;
@@ -633,8 +645,6 @@ void EditorWindow::updateTransportLabels()
         m_audioNowPlayingLabel->setText(QStringLiteral("Re-timing audio"));
     } else if (m_playbackAudioWarmupPending) {
         m_audioNowPlayingLabel->setText(QStringLiteral("Loading re-timed audio"));
-    } else if (m_playbackVideoWarmupPending) {
-        m_audioNowPlayingLabel->setText(QStringLiteral("Buffering video"));
     } else {
         m_audioNowPlayingLabel->setText(activeAudio.isEmpty()
                                             ? QStringLiteral("Audio idle")

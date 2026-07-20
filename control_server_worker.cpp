@@ -54,8 +54,13 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
     const qint64 fastCurrentFrame = fastSnapshot.value(QStringLiteral("current_frame")).toInteger(0);
     const bool statePlaying = snapshot.value(QStringLiteral("playing")).toBool(false);
     const qint64 stateCurrentFrame = snapshot.value(QStringLiteral("currentFrame")).toInteger(0);
+    const qint64 fastStateRevision = fastSnapshot.value(QStringLiteral("state_revision")).toInteger(-1);
+    const qint64 snapshotStateRevision = snapshot.value(QStringLiteral("stateRevision")).toInteger(-2);
     const QJsonArray timeline = snapshot.value(QStringLiteral("timeline")).toArray();
     const QString selectedClipId = snapshot.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    if (fastStateRevision >= 0 && snapshotStateRevision != fastStateRevision) {
+        return false;
+    }
     if ((playbackActive || fastCurrentFrame > 0) && timeline.isEmpty()) {
         return false;
     }
