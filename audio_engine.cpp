@@ -1393,7 +1393,12 @@ AudioEngine::timeStretchProgressSnapshot() const {
   int remaining = 0;
   for (int i = 0; i < jobs.size(); ++i) {
     const TimeStretchJobProgress &job = jobs.at(i);
-    if (job.state == TimeStretchJobComplete) {
+    // Reading an existing sidecar is cache validation/loading, not artifact
+    // generation. Do not surface the generation dialog for a cache hit. If
+    // the sidecar is missing or invalid, the job transitions to Generating
+    // below and becomes visible on the next progress snapshot.
+    if (job.state == TimeStretchJobComplete ||
+        job.state == TimeStretchJobReadingSidecar) {
       ++completed;
       continue;
     }

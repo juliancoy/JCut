@@ -87,6 +87,28 @@ bool EditorWindow::eventFilter(QObject *watched, QEvent *event)
             }
             if (belongsToEditor) {
                 const int key = keyEvent->key();
+                if (!shouldBlockGlobalEditorShortcuts() && m_timeline && !keyEvent->isAutoRepeat()) {
+                    bool changed = false;
+                    if (key == Qt::Key_C) {
+                        return m_timeline->copySelectedClips();
+                    }
+                    if (key == Qt::Key_X) {
+                        changed = m_timeline->cutSelectedClips();
+                    } else if (key == Qt::Key_V) {
+                        changed = m_timeline->pasteClipsAtCurrentFrame();
+                    } else if (key == Qt::Key_D) {
+                        changed = m_timeline->duplicateSelectedClips();
+                    } else if (key == Qt::Key_A) {
+                        return m_timeline->selectAllClips();
+                    } else if (key == Qt::Key_Y) {
+                        redoHistory();
+                        return true;
+                    }
+                    if (changed) {
+                        refreshTimelineStructureInspectorViews();
+                        return true;
+                    }
+                }
                 if (key == Qt::Key_Equal || key == Qt::Key_Plus) {
                     adjustGlobalFontSize(+1);
                     return true;

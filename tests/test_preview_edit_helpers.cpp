@@ -10,7 +10,7 @@ private slots:
     void testPreviewResizeCreatesTemporalTransformKeyframe();
     void testPreviewResizeUpdatesTemporalTransformKeyframe();
     void testPreviewResizeKeyframeStoresRelativeToBaseTransform();
-    void testPreviewMoveCommitsAsStaticBaseTransform();
+    void testPreviewMovePreservesTemporalScale();
 };
 
 namespace {
@@ -163,19 +163,24 @@ void TestPreviewEditHelpers::testPreviewResizeKeyframeStoresRelativeToBaseTransf
     QCOMPARE(resized.scaleY, 1.75);
 }
 
-void TestPreviewEditHelpers::testPreviewMoveCommitsAsStaticBaseTransform() {
+void TestPreviewEditHelpers::testPreviewMovePreservesTemporalScale() {
     TimelineClip clip = makeVideoClipWithPreviewKeyframeArtifacts();
     clip.baseScaleX = 1.5;
     clip.baseScaleY = 1.5;
 
     QVERIFY(commitPreviewMove(clip, 162, 32.0, -44.0, false));
 
-    QCOMPARE(clip.baseTranslationX, 32.0);
-    QCOMPARE(clip.baseTranslationY, -44.0);
+    QCOMPARE(clip.baseTranslationX, 0.0);
+    QCOMPARE(clip.baseTranslationY, 0.0);
     QCOMPARE(clip.baseScaleX, 1.5);
     QCOMPARE(clip.baseScaleY, 1.5);
-    QCOMPARE(clip.transformKeyframes.size(), 1);
-    verifyIdentityTransformKeyframe(clip.transformKeyframes.constFirst());
+    QCOMPARE(clip.transformKeyframes.size(), 2);
+    const TimelineClip::TransformKeyframe moved =
+        evaluateClipTransformAtFrame(clip, 162);
+    QCOMPARE(moved.translationX, 32.0);
+    QCOMPARE(moved.translationY, -44.0);
+    QCOMPARE(moved.scaleX, 2.835);
+    QCOMPARE(moved.scaleY, 2.835);
 }
 
 QTEST_MAIN(TestPreviewEditHelpers)

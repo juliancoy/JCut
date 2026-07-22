@@ -272,6 +272,7 @@ QWidget *InspectorPane::buildPreviewTab()
     m_previewGpuCombo = new QComboBox(page);
     m_previewGpuCombo->addItem(QStringLiteral("Automatic (Prefer Intel Iris)"), QStringLiteral("auto"));
     QVulkanInstance gpuProbeInstance;
+    gpuProbeInstance.setApiVersion(QVersionNumber(1, 1));
     if (gpuProbeInstance.create()) {
         QVulkanWindow gpuProbeWindow;
         gpuProbeWindow.setVulkanInstance(&gpuProbeInstance);

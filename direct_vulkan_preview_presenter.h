@@ -60,6 +60,9 @@ struct DirectVulkanPreviewStats {
     int64_t decoderDiagnosticReadbackCopies = 0;
     int64_t previewUpdateRequests = 0;
     int64_t previewUpdatesDelivered = 0;
+    int64_t stalePreviewUpdateRecoveries = 0;
+    int64_t previewSurfaceRestarts = 0;
+    double lastStalePreviewUpdateAgeMs = 0.0;
     double lastPreviewUpdateLatencyMs = 0.0;
     double maxPreviewUpdateLatencyMs = 0.0;
     double lastPresentIntervalMs = 0.0;

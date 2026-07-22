@@ -70,6 +70,11 @@ public:
     bool createOrReplaceMaskZMarker(const QString& clipId, bool selectMarker = true);
     bool deleteSelectedClip();
     bool deleteClipById(const QString& clipId);
+    bool copySelectedClips();
+    bool cutSelectedClips();
+    bool pasteClipsAtCurrentFrame();
+    bool duplicateSelectedClips();
+    bool selectAllClips();
     bool splitSelectedClipAtFrame(int64_t frame);
     bool splitClipAtFrame(const QString& clipId, int64_t frame);
     bool nudgeSelectedClip(int direction);
@@ -313,6 +318,7 @@ private:
     int m_verticalScrollOffset = 0;
     int64_t m_snapIndicatorFrame = -1;
     ClipSelectionState m_clipSelection;
+    QVector<TimelineClip> m_clipClipboard;
     int m_selectedTrackIndex = -1;
     QString m_hoveredClipId;
     QVector<RenderSyncMarker> m_renderSyncMarkers;

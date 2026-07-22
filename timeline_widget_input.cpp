@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "editor_effect_presets.h"
 #include "editor_shared_timing.h"
 #include "titles.h"
 
@@ -853,6 +854,9 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             } else {
                 clip.startFrame = qMax<int64_t>(0, m_dragOriginalStartFrame + moveDelta);
             }
+            // Keep generated followers visually aligned during the gesture as
+            // well as at the committed sortClips() mutation boundary.
+            normalizeMaskMatteClips(m_clips);
             m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
             m_currentFrame = qMax<int64_t>(0, m_dragOriginalStartFrame + moveDelta);
 
@@ -952,6 +956,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 }
                 normalizeClipTransformKeyframes(clip);
             }
+            normalizeMaskMatteClips(m_clips);
             m_currentFrame = newStartFrame;
         } else if (m_dragMode == ClipDragMode::TrimRight) {
             if (clip.mediaType == ClipMediaType::Audio) {
@@ -1013,6 +1018,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 }
                 normalizeClipTransformKeyframes(clip);
             }
+            normalizeMaskMatteClips(m_clips);
             m_currentFrame = newEndFrame;
         }
         update();

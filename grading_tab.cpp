@@ -368,31 +368,12 @@ void GradingTab::refresh()
 
     m_suppressSyncForTimelineFrame = -1;
 
-    GradingKeyframeDisplay displayed = evaluateDisplayedGrading(*clip, clip->startFrame);
     const int selectedIndex = selectedKeyframeIndex(*clip);
-    if (selectedIndex >= 0) {
-        const auto& keyframe = clip->gradingKeyframes[selectedIndex];
-        displayed.frame = keyframe.frame;
-        displayed.brightness = keyframe.brightness;
-        displayed.contrast = keyframe.contrast;
-        displayed.saturation = keyframe.saturation;
-        displayed.shadowsR = keyframe.shadowsR;
-        displayed.shadowsG = keyframe.shadowsG;
-        displayed.shadowsB = keyframe.shadowsB;
-        displayed.midtonesR = keyframe.midtonesR;
-        displayed.midtonesG = keyframe.midtonesG;
-        displayed.midtonesB = keyframe.midtonesB;
-        displayed.highlightsR = keyframe.highlightsR;
-        displayed.highlightsG = keyframe.highlightsG;
-        displayed.highlightsB = keyframe.highlightsB;
-        displayed.curvePointsR = keyframe.curvePointsR;
-        displayed.curvePointsG = keyframe.curvePointsG;
-        displayed.curvePointsB = keyframe.curvePointsB;
-        displayed.curvePointsLuma = keyframe.curvePointsLuma;
-        displayed.curveThreePointLock = keyframe.curveThreePointLock;
-        displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
-        displayed.linearInterpolation = keyframe.linearInterpolation;
-    }
+    const int64_t displayedLocalFrame = selectedIndex >= 0
+                                              ? clip->gradingKeyframes[selectedIndex].frame
+                                              : calculateLocalFrame(clip);
+    const GradingKeyframeDisplay displayed =
+        evaluateDisplayedGrading(*clip, displayedLocalFrame);
     updateSpinBoxesFromKeyframe(displayed);
 
     editor::restoreSelectionByFrameRole(m_widgets.gradingKeyframeTable, m_selectedKeyframeFrames);
@@ -519,34 +500,7 @@ void GradingTab::syncTableToPlayhead()
         m_selectedKeyframeFrame = primaryFrame;
         m_selectedKeyframeFrames = {primaryFrame};
         
-        // Update spin boxes with the selected keyframe's values
-        GradingKeyframeDisplay displayed = evaluateDisplayedGrading(*clip, clip->startFrame + primaryFrame);
-        for (const TimelineClip::GradingKeyframe& keyframe : clip->gradingKeyframes) {
-            if (keyframe.frame == primaryFrame) {
-                displayed.frame = keyframe.frame;
-                displayed.brightness = keyframe.brightness;
-                displayed.contrast = keyframe.contrast;
-                displayed.saturation = keyframe.saturation;
-                displayed.shadowsR = keyframe.shadowsR;
-                displayed.shadowsG = keyframe.shadowsG;
-                displayed.shadowsB = keyframe.shadowsB;
-                displayed.midtonesR = keyframe.midtonesR;
-                displayed.midtonesG = keyframe.midtonesG;
-                displayed.midtonesB = keyframe.midtonesB;
-                displayed.highlightsR = keyframe.highlightsR;
-                displayed.highlightsG = keyframe.highlightsG;
-                displayed.highlightsB = keyframe.highlightsB;
-                displayed.curvePointsR = keyframe.curvePointsR;
-                displayed.curvePointsG = keyframe.curvePointsG;
-                displayed.curvePointsB = keyframe.curvePointsB;
-                displayed.curvePointsLuma = keyframe.curvePointsLuma;
-                displayed.curveThreePointLock = keyframe.curveThreePointLock;
-                displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
-                displayed.linearInterpolation = keyframe.linearInterpolation;
-                break;
-            }
-        }
-        updateSpinBoxesFromKeyframe(displayed);
+        updateSpinBoxesFromKeyframe(evaluateDisplayedGrading(*clip, primaryFrame));
     }
     updateHistogramAndCurve();
 }
@@ -845,33 +799,7 @@ void GradingTab::onTableSelectionChanged()
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     if (clip && m_deps.clipHasVisuals(*clip)) {
-        GradingKeyframeDisplay displayed = evaluateDisplayedGrading(*clip, clip->startFrame + primaryFrame);
-        for (const TimelineClip::GradingKeyframe& keyframe : clip->gradingKeyframes) {
-            if (keyframe.frame == primaryFrame) {
-                displayed.frame = keyframe.frame;
-                displayed.brightness = keyframe.brightness;
-                displayed.contrast = keyframe.contrast;
-                displayed.saturation = keyframe.saturation;
-                displayed.shadowsR = keyframe.shadowsR;
-                displayed.shadowsG = keyframe.shadowsG;
-                displayed.shadowsB = keyframe.shadowsB;
-                displayed.midtonesR = keyframe.midtonesR;
-                displayed.midtonesG = keyframe.midtonesG;
-                displayed.midtonesB = keyframe.midtonesB;
-                displayed.highlightsR = keyframe.highlightsR;
-                displayed.highlightsG = keyframe.highlightsG;
-                displayed.highlightsB = keyframe.highlightsB;
-                displayed.curvePointsR = keyframe.curvePointsR;
-                displayed.curvePointsG = keyframe.curvePointsG;
-                displayed.curvePointsB = keyframe.curvePointsB;
-                displayed.curvePointsLuma = keyframe.curvePointsLuma;
-                displayed.curveThreePointLock = keyframe.curveThreePointLock;
-                displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
-                displayed.linearInterpolation = keyframe.linearInterpolation;
-                break;
-            }
-        }
-        updateSpinBoxesFromKeyframe(displayed);
+        updateSpinBoxesFromKeyframe(evaluateDisplayedGrading(*clip, primaryFrame));
     }
     updateHistogramAndCurve();
 

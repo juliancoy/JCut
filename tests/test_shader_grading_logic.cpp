@@ -262,6 +262,9 @@ void TestShaderGradingLogic::testNv12HandoffShaderStoresCanonicalRgba()
              "NV12 handoff shader must honor full-range source metadata.");
     QVERIFY2(shader.contains(QStringLiteral("pc.colorMatrix")),
              "NV12 handoff shader must honor source color-matrix metadata.");
+    QVERIFY2(shader.contains(QStringLiteral("pc.colorMatrix == 2")) &&
+                 shader.contains(QStringLiteral("1.4746 * v")),
+             "NV12 handoff shader must support BT.2020 non-constant-luminance sources.");
     QVERIFY2(shader.contains(QStringLiteral("pc.chromaSwap")),
              "NV12 handoff shader must support decoder paths that expose VU chroma order.");
     QVERIFY2(shader.contains(QStringLiteral("uint chromaX = p.x & ~1u;")) &&

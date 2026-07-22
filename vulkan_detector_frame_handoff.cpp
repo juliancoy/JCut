@@ -89,7 +89,9 @@ QString nv12ColorConversionLabel(const Nv12ColorConversion& conversion)
 {
     const QString matrix = conversion.colorMatrix == 0
         ? QStringLiteral("bt601")
-        : QStringLiteral("bt709");
+        : (conversion.colorMatrix == 2
+               ? QStringLiteral("bt2020_ncl")
+               : QStringLiteral("bt709"));
     const QString range = conversion.fullRange != 0
         ? QStringLiteral("full")
         : QStringLiteral("limited");
@@ -107,6 +109,8 @@ Nv12ColorConversion nv12ColorConversionForFrame(const editor::FrameHandle& frame
         return conversion;
     }
 
+    // FFmpeg's JPEG value means full/PC range for every codec, not just JPEG.
+    // Unspecified range follows the professional video default: limited range.
     conversion.fullRange = avFrame->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
     switch (avFrame->colorspace) {
         case AVCOL_SPC_SMPTE170M:
@@ -114,9 +118,18 @@ Nv12ColorConversion nv12ColorConversionForFrame(const editor::FrameHandle& frame
         case AVCOL_SPC_FCC:
             conversion.colorMatrix = 0;
             break;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            conversion.colorMatrix = 2;
+            break;
         case AVCOL_SPC_BT709:
-        default:
             conversion.colorMatrix = 1;
+            break;
+        case AVCOL_SPC_UNSPECIFIED:
+        default:
+            // ITU/FFmpeg convention for untagged material: SD uses BT.601;
+            // HD and UHD use BT.709 unless explicitly tagged as BT.2020.
+            conversion.colorMatrix = avFrame->height > 576 || avFrame->width >= 1280 ? 1 : 0;
             break;
     }
     return conversion;

@@ -378,3 +378,187 @@ Any logic duplicated between the two shells should be treated as a migration bug
   - `ctest --test-dir build -R 'test_imgui_binary_no_qt|test_imgui_standalone_render|test_imgui_standalone_export' --output-on-failure`
 - Remaining work on this track is to remove the larger Qt request/result/JSON and renderer-surface
   types that still sit above these now-neutral Vulkan/backend contracts.
+
+## UI Parity Audit
+
+### Conclusion
+
+The Dear ImGui editor is not yet fully on par with the Qt editor. It is a usable migration
+checkpoint with the main editor layout and a functional basic editing loop, but a substantial
+part of the visible inspector surface is currently scaffolding rather than connected editor
+functionality. It should not yet be treated as a drop-in replacement for the Qt UI.
+
+### Current Functional Coverage
+
+The following areas have meaningful working implementations in the ImGui shell:
+
+- loading and saving the active project session
+- browsing and importing media
+- selecting tracks and clips
+- basic clip insertion and deletion
+- timeline seeking
+- clip move, start trim, and end trim interactions
+- splitting a selected clip at the playhead
+- playback, pause, frame stepping, and playback-speed control
+- basic audio-preview integration
+- Vulkan preview rendering
+- basic preview zoom and pan
+- export size, frame rate, path, container, proxy, and image-sequence settings
+- starting, monitoring, cancelling, and reporting standalone exports
+- basic project, clip, track, and panel-visibility commands
+
+### Feature Comparison
+
+| Area | ImGui status | Remaining parity work |
+| --- | --- | --- |
+| Project loading and saving | Partially functional | Add full project selection, creation, rename, history, and safe roundtrip coverage. |
+| Media browser and import | Mostly functional | Match Qt metadata, drag/drop, proxy, deletion, and media-management actions. |
+| Playback and seek | Functional basic implementation | Match Qt shortcuts, playback policies, preview controls, and advanced transport behavior. |
+| Timeline | Basic select, move, trim, split, and delete work | Add multi-selection, undo/redo, razor mode, nudge, copy/paste, snapping behavior, track reorder, context actions, export ranges, proxies, transcripts, and facedetection actions. |
+| Preview | Functional basic Vulkan preview | Close renderer gaps for richer composition, overlays, transcripts, grading, masks, effects, and exact Qt/Vulkan behavior. |
+| Export | Basic video and image-sequence export works | Match the complete Qt output configuration and renderer behavior. |
+| Grade | Mostly presentation-only | Bind grading values, channel curves, histograms, keyframes, interpolation, preview, and auto-oppose behavior. |
+| Opacity | Presentation-only | Bind opacity values, keyframes, interpolation, and fade operations. |
+| Effects | Presentation-only | Bind effect state, mask feathering, effect parameters, presets, and preview evaluation. |
+| Masks | Missing as an equivalent inspector tab | Port the full masks UI and editing workflow. |
+| Corrections | Presentation-only | Bind enablement, polygon drawing, ranges, point editing, clearing, and preview overlays. |
+| Titles | Presentation-only | Bind title creation, removal, text/style controls, placement, keyframes, and preview rendering. |
+| Sync | Presentation-only | Load, edit, clear, and display actual sync points and associated actions. |
+| Transform | Presentation-only | Bind transform values, keyframes, interpolation, flips, and preview manipulation. |
+| Transcript | Visibility toggle only; editor table is empty | Port transcript loading, editing, timing, skipping, restoration, overlay styling, and context actions. |
+| Speakers | Presentation-only | Port roster, sections, assignments, AI cleanup, continuity tracks, face detections, titles, and debugging tools. |
+| History | Empty table | Add actual undo/redo history and navigation. |
+| Audio | Basic status and waveform toggle | Port the full audio inspector, routing, dynamics, mixing, isolation, and preview controls. |
+| Processing jobs | Missing as an equivalent inspector tab | Port job creation, progress, cancellation, diagnostics, and result handling. |
+| AI Assist | Presentation-only | Connect transcription, transcript mining, model selection, chat, and cleanup actions. |
+| Access | Presentation-only | Connect entitlement/subscription data and refresh behavior. |
+| Scopes | Placeholder drawing | Feed real grading scope and histogram data. |
+| Pipeline | Placeholder drawing and static labels | Connect the actual pipeline graph, state, diagnostics, and preview. |
+| System | Mostly static status | Connect decoder threading, benchmarks, decoder restart, hardware status, and diagnostics. |
+| Projects | Current path display and Save As only | Implement new, rename, switch, and project-management behavior. |
+| Preferences | Small functional subset | Port the complete Qt preferences surface and persistence behavior. |
+
+### Visible But Unwired Controls
+
+Several tabs currently resemble their Qt counterparts but do not apply changes to the runtime.
+Examples in `jcut_imgui_main.cpp` include:
+
+- saturation, brightness, and contrast sliders
+- grade keyframe and auto-oppose buttons
+- opacity slider, keyframe, and fade buttons
+- mask-feathering controls
+- correction toggles and polygon buttons
+- title text, placement, size, add, and remove controls
+- sync-point clearing
+- transform sliders, keyframe creation, and horizontal flip
+- transcript layout controls and transcript rows
+- speaker mining, organization, cleanup, continuity, and detection controls
+- AI transcription, mining, chat send, and clear actions
+- access refresh
+- decoder threading, benchmark, and restart controls
+- project New and Rename actions
+
+Many of these controls use temporary local values that are recreated every frame, or their return
+values are ignored. They therefore provide visual coverage without behavioral parity.
+
+### Menu And Shortcut Gaps
+
+The File menu currently displays disabled Open Project, Import Media, and Export entries even
+though some related operations are available elsewhere in the shell. Save and Reload are
+available through the menu, but their displayed `Ctrl+S` and `Ctrl+R` shortcuts are not handled as
+editor actions.
+
+The ImGui shell also lacks the Qt editor's major editing shortcuts and commands, including:
+
+- undo and redo
+- split at playhead shortcut
+- razor/select tool switching
+- delete-selected shortcut
+- left/right clip nudging
+- spacebar playback toggle
+- timeline copy, cut, and paste
+- context-sensitive timeline actions
+
+### Project And History Risk
+
+The ImGui project adapter preserves a legacy state root while translating the reduced
+`EditorDocumentCore` model back to the Qt project format. Existing legacy clip fields can be
+preserved when clips are matched, but the neutral ImGui document model does not represent the
+full Qt project model.
+
+More importantly, `saveImGuiProjectSession(...)` currently rewrites `history.json` with one entry
+at index zero. Saving through ImGui therefore does not preserve the Qt editor's full history stack.
+This must be resolved and covered by roundtrip tests before the ImGui shell is considered safe for
+full interchange with complex Qt projects.
+
+### Data Model And Runtime Gaps
+
+`EditorDocumentCore` currently contains only basic media, track, clip, transport, panel, and export
+state. `EditorRuntime` likewise exposes a deliberately small command set centered on basic editing
+and export configuration. Full parity requires neutral models and commands for at least:
+
+- undo/redo and history transactions
+- complete clip timing and source-time state
+- multi-clip selection and editing
+- track flags, ordering, audio, and compositing state
+- transform, opacity, grading, and title keyframes
+- effects, masks, and corrections
+- sync markers and export ranges
+- transcripts and transcript overlay style
+- speakers, assignments, continuity tracks, and face detections
+- audio mixing and processing
+- project management and preferences
+- processing jobs, AI actions, access state, and diagnostics
+
+These capabilities should be added to the shared runtime rather than implemented as ImGui-only
+business logic.
+
+### Layout And Interaction Gaps
+
+The current ImGui shell reproduces the broad left-media, center-preview, bottom-timeline, and
+right-inspector arrangement. Its panels are positioned and sized by the shell each frame and are
+marked non-movable and non-resizable. This does not yet match the Qt editor's adjustable splitters,
+richer focus behavior, drag/drop interactions, context menus, and keyboard workflow. Docking or an
+equivalent persisted adjustable layout remains part of full UI parity.
+
+### Test Coverage Assessment
+
+Current ImGui-specific tests primarily cover binary linkage and standalone preview/export paths.
+They do not establish full UI parity. The following automated coverage is still required:
+
+- command-level Qt/ImGui state equivalence for every editor operation
+- complex Qt project load/save roundtrips without state or history loss
+- shell interaction tests for every functional ImGui control
+- detection of visible but unwired controls
+- undo/redo and history parity
+- advanced timeline interaction parity
+- transcript, speaker, effect, mask, correction, title, grading, and audio parity
+- equivalent preview output after identical command sequences
+- equivalent export output and configuration behavior
+- persisted layout, preferences, and keyboard-shortcut behavior
+
+### Priority Order For Closing UI Parity
+
+1. Protect project data and preserve the complete history stack during ImGui saves.
+2. Expand the neutral document model and runtime command API to represent the full Qt editor state.
+3. Add undo/redo, shortcuts, multi-selection, copy/paste, nudge, razor, snapping, and context actions.
+4. Replace presentation-only Grade, Opacity, Effects, Corrections, Titles, Sync, and Transform tabs with bound controls.
+5. Port Masks and Processing Jobs, which currently lack equivalent ImGui inspector tabs.
+6. Port complete Transcript and Speaker workflows, including AI and facedetection integrations.
+7. Port complete Audio, Output, Projects, Preferences, Access, Pipeline, and System behavior.
+8. Feed real data to scopes, histograms, pipeline views, history tables, and other placeholders.
+9. Match Qt layout flexibility, focus, drag/drop, context menus, and keyboard behavior.
+10. Add shell-level and cross-shell parity tests, then remove the migration-checkpoint designation only when they pass.
+
+### Parity Exit Criteria
+
+The ImGui UI can be considered on par with the Qt UI only when:
+
+- every Qt inspector tab has an ImGui equivalent with connected behavior
+- every visible ImGui editor control reads and writes persistent runtime state
+- the same editing operations produce equivalent project snapshots in both shells
+- complex projects roundtrip between shells without losing state or history
+- preview and export results are equivalent for the same project and settings
+- shortcuts, timeline editing, drag/drop, context actions, and undo/redo are functionally equivalent
+- the ImGui shell has no placeholder tables, graphs, or buttons presented as working editor features
+- shell smoke tests and shared parity tests cover the complete supported UI surface

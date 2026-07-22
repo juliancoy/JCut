@@ -1042,6 +1042,24 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
                     avFrame->colorspace = codecpar->color_space;
                 }
             }
+            if (avFrame->color_primaries == AVCOL_PRI_UNSPECIFIED) {
+                avFrame->color_primaries = m_codecCtx->color_primaries;
+                if (avFrame->color_primaries == AVCOL_PRI_UNSPECIFIED && codecpar) {
+                    avFrame->color_primaries = codecpar->color_primaries;
+                }
+            }
+            if (avFrame->color_trc == AVCOL_TRC_UNSPECIFIED) {
+                avFrame->color_trc = m_codecCtx->color_trc;
+                if (avFrame->color_trc == AVCOL_TRC_UNSPECIFIED && codecpar) {
+                    avFrame->color_trc = codecpar->color_trc;
+                }
+            }
+            if (avFrame->chroma_location == AVCHROMA_LOC_UNSPECIFIED) {
+                avFrame->chroma_location = m_codecCtx->chroma_sample_location;
+                if (avFrame->chroma_location == AVCHROMA_LOC_UNSPECIFIED && codecpar) {
+                    avFrame->chroma_location = codecpar->chroma_location;
+                }
+            }
             FrameHandle hardwareHandle =
                 FrameHandle::createHardwareFrame(avFrame, frameNumber, m_path, swPixelFormat);
             if (!hardwareHandle.isNull()) {

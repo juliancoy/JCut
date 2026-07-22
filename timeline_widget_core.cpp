@@ -147,6 +147,7 @@ void drawSpeakerIcon(QPainter& painter, const QRect& rect, bool enabled, bool in
 
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
     setAcceptDrops(true);
+    setFocusPolicy(Qt::StrongFocus);
     setMinimumHeight(130);
     setMouseTracking(true);
     setAutoFillBackground(true);
@@ -336,6 +337,59 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         }
     }
     reconcileMaskMatteChildrenFromDisk(m_clips);
+
+    // A persisted/generated child track is identified by its child clip, not
+    // by its row index. Older states can contain duplicate or stale rows after
+    // repeated mask discovery. Keep the row currently owned by each matte and
+    // remove every other generated row before rebuilding the hierarchy.
+    QSet<QString> maskMatteIds;
+    QHash<QString, int> preferredChildTrackById;
+    for (const TimelineClip& clip : std::as_const(m_clips)) {
+        if (clip.clipRole != ClipRole::MaskMatte || clip.id.trimmed().isEmpty()) {
+            continue;
+        }
+        const QString childId = clip.id.trimmed();
+        maskMatteIds.insert(childId);
+        if (clip.trackIndex >= 0 && clip.trackIndex < m_tracks.size()) {
+            const TimelineTrack& track = m_tracks.at(clip.trackIndex);
+            if (track.generatedChildTrack && track.childClipId.trimmed() == childId) {
+                preferredChildTrackById.insert(childId, clip.trackIndex);
+            }
+        }
+    }
+    for (int trackIndex = 0; trackIndex < m_tracks.size(); ++trackIndex) {
+        const TimelineTrack& track = m_tracks.at(trackIndex);
+        const QString childId = track.childClipId.trimmed();
+        if (track.generatedChildTrack && maskMatteIds.contains(childId) &&
+            !preferredChildTrackById.contains(childId)) {
+            preferredChildTrackById.insert(childId, trackIndex);
+        }
+    }
+    for (int trackIndex = m_tracks.size() - 1; trackIndex >= 0; --trackIndex) {
+        const TimelineTrack& track = m_tracks.at(trackIndex);
+        if (!track.generatedChildTrack) {
+            continue;
+        }
+        const QString childId = track.childClipId.trimmed();
+        const bool keep = maskMatteIds.contains(childId) &&
+                          preferredChildTrackById.value(childId, -1) == trackIndex;
+        if (keep) {
+            continue;
+        }
+        m_tracks.removeAt(trackIndex);
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex > trackIndex) {
+                --clip.trackIndex;
+            } else if (clip.trackIndex == trackIndex) {
+                clip.trackIndex = qMax(0, clip.trackIndex - 1);
+            }
+        }
+        if (m_selectedTrackIndex > trackIndex) {
+            --m_selectedTrackIndex;
+        } else if (m_selectedTrackIndex == trackIndex) {
+            m_selectedTrackIndex = -1;
+        }
+    }
     ensureTrackCount(trackCount());
 
     QHash<int, int> clipCountByTrack;
@@ -1041,6 +1095,12 @@ void TimelineWidget::setToolMode(ToolMode mode) {
 }
 
 void TimelineWidget::sortClips() {
+    // Generated timeline followers are not independent A/V streams.  Keep their
+    // edit-domain timing derived from the linked source before publishing or
+    // ordering the model (TIME.md, "Generated timeline followers").  Putting
+    // this at the common mutation boundary covers moves, trims, rate changes,
+    // splits, nudges, pastes, and programmatic edits that finish by sorting.
+    normalizeMaskMatteClips(m_clips);
     std::sort(m_clips.begin(), m_clips.end(), [](const TimelineClip& a, const TimelineClip& b) {
         if (a.trackIndex == b.trackIndex) {
             const int64_t aStartSamples = clipTimelineStartSamples(a);

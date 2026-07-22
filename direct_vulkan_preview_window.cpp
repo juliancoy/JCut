@@ -289,11 +289,62 @@ public:
 
     void schedulePreviewUpdate()
     {
+        constexpr qint64 kStalePreviewUpdateMs = 250;
+        constexpr int kStaleRequestsBeforeSurfaceRestart = 4;
+        const qint64 now = previewUpdateClockMs();
         if (m_updatePending) {
-            return;
+            const qint64 pendingAgeMs = m_updateRequestMs >= 0 ? now - m_updateRequestMs : 0;
+            if (pendingAgeMs < kStalePreviewUpdateMs) {
+                return;
+            }
+            // QVulkanWindow update requests can occasionally be dropped by the
+            // platform integration. Do not let one lost event latch the preview
+            // permanently: refresh the request timestamp and ask Qt again.
+            if (m_stats) {
+                ++m_stats->stalePreviewUpdateRecoveries;
+                m_stats->lastStalePreviewUpdateAgeMs = static_cast<double>(pendingAgeMs);
+                const int64_t recoveryCount = m_stats->stalePreviewUpdateRecoveries;
+                if (recoveryCount == 1 || recoveryCount % 30 == 0) {
+                    qWarning().noquote()
+                        << QStringLiteral("[vulkan-preview] recovering stale update request age_ms=%1 count=%2")
+                               .arg(pendingAgeMs)
+                               .arg(recoveryCount);
+                }
+            }
+            ++m_consecutiveStaleUpdateRequests;
+            if (m_consecutiveStaleUpdateRequests >= kStaleRequestsBeforeSurfaceRestart) {
+                const bool waylandPlatform =
+                    QGuiApplication::platformName().startsWith(QStringLiteral("wayland"),
+                                                               Qt::CaseInsensitive);
+                if (!waylandPlatform) {
+                    // requestUpdate() cannot clear QVulkanWindow's private
+                    // frame-pending latch when a platform UpdateRequest is
+                    // lost. Cycling visibility is safe for the X11 container
+                    // and forces Qt to recreate its swapchain state.
+                    if (m_stats) {
+                        ++m_stats->previewSurfaceRestarts;
+                    }
+                    qWarning().noquote()
+                        << QStringLiteral("[vulkan-preview] restarting stalled preview surface after %1 stale update requests")
+                               .arg(m_consecutiveStaleUpdateRequests);
+                    hide();
+                    show();
+                } else {
+                    // Recreating an embedded Vulkan native child invalidates
+                    // Qt's Wayland surface role and can terminate the entire
+                    // display connection with EINVAL. Keep the surface alive
+                    // and re-arm the update request instead.
+                    qWarning().noquote()
+                        << QStringLiteral("[vulkan-preview] rearming stalled Wayland preview after %1 stale update requests")
+                               .arg(m_consecutiveStaleUpdateRequests);
+                }
+                m_consecutiveStaleUpdateRequests = 0;
+                m_updatePending = false;
+                m_updateRequestMs = -1;
+            }
         }
         m_updatePending = true;
-        m_updateRequestMs = QDateTime::currentMSecsSinceEpoch();
+        m_updateRequestMs = now;
         if (m_stats) {
             ++m_stats->previewUpdateRequests;
         }
@@ -315,7 +366,21 @@ public:
                 }
             }
         }
-        requestUpdate();
+        // Do not call QVulkanWindow::requestUpdate() synchronously from
+        // startNextFrame(). On Wayland, frameReady() does not clear Qt's
+        // private update-pending latch until control returns to the event
+        // loop, so a synchronous request for the next playback frame can be
+        // silently discarded. Delivering it on the next event-loop turn
+        // makes the request after Qt has finished the current frame.
+        if (!m_updateDeliveryQueued) {
+            m_updateDeliveryQueued = true;
+            QMetaObject::invokeMethod(this, [this]() {
+                m_updateDeliveryQueued = false;
+                if (m_updatePending) {
+                    requestUpdate();
+                }
+            }, Qt::QueuedConnection);
+        }
     }
 
     bool updatePending() const
@@ -1148,16 +1213,17 @@ public:
     }
     void markPreviewUpdateDelivered()
     {
-        if (m_updatePending && m_updateRequestMs > 0 && m_stats) {
+        if (m_updatePending && m_updateRequestMs >= 0 && m_stats) {
             const double latencyMs =
-                static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_updateRequestMs);
+                static_cast<double>(previewUpdateClockMs() - m_updateRequestMs);
             ++m_stats->previewUpdatesDelivered;
             m_stats->lastPreviewUpdateLatencyMs = latencyMs;
             m_stats->maxPreviewUpdateLatencyMs =
                 std::max(m_stats->maxPreviewUpdateLatencyMs, latencyMs);
         }
         m_updatePending = false;
-        m_updateRequestMs = 0;
+        m_updateRequestMs = -1;
+        m_consecutiveStaleUpdateRequests = 0;
     }
     void setLatestVulkanReadbackImage(const QImage& image)
     {
@@ -1252,10 +1318,21 @@ private:
     bool m_pipelineThumbnailReadbackPending = false;
     qint64 m_lastPipelineThumbnailReadbackMs = 0;
     bool m_updatePending = false;
+    bool m_updateDeliveryQueued = false;
     bool m_scheduledWhileExposed = false;
     QSize m_lastExposeScheduledSize;
-    qint64 m_updateRequestMs = 0;
+    qint64 m_updateRequestMs = -1;
+    int m_consecutiveStaleUpdateRequests = 0;
+    QElapsedTimer m_previewUpdateClock;
     qint64 m_lastPresentMs = 0;
+
+    qint64 previewUpdateClockMs()
+    {
+        if (!m_previewUpdateClock.isValid()) {
+            m_previewUpdateClock.start();
+        }
+        return m_previewUpdateClock.elapsed();
+    }
 };
 
 void DirectVulkanPreviewRenderer::initResources()

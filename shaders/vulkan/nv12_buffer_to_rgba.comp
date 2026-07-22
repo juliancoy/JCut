@@ -49,7 +49,16 @@ vec3 nv12ToRgb(float yByte, float uByte, float vByte)
     float v = vByte - 128.0;
 
     vec3 rgb;
-    if (pc.colorMatrix == 1) {
+    if (pc.colorMatrix == 2) {
+        // ITU-R BT.2020 non-constant-luminance, normalized for 8-bit code values.
+        rgb = pc.fullRange != 0
+            ? vec3(y + 1.4746 * v,
+                   y - 0.16455313 * u - 0.57135313 * v,
+                   y + 1.8814 * u)
+            : vec3(y + 1.67867411 * v,
+                   y - 0.18732610 * u - 0.65042432 * v,
+                   y + 2.14177232 * u);
+    } else if (pc.colorMatrix == 1) {
         rgb = pc.fullRange != 0
             ? vec3(y + 1.5748 * v,
                    y - 0.18732427 * u - 0.46812427 * v,

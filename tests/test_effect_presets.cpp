@@ -67,6 +67,7 @@ private slots:
     void clipSerializationPersistsGeneratedClipRoleState();
     void maskMatteFactoryKeepsSourceTimingLocked();
     void maskMatteNormalizerRepairsLegacyTimelineState();
+    void maskMatteNormalizerFollowsSourceTimingEdits();
     void alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip();
     void sourceTilingFactoryCreatesVisualOnlySynthClip();
     void speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges();
@@ -787,6 +788,47 @@ void TestEffectPresets::maskMatteNormalizerRepairsLegacyTimelineState()
     QCOMPARE(clips[1].transformKeyframes.size(), clips[0].transformKeyframes.size());
     QCOMPARE(clips[1].transformKeyframes.constFirst().translationX,
              clips[0].transformKeyframes.constFirst().translationX);
+}
+
+void TestEffectPresets::maskMatteNormalizerFollowsSourceTimingEdits()
+{
+    TimelineClip source;
+    source.id = QStringLiteral("shot-01");
+    source.filePath = QStringLiteral("/media/shot-01.mp4");
+    source.mediaType = ClipMediaType::Video;
+    source.sourceFps = 59.94;
+    source.sourceDurationFrames = 12000;
+    source.sourceInFrame = 240;
+    source.sourceInSubframeSamples = 7;
+    source.startFrame = 300;
+    source.startSubframeSamples = 11;
+    source.durationFrames = 900;
+    source.durationSubframeSamples = 13;
+    source.playbackRate = 1.25;
+    source.maskFramesDir = QStringLiteral("/tmp/shot-01_masks");
+
+    TimelineClip matte = makeMaskMatteClip(source);
+    QVector<TimelineClip> clips{source, matte};
+
+    // Model the edits which previously changed only the source clip: move,
+    // left/right trim, and playback-rate adjustment.
+    clips[0].startFrame = 420;
+    clips[0].startSubframeSamples = 17;
+    clips[0].sourceInFrame = 360;
+    clips[0].sourceInSubframeSamples = 19;
+    clips[0].durationFrames = 480;
+    clips[0].durationSubframeSamples = 23;
+    clips[0].playbackRate = 0.8;
+
+    QVERIFY(normalizeMaskMatteClips(clips));
+    QCOMPARE(clips[1].startFrame, clips[0].startFrame);
+    QCOMPARE(clips[1].startSubframeSamples, clips[0].startSubframeSamples);
+    QCOMPARE(clips[1].sourceInFrame, clips[0].sourceInFrame);
+    QCOMPARE(clips[1].sourceInSubframeSamples, clips[0].sourceInSubframeSamples);
+    QCOMPARE(clips[1].durationFrames, clips[0].durationFrames);
+    QCOMPARE(clips[1].durationSubframeSamples, clips[0].durationSubframeSamples);
+    QCOMPARE(clips[1].playbackRate, clips[0].playbackRate);
+    QVERIFY(!normalizeMaskMatteClips(clips));
 }
 
 void TestEffectPresets::alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip()

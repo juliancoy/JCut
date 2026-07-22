@@ -299,20 +299,24 @@ bool commitPreviewMove(TimelineClip& clip,
         return commitPreviewTitleMoveKeyframe(
             clip, keyframeTimelineFrame, translationX, translationY);
     }
-    const bool updated = applyStaticPreviewVisualTransform(
+    const TimelineClip::TransformKeyframe current =
+        evaluateClipTransformAtFrame(clip, keyframeTimelineFrame);
+    const bool updated = upsertPreviewVisualTransformKeyframe(
         clip,
+        keyframeTimelineFrame,
         translationX,
         translationY,
-        clip.baseScaleX,
-        clip.baseScaleY,
-        false);
+        current.scaleX,
+        current.scaleY);
     qInfo().noquote()
-        << QStringLiteral("[preview-move-commit] ok=%1 clip=%2 mode=static_base frame=%3 tx=%4 ty=%5")
+        << QStringLiteral("[preview-move-commit] ok=%1 clip=%2 mode=temporal_keyframe frame=%3 tx=%4 ty=%5 sx=%6 sy=%7")
                .arg(updated ? QStringLiteral("true") : QStringLiteral("false"),
                     clip.id,
                     QString::number(keyframeTimelineFrame),
                     QString::number(translationX, 'f', 3),
-                    QString::number(translationY, 'f', 3));
+                    QString::number(translationY, 'f', 3),
+                    QString::number(current.scaleX, 'f', 4),
+                    QString::number(current.scaleY, 'f', 4));
     return updated;
 }
 

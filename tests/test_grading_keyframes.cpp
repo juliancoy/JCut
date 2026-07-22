@@ -1,5 +1,7 @@
 #include <QtTest/QtTest>
 
+#include <QFile>
+
 #include "../editor_shared.h"
 #include "../render_vulkan_shared.h"
 
@@ -16,7 +18,23 @@ private slots:
     void testVulkanBrightnessCurveLutMatchesCpuLut();
     void testVulkanDrawStateDoesNotEnableCurveByDefault();
     void testSpeakerGradeOverridesRatherThanCombinesWithClipGrade();
+    void testGradingTabKeepsDisplayedFramesClipLocal();
 };
+
+void TestGradingKeyframes::testGradingTabKeepsDisplayedFramesClipLocal()
+{
+    QFile source(QStringLiteral(JCUT_SOURCE_DIR "/grading_tab.cpp"));
+    QVERIFY2(source.open(QIODevice::ReadOnly | QIODevice::Text),
+             "grading_tab.cpp must be readable");
+    const QByteArray contents = source.readAll();
+
+    QVERIFY2(contents.contains("evaluateDisplayedGrading(*clip, displayedLocalFrame)"),
+             "Grade refresh must evaluate a clip-local frame");
+    QVERIFY2(contents.contains("evaluateDisplayedGrading(*clip, primaryFrame)"),
+             "Grade table selection must evaluate the selected clip-local frame");
+    QVERIFY2(!contents.contains("evaluateDisplayedGrading(*clip, clip->startFrame"),
+             "Grade-tab callers must not add the clip start before the display helper adds it");
+}
 
 void TestGradingKeyframes::testSpeakerGradeOverridesRatherThanCombinesWithClipGrade()
 {

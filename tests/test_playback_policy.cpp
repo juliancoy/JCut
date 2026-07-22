@@ -471,6 +471,9 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
                  audio.contains(QStringLiteral("markTimeStretchJob")),
              "audio diagnostics must expose aggregate Rubber Band progress "
              "from an explicit job tracker, not decode queue inspection");
+    QVERIFY2(audio.contains(QStringLiteral("job.state == TimeStretchJobReadingSidecar")),
+             "loading or validating an existing Rubber Band sidecar must not "
+             "be presented as new artifact generation");
     QVERIFY2(!playback.contains(QStringLiteral("PlaybackClockInput{")),
              "PlaybackClockInput must use named field assignment so adding "
              "clock fields cannot silently shift audio/current-frame values");

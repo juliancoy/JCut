@@ -515,6 +515,12 @@ void EditorWindow::loadState()
                     });
     }
 
+    if (synchronizeProjectRootForState(&root)) {
+        loadState();
+        --m_projectRootRedirectDepth;
+        return;
+    }
+
     markStartup(QStringLiteral("load_state.apply_state.begin"));
     applyStateJson(root);
     markStartup(QStringLiteral("load_state.apply_state.end"));
@@ -544,6 +550,58 @@ void EditorWindow::loadState()
     markStartup(QStringLiteral("load_state.end"));
 }
 
+bool EditorWindow::synchronizeProjectRootForState(QJsonObject* root)
+{
+    if (!root || root->isEmpty() || !m_projectManager) {
+        return false;
+    }
+
+    const QString projectRoot = m_projectManager->rootDirPath();
+    QString mediaRoot = root->value(QStringLiteral("mediaRoot")).toString();
+    if (mediaRoot.isEmpty()) {
+        mediaRoot = root->value(QStringLiteral("explorerRoot")).toString();
+    }
+    if (!mediaRoot.isEmpty() && QFileInfo(mediaRoot).isRelative()) {
+        mediaRoot = QDir(projectRoot).filePath(mediaRoot);
+    }
+
+    const QFileInfo mediaRootInfo(mediaRoot);
+    if (!mediaRootInfo.exists() || !mediaRootInfo.isDir()) {
+        mediaRoot.clear();
+    } else {
+        mediaRoot = mediaRootInfo.canonicalFilePath();
+        if (mediaRoot.isEmpty()) {
+            mediaRoot = mediaRootInfo.absoluteFilePath();
+        }
+    }
+
+    if (mediaRoot.isEmpty() ||
+        QDir(mediaRoot).absolutePath() == QDir(projectRoot).absolutePath()) {
+        (*root)[QStringLiteral("mediaRoot")] = projectRoot;
+        (*root)[QStringLiteral("explorerRoot")] = projectRoot;
+        return false;
+    }
+
+    constexpr int kMaximumProjectRootRedirects = 8;
+    if (m_projectRootRedirectDepth < kMaximumProjectRootRedirects &&
+        m_projectManager->changeRootDirPath(mediaRoot)) {
+        ++m_projectRootRedirectDepth;
+        startupProfileMark(QStringLiteral("project_root.redirect"),
+                           QJsonObject{{QStringLiteral("from"), projectRoot},
+                                       {QStringLiteral("to"), mediaRoot},
+                                       {QStringLiteral("depth"), m_projectRootRedirectDepth}});
+        return true;
+    }
+
+    // JCUT_PROJECT_ROOT, a configuration write failure, or a redirect cycle
+    // makes ProjectManager authoritative. Persist a single coherent route.
+    (*root)[QStringLiteral("mediaRoot")] = projectRoot;
+    (*root)[QStringLiteral("explorerRoot")] = projectRoot;
+    qWarning() << "[PROJECT] Could not synchronize project root to media route; using"
+               << projectRoot;
+    return false;
+}
+
 void EditorWindow::refreshProjectsList()
 {
     if (!m_projectsTab) {
@@ -557,7 +615,7 @@ void EditorWindow::refreshProjectsList()
 
 void EditorWindow::changeMediaRoot(const QString &path)
 {
-    if (!m_explorerPane || path.trimmed().isEmpty()) {
+    if (!m_projectManager || path.trimmed().isEmpty()) {
         return;
     }
 
@@ -566,16 +624,41 @@ void EditorWindow::changeMediaRoot(const QString &path)
     if (!requestedInfo.exists() || !requestedInfo.isDir()) {
         return;
     }
-    if (QDir(m_explorerPane->currentRootPath()).absolutePath() ==
-        QDir(requestedRoot).absolutePath()) {
+    const QString previousRoot = m_projectManager->rootDirPath();
+    if (QDir(previousRoot).absolutePath() == QDir(requestedRoot).absolutePath()) {
+        if (m_explorerPane) {
+            m_explorerPane->setInitialRootPath(previousRoot);
+        }
+        refreshProjectsList();
         return;
     }
 
-    // The media browser root belongs to project state.  It must not mutate
-    // ProjectManager's storage root or reload/switch the active project.
-    m_explorerPane->setInitialRootPath(requestedRoot);
-    scheduleSaveState();
-    pushHistorySnapshot();
+    // Finish writes against the old root before changing ProjectManager's
+    // storage location. This prevents the outgoing project from being saved
+    // into the newly selected workspace.
+    stopPlaybackWithReason(QStringLiteral("media_root_changed"));
+    flushStateSaveNow();
+    flushHistorySaveNow();
+    m_stateSaveTimer.stop();
+    m_historySaveTimer.stop();
+    m_pendingSaveAfterLoad = false;
+    m_pendingSaveAfterPlayback = false;
+
+    if (!m_projectManager->changeRootDirPath(requestedRoot)) {
+        refreshProjectsList();
+        return;
+    }
+
+    m_lastSavedState.clear();
+    m_historyEntries = QJsonArray();
+    m_historyIndex = -1;
+
+    // A workspace switch selects its default project first. The refreshed
+    // Projects tab then exposes every project under <requestedRoot>/projects
+    // so the user can explicitly open another one.
+    loadState();
+    refreshProjectsList();
+    refreshCurrentInspectorTab();
 }
 
 void EditorWindow::switchToProject(const QString &projectId)
@@ -706,8 +789,11 @@ QJsonObject EditorWindow::buildStateJson() const
 {
     QJsonObject root;
     root[QStringLiteral("maskArchitectureVersion")] = 2;
+    // ProjectManager owns the workspace route. The media browser is a view of
+    // that same workspace, not a separately persisted location.
     const QString mediaRoot =
-        m_explorerPane ? m_explorerPane->currentRootPath() : QString();
+        m_projectManager ? m_projectManager->rootDirPath()
+                         : (m_explorerPane ? m_explorerPane->currentRootPath() : QString());
     const QString mediaGalleryPath =
         m_explorerPane ? m_explorerPane->galleryPath() : QString();
     root[QStringLiteral("mediaRoot")] = mediaRoot;

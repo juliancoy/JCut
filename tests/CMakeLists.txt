@@ -116,6 +116,7 @@ target_sources(test_media_drag_drop PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_context_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_clipboard.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_input.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_layout.cpp

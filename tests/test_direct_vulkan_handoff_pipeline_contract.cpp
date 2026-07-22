@@ -8,6 +8,7 @@ class TestDirectVulkanHandoffPipelineContract : public QObject {
 
 private slots:
   void directPreviewUsesExtractedPipelineBeforeRenderPass();
+  void directPreviewRecoversDroppedUpdateRequests();
   void directPreviewRecordsTextureUploadsBeforeRenderPass();
   void directPreviewRecordsGpuHandoffIntoFrameCommandBuffer();
   void hardwareDirectExportBuffersAreRetiredBeforeReplacement();
@@ -78,6 +79,20 @@ QString readSourceFiles(const QStringList &relativePaths) {
 }
 
 } // namespace
+
+void TestDirectVulkanHandoffPipelineContract::directPreviewRecoversDroppedUpdateRequests() {
+  const QString source =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  QVERIFY2(!source.isEmpty(),
+           "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(source.contains(QStringLiteral("kStalePreviewUpdateMs")) &&
+               source.contains(QStringLiteral("pendingAgeMs < kStalePreviewUpdateMs")) &&
+               source.contains(QStringLiteral("QElapsedTimer m_previewUpdateClock")) &&
+               source.contains(QStringLiteral("Qt::QueuedConnection")) &&
+               source.contains(QStringLiteral("m_updateDeliveryQueued")) &&
+               source.contains(QStringLiteral("stalePreviewUpdateRecoveries")),
+           "preview updates must be delivered after the current frame callback and reissued after a bounded monotonic timeout instead of permanently latching video presentation");
+}
 
 void TestDirectVulkanHandoffPipelineContract::
     directPreviewUsesExtractedPipelineBeforeRenderPass() {
@@ -1209,6 +1224,24 @@ void TestDirectVulkanHandoffPipelineContract::
         audio.contains(field),
         qPrintable(
             QStringLiteral("audio diagnostics must expose %1").arg(field)));
+  }
+
+  const QString directPreviewPresenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(!directPreviewPresenter.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
+  const QStringList directPreviewFields{
+      QStringLiteral("preview_update_requests"),
+      QStringLiteral("preview_updates_delivered"),
+      QStringLiteral("stale_preview_update_recoveries"),
+      QStringLiteral("last_stale_preview_update_age_ms"),
+      QStringLiteral("last_preview_update_latency_ms"),
+      QStringLiteral("max_preview_update_latency_ms")};
+  for (const QString &field : directPreviewFields) {
+    QVERIFY2(directPreviewPresenter.contains(field),
+             qPrintable(QStringLiteral(
+                            "direct preview diagnostics must expose %1")
+                            .arg(field)));
   }
 
   const QString routes =
