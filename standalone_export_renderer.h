@@ -4,6 +4,7 @@
 #include "render_contract_types.h"
 
 #include <functional>
+#include <cstdint>
 #include <string>
 
 namespace jcut::standalone_render {
@@ -11,6 +12,8 @@ namespace jcut::standalone_render {
 struct ExportRenderRequest {
     EditorDocumentCore document;
     std::string rootDirectory;
+    std::int64_t imageSequenceFrameNumberOffset = 0;
+    std::int64_t outputFrameLimit = 0;
 };
 
 using ExportProgressCallback = std::function<bool(const render::RenderProgressCore&)>;

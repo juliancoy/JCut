@@ -55,7 +55,9 @@ struct PreviewInteractionTransientState {
 struct VulkanPreviewClipFrameStatus {
     QString clipId;
     QString mediaOwnerClipId;
+    QString timingOwnerClipId;
     QString effectsOwnerClipId;
+    QString matteOwnerClipId;
     QString label;
     QString decodePath;
     QString frameSelection;
@@ -140,6 +142,8 @@ struct VulkanPreviewClipFrameStatus {
     float frameCrossfadeOpacity = 0.0f;
     QSize frameCrossfadeFrameSize;
     editor::FrameHandle frameCrossfadeFrame;
+    QImage frameCrossfadeMaskImage;
+    bool frameCrossfadeMaskTextureEnabled = false;
     bool externalVulkanFrame = false;
     bool sampledFramePregraded = false;
     bool sampledFrameNeedsYFlip = false;

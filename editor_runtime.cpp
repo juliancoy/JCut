@@ -4,6 +4,7 @@
 #include "editor_grading_core.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -1356,6 +1357,7 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::InsertClipFromMediaCommand> ||
                    std::is_same_v<T, jcut::AddClipCommand> ||
                    std::is_same_v<T, jcut::CreateTitleClipCommand> ||
+                   std::is_same_v<T, jcut::ReplaceSpeakerTitleClipsCommand> ||
                    std::is_same_v<T, jcut::DeleteClipCommand> ||
                    std::is_same_v<T, jcut::DeleteSelectedClipsCommand> ||
                    std::is_same_v<T, jcut::SplitClipCommand> ||
@@ -1363,6 +1365,7 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::TrimClipStartCommand> ||
                    std::is_same_v<T, jcut::TrimClipEndCommand> ||
                    std::is_same_v<T, jcut::SetClipLabelCommand> ||
+                   std::is_same_v<T, jcut::SetClipProxyCommand> ||
                    std::is_same_v<T, jcut::SetClipLockedCommand> ||
                    std::is_same_v<T, jcut::SetClipPlaybackRateCommand> ||
                    std::is_same_v<T, jcut::MoveClipCommand> ||
@@ -1377,12 +1380,16 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::RemoveClipKeyframeCommand> ||
                    std::is_same_v<T, jcut::SetClipTransformCommand> ||
                    std::is_same_v<T, jcut::UpsertTransformKeyframeCommand> ||
+                   std::is_same_v<T, jcut::CommitPreviewTransformCommand> ||
                    std::is_same_v<T, jcut::SetClipMaskEffectCommand> ||
                    std::is_same_v<T, jcut::SetClipMaskCommand> ||
+                   std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
+                   std::is_same_v<T, jcut::SetClipZLevelCommand> ||
                    std::is_same_v<T, jcut::SetClipTranscriptOverlayCommand> ||
                    std::is_same_v<T, jcut::SetClipTranscriptActiveCutCommand> ||
                    std::is_same_v<T, jcut::UpsertTitleKeyframeCommand> ||
                    std::is_same_v<T, jcut::RemoveTitleKeyframeCommand> ||
+                   std::is_same_v<T, jcut::SetClipCorrectionPolygonsCommand> ||
                    std::is_same_v<T, jcut::ClearCorrectionPolygonsCommand> ||
                    std::is_same_v<T, jcut::SetCorrectionsEnabledCommand> ||
                    std::is_same_v<T, jcut::SetClipAudioCommand> ||
@@ -1398,9 +1405,30 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::SetExportFormatCommand> ||
                    std::is_same_v<T, jcut::SetExportImageSequenceFormatCommand> ||
                    std::is_same_v<T, jcut::SetExportUseProxyMediaCommand> ||
+                   std::is_same_v<T, jcut::SetTranscriptHistoryDocumentCommand> ||
                    std::is_same_v<T, jcut::SetExportImageSequenceCommand>;
         },
         command);
+}
+
+bool transcriptHistoryDocumentsEqual(
+    const jcut::EditorDocumentCore& lhs,
+    const jcut::EditorDocumentCore& rhs)
+{
+    if (lhs.transcriptHistoryDocuments.size() !=
+        rhs.transcriptHistoryDocuments.size()) {
+        return false;
+    }
+    for (std::size_t index = 0;
+         index < lhs.transcriptHistoryDocuments.size(); ++index) {
+        const auto& left = lhs.transcriptHistoryDocuments[index];
+        const auto& right = rhs.transcriptHistoryDocuments[index];
+        if (left.path != right.path ||
+            left.jsonPayload != right.jsonPayload) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool reconcilesGeneratedTrackTopology(const jcut::EditorCommand& command)
@@ -1421,6 +1449,7 @@ bool reconcilesGeneratedTrackTopology(const jcut::EditorCommand& command)
                 std::is_same_v<T, jcut::SplitSelectedClipsCommand> ||
                 std::is_same_v<T, jcut::MoveClipCommand> ||
                 std::is_same_v<T, jcut::MoveSelectedClipsCommand> ||
+                std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
                 std::is_same_v<T, jcut::SetClipLabelCommand>;
         },
         command);
@@ -1865,6 +1894,167 @@ EditorGradingKeyframe evaluateEditorClipGradingAtLocalFrame(
     return finish(keyframes.back());
 }
 
+EditorTransformKeyframe evaluateEditorClipTransformAtLocalFrame(
+    const EditorClip& clip,
+    std::int64_t localFrame)
+{
+    const std::int64_t frame = std::clamp<std::int64_t>(
+        localFrame, 0, std::max(0, clip.durationFrames - 1));
+    EditorTransformKeyframe offset;
+    offset.frame = frame;
+    if (!clip.transformKeyframes.empty()) {
+        std::vector<EditorTransformKeyframe> keyframes =
+            clip.transformKeyframes;
+        std::sort(keyframes.begin(), keyframes.end(),
+            [](const EditorTransformKeyframe& left,
+               const EditorTransformKeyframe& right) {
+                return left.frame < right.frame;
+            });
+        offset = keyframes.front();
+        if (frame >= keyframes.back().frame) {
+            offset = keyframes.back();
+        } else if (frame > keyframes.front().frame) {
+            for (std::size_t index = 1; index < keyframes.size(); ++index) {
+                const EditorTransformKeyframe& previous = keyframes[index - 1];
+                const EditorTransformKeyframe& current = keyframes[index];
+                if (frame == current.frame) {
+                    offset = current;
+                    break;
+                }
+                if (frame < current.frame) {
+                    if (!current.linearInterpolation ||
+                        current.frame <= previous.frame) {
+                        offset = previous;
+                    } else {
+                        const double amount =
+                            static_cast<double>(frame - previous.frame) /
+                            static_cast<double>(current.frame - previous.frame);
+                        offset.frame = frame;
+                        offset.title = previous.title;
+                        offset.translationX = previous.translationX +
+                            (current.translationX - previous.translationX) * amount;
+                        offset.translationY = previous.translationY +
+                            (current.translationY - previous.translationY) * amount;
+                        offset.rotation = previous.rotation +
+                            (current.rotation - previous.rotation) * amount;
+                        offset.scaleX = previous.scaleX +
+                            (current.scaleX - previous.scaleX) * amount;
+                        offset.scaleY = previous.scaleY +
+                            (current.scaleY - previous.scaleY) * amount;
+                        offset.linearInterpolation = current.linearInterpolation;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    const auto boundedScale = [](double value) {
+        if (!std::isfinite(value)) {
+            return 1.0;
+        }
+        if (std::abs(value) < 0.01) {
+            return value < 0.0 ? -0.01 : 0.01;
+        }
+        return value;
+    };
+    offset.frame = frame;
+    offset.translationX += clip.baseTranslationX;
+    offset.translationY += clip.baseTranslationY;
+    offset.rotation += clip.baseRotation;
+    offset.scaleX = boundedScale(clip.baseScaleX * offset.scaleX);
+    offset.scaleY = boundedScale(clip.baseScaleY * offset.scaleY);
+    return offset;
+}
+
+EditorTitleKeyframe evaluateEditorClipTitleAtLocalFrame(
+    const EditorClip& clip,
+    std::int64_t localFrame)
+{
+    const std::int64_t frame = std::clamp<std::int64_t>(
+        localFrame, 0, std::max(0, clip.durationFrames - 1));
+    EditorTitleKeyframe result;
+    result.frame = frame;
+    if (clip.titleKeyframes.empty()) {
+        return result;
+    }
+
+    std::vector<EditorTitleKeyframe> keyframes = clip.titleKeyframes;
+    std::stable_sort(keyframes.begin(), keyframes.end(),
+        [](const EditorTitleKeyframe& left,
+           const EditorTitleKeyframe& right) {
+            return left.frame < right.frame;
+        });
+    result = keyframes.front();
+    if (frame >= keyframes.back().frame) {
+        result = keyframes.back();
+    } else if (frame > keyframes.front().frame) {
+        for (std::size_t index = 1; index < keyframes.size(); ++index) {
+            const EditorTitleKeyframe& previous = keyframes[index - 1];
+            const EditorTitleKeyframe& current = keyframes[index];
+            if (frame == current.frame) {
+                result = current;
+                break;
+            }
+            if (frame < current.frame) {
+                result = previous;
+                if (current.linearInterpolation && current.frame > previous.frame) {
+                    const double amount =
+                        static_cast<double>(frame - previous.frame) /
+                        static_cast<double>(current.frame - previous.frame);
+                    const auto interpolate = [amount](double left, double right) {
+                        return left + (right - left) * amount;
+                    };
+                    result.translationX = interpolate(
+                        previous.translationX, current.translationX);
+                    result.translationY = interpolate(
+                        previous.translationY, current.translationY);
+                    result.fontSize = interpolate(
+                        previous.fontSize, current.fontSize);
+                    result.opacity = interpolate(
+                        previous.opacity, current.opacity);
+                    result.windowWidth = interpolate(
+                        previous.windowWidth, current.windowWidth);
+                    result.vulkan3DEnabled =
+                        previous.vulkan3DEnabled || current.vulkan3DEnabled;
+                    result.vulkan3DExtrudeEnabled =
+                        previous.vulkan3DExtrudeEnabled || current.vulkan3DExtrudeEnabled;
+                    result.textExtrudeMode = previous.textExtrudeMode != "none"
+                        ? previous.textExtrudeMode : current.textExtrudeMode;
+                    result.vulkan3DExtrudeDepth = interpolate(
+                        previous.vulkan3DExtrudeDepth, current.vulkan3DExtrudeDepth);
+                    result.vulkan3DBevelScale = interpolate(
+                        previous.vulkan3DBevelScale, current.vulkan3DBevelScale);
+                    result.vulkan3DYawDegrees = interpolate(
+                        previous.vulkan3DYawDegrees, current.vulkan3DYawDegrees);
+                    result.vulkan3DPitchDegrees = interpolate(
+                        previous.vulkan3DPitchDegrees, current.vulkan3DPitchDegrees);
+                    result.vulkan3DRollDegrees = interpolate(
+                        previous.vulkan3DRollDegrees, current.vulkan3DRollDegrees);
+                    result.vulkan3DDepth = interpolate(
+                        previous.vulkan3DDepth, current.vulkan3DDepth);
+                    result.vulkan3DScale = interpolate(
+                        previous.vulkan3DScale, current.vulkan3DScale);
+                    result.textPatternScale = interpolate(
+                        previous.textPatternScale, current.textPatternScale);
+                    result.windowFramePatternScale = interpolate(
+                        previous.windowFramePatternScale,
+                        current.windowFramePatternScale);
+                    result.linearInterpolation = true;
+                }
+                break;
+            }
+        }
+    }
+    result.frame = frame;
+    result.fontSize = std::clamp(
+        std::isfinite(result.fontSize) ? result.fontSize : 48.0,
+        1.0, 1024.0);
+    result.opacity = std::clamp(
+        std::isfinite(result.opacity) ? result.opacity : 1.0,
+        0.0, 1.0);
+    return result;
+}
+
 EditorRuntime EditorRuntime::createDemo()
 {
     EditorRuntime runtime;
@@ -2102,6 +2292,15 @@ std::size_t EditorRuntime::undoDepth() const
 std::size_t EditorRuntime::redoDepth() const
 {
     return m_redoStack.size();
+}
+
+void EditorRuntime::clearHistory()
+{
+    m_undoStack.clear();
+    m_redoStack.clear();
+    m_historyTransactionSnapshot = {};
+    m_historyTransactionActive = false;
+    m_historyTransactionHasChanges = false;
 }
 
 void EditorRuntime::beginHistoryTransaction()
@@ -2628,6 +2827,110 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 return {true, createdTrack
                     ? "title created on new Titles track"
                     : "title created"};
+            } else if constexpr (
+                std::is_same_v<T, ReplaceSpeakerTitleClipsCommand>) {
+                EditorClip* source = findClip(
+                    &m_document.clips, typedCommand.sourceClipId);
+                if (!source ||
+                    canonicalEditorClipRole(source->clipRole) != "media" ||
+                    source->persistentId.empty()) {
+                    return {false, "speaker-title source clip not found"};
+                }
+                const std::string sourcePersistentId = source->persistentId;
+                if (!typedCommand.generatedClips.empty()) {
+                    source->transcriptOverlay.showSpeakerTitle = false;
+                }
+                const std::size_t before = m_document.clips.size();
+                m_document.clips.erase(
+                    std::remove_if(
+                        m_document.clips.begin(), m_document.clips.end(),
+                        [&](const EditorClip& clip) {
+                            return canonicalEditorClipRole(clip.clipRole) ==
+                                    "speaker_title" &&
+                                clip.linkedSourceClipId == sourcePersistentId;
+                        }),
+                    m_document.clips.end());
+                const int removed = static_cast<int>(
+                    before - m_document.clips.size());
+                const auto titleTrack = [](const EditorTrack& track) {
+                    std::string label = trimmed(track.label);
+                    std::transform(
+                        label.begin(), label.end(), label.begin(),
+                        [](unsigned char value) {
+                            return static_cast<char>(std::tolower(value));
+                        });
+                    return label == "speaker titles" ||
+                        label.rfind("speaker titles ", 0) == 0;
+                };
+                const auto trackAvailable = [&](int trackId,
+                                                const EditorClip& proposed) {
+                    const std::int64_t start = proposed.startFrame;
+                    const std::int64_t end =
+                        start + std::max(1, proposed.durationFrames);
+                    return std::none_of(
+                        m_document.clips.begin(), m_document.clips.end(),
+                        [&](const EditorClip& clip) {
+                            if (clip.trackId != trackId ||
+                                !editorClipHasVisuals(clip)) {
+                                return false;
+                            }
+                            const std::int64_t clipStart = clip.startFrame;
+                            const std::int64_t clipEnd =
+                                clipStart + std::max(1, clip.durationFrames);
+                            return end > clipStart && start < clipEnd;
+                        });
+                };
+                int inserted = 0;
+                for (EditorClip generated : typedCommand.generatedClips) {
+                    generated.durationFrames =
+                        std::max(1, generated.durationFrames);
+                    generated.clipRole = "speaker_title";
+                    generated.linkedSourceClipId = sourcePersistentId;
+                    generated.syncLockedToSource = true;
+                    generated.mediaKind = "title";
+                    generated.videoEnabled = true;
+                    generated.audioEnabled = false;
+                    generated.audioPresenceKnown = true;
+                    generated.hasAudio = false;
+                    int targetTrackId = 0;
+                    for (const EditorTrack& track : m_document.tracks) {
+                        if (titleTrack(track) &&
+                            trackAvailable(track.id, generated)) {
+                            targetTrackId = track.id;
+                            break;
+                        }
+                    }
+                    if (targetTrackId == 0) {
+                        EditorTrack track;
+                        track.id = nextTrackId(m_document.tracks);
+                        const int titleTrackCount = static_cast<int>(
+                            std::count_if(
+                                m_document.tracks.begin(),
+                                m_document.tracks.end(), titleTrack));
+                        track.label = titleTrackCount == 0
+                            ? "Speaker Titles"
+                            : "Speaker Titles " +
+                                std::to_string(titleTrackCount + 1);
+                        track.audioEnabled = false;
+                        targetTrackId = track.id;
+                        m_document.tracks.push_back(std::move(track));
+                    }
+                    generated.id = nextClipId(m_document.clips);
+                    generated.persistentId = uniquePersistentClipId(
+                        m_document.clips, generated.id);
+                    generated.trackId = targetTrackId;
+                    generated.selected = false;
+                    m_document.clips.push_back(std::move(generated));
+                    ++inserted;
+                }
+                if (removed == 0 && inserted == 0) {
+                    return {false, "no speaker introductions were generated"};
+                }
+                sortClipsByTimeline(&m_document.clips);
+                return {true,
+                        "replaced speaker introductions (" +
+                            std::to_string(inserted) + " generated, " +
+                            std::to_string(removed) + " removed)"};
             } else if constexpr (std::is_same_v<T, DeleteClipCommand>) {
                 const EditorClip* removedClip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!removedClip) {
@@ -2801,6 +3104,30 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 }
                 clip->label = typedCommand.label.empty() ? std::string("clip") : typedCommand.label;
                 return {true, "clip label updated"};
+            } else if constexpr (std::is_same_v<T, SetClipProxyCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                if (canonicalEditorClipRole(clip->clipRole) == "mask_matte") {
+                    return {false, "mask matte proxy follows its source"};
+                }
+                const std::string nextPath = trimmed(
+                    typedCommand.proxyPath);
+                const bool nextUseProxy =
+                    !nextPath.empty() && typedCommand.useProxy;
+                if (clip->proxyPath == nextPath &&
+                    clip->useProxy == nextUseProxy) {
+                    return {false, "clip proxy is unchanged"};
+                }
+                clip->proxyPath = nextPath;
+                clip->useProxy = nextUseProxy;
+                normalizeMaskMatteParentCaches(&m_document);
+                return {true, nextPath.empty()
+                    ? "clip proxy association cleared"
+                    : (nextUseProxy ? "clip proxy enabled"
+                                    : "clip proxy disabled")};
             } else if constexpr (std::is_same_v<T, SetClipLockedCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -3228,6 +3555,61 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 keyframe.scaleY = normalizedScale(keyframe.scaleY);
                 upsertKeyframe(&clip->transformKeyframes, std::move(keyframe));
                 return {true, "transform keyframe updated"};
+            } else if constexpr (std::is_same_v<T, CommitPreviewTransformCommand>) {
+                EditorClip* requestedClip = findClip(&m_document.clips, typedCommand.clipId);
+                if (!requestedClip) {
+                    return {false, "clip not found"};
+                }
+                EditorClip* clip = requestedClip;
+                if (canonicalEditorClipRole(requestedClip->clipRole) == "mask_matte") {
+                    const std::string ownerId =
+                        trimmedEditorClipId(requestedClip->linkedSourceClipId);
+                    const auto owner = std::find_if(
+                        m_document.clips.begin(), m_document.clips.end(),
+                        [&](const EditorClip& candidate) {
+                            return trimmedEditorClipId(candidate.persistentId) == ownerId &&
+                                canonicalEditorClipRole(candidate.clipRole) != "mask_matte" &&
+                                candidate.mediaKind == "video";
+                        });
+                    if (owner == m_document.clips.end()) {
+                        return {false, "mask matte transform owner not found"};
+                    }
+                    clip = &*owner;
+                }
+                if (!editorClipHasVisuals(*clip)) {
+                    return {false, "clip has no visual transform"};
+                }
+                const std::int64_t localFrame = std::clamp<std::int64_t>(
+                    typedCommand.localFrame, 0,
+                    std::max(0, clip->durationFrames - 1));
+                if (localFrame > 0 && std::none_of(
+                        clip->transformKeyframes.begin(), clip->transformKeyframes.end(),
+                        [](const EditorTransformKeyframe& keyframe) {
+                            return keyframe.frame == 0;
+                        })) {
+                    clip->transformKeyframes.push_back(EditorTransformKeyframe{});
+                }
+                EditorTransformKeyframe keyframe;
+                keyframe.frame = localFrame;
+                keyframe.translationX = typedCommand.translationX - clip->baseTranslationX;
+                keyframe.translationY = typedCommand.translationY - clip->baseTranslationY;
+                keyframe.rotation = std::clamp(
+                    typedCommand.rotation - clip->baseRotation, -360.0, 360.0);
+                keyframe.scaleX = normalizedScale(
+                    normalizedScale(typedCommand.scaleX) /
+                    normalizedScale(clip->baseScaleX));
+                keyframe.scaleY = normalizedScale(
+                    normalizedScale(typedCommand.scaleY) /
+                    normalizedScale(clip->baseScaleY));
+                for (const EditorTransformKeyframe& existing : clip->transformKeyframes) {
+                    if (existing.frame > localFrame) {
+                        keyframe.linearInterpolation = existing.linearInterpolation;
+                        break;
+                    }
+                }
+                upsertKeyframe(&clip->transformKeyframes, std::move(keyframe));
+                normalizeMaskMatteParentCaches(&m_document);
+                return {true, "preview transform committed"};
             } else if constexpr (std::is_same_v<T, SetClipMaskEffectCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -3255,6 +3637,28 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     kEditorEffectMinScale,
                     kEditorEffectMaxScale);
                 clip->effectAlternateDirection = typedCommand.alternateDirection;
+                clip->effectSkipAwareTiming = typedCommand.skipAwareTiming;
+                clip->differenceReferenceFrames = std::clamp(
+                    typedCommand.differenceReferenceFrames, 1, 300);
+                clip->differenceThreshold = std::clamp(
+                    typedCommand.differenceThreshold, 0.0, 1.0);
+                clip->differenceSoftness = std::clamp(
+                    typedCommand.differenceSoftness, 0.0, 1.0);
+                clip->temporalEchoCount = std::clamp(
+                    typedCommand.temporalEchoCount, 1, 12);
+                clip->temporalEchoSpacingFrames = std::clamp(
+                    typedCommand.temporalEchoSpacingFrames, 1, 120);
+                clip->temporalEchoDecay = std::clamp(
+                    typedCommand.temporalEchoDecay, 0.0, 1.0);
+                static constexpr std::array<std::string_view, 6> kTilingPatterns = {
+                    "grid", "encircle", "spiral_xy", "spiral_xz", "spiral_yz", "diamond"};
+                clip->tilingPattern = std::find(
+                    kTilingPatterns.begin(), kTilingPatterns.end(), typedCommand.tilingPattern) !=
+                        kTilingPatterns.end()
+                    ? typedCommand.tilingPattern
+                    : "grid";
+                clip->tilingSpacing = std::clamp(typedCommand.tilingSpacing, 0.1, 8.0);
+                clip->tilingWrap = typedCommand.tilingWrap;
                 return {true, "clip mask and effect updated"};
             } else if constexpr (std::is_same_v<T, SetClipMaskCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
@@ -3270,9 +3674,179 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->maskForegroundLayerEnabled =
                     typedCommand.foregroundLayerEnabled;
                 clip->maskRepeatEnabled = typedCommand.repeatEnabled;
-                clip->maskRepeatDeltaX = typedCommand.repeatDeltaX;
-                clip->maskRepeatDeltaY = typedCommand.repeatDeltaY;
+                clip->maskRepeatDeltaX = std::clamp(
+                    typedCommand.repeatDeltaX, -100000.0, 100000.0);
+                clip->maskRepeatDeltaY = std::clamp(
+                    typedCommand.repeatDeltaY, -100000.0, 100000.0);
+                clip->maskDilate = std::clamp(typedCommand.dilate, 0.0, 200.0);
+                clip->maskErode = std::clamp(typedCommand.erode, 0.0, 200.0);
+                clip->maskBlur = std::clamp(typedCommand.blur, 0.0, 200.0);
+                clip->maskInvert = typedCommand.invert;
+                clip->maskShowOnly = typedCommand.showOnly;
+                clip->maskOpacity = std::clamp(typedCommand.opacity, 0.0, 1.0);
+                clip->maskGradeEnabled = typedCommand.gradeEnabled;
+                clip->maskGradeBrightness = std::clamp(
+                    typedCommand.gradeBrightness, -1.0, 1.0);
+                clip->maskGradeContrast = std::clamp(
+                    typedCommand.gradeContrast, 0.0, 4.0);
+                clip->maskGradeSaturation = std::clamp(
+                    typedCommand.gradeSaturation, 0.0, 4.0);
+                clip->maskGradeCurvePointsR = sanitizeEditorGradingCurve(
+                    typedCommand.gradeCurvePointsR);
+                clip->maskGradeCurvePointsG = sanitizeEditorGradingCurve(
+                    typedCommand.gradeCurvePointsG);
+                clip->maskGradeCurvePointsB = sanitizeEditorGradingCurve(
+                    typedCommand.gradeCurvePointsB);
+                clip->maskGradeCurvePointsLuma = sanitizeEditorGradingCurve(
+                    typedCommand.gradeCurvePointsLuma);
+                clip->maskGradeCurveSmoothingEnabled =
+                    typedCommand.gradeCurveSmoothingEnabled;
+                clip->maskDropShadowEnabled = typedCommand.dropShadowEnabled;
+                clip->maskDropShadowRadius = std::clamp(
+                    typedCommand.dropShadowRadius, 0.0, 200.0);
+                clip->maskDropShadowOffsetX = std::clamp(
+                    typedCommand.dropShadowOffsetX, -500.0, 500.0);
+                clip->maskDropShadowOffsetY = std::clamp(
+                    typedCommand.dropShadowOffsetY, -500.0, 500.0);
+                clip->maskDropShadowOpacity = std::clamp(
+                    typedCommand.dropShadowOpacity, 0.0, 1.0);
                 return {true, "clip mask updated"};
+            } else if constexpr (std::is_same_v<T, MaterializeMaskMatteCommand>) {
+                EditorClip* source = findClip(&m_document.clips, typedCommand.sourceClipId);
+                if (!source || canonicalEditorClipRole(source->clipRole) != "media" ||
+                    source->mediaKind != "video" || source->persistentId.empty()) {
+                    return {false, "source video clip not found"};
+                }
+                const std::string directory = trimmed(typedCommand.sidecarDirectory);
+                const std::string sidecarId = trimmed(typedCommand.sidecarId);
+                if (directory.empty() || sidecarId.empty()) {
+                    return {false, "mask sidecar is invalid"};
+                }
+                const std::string sourcePersistentId = source->persistentId;
+                const auto existing = std::find_if(
+                    m_document.clips.begin(), m_document.clips.end(),
+                    [&](const EditorClip& candidate) {
+                        return canonicalEditorClipRole(candidate.clipRole) == "mask_matte" &&
+                            trimmedEditorClipId(candidate.linkedSourceClipId) ==
+                                trimmedEditorClipId(sourcePersistentId) &&
+                            (candidate.generatedFromMaskId == sidecarId ||
+                             candidate.maskFramesDir == directory);
+                    });
+                if (existing != m_document.clips.end()) {
+                    for (EditorClip& clip : m_document.clips) clip.selected = false;
+                    existing->selected = true;
+                    return {false, "mask matte already exists"};
+                }
+
+                EditorClip child = *source;
+                int nextId = 1;
+                for (EditorClip& clip : m_document.clips) {
+                    nextId = std::max(nextId, clip.id + 1);
+                    clip.selected = false;
+                }
+                child.id = nextId;
+                child.persistentId = sourcePersistentId + "-mask-" + sidecarId;
+                int suffix = 2;
+                const auto persistentExists = [&](const std::string& id) {
+                    return std::any_of(
+                        m_document.clips.begin(), m_document.clips.end(),
+                        [&](const EditorClip& clip) { return clip.persistentId == id; });
+                };
+                const std::string persistentBase = child.persistentId;
+                while (persistentExists(child.persistentId)) {
+                    child.persistentId = persistentBase + "-" + std::to_string(suffix++);
+                }
+                child.clipRole = "mask_matte";
+                child.linkedSourceClipId = sourcePersistentId;
+                child.generatedFromMaskId = sidecarId;
+                child.syncLockedToSource = true;
+                child.sourceTransformLocked = true;
+                child.label = source->label.empty() ? "Generated Mask"
+                    : source->label + " · " +
+                        (typedCommand.sidecarLabel.empty()
+                             ? std::string("Generated")
+                             : typedCommand.sidecarLabel) + " Mask";
+                child.selected = true;
+                child.locked = true;
+                child.videoEnabled = true;
+                child.hasAudio = false;
+                child.audioPresenceKnown = true;
+                child.audioEnabled = false;
+                child.audioLinkedToVideo = false;
+                child.audioBusId.clear();
+                child.audioSourcePath.clear();
+                child.audioSourceStatus = "generated";
+                child.audioStreamIndex = -1;
+                child.audioGain = 1.0;
+                child.audioPan = 0.0;
+                child.audioSolo = false;
+                child.maskEnabled = true;
+                child.maskFramesDir = directory;
+                child.maskShowOnly = false;
+                child.maskForegroundLayerEnabled = false;
+                child.effectPreset = "none";
+                child.effectRows = 32;
+                child.effectSpeed = 1.0;
+                child.effectScale = 1.0;
+                child.effectAlternateDirection = true;
+                child.effectSkipAwareTiming = true;
+                child.maskRepeatEnabled = false;
+                child.maskRepeatDeltaX = 160.0;
+                child.maskRepeatDeltaY = 0.0;
+                child.differenceReferenceFrames = 1;
+                child.differenceThreshold = 0.10;
+                child.differenceSoftness = 0.05;
+                child.temporalEchoCount = 4;
+                child.temporalEchoSpacingFrames = 2;
+                child.temporalEchoDecay = 0.65;
+                child.tilingPattern = "grid";
+                child.tilingSpacing = 1.0;
+                child.tilingWrap = true;
+                child.opacity = 1.0;
+                child.opacityKeyframes.clear();
+                child.correctionPolygons.clear();
+                child.titleKeyframes.clear();
+                child.transcriptOverlay = {};
+                child.brightness = source->maskGradeEnabled
+                    ? source->maskGradeBrightness : 0.0;
+                child.contrast = source->maskGradeEnabled
+                    ? source->maskGradeContrast : 1.0;
+                child.saturation = source->maskGradeEnabled
+                    ? source->maskGradeSaturation : 1.0;
+                child.gradingKeyframes.clear();
+                child.maskGradeEnabled = false;
+                child.maskGradeBrightness = 0.0;
+                child.maskGradeContrast = 1.0;
+                child.maskGradeSaturation = 1.0;
+                child.maskGradeCurvePointsR = {{0.0, 0.0}, {1.0, 1.0}};
+                child.maskGradeCurvePointsG = child.maskGradeCurvePointsR;
+                child.maskGradeCurvePointsB = child.maskGradeCurvePointsR;
+                child.maskGradeCurvePointsLuma = child.maskGradeCurvePointsR;
+                child.maskGradeCurveSmoothingEnabled = true;
+                const auto effectiveZ = [](const EditorClip& clip) {
+                    return clip.zLevel != std::numeric_limits<int>::min()
+                        ? clip.zLevel : -std::max(0, clip.trackId - 1) * 100;
+                };
+                int nextZ = effectiveZ(*source) + 1;
+                for (const EditorClip& candidate : m_document.clips) {
+                    if (canonicalEditorClipRole(candidate.clipRole) == "mask_matte" &&
+                        trimmedEditorClipId(candidate.linkedSourceClipId) ==
+                            trimmedEditorClipId(sourcePersistentId)) {
+                        nextZ = std::max(nextZ, effectiveZ(candidate) + 1);
+                    }
+                }
+                child.zLevel = nextZ;
+                child.zLevelUserSet = false;
+                m_document.clips.push_back(std::move(child));
+                return {true, "mask matte materialized"};
+            } else if constexpr (std::is_same_v<T, SetClipZLevelCommand>) {
+                EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
+                if (!clip) return {false, "clip not found"};
+                clip->zLevel = typedCommand.automatic
+                    ? std::numeric_limits<int>::min()
+                    : std::clamp(typedCommand.zLevel, -100000, 100000);
+                clip->zLevelUserSet = !typedCommand.automatic;
+                return {true, "clip z level updated"};
             } else if constexpr (std::is_same_v<T, SetClipTranscriptOverlayCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -3281,6 +3855,34 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->transcriptOverlay = typedCommand.overlay;
                 clip->transcriptOverlay.backgroundOpacity =
                     std::clamp(clip->transcriptOverlay.backgroundOpacity, 0.0, 1.0);
+                clip->transcriptOverlay.backgroundCornerRadius =
+                    std::clamp(clip->transcriptOverlay.backgroundCornerRadius, 0.0, 128.0);
+                clip->transcriptOverlay.backgroundPadding =
+                    std::clamp(clip->transcriptOverlay.backgroundPadding, 0.0, 400.0);
+                clip->transcriptOverlay.backgroundFrameOpacity =
+                    std::clamp(clip->transcriptOverlay.backgroundFrameOpacity, 0.0, 1.0);
+                clip->transcriptOverlay.backgroundFrameWidth =
+                    std::clamp(clip->transcriptOverlay.backgroundFrameWidth, 0.0, 120.0);
+                clip->transcriptOverlay.backgroundFrameGap =
+                    std::clamp(clip->transcriptOverlay.backgroundFrameGap, 0.0, 200.0);
+                clip->transcriptOverlay.shadowOpacity =
+                    std::clamp(clip->transcriptOverlay.shadowOpacity, 0.0, 1.0);
+                clip->transcriptOverlay.shadowOffsetX =
+                    std::clamp(clip->transcriptOverlay.shadowOffsetX, -128.0, 128.0);
+                clip->transcriptOverlay.shadowOffsetY =
+                    std::clamp(clip->transcriptOverlay.shadowOffsetY, -128.0, 128.0);
+                clip->transcriptOverlay.textOutlineWidth =
+                    std::clamp(clip->transcriptOverlay.textOutlineWidth, 0.0, 24.0);
+                clip->transcriptOverlay.textOutlineOpacity =
+                    std::clamp(clip->transcriptOverlay.textOutlineOpacity, 0.0, 1.0);
+                if (clip->transcriptOverlay.textExtrudeMode != "stacked_copies" &&
+                    clip->transcriptOverlay.textExtrudeMode != "eroded_solid") {
+                    clip->transcriptOverlay.textExtrudeMode = "none";
+                }
+                clip->transcriptOverlay.textExtrudeDepth =
+                    std::clamp(clip->transcriptOverlay.textExtrudeDepth, 0.0, 2.0);
+                clip->transcriptOverlay.textExtrudeBevelScale =
+                    std::clamp(clip->transcriptOverlay.textExtrudeBevelScale, 0.0, 2.0);
                 clip->transcriptOverlay.boxWidth = std::max(160.0, clip->transcriptOverlay.boxWidth);
                 clip->transcriptOverlay.boxHeight = std::max(80.0, clip->transcriptOverlay.boxHeight);
                 clip->transcriptOverlay.maxLines = std::max(1, clip->transcriptOverlay.maxLines);
@@ -3311,6 +3913,55 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     keyframe.frame, 0, std::max(0, clip->durationFrames - 1));
                 keyframe.fontSize = std::clamp(keyframe.fontSize, 1.0, 1000.0);
                 keyframe.opacity = std::clamp(keyframe.opacity, 0.0, 1.0);
+                const auto normalizeMaterial = [](std::string value) {
+                    if (value == "neon" || value == "diagonal_stripes" ||
+                        value == "grid" || value == "image_pattern") return value;
+                    return std::string("solid");
+                };
+                keyframe.textMaterialStyle = normalizeMaterial(
+                    keyframe.textMaterialStyle);
+                keyframe.windowFrameMaterialStyle = normalizeMaterial(
+                    keyframe.windowFrameMaterialStyle);
+                keyframe.textPatternScale = std::clamp(
+                    keyframe.textPatternScale, 0.1, 8.0);
+                keyframe.dropShadowOpacity = std::clamp(
+                    keyframe.dropShadowOpacity, 0.0, 1.0);
+                keyframe.dropShadowOffsetX = std::clamp(
+                    keyframe.dropShadowOffsetX, -200.0, 200.0);
+                keyframe.dropShadowOffsetY = std::clamp(
+                    keyframe.dropShadowOffsetY, -200.0, 200.0);
+                keyframe.windowOpacity = std::clamp(
+                    keyframe.windowOpacity, 0.0, 1.0);
+                keyframe.windowPadding = std::clamp(
+                    keyframe.windowPadding, 0.0, 400.0);
+                keyframe.windowWidth = std::clamp(
+                    keyframe.windowWidth, 0.0, 10000.0);
+                keyframe.windowFrameOpacity = std::clamp(
+                    keyframe.windowFrameOpacity, 0.0, 1.0);
+                keyframe.windowFrameWidth = std::clamp(
+                    keyframe.windowFrameWidth, 0.0, 120.0);
+                keyframe.windowFrameGap = std::clamp(
+                    keyframe.windowFrameGap, 0.0, 200.0);
+                keyframe.windowFramePatternScale = std::clamp(
+                    keyframe.windowFramePatternScale, 0.1, 8.0);
+                if (keyframe.textExtrudeMode != "stacked_copies" &&
+                    keyframe.textExtrudeMode != "eroded_solid") {
+                    keyframe.textExtrudeMode = "none";
+                }
+                keyframe.vulkan3DExtrudeDepth = std::clamp(
+                    keyframe.vulkan3DExtrudeDepth, 0.0, 2.0);
+                keyframe.vulkan3DBevelScale = std::clamp(
+                    keyframe.vulkan3DBevelScale, 0.0, 2.0);
+                keyframe.vulkan3DYawDegrees = std::clamp(
+                    keyframe.vulkan3DYawDegrees, -360.0, 360.0);
+                keyframe.vulkan3DPitchDegrees = std::clamp(
+                    keyframe.vulkan3DPitchDegrees, -360.0, 360.0);
+                keyframe.vulkan3DRollDegrees = std::clamp(
+                    keyframe.vulkan3DRollDegrees, -360.0, 360.0);
+                keyframe.vulkan3DDepth = std::clamp(
+                    keyframe.vulkan3DDepth, -10.0, 10.0);
+                keyframe.vulkan3DScale = std::clamp(
+                    keyframe.vulkan3DScale, 0.01, 10.0);
                 upsertKeyframe(&clip->titleKeyframes, std::move(keyframe));
                 return {true, "title keyframe updated"};
             } else if constexpr (std::is_same_v<T, RemoveTitleKeyframeCommand>) {
@@ -3328,6 +3979,24 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 return clip->titleKeyframes.size() == oldSize
                     ? CommandResult{false, "title keyframe not found"}
                     : CommandResult{true, "title keyframe removed"};
+            } else if constexpr (std::is_same_v<T, SetClipCorrectionPolygonsCommand>) {
+                EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                std::vector<EditorCorrectionPolygon> polygons = typedCommand.polygons;
+                for (EditorCorrectionPolygon& polygon : polygons) {
+                    polygon.startFrame = std::max<std::int64_t>(0, polygon.startFrame);
+                    if (polygon.endFrame >= 0) {
+                        polygon.endFrame = std::max(polygon.startFrame, polygon.endFrame);
+                    }
+                    for (EditorPoint& point : polygon.pointsNormalized) {
+                        point.x = std::clamp(point.x, 0.0, 1.0);
+                        point.y = std::clamp(point.y, 0.0, 1.0);
+                    }
+                }
+                clip->correctionPolygons = std::move(polygons);
+                return {true, "correction polygons updated"};
             } else if constexpr (std::is_same_v<T, ClearCorrectionPolygonsCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -3491,6 +4160,28 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
             } else if constexpr (std::is_same_v<T, SetTranscriptVisibleCommand>) {
                 m_document.panels.showTranscript = typedCommand.visible;
                 return {true, "transcript visibility updated"};
+            } else if constexpr (
+                std::is_same_v<T, SeedTranscriptHistoryDocumentCommand> ||
+                std::is_same_v<T, SetTranscriptHistoryDocumentCommand>) {
+                if (typedCommand.path.empty() || typedCommand.jsonPayload.empty()) {
+                    return {false, "transcript history document requires path and payload"};
+                }
+                auto document = std::find_if(
+                    m_document.transcriptHistoryDocuments.begin(),
+                    m_document.transcriptHistoryDocuments.end(),
+                    [&](const EditorDocumentCore::TranscriptHistoryDocument& candidate) {
+                        return candidate.path == typedCommand.path;
+                    });
+                if (document == m_document.transcriptHistoryDocuments.end()) {
+                    m_document.transcriptHistoryDocuments.push_back(
+                        {typedCommand.path, typedCommand.jsonPayload});
+                    return {true, "transcript history document seeded"};
+                }
+                if (document->jsonPayload == typedCommand.jsonPayload) {
+                    return {false, "transcript history document unchanged"};
+                }
+                document->jsonPayload = typedCommand.jsonPayload;
+                return {true, "transcript history document updated"};
             } else if constexpr (std::is_same_v<T, SetScopesVisibleCommand>) {
                 m_document.panels.showScopes = typedCommand.visible;
                 return {true, "scopes visibility updated"};
@@ -3537,7 +4228,9 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
         reconcileEditorGeneratedChildTracks(&m_document);
     }
     syncDocumentCounts(&m_document);
-    if (recordHistory && result.applied && toJson(previousDocument) != toJson(m_document)) {
+    if (recordHistory && result.applied &&
+        (toJson(previousDocument) != toJson(m_document) ||
+         !transcriptHistoryDocumentsEqual(previousDocument, m_document))) {
         if (m_historyTransactionActive) {
             if (!m_historyTransactionHasChanges) {
                 m_historyTransactionSnapshot = std::move(previousDocument);

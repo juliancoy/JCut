@@ -1,6 +1,9 @@
 #include "standalone_export_renderer.h"
 
 #include "export_timing.h"
+#include "ffmpeg_compat.h"
+#include "audio_time_stretch_core.h"
+#include "standalone_audio_mixer.h"
 #include "standalone_timeline_renderer.h"
 #include "timeline_fps.h"
 
@@ -11,6 +14,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <memory>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -20,6 +24,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 
@@ -66,6 +71,13 @@ struct SwsContextDeleter {
     }
 };
 
+struct SwrContextDeleter {
+    void operator()(SwrContext* value) const
+    {
+        swr_free(&value);
+    }
+};
+
 std::string avErrorToString(int errorCode)
 {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -107,6 +119,9 @@ std::int64_t totalFramesToRender(const jcut::EditorDocumentCore& document)
 const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat,
                                 const std::string& requestedFormat)
 {
+    if (requestedFormat == "mov_mjpeg") {
+        return avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    }
     if (requestedFormat == "webm") {
         // Generic codec-ID lookup can select a device-only V4L2/QSV encoder
         // that is registered but unusable on the current host. Prefer the
@@ -130,12 +145,286 @@ const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat,
     return avcodec_find_encoder(AV_CODEC_ID_MPEG4);
 }
 
+const AVCodec* pickAudioEncoder(const std::string& requestedFormat)
+{
+    if (requestedFormat == "webm") {
+        if (const AVCodec* codec = avcodec_find_encoder_by_name("libopus")) {
+            return codec;
+        }
+        if (const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_OPUS)) {
+            return codec;
+        }
+        return avcodec_find_encoder(AV_CODEC_ID_VORBIS);
+    }
+    return avcodec_find_encoder(AV_CODEC_ID_AAC);
+}
+
+struct AudioOutput {
+    AVStream* stream = nullptr;
+    std::unique_ptr<AVCodecContext, AvCodecContextDeleter> codecContext;
+    std::unique_ptr<SwrContext, SwrContextDeleter> resampler;
+    std::unique_ptr<AVFrame, AvFrameDeleter> frame;
+    std::unique_ptr<AVPacket, AvPacketDeleter> packet;
+    std::int64_t nextPts = 0;
+
+    bool initialize(AVFormatContext* formatContext,
+                    const std::string& requestedFormat,
+                    std::string* errorOut)
+    {
+        const AVCodec* codec = pickAudioEncoder(requestedFormat);
+        if (!codec) {
+            if (errorOut) {
+                *errorOut = requestedFormat == "webm"
+                    ? "WebM export requires an Opus or Vorbis audio encoder"
+                    : "export requires an AAC audio encoder";
+            }
+            return false;
+        }
+        stream = avformat_new_stream(formatContext, codec);
+        codecContext.reset(avcodec_alloc_context3(codec));
+        if (!stream || !codecContext) {
+            if (errorOut) {
+                *errorOut = "failed to allocate audio output stream";
+            }
+            return false;
+        }
+        codecContext->codec_id = codec->id;
+        codecContext->codec_type = AVMEDIA_TYPE_AUDIO;
+        codecContext->sample_rate =
+            jcut::standalone_render::audio::kSampleRate;
+        codecContext->time_base = AVRational{
+            1, jcut::standalone_render::audio::kSampleRate};
+        codecContext->bit_rate = 192'000;
+        codecContext->sample_fmt = codec->sample_fmts
+            ? codec->sample_fmts[0]
+            : AV_SAMPLE_FMT_FLTP;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+        av_channel_layout_default(
+            &codecContext->ch_layout,
+            jcut::standalone_render::audio::kChannelCount);
+#else
+        codecContext->channels = jcut::standalone_render::audio::kChannelCount;
+        codecContext->channel_layout = AV_CH_LAYOUT_STEREO;
+#endif
+        if (formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
+            codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        }
+        const int openResult = avcodec_open2(codecContext.get(), codec, nullptr);
+        if (openResult < 0) {
+            if (errorOut) {
+                *errorOut = "failed to open audio encoder: " +
+                    avErrorToString(openResult);
+            }
+            return false;
+        }
+        if (avcodec_parameters_from_context(
+                stream->codecpar, codecContext.get()) < 0) {
+            if (errorOut) {
+                *errorOut = "failed to copy audio codec parameters";
+            }
+            return false;
+        }
+        stream->time_base = codecContext->time_base;
+
+        resampler.reset(swr_alloc());
+        ffmpeg_compat::ChannelLayoutHandle stereoLayout;
+        ffmpeg_compat::defaultChannelLayout(
+            &stereoLayout, jcut::standalone_render::audio::kChannelCount);
+        const bool configured = resampler &&
+            ffmpeg_compat::setSwrOutputLayout(
+                resampler.get(), &stereoLayout) >= 0 &&
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+            av_opt_set_chlayout(
+                resampler.get(), "in_chlayout", &stereoLayout, 0) >= 0 &&
+#else
+            av_opt_set_int(resampler.get(), "in_channel_layout",
+                           AV_CH_LAYOUT_STEREO, 0) >= 0 &&
+#endif
+            av_opt_set_int(resampler.get(), "in_sample_rate",
+                           jcut::standalone_render::audio::kSampleRate, 0) >= 0 &&
+            av_opt_set_int(resampler.get(), "out_sample_rate",
+                           codecContext->sample_rate, 0) >= 0 &&
+            av_opt_set_sample_fmt(resampler.get(), "in_sample_fmt",
+                                  AV_SAMPLE_FMT_FLT, 0) >= 0 &&
+            av_opt_set_sample_fmt(resampler.get(), "out_sample_fmt",
+                                  codecContext->sample_fmt, 0) >= 0 &&
+            swr_init(resampler.get()) >= 0;
+        ffmpeg_compat::uninitChannelLayout(&stereoLayout);
+        if (!configured) {
+            if (errorOut) {
+                *errorOut = "failed to configure audio encoder conversion";
+            }
+            return false;
+        }
+        frame.reset(av_frame_alloc());
+        packet.reset(av_packet_alloc());
+        if (!frame || !packet) {
+            if (errorOut) {
+                *errorOut = "failed to allocate audio encoder buffers";
+            }
+            return false;
+        }
+        return true;
+    }
+
+    bool drain(AVFormatContext* formatContext, std::string* errorOut)
+    {
+        for (;;) {
+            const int receiveResult =
+                avcodec_receive_packet(codecContext.get(), packet.get());
+            if (receiveResult == AVERROR(EAGAIN) || receiveResult == AVERROR_EOF) {
+                return true;
+            }
+            if (receiveResult < 0) {
+                if (errorOut) {
+                    *errorOut = "failed to receive encoded audio packet: " +
+                        avErrorToString(receiveResult);
+                }
+                return false;
+            }
+            av_packet_rescale_ts(
+                packet.get(), codecContext->time_base, stream->time_base);
+            packet->stream_index = stream->index;
+            const int writeResult =
+                av_interleaved_write_frame(formatContext, packet.get());
+            av_packet_unref(packet.get());
+            if (writeResult < 0) {
+                if (errorOut) {
+                    *errorOut = "failed to write encoded audio packet: " +
+                        avErrorToString(writeResult);
+                }
+                return false;
+            }
+        }
+    }
+
+    bool encode(AVFormatContext* formatContext,
+                const jcut::EditorDocumentCore& document,
+                const jcut::standalone_render::audio::DecodedAudioCache& cache,
+                std::int64_t timelineStartSample,
+                std::int64_t outputSampleCount,
+                double playbackSpeed,
+                std::string* errorOut)
+    {
+        const int preferredFrameSize = codecContext->frame_size > 0
+            ? codecContext->frame_size
+            : 1024;
+        std::vector<float> mixed;
+        std::vector<float> stretchedMix;
+        if (std::abs(playbackSpeed - 1.0) >= 0.0001) {
+            const std::int64_t sourceSampleCount =
+                static_cast<std::int64_t>(std::llround(
+                    static_cast<long double>(outputSampleCount) *
+                    playbackSpeed));
+            if (sourceSampleCount <= 0 ||
+                sourceSampleCount > std::numeric_limits<int>::max() ||
+                sourceSampleCount > static_cast<std::int64_t>(
+                    std::numeric_limits<std::size_t>::max() /
+                    (sizeof(float) *
+                     jcut::standalone_render::audio::kChannelCount))) {
+                if (errorOut) {
+                    *errorOut = "export audio duration is too large";
+                }
+                return false;
+            }
+            std::vector<float> timelineMix(
+                static_cast<std::size_t>(sourceSampleCount) *
+                jcut::standalone_render::audio::kChannelCount);
+            jcut::standalone_render::audio::mixAudioChunk(
+                document, cache, timelineMix.data(),
+                static_cast<int>(sourceSampleCount),
+                timelineStartSample, 1.0);
+            stretchedMix = jcut::audio::timeStretchPreservePitch(
+                timelineMix,
+                jcut::standalone_render::audio::kChannelCount,
+                jcut::standalone_render::audio::kSampleRate,
+                playbackSpeed);
+            if (stretchedMix.empty()) {
+                if (errorOut) {
+                    *errorOut = "failed to pitch-preserve export playback speed";
+                }
+                return false;
+            }
+            stretchedMix.resize(
+                static_cast<std::size_t>(outputSampleCount) *
+                    jcut::standalone_render::audio::kChannelCount,
+                0.0f);
+        }
+        for (std::int64_t outputOffset = 0;
+             outputOffset < outputSampleCount;) {
+            const int sampleCount = static_cast<int>(std::min<std::int64_t>(
+                preferredFrameSize, outputSampleCount - outputOffset));
+            mixed.resize(static_cast<std::size_t>(sampleCount) *
+                jcut::standalone_render::audio::kChannelCount);
+            if (stretchedMix.empty()) {
+                jcut::standalone_render::audio::mixAudioChunk(
+                    document, cache, mixed.data(), sampleCount,
+                    timelineStartSample + outputOffset, 1.0);
+            } else {
+                std::copy_n(
+                    stretchedMix.data() +
+                        static_cast<std::size_t>(outputOffset) *
+                            jcut::standalone_render::audio::kChannelCount,
+                    static_cast<std::size_t>(sampleCount) *
+                        jcut::standalone_render::audio::kChannelCount,
+                    mixed.data());
+            }
+
+            av_frame_unref(frame.get());
+            frame->format = codecContext->sample_fmt;
+            frame->sample_rate = codecContext->sample_rate;
+            frame->nb_samples = sampleCount;
+            if (ffmpeg_compat::copyFrameChannelLayout(
+                    frame.get(), codecContext.get()) < 0 ||
+                av_frame_get_buffer(frame.get(), 0) < 0) {
+                if (errorOut) {
+                    *errorOut = "failed to allocate encoded audio frame";
+                }
+                return false;
+            }
+            const std::uint8_t* input[] = {
+                reinterpret_cast<const std::uint8_t*>(mixed.data())};
+            const int converted = swr_convert(
+                resampler.get(), frame->data, sampleCount, input, sampleCount);
+            if (converted < 0) {
+                if (errorOut) {
+                    *errorOut = "failed to convert mixed audio: " +
+                        avErrorToString(converted);
+                }
+                return false;
+            }
+            frame->nb_samples = converted;
+            frame->pts = nextPts;
+            nextPts += converted;
+            const int sendResult =
+                avcodec_send_frame(codecContext.get(), frame.get());
+            if (sendResult < 0 || !drain(formatContext, errorOut)) {
+                if (sendResult < 0 && errorOut) {
+                    *errorOut = "failed to submit mixed audio: " +
+                        avErrorToString(sendResult);
+                }
+                return false;
+            }
+            outputOffset += sampleCount;
+        }
+        const int flushResult = avcodec_send_frame(codecContext.get(), nullptr);
+        if (flushResult < 0) {
+            if (errorOut) {
+                *errorOut = "failed to flush audio encoder: " +
+                    avErrorToString(flushResult);
+            }
+            return false;
+        }
+        return drain(formatContext, errorOut);
+    }
+};
+
 const char* muxerNameForOutputFormat(const std::string& outputFormat)
 {
     if (outputFormat == "mp4") {
         return "mp4";
     }
-    if (outputFormat == "mov") {
+    if (outputFormat == "mov" || outputFormat == "mov_mjpeg") {
         return "mov";
     }
     if (outputFormat == "mkv") {
@@ -447,7 +736,10 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     }
 
     std::filesystem::path namedOutputDir;
-    if (!outputPath.stem().empty()) {
+    const bool imageSequenceRequested =
+        exportRequest.outputMode != render::RenderOutputMode::EncodedFile &&
+        !exportRequest.imageSequenceFormat.empty();
+    if (imageSequenceRequested && !outputPath.stem().empty()) {
         namedOutputDir = outputPath.parent_path() / outputPath.stem();
         std::filesystem::create_directories(namedOutputDir, filesystemError);
         if (filesystemError) {
@@ -457,8 +749,7 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     }
 
     const bool writeImageSequence =
-        exportRequest.outputMode != render::RenderOutputMode::EncodedFile &&
-        !exportRequest.imageSequenceFormat.empty() &&
+        imageSequenceRequested &&
         !namedOutputDir.empty();
     const bool writeEncodedVideo =
         exportRequest.outputMode != render::RenderOutputMode::ImageSequence;
@@ -473,6 +764,20 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     std::unique_ptr<AVFrame, AvFrameDeleter> frame;
     std::unique_ptr<AVPacket, AvPacketDeleter> packet;
     std::unique_ptr<SwsContext, SwsContextDeleter> scaleContext;
+    audio::DecodedAudioCache decodedAudio;
+    std::unique_ptr<AudioOutput> audioOutput;
+
+    if (writeEncodedVideo) {
+        std::string audioDecodeError;
+        if (!audio::decodeDocumentAudio(
+                request.document, request.rootDirectory,
+                &decodedAudio, &audioDecodeError)) {
+            result.message = audioDecodeError.empty()
+                ? "failed to decode export audio"
+                : audioDecodeError;
+            return result;
+        }
+    }
 
     if (writeEncodedVideo) {
         AVFormatContext* rawFormatContext = nullptr;
@@ -510,14 +815,21 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
 
         codecContext->codec_id = codec->id;
         codecContext->codec_type = AVMEDIA_TYPE_VIDEO;
-        codecContext->pix_fmt = AV_PIX_FMT_YUV420P;
+        codecContext->pix_fmt = codec->id == AV_CODEC_ID_MJPEG
+            ? AV_PIX_FMT_YUVJ420P
+            : AV_PIX_FMT_YUV420P;
         codecContext->width = exportRequest.outputSize.width;
         codecContext->height = exportRequest.outputSize.height;
         codecContext->time_base = av_inv_q(frameRate);
         codecContext->framerate = frameRate;
         codecContext->gop_size = std::max(1, static_cast<int>(std::lround(outputFps)));
         codecContext->max_b_frames = 0;
-        codecContext->bit_rate = 8'000'000;
+        codecContext->bit_rate = codec->id == AV_CODEC_ID_MJPEG
+            ? 40'000'000
+            : 8'000'000;
+        if (codec->id == AV_CODEC_ID_MJPEG) {
+            codecContext->color_range = AVCOL_RANGE_JPEG;
+        }
         if (formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
             codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
@@ -535,6 +847,17 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
             return result;
         }
         stream->time_base = codecContext->time_base;
+
+        if (!decodedAudio.empty()) {
+            audioOutput = std::make_unique<AudioOutput>();
+            std::string audioError;
+            if (!audioOutput->initialize(
+                    formatContext.get(), exportRequest.outputFormat,
+                    &audioError)) {
+                result.message = audioError;
+                return result;
+            }
+        }
 
         if (!(formatContext->oformat->flags & AVFMT_NOFILE)) {
             const int ioOpenResult =
@@ -588,7 +911,11 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     TimelineRenderer renderer;
     const int startFrame = exportStartFrame(request.document);
     const int endFrame = exportEndFrame(request.document);
-    const std::int64_t totalFrames = totalFramesToRender(request.document);
+    const std::int64_t totalFrames = request.outputFrameLimit > 0
+        ? std::min(
+            totalFramesToRender(request.document),
+            request.outputFrameLimit)
+        : totalFramesToRender(request.document);
     const double playbackSpeed =
         jcut::export_timing::normalizedPlaybackSpeed(exportRequest.playbackSpeed);
     const auto startTime = std::chrono::steady_clock::now();
@@ -615,7 +942,10 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
         if (writeImageSequence) {
             const std::string extension = imageExtensionForFormat(exportRequest.imageSequenceFormat);
             const std::filesystem::path imagePath =
-                sequenceFramePath(namedOutputDir, frameIndex, extension);
+                sequenceFramePath(
+                    namedOutputDir,
+                    request.imageSequenceFrameNumberOffset + frameIndex,
+                    extension);
             std::string imageError;
             if (!encodeImageBufferToFile(frameResult.image, imagePath, exportRequest.imageSequenceFormat, &imageError)) {
                 result.message = imageError.empty() ? "failed to write image-sequence frame" : imageError;
@@ -709,6 +1039,23 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
         if (!flushEncoder(codecContext.get(), formatContext.get(), stream, &flushError)) {
             result.message = flushError;
             return result;
+        }
+        if (audioOutput) {
+            const std::int64_t outputSampleCount =
+                static_cast<std::int64_t>(std::llround(
+                    static_cast<long double>(totalFrames) *
+                    audio::kSampleRate / outputFps));
+            const std::int64_t timelineStartSample =
+                static_cast<std::int64_t>(startFrame) *
+                audio::kSamplesPerTimelineFrame;
+            std::string audioError;
+            if (!audioOutput->encode(
+                    formatContext.get(), request.document, decodedAudio,
+                    timelineStartSample, outputSampleCount,
+                    playbackSpeed, &audioError)) {
+                result.message = audioError;
+                return result;
+            }
         }
         if (av_write_trailer(formatContext.get()) < 0) {
             result.message = "failed to finalize output file";

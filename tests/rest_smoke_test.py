@@ -7,8 +7,10 @@ import base64
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -19,15 +21,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ONSCREEN_BASE_URL = "http://127.0.0.1:40130"
-OFFSCREEN_BASE_URL = "http://127.0.0.1:40131"
-BASE_URL = ONSCREEN_BASE_URL
-EDITOR_PROCESS_PATTERNS = (
-    f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)",
-    f"{REPO_ROOT.name}/(build|build-asan)/(editor|jcut)",
-    r"(^| )\./(build|build-asan)/(editor|jcut)( |$)",
-)
-EDITOR_LOCK_PATH = Path("/tmp/PanelTalkEditor.lock")
+BASE_URL = ""
+TESTBENCH_STATE = REPO_ROOT / "testbench_state.json"
 
 
 class TestFailure(RuntimeError):
@@ -78,6 +73,8 @@ def request(path: str, method: str = "GET", payload: dict[str, Any] | None = Non
         raise TestFailure(f"{method} {path} timed out after {timeout:.1f}s") from exc
     except urllib.error.URLError as exc:
         raise TestFailure(f"{method} {path} failed: {exc.reason}") from exc
+    except OSError as exc:
+        raise TestFailure(f"{method} {path} failed: {exc}") from exc
     if not body:
         return {}
     if "application/json" in content_type:
@@ -93,88 +90,6 @@ def find_widget(node: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
         if found is not None:
             return found
     return None
-
-
-def kill_existing_editors() -> None:
-    for pattern in EDITOR_PROCESS_PATTERNS:
-        probe = subprocess.run(
-            ["pgrep", "-f", pattern],
-            text=True,
-            capture_output=True,
-            cwd=str(REPO_ROOT),
-        )
-        if probe.returncode not in (0, 1):
-            raise TestFailure(f"failed to probe existing editor processes: {probe.stderr.strip()}")
-        if probe.returncode == 1:
-            continue
-
-        for line in probe.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            pid = int(line)
-            if pid == os.getpid():
-                continue
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                continue
-
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        any_running = False
-        for pattern in EDITOR_PROCESS_PATTERNS:
-            probe = subprocess.run(
-                ["pgrep", "-f", pattern],
-                text=True,
-                capture_output=True,
-                cwd=str(REPO_ROOT),
-            )
-            if probe.returncode == 0:
-                any_running = True
-                break
-            if probe.returncode != 1:
-                raise TestFailure(f"failed to reprobe existing editor processes: {probe.stderr.strip()}")
-        if not any_running:
-            remove_stale_editor_lock()
-            return
-        time.sleep(0.1)
-
-    for pattern in EDITOR_PROCESS_PATTERNS:
-        probe = subprocess.run(
-            ["pgrep", "-f", pattern],
-            text=True,
-            capture_output=True,
-            cwd=str(REPO_ROOT),
-        )
-        for line in probe.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            pid = int(line)
-            if pid == os.getpid():
-                continue
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                continue
-    remove_stale_editor_lock()
-
-
-def remove_stale_editor_lock() -> None:
-    if not EDITOR_LOCK_PATH.exists():
-        return
-    try:
-        first_line = EDITOR_LOCK_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
-        pid = int(first_line.strip())
-    except (IndexError, OSError, ValueError):
-        return
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        EDITOR_LOCK_PATH.unlink(missing_ok=True)
-    except PermissionError:
-        return
 
 
 def wait_until(predicate, timeout: float, interval: float = 0.1, description: str = "condition") -> Any:
@@ -237,7 +152,70 @@ def resolve_editor_path(asan: bool) -> Path:
     return build_dir / "editor"
 
 
-def launch_editor(offscreen: bool, asan: bool, valgrind: bool, software_rendering: bool) -> subprocess.Popen[str]:
+def reserve_control_port() -> tuple[socket.socket, int]:
+    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    reservation.bind(("127.0.0.1", 0))
+    return reservation, int(reservation.getsockname()[1])
+
+
+def create_isolated_playback_project(parent: Path) -> Path:
+    if not TESTBENCH_STATE.is_file():
+        raise TestFailure(f"testbench state fixture not found: {TESTBENCH_STATE}")
+    state = json.loads(TESTBENCH_STATE.read_text(encoding="utf-8"))
+    image_clip = next(
+        (clip for clip in state.get("timeline", []) if clip.get("mediaType") == "image"),
+        None,
+    )
+    if image_clip is None:
+        raise TestFailure("testbench state fixture has no image clip")
+    image_clip = dict(image_clip)
+    image_clip.update({
+        "id": "rest_smoke_image",
+        "label": "REST smoke image",
+        "filePath": str((REPO_ROOT / "testbench_assets" / "images" / "life_c.png").resolve()),
+        "audioEnabled": False,
+        "hasAudio": False,
+        "startFrame": 0,
+        "durationFrames": 600,
+        "trackIndex": 0,
+        "sourceDurationFrames": 1,
+        "sourceInFrame": 0,
+        "useProxy": False,
+        "proxyPath": "",
+    })
+    state.update({
+        "timeline": [image_clip],
+        "tracks": [state.get("tracks", [{}])[0]],
+        "selectedClip": image_clip,
+        "selectedClipId": image_clip["id"],
+        "selectedClipIds": [image_clip["id"]],
+        "currentFrame": 0,
+        "playing": False,
+        "playbackSpeed": 1.0,
+        "playbackClockSource": "timeline",
+        "playbackClockSourceExplicit": True,
+        "renderSyncMarkers": [],
+    })
+
+    root = parent / "workspace"
+    project = root / "projects" / "rest-smoke"
+    project.mkdir(parents=True)
+    (project / "state.json").write_text(
+        json.dumps(state, indent=2) + "\n", encoding="utf-8"
+    )
+    (root / "projects" / ".current_project").write_text(
+        "rest-smoke\n", encoding="utf-8"
+    )
+    return root
+
+
+def launch_editor(offscreen: bool,
+                  asan: bool,
+                  valgrind: bool,
+                  software_rendering: bool,
+                  control_port: int,
+                  project_root: Path) -> subprocess.Popen[str]:
     cmd = [str(resolve_editor_path(asan))]
     if valgrind:
         cmd = [
@@ -257,9 +235,9 @@ def launch_editor(offscreen: bool, asan: bool, valgrind: bool, software_renderin
         env["QT_OPENGL"] = "software"
     if valgrind:
         env["EDITOR_FORCE_NULL_RHI"] = "1"
-    env["EDITOR_CONTROL_PORT"] = "40131" if offscreen else "40130"
+    env["EDITOR_CONTROL_PORT"] = str(control_port)
     env["JCUT_UI_AUTOMATION"] = "1"
-    env["JCUT_PROJECT_ROOT"] = str(REPO_ROOT)
+    env["JCUT_PROJECT_ROOT"] = str(project_root)
     return subprocess.Popen(
         cmd,
         cwd=str(REPO_ROOT),
@@ -524,7 +502,6 @@ def main() -> int:
     parser.add_argument("--screenshot-out", default=str(REPO_ROOT / "tests" / "rest_smoke_screenshot.png"))
     args = parser.parse_args()
     global BASE_URL
-    BASE_URL = OFFSCREEN_BASE_URL if args.offscreen else ONSCREEN_BASE_URL
     if args.valgrind and args.asan:
         print(json.dumps({"ok": False, "error": "--asan and --valgrind should not be combined"}), file=sys.stderr)
         return 1
@@ -551,13 +528,22 @@ def main() -> int:
             print(json.dumps({"ok": False, "error": "build failed", "stdout": build.stdout, "stderr": build.stderr}), file=sys.stderr)
             return 1
 
-    kill_existing_editors()
+    temp_project = tempfile.TemporaryDirectory(prefix="jcut-rest-smoke-")
+    project_root = create_isolated_playback_project(Path(temp_project.name))
+    port_reservation, control_port = reserve_control_port()
+    BASE_URL = f"http://127.0.0.1:{control_port}"
+    # Hold the ephemeral port until immediately before launch. UI automation
+    # bypasses the application singleton, so unrelated editor instances can
+    # remain running without being terminated by this test.
+    port_reservation.close()
 
     process = launch_editor(
         offscreen=args.offscreen,
         asan=args.asan,
         valgrind=args.valgrind,
         software_rendering=args.software_rendering,
+        control_port=control_port,
+        project_root=project_root,
     )
     monitor = HarnessMonitor(process)
     diagnostics = Diagnostics()
@@ -580,6 +566,8 @@ def main() -> int:
                 asan=args.asan,
                 valgrind=args.valgrind,
                 software_rendering=args.software_rendering,
+                control_port=control_port,
+                project_root=project_root,
             )
             monitor = HarnessMonitor(process)
             restarted_pid = monitor.wait_for_pid(timeout=args.restart_timeout)
@@ -855,6 +843,8 @@ def main() -> int:
         return 1
     finally:
         stop_process(process)
+        port_reservation.close()
+        temp_project.cleanup()
 
 
 if __name__ == "__main__":

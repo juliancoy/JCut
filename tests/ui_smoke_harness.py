@@ -7,8 +7,10 @@ import json
 import os
 import signal
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -19,12 +21,10 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ONSCREEN_BASE_URL = "http://127.0.0.1:40130"
-OFFSCREEN_BASE_URL = "http://127.0.0.1:40131"
-EDITOR_PROCESS_PATTERN = f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)"
 SPEAKER_FLOW_CLIP = REPO_ROOT / "testbench_assets" / "video" / "pseudorandom_source.mp4"
 SPEAKER_FLOW_SOURCE_MARKER = REPO_ROOT / "testbench_assets" / "video" / "pseudorandom_source.source"
 SPEAKER_FLOW_SOURCE_ID = "sam3_assets_videos_0001"
+TESTBENCH_STATE = REPO_ROOT / "testbench_state.json"
 
 
 class HarnessFailure(RuntimeError):
@@ -40,8 +40,14 @@ def ensure_speaker_flow_clip() -> None:
     if not SPEAKER_FLOW_CLIP.exists() or source_marker != SPEAKER_FLOW_SOURCE_ID:
         SPEAKER_FLOW_CLIP.parent.mkdir(parents=True, exist_ok=True)
         frame_pattern = REPO_ROOT / "sam3" / "assets" / "videos" / "0001" / "%d.jpg"
+        ffmpeg = Path("/usr/bin/ffmpeg")
+        if not ffmpeg.is_file():
+            resolved_ffmpeg = shutil.which("ffmpeg", path=os.defpath)
+            if not resolved_ffmpeg:
+                raise HarnessFailure("system ffmpeg executable not found")
+            ffmpeg = Path(resolved_ffmpeg)
         cmd = [
-            "ffmpeg",
+            str(ffmpeg),
             "-y",
             "-framerate", "30",
             "-start_number", "0",
@@ -56,7 +62,19 @@ def ensure_speaker_flow_clip() -> None:
             "-shortest",
             str(SPEAKER_FLOW_CLIP),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        # The editor runs against JCut's private FFmpeg libraries. A system
+        # ffmpeg executable must load its matching system libraries instead;
+        # mixing the two configurations hides optional encoders such as x264.
+        ffmpeg_env = os.environ.copy()
+        ffmpeg_env.pop("LD_LIBRARY_PATH", None)
+        ffmpeg_env.pop("LD_PRELOAD", None)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=ffmpeg_env,
+        )
         if result.returncode != 0 or not SPEAKER_FLOW_CLIP.exists():
             detail = result.stderr.strip() or result.stdout.strip()
             raise HarnessFailure(f"failed to generate speaker-flow clip with ffmpeg: {detail}")
@@ -173,53 +191,24 @@ def ui_request(base_url: str, payload: dict[str, Any], timeout: float = 8.0) -> 
     return request(base_url, "/ui", method="POST", payload=payload, timeout=timeout)
 
 
-def kill_existing_editors() -> None:
-    probe = subprocess.run(
-        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
-        text=True,
-        capture_output=True,
-        cwd=str(REPO_ROOT),
+def reserve_control_port() -> tuple[socket.socket, int]:
+    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    reservation.bind(("127.0.0.1", 0))
+    return reservation, int(reservation.getsockname()[1])
+
+
+def create_isolated_project_root(parent: Path) -> Path:
+    if not TESTBENCH_STATE.is_file():
+        raise HarnessFailure(f"testbench state fixture not found: {TESTBENCH_STATE}")
+    root = parent / "workspace"
+    project = root / "projects" / "testbench"
+    project.mkdir(parents=True)
+    shutil.copyfile(TESTBENCH_STATE, project / "state.json")
+    (root / "projects" / ".current_project").write_text(
+        "testbench\n", encoding="utf-8"
     )
-    if probe.returncode not in (0, 1):
-        raise HarnessFailure(f"failed to probe existing editor processes: {probe.stderr.strip()}")
-    if probe.returncode == 1:
-        return
-
-    for line in probe.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            os.kill(int(line), signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        probe = subprocess.run(
-            ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
-            text=True,
-            capture_output=True,
-            cwd=str(REPO_ROOT),
-        )
-        if probe.returncode == 1:
-            return
-        time.sleep(0.1)
-
-    probe = subprocess.run(
-        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
-        text=True,
-        capture_output=True,
-        cwd=str(REPO_ROOT),
-    )
-    for line in probe.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            os.kill(int(line), signal.SIGKILL)
-        except ProcessLookupError:
-            continue
+    return root
 
 
 def resolve_editor_path(asan: bool) -> Path:
@@ -240,7 +229,9 @@ def resolve_editor_path(asan: bool) -> Path:
 def launch_editor(offscreen: bool,
                   asan: bool,
                   valgrind: bool,
-                  software_rendering: bool) -> subprocess.Popen[str]:
+                  software_rendering: bool,
+                  control_port: int,
+                  project_root: Path) -> subprocess.Popen[str]:
     cmd = [str(resolve_editor_path(asan))]
     if valgrind:
         cmd = [
@@ -260,9 +251,9 @@ def launch_editor(offscreen: bool,
         env["QT_OPENGL"] = "software"
     if valgrind:
         env["EDITOR_FORCE_NULL_RHI"] = "1"
-    env["EDITOR_CONTROL_PORT"] = "40131" if offscreen else "40130"
+    env["EDITOR_CONTROL_PORT"] = str(control_port)
     env["JCUT_UI_AUTOMATION"] = "1"
-    env["JCUT_PROJECT_ROOT"] = str(REPO_ROOT)
+    env["JCUT_PROJECT_ROOT"] = str(project_root)
     return subprocess.Popen(
         cmd,
         cwd=str(REPO_ROOT),
@@ -393,10 +384,6 @@ def reset_speaker_flow_artifacts(clip_path: Path) -> None:
     editable_path.write_text(transcript_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def configure_editor_project_root(editor_path: Path) -> None:
-    del editor_path
-
-
 def build_if_requested(args: argparse.Namespace) -> None:
     if args.skip_build:
         return
@@ -448,7 +435,10 @@ def main() -> int:
 
     artifact_dir = Path(args.artifact_dir).resolve()
     screenshot_out = Path(args.screenshot_out).resolve() if args.screenshot_out else artifact_dir / "ui.png"
-    base_url = OFFSCREEN_BASE_URL if args.offscreen else ONSCREEN_BASE_URL
+    temp_project = tempfile.TemporaryDirectory(prefix="jcut-ui-smoke-")
+    project_root = create_isolated_project_root(Path(temp_project.name))
+    port_reservation, control_port = reserve_control_port()
+    base_url = f"http://127.0.0.1:{control_port}"
 
     process: subprocess.Popen[str] | None = None
     monitor: HarnessMonitor | None = None
@@ -457,18 +447,21 @@ def main() -> int:
         if args.exercise_generated_track_assignment:
             ensure_speaker_flow_clip()
             reset_speaker_flow_artifacts(SPEAKER_FLOW_CLIP)
-        kill_existing_editors()
 
         editor_path = resolve_editor_path(args.asan)
         if not editor_path.exists():
             raise HarnessFailure(f"editor binary not found: {editor_path}")
-        configure_editor_project_root(editor_path)
+        # Keep the selected ephemeral port unavailable until immediately
+        # before launch so another local harness cannot claim it.
+        port_reservation.close()
 
         process = launch_editor(
             offscreen=args.offscreen,
             asan=args.asan,
             valgrind=args.valgrind,
             software_rendering=args.software_rendering,
+            control_port=control_port,
+            project_root=project_root,
         )
         monitor = HarnessMonitor(process)
 
@@ -839,8 +832,10 @@ def main() -> int:
         print(json.dumps(failure, indent=2), file=sys.stderr)
         return 1
     finally:
+        port_reservation.close()
         if process is not None:
             stop_process(process)
+        temp_project.cleanup()
 
 
 if __name__ == "__main__":

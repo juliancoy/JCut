@@ -25,7 +25,7 @@ def main() -> int:
         "jcut_imgui_vulkan_import",
         "jcut_imgui_runtime",
         "jcut_imgui_standalone_runtime",
-        "jcut_imgui_qt_adapters",
+        "jcut_imgui_audio_runtime",
         "jcut_editor_runtime",
         "jcut_runtime_support",
         "jcut_preview_decode_runtime",

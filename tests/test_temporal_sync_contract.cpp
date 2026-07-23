@@ -61,6 +61,7 @@ private slots:
     void derivedDomainsStayLockedAtPlaybackSpeeds();
     void clipFrameMappingCarriesAllClockDomains();
     void renderSyncMarkersFeedVideoAndTranscriptMapping();
+    void renderSyncCacheInvalidatesAfterInteriorMarkerMutation();
     void transcriptSectionStartMapsBackToExactTimelineFrame();
     void systemClockDecisionIgnoresAudioReadiness();
 };
@@ -246,6 +247,53 @@ void TestTemporalSyncContract::renderSyncMarkersFeedVideoAndTranscriptMapping()
         static_cast<double>(transcriptWithMarker) / static_cast<double>(kTimelineFps);
     QVERIFY2(std::abs(sourceSeconds - transcriptSeconds) <= (1.0 / kTimelineFps),
              "video and transcript mapping must consume the same render-sync-adjusted source time");
+}
+
+void TestTemporalSyncContract::renderSyncCacheInvalidatesAfterInteriorMarkerMutation()
+{
+    TimelineClip clip = makeSixtyFpsClip();
+    clip.startFrame = 100;
+
+    QVector<RenderSyncMarker> markers{
+        {clip.id, 105, RenderSyncAction::SkipFrame, 1},
+        {clip.id, 110, RenderSyncAction::SkipFrame, 2},
+        {clip.id, 115, RenderSyncAction::SkipFrame, 3},
+        {clip.id, 120, RenderSyncAction::SkipFrame, 4},
+        {clip.id, 125, RenderSyncAction::SkipFrame, 5},
+    };
+    constexpr int64_t localTimelineFrame = 30;
+
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(45));
+
+    // Keep the QVector object and size unchanged, and mutate an entry that is
+    // neither first, middle, nor last. Every marker field participates in the
+    // cache identity, so each edit must become visible on the next lookup.
+    markers[1].count = 7;
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(50));
+
+    markers[1].action = RenderSyncAction::DuplicateFrame;
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(36));
+
+    markers[1].frame = 130;
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(43));
+
+    markers[1].frame = 110;
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(36));
+
+    markers[1].clipId = QStringLiteral("another-clip");
+    QCOMPARE(adjustedClipLocalFrameAtTimelineFrame(
+                 clip, localTimelineFrame, markers),
+             int64_t(43));
 }
 
 void TestTemporalSyncContract::systemClockDecisionIgnoresAudioReadiness()

@@ -24,6 +24,7 @@ struct MaskSidecar {
     int64_t firstMappedSourceFrame = -1;
     int64_t lastMappedSourceFrame = -1;
     int64_t lastMappedMaskFrame = -1;
+    bool frameCoverageComplete = true;
     bool completionConfirmed = true;
     bool decodeOrdinalFrames = false;
     QString readinessIssue;
@@ -34,7 +35,7 @@ struct MaskSidecar {
         return isValid() &&
                (!decodeOrdinalFrames ||
                 (frameIndexMapAvailable && frameIndexMetadataAvailable &&
-                 completionConfirmed));
+                 frameCoverageComplete && completionConfirmed));
     }
 };
 

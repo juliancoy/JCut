@@ -113,6 +113,12 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.clipRole = clipRoleName(clip.clipRole);
         coreClip.linkedSourceClipId =
             clip.linkedSourceClipId.trimmed().toStdString();
+        coreClip.generatedFromMaskId =
+            clip.generatedFromMaskId.trimmed().toStdString();
+        coreClip.syncLockedToSource = clip.syncLockedToSource;
+        coreClip.sourceTransformLocked = clip.sourceTransformLocked;
+        coreClip.zLevel = clip.zLevel;
+        coreClip.zLevelUserSet = clip.zLevelUserSet;
         coreClip.proxyPath = clip.proxyPath.toStdString();
         coreClip.useProxy = clip.useProxy;
         coreClip.mediaKind = clipKind(clip.mediaType);
@@ -160,6 +166,30 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.maskInvert = clip.maskInvert;
         coreClip.maskShowOnly = clip.maskShowOnly;
         coreClip.maskOpacity = clip.maskOpacity;
+        coreClip.maskGradeEnabled = clip.maskGradeEnabled;
+        coreClip.maskGradeBrightness = clip.maskGradeBrightness;
+        coreClip.maskGradeContrast = clip.maskGradeContrast;
+        coreClip.maskGradeSaturation = clip.maskGradeSaturation;
+        const auto copyMaskCurveToCore = [](const QVector<QPointF>& source) {
+            std::vector<EditorPoint> result;
+            result.reserve(source.size());
+            for (const QPointF& point : source) {
+                result.push_back({point.x(), point.y()});
+            }
+            return result.empty()
+                ? std::vector<EditorPoint>{{0.0, 0.0}, {1.0, 1.0}}
+                : result;
+        };
+        coreClip.maskGradeCurvePointsR = copyMaskCurveToCore(clip.maskGradeCurvePointsR);
+        coreClip.maskGradeCurvePointsG = copyMaskCurveToCore(clip.maskGradeCurvePointsG);
+        coreClip.maskGradeCurvePointsB = copyMaskCurveToCore(clip.maskGradeCurvePointsB);
+        coreClip.maskGradeCurvePointsLuma = copyMaskCurveToCore(clip.maskGradeCurvePointsLuma);
+        coreClip.maskGradeCurveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+        coreClip.maskDropShadowEnabled = clip.maskDropShadowEnabled;
+        coreClip.maskDropShadowRadius = clip.maskDropShadowRadius;
+        coreClip.maskDropShadowOffsetX = clip.maskDropShadowOffsetX;
+        coreClip.maskDropShadowOffsetY = clip.maskDropShadowOffsetY;
+        coreClip.maskDropShadowOpacity = clip.maskDropShadowOpacity;
         coreClip.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
         coreClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         coreClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
@@ -169,6 +199,16 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.effectSpeed = clip.effectSpeed;
         coreClip.effectScale = clip.effectScale;
         coreClip.effectAlternateDirection = clip.effectAlternateDirection;
+        coreClip.effectSkipAwareTiming = clip.effectSkipAwareTiming;
+        coreClip.differenceReferenceFrames = clip.differenceReferenceFrames;
+        coreClip.differenceThreshold = clip.differenceThreshold;
+        coreClip.differenceSoftness = clip.differenceSoftness;
+        coreClip.temporalEchoCount = clip.temporalEchoCount;
+        coreClip.temporalEchoSpacingFrames = clip.temporalEchoSpacingFrames;
+        coreClip.temporalEchoDecay = clip.temporalEchoDecay;
+        coreClip.tilingPattern = editor::tilingPatternToJson(clip.tilingPattern).toStdString();
+        coreClip.tilingSpacing = clip.tilingSpacing;
+        coreClip.tilingWrap = clip.tilingWrap;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
             EditorCorrectionPolygon value;
             value.enabled = polygon.enabled;
@@ -182,7 +222,31 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.transcriptOverlay.enabled = clip.transcriptOverlay.enabled;
         coreClip.transcriptOverlay.showBackground = clip.transcriptOverlay.showBackground;
         coreClip.transcriptOverlay.backgroundOpacity = clip.transcriptOverlay.backgroundOpacity;
+        coreClip.transcriptOverlay.backgroundCornerRadius = clip.transcriptOverlay.backgroundCornerRadius;
+        coreClip.transcriptOverlay.backgroundPadding = clip.transcriptOverlay.backgroundPadding;
+        coreClip.transcriptOverlay.backgroundFrameEnabled = clip.transcriptOverlay.backgroundFrameEnabled;
+        coreClip.transcriptOverlay.backgroundFrameColor = clip.transcriptOverlay.backgroundFrameColor.name(QColor::HexArgb).toStdString();
+        coreClip.transcriptOverlay.backgroundFrameOpacity = clip.transcriptOverlay.backgroundFrameOpacity;
+        coreClip.transcriptOverlay.backgroundFrameWidth = clip.transcriptOverlay.backgroundFrameWidth;
+        coreClip.transcriptOverlay.backgroundFrameGap = clip.transcriptOverlay.backgroundFrameGap;
         coreClip.transcriptOverlay.showShadow = clip.transcriptOverlay.showShadow;
+        coreClip.transcriptOverlay.shadowColor = clip.transcriptOverlay.shadowColor.name(QColor::HexArgb).toStdString();
+        coreClip.transcriptOverlay.shadowOpacity = clip.transcriptOverlay.shadowOpacity;
+        coreClip.transcriptOverlay.shadowOffsetX = clip.transcriptOverlay.shadowOffsetX;
+        coreClip.transcriptOverlay.shadowOffsetY = clip.transcriptOverlay.shadowOffsetY;
+        coreClip.transcriptOverlay.textOutlineEnabled = clip.transcriptOverlay.textOutlineEnabled;
+        coreClip.transcriptOverlay.textOutlineWidth = clip.transcriptOverlay.textOutlineWidth;
+        coreClip.transcriptOverlay.textOutlineColor = clip.transcriptOverlay.textOutlineColor.name(QColor::HexArgb).toStdString();
+        coreClip.transcriptOverlay.textOutlineOpacity = clip.transcriptOverlay.textOutlineOpacity;
+        using TextExtrudeMode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+        coreClip.transcriptOverlay.textExtrudeMode =
+            clip.transcriptOverlay.textExtrudeMode == TextExtrudeMode::StackedCopies
+                ? "stacked_copies"
+                : (clip.transcriptOverlay.textExtrudeMode == TextExtrudeMode::ErodedSolid
+                    ? "eroded_solid" : "none");
+        coreClip.transcriptOverlay.textExtrudeDepth = clip.transcriptOverlay.textExtrudeDepth;
+        coreClip.transcriptOverlay.textExtrudeBevelScale = clip.transcriptOverlay.textExtrudeBevelScale;
+        coreClip.transcriptOverlay.showSpeakerTitle = clip.transcriptOverlay.showSpeakerTitle;
         coreClip.transcriptOverlay.highlightCurrentWord = clip.transcriptOverlay.highlightCurrentWord;
         coreClip.transcriptOverlay.autoScroll = clip.transcriptOverlay.autoScroll;
         coreClip.transcriptOverlay.useManualPlacement = clip.transcriptOverlay.useManualPlacement;
@@ -257,19 +321,69 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
             });
         }
         for (const TimelineClip::TitleKeyframe& keyframe : clip.titleKeyframes) {
-            coreClip.titleKeyframes.push_back({
-                keyframe.frame,
-                keyframe.text.toStdString(),
-                keyframe.translationX,
-                keyframe.translationY,
-                keyframe.fontSize,
-                keyframe.opacity,
-                keyframe.fontFamily.toStdString(),
-                keyframe.bold,
-                keyframe.italic,
-                keyframe.color.name(QColor::HexArgb).toStdString(),
-                keyframe.linearInterpolation
-            });
+            const auto materialName = [](TimelineClip::TitleKeyframe::MaterialStyle style) {
+                using Style = TimelineClip::TitleKeyframe::MaterialStyle;
+                switch (style) {
+                case Style::Neon: return std::string("neon");
+                case Style::DiagonalStripes: return std::string("diagonal_stripes");
+                case Style::Grid: return std::string("grid");
+                case Style::ImagePattern: return std::string("image_pattern");
+                case Style::Solid: return std::string("solid");
+                }
+                return std::string("solid");
+            };
+            const auto extrudeName = [](TimelineClip::TitleKeyframe::TextExtrudeMode mode) {
+                using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+                if (mode == Mode::StackedCopies) return std::string("stacked_copies");
+                if (mode == Mode::ErodedSolid) return std::string("eroded_solid");
+                return std::string("none");
+            };
+            EditorTitleKeyframe value;
+            value.frame = keyframe.frame;
+            value.text = keyframe.text.toStdString();
+            value.translationX = keyframe.translationX;
+            value.translationY = keyframe.translationY;
+            value.fontSize = keyframe.fontSize;
+            value.opacity = keyframe.opacity;
+            value.fontFamily = keyframe.fontFamily.toStdString();
+            value.bold = keyframe.bold;
+            value.italic = keyframe.italic;
+            value.color = keyframe.color.name(QColor::HexArgb).toStdString();
+            value.linearInterpolation = keyframe.linearInterpolation;
+            value.autoFitToOutput = keyframe.autoFitToOutput;
+            value.logoPath = keyframe.logoPath.toStdString();
+            value.textMaterialStyle = materialName(keyframe.textMaterialStyle);
+            value.textPatternImagePath = keyframe.textPatternImagePath.toStdString();
+            value.textPatternScale = keyframe.textPatternScale;
+            value.dropShadowEnabled = keyframe.dropShadowEnabled;
+            value.dropShadowColor = keyframe.dropShadowColor.name(QColor::HexArgb).toStdString();
+            value.dropShadowOpacity = keyframe.dropShadowOpacity;
+            value.dropShadowOffsetX = keyframe.dropShadowOffsetX;
+            value.dropShadowOffsetY = keyframe.dropShadowOffsetY;
+            value.windowEnabled = keyframe.windowEnabled;
+            value.windowColor = keyframe.windowColor.name(QColor::HexArgb).toStdString();
+            value.windowOpacity = keyframe.windowOpacity;
+            value.windowPadding = keyframe.windowPadding;
+            value.windowWidth = keyframe.windowWidth;
+            value.windowFrameEnabled = keyframe.windowFrameEnabled;
+            value.windowFrameColor = keyframe.windowFrameColor.name(QColor::HexArgb).toStdString();
+            value.windowFrameOpacity = keyframe.windowFrameOpacity;
+            value.windowFrameWidth = keyframe.windowFrameWidth;
+            value.windowFrameGap = keyframe.windowFrameGap;
+            value.windowFrameMaterialStyle = materialName(keyframe.windowFrameMaterialStyle);
+            value.windowFramePatternImagePath = keyframe.windowFramePatternImagePath.toStdString();
+            value.windowFramePatternScale = keyframe.windowFramePatternScale;
+            value.vulkan3DEnabled = keyframe.vulkan3DEnabled;
+            value.vulkan3DExtrudeEnabled = keyframe.vulkan3DExtrudeEnabled;
+            value.textExtrudeMode = extrudeName(keyframe.textExtrudeMode);
+            value.vulkan3DExtrudeDepth = keyframe.vulkan3DExtrudeDepth;
+            value.vulkan3DBevelScale = keyframe.vulkan3DBevelScale;
+            value.vulkan3DYawDegrees = keyframe.vulkan3DYawDegrees;
+            value.vulkan3DPitchDegrees = keyframe.vulkan3DPitchDegrees;
+            value.vulkan3DRollDegrees = keyframe.vulkan3DRollDegrees;
+            value.vulkan3DDepth = keyframe.vulkan3DDepth;
+            value.vulkan3DScale = keyframe.vulkan3DScale;
+            coreClip.titleKeyframes.push_back(std::move(value));
         }
         document.clips.push_back(std::move(coreClip));
     }

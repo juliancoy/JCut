@@ -1,4 +1,5 @@
 #include "preview_view_transform.h"
+#include "preview_resize_core.h"
 
 #include <Qt>
 #include <QWindow>
@@ -258,25 +259,19 @@ QPointF PreviewViewTransform::screenShiftForAnchoredResize(const QRectF& originB
                                                            qreal scaleXFactor,
                                                            qreal scaleYFactor)
 {
-    if (originBounds.width() <= 1.0 || originBounds.height() <= 1.0) {
-        return QPointF();
-    }
-
-    QPointF anchorPoint = originBounds.center();
-    QPointF resizedAnchorPoint = originBounds.center();
-    const qreal nextHalfWidth = originBounds.width() * scaleXFactor * 0.5;
-    const qreal nextHalfHeight = originBounds.height() * scaleYFactor * 0.5;
-
-    if (anchor == PreviewResizeAnchor::Left || anchor == PreviewResizeAnchor::TopLeft) {
-        anchorPoint.setX(originBounds.left());
-        resizedAnchorPoint.setX(originBounds.center().x() - nextHalfWidth);
-    }
-    if (anchor == PreviewResizeAnchor::Top || anchor == PreviewResizeAnchor::TopLeft) {
-        anchorPoint.setY(originBounds.top());
-        resizedAnchorPoint.setY(originBounds.center().y() - nextHalfHeight);
-    }
-
-    return anchorPoint - resizedAnchorPoint;
+    const auto coreAnchor = anchor == PreviewResizeAnchor::Left
+        ? jcut::preview::ResizeAnchor::Left
+        : (anchor == PreviewResizeAnchor::Top
+               ? jcut::preview::ResizeAnchor::Top
+               : (anchor == PreviewResizeAnchor::TopLeft
+                      ? jcut::preview::ResizeAnchor::TopLeft
+                      : jcut::preview::ResizeAnchor::Center));
+    const jcut::preview::PointD shift =
+        jcut::preview::screenShiftForAnchoredResize(
+            {originBounds.left(), originBounds.top(),
+             originBounds.width(), originBounds.height()},
+            coreAnchor, scaleXFactor, scaleYFactor);
+    return QPointF(shift.x, shift.y);
 }
 
 QPointF PreviewViewTransform::translationForAnchoredResize(const QPointF& originTranslation,
@@ -286,18 +281,23 @@ QPointF PreviewViewTransform::translationForAnchoredResize(const QPointF& origin
                                                            PreviewResizeAnchor anchor,
                                                            const QPointF& previewScale)
 {
-    const auto safeScale = [](qreal value) {
-        if (std::abs(value) < 0.0001) {
-            return value < 0.0 ? -0.0001 : 0.0001;
-        }
-        return value;
-    };
-    const qreal scaleXFactor = nextScale.x() / safeScale(originScale.x());
-    const qreal scaleYFactor = nextScale.y() / safeScale(originScale.y());
-    const QPointF screenShift =
-        screenShiftForAnchoredResize(originBounds, anchor, scaleXFactor, scaleYFactor);
-    return QPointF(originTranslation.x() + (screenShift.x() / qMax<qreal>(0.0001, previewScale.x())),
-                   originTranslation.y() + (screenShift.y() / qMax<qreal>(0.0001, previewScale.y())));
+    const auto coreAnchor = anchor == PreviewResizeAnchor::Left
+        ? jcut::preview::ResizeAnchor::Left
+        : (anchor == PreviewResizeAnchor::Top
+               ? jcut::preview::ResizeAnchor::Top
+               : (anchor == PreviewResizeAnchor::TopLeft
+                      ? jcut::preview::ResizeAnchor::TopLeft
+                      : jcut::preview::ResizeAnchor::Center));
+    const jcut::preview::PointD translation =
+        jcut::preview::translationForAnchoredResize(
+            {originTranslation.x(), originTranslation.y()},
+            {originScale.x(), originScale.y()},
+            {nextScale.x(), nextScale.y()},
+            {originBounds.left(), originBounds.top(),
+             originBounds.width(), originBounds.height()},
+            coreAnchor,
+            {previewScale.x(), previewScale.y()});
+    return QPointF(translation.x, translation.y);
 }
 
 QPointF PreviewViewTransform::outputScale() const

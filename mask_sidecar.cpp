@@ -1,8 +1,10 @@
 #include "mask_sidecar.h"
+#include "mask_sidecar_core.h"
 
 #include "editor_timeline_types.h"
 
 #include <QCryptographicHash>
+#include <QBitArray>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -18,6 +20,9 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <filesystem>
+#include <limits>
+#include <string>
 #include <sys/stat.h>
 
 namespace editor::masks {
@@ -159,20 +164,46 @@ bool identityObjectIsUsable(const QJsonObject& identity)
 
 QJsonObject sourceStatFields(const QString& absolutePath)
 {
+#if defined(Q_OS_WIN)
+    struct _stat64 sourceStat {};
+    const std::wstring nativePath = absolutePath.toStdWString();
+    if (::_wstat64(nativePath.c_str(), &sourceStat) != 0 ||
+        (sourceStat.st_mode & _S_IFREG) == 0 || sourceStat.st_size < 0) {
+        return {};
+    }
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtime) * 1000000000;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctime) * 1000000000;
+#else
     struct stat sourceStat {};
     const QByteArray nativePath = QFile::encodeName(absolutePath);
     if (::stat(nativePath.constData(), &sourceStat) != 0 ||
         !S_ISREG(sourceStat.st_mode) || sourceStat.st_size < 0) {
         return {};
     }
+#if defined(Q_OS_DARWIN)
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtimespec.tv_sec) * 1000000000 +
+        sourceStat.st_mtimespec.tv_nsec;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctimespec.tv_sec) * 1000000000 +
+        sourceStat.st_ctimespec.tv_nsec;
+#else
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtim.tv_sec) * 1000000000 +
+        sourceStat.st_mtim.tv_nsec;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctim.tv_sec) * 1000000000 +
+        sourceStat.st_ctim.tv_nsec;
+#endif
+#endif
     return QJsonObject{
         {QStringLiteral("size"), static_cast<qint64>(sourceStat.st_size)},
         {QStringLiteral("mtime_ns"),
-         QString::number(static_cast<qint64>(sourceStat.st_mtim.tv_sec) * 1000000000 +
-                         sourceStat.st_mtim.tv_nsec)},
+         QString::number(modifiedNanoseconds)},
         {QStringLiteral("ctime_ns"),
-         QString::number(static_cast<qint64>(sourceStat.st_ctim.tv_sec) * 1000000000 +
-                         sourceStat.st_ctim.tv_nsec)},
+         QString::number(changedNanoseconds)},
         {QStringLiteral("device"),
          QString::number(static_cast<qulonglong>(sourceStat.st_dev))},
         {QStringLiteral("inode"),
@@ -534,6 +565,45 @@ QString displayNameForDirectory(QString name, const QString& mediaStem)
     return name.replace(QLatin1Char('_'), QLatin1Char(' ')).trimmed();
 }
 
+bool ordinalFrameCoverageComplete(const QDir& directory,
+                                  int64_t lastMappedMaskFrame)
+{
+    const int64_t expectedFrameCount = lastMappedMaskFrame + 1;
+    if (expectedFrameCount <= 0 ||
+        expectedFrameCount > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    QBitArray seen(static_cast<int>(expectedFrameCount), false);
+    int64_t seenCount = 0;
+    const QRegularExpression framePattern(
+        QStringLiteral("^frame_(\\d+)\\.png$"));
+    QDirIterator frames(directory.absolutePath(),
+                        QStringList{QStringLiteral("frame_*.png")},
+                        QDir::Files | QDir::NoSymLinks);
+    while (frames.hasNext()) {
+        const QFileInfo frameInfo(frames.next());
+        const QString frameName = frameInfo.fileName();
+        const QRegularExpressionMatch match = framePattern.match(frameName);
+        bool indexOk = false;
+        const int64_t oneBasedFrame = match.hasMatch()
+            ? match.captured(1).toLongLong(&indexOk)
+            : -1;
+        const QString canonicalName = indexOk
+            ? QStringLiteral("frame_%1.png").arg(
+                  oneBasedFrame, 6, 10, QLatin1Char('0'))
+            : QString();
+        const int64_t zeroBasedFrame = oneBasedFrame - 1;
+        if (!indexOk || frameName != canonicalName ||
+            zeroBasedFrame < 0 || zeroBasedFrame >= expectedFrameCount ||
+            frameInfo.size() <= 0 || seen.testBit(static_cast<int>(zeroBasedFrame))) {
+            return false;
+        }
+        seen.setBit(static_cast<int>(zeroBasedFrame));
+        ++seenCount;
+    }
+    return seenCount == expectedFrameCount;
+}
+
 bool cheapOrdinalSidecarReady(const QString& directory,
                               const QString& sourceMediaPath)
 {
@@ -551,12 +621,7 @@ bool cheapOrdinalSidecarReady(const QString& directory,
     if (!frameIndexMetadataMatches(dir, map, sourceMediaPath, &mapMetadata)) {
         return false;
     }
-    const QFileInfo firstFrame(dir.filePath(QStringLiteral("frame_000001.png")));
-    const QFileInfo lastFrame(dir.filePath(
-        QStringLiteral("frame_%1.png")
-            .arg(map.lastMaskFrame + 1, 6, 10, QLatin1Char('0'))));
-    return firstFrame.isFile() && firstFrame.size() > 0 &&
-           lastFrame.isFile() && lastFrame.size() > 0 &&
+    return ordinalFrameCoverageComplete(dir, map.lastMaskFrame) &&
            completionMetadataConfirms(dir, sourceType, map.lastMaskFrame, mapMetadata);
 }
 
@@ -572,11 +637,8 @@ bool directoryHasAnyMaskFrame(const QString& directory)
 
 QString stableMaskSidecarId(const QString& directory)
 {
-    const QString canonical = QFileInfo(directory).canonicalFilePath();
-    const QByteArray identity =
-        (canonical.isEmpty() ? QDir::cleanPath(directory) : canonical).toUtf8();
-    return QString::fromLatin1(
-        QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex().left(16));
+    return QString::fromStdString(jcut::masks::stableMaskSidecarIdCore(
+        std::filesystem::path(directory.toStdString())));
 }
 
 bool maskSidecarUsesDecodeOrdinalFrames(const QString& directory)
@@ -625,7 +687,8 @@ bool maskSidecarCompletionConfirmedForRender(const QString& directory,
         !metadataIdentityMatchesSource(frameIndexMetadata, sourceMediaPath)) {
         return false;
     }
-    return completionMetadataConfirms(
+    return ordinalFrameCoverageComplete(dir, lastMappedMaskFrame) &&
+        completionMetadataConfirms(
         dir, metadata.value(QStringLiteral("source_type")).toString(),
         lastMappedMaskFrame, frameIndexMetadata);
 }
@@ -640,12 +703,23 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
         return sidecar;
     }
     const QDir dir(dirInfo.absoluteFilePath());
+    const FrameIndexMapInspection map = inspectFrameIndexMap(dir);
+    const int64_t expectedOrdinalFrameCount = map.lastMaskFrame + 1;
+    const bool trackOrdinalCoverage = map.populated &&
+        expectedOrdinalFrameCount > 0 &&
+        expectedOrdinalFrameCount <= std::numeric_limits<int>::max();
+    QBitArray seenOrdinalFrames(
+        trackOrdinalCoverage ? static_cast<int>(expectedOrdinalFrameCount) : 0,
+        false);
+    int64_t seenOrdinalFrameCount = 0;
+    bool ordinalCoverageValid = trackOrdinalCoverage;
     const QRegularExpression framePattern(QStringLiteral("^frame_(\\d+)\\.png$"));
     QDirIterator frames(dir.absolutePath(),
                         QStringList{QStringLiteral("frame_*.png")},
                         QDir::Files | QDir::NoSymLinks);
     while (frames.hasNext()) {
-        const QString frameName = QFileInfo(frames.next()).fileName();
+        const QFileInfo frameInfo(frames.next());
+        const QString frameName = frameInfo.fileName();
         const QRegularExpressionMatch match = framePattern.match(frameName);
         if (!match.hasMatch()) {
             continue;
@@ -656,6 +730,20 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
             : qMin(sidecar.firstFrame, frame);
         sidecar.lastFrame = qMax(sidecar.lastFrame, frame);
         ++sidecar.frameCount;
+        if (ordinalCoverageValid) {
+            const int64_t zeroBasedFrame = frame - 1;
+            const QString canonicalName = QStringLiteral("frame_%1.png").arg(
+                frame, 6, 10, QLatin1Char('0'));
+            if (frameName != canonicalName || zeroBasedFrame < 0 ||
+                zeroBasedFrame >= expectedOrdinalFrameCount ||
+                frameInfo.size() <= 0 ||
+                seenOrdinalFrames.testBit(static_cast<int>(zeroBasedFrame))) {
+                ordinalCoverageValid = false;
+            } else {
+                seenOrdinalFrames.setBit(static_cast<int>(zeroBasedFrame));
+                ++seenOrdinalFrameCount;
+            }
+        }
     }
     if (sidecar.frameCount <= 0) {
         return {};
@@ -676,7 +764,6 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     }
     sidecar.frameDomain =
         metadata.value(QStringLiteral("frame_domain")).toString().trimmed();
-    const FrameIndexMapInspection map = inspectFrameIndexMap(dir);
     const QJsonObject rawFrameIndexMetadata = readJsonObject(
         dir.filePath(QStringLiteral("jcut_frame_map.json")));
     const bool mappedOrdinalSidecar = map.populated ||
@@ -697,6 +784,9 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     sidecar.firstMappedSourceFrame = map.firstSourceFrame;
     sidecar.lastMappedSourceFrame = map.lastSourceFrame;
     sidecar.lastMappedMaskFrame = map.lastMaskFrame;
+    sidecar.frameCoverageComplete = !sidecar.decodeOrdinalFrames ||
+        (ordinalCoverageValid &&
+         seenOrdinalFrameCount == expectedOrdinalFrameCount);
     sidecar.completionConfirmed = !sidecar.decodeOrdinalFrames ||
         completionMetadataConfirms(
             dir, sidecar.sourceType, map.lastMaskFrame, frameIndexMetadata);
@@ -705,6 +795,8 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
         sidecar.readinessIssue = QStringLiteral("Frame map missing");
     } else if (sidecar.decodeOrdinalFrames && !sidecar.frameIndexMetadataAvailable) {
         sidecar.readinessIssue = QStringLiteral("Frame map unverified");
+    } else if (sidecar.decodeOrdinalFrames && !sidecar.frameCoverageComplete) {
+        sidecar.readinessIssue = QStringLiteral("Frame coverage incomplete");
     } else if (sidecar.decodeOrdinalFrames && !sidecar.completionConfirmed) {
         sidecar.readinessIssue = QStringLiteral("Generation incomplete");
     }

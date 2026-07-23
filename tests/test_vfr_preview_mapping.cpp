@@ -1,10 +1,14 @@
 #include <QtTest/QtTest>
 
 #include "../decoder_context.h"
+#include "../editor_shared_effects.h"
 #include "../editor_shared_render_sync.h"
+#include "../mask_sidecar.h"
+#include "mask_sidecar_test_utils.h"
 
 #include <QDir>
 #include <QFile>
+#include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -157,6 +161,7 @@ class TestVfrPreviewMapping : public QObject {
 
 private slots:
     void syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers();
+    void roundedSourceKeyDuplicatesUseFirstPresentation();
 };
 
 void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
@@ -312,6 +317,183 @@ void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
     QCOMPARE(requestedSourceFrameForGeneratedMaskPreview(
                  aggregate.constLast(), aggregate, 104.0, {skipMarker}),
              int64_t(5));
+}
+
+void TestVfrPreviewMapping::roundedSourceKeyDuplicatesUseFirstPresentation()
+{
+    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString python = QStandardPaths::findExecutable(QStringLiteral("python3"));
+    if (ffmpeg.isEmpty() || python.isEmpty()) {
+        QSKIP("ffmpeg and python3 are required for the duplicate-key VFR integration test");
+    }
+
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString sourcePath =
+        temporary.filePath(QStringLiteral("rounded-key-collision.mp4"));
+    const QString mapPath =
+        temporary.filePath(QStringLiteral("jcut_frame_map.tsv"));
+    const QString mapMetadataPath =
+        temporary.filePath(QStringLiteral("jcut_frame_map.json"));
+    const QString completionPath =
+        temporary.filePath(QStringLiteral("jcut_mask.json"));
+    const QString helperPath = QDir(QStringLiteral(JCUT_SOURCE_DIR)).filePath(
+        QStringLiteral("jcut_frame_index_map.py"));
+
+    QString error;
+    const QString collidingPts = QStringLiteral(
+        "drawbox=color=red:t=fill:enable='eq(n,0)',"
+        "drawbox=color=blue:t=fill:enable='eq(n,1)',"
+        "drawbox=color=green:t=fill:enable='eq(n,2)',"
+        "drawbox=color=white:t=fill:enable='eq(n,3)',"
+        "setpts='if(eq(N,0),0,"
+        "if(eq(N,1),0.01/TB,if(eq(N,2),1/TB,1.5/TB)))'");
+    QVERIFY2(runExternalTool(
+                 ffmpeg,
+                 {QStringLiteral("-hide_banner"),
+                  QStringLiteral("-loglevel"), QStringLiteral("error"),
+                  QStringLiteral("-y"),
+                  QStringLiteral("-f"), QStringLiteral("lavfi"),
+                  QStringLiteral("-i"),
+                  QStringLiteral("color=c=black:size=32x24:rate=10:duration=0.4"),
+                  QStringLiteral("-vf"), collidingPts,
+                  QStringLiteral("-fps_mode"), QStringLiteral("vfr"),
+                  QStringLiteral("-c:v"), QStringLiteral("mpeg4"),
+                  sourcePath},
+                 nullptr,
+                 &error),
+             qPrintable(error));
+
+    QVERIFY2(runExternalTool(
+                  python,
+                  {helperPath,
+                   QStringLiteral("--input"), sourcePath,
+                   QStringLiteral("--output"), mapPath},
+                  nullptr,
+                  &error),
+              qPrintable(error));
+
+    const QVector<FrameMapEntry> frameMap = readFrameMap(mapPath, &error);
+    QCOMPARE(frameMap.size(), 4);
+    QCOMPARE(frameMap.at(0).sourceFrame, frameMap.at(1).sourceFrame);
+    QCOMPARE(frameMap.at(0).decodedOrdinal, int64_t(0));
+    QCOMPARE(frameMap.at(1).decodedOrdinal, int64_t(1));
+    const int64_t duplicateSourceKey = frameMap.at(0).sourceFrame;
+
+    QByteArray lookupOutput;
+    QVERIFY2(runExternalTool(
+                  python,
+                  {helperPath,
+                   QStringLiteral("--input"), sourcePath,
+                   QStringLiteral("--lookup-source-frame"),
+                   QString::number(duplicateSourceKey)},
+                  &lookupOutput,
+                  &error),
+              qPrintable(error));
+    QCOMPARE(QString::fromUtf8(lookupOutput).trimmed(), QStringLiteral("1"));
+
+    editor::DecoderContext decoder(sourcePath, nullptr, true);
+    QVERIFY(decoder.initialize());
+    const editor::FrameHandle decoded = decoder.decodeFrame(duplicateSourceKey);
+    QVERIFY(!decoded.isNull());
+    QCOMPARE(decoded.frameNumber(), duplicateSourceKey);
+    const QColor decodedCenter(decoded.cpuImage().pixel(16, 12));
+    QVERIFY2(decodedCenter.red() > 200 && decodedCenter.blue() < 40,
+             "DecoderContext must return the first (red) presentation for a duplicate rounded key");
+
+    QFile metadataFile(mapMetadataPath);
+    QVERIFY(metadataFile.open(QIODevice::ReadOnly));
+    const QJsonObject mapMetadata =
+        QJsonDocument::fromJson(metadataFile.readAll()).object();
+    QCOMPARE(mapMetadata.value(QStringLiteral("status")).toString(),
+             QStringLiteral("ready"));
+    QCOMPARE(mapMetadata.value(QStringLiteral("mapped_frame_count")).toInteger(),
+             qint64(frameMap.size()));
+    QVERIFY(mask_sidecar_test::writeJson(mapMetadataPath, mapMetadata));
+    QJsonObject completionMetadata{
+            {QStringLiteral("schema"), QStringLiteral("jcut_mask_sidecar_v1")},
+            {QStringLiteral("complete"), true},
+            {QStringLiteral("source_type"), QStringLiteral("sam3_binary_frames")},
+            {QStringLiteral("frame_domain"), QStringLiteral("decode_ordinal")},
+            {QStringLiteral("frame_index_map"), QStringLiteral("jcut_frame_map.tsv")},
+            {QStringLiteral("frame_index_metadata"), QStringLiteral("jcut_frame_map.json")},
+            {QStringLiteral("frame_map_sha256"),
+             mask_sidecar_test::fileSha256(mapPath)},
+            {QStringLiteral("expected_frame_count"), frameMap.size()},
+            {QStringLiteral("source_identity"),
+             mapMetadata.value(QStringLiteral("source_identity")).toObject()},
+        };
+    QVERIFY(mask_sidecar_test::writeJson(
+        completionPath, completionMetadata));
+    for (int oneBasedFrame = 1; oneBasedFrame <= frameMap.size(); ++oneBasedFrame) {
+        QImage mask(2, 2, QImage::Format_Grayscale8);
+        mask.fill(oneBasedFrame * 32);
+        QVERIFY(mask.save(temporary.filePath(
+            QStringLiteral("frame_%1.png").arg(
+                oneBasedFrame, 6, 10, QLatin1Char('0')))));
+    }
+
+    const editor::masks::MaskSidecar sidecar =
+        editor::masks::inspectMaskSidecar(
+            temporary.path(), QStringLiteral("rounded-key-collision"), sourcePath);
+    QVERIFY(sidecar.isValid());
+    QVERIFY(sidecar.decodeOrdinalFrames);
+    QVERIFY(sidecar.frameIndexMapAvailable);
+    QVERIFY(sidecar.isReadyForTimeline());
+
+    TimelineClip clip;
+    clip.filePath = sourcePath;
+    clip.maskFramesDir = temporary.path();
+    clip.maskEnabled = true;
+    const QImage resolvedMask = rawClipMaskImage(clip, duplicateSourceKey);
+    QVERIFY(!resolvedMask.isNull());
+    QCOMPARE(qGray(resolvedMask.pixel(0, 0)), 32);
+
+    // Prime the runtime cache above, then publish a different, still-valid
+    // mapping with the same byte sizes and restore each file's millisecond
+    // modification timestamp. Nanosecond/ctime versioning must still reload it.
+    const QFileInfo originalMapInfo(mapPath);
+    const QFileInfo originalMetadataInfo(mapMetadataPath);
+    const QFileInfo originalCompletionInfo(completionPath);
+    const QByteArray remappedContents(
+        "# source_frame\tmask_frame\n1\t0\n1\t1\n3\t2\n4\t3\n");
+    QFile remappedFile(mapPath);
+    QVERIFY(remappedFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(remappedFile.write(remappedContents), qint64(remappedContents.size()));
+    remappedFile.close();
+
+    QJsonObject remappedMetadata = mapMetadata;
+    remappedMetadata.insert(QStringLiteral("min_source_frame"), 1);
+    remappedMetadata.insert(QStringLiteral("map_sha256"),
+                            mask_sidecar_test::fileSha256(mapPath));
+    completionMetadata.insert(
+        QStringLiteral("frame_map_sha256"),
+        remappedMetadata.value(QStringLiteral("map_sha256")));
+    QVERIFY(mask_sidecar_test::writeJson(mapMetadataPath, remappedMetadata));
+    QVERIFY(mask_sidecar_test::writeJson(completionPath, completionMetadata));
+
+    const auto restoreModificationTime = [](const QString& path,
+                                            const QDateTime& timestamp) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) &&
+            file.setFileTime(timestamp, QFileDevice::FileModificationTime);
+    };
+    QVERIFY(restoreModificationTime(mapPath, originalMapInfo.lastModified()));
+    QVERIFY(restoreModificationTime(
+        mapMetadataPath, originalMetadataInfo.lastModified()));
+    QVERIFY(restoreModificationTime(
+        completionPath, originalCompletionInfo.lastModified()));
+    QCOMPARE(QFileInfo(mapPath).size(), originalMapInfo.size());
+    QCOMPARE(QFileInfo(mapMetadataPath).size(), originalMetadataInfo.size());
+    QCOMPARE(QFileInfo(completionPath).size(), originalCompletionInfo.size());
+    QCOMPARE(QFileInfo(mapPath).lastModified().toMSecsSinceEpoch(),
+             originalMapInfo.lastModified().toMSecsSinceEpoch());
+    QCOMPARE(QFileInfo(mapMetadataPath).lastModified().toMSecsSinceEpoch(),
+             originalMetadataInfo.lastModified().toMSecsSinceEpoch());
+    QCOMPARE(QFileInfo(completionPath).lastModified().toMSecsSinceEpoch(),
+             originalCompletionInfo.lastModified().toMSecsSinceEpoch());
+    QVERIFY2(rawClipMaskImage(clip, duplicateSourceKey).isNull(),
+             "A same-ms, same-size authenticated map rewrite must invalidate the cache");
 }
 
 QTEST_GUILESS_MAIN(TestVfrPreviewMapping)

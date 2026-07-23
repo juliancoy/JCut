@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "../mask_tab.h"
+#include "../mask_sidecar.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -74,6 +75,7 @@ private slots:
     void activeRefreshMaterializesAndSelectsChildReentrantly();
     void failedMaterializationLeavesOnlyDiscoveryControlsEnabled();
     void unavailableChildPreservesEnabledIntentAndReportsAvailability();
+    void onlyExplicitZEditsFreezeAutomaticOrdering();
 };
 
 void TestMaskTab::inactiveRefreshNeverMaterializesOrSelects()
@@ -216,6 +218,43 @@ void TestMaskTab::unavailableChildPreservesEnabledIntentAndReportsAvailability()
         QStringLiteral("Generation incomplete")));
     QCOMPARE(controls.sidecars.currentData(Qt::ToolTipRole).toString(),
              QStringLiteral("Generation incomplete"));
+}
+
+void TestMaskTab::onlyExplicitZEditsFreezeAutomaticOrdering()
+{
+    const TimelineClip source = makeSourceClip();
+    TimelineClip selected = makeMaskChild(
+        source, QStringLiteral("/missing/source_alpha_masks"));
+    selected.generatedFromMaskId = editor::masks::stableMaskSidecarId(
+        selected.maskFramesDir);
+    selected.zLevel = 7;
+    selected.zLevelUserSet = false;
+    MaskWidgets controls;
+
+    MaskTab::Dependencies deps;
+    deps.getSelectedClip = [&selected]() { return &selected; };
+    deps.updateClipById = [&selected](
+                              const QString& id,
+                              const std::function<void(TimelineClip&)>& update) {
+        if (id != selected.id) return false;
+        update(selected);
+        return true;
+    };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.isMaskInspectorActive = []() { return true; };
+
+    MaskTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    controls.feather.setValue(3.0);
+    QCOMPARE(selected.maskFeather, 3.0);
+    QCOMPARE(selected.zLevel, 7);
+    QVERIFY(!selected.zLevelUserSet);
+
+    controls.zLevel.setValue(12);
+    QCOMPARE(selected.zLevel, 12);
+    QVERIFY(selected.zLevelUserSet);
 }
 
 QTEST_MAIN(TestMaskTab)

@@ -1,5 +1,6 @@
 #include "editor_effect_presets.h"
 
+#include "speaker_title_core.h"
 #include "timeline_fps.h"
 
 #include <QHash>
@@ -1018,6 +1019,184 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
         return false;
     }
 
+    const auto materialName = [](TimelineClip::TitleKeyframe::MaterialStyle style) {
+        using Style = TimelineClip::TitleKeyframe::MaterialStyle;
+        if (style == Style::Neon) return std::string("neon");
+        if (style == Style::DiagonalStripes) return std::string("diagonal_stripes");
+        if (style == Style::Grid) return std::string("grid");
+        if (style == Style::ImagePattern) return std::string("image_pattern");
+        return std::string("solid");
+    };
+    const auto materialStyle = [](const std::string& value) {
+        using Style = TimelineClip::TitleKeyframe::MaterialStyle;
+        if (value == "neon") return Style::Neon;
+        if (value == "diagonal_stripes") return Style::DiagonalStripes;
+        if (value == "grid") return Style::Grid;
+        if (value == "image_pattern") return Style::ImagePattern;
+        return Style::Solid;
+    };
+    const auto extrudeName = [](TimelineClip::TitleKeyframe::TextExtrudeMode mode) {
+        using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+        if (mode == Mode::StackedCopies) return std::string("stacked_copies");
+        if (mode == Mode::ErodedSolid) return std::string("eroded_solid");
+        return std::string("none");
+    };
+    const auto extrudeMode = [](const std::string& value) {
+        using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+        if (value == "stacked_copies") return Mode::StackedCopies;
+        if (value == "eroded_solid") return Mode::ErodedSolid;
+        return Mode::None;
+    };
+    const auto toCore = [&](const TimelineClip::TitleKeyframe& source) {
+        jcut::EditorTitleKeyframe target;
+        target.frame = source.frame;
+        target.text = source.text.toStdString();
+        target.translationX = source.translationX;
+        target.translationY = source.translationY;
+        target.fontSize = source.fontSize;
+        target.opacity = source.opacity;
+        target.fontFamily = source.fontFamily.toStdString();
+        target.bold = source.bold;
+        target.italic = source.italic;
+        target.color = source.color.name(QColor::HexArgb).toStdString();
+        target.linearInterpolation = source.linearInterpolation;
+        target.autoFitToOutput = source.autoFitToOutput;
+        target.logoPath = source.logoPath.toStdString();
+        target.textMaterialStyle = materialName(source.textMaterialStyle);
+        target.textPatternImagePath = source.textPatternImagePath.toStdString();
+        target.textPatternScale = source.textPatternScale;
+        target.dropShadowEnabled = source.dropShadowEnabled;
+        target.dropShadowColor = source.dropShadowColor.name(QColor::HexArgb).toStdString();
+        target.dropShadowOpacity = source.dropShadowOpacity;
+        target.dropShadowOffsetX = source.dropShadowOffsetX;
+        target.dropShadowOffsetY = source.dropShadowOffsetY;
+        target.windowEnabled = source.windowEnabled;
+        target.windowColor = source.windowColor.name(QColor::HexArgb).toStdString();
+        target.windowOpacity = source.windowOpacity;
+        target.windowPadding = source.windowPadding;
+        target.windowWidth = source.windowWidth;
+        target.windowFrameEnabled = source.windowFrameEnabled;
+        target.windowFrameColor = source.windowFrameColor.name(QColor::HexArgb).toStdString();
+        target.windowFrameOpacity = source.windowFrameOpacity;
+        target.windowFrameWidth = source.windowFrameWidth;
+        target.windowFrameGap = source.windowFrameGap;
+        target.windowFrameMaterialStyle = materialName(source.windowFrameMaterialStyle);
+        target.windowFramePatternImagePath =
+            source.windowFramePatternImagePath.toStdString();
+        target.windowFramePatternScale = source.windowFramePatternScale;
+        target.vulkan3DEnabled = source.vulkan3DEnabled;
+        target.vulkan3DExtrudeEnabled = source.vulkan3DExtrudeEnabled;
+        target.textExtrudeMode = extrudeName(source.textExtrudeMode);
+        target.vulkan3DExtrudeDepth = source.vulkan3DExtrudeDepth;
+        target.vulkan3DBevelScale = source.vulkan3DBevelScale;
+        target.vulkan3DYawDegrees = source.vulkan3DYawDegrees;
+        target.vulkan3DPitchDegrees = source.vulkan3DPitchDegrees;
+        target.vulkan3DRollDegrees = source.vulkan3DRollDegrees;
+        target.vulkan3DDepth = source.vulkan3DDepth;
+        target.vulkan3DScale = source.vulkan3DScale;
+        return target;
+    };
+    const auto fromCore = [&](const jcut::EditorTitleKeyframe& source) {
+        TimelineClip::TitleKeyframe target;
+        target.frame = source.frame;
+        target.text = QString::fromStdString(source.text);
+        target.translationX = source.translationX;
+        target.translationY = source.translationY;
+        target.fontSize = source.fontSize;
+        target.opacity = source.opacity;
+        target.fontFamily = QString::fromStdString(source.fontFamily);
+        target.bold = source.bold;
+        target.italic = source.italic;
+        target.color = QColor(QString::fromStdString(source.color));
+        target.linearInterpolation = source.linearInterpolation;
+        target.autoFitToOutput = source.autoFitToOutput;
+        target.logoPath = QString::fromStdString(source.logoPath);
+        target.textMaterialStyle = materialStyle(source.textMaterialStyle);
+        target.textPatternImagePath =
+            QString::fromStdString(source.textPatternImagePath);
+        target.textPatternScale = source.textPatternScale;
+        target.dropShadowEnabled = source.dropShadowEnabled;
+        target.dropShadowColor =
+            QColor(QString::fromStdString(source.dropShadowColor));
+        target.dropShadowOpacity = source.dropShadowOpacity;
+        target.dropShadowOffsetX = source.dropShadowOffsetX;
+        target.dropShadowOffsetY = source.dropShadowOffsetY;
+        target.windowEnabled = source.windowEnabled;
+        target.windowColor = QColor(QString::fromStdString(source.windowColor));
+        target.windowOpacity = source.windowOpacity;
+        target.windowPadding = source.windowPadding;
+        target.windowWidth = source.windowWidth;
+        target.windowFrameEnabled = source.windowFrameEnabled;
+        target.windowFrameColor =
+            QColor(QString::fromStdString(source.windowFrameColor));
+        target.windowFrameOpacity = source.windowFrameOpacity;
+        target.windowFrameWidth = source.windowFrameWidth;
+        target.windowFrameGap = source.windowFrameGap;
+        target.windowFrameMaterialStyle =
+            materialStyle(source.windowFrameMaterialStyle);
+        target.windowFramePatternImagePath =
+            QString::fromStdString(source.windowFramePatternImagePath);
+        target.windowFramePatternScale = source.windowFramePatternScale;
+        target.vulkan3DEnabled = source.vulkan3DEnabled;
+        target.vulkan3DExtrudeEnabled = source.vulkan3DExtrudeEnabled;
+        target.textExtrudeMode = extrudeMode(source.textExtrudeMode);
+        target.vulkan3DExtrudeDepth = source.vulkan3DExtrudeDepth;
+        target.vulkan3DBevelScale = source.vulkan3DBevelScale;
+        target.vulkan3DYawDegrees = source.vulkan3DYawDegrees;
+        target.vulkan3DPitchDegrees = source.vulkan3DPitchDegrees;
+        target.vulkan3DRollDegrees = source.vulkan3DRollDegrees;
+        target.vulkan3DDepth = source.vulkan3DDepth;
+        target.vulkan3DScale = source.vulkan3DScale;
+        return target;
+    };
+    jcut::EditorClip coreClip;
+    coreClip.label = clip.label.toStdString();
+    coreClip.mediaKind = "title";
+    coreClip.durationFrames = static_cast<int>(clip.durationFrames);
+    for (const auto& keyframe : clip.titleKeyframes) {
+        coreClip.titleKeyframes.push_back(toCore(keyframe));
+    }
+    jcut::SpeakerTitleFlyInSettingsCore coreSettings;
+    coreSettings.style = static_cast<jcut::SpeakerTitleFlyInStyleCore>(
+        static_cast<int>(settings.style));
+    coreSettings.titleDurationFrames = settings.titleDurationFrames;
+    coreSettings.titleStartDelayFrames = settings.titleStartDelayFrames;
+    coreSettings.flyInFrames = settings.flyInFrames;
+    coreSettings.flyOutFrames = settings.flyOutFrames;
+    coreSettings.wrapRadius = settings.wrapRadius;
+    coreSettings.wrapDepth = settings.wrapDepth;
+    coreSettings.wrapStartAngleDegrees = settings.wrapStartAngleDegrees;
+    coreSettings.wrapEndAngleDegrees = settings.wrapEndAngleDegrees;
+    coreSettings.wrapPitchDegrees = settings.wrapPitchDegrees;
+    coreSettings.wrapRollDegrees = settings.wrapRollDegrees;
+    coreSettings.rotationStartXDegrees = settings.rotationStartXDegrees;
+    coreSettings.rotationStartYDegrees = settings.rotationStartYDegrees;
+    coreSettings.rotationStartZDegrees = settings.rotationStartZDegrees;
+    coreSettings.titleBackgroundEnabled = settings.titleBackgroundEnabled;
+    coreSettings.titleTextMaterialStyle = materialName(settings.titleTextMaterialStyle);
+    coreSettings.titleBorderMaterialStyle = materialName(settings.titleBorderMaterialStyle);
+    coreSettings.titleTextPatternImagePath =
+        settings.titleTextPatternImagePath.toStdString();
+    coreSettings.titleBorderPatternImagePath =
+        settings.titleBorderPatternImagePath.toStdString();
+    coreSettings.titlePatternScale = settings.titlePatternScale;
+    coreSettings.titleExtrude3D = settings.titleExtrude3D;
+    coreSettings.titleExtrudeMode = extrudeName(settings.titleExtrudeMode);
+    coreSettings.titleExtrudeDepth = settings.titleExtrudeDepth;
+    coreSettings.titleBevelScale = settings.titleBevelScale;
+    if (!jcut::applySpeakerTitleFlyInCore(&coreClip, coreSettings)) {
+        return false;
+    }
+    clip.titleKeyframes.clear();
+    clip.titleKeyframes.reserve(
+        static_cast<qsizetype>(coreClip.titleKeyframes.size()));
+    for (const auto& keyframe : coreClip.titleKeyframes) {
+        clip.titleKeyframes.push_back(fromCore(keyframe));
+    }
+    return true;
+
+#if 0 // Replaced by the Qt-free speaker_title_core adapter above.
+
     const int64_t duration = qMax<int64_t>(static_cast<int64_t>(kTimelineFps), clip.durationFrames);
     const int64_t inEnd = qMin<int64_t>(duration - 1, qMax<int64_t>(1, settings.flyInFrames));
     const int64_t holdEnd =
@@ -1251,6 +1430,7 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
 
     clip.titleKeyframes = {before, arrived, hold, after};
     return true;
+#endif
 }
 
 GeneratedClipPlacementResult replaceGeneratedClipsForSource(

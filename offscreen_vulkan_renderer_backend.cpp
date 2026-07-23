@@ -2145,6 +2145,11 @@ public:
   }
 
   struct LayerInput {
+    QString clipId;
+    QString mediaOwnerClipId;
+    QString timingOwnerClipId;
+    QString effectsOwnerClipId;
+    QString matteOwnerClipId;
     QImage image;
     QImage maskImage;
     QSize maskSourceSize;
@@ -4494,6 +4499,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
   for (const TimelineClip &clip : orderedClips) {
     const TimelineClip &timingSource =
         resolvedClipTimingSource(clip, request.clips);
+    const TimelineClip &mediaOwner = timingSource;
+    const TimelineClip &timingOwner = timingSource;
+    const TimelineClip &effectsOwner = clip;
+    const TimelineClip &matteOwner = clip;
     // An orphaned or malformed virtual matte must never fall back to its
     // serialized media-path cache and decode as an independent full layer.
     // Normalization removes these clips, but export remains fail-closed when
@@ -4514,7 +4523,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       continue;
     }
     const TimelineClip visualEffectsClip =
-        clipWithResolvedTimingOwner(clip, request.clips);
+        clipWithResolvedTimingOwner(effectsOwner, request.clips);
     EffectiveVisualEffects effects =
         request.bypassGrading
             ? EffectiveVisualEffects{}
@@ -4545,7 +4554,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       textInputs.title3D.push_back(title);
       continue;
     }
-    const QString decodePath = playbackMediaPathForClip(timingSource);
+    const QString decodePath = playbackMediaPathForClip(mediaOwner);
     if (decodePath.isEmpty()) {
       ++decodePathMissingCount;
       continue;
@@ -4556,12 +4565,17 @@ QImage OffscreenVulkanRenderer::renderFrame(
             clip, request.clips, frameClock, request.renderSyncMarkers);
     const int64_t localFrame = frameMapping.sourceFrame;
     const editor::FrameHandle frame =
-        decodeFrameForTimingOwner(timingSource, decodePath, localFrame);
+        decodeFrameForTimingOwner(timingOwner, decodePath, localFrame);
     if (frame.isNull()) {
       ++decodeNullCount;
       continue;
     }
     OffscreenVulkanRendererPrivate::LayerInput layer;
+    layer.clipId = clip.id;
+    layer.mediaOwnerClipId = mediaOwner.id;
+    layer.timingOwnerClipId = timingOwner.id;
+    layer.effectsOwnerClipId = effectsOwner.id;
+    layer.matteOwnerClipId = matteOwner.id;
     layer.frameHandle = frame;
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
@@ -4582,17 +4596,23 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
       layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
     }
-    const bool generatedMaskMatte = clip.clipRole == ClipRole::MaskMatte;
+    const bool generatedMaskMatte = matteOwner.clipRole == ClipRole::MaskMatte;
+    if (generatedMaskMatte &&
+        (layer.mediaOwnerClipId != layer.timingOwnerClipId ||
+         layer.effectsOwnerClipId != layer.clipId ||
+         layer.matteOwnerClipId != layer.clipId)) {
+      continue;
+    }
     const bool gpuMaskEnabled =
-        clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
-        (generatedMaskMatte || clip.maskShowOnly ||
-         clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
+        matteOwner.maskEnabled && !matteOwner.maskFramesDir.trimmed().isEmpty() &&
+        (generatedMaskMatte || matteOwner.maskShowOnly ||
+         matteOwner.maskForegroundLayerEnabled || matteOwner.maskRepeatEnabled);
     if (gpuMaskEnabled) {
       // The matte follows the frame that was actually decoded/presented for
       // its parent. It must never combine a requested source key with a
       // different bounded decode result (TIME.md).
       QImage mask = frame.frameNumber() >= 0
-          ? rawClipMaskImage(clip, frame.frameNumber())
+          ? rawClipMaskImage(matteOwner, frame.frameNumber())
           : QImage{};
       if (generatedMaskMatte) {
         mask = applyCorrectionPolygonsToMaskImage(
@@ -4604,37 +4624,37 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskSourceSize = maskRgba.size();
         layer.maskTextureEnabled = true;
         layer.maskClipSource = generatedMaskMatte;
-        layer.maskShowOnly = clip.maskShowOnly;
+        layer.maskShowOnly = matteOwner.maskShowOnly;
         layer.maskGradeEnabled = false;
-        layer.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
-        layer.maskInvert = clip.maskInvert;
-        layer.maskErodeRadius = qRound(qMax<qreal>(0.0, clip.maskErode));
-        layer.maskDilateRadius = qRound(qMax<qreal>(0.0, clip.maskDilate));
-        layer.maskBlurRadius = qRound(qMax<qreal>(clip.maskFeather, clip.maskBlur));
+        layer.maskForegroundLayerEnabled = matteOwner.maskForegroundLayerEnabled;
+        layer.maskInvert = matteOwner.maskInvert;
+        layer.maskErodeRadius = qRound(qMax<qreal>(0.0, matteOwner.maskErode));
+        layer.maskDilateRadius = qRound(qMax<qreal>(0.0, matteOwner.maskDilate));
+        layer.maskBlurRadius = qRound(qMax<qreal>(matteOwner.maskFeather, matteOwner.maskBlur));
         layer.maskFeatherGamma = static_cast<float>(
-            qBound<qreal>(0.1, clip.maskFeatherGamma, 5.0));
-        layer.maskFeatherFalloff = qBound(0, clip.maskFeatherFalloff, 5);
-        layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, clip.maskOpacity, 1.0));
+            qBound<qreal>(0.1, matteOwner.maskFeatherGamma, 5.0));
+        layer.maskFeatherFalloff = qBound(0, matteOwner.maskFeatherFalloff, 5);
+        layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, matteOwner.maskOpacity, 1.0));
         layer.maskDropShadowRadius = static_cast<float>(
-            qBound<qreal>(0.0, clip.maskDropShadowRadius, 200.0));
-        layer.maskDropShadowOffsetX = static_cast<float>(clip.maskDropShadowOffsetX);
-        layer.maskDropShadowOffsetY = static_cast<float>(clip.maskDropShadowOffsetY);
+            qBound<qreal>(0.0, matteOwner.maskDropShadowRadius, 200.0));
+        layer.maskDropShadowOffsetX = static_cast<float>(matteOwner.maskDropShadowOffsetX);
+        layer.maskDropShadowOffsetY = static_cast<float>(matteOwner.maskDropShadowOffsetY);
         layer.maskDropShadowOpacity = static_cast<float>(
-            qBound<qreal>(0.0, clip.maskDropShadowOpacity, 1.0));
+            qBound<qreal>(0.0, matteOwner.maskDropShadowOpacity, 1.0));
         layer.maskDropShadowDraw = generatedMaskMatte &&
-            clip.maskDropShadowEnabled && layer.maskDropShadowOpacity > 0.0f;
-        layer.maskBrightness = static_cast<float>(clip.maskGradeBrightness);
-        layer.maskContrast = static_cast<float>(clip.maskGradeContrast);
-        layer.maskSaturation = static_cast<float>(clip.maskGradeSaturation);
+            matteOwner.maskDropShadowEnabled && layer.maskDropShadowOpacity > 0.0f;
+        layer.maskBrightness = static_cast<float>(matteOwner.maskGradeBrightness);
+        layer.maskContrast = static_cast<float>(matteOwner.maskGradeContrast);
+        layer.maskSaturation = static_cast<float>(matteOwner.maskGradeSaturation);
         TimelineClip::GradingKeyframe maskGrade;
-        maskGrade.brightness = clip.maskGradeBrightness;
-        maskGrade.contrast = clip.maskGradeContrast;
-        maskGrade.saturation = clip.maskGradeSaturation;
-        maskGrade.curvePointsR = clip.maskGradeCurvePointsR;
-        maskGrade.curvePointsG = clip.maskGradeCurvePointsG;
-        maskGrade.curvePointsB = clip.maskGradeCurvePointsB;
-        maskGrade.curvePointsLuma = clip.maskGradeCurvePointsLuma;
-        maskGrade.curveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+        maskGrade.brightness = matteOwner.maskGradeBrightness;
+        maskGrade.contrast = matteOwner.maskGradeContrast;
+        maskGrade.saturation = matteOwner.maskGradeSaturation;
+        maskGrade.curvePointsR = matteOwner.maskGradeCurvePointsR;
+        maskGrade.curvePointsG = matteOwner.maskGradeCurvePointsG;
+        maskGrade.curvePointsB = matteOwner.maskGradeCurvePointsB;
+        maskGrade.curvePointsLuma = matteOwner.maskGradeCurvePointsLuma;
+        maskGrade.curveSmoothingEnabled = matteOwner.maskGradeCurveSmoothingEnabled;
         layer.maskCurveLutRgba = curveLutBytesForGrade(maskGrade);
         layer.maskCurveLutApplied = gradingUsesCurveLut(maskGrade);
       }
@@ -4696,7 +4716,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         QPointF(transform.scaleX, transform.scaleY));
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
     const TimelineClip effectClip = clipWithResolvedTimingOwner(
-        clipWithRenderableEffectSettings(clip, request.tracks),
+        clipWithRenderableEffectSettings(effectsOwner, request.tracks),
         request.clips);
     if (effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
       const int64_t referenceFrameNumber =

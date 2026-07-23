@@ -95,6 +95,10 @@ struct CreateTitleClipCommand {
     int startFrame = 0;
     int durationFrames = kEditorDefaultTitleDurationFrames;
 };
+struct ReplaceSpeakerTitleClipsCommand {
+    int sourceClipId = 0;
+    std::vector<EditorClip> generatedClips;
+};
 struct DeleteClipCommand { int clipId = 0; };
 struct DeleteSelectedClipsCommand {};
 struct SplitClipCommand {
@@ -113,6 +117,11 @@ struct TrimClipEndCommand {
     int endFrame = 0;
 };
 struct SetClipLabelCommand { int clipId = 0; std::string label; };
+struct SetClipProxyCommand {
+    int clipId = 0;
+    std::string proxyPath;
+    bool useProxy = true;
+};
 struct SetClipLockedCommand { int clipId = 0; bool locked = false; };
 // Matches the Qt timeline's clip-speed action: changing rate rescales the
 // clip's timeline duration and ripples later clips on the same track.
@@ -170,6 +179,18 @@ struct UpsertTransformKeyframeCommand {
     int clipId = 0;
     EditorTransformKeyframe keyframe;
 };
+// Commits a Program-monitor transform expressed in evaluated/output space.
+// The runtime converts it to the stored base-relative keyframe representation,
+// matching the Qt preview edit helper.
+struct CommitPreviewTransformCommand {
+    int clipId = 0;
+    std::int64_t localFrame = 0;
+    double translationX = 0.0;
+    double translationY = 0.0;
+    double rotation = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+};
 struct SetClipMaskEffectCommand {
     int clipId = 0;
     bool maskEnabled = false;
@@ -185,6 +206,16 @@ struct SetClipMaskEffectCommand {
     double effectSpeed = 1.0;
     double effectScale = 1.0;
     bool alternateDirection = true;
+    bool skipAwareTiming = true;
+    int differenceReferenceFrames = 1;
+    double differenceThreshold = 0.10;
+    double differenceSoftness = 0.05;
+    int temporalEchoCount = 4;
+    int temporalEchoSpacingFrames = 2;
+    double temporalEchoDecay = 0.65;
+    std::string tilingPattern = "grid";
+    double tilingSpacing = 1.0;
+    bool tilingWrap = true;
 };
 // Updates only mask presentation fields. Keeping this separate from effect
 // normalization prevents a mask-only edit from rewriting a forward-compatible
@@ -199,6 +230,37 @@ struct SetClipMaskCommand {
     bool repeatEnabled = false;
     double repeatDeltaX = 160.0;
     double repeatDeltaY = 0.0;
+    double dilate = 0.0;
+    double erode = 0.0;
+    double blur = 0.0;
+    bool invert = false;
+    bool showOnly = false;
+    double opacity = 1.0;
+    bool gradeEnabled = false;
+    double gradeBrightness = 0.0;
+    double gradeContrast = 1.0;
+    double gradeSaturation = 1.0;
+    std::vector<EditorPoint> gradeCurvePointsR = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> gradeCurvePointsG = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> gradeCurvePointsB = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> gradeCurvePointsLuma = {{0.0, 0.0}, {1.0, 1.0}};
+    bool gradeCurveSmoothingEnabled = true;
+    bool dropShadowEnabled = false;
+    double dropShadowRadius = 12.0;
+    double dropShadowOffsetX = 0.0;
+    double dropShadowOffsetY = 4.0;
+    double dropShadowOpacity = 0.45;
+};
+struct MaterializeMaskMatteCommand {
+    int sourceClipId = 0;
+    std::string sidecarDirectory;
+    std::string sidecarId;
+    std::string sidecarLabel;
+};
+struct SetClipZLevelCommand {
+    int clipId = 0;
+    int zLevel = 0;
+    bool automatic = false;
 };
 struct SetClipTranscriptOverlayCommand {
     int clipId = 0;
@@ -215,6 +277,10 @@ struct UpsertTitleKeyframeCommand {
 struct RemoveTitleKeyframeCommand {
     int clipId = 0;
     std::int64_t frame = 0;
+};
+struct SetClipCorrectionPolygonsCommand {
+    int clipId = 0;
+    std::vector<EditorCorrectionPolygon> polygons;
 };
 struct ClearCorrectionPolygonsCommand { int clipId = 0; };
 struct SetCorrectionsEnabledCommand { bool enabled = true; };
@@ -257,6 +323,14 @@ struct SetExportRangeCommand {
 };
 struct SetWaveformVisibleCommand { bool visible = true; };
 struct SetTranscriptVisibleCommand { bool visible = true; };
+struct SeedTranscriptHistoryDocumentCommand {
+    std::string path;
+    std::string jsonPayload;
+};
+struct SetTranscriptHistoryDocumentCommand {
+    std::string path;
+    std::string jsonPayload;
+};
 struct SetScopesVisibleCommand { bool visible = true; };
 struct SetExportSizeCommand { int width = 1080; int height = 1920; };
 struct SetExportFpsCommand { double fps = 30.0; };
@@ -292,6 +366,7 @@ using EditorCommand = std::variant<
     InsertClipFromMediaCommand,
     AddClipCommand,
     CreateTitleClipCommand,
+    ReplaceSpeakerTitleClipsCommand,
     DeleteClipCommand,
     DeleteSelectedClipsCommand,
     SplitClipCommand,
@@ -299,6 +374,7 @@ using EditorCommand = std::variant<
     TrimClipStartCommand,
     TrimClipEndCommand,
     SetClipLabelCommand,
+    SetClipProxyCommand,
     SetClipLockedCommand,
     SetClipPlaybackRateCommand,
     MoveClipCommand,
@@ -313,12 +389,16 @@ using EditorCommand = std::variant<
     RemoveClipKeyframeCommand,
     SetClipTransformCommand,
     UpsertTransformKeyframeCommand,
+    CommitPreviewTransformCommand,
     SetClipMaskEffectCommand,
     SetClipMaskCommand,
+    MaterializeMaskMatteCommand,
+    SetClipZLevelCommand,
     SetClipTranscriptOverlayCommand,
     SetClipTranscriptActiveCutCommand,
     UpsertTitleKeyframeCommand,
     RemoveTitleKeyframeCommand,
+    SetClipCorrectionPolygonsCommand,
     ClearCorrectionPolygonsCommand,
     SetCorrectionsEnabledCommand,
     SetClipAudioCommand,
@@ -330,6 +410,8 @@ using EditorCommand = std::variant<
     SetExportRangeCommand,
     SetWaveformVisibleCommand,
     SetTranscriptVisibleCommand,
+    SeedTranscriptHistoryDocumentCommand,
+    SetTranscriptHistoryDocumentCommand,
     SetScopesVisibleCommand,
     SetExportSizeCommand,
     SetExportFpsCommand,
@@ -361,6 +443,19 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document);
     const EditorClip& clip,
     std::int64_t localFrame);
 
+// Evaluates the complete neutral clip transform at a local frame. Keyframes
+// are offsets composed with the clip's base transform, matching the Qt model.
+[[nodiscard]] EditorTransformKeyframe evaluateEditorClipTransformAtLocalFrame(
+    const EditorClip& clip,
+    std::int64_t localFrame);
+
+// Evaluates title keyframes without depending on either UI toolkit. Discrete
+// text/font/style fields follow the preceding keyframe; numeric fields honor
+// Linear/Hold interpolation.
+[[nodiscard]] EditorTitleKeyframe evaluateEditorClipTitleAtLocalFrame(
+    const EditorClip& clip,
+    std::int64_t localFrame);
+
 class EditorRuntime {
 public:
     static EditorRuntime createDemo();
@@ -372,6 +467,7 @@ public:
     [[nodiscard]] bool canRedo() const;
     [[nodiscard]] std::size_t undoDepth() const;
     [[nodiscard]] std::size_t redoDepth() const;
+    void clearHistory();
     void beginHistoryTransaction();
     void endHistoryTransaction();
     void tick(const TickParams& params);

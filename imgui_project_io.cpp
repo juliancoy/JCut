@@ -8,11 +8,14 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <sstream>
 #include <system_error>
 #include <vector>
 
@@ -1584,6 +1587,104 @@ bool saveImGuiProjectSession(
     }
     return saveImGuiProjectSessionImpl(
         session, document, errorOut, false, true);
+}
+
+bool writeImGuiProjectAutosave(
+    const ImGuiProjectSession& session,
+    const EditorDocumentCore& document,
+    int maxBackups,
+    std::string* backupPathOut,
+    std::string* errorOut)
+{
+    if (backupPathOut) backupPathOut->clear();
+    if (errorOut) errorOut->clear();
+    if (trim(session.statePath).empty()) {
+        if (errorOut) *errorOut = "project state path is empty";
+        return false;
+    }
+    const fs::path projectDirectory =
+        fs::path(session.statePath).parent_path();
+    std::error_code error;
+    fs::create_directories(projectDirectory, error);
+    if (error) {
+        if (errorOut) {
+            *errorOut = "failed to create autosave directory: " +
+                error.message();
+        }
+        return false;
+    }
+
+    projectio::ScopedProjectSaveLock saveLock;
+    if (!saveLock.acquire(projectDirectory, errorOut)) {
+        return false;
+    }
+
+    json stateRoot;
+    try {
+        const json* preservationRoot =
+            session.legacyStateRoot.is_object()
+            ? &session.legacyStateRoot
+            : nullptr;
+        stateRoot = toLegacyStateJson(document, preservationRoot);
+        if (session.legacyStateOverrides.is_object() &&
+            !session.legacyStateOverrides.empty()) {
+            stateRoot.merge_patch(session.legacyStateOverrides);
+        }
+    } catch (const std::exception& exception) {
+        if (errorOut) {
+            *errorOut = "failed to prepare autosave: " +
+                std::string(exception.what());
+        }
+        return false;
+    }
+
+    const std::time_t now = std::time(nullptr);
+    std::tm localTime{};
+    localtime_r(&now, &localTime);
+    std::ostringstream name;
+    name << "state_backup_"
+         << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S")
+         << ".json";
+    const fs::path backupPath = projectDirectory / name.str();
+    if (!writeTextAtomically(
+            backupPath, stateRoot.dump(2) + "\n", errorOut)) {
+        return false;
+    }
+
+    std::vector<fs::path> backups;
+    for (const fs::directory_entry& entry :
+         fs::directory_iterator(projectDirectory, error)) {
+        if (error) break;
+        if (!entry.is_regular_file(error) || error) continue;
+        const std::string fileName = entry.path().filename().string();
+        if (fileName.starts_with("state_backup_") &&
+            entry.path().extension() == ".json") {
+            backups.push_back(entry.path());
+        }
+    }
+    if (error) {
+        if (errorOut) {
+            *errorOut = "failed to enumerate autosave backups: " +
+                error.message();
+        }
+        return false;
+    }
+    std::sort(backups.begin(), backups.end());
+    const std::size_t keep = static_cast<std::size_t>(
+        std::clamp(maxBackups, 1, 200));
+    while (backups.size() > keep) {
+        fs::remove(backups.front(), error);
+        if (error) {
+            if (errorOut) {
+                *errorOut = "failed to trim autosave backup: " +
+                    error.message();
+            }
+            return false;
+        }
+        backups.erase(backups.begin());
+    }
+    if (backupPathOut) *backupPathOut = backupPath.string();
+    return true;
 }
 
 std::optional<std::vector<ImGuiProjectHistoryEntry>>

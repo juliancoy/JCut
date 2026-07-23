@@ -252,6 +252,7 @@ private slots:
     void managedSessionsRejectSymlinkEscapes();
     void staleManagedSaveCannotRecreateProjectAfterRename();
     void legacyStateOverridesApplyAfterConcurrencyValidation();
+    void autosaveWritesCompatibleSnapshotAndTrimsBackups();
     void imguiShellWiresLifecycleActionsThroughSharedDirtyGuard();
 };
 
@@ -1748,6 +1749,74 @@ void TestImGuiProjectHistory::legacyStateOverridesApplyAfterConcurrencyValidatio
     QCOMPARE(session.legacyStateRoot, baseState);
 }
 
+void TestImGuiProjectHistory::autosaveWritesCompatibleSnapshotAndTrimsBackups()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString statePath = tempDir.filePath(QStringLiteral("state.json"));
+    const QString historyPath = tempDir.filePath(QStringLiteral("history.json"));
+    const json state = {
+        {"projectName", "Autosave Original"},
+        {"tracks", json::array({{{"name", "Video 1"}}})},
+        {"timeline", json::array()},
+        {"unknownFutureField", {{"keep", 42}}},
+    };
+    const json history = {
+        {"index", 0},
+        {"entries", json::array({state})},
+    };
+    QVERIFY(writeJson(statePath, state));
+    QVERIFY(writeJson(historyPath, history));
+    QVERIFY(writeJson(
+        tempDir.filePath(
+            QStringLiteral("state_backup_2020-01-01_00-00-00.json")),
+        state));
+    QVERIFY(writeJson(
+        tempDir.filePath(
+            QStringLiteral("state_backup_2021-01-01_00-00-00.json")),
+        state));
+    const QByteArray originalState = readBytes(statePath);
+    const QByteArray originalHistory = readBytes(historyPath);
+
+    jcut::ImGuiProjectSession session =
+        sessionFor(statePath, historyPath, state);
+    session.legacyStateOverrides = {
+        {"autosaveIntervalMinutes", 3},
+        {"autosaveMaxBackups", 2},
+    };
+    std::string backupPath;
+    std::string error;
+    QVERIFY2(
+        jcut::writeImGuiProjectAutosave(
+            session,
+            documentNamed("Autosave Current"),
+            2,
+            &backupPath,
+            &error),
+        error.c_str());
+    QVERIFY(QFileInfo::exists(QString::fromStdString(backupPath)));
+    QCOMPARE(readBytes(statePath), originalState);
+    QCOMPARE(readBytes(historyPath), originalHistory);
+
+    const std::optional<json> backup =
+        readJson(QString::fromStdString(backupPath));
+    QVERIFY(backup.has_value());
+    QCOMPARE(
+        backup->value("projectName", std::string{}),
+        std::string("Autosave Current"));
+    QCOMPARE(
+        backup->at("unknownFutureField").at("keep").get<int>(), 42);
+    QCOMPARE(backup->value("autosaveIntervalMinutes", 0), 3);
+    QCOMPARE(backup->value("autosaveMaxBackups", 0), 2);
+    const QStringList backups = QDir(tempDir.path()).entryList(
+        {QStringLiteral("state_backup_*.json")},
+        QDir::Files,
+        QDir::Name);
+    QCOMPARE(backups.size(), 2);
+    QVERIFY(!backups.contains(
+        QStringLiteral("state_backup_2020-01-01_00-00-00.json")));
+}
+
 void TestImGuiProjectHistory::imguiShellWiresLifecycleActionsThroughSharedDirtyGuard()
 {
     QFile source(QStringLiteral(JCUT_SOURCE_DIR "/jcut_imgui_main.cpp"));
@@ -1773,6 +1842,14 @@ void TestImGuiProjectHistory::imguiShellWiresLifecycleActionsThroughSharedDirtyG
         "save changes before restoring project history")));
     QVERIFY(body.contains(QStringLiteral(
         "void invalidateProjectHistoryCache(ShellState* shellState)")));
+    QVERIFY(body.contains(QStringLiteral(
+        "setLegacyStateOverride(shellState, \"mediaRoot\", mediaRoot)")));
+    QVERIFY(body.contains(QStringLiteral(
+        "setLegacyStateOverride(shellState, \"explorerRoot\", mediaRoot)")));
+    QVERIFY(body.contains(QStringLiteral(
+        "{\"mediaRoot\", shellState.mediaRootDirectory}")));
+    QVERIFY(body.contains(QStringLiteral(
+        "media root changed; save the project to keep it")));
     const qsizetype adoptStart = body.indexOf(
         QStringLiteral("void adoptSavedProjectSession("));
     const qsizetype adoptEnd = body.indexOf(

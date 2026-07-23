@@ -64,7 +64,7 @@ public:
 
     void wire();
     void refresh();
-    void apply(bool pushHistory = false);
+    void apply(bool pushHistory = false, bool zLevelEdited = false);
 
 private:
     void setControlsEnabled(bool enabled);

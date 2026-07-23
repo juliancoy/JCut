@@ -50,6 +50,15 @@ bool saveImGuiProjectSession(
     const EditorDocumentCore& document,
     std::string* errorOut = nullptr);
 
+// Writes a Qt-compatible state_backup_*.json snapshot without mutating
+// state.json or history.json, then keeps only the newest maxBackups files.
+bool writeImGuiProjectAutosave(
+    const ImGuiProjectSession& session,
+    const EditorDocumentCore& document,
+    int maxBackups,
+    std::string* backupPathOut = nullptr,
+    std::string* errorOut = nullptr);
+
 // Reconstructs lightweight summaries without changing state.json or history.json.
 std::optional<std::vector<ImGuiProjectHistoryEntry>>
 listImGuiProjectHistoryEntries(

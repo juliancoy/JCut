@@ -1,4 +1,5 @@
 #include "transcript_cut_session_core.h"
+#include "transcript_document_mutation_core.h"
 
 #include <algorithm>
 #include <charconv>
@@ -386,6 +387,109 @@ TranscriptCutSession loadTranscriptCutSession(
     }
     session.rows = session.activeDocument->rows(rowOptions, original);
     return session;
+}
+
+std::optional<std::string> createTranscriptCutVersion(
+    const TranscriptCutSession& session,
+    std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (!session.activeDocument || session.catalog.source.fileStem.empty()) {
+        if (errorOut) *errorOut = "No active transcript document is available.";
+        return std::nullopt;
+    }
+    int maximumVersion = 1;
+    for (const TranscriptCutEntry& cut : session.catalog.cuts) {
+        if (cut.kind == TranscriptCutKind::Version) {
+            maximumVersion = std::max(maximumVersion, cut.version);
+        }
+    }
+    const fs::path directory =
+        fs::path(session.catalog.source.sourcePath).parent_path();
+    fs::path target;
+    do {
+        ++maximumVersion;
+        target = directory /
+            (session.catalog.source.fileStem + "_editable_v" +
+             std::to_string(maximumVersion) + ".json");
+    } while (regularFileExists(target));
+
+    json root = session.activeDocument->root();
+    auto segments = root.find("segments");
+    int renderOrder = 0;
+    if (segments != root.end() && segments->is_array()) {
+        for (std::size_t segmentIndex = 0; segmentIndex < segments->size(); ++segmentIndex) {
+            json& segment = (*segments)[segmentIndex];
+            auto words = segment.find("words");
+            if (!segment.is_object() || words == segment.end() || !words->is_array()) continue;
+            for (std::size_t wordIndex = 0; wordIndex < words->size(); ++wordIndex) {
+                json& word = (*words)[wordIndex];
+                if (!word.is_object()) continue;
+                if (!word.contains("original_segment_index")) {
+                    word["original_segment_index"] = static_cast<int>(segmentIndex);
+                }
+                if (!word.contains("original_word_index")) {
+                    word["original_word_index"] = static_cast<int>(wordIndex);
+                }
+                word["render_order"] = renderOrder++;
+            }
+        }
+    }
+    if (!saveTranscriptDocumentAtomic(target.string(), root, errorOut)) {
+        return std::nullopt;
+    }
+    return target.lexically_normal().string();
+}
+
+bool renameTranscriptCut(const TranscriptCutSession& session,
+                         const std::string& label,
+                         std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (!session.activeCutMutable || !session.activeDocument) {
+        if (errorOut) *errorOut = "The original transcript cannot be renamed.";
+        return false;
+    }
+    const std::string normalized = trimAscii(label);
+    if (normalized.empty()) {
+        if (errorOut) *errorOut = "Cut label cannot be empty.";
+        return false;
+    }
+    json root = session.activeDocument->root();
+    if (root.value("cut_label", std::string{}) == normalized) return false;
+    root["cut_label"] = normalized;
+    return saveTranscriptDocumentAtomic(session.activePath, root, errorOut);
+}
+
+bool deleteTranscriptCut(const TranscriptCutSession& session,
+                         std::string* fallbackPathOut,
+                         std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (fallbackPathOut) fallbackPathOut->clear();
+    if (!session.activeCutMutable || session.activePath.empty()) {
+        if (errorOut) *errorOut = "The original transcript cannot be deleted.";
+        return false;
+    }
+    std::error_code ec;
+    const bool removed = fs::remove(session.activePath, ec);
+    if (ec || !removed) {
+        if (errorOut) {
+            *errorOut = ec
+                ? "Could not delete transcript cut: " + ec.message()
+                : "Transcript cut no longer exists.";
+        }
+        return false;
+    }
+    if (fallbackPathOut) {
+        if (regularFileExists(session.catalog.editablePath) &&
+            !samePath(session.catalog.editablePath, session.activePath)) {
+            *fallbackPathOut = session.catalog.editablePath;
+        } else if (regularFileExists(session.catalog.originalPath)) {
+            *fallbackPathOut = session.catalog.originalPath;
+        }
+    }
+    return true;
 }
 
 } // namespace jcut

@@ -1,19 +1,17 @@
 #include "imgui_audio_runtime.h"
 
-#include "audio_engine.h"
-#include "editor_document_render_bridge.h"
-#include "editor_shared_media.h"
-#include "editor_shared_render_sync.h"
+#include "RtAudio.h"
+#include "standalone_audio_mixer.h"
+#include "standalone_timeline_renderer.h"
 
 #include <nlohmann/json.hpp>
 
-#include <QVector>
-
 #include <algorithm>
-#include <chrono>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
-#include <cstdio>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -30,11 +28,19 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr auto kAudioSourcePollInterval = std::chrono::milliseconds(250);
-constexpr int kAudioWarmTimeoutMs = 1000;
+constexpr unsigned int kDefaultAudioBufferFrames = 1024;
 
 std::string pathString(const fs::path& path)
 {
     return path.lexically_normal().string();
+}
+
+std::string lowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
 }
 
 std::string resolvePathForRoot(const std::string& path,
@@ -50,19 +56,28 @@ std::string resolvePathForRoot(const std::string& path,
     return pathString(resolved);
 }
 
-jcut::EditorDocumentCore documentWithResolvedMediaPaths(
-    jcut::EditorDocumentCore document,
-    const std::string& rootDirectory)
+bool regularFile(const fs::path& path)
 {
-    for (jcut::EditorMediaItem& mediaItem : document.mediaItems) {
-        mediaItem.id = resolvePathForRoot(mediaItem.id, rootDirectory);
+    std::error_code error;
+    return fs::is_regular_file(path, error) && !error;
+}
+
+std::string fileIdentity(const fs::path& path)
+{
+    nlohmann::json identity{{"path", pathString(path)}, {"regular", false}};
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) {
+        return identity.dump();
     }
-    for (jcut::EditorClip& clip : document.clips) {
-        clip.sourcePath = resolvePathForRoot(clip.sourcePath, rootDirectory);
-        clip.audioSourcePath =
-            resolvePathForRoot(clip.audioSourcePath, rootDirectory);
-    }
-    return document;
+    identity["regular"] = true;
+    const std::uintmax_t size = fs::file_size(path, error);
+    identity["size"] = error ? 0 : size;
+    error.clear();
+    const fs::file_time_type modified = fs::last_write_time(path, error);
+    identity["modified"] = error
+        ? 0
+        : static_cast<long long>(modified.time_since_epoch().count());
+    return identity.dump();
 }
 
 std::string audioTimelineSignature(const jcut::EditorDocumentCore& document,
@@ -72,24 +87,17 @@ std::string audioTimelineSignature(const jcut::EditorDocumentCore& document,
         {"mediaRoot", mediaRoot},
         {"tracks", nlohmann::json::array()},
         {"clips", nlohmann::json::array()},
-        {"exportRanges", nlohmann::json::array()},
         {"renderSyncMarkers", nlohmann::json::array()}};
     for (const jcut::EditorTrack& track : document.tracks) {
         signature["tracks"].push_back({
             {"id", track.id},
             {"audioEnabled", track.audioEnabled},
-            {"audioBusId", track.audioBusId},
             {"audioGain", track.audioGain},
             {"audioMuted", track.audioMuted},
             {"audioSolo", track.audioSolo}});
     }
     for (const jcut::EditorClip& clip : document.clips) {
-        const bool mayContainAudio = clip.hasAudio ||
-            jcut::mediaKindMayContainAudio(clip.mediaKind, clip.sourcePath);
-        if (!mayContainAudio) {
-            continue;
-        }
-        nlohmann::json clipSignature{
+        signature["clips"].push_back({
             {"id", clip.id},
             {"persistentId", clip.persistentId},
             {"trackId", clip.trackId},
@@ -100,34 +108,20 @@ std::string audioTimelineSignature(const jcut::EditorDocumentCore& document,
             {"hasAudio", clip.hasAudio},
             {"audioSourceMode", clip.audioSourceMode},
             {"audioSourcePath", clip.audioSourcePath},
-            {"audioSourceStatus", clip.audioSourceStatus},
             {"audioStreamIndex", clip.audioStreamIndex},
-            {"audioBusId", clip.audioBusId},
             {"audioGain", clip.audioGain},
             {"audioPan", clip.audioPan},
             {"audioSolo", clip.audioSolo},
-            {"audioLinkedToVideo", clip.audioLinkedToVideo}};
-        if (clip.audioEnabled && clip.hasAudio) {
-            clipSignature.update({
-                {"startFrame", clip.startFrame},
-                {"startSubframeSamples", clip.startSubframeSamples},
-                {"durationFrames", clip.durationFrames},
-                {"durationSubframeSamples", clip.durationSubframeSamples},
-                {"sourceDurationFrames", clip.sourceDurationFrames},
-                {"sourceInFrame", clip.sourceInFrame},
-                {"sourceInSubframeSamples", clip.sourceInSubframeSamples},
-                {"sourceFps", clip.sourceFps},
-                {"playbackRate", clip.playbackRate},
-                {"fadeSamples", clip.fadeSamples}});
-        }
-        signature["clips"].push_back(std::move(clipSignature));
-    }
-    signature["exportStartFrame"] = document.exportRequest.exportStartFrame;
-    signature["exportEndFrame"] = document.exportRequest.exportEndFrame;
-    for (const jcut::EditorExportRange& range : document.exportRanges) {
-        signature["exportRanges"].push_back({
-            {"startFrame", range.startFrame},
-            {"endFrame", range.endFrame}});
+            {"startFrame", clip.startFrame},
+            {"startSubframeSamples", clip.startSubframeSamples},
+            {"durationFrames", clip.durationFrames},
+            {"durationSubframeSamples", clip.durationSubframeSamples},
+            {"sourceDurationFrames", clip.sourceDurationFrames},
+            {"sourceInFrame", clip.sourceInFrame},
+            {"sourceInSubframeSamples", clip.sourceInSubframeSamples},
+            {"sourceFps", clip.sourceFps},
+            {"playbackRate", clip.playbackRate},
+            {"fadeSamples", clip.fadeSamples}});
     }
     for (const jcut::EditorRenderSyncMarker& marker : document.renderSyncMarkers) {
         signature["renderSyncMarkers"].push_back({
@@ -139,151 +133,102 @@ std::string audioTimelineSignature(const jcut::EditorDocumentCore& document,
     return signature.dump();
 }
 
-std::string lowercaseExtension(const fs::path& path)
+struct ResolvedAudioTimeline {
+    jcut::EditorDocumentCore document;
+    std::vector<std::string> scheduledPaths;
+    std::string sourceIdentity;
+};
+
+struct ProbeCacheEntry {
+    std::string identity;
+    bool hasAudio = false;
+};
+
+bool fallbackAudioPresence(const jcut::EditorClip& clip)
 {
-    std::string extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char value) {
-                       return static_cast<char>(std::tolower(value));
-                   });
-    return extension;
+    return clip.hasAudio || lowerAscii(clip.mediaKind) == "audio";
 }
 
-std::string audioSourceIdentitySignature(
-    const jcut::EditorDocumentCore& resolvedDocument)
+fs::path selectedAudioPath(const jcut::EditorClip& clip,
+                           const std::string& mediaRoot)
 {
-    std::set<std::string> candidates;
-    for (const jcut::EditorClip& clip : resolvedDocument.clips) {
-        if (!clip.audioEnabled ||
-            (!clip.hasAudio &&
-             !jcut::mediaKindMayContainAudio(clip.mediaKind, clip.sourcePath))) {
+    const fs::path source(resolvePathForRoot(clip.sourcePath, mediaRoot));
+    const fs::path explicitAudio(
+        resolvePathForRoot(clip.audioSourcePath, mediaRoot));
+    const std::string sourceMode = lowerAscii(clip.audioSourceMode);
+    if ((sourceMode == "external" || sourceMode == "explicit_file" ||
+         sourceMode == "sidecar") &&
+        !explicitAudio.empty() && regularFile(explicitAudio)) {
+        return explicitAudio;
+    }
+    if (!source.empty() && lowerAscii(source.extension().string()) != ".wav") {
+        fs::path sidecar = source;
+        sidecar.replace_extension(".wav");
+        if (regularFile(sidecar)) {
+            return sidecar;
+        }
+    }
+    return source;
+}
+
+ResolvedAudioTimeline resolveAudioTimeline(
+    const jcut::EditorDocumentCore& sourceDocument,
+    const std::string& mediaRoot,
+    std::unordered_map<std::string, ProbeCacheEntry>* probeCache)
+{
+    ResolvedAudioTimeline resolved;
+    resolved.document = sourceDocument;
+    nlohmann::json identities = nlohmann::json::array();
+    std::set<std::string> uniquePaths;
+
+    for (jcut::EditorClip& clip : resolved.document.clips) {
+        if (!clip.audioEnabled) {
+            clip.hasAudio = false;
             continue;
         }
-        if (!clip.sourcePath.empty()) {
-            const fs::path sourcePath(clip.sourcePath);
-            candidates.insert(pathString(sourcePath));
-            if (lowercaseExtension(sourcePath) != ".wav") {
-                fs::path sidecarPath = sourcePath;
-                sidecarPath.replace_extension(".wav");
-                candidates.insert(pathString(sidecarPath));
-            }
-        }
-        if (!clip.audioSourcePath.empty()) {
-            candidates.insert(pathString(fs::path(clip.audioSourcePath)));
-        }
-    }
-
-    nlohmann::json identity = nlohmann::json::array();
-    for (const std::string& candidate : candidates) {
-        std::error_code statusError;
-        const fs::file_status status = fs::status(candidate, statusError);
-        const bool regular = !statusError && fs::is_regular_file(status);
-        std::uintmax_t size = 0;
-        long long modified = 0;
-        if (regular) {
-            std::error_code sizeError;
-            size = fs::file_size(candidate, sizeError);
-            if (sizeError) {
-                size = 0;
-            }
-            std::error_code timeError;
-            const fs::file_time_type writeTime =
-                fs::last_write_time(candidate, timeError);
-            if (!timeError) {
-                modified = static_cast<long long>(
-                    writeTime.time_since_epoch().count());
-            }
-        }
-        identity.push_back({
-            {"path", candidate},
-            {"regular", regular},
-            {"size", size},
-            {"modified", modified}});
-    }
-    return identity.dump();
-}
-
-std::string audioPresenceOverrideKey(const jcut::EditorClip& clip)
-{
-    return clip.sourcePath + "\n" + clip.audioSourceMode + "\n" +
-        clip.audioSourcePath;
-}
-
-void applyAudioPresenceOverrides(
-    jcut::EditorDocumentCore* document,
-    const std::unordered_map<std::string, bool>& overrides)
-{
-    if (!document) {
-        return;
-    }
-    for (jcut::EditorClip& clip : document->clips) {
-        const auto overrideIt = overrides.find(audioPresenceOverrideKey(clip));
-        if (overrideIt != overrides.end()) {
-            clip.audioPresenceKnown = true;
-            clip.hasAudio = overrideIt->second;
-        }
-    }
-}
-
-void refreshAudioPresenceOverrides(
-    jcut::EditorDocumentCore* document,
-    bool refreshKnown,
-    std::unordered_map<std::string, bool>* overrides)
-{
-    if (!document || !overrides) {
-        return;
-    }
-    for (jcut::EditorClip& clip : document->clips) {
-        if (!clip.audioEnabled ||
-            (!clip.hasAudio &&
-             !jcut::mediaKindMayContainAudio(clip.mediaKind, clip.sourcePath)) ||
-            (!refreshKnown && clip.audioPresenceKnown)) {
+        const fs::path audioPath = selectedAudioPath(clip, mediaRoot);
+        const std::string identity = fileIdentity(audioPath);
+        identities.push_back(nlohmann::json::parse(identity));
+        if (audioPath.empty() || !regularFile(audioPath)) {
+            clip.hasAudio = false;
             continue;
         }
 
-        fs::path probePath(clip.sourcePath);
-        const fs::path trackedAudioPath(clip.audioSourcePath);
-        std::error_code pathError;
-        if (!clip.audioSourcePath.empty() &&
-            (clip.audioSourceMode == "explicit_file" ||
-             clip.audioSourceMode == "sidecar") &&
-            fs::is_regular_file(trackedAudioPath, pathError) && !pathError) {
-            probePath = trackedAudioPath;
-        } else if (!probePath.empty() && lowercaseExtension(probePath) != ".wav") {
-            fs::path sidecarPath = probePath;
-            sidecarPath.replace_extension(".wav");
-            pathError.clear();
-            if (fs::is_regular_file(sidecarPath, pathError) && !pathError) {
-                probePath = std::move(sidecarPath);
-            }
+        const std::string normalizedPath = pathString(audioPath);
+        bool hasAudio = fallbackAudioPresence(clip);
+        ProbeCacheEntry& cached = (*probeCache)[normalizedPath];
+        if (cached.identity != identity) {
+            const jcut::standalone_render::StandaloneMediaInfo probe =
+                jcut::standalone_render::probeStandaloneMedia(normalizedPath);
+            cached.identity = identity;
+            cached.hasAudio = probe.probed ? probe.hasAudio : hasAudio;
         }
-        if (probePath.empty()) {
-            continue;
-        }
-
-        const MediaProbeResult probe = probeMediaFile(
-            QString::fromStdString(pathString(probePath)),
-            std::max(1, clip.durationFrames) / 30.0);
-        const bool authoritative = probe.hasVideo || probe.hasAudio ||
-            probe.mediaType != ClipMediaType::Unknown;
-        if (!authoritative) {
-            continue;
-        }
+        hasAudio = cached.hasAudio;
         clip.audioPresenceKnown = true;
-        clip.hasAudio = probe.hasAudio;
-        (*overrides)[audioPresenceOverrideKey(clip)] = probe.hasAudio;
+        clip.hasAudio = hasAudio;
+        if (!hasAudio) {
+            continue;
+        }
+
+        // The standalone mixer consumes one canonical path per clip. Resolve
+        // explicit and derived sidecars here so decode and status agree.
+        clip.sourcePath = normalizedPath;
+        clip.audioSourceMode = "embedded";
+        clip.audioSourcePath.clear();
+        if (uniquePaths.insert(normalizedPath).second) {
+            resolved.scheduledPaths.push_back(normalizedPath);
+        }
     }
+    resolved.sourceIdentity = identities.dump();
+    return resolved;
 }
 
-template <typename T>
-QVector<T> toQVector(const std::vector<T>& values)
+double normalizedPlaybackSpeed(double speed)
 {
-    QVector<T> result;
-    result.reserve(static_cast<qsizetype>(values.size()));
-    for (const T& value : values) {
-        result.push_back(value);
+    if (!std::isfinite(speed) || std::abs(speed) < 0.001) {
+        return 1.0;
     }
-    return result;
+    return std::clamp(std::abs(speed), 0.05, 8.0);
 }
 
 } // namespace
@@ -292,6 +237,11 @@ namespace jcut {
 
 class ImGuiAudioRuntime::Impl {
 public:
+    ~Impl()
+    {
+        shutdown();
+    }
+
     void synchronize(const EditorDocumentCore& document,
                      const std::string& mediaRoot)
     {
@@ -299,11 +249,9 @@ public:
         try {
             synchronizeLocked(document, mediaRoot);
         } catch (const std::exception& exception) {
-            if (m_playbackActive) {
-                m_audioEngine.stop();
-            }
-            m_playbackActive = false;
+            stopOutputLocked();
             m_buffering = false;
+            m_outputUnavailable = true;
             m_statusMessage =
                 "audio synchronization failed: " + std::string(exception.what());
         }
@@ -316,39 +264,117 @@ public:
         return m_status;
     }
 
+    void setBufferFrames(unsigned int frames)
+    {
+        std::lock_guard<std::mutex> operationLock(m_operationMutex);
+        const unsigned int normalized = std::clamp(frames, 64U, 8192U);
+        if (m_requestedBufferFrames == normalized) return;
+        stopOutputLocked();
+        if (m_audio && m_audio->isStreamOpen()) {
+            m_audio->closeStream();
+        }
+        m_requestedBufferFrames = normalized;
+        m_actualBufferFrames = 0;
+        m_initialized = false;
+        m_statusMessage =
+            "audio buffer changed; output will restart on playback";
+        publishStatusLocked();
+    }
+
     void shutdown()
     {
         std::lock_guard<std::mutex> operationLock(m_operationMutex);
-        if (m_warmFuture.valid()) {
+        stopOutputLocked();
+        if (m_decodeFuture.valid()) {
             try {
-                m_warmFuture.wait();
-                (void)m_warmFuture.get();
-            } catch (const std::exception&) {
-                // Shutdown still owns the backend and must continue even if a
-                // background warm operation reported an error.
+                m_decodeFuture.wait();
+                (void)m_decodeFuture.get();
+            } catch (...) {
+                // Teardown must continue after a background decode failure.
             }
         }
-        if (m_playbackActive) {
-            m_audioEngine.stop();
+        if (m_audio && m_audio->isStreamOpen()) {
+            m_audio->closeStream();
         }
-        m_audioEngine.shutdown();
+        m_audio.reset();
+        m_playbackData.reset();
         m_initialized = false;
+        m_actualBufferFrames = 0;
         m_timelineConfigured = false;
-        m_playbackActive = false;
         m_outputUnavailable = false;
+        m_buffering = false;
+        m_cacheReady = false;
+        m_decodeFailed = false;
         m_lastFrame = -1;
         m_lastSpeed = 1.0;
-        m_buffering = false;
         m_timelineGeneration = 0;
         m_timelineSignature.clear();
-        m_sourceIdentitySignature.clear();
-        m_audioPresenceOverrides.clear();
+        m_sourceIdentity.clear();
+        m_scheduledPaths.clear();
+        m_probeCache.clear();
         m_nextSourcePoll = {};
         m_statusMessage.clear();
         publishStatusLocked();
     }
 
 private:
+    struct PlaybackData {
+        EditorDocumentCore document;
+        standalone_render::audio::DecodedAudioCache cache;
+        std::atomic<std::int64_t> timelineSample{0};
+        std::atomic<double> timelineSampleStep{1.0};
+    };
+
+    struct DecodeResult {
+        std::uint64_t generation = 0;
+        bool success = false;
+        std::string error;
+        EditorDocumentCore document;
+        standalone_render::audio::DecodedAudioCache cache;
+    };
+
+    static int audioCallback(void* outputBuffer,
+                             void*,
+                             unsigned int frameCount,
+                             double,
+                             RtAudioStreamStatus,
+                             void* userData)
+    {
+        auto* self = static_cast<Impl*>(userData);
+        if (!self || !outputBuffer) {
+            return 0;
+        }
+        self->renderAudio(static_cast<float*>(outputBuffer), frameCount);
+        return 0;
+    }
+
+    void renderAudio(float* output, unsigned int frameCount)
+    {
+        PlaybackData* data = m_playbackData.get();
+        if (!data) {
+            std::fill(output,
+                      output + static_cast<std::ptrdiff_t>(
+                          frameCount * standalone_render::audio::kChannelCount),
+                      0.0f);
+            return;
+        }
+        const std::int64_t start =
+            data->timelineSample.load(std::memory_order_relaxed);
+        const double step =
+            data->timelineSampleStep.load(std::memory_order_relaxed);
+        standalone_render::audio::mixAudioChunk(
+            data->document,
+            data->cache,
+            output,
+            static_cast<int>(frameCount),
+            start,
+            step);
+        const std::int64_t consumed = std::max<std::int64_t>(
+            1,
+            static_cast<std::int64_t>(std::llround(frameCount * step)));
+        data->timelineSample.fetch_add(consumed, std::memory_order_relaxed);
+    }
+
     void publishStatusLocked()
     {
         ImGuiAudioStatus status;
@@ -356,268 +382,285 @@ private:
         status.timelineConfigured = m_timelineConfigured;
         status.buffering = m_buffering;
         status.playbackActive = m_playbackActive;
-        status.playbackStarted =
-            m_initialized ? m_audioEngine.playbackStarted() : false;
-        status.hasPlayableAudio =
-            m_timelineConfigured ? m_audioEngine.hasPlayableAudio() : false;
-        status.clockAvailable =
-            m_initialized ? m_audioEngine.audioClockAvailable() : false;
-        status.outputUnavailable = status.hasPlayableAudio &&
-            (m_outputUnavailable ||
-             (m_initialized && m_audioEngine.audioOutputUnavailableForPlayback()));
-        if (m_timelineConfigured) {
-            for (const QString& path : m_audioEngine.scheduledAudioSourcePaths()) {
-                status.scheduledSourcePaths.push_back(path.toStdString());
-            }
-        }
+        status.playbackStarted = m_audio && m_audio->isStreamRunning();
+        status.hasPlayableAudio = !m_scheduledPaths.empty();
+        status.clockAvailable = status.playbackStarted;
+        status.outputUnavailable = status.hasPlayableAudio && m_outputUnavailable;
+        status.requestedBufferFrames = m_requestedBufferFrames;
+        status.actualBufferFrames = m_actualBufferFrames;
+        status.scheduledSourcePaths = m_scheduledPaths;
         status.message = m_statusMessage;
         std::lock_guard<std::mutex> statusLock(m_statusMutex);
         m_status = std::move(status);
     }
 
-    bool ensureInitializedLocked()
+    void stopOutputLocked()
     {
-        if (m_initialized) {
+        if (m_audio && m_audio->isStreamRunning()) {
+            (void)m_audio->stopStream();
+        }
+        m_playbackActive = false;
+    }
+
+    bool openOutputLocked()
+    {
+        if (!m_audio) {
+            m_audio = std::make_unique<RtAudio>();
+            m_audio->showWarnings(false);
+        }
+        if (m_audio->isStreamOpen()) {
+            m_initialized = true;
             return true;
         }
-        m_initialized = m_audioEngine.initialize();
-        m_outputUnavailable = !m_initialized;
-        if (!m_initialized) {
-            m_statusMessage =
-                m_audioEngine.audioOutputStatusText().toStdString();
+        const std::vector<unsigned int> devices = m_audio->getDeviceIds();
+        if (devices.empty()) {
+            m_outputUnavailable = true;
+            m_statusMessage = "audio output unavailable: no output device";
+            return false;
+        }
+        RtAudio::StreamParameters output;
+        output.deviceId = m_audio->getDefaultOutputDevice();
+        output.nChannels = standalone_render::audio::kChannelCount;
+        output.firstChannel = 0;
+        unsigned int bufferFrames = m_requestedBufferFrames;
+        RtAudio::StreamOptions options;
+        options.streamName = "JCut ImGui Preview";
+        options.flags = RTAUDIO_MINIMIZE_LATENCY;
+        if (m_audio->openStream(
+                &output,
+                nullptr,
+                RTAUDIO_FLOAT32,
+                standalone_render::audio::kSampleRate,
+                &bufferFrames,
+                &Impl::audioCallback,
+                this,
+                &options) != RTAUDIO_NO_ERROR) {
+            m_outputUnavailable = true;
+            m_statusMessage = m_audio->getErrorText();
             if (m_statusMessage.empty()) {
                 m_statusMessage = "audio output unavailable";
             }
+            return false;
         }
-        return m_initialized;
+        m_initialized = true;
+        m_actualBufferFrames = bufferFrames;
+        m_outputUnavailable = false;
+        return true;
     }
 
-    bool configureTimelineLocked(const EditorDocumentCore& document,
-                                 const std::string& mediaRoot,
-                                 int currentFrame)
+    bool startOutputLocked(int currentFrame, double speed)
     {
-        EditorDocumentCore renderDocument =
-            documentWithResolvedMediaPaths(document, mediaRoot);
-        applyAudioPresenceOverrides(&renderDocument, m_audioPresenceOverrides);
-        std::string signature =
-            audioTimelineSignature(renderDocument, mediaRoot);
-        bool documentChanged =
-            !m_timelineConfigured || m_timelineSignature != signature;
+        if (!m_cacheReady || !openOutputLocked()) {
+            return false;
+        }
+        if (!m_playbackData) {
+            m_playbackData = std::make_unique<PlaybackData>();
+        }
+        m_playbackData->document = m_resolvedDocument;
+        m_playbackData->cache = m_decodedCache;
+        m_playbackData->timelineSample.store(
+            static_cast<std::int64_t>(std::max(0, currentFrame)) *
+                standalone_render::audio::kSamplesPerTimelineFrame,
+            std::memory_order_relaxed);
+        m_playbackData->timelineSampleStep.store(
+            normalizedPlaybackSpeed(speed), std::memory_order_relaxed);
+        if (m_audio->startStream() != RTAUDIO_NO_ERROR) {
+            m_outputUnavailable = true;
+            m_statusMessage = m_audio->getErrorText();
+            if (m_statusMessage.empty()) {
+                m_statusMessage = "audio output unavailable";
+            }
+            return false;
+        }
+        m_playbackActive = m_audio->isStreamRunning();
+        m_outputUnavailable = !m_playbackActive;
+        return m_playbackActive;
+    }
+
+    bool refreshTimelineLocked(const EditorDocumentCore& document,
+                               const std::string& mediaRoot)
+    {
+        const std::string documentSignature =
+            audioTimelineSignature(document, mediaRoot);
         const auto now = std::chrono::steady_clock::now();
-        if (!documentChanged && now < m_nextSourcePoll) {
+        if (m_timelineConfigured && documentSignature == m_timelineSignature &&
+            now < m_nextSourcePoll) {
             return false;
         }
 
-        const std::string sourceIdentity =
-            audioSourceIdentitySignature(renderDocument);
-        const bool sourceIdentityChanged = !m_timelineConfigured ||
-            sourceIdentity != m_sourceIdentitySignature;
+        ResolvedAudioTimeline resolved = resolveAudioTimeline(
+            document, mediaRoot, &m_probeCache);
         m_nextSourcePoll = now + kAudioSourcePollInterval;
-        if (!documentChanged && !sourceIdentityChanged) {
+        const bool changed = !m_timelineConfigured ||
+            documentSignature != m_timelineSignature ||
+            resolved.sourceIdentity != m_sourceIdentity ||
+            resolved.scheduledPaths != m_scheduledPaths;
+        if (!changed) {
             return false;
         }
 
-        if (sourceIdentityChanged) {
-            // Initial loads only fill legacy unknowns. Once a timeline is
-            // installed, an identity change can also mean that the media at
-            // a stable path was replaced, so refresh known stream topology.
-            refreshAudioPresenceOverrides(
-                &renderDocument,
-                m_timelineConfigured,
-                &m_audioPresenceOverrides);
-            applyAudioPresenceOverrides(
-                &renderDocument, m_audioPresenceOverrides);
-            signature = audioTimelineSignature(renderDocument, mediaRoot);
-            documentChanged = !m_timelineConfigured ||
-                m_timelineSignature != signature;
-        }
-
-        if (m_playbackActive) {
-            m_audioEngine.stop();
-            m_playbackActive = false;
-        }
-        if (m_timelineConfigured && sourceIdentityChanged) {
-            m_audioEngine.invalidateAudioSourceCaches();
-        }
-
-        const render::TimelineRenderData timelineData =
-            render::buildTimelineRenderData(renderDocument, false);
-        m_audioEngine.setTimelineStateAtFrame(
-            toQVector(timelineData.tracks),
-            toQVector(timelineData.clips),
-            toQVector(timelineData.exportRanges),
-            toQVector(timelineData.renderSyncMarkers),
-            currentFrame);
+        stopOutputLocked();
+        m_resolvedDocument = std::move(resolved.document);
+        m_scheduledPaths = std::move(resolved.scheduledPaths);
+        m_timelineSignature = documentSignature;
+        m_sourceIdentity = std::move(resolved.sourceIdentity);
         m_timelineConfigured = true;
-        m_timelineSignature = signature;
-        m_sourceIdentitySignature = sourceIdentity;
+        m_cacheReady = false;
+        m_decodeFailed = false;
+        m_decodedCache.clear();
         ++m_timelineGeneration;
         return true;
+    }
+
+    void collectDecodeResultLocked()
+    {
+        if (!m_decodeFuture.valid() ||
+            m_decodeFuture.wait_for(std::chrono::milliseconds(0)) !=
+                std::future_status::ready) {
+            return;
+        }
+        DecodeResult decoded = m_decodeFuture.get();
+        if (decoded.generation != m_timelineGeneration) {
+            return;
+        }
+        m_buffering = false;
+        if (!decoded.success) {
+            m_cacheReady = false;
+            m_decodeFailed = true;
+            m_outputUnavailable = true;
+            m_statusMessage = decoded.error.empty()
+                ? "audio source decode failed"
+                : "audio source decode failed: " + decoded.error;
+            return;
+        }
+        m_resolvedDocument = std::move(decoded.document);
+        m_decodedCache = std::move(decoded.cache);
+        m_cacheReady = true;
+        m_decodeFailed = false;
+        m_outputUnavailable = false;
+    }
+
+    void launchDecodeLocked()
+    {
+        if (m_decodeFuture.valid() || m_decodeFailed ||
+            m_scheduledPaths.empty()) {
+            return;
+        }
+        const std::uint64_t generation = m_timelineGeneration;
+        const EditorDocumentCore document = m_resolvedDocument;
+        m_decodeFuture = std::async(
+            std::launch::async,
+            [generation, document]() mutable {
+                DecodeResult result;
+                result.generation = generation;
+                result.document = std::move(document);
+                result.success = standalone_render::audio::decodeDocumentAudio(
+                    result.document, {}, &result.cache, &result.error);
+                return result;
+            });
+        m_buffering = true;
+        m_statusMessage = "buffering audio";
     }
 
     void synchronizeLocked(const EditorDocumentCore& document,
                            const std::string& mediaRoot)
     {
+        refreshTimelineLocked(document, mediaRoot);
+        collectDecodeResultLocked();
         const int currentFrame = document.transport.currentFrame;
-        configureTimelineLocked(document, mediaRoot, currentFrame);
-        const bool hasPlayableAudio = m_audioEngine.hasPlayableAudio();
+        const double speed = normalizedPlaybackSpeed(
+            document.transport.playbackSpeed);
 
         if (!document.transport.playbackActive) {
-            if (m_playbackActive) {
-                m_audioEngine.stop();
-            }
-            m_playbackActive = false;
+            stopOutputLocked();
             m_buffering = false;
+            m_outputUnavailable = false;
             m_lastFrame = currentFrame;
-            if (!hasPlayableAudio) {
-                m_statusMessage = "no playable audio on timeline";
-            } else if (!m_outputUnavailable) {
-                m_statusMessage = m_initialized
-                    ? m_audioEngine.audioOutputStatusText().toStdString()
-                    : std::string("audio timeline configured");
-                if (m_statusMessage.empty()) {
-                    m_statusMessage = "audio timeline configured";
-                }
-            }
+            m_lastSpeed = speed;
+            m_statusMessage = m_scheduledPaths.empty()
+                ? "no playable audio on timeline"
+                : "audio timeline configured";
             return;
         }
 
-        if (!hasPlayableAudio) {
-            if (m_playbackActive) {
-                m_audioEngine.stop();
-            }
-            m_playbackActive = false;
+        if (m_scheduledPaths.empty()) {
+            stopOutputLocked();
             m_buffering = false;
             m_lastFrame = currentFrame;
             m_statusMessage = "no playable audio on timeline";
             return;
         }
 
-        if (!ensureInitializedLocked()) {
-            m_buffering = false;
+        if (!m_cacheReady) {
+            launchDecodeLocked();
+            if (m_decodeFuture.valid()) {
+                m_buffering = true;
+                m_statusMessage = "buffering audio";
+            } else if (m_decodeFailed) {
+                // Keep the transport fail-open after a terminal decode error,
+                // but do not spin up a full-file decode on every UI frame.
+                m_buffering = false;
+                m_outputUnavailable = true;
+            }
+            m_lastFrame = currentFrame;
+            m_lastSpeed = speed;
             return;
         }
 
-        const double speed = document.transport.playbackSpeed == 0.0
-            ? 1.0
-            : document.transport.playbackSpeed;
-        const PlaybackAudioWarpMode requestedWarpMode =
-            std::abs(speed - 1.0) < 0.0001
-                ? PlaybackAudioWarpMode::Disabled
-                : PlaybackAudioWarpMode::Varispeed;
-        m_audioEngine.setPlaybackWarpMode(
-            normalizedPlaybackAudioWarpMode(speed, requestedWarpMode));
-        m_audioEngine.setPlaybackRate(
-            effectivePlaybackAudioWarpRate(speed, requestedWarpMode));
-
-        const bool speedChanged =
-            std::abs(speed - m_lastSpeed) >= 0.0001;
-        const bool frameJumped =
-            m_lastFrame >= 0 && std::abs(currentFrame - m_lastFrame) > 8;
-
-        if (!m_playbackActive || !m_audioEngine.playbackStarted()) {
-            const bool requestMatchesFuture = m_warmFuture.valid() &&
-                m_warmTimelineGeneration == m_timelineGeneration &&
-                m_warmFrame == currentFrame &&
-                std::abs(m_warmSpeed - speed) < 0.0001;
-            if (m_warmFuture.valid()) {
-                if (m_warmFuture.wait_for(std::chrono::milliseconds(0)) !=
-                    std::future_status::ready) {
-                    m_buffering = true;
-                    m_lastFrame = currentFrame;
-                    m_lastSpeed = speed;
-                    m_statusMessage = "buffering audio";
-                    return;
-                }
-
-                const bool warmed = m_warmFuture.get();
-                if (requestMatchesFuture) {
-                    if (!warmed &&
-                        m_audioEngine.audioOutputUnavailableForPlayback()) {
-                        m_outputUnavailable = true;
-                        m_buffering = false;
-                        m_lastFrame = currentFrame;
-                        m_lastSpeed = speed;
-                        m_statusMessage =
-                            m_audioEngine.audioOutputStatusText().toStdString();
-                        if (m_statusMessage.empty()) {
-                            m_statusMessage = "audio output unavailable";
-                        }
-                        return;
-                    }
-                    const bool terminalSourceFailure = !warmed &&
-                        m_audioEngine.playbackAudioWarmupPermanentlyFailed(
-                            currentFrame);
-                    if (!warmed && !terminalSourceFailure) {
-                        std::fprintf(
-                            stderr,
-                            "[AUDIO] decode still pending after warm interval at frame %d\n",
-                            currentFrame);
-                    } else {
-                        if (terminalSourceFailure) {
-                            std::fprintf(
-                                stderr,
-                                "[AUDIO WARN] source decode failed at frame %d; continuing timeline playback\n",
-                                currentFrame);
-                        }
-                        m_buffering = false;
-                        m_outputUnavailable = false;
-                        m_audioEngine.start(currentFrame);
-                        m_playbackActive = m_audioEngine.playbackStarted();
-                    }
-                }
-            }
-
-            if (!m_playbackActive) {
-                m_warmTimelineGeneration = m_timelineGeneration;
-                m_warmFrame = currentFrame;
-                m_warmSpeed = speed;
-                m_warmFuture = std::async(
-                    std::launch::async,
-                    [this, currentFrame]() {
-                        return m_audioEngine.warmPlaybackAudio(
-                            currentFrame, kAudioWarmTimeoutMs);
-                    });
-                m_buffering = true;
+        if (!m_playbackActive) {
+            if (!startOutputLocked(currentFrame, speed)) {
+                m_buffering = false;
                 m_lastFrame = currentFrame;
                 m_lastSpeed = speed;
-                m_statusMessage = "buffering audio";
                 return;
             }
-        } else if (frameJumped || speedChanged) {
-            m_audioEngine.seek(currentFrame);
+        } else if (m_playbackData) {
+            const bool speedChanged = std::abs(speed - m_lastSpeed) >= 0.0001;
+            const bool frameJumped = m_lastFrame >= 0 &&
+                std::abs(currentFrame - m_lastFrame) > 8;
+            if (speedChanged) {
+                m_playbackData->timelineSampleStep.store(
+                    speed, std::memory_order_relaxed);
+            }
+            if (frameJumped) {
+                m_playbackData->timelineSample.store(
+                    static_cast<std::int64_t>(std::max(0, currentFrame)) *
+                        standalone_render::audio::kSamplesPerTimelineFrame,
+                    std::memory_order_relaxed);
+            }
         }
 
         m_buffering = false;
         m_lastFrame = currentFrame;
         m_lastSpeed = speed;
-        m_statusMessage =
-            m_audioEngine.audioOutputStatusText().toStdString();
-        if (m_statusMessage.empty()) {
-            m_statusMessage = "audio playback active";
-        }
+        m_statusMessage = "audio playback active";
     }
 
     mutable std::mutex m_operationMutex;
     mutable std::mutex m_statusMutex;
     ImGuiAudioStatus m_status;
-    AudioEngine m_audioEngine;
+    std::unique_ptr<RtAudio> m_audio;
+    std::unique_ptr<PlaybackData> m_playbackData;
+    std::future<DecodeResult> m_decodeFuture;
+    EditorDocumentCore m_resolvedDocument;
+    standalone_render::audio::DecodedAudioCache m_decodedCache;
+    std::unordered_map<std::string, ProbeCacheEntry> m_probeCache;
+    std::vector<std::string> m_scheduledPaths;
     bool m_initialized = false;
     bool m_timelineConfigured = false;
     bool m_playbackActive = false;
     bool m_outputUnavailable = false;
+    bool m_buffering = false;
+    bool m_cacheReady = false;
+    bool m_decodeFailed = false;
+    unsigned int m_requestedBufferFrames = kDefaultAudioBufferFrames;
+    unsigned int m_actualBufferFrames = 0;
     int m_lastFrame = -1;
     double m_lastSpeed = 1.0;
-    bool m_buffering = false;
-    std::future<bool> m_warmFuture;
-    std::uint64_t m_warmTimelineGeneration = 0;
-    int m_warmFrame = -1;
-    double m_warmSpeed = 1.0;
     std::uint64_t m_timelineGeneration = 0;
     std::chrono::steady_clock::time_point m_nextSourcePoll{};
-    std::unordered_map<std::string, bool> m_audioPresenceOverrides;
     std::string m_timelineSignature;
-    std::string m_sourceIdentitySignature;
+    std::string m_sourceIdentity;
     std::string m_statusMessage;
 };
 
@@ -626,10 +669,7 @@ ImGuiAudioRuntime::ImGuiAudioRuntime()
 {
 }
 
-ImGuiAudioRuntime::~ImGuiAudioRuntime()
-{
-    shutdown();
-}
+ImGuiAudioRuntime::~ImGuiAudioRuntime() = default;
 
 void ImGuiAudioRuntime::synchronize(const EditorDocumentCore& document,
                                     const std::string& mediaRoot)
@@ -640,6 +680,11 @@ void ImGuiAudioRuntime::synchronize(const EditorDocumentCore& document,
 ImGuiAudioStatus ImGuiAudioRuntime::status() const
 {
     return m_impl->status();
+}
+
+void ImGuiAudioRuntime::setBufferFrames(unsigned int frames)
+{
+    m_impl->setBufferFrames(frames);
 }
 
 void ImGuiAudioRuntime::shutdown()

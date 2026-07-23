@@ -949,15 +949,12 @@ protected:
         }
 
         if (event->type() == QEvent::UpdateRequest) {
-            // Render on demand: the macOS platform layer (display link /
-            // Metal layer) delivers continuous UpdateRequests for this
-            // window even when nothing scheduled one, which saturates the
-            // UI thread with idle presents and starves the control-server
-            // bridge. Only render when the app latched a request via
-            // schedulePreviewUpdate() or during active playback, where the
-            // renderer re-arms itself per presented frame.
-            const bool playing = m_state && m_state->playing;
-            if (!m_updatePending && !playing) {
+            // Platform layers can deliver unsolicited UpdateRequests. Only
+            // consume requests explicitly latched by schedulePreviewUpdate().
+            // Playback already schedules one from each timeline tick; letting
+            // the renderer bypass this latch creates a tight present loop that
+            // can starve the rest of the Qt event queue.
+            if (!m_updatePending) {
                 return true;
             }
         }
@@ -2153,6 +2150,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     QHash<QString, bool> curveLutUploadResults;
     QHash<QString, bool> maskCurveLutUploadResults;
     QHash<QString, bool> maskUploadResults;
+    QHash<QString, bool> frameCrossfadeMaskUploadResults;
+    QHash<QString, bool> frameCrossfadeCurveLutUploadResults;
+    QHash<QString, bool> frameCrossfadeMaskCurveLutUploadResults;
     struct PreparedOverlayTexture {
         VulkanResources* resources = nullptr;
         QRectF bounds;
@@ -2478,6 +2478,46 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         secondaryResult = {};
                     }
                     frameHandoffResults.insert(secondaryHandoffKey, secondaryResult);
+                    if (!status.maskClipSource && status.curveLutApplied) {
+                        const QByteArray secondaryCurveLut =
+                            curveLutRgbaBytes(status.grading);
+                        if (!secondaryCurveLut.isEmpty()) {
+                            frameCrossfadeCurveLutUploadResults.insert(
+                                status.clipId,
+                                secondaryHandoffResources->resources->uploadCurveLut(
+                                    cb, secondaryCurveLut));
+                        }
+                    }
+                    if (status.maskGradeEnabled && status.maskCurveLutApplied) {
+                        const QByteArray secondaryMaskCurveLut =
+                            curveLutRgbaBytes(status.maskGrade);
+                        if (!secondaryMaskCurveLut.isEmpty()) {
+                            frameCrossfadeMaskCurveLutUploadResults.insert(
+                                status.clipId,
+                                secondaryHandoffResources->resources->uploadMaskCurveLut(
+                                    cb, secondaryMaskCurveLut));
+                        }
+                    }
+                    if (status.frameCrossfadeMaskTextureEnabled) {
+                        VulkanMaskPreprocessOptions secondaryMaskOptions;
+                        secondaryMaskOptions.outputSize =
+                            status.frameCrossfadeFrameSize.isValid()
+                                ? status.frameCrossfadeFrameSize
+                                : status.frameSize;
+                        secondaryMaskOptions.invert = status.maskInvert;
+                        secondaryMaskOptions.erodeRadius =
+                            qRound(qMax<qreal>(0.0, status.maskErode));
+                        secondaryMaskOptions.dilateRadius =
+                            qRound(qMax<qreal>(0.0, status.maskDilate));
+                        secondaryMaskOptions.blurRadius = qRound(
+                            qMax<qreal>(status.maskFeather, status.maskBlur));
+                        frameCrossfadeMaskUploadResults.insert(
+                            status.clipId,
+                            secondaryHandoffResources->resources->uploadMaskTexture(
+                                cb,
+                                status.frameCrossfadeMaskImage,
+                                secondaryMaskOptions));
+                    }
                     secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
                 }
             }
@@ -3012,7 +3052,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         m_owner->markPresented();
         m_window->frameReady();
         m_owner->markPreviewUpdateDelivered();
-        if (state->playing || audioWaitingForWaveform) {
+        if (audioWaitingForWaveform && !state->playing) {
             m_owner->schedulePreviewUpdate();
         }
         return;
@@ -3095,6 +3135,20 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!status || !status->active || status->drawSuppressed) {
                 continue;
             }
+            if (status->maskClipSource) {
+                const bool ownerMappingValid =
+                    !status->mediaOwnerClipId.trimmed().isEmpty() &&
+                    status->timingOwnerClipId == status->mediaOwnerClipId &&
+                    status->effectsOwnerClipId == clip.id &&
+                    status->matteOwnerClipId == clip.id;
+                if (!ownerMappingValid) {
+                    if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                        stats->lastUnsupportedEffect =
+                            QStringLiteral("invalid_mask_owner_mapping");
+                    }
+                    continue;
+                }
+            }
             const bool selected = !state->selectedClipId.isEmpty() && clip.id == state->selectedClipId;
             VkClearAttachment attachment{};
             attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -3153,8 +3207,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     ++stats->textureDraws;
                     ++stats->activeClipDraws;
                 }
+                const TimelineClip* effectsOwner =
+                    clipForId(state, status->effectsOwnerClipId);
+                if (!effectsOwner) {
+                    if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
+                        stats->lastUnsupportedEffect =
+                            QStringLiteral("effects_owner_missing");
+                    }
+                    continue;
+                }
                 const TimelineClip effectClip = clipWithResolvedTimingOwner(
-                    clipWithRenderableEffectSettings(clip, state->tracks),
+                    clipWithRenderableEffectSettings(*effectsOwner, state->tracks),
                     state->clips);
                 const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
                     render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks);
@@ -3547,9 +3610,26 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                     echoPush, echoUniformOffset);
                         }
                     }
+                    const bool frameCrossfadeMaskReady =
+                        !status || !status->maskTextureEnabled ||
+                        (status->frameCrossfadeMaskTextureEnabled &&
+                         frameCrossfadeMaskUploadResults.value(
+                             status->clipId, false));
+                    const bool frameCrossfadeCurveReady =
+                        !status || status->maskClipSource ||
+                        !status->curveLutApplied ||
+                        frameCrossfadeCurveLutUploadResults.value(
+                            status->clipId, false);
+                    const bool frameCrossfadeMaskCurveReady =
+                        !status || !status->maskCurveLutApplied ||
+                        frameCrossfadeMaskCurveLutUploadResults.value(
+                            status->clipId, false);
                     if (status && status->frameCrossfadeActive &&
                         secondaryHandoffResult.sampledFrameReady &&
-                        secondaryHandoffResult.descriptorSet != VK_NULL_HANDLE) {
+                        secondaryHandoffResult.descriptorSet != VK_NULL_HANDLE &&
+                        frameCrossfadeMaskReady &&
+                        frameCrossfadeCurveReady &&
+                        frameCrossfadeMaskCurveReady) {
                         VulkanPipeline::Push crossfadePush = basePush;
                         crossfadePush.opacity *= qBound(
                             0.0f, status->frameCrossfadeOpacity, 1.0f);
@@ -3936,9 +4016,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     m_owner->markPresented();
     m_window->frameReady();
     m_owner->markPreviewUpdateDelivered();
-    if (state && state->playing) {
-        m_owner->schedulePreviewUpdate();
-    }
 }
 
 void DirectVulkanPreviewRenderer::physicalDeviceLost()

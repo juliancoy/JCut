@@ -201,8 +201,10 @@ bool TranscriptTab::rebuildInMemoryTranscriptDocument(const QJsonDocument& docum
         for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
             const QJsonObject wordObject = words.at(wordIndex).toObject();
             TranscriptDocumentWord word;
+            word.metadata = wordObject;
             word.wordId = m_nextTranscriptWordId++;
-            word.text = wordObject.value(QStringLiteral("word")).toString();
+            word.text = wordObject.value(QStringLiteral("word")).toString(
+                wordObject.value(QStringLiteral("text")).toString());
             word.startSeconds = wordObject.value(QStringLiteral("start")).toDouble(0.0);
             word.endSeconds = wordObject.value(QStringLiteral("end")).toDouble(word.startSeconds);
             word.speaker = wordObject.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
@@ -262,15 +264,23 @@ QJsonDocument TranscriptTab::serializeInMemoryTranscriptDocument() const
         QJsonObject segmentObject = segment.metadata;
         QJsonArray words;
         for (const TranscriptDocumentWord& word : segment.words) {
-            QJsonObject wordObject;
-            wordObject[QStringLiteral("word")] = word.text;
+            QJsonObject wordObject = word.metadata;
+            const QString textKey =
+                wordObject.contains(QStringLiteral("text")) &&
+                    !wordObject.contains(QStringLiteral("word"))
+                ? QStringLiteral("text") : QStringLiteral("word");
+            wordObject[textKey] = word.text;
             wordObject[QStringLiteral("start")] = word.startSeconds;
             wordObject[QStringLiteral("end")] = word.endSeconds;
             if (!word.speaker.trimmed().isEmpty()) {
                 wordObject[QString(kTranscriptWordSpeakerKey)] = word.speaker.trimmed();
+            } else {
+                wordObject.remove(QString(kTranscriptWordSpeakerKey));
             }
             if (word.skipped) {
                 wordObject[QString(kTranscriptWordSkippedKey)] = true;
+            } else {
+                wordObject.remove(QString(kTranscriptWordSkippedKey));
             }
             if (!word.editTags.isEmpty()) {
                 QJsonArray editArray;
@@ -278,9 +288,13 @@ QJsonDocument TranscriptTab::serializeInMemoryTranscriptDocument() const
                     editArray.push_back(tag);
                 }
                 wordObject[QString(kTranscriptWordEditsKey)] = editArray;
+            } else {
+                wordObject.remove(QString(kTranscriptWordEditsKey));
             }
             if (word.renderOrder >= 0) {
                 wordObject[QString(kTranscriptWordRenderOrderKey)] = word.renderOrder;
+            } else {
+                wordObject.remove(QString(kTranscriptWordRenderOrderKey));
             }
             wordObject[QString(kTranscriptWordOriginalSegmentKey)] = word.originalSegmentIndex;
             wordObject[QString(kTranscriptWordOriginalWordKey)] = word.originalWordIndex;

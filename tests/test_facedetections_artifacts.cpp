@@ -2,6 +2,7 @@
 #include "facedetections_tracking.h"
 #include "facedetections_artifact_utils.h"
 #include "speaker_track_assignment_service.h"
+#include "face_artifact_core.h"
 #include "speakers_tab_internal.h"
 #include "transcript_engine.h"
 
@@ -188,6 +189,13 @@ private slots:
         };
         QVERIFY(engine.saveIdentityArtifact(transcriptPath, identityRoot));
         QVERIFY(QFileInfo::exists(engine.identityArtifactPath(transcriptPath)));
+        const jcut::FaceArtifactInspectionCore neutralInspection =
+            jcut::inspectFaceArtifacts(
+                transcriptPath.toStdString(), clipId.toStdString());
+        QVERIFY(neutralInspection.ok());
+        QCOMPARE(neutralInspection.tracks.size(), std::size_t{2});
+        QCOMPARE(neutralInspection.identityClusterCount, std::size_t{2});
+        QCOMPARE(neutralInspection.identityAssignmentCount, std::size_t{2});
 
         QJsonDocument reloadedTranscript;
         QVERIFY(engine.loadTranscriptJson(transcriptPath, &reloadedTranscript));

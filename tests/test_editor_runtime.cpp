@@ -12,6 +12,7 @@
 #include "../editor_shared_timing.h"
 #include "../render.h"
 #include "../render_qt_compat.h"
+#include "../preview_resize_core.h"
 
 #include <nlohmann/json.hpp>
 
@@ -54,9 +55,13 @@ private slots:
     void testHistoryTransactionCoalescesContinuousEdits();
     void testNavigationAndPanelCommandsStayOutsideUndoHistory();
     void testMutationAfterUndoInvalidatesRedo();
+    void testTranscriptDocumentsShareGlobalHistoryWithoutProjectSerialization();
     void testNudgeSelectedClipCommandUpdatesTimeline();
     void testClipLockAndPlaybackRateCommandsMatchTimelinePolicies();
     void testInspectorCommandsUpdateSharedClipState();
+    void testCorrectionPolygonCommandNormalizesAndIsUndoable();
+    void testPreviewTransformCommandMatchesQtKeyframeSemantics();
+    void testMaterializeMaskMatteMatchesQtOwnershipDefaults();
     void testResetClipGradingMatchesQtContextSemantics();
     void testResetClipGradingClearsQtKnownLegacyFields();
     void testScaleToFillHelperReusesUndoableTransformCommand();
@@ -1618,6 +1623,48 @@ void TestEditorRuntime::testMutationAfterUndoInvalidatesRedo()
     QCOMPARE(runtime.snapshot().exportRequest.outputFps, 30.0);
 }
 
+void TestEditorRuntime::testTranscriptDocumentsShareGlobalHistoryWithoutProjectSerialization()
+{
+    jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
+    const std::string originalName = runtime.snapshot().projectName;
+    const std::string path = "/tmp/jcut-transcript-history.json";
+    const std::string beforePayload = R"({"segments":[{"words":[{"word":"before"}]}]})";
+    const std::string afterPayload = R"({"segments":[{"words":[{"word":"after"}]}]})";
+
+    QVERIFY(runtime.execute(jcut::SeedTranscriptHistoryDocumentCommand{
+        path, beforePayload}).applied);
+    QCOMPARE(runtime.undoDepth(), std::size_t{0});
+    QVERIFY(runtime.execute(jcut::SetTranscriptHistoryDocumentCommand{
+        path, afterPayload}).applied);
+    QCOMPARE(runtime.undoDepth(), std::size_t{1});
+    QVERIFY(runtime.execute(jcut::SetProjectNameCommand{"After Transcript"}).applied);
+    QCOMPARE(runtime.undoDepth(), std::size_t{2});
+
+    QVERIFY(runtime.execute(jcut::UndoCommand{}).applied);
+    QCOMPARE(runtime.snapshot().projectName, originalName);
+    QCOMPARE(runtime.snapshot().transcriptHistoryDocuments.front().jsonPayload,
+             afterPayload);
+    QVERIFY(runtime.execute(jcut::UndoCommand{}).applied);
+    QCOMPARE(runtime.snapshot().transcriptHistoryDocuments.front().jsonPayload,
+             beforePayload);
+    QVERIFY(runtime.execute(jcut::RedoCommand{}).applied);
+    QCOMPARE(runtime.snapshot().transcriptHistoryDocuments.front().jsonPayload,
+             afterPayload);
+    QVERIFY(runtime.execute(jcut::RedoCommand{}).applied);
+    QCOMPARE(runtime.snapshot().projectName, std::string("After Transcript"));
+
+    const nlohmann::json neutralJson = jcut::toJson(runtime.snapshot());
+    const nlohmann::json legacyJson = jcut::toLegacyStateJson(runtime.snapshot());
+    QVERIFY(!neutralJson.contains("transcriptHistoryDocuments"));
+    QVERIFY(!neutralJson.contains("__historyTranscriptDocuments"));
+    QVERIFY(!legacyJson.contains("transcriptHistoryDocuments"));
+    QVERIFY(!legacyJson.contains("__historyTranscriptDocuments"));
+
+    runtime.clearHistory();
+    QVERIFY(!runtime.canUndo());
+    QVERIFY(!runtime.canRedo());
+}
+
 void TestEditorRuntime::testNudgeSelectedClipCommandUpdatesTimeline()
 {
     jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
@@ -1949,6 +1996,210 @@ void TestEditorRuntime::testInspectorCommandsUpdateSharedClipState()
     QCOMPARE(enabledTrack.audioSolo, forceOpaqueTrack.audioSolo);
     QCOMPARE(enabledTrack.gradingPreviewEnabled, false);
     QCOMPARE(runtime.canUndo(), true);
+}
+
+void TestEditorRuntime::testCorrectionPolygonCommandNormalizesAndIsUndoable()
+{
+    jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
+    jcut::EditorCorrectionPolygon polygon;
+    polygon.enabled = true;
+    polygon.startFrame = -12;
+    polygon.endFrame = -2;
+    polygon.pointsNormalized = {{-0.2, 0.25}, {0.5, 1.4}, {1.2, -0.1}};
+
+    const jcut::CommandResult result = runtime.execute(
+        jcut::EditorCommand{jcut::SetClipCorrectionPolygonsCommand{1, {polygon}}});
+    QVERIFY(result.applied);
+    const jcut::EditorCorrectionPolygon stored =
+        runtime.snapshot().clips.front().correctionPolygons.front();
+    QCOMPARE(stored.startFrame, std::int64_t(0));
+    QCOMPARE(stored.endFrame, std::int64_t(-2));
+    QCOMPARE(stored.pointsNormalized[0].x, 0.0);
+    QCOMPARE(stored.pointsNormalized[1].y, 1.0);
+    QCOMPARE(stored.pointsNormalized[2].x, 1.0);
+    QCOMPARE(stored.pointsNormalized[2].y, 0.0);
+
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::UndoCommand{}}).applied);
+    QVERIFY(runtime.snapshot().clips.front().correctionPolygons.empty());
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::RedoCommand{}}).applied);
+    QCOMPARE(runtime.snapshot().clips.front().correctionPolygons.size(), std::size_t(1));
+}
+
+void TestEditorRuntime::testPreviewTransformCommandMatchesQtKeyframeSemantics()
+{
+    const jcut::preview::PointD anchored =
+        jcut::preview::translationForAnchoredResize(
+            {10.0, 20.0}, {1.0, 1.0}, {2.0, 1.0},
+            {0.0, 0.0, 100.0, 80.0},
+            jcut::preview::ResizeAnchor::Left,
+            {0.5, 0.5});
+    QCOMPARE(anchored.x, 110.0);
+    QCOMPARE(anchored.y, 20.0);
+
+    jcut::EditorDocumentCore document =
+        jcut::EditorRuntime::createDemo().snapshot();
+    jcut::EditorClip& clip = document.clips.front();
+    clip.baseTranslationX = 12.0;
+    clip.baseTranslationY = -8.0;
+    clip.baseRotation = 5.0;
+    clip.baseScaleX = 2.0;
+    clip.baseScaleY = 0.5;
+    clip.transformKeyframes = {{40, "later", 4.0, 6.0, 3.0, 1.2, 0.8, false}};
+    const int clipId = clip.id;
+    jcut::EditorRuntime runtime = jcut::EditorRuntime::fromDocument(std::move(document));
+
+    const jcut::CommandResult result = runtime.execute(jcut::EditorCommand{
+        jcut::CommitPreviewTransformCommand{
+            clipId, 20, 112.0, 42.0, 25.0, 3.0, -1.0}});
+    QVERIFY(result.applied);
+    const jcut::EditorClip storedClip = runtime.snapshot().clips.front();
+    QCOMPARE(storedClip.transformKeyframes.size(), std::size_t(3));
+    QCOMPARE(storedClip.transformKeyframes[0].frame, std::int64_t(0));
+    QCOMPARE(storedClip.transformKeyframes[1].frame, std::int64_t(20));
+    QCOMPARE(storedClip.transformKeyframes[1].translationX, 100.0);
+    QCOMPARE(storedClip.transformKeyframes[1].translationY, 50.0);
+    QCOMPARE(storedClip.transformKeyframes[1].rotation, 20.0);
+    QCOMPARE(storedClip.transformKeyframes[1].scaleX, 1.5);
+    QCOMPARE(storedClip.transformKeyframes[1].scaleY, -2.0);
+    QCOMPARE(storedClip.transformKeyframes[1].linearInterpolation, false);
+    const jcut::EditorTransformKeyframe evaluated =
+        jcut::evaluateEditorClipTransformAtLocalFrame(storedClip, 20);
+    QCOMPARE(evaluated.translationX, 112.0);
+    QCOMPARE(evaluated.translationY, 42.0);
+    QCOMPARE(evaluated.rotation, 25.0);
+    QCOMPARE(evaluated.scaleX, 3.0);
+    QCOMPARE(evaluated.scaleY, -1.0);
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::UndoCommand{}}).applied);
+    QCOMPARE(runtime.snapshot().clips.front().transformKeyframes.size(), std::size_t(1));
+
+    jcut::EditorDocumentCore ownedDocument =
+        jcut::EditorRuntime::createDemo().snapshot();
+    jcut::EditorClip& owner = ownedDocument.clips.front();
+    owner.persistentId = "preview-owner";
+    owner.clipRole = "media";
+    owner.mediaKind = "video";
+    jcut::EditorClip child = owner;
+    child.id = 901;
+    child.persistentId = "preview-child";
+    child.clipRole = "mask_matte";
+    child.linkedSourceClipId = owner.persistentId;
+    ownedDocument.clips.push_back(child);
+    jcut::EditorRuntime ownedRuntime =
+        jcut::EditorRuntime::fromDocument(std::move(ownedDocument));
+    QVERIFY(ownedRuntime.execute(jcut::EditorCommand{
+        jcut::CommitPreviewTransformCommand{
+            child.id, 10, 55.0, -35.0, 0.0, 1.25, 0.75}}).applied);
+    const jcut::EditorDocumentCore ownedSnapshot = ownedRuntime.snapshot();
+    const auto findPersistent = [&](const std::string& id) -> const jcut::EditorClip& {
+        return *std::find_if(
+            ownedSnapshot.clips.begin(), ownedSnapshot.clips.end(),
+            [&](const jcut::EditorClip& candidate) {
+                return candidate.persistentId == id;
+            });
+    };
+    const jcut::EditorClip& storedOwner = findPersistent("preview-owner");
+    const jcut::EditorClip& storedChild = findPersistent("preview-child");
+    const jcut::EditorTransformKeyframe ownerTransform =
+        jcut::evaluateEditorClipTransformAtLocalFrame(storedOwner, 10);
+    const jcut::EditorTransformKeyframe childTransform =
+        jcut::evaluateEditorClipTransformAtLocalFrame(storedChild, 10);
+    QCOMPARE(ownerTransform.translationX, 55.0);
+    QCOMPARE(ownerTransform.translationY, -35.0);
+    QCOMPARE(childTransform.translationX, ownerTransform.translationX);
+    QCOMPARE(childTransform.translationY, ownerTransform.translationY);
+    QCOMPARE(childTransform.scaleX, ownerTransform.scaleX);
+    QCOMPARE(childTransform.scaleY, ownerTransform.scaleY);
+}
+
+void TestEditorRuntime::testMaterializeMaskMatteMatchesQtOwnershipDefaults()
+{
+    jcut::EditorDocumentCore document =
+        jcut::EditorRuntime::createDemo().snapshot();
+    jcut::EditorClip& source = document.clips.front();
+    source.persistentId = "mask-source";
+    source.clipRole = "media";
+    source.mediaKind = "video";
+    source.selected = true;
+    source.maskGradeEnabled = true;
+    source.maskGradeBrightness = 0.2;
+    source.maskGradeContrast = 1.3;
+    source.maskGradeSaturation = 0.7;
+    const int sourceId = source.id;
+    const std::size_t initialClipCount = document.clips.size();
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(std::move(document));
+
+    const jcut::CommandResult result = runtime.execute(jcut::EditorCommand{
+        jcut::MaterializeMaskMatteCommand{
+            sourceId, "/tmp/mask-source_alpha_masks", "a1b2c3d4", "Person"}});
+    QVERIFY(result.applied);
+    const jcut::EditorDocumentCore snapshot = runtime.snapshot();
+    QCOMPARE(snapshot.clips.size(), initialClipCount + 1);
+    const auto childIt = std::find_if(
+        snapshot.clips.begin(), snapshot.clips.end(),
+        [](const jcut::EditorClip& clip) {
+            return clip.clipRole == "mask_matte" &&
+                clip.generatedFromMaskId == "a1b2c3d4";
+        });
+    QVERIFY(childIt != snapshot.clips.end());
+    const jcut::EditorClip& child = *childIt;
+    QCOMPARE(QString::fromStdString(child.linkedSourceClipId), QStringLiteral("mask-source"));
+    QCOMPARE(QString::fromStdString(child.generatedFromMaskId), QStringLiteral("a1b2c3d4"));
+    QCOMPARE(QString::fromStdString(child.maskFramesDir),
+             QStringLiteral("/tmp/mask-source_alpha_masks"));
+    QCOMPARE(child.syncLockedToSource, true);
+    QCOMPARE(child.sourceTransformLocked, true);
+    QCOMPARE(child.maskEnabled, true);
+    QCOMPARE(child.hasAudio, false);
+    QCOMPARE(child.audioEnabled, false);
+    QCOMPARE(child.locked, true);
+    QCOMPARE(child.selected, true);
+    QCOMPARE(child.brightness, 0.2);
+    QCOMPARE(child.contrast, 1.3);
+    QCOMPARE(child.saturation, 0.7);
+    const auto childTrack = std::find_if(
+        snapshot.tracks.begin(), snapshot.tracks.end(),
+        [&](const jcut::EditorTrack& track) { return track.id == child.trackId; });
+    QVERIFY(childTrack != snapshot.tracks.end());
+    QCOMPARE(childTrack->generatedChildTrack, true);
+    QCOMPARE(QString::fromStdString(childTrack->parentClipId), QStringLiteral("mask-source"));
+    QCOMPARE(QString::fromStdString(childTrack->childClipId),
+             QString::fromStdString(child.persistentId));
+
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::SetClipZLevelCommand{child.id, 42, false}}).applied);
+    // Own the snapshot before dereferencing; runtime.snapshot() returns by value.
+    const jcut::EditorDocumentCore zSnapshot = runtime.snapshot();
+    const auto stableZChild = std::find_if(
+        zSnapshot.clips.begin(), zSnapshot.clips.end(),
+        [](const jcut::EditorClip& clip) {
+            return clip.generatedFromMaskId == "a1b2c3d4";
+        });
+    QVERIFY(stableZChild != zSnapshot.clips.end());
+    QCOMPARE(stableZChild->zLevel, 42);
+    QCOMPARE(stableZChild->zLevelUserSet, true);
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::UndoCommand{}}).applied);
+
+    const nlohmann::json serialized = jcut::toJson(snapshot);
+    const auto reparsed = jcut::editorDocumentCoreFromJson(serialized);
+    QVERIFY(reparsed.has_value());
+    const auto reparsedChild = std::find_if(
+        reparsed->clips.begin(), reparsed->clips.end(),
+        [](const jcut::EditorClip& clip) {
+            return clip.clipRole == "mask_matte" &&
+                clip.generatedFromMaskId == "a1b2c3d4";
+        });
+    QVERIFY(reparsedChild != reparsed->clips.end());
+    QCOMPARE(QString::fromStdString(reparsedChild->generatedFromMaskId),
+             QStringLiteral("a1b2c3d4"));
+    QCOMPARE(reparsedChild->syncLockedToSource, true);
+    QCOMPARE(reparsedChild->sourceTransformLocked, true);
+    QCOMPARE(reparsedChild->zLevel, child.zLevel);
+
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::UndoCommand{}}).applied);
+    QCOMPARE(runtime.snapshot().clips.size(), initialClipCount);
+    QVERIFY(runtime.execute(jcut::EditorCommand{jcut::RedoCommand{}}).applied);
+    QCOMPARE(runtime.snapshot().clips.size(), initialClipCount + 1);
 }
 
 void TestEditorRuntime::testResetClipGradingMatchesQtContextSemantics()
@@ -2309,6 +2560,21 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QVERIFY(imguiCode.contains(QStringLiteral("jcut::kEditorEffectMinSpeed")));
     QVERIFY(imguiCode.contains(QStringLiteral("effectPresetUsesCommonNeutralParameters")));
     QVERIFY(imguiCode.contains(QStringLiteral("jcut::SetClipMaskCommand")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Enable Mask Grade")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Mask Brightness")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Mask Contrast")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Mask Saturation")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Enable Mask Shadow")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Shadow Radius")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Show Mask Only")));
+    QVERIFY(imguiCode.contains(QStringLiteral("command.gradeCurvePointsR")));
+    QVERIFY(imguiCode.contains(QStringLiteral("command.dropShadowOpacity")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Difference Reference Frames")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Echo Spacing")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Tiling Pattern")));
+    QVERIFY(imguiCode.contains(QStringLiteral("Synchronize motion with Speech Filter")));
+    QVERIFY(imguiCode.contains(QStringLiteral("command.temporalEchoDecay")));
+    QVERIFY(imguiCode.contains(QStringLiteral("command.tilingPattern")));
     QVERIFY(!imguiCode.contains(QStringLiteral("std::array<const char*, 12> presets")));
 }
 
@@ -2373,6 +2639,39 @@ void TestEditorRuntime::testTitleKeyframeFieldsRoundTripThroughRenderBridge()
     keyframe.italic = true;
     keyframe.color = "#44cc88";
     keyframe.linearInterpolation = false;
+    keyframe.autoFitToOutput = true;
+    keyframe.logoPath = "assets/logo.png";
+    keyframe.textMaterialStyle = "diagonal_stripes";
+    keyframe.textPatternImagePath = "assets/text-pattern.png";
+    keyframe.textPatternScale = 2.25;
+    keyframe.dropShadowEnabled = false;
+    keyframe.dropShadowColor = "#112233";
+    keyframe.dropShadowOpacity = 0.45;
+    keyframe.dropShadowOffsetX = -12.0;
+    keyframe.dropShadowOffsetY = 14.0;
+    keyframe.windowEnabled = true;
+    keyframe.windowColor = "#223344";
+    keyframe.windowOpacity = 0.35;
+    keyframe.windowPadding = 26.0;
+    keyframe.windowWidth = 620.0;
+    keyframe.windowFrameEnabled = true;
+    keyframe.windowFrameColor = "#334455";
+    keyframe.windowFrameOpacity = 0.75;
+    keyframe.windowFrameWidth = 6.0;
+    keyframe.windowFrameGap = 8.0;
+    keyframe.windowFrameMaterialStyle = "grid";
+    keyframe.windowFramePatternImagePath = "assets/frame-pattern.png";
+    keyframe.windowFramePatternScale = 1.75;
+    keyframe.vulkan3DEnabled = true;
+    keyframe.vulkan3DExtrudeEnabled = true;
+    keyframe.textExtrudeMode = "eroded_solid";
+    keyframe.vulkan3DExtrudeDepth = 0.8;
+    keyframe.vulkan3DBevelScale = 1.2;
+    keyframe.vulkan3DYawDegrees = 21.0;
+    keyframe.vulkan3DPitchDegrees = -17.0;
+    keyframe.vulkan3DRollDegrees = 9.0;
+    keyframe.vulkan3DDepth = 1.5;
+    keyframe.vulkan3DScale = 1.3;
 
     const jcut::CommandResult upsertResult = runtime.execute(
         jcut::EditorCommand{jcut::UpsertTitleKeyframeCommand{1, keyframe}});
@@ -2393,6 +2692,21 @@ void TestEditorRuntime::testTitleKeyframeFieldsRoundTripThroughRenderBridge()
     QCOMPARE(stored.italic, true);
     QCOMPARE(QString::fromStdString(stored.color), QStringLiteral("#44cc88"));
     QCOMPARE(stored.linearInterpolation, false);
+    QCOMPARE(stored.autoFitToOutput, true);
+    QCOMPARE(QString::fromStdString(stored.logoPath), QStringLiteral("assets/logo.png"));
+    QCOMPARE(QString::fromStdString(stored.textMaterialStyle), QStringLiteral("diagonal_stripes"));
+    QCOMPARE(stored.textPatternScale, 2.25);
+    QCOMPARE(stored.dropShadowEnabled, false);
+    QCOMPARE(stored.dropShadowOpacity, 0.45);
+    QCOMPARE(stored.windowEnabled, true);
+    QCOMPARE(stored.windowWidth, 620.0);
+    QCOMPARE(stored.windowFrameEnabled, true);
+    QCOMPARE(QString::fromStdString(stored.windowFrameMaterialStyle), QStringLiteral("grid"));
+    QCOMPARE(stored.vulkan3DEnabled, true);
+    QCOMPARE(stored.vulkan3DExtrudeEnabled, true);
+    QCOMPARE(QString::fromStdString(stored.textExtrudeMode), QStringLiteral("eroded_solid"));
+    QCOMPARE(stored.vulkan3DYawDegrees, 21.0);
+    QCOMPARE(stored.vulkan3DScale, 1.3);
 
     const nlohmann::json serialized = jcut::toJson(snapshot);
     std::string parseError;
@@ -2414,6 +2728,21 @@ void TestEditorRuntime::testTitleKeyframeFieldsRoundTripThroughRenderBridge()
     QCOMPARE(QString::fromStdString(reparsedTitle.color),
              QString::fromStdString(stored.color));
     QCOMPARE(reparsedTitle.linearInterpolation, stored.linearInterpolation);
+    QCOMPARE(reparsedTitle.autoFitToOutput, stored.autoFitToOutput);
+    QCOMPARE(QString::fromStdString(reparsedTitle.logoPath),
+             QString::fromStdString(stored.logoPath));
+    QCOMPARE(QString::fromStdString(reparsedTitle.textMaterialStyle),
+             QString::fromStdString(stored.textMaterialStyle));
+    QCOMPARE(reparsedTitle.textPatternScale, stored.textPatternScale);
+    QCOMPARE(reparsedTitle.dropShadowOpacity, stored.dropShadowOpacity);
+    QCOMPARE(reparsedTitle.windowPadding, stored.windowPadding);
+    QCOMPARE(reparsedTitle.windowFrameWidth, stored.windowFrameWidth);
+    QCOMPARE(QString::fromStdString(reparsedTitle.windowFrameMaterialStyle),
+             QString::fromStdString(stored.windowFrameMaterialStyle));
+    QCOMPARE(QString::fromStdString(reparsedTitle.textExtrudeMode),
+             QString::fromStdString(stored.textExtrudeMode));
+    QCOMPARE(reparsedTitle.vulkan3DExtrudeDepth, stored.vulkan3DExtrudeDepth);
+    QCOMPARE(reparsedTitle.vulkan3DRollDegrees, stored.vulkan3DRollDegrees);
 
     const jcut::render::TimelineRenderData renderData =
         jcut::render::buildTimelineRenderData(*reparsed);
@@ -2431,6 +2760,34 @@ void TestEditorRuntime::testTitleKeyframeFieldsRoundTripThroughRenderBridge()
     QCOMPARE(renderTitle.italic, true);
     QCOMPARE(renderTitle.color.name(), QStringLiteral("#44cc88"));
     QCOMPARE(renderTitle.linearInterpolation, false);
+    QCOMPARE(renderTitle.autoFitToOutput, true);
+    QCOMPARE(renderTitle.logoPath, QStringLiteral("assets/logo.png"));
+    QCOMPARE(renderTitle.textMaterialStyle,
+             TimelineClip::TitleKeyframe::MaterialStyle::DiagonalStripes);
+    QCOMPARE(renderTitle.textPatternImagePath,
+             QStringLiteral("assets/text-pattern.png"));
+    QCOMPARE(renderTitle.textPatternScale, 2.25);
+    QCOMPARE(renderTitle.dropShadowEnabled, false);
+    QCOMPARE(renderTitle.dropShadowColor, QColor(QStringLiteral("#112233")));
+    QCOMPARE(renderTitle.dropShadowOffsetX, -12.0);
+    QCOMPARE(renderTitle.windowEnabled, true);
+    QCOMPARE(renderTitle.windowColor, QColor(QStringLiteral("#223344")));
+    QCOMPARE(renderTitle.windowWidth, 620.0);
+    QCOMPARE(renderTitle.windowFrameEnabled, true);
+    QCOMPARE(renderTitle.windowFrameMaterialStyle,
+             TimelineClip::TitleKeyframe::MaterialStyle::Grid);
+    QCOMPARE(renderTitle.windowFramePatternScale, 1.75);
+    QCOMPARE(renderTitle.vulkan3DEnabled, true);
+    QCOMPARE(renderTitle.vulkan3DExtrudeEnabled, true);
+    QCOMPARE(renderTitle.textExtrudeMode,
+             TimelineClip::TitleKeyframe::TextExtrudeMode::ErodedSolid);
+    QCOMPARE(renderTitle.vulkan3DExtrudeDepth, 0.8);
+    QCOMPARE(renderTitle.vulkan3DBevelScale, 1.2);
+    QCOMPARE(renderTitle.vulkan3DYawDegrees, 21.0);
+    QCOMPARE(renderTitle.vulkan3DPitchDegrees, -17.0);
+    QCOMPARE(renderTitle.vulkan3DRollDegrees, 9.0);
+    QCOMPARE(renderTitle.vulkan3DDepth, 1.5);
+    QCOMPARE(renderTitle.vulkan3DScale, 1.3);
 
     const jcut::CommandResult removeResult = runtime.execute(
         jcut::EditorCommand{jcut::RemoveTitleKeyframeCommand{1, keyframe.frame}});
@@ -2450,7 +2807,26 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     overlay.enabled = true;
     overlay.showBackground = false;
     overlay.backgroundOpacity = 0.375;
+    overlay.backgroundCornerRadius = 23.0;
+    overlay.backgroundPadding = 31.0;
+    overlay.backgroundFrameEnabled = true;
+    overlay.backgroundFrameColor = "#112233";
+    overlay.backgroundFrameOpacity = 0.55;
+    overlay.backgroundFrameWidth = 7.0;
+    overlay.backgroundFrameGap = 9.0;
     overlay.showShadow = false;
+    overlay.shadowColor = "#223344";
+    overlay.shadowOpacity = 0.45;
+    overlay.shadowOffsetX = -11.0;
+    overlay.shadowOffsetY = 13.0;
+    overlay.textOutlineEnabled = true;
+    overlay.textOutlineWidth = 3.5;
+    overlay.textOutlineColor = "#334455";
+    overlay.textOutlineOpacity = 0.65;
+    overlay.textExtrudeMode = "eroded_solid";
+    overlay.textExtrudeDepth = 0.85;
+    overlay.textExtrudeBevelScale = 1.25;
+    overlay.showSpeakerTitle = true;
     overlay.highlightCurrentWord = false;
     overlay.autoScroll = true;
     overlay.useManualPlacement = true;
@@ -2480,7 +2856,26 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(stored.enabled, true);
     QCOMPARE(stored.showBackground, false);
     QCOMPARE(stored.backgroundOpacity, 0.375);
+    QCOMPARE(stored.backgroundCornerRadius, 23.0);
+    QCOMPARE(stored.backgroundPadding, 31.0);
+    QCOMPARE(stored.backgroundFrameEnabled, true);
+    QCOMPARE(QString::fromStdString(stored.backgroundFrameColor), QStringLiteral("#112233"));
+    QCOMPARE(stored.backgroundFrameOpacity, 0.55);
+    QCOMPARE(stored.backgroundFrameWidth, 7.0);
+    QCOMPARE(stored.backgroundFrameGap, 9.0);
     QCOMPARE(stored.showShadow, false);
+    QCOMPARE(QString::fromStdString(stored.shadowColor), QStringLiteral("#223344"));
+    QCOMPARE(stored.shadowOpacity, 0.45);
+    QCOMPARE(stored.shadowOffsetX, -11.0);
+    QCOMPARE(stored.shadowOffsetY, 13.0);
+    QCOMPARE(stored.textOutlineEnabled, true);
+    QCOMPARE(stored.textOutlineWidth, 3.5);
+    QCOMPARE(QString::fromStdString(stored.textOutlineColor), QStringLiteral("#334455"));
+    QCOMPARE(stored.textOutlineOpacity, 0.65);
+    QCOMPARE(QString::fromStdString(stored.textExtrudeMode), QStringLiteral("eroded_solid"));
+    QCOMPARE(stored.textExtrudeDepth, 0.85);
+    QCOMPARE(stored.textExtrudeBevelScale, 1.25);
+    QCOMPARE(stored.showSpeakerTitle, true);
     QCOMPARE(stored.highlightCurrentWord, false);
     QCOMPARE(stored.autoScroll, true);
     QCOMPARE(stored.useManualPlacement, true);
@@ -2507,6 +2902,23 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     const jcut::EditorTranscriptOverlayState& roundTripped =
         reparsed->clips.front().transcriptOverlay;
     QCOMPARE(roundTripped.showShadow, stored.showShadow);
+    QCOMPARE(roundTripped.backgroundCornerRadius, stored.backgroundCornerRadius);
+    QCOMPARE(roundTripped.backgroundPadding, stored.backgroundPadding);
+    QCOMPARE(roundTripped.backgroundFrameEnabled, stored.backgroundFrameEnabled);
+    QCOMPARE(QString::fromStdString(roundTripped.backgroundFrameColor),
+             QString::fromStdString(stored.backgroundFrameColor));
+    QCOMPARE(roundTripped.shadowOpacity, stored.shadowOpacity);
+    QCOMPARE(roundTripped.shadowOffsetX, stored.shadowOffsetX);
+    QCOMPARE(roundTripped.shadowOffsetY, stored.shadowOffsetY);
+    QCOMPARE(roundTripped.textOutlineEnabled, stored.textOutlineEnabled);
+    QCOMPARE(roundTripped.textOutlineWidth, stored.textOutlineWidth);
+    QCOMPARE(QString::fromStdString(roundTripped.textOutlineColor),
+             QString::fromStdString(stored.textOutlineColor));
+    QCOMPARE(QString::fromStdString(roundTripped.textExtrudeMode),
+             QString::fromStdString(stored.textExtrudeMode));
+    QCOMPARE(roundTripped.textExtrudeDepth, stored.textExtrudeDepth);
+    QCOMPARE(roundTripped.textExtrudeBevelScale, stored.textExtrudeBevelScale);
+    QCOMPARE(roundTripped.showSpeakerTitle, stored.showSpeakerTitle);
     QCOMPARE(roundTripped.useManualPlacement, stored.useManualPlacement);
     QCOMPARE(roundTripped.translationX, stored.translationX);
     QCOMPARE(roundTripped.translationY, stored.translationY);
@@ -2529,6 +2941,21 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     const TimelineClip::TranscriptOverlaySettings& renderOverlay =
         renderData.clips.front().transcriptOverlay;
     QCOMPARE(renderOverlay.showShadow, false);
+    QCOMPARE(renderOverlay.backgroundCornerRadius, 23.0);
+    QCOMPARE(renderOverlay.backgroundPadding, 31.0);
+    QCOMPARE(renderOverlay.backgroundFrameEnabled, true);
+    QCOMPARE(renderOverlay.backgroundFrameColor, QColor(QStringLiteral("#112233")));
+    QCOMPARE(renderOverlay.shadowColor, QColor(QStringLiteral("#223344")));
+    QCOMPARE(renderOverlay.shadowOffsetX, -11.0);
+    QCOMPARE(renderOverlay.shadowOffsetY, 13.0);
+    QCOMPARE(renderOverlay.textOutlineEnabled, true);
+    QCOMPARE(renderOverlay.textOutlineWidth, 3.5);
+    QCOMPARE(renderOverlay.textOutlineColor, QColor(QStringLiteral("#334455")));
+    QCOMPARE(renderOverlay.textExtrudeMode,
+             TimelineClip::TitleKeyframe::TextExtrudeMode::ErodedSolid);
+    QCOMPARE(renderOverlay.textExtrudeDepth, 0.85);
+    QCOMPARE(renderOverlay.textExtrudeBevelScale, 1.25);
+    QCOMPARE(renderOverlay.showSpeakerTitle, true);
     QCOMPARE(renderOverlay.useManualPlacement, true);
     QCOMPARE(renderOverlay.translationX, -0.375);
     QCOMPARE(renderOverlay.translationY, 0.625);
@@ -3859,7 +4286,29 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.baseScaleX = -1.0;
     clip.maskEnabled = true;
     clip.maskFeather = 12.0;
+    clip.maskGradeEnabled = true;
+    clip.maskGradeBrightness = 0.25;
+    clip.maskGradeContrast = 1.5;
+    clip.maskGradeSaturation = 0.75;
+    clip.maskGradeCurvePointsR = {{0.0, 0.1}, {1.0, 0.9}};
+    clip.maskGradeCurvePointsLuma = {{0.0, 0.2}, {1.0, 0.8}};
+    clip.maskGradeCurveSmoothingEnabled = false;
+    clip.maskDropShadowEnabled = true;
+    clip.maskDropShadowRadius = 18.0;
+    clip.maskDropShadowOffsetX = 7.0;
+    clip.maskDropShadowOffsetY = 9.0;
+    clip.maskDropShadowOpacity = 0.6;
     clip.effectPreset = "neon_glow";
+    clip.effectSkipAwareTiming = false;
+    clip.differenceReferenceFrames = 17;
+    clip.differenceThreshold = 0.23;
+    clip.differenceSoftness = 0.11;
+    clip.temporalEchoCount = 7;
+    clip.temporalEchoSpacingFrames = 13;
+    clip.temporalEchoDecay = 0.42;
+    clip.tilingPattern = "spiral_yz";
+    clip.tilingSpacing = 2.5;
+    clip.tilingWrap = false;
     clip.gradingKeyframes.push_back({12, -0.2, 1.3, 1.2, 0.65, true});
     clip.gradingKeyframes.back().shadowsR = -0.15;
     clip.gradingKeyframes.back().midtonesG = 0.25;
@@ -3900,6 +4349,24 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.opacityKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.transformKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.titleKeyframes.size(), std::size_t(1));
+    QCOMPARE(reparsedClip.maskGradeEnabled, true);
+    QCOMPARE(reparsedClip.maskGradeBrightness, 0.25);
+    QCOMPARE(reparsedClip.maskGradeCurvePointsR.front().y, 0.1);
+    QCOMPARE(reparsedClip.maskGradeCurvePointsLuma.back().y, 0.8);
+    QCOMPARE(reparsedClip.maskGradeCurveSmoothingEnabled, false);
+    QCOMPARE(reparsedClip.maskDropShadowEnabled, true);
+    QCOMPARE(reparsedClip.maskDropShadowRadius, 18.0);
+    QCOMPARE(reparsedClip.maskDropShadowOffsetX, 7.0);
+    QCOMPARE(reparsedClip.maskDropShadowOpacity, 0.6);
+    QCOMPARE(reparsedClip.effectSkipAwareTiming, false);
+    QCOMPARE(reparsedClip.differenceReferenceFrames, 17);
+    QCOMPARE(reparsedClip.differenceThreshold, 0.23);
+    QCOMPARE(reparsedClip.temporalEchoCount, 7);
+    QCOMPARE(reparsedClip.temporalEchoSpacingFrames, 13);
+    QCOMPARE(reparsedClip.temporalEchoDecay, 0.42);
+    QCOMPARE(QString::fromStdString(reparsedClip.tilingPattern), QStringLiteral("spiral_yz"));
+    QCOMPARE(reparsedClip.tilingSpacing, 2.5);
+    QCOMPARE(reparsedClip.tilingWrap, false);
     QCOMPARE(reparsedClip.correctionPolygons.size(), std::size_t(1));
     QCOMPARE(reparsedClip.correctionPolygons.front().pointsNormalized.size(), std::size_t(3));
     QCOMPARE(reparsed->renderSyncMarkers.size(), std::size_t(1));
@@ -3919,7 +4386,25 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(renderClip.baseTranslationX, 24.0);
     QCOMPARE(renderClip.baseScaleX, -1.0);
     QCOMPARE(renderClip.maskEnabled, true);
+    QCOMPARE(renderClip.maskGradeEnabled, true);
+    QCOMPARE(renderClip.maskGradeBrightness, 0.25);
+    QCOMPARE(renderClip.maskGradeCurvePointsR.front(), QPointF(0.0, 0.1));
+    QCOMPARE(renderClip.maskGradeCurvePointsLuma.back(), QPointF(1.0, 0.8));
+    QCOMPARE(renderClip.maskGradeCurveSmoothingEnabled, false);
+    QCOMPARE(renderClip.maskDropShadowEnabled, true);
+    QCOMPARE(renderClip.maskDropShadowRadius, 18.0);
+    QCOMPARE(renderClip.maskDropShadowOffsetY, 9.0);
+    QCOMPARE(renderClip.maskDropShadowOpacity, 0.6);
     QCOMPARE(renderClip.effectPreset, ClipEffectPreset::NeonGlow);
+    QCOMPARE(renderClip.effectSkipAwareTiming, false);
+    QCOMPARE(renderClip.differenceReferenceFrames, 17);
+    QCOMPARE(renderClip.differenceSoftness, 0.11);
+    QCOMPARE(renderClip.temporalEchoCount, 7);
+    QCOMPARE(renderClip.temporalEchoSpacingFrames, 13);
+    QCOMPARE(renderClip.temporalEchoDecay, 0.42);
+    QCOMPARE(renderClip.tilingPattern, ClipTilingPattern::SpiralYZ);
+    QCOMPARE(renderClip.tilingSpacing, 2.5);
+    QCOMPARE(renderClip.tilingWrap, false);
     QCOMPARE(renderClip.gradingKeyframes.size(), 1);
     QCOMPARE(renderClip.gradingKeyframes.front().shadowsR, -0.15);
     QCOMPARE(renderClip.gradingKeyframes.front().midtonesG, 0.25);

@@ -1,4 +1,5 @@
 #include "editor_shared_effects.h"
+#include "mask_frame_map_core.h"
 #include "editor_grading_core.h"
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
@@ -25,7 +26,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <optional>
+#include <string>
+#include <sys/stat.h>
 
 bool trackHasEffectPreset(const TimelineTrack& track)
 {
@@ -121,17 +125,78 @@ QMutex& preparedMaskCacheMutex()
     return mutex;
 }
 
-struct MaskFrameMap {
-    qint64 mtimeMs = -1;
+struct FileVersionSignature {
+    bool valid = false;
     qint64 size = -1;
-    qint64 metadataMtimeMs = -1;
-    qint64 metadataSize = -1;
-    qint64 completionMtimeMs = -1;
-    qint64 completionSize = -1;
-    qint64 alphaCompletionMtimeMs = -1;
-    qint64 alphaCompletionSize = -1;
-    qint64 sourceMtimeMs = -1;
-    qint64 sourceSize = -1;
+    qint64 modifiedNanoseconds = -1;
+    qint64 changedNanoseconds = -1;
+    quint64 device = 0;
+    quint64 inode = 0;
+
+    bool operator==(const FileVersionSignature& other) const
+    {
+        return valid == other.valid && size == other.size &&
+            modifiedNanoseconds == other.modifiedNanoseconds &&
+            changedNanoseconds == other.changedNanoseconds &&
+            device == other.device && inode == other.inode;
+    }
+
+    bool operator!=(const FileVersionSignature& other) const
+    {
+        return !(*this == other);
+    }
+};
+
+FileVersionSignature fileVersionSignature(const QString& path)
+{
+    FileVersionSignature signature;
+#if defined(Q_OS_WIN)
+    struct _stat64 fileStat {};
+    const std::wstring nativePath = QFileInfo(path).absoluteFilePath().toStdWString();
+    if (::_wstat64(nativePath.c_str(), &fileStat) != 0 ||
+        (fileStat.st_mode & _S_IFREG) == 0 || fileStat.st_size < 0) {
+        return signature;
+    }
+    signature.modifiedNanoseconds =
+        static_cast<qint64>(fileStat.st_mtime) * 1000000000;
+    signature.changedNanoseconds =
+        static_cast<qint64>(fileStat.st_ctime) * 1000000000;
+#else
+    struct stat fileStat {};
+    const QByteArray nativePath = QFile::encodeName(QFileInfo(path).absoluteFilePath());
+    if (::stat(nativePath.constData(), &fileStat) != 0 ||
+        !S_ISREG(fileStat.st_mode) || fileStat.st_size < 0) {
+        return signature;
+    }
+#if defined(Q_OS_DARWIN)
+    signature.modifiedNanoseconds =
+        static_cast<qint64>(fileStat.st_mtimespec.tv_sec) * 1000000000 +
+        fileStat.st_mtimespec.tv_nsec;
+    signature.changedNanoseconds =
+        static_cast<qint64>(fileStat.st_ctimespec.tv_sec) * 1000000000 +
+        fileStat.st_ctimespec.tv_nsec;
+#else
+    signature.modifiedNanoseconds =
+        static_cast<qint64>(fileStat.st_mtim.tv_sec) * 1000000000 +
+        fileStat.st_mtim.tv_nsec;
+    signature.changedNanoseconds =
+        static_cast<qint64>(fileStat.st_ctim.tv_sec) * 1000000000 +
+        fileStat.st_ctim.tv_nsec;
+#endif
+#endif
+    signature.valid = true;
+    signature.size = static_cast<qint64>(fileStat.st_size);
+    signature.device = static_cast<quint64>(fileStat.st_dev);
+    signature.inode = static_cast<quint64>(fileStat.st_ino);
+    return signature;
+}
+
+struct MaskFrameMap {
+    FileVersionSignature mapVersion;
+    FileVersionSignature metadataVersion;
+    FileVersionSignature completionVersion;
+    FileVersionSignature alphaCompletionVersion;
+    FileVersionSignature sourceVersion;
     quint64 lastAccess = 0;
     int64_t mappedFrameCount = 0;
     int64_t firstSourceFrame = -1;
@@ -211,11 +276,7 @@ MaskFrameMap loadMaskFrameMap(const QString& path, const QString& sourceMediaPat
             : qMin(map.firstSourceFrame, sourceFrame);
         map.lastSourceFrame = qMax(map.lastSourceFrame, sourceFrame);
         map.lastMaskFrame = qMax(map.lastMaskFrame, maskFrame);
-        const bool duplicateSourceFrame =
-            !map.sorted.isEmpty() && map.sorted.constLast().first == sourceFrame;
-        if (!duplicateSourceFrame) {
-            map.sorted.push_back(qMakePair(sourceFrame, maskFrame));
-        }
+        map.sorted.push_back(qMakePair(sourceFrame, maskFrame));
         previousSourceFrame = sourceFrame;
         previousMaskFrame = maskFrame;
     }
@@ -268,6 +329,11 @@ MaskFrameMap loadMaskFrameMap(const QString& path, const QString& sourceMediaPat
 std::optional<int64_t> mappedMaskFrameForSourceFrame(const TimelineClip& clip,
                                                      int64_t sourceFrame)
 {
+    return jcut::masks::mappedMaskFrameForSourceFrameCore(
+        std::filesystem::path(clip.maskFramesDir.toStdString()),
+        std::filesystem::path(clip.filePath.toStdString()),
+        sourceFrame);
+#if 0
     const QString maskDir = clip.maskFramesDir;
     const QString mapPath = QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_frame_map.tsv"));
     const QFileInfo info(mapPath);
@@ -290,31 +356,28 @@ std::optional<int64_t> mappedMaskFrameForSourceFrame(const TimelineClip& clip,
         const QFileInfo sourceInfo(clip.filePath);
         const QString cacheKey = info.absoluteFilePath() + QChar(0x1f) +
             sourceInfo.absoluteFilePath();
+        const FileVersionSignature mapVersion =
+            fileVersionSignature(info.absoluteFilePath());
+        const FileVersionSignature metadataVersion =
+            fileVersionSignature(metadataInfo.absoluteFilePath());
+        const FileVersionSignature completionVersion =
+            fileVersionSignature(completionInfo.absoluteFilePath());
+        const FileVersionSignature alphaCompletionVersion =
+            fileVersionSignature(alphaCompletionInfo.absoluteFilePath());
+        const FileVersionSignature sourceVersion =
+            fileVersionSignature(sourceInfo.absoluteFilePath());
         MaskFrameMap& cached = maskFrameMapCache()[cacheKey];
-        if (cached.mtimeMs != info.lastModified().toMSecsSinceEpoch() ||
-            cached.size != info.size() ||
-            cached.metadataMtimeMs != metadataInfo.lastModified().toMSecsSinceEpoch() ||
-            cached.metadataSize != metadataInfo.size() ||
-            cached.completionMtimeMs != completionInfo.lastModified().toMSecsSinceEpoch() ||
-            cached.completionSize != completionInfo.size() ||
-            cached.alphaCompletionMtimeMs !=
-                alphaCompletionInfo.lastModified().toMSecsSinceEpoch() ||
-            cached.alphaCompletionSize != alphaCompletionInfo.size() ||
-            cached.sourceMtimeMs != sourceInfo.lastModified().toMSecsSinceEpoch() ||
-            cached.sourceSize != sourceInfo.size()) {
+        if (cached.mapVersion != mapVersion ||
+            cached.metadataVersion != metadataVersion ||
+            cached.completionVersion != completionVersion ||
+            cached.alphaCompletionVersion != alphaCompletionVersion ||
+            cached.sourceVersion != sourceVersion) {
             cached = loadMaskFrameMap(info.absoluteFilePath(), clip.filePath);
-            cached.mtimeMs = info.lastModified().toMSecsSinceEpoch();
-            cached.size = info.size();
-            cached.metadataMtimeMs = metadataInfo.lastModified().toMSecsSinceEpoch();
-            cached.metadataSize = metadataInfo.size();
-            cached.completionMtimeMs =
-                completionInfo.lastModified().toMSecsSinceEpoch();
-            cached.completionSize = completionInfo.size();
-            cached.alphaCompletionMtimeMs =
-                alphaCompletionInfo.lastModified().toMSecsSinceEpoch();
-            cached.alphaCompletionSize = alphaCompletionInfo.size();
-            cached.sourceMtimeMs = sourceInfo.lastModified().toMSecsSinceEpoch();
-            cached.sourceSize = sourceInfo.size();
+            cached.mapVersion = mapVersion;
+            cached.metadataVersion = metadataVersion;
+            cached.completionVersion = completionVersion;
+            cached.alphaCompletionVersion = alphaCompletionVersion;
+            cached.sourceVersion = sourceVersion;
         }
         cached.lastAccess = ++maskFrameMapAccessCounter();
         map = cached;
@@ -376,6 +439,7 @@ std::optional<int64_t> mappedMaskFrameForSourceFrame(const TimelineClip& clip,
     return qAbs(previous->first - sourceFrame) <= qAbs(lower->first - sourceFrame)
                ? previous->second
                : lower->second;
+#endif
 }
 
 qreal effectTimelinePositionForClip(const TimelineClip& clip,

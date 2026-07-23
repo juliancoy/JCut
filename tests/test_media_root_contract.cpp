@@ -43,52 +43,54 @@ class TestMediaRootContract final : public QObject
     Q_OBJECT
 
 private slots:
-    void changingMediaRootSwitchesProjectWorkspaceSafely();
-    void loadingStateSynchronizesProjectWorkspaceToMediaRoot();
-    void asynchronousStartupSynchronizesProjectWorkspaceToMediaRoot();
-    void serializedStateUsesProjectWorkspaceRoot();
+    void changingMediaRootDoesNotMutateProjectStorage();
+    void loadingStateDoesNotRedirectProjectStorage();
+    void asynchronousStartupDoesNotRedirectProjectStorage();
+    void serializedStateUsesMediaBrowserRoot();
     void stateRestorePreservesSavedMediaRoot();
     void qtStateRoundTripPreservesImGuiMediaItemsExtension();
 };
 
-void TestMediaRootContract::changingMediaRootSwitchesProjectWorkspaceSafely()
+void TestMediaRootContract::changingMediaRootDoesNotMutateProjectStorage()
 {
     const QString body = functionBody(
         sourceFile(QStringLiteral("project_state.cpp")),
         QStringLiteral("void EditorWindow::changeMediaRoot(const QString &path)"));
     QVERIFY2(!body.isEmpty(), "changeMediaRoot implementation must remain discoverable");
-    QVERIFY(body.contains(QStringLiteral("flushStateSaveNow()")));
-    QVERIFY(body.contains(QStringLiteral("flushHistorySaveNow()")));
-    QVERIFY(body.contains(QStringLiteral("changeRootDirPath(requestedRoot)")));
-    QVERIFY(body.contains(QRegularExpression(QStringLiteral("\\bloadState\\s*\\("))));
-    QVERIFY(body.contains(QStringLiteral("refreshProjectsList()")));
+    QVERIFY(body.contains(QStringLiteral("m_explorerPane->setInitialRootPath(requestedRoot)")));
+    QVERIFY(body.contains(QStringLiteral("scheduleSaveState()")));
+    QVERIFY(body.contains(QStringLiteral("pushHistorySnapshot()")));
+    QVERIFY(!body.contains(QStringLiteral("changeRootDirPath")));
+    QVERIFY(!body.contains(QRegularExpression(QStringLiteral("\\bloadState\\s*\\("))));
     QVERIFY(!body.contains(QStringLiteral("switchToProject")));
 }
 
-void TestMediaRootContract::loadingStateSynchronizesProjectWorkspaceToMediaRoot()
+void TestMediaRootContract::loadingStateDoesNotRedirectProjectStorage()
 {
     const QString body = functionBody(
         sourceFile(QStringLiteral("project_state.cpp")),
         QStringLiteral("void EditorWindow::loadState()"));
     QVERIFY2(!body.isEmpty(), "loadState implementation must remain discoverable");
-    QVERIFY(body.contains(QStringLiteral("synchronizeProjectRootForState(&root)")));
-    QVERIFY(body.contains(QStringLiteral("m_projectRootRedirectDepth")));
+    QVERIFY(!body.contains(QStringLiteral("synchronizeProjectRootForState")));
+    QVERIFY(body.contains(QStringLiteral("applyStateJson(root)")));
 }
 
-void TestMediaRootContract::asynchronousStartupSynchronizesProjectWorkspaceToMediaRoot()
+void TestMediaRootContract::asynchronousStartupDoesNotRedirectProjectStorage()
 {
     const QString source = sourceFile(QStringLiteral("editor.cpp"));
-    QVERIFY(source.contains(QStringLiteral("synchronizeProjectRootForState(&startupRoot)")));
-    QVERIFY(source.contains(QStringLiteral("applyStateJson(startupRoot)")));
+    QVERIFY(!source.contains(QStringLiteral("synchronizeProjectRootForState")));
+    QVERIFY(source.contains(QStringLiteral(
+        "applyStateJson(result.value(QStringLiteral(\"root\")).toObject())")));
 }
 
-void TestMediaRootContract::serializedStateUsesProjectWorkspaceRoot()
+void TestMediaRootContract::serializedStateUsesMediaBrowserRoot()
 {
     const QString body = functionBody(
         sourceFile(QStringLiteral("project_state.cpp")),
         QStringLiteral("QJsonObject EditorWindow::buildStateJson() const"));
     QVERIFY2(!body.isEmpty(), "buildStateJson implementation must remain discoverable");
-    QVERIFY(body.contains(QStringLiteral("m_projectManager->rootDirPath()")));
+    QVERIFY(body.contains(QStringLiteral("m_explorerPane->currentRootPath()")));
+    QVERIFY(!body.contains(QStringLiteral("m_projectManager->rootDirPath()")));
     QVERIFY(body.contains(QStringLiteral("root[QStringLiteral(\"mediaRoot\")] = mediaRoot")));
     QVERIFY(body.contains(QStringLiteral("root[QStringLiteral(\"explorerRoot\")] = mediaRoot")));
 }

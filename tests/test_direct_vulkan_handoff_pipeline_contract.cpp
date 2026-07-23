@@ -27,6 +27,7 @@ private slots:
   void directPreviewUsesPerClipHandoffDescriptors();
   void mediaOwnerPlanDeduplicatesHiddenParentChildren();
   void mediaOwnerPayloadReuseFailsClosed();
+  void maskChildrenUseExplicitOwners();
   void descriptorUpdatesFollowAcquiredSwapchainOwnership();
   void maskChildrenFailClosedWithoutAMatte();
   void directPreviewRequiresHardwarePayloadsFromCache();
@@ -90,19 +91,74 @@ QString readSourceFiles(const QStringList &relativePaths) {
 
 } // namespace
 
+void TestDirectVulkanHandoffPipelineContract::maskChildrenUseExplicitOwners() {
+  const QString statusHeader =
+      readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  const QString surface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString preview =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+
+  QVERIFY2(statusHeader.contains(QStringLiteral("QString mediaOwnerClipId")) &&
+               statusHeader.contains(QStringLiteral("QString timingOwnerClipId")) &&
+               statusHeader.contains(QStringLiteral("QString effectsOwnerClipId")) &&
+               statusHeader.contains(QStringLiteral("QString matteOwnerClipId")),
+           "preview status must name every mask-child owner explicitly");
+  QVERIFY2(surface.contains(QStringLiteral("markerStatus.mediaOwnerClipId = sourceId")) &&
+               surface.contains(QStringLiteral("markerStatus.timingOwnerClipId = sourceId")) &&
+               surface.contains(QStringLiteral("markerStatus.effectsOwnerClipId = clip.id")) &&
+               surface.contains(QStringLiteral("markerStatus.matteOwnerClipId = clip.id")),
+           "mask children must use parent media/timing and child effects/matte");
+  QVERIFY2(surface.contains(QStringLiteral(
+               "maskChildStatusFromParentMediaAndTiming(parentStatus)")) &&
+               !surface.contains(QStringLiteral(
+                   "VulkanPreviewClipFrameStatus markerStatus = statusByClipId.value(sourceId)")),
+           "mask children must copy only parent media/timing state, not the parent's evaluated effects");
+  QVERIFY2(preview.contains(QStringLiteral(
+               "status->timingOwnerClipId == status->mediaOwnerClipId")) &&
+               preview.contains(QStringLiteral(
+                   "status->effectsOwnerClipId == clip.id")) &&
+               preview.contains(QStringLiteral(
+                   "status->matteOwnerClipId == clip.id")),
+           "direct preview must fail closed when mask ownership is inconsistent");
+  QVERIFY2(exportBackend.contains(QStringLiteral(
+               "const TimelineClip &mediaOwner = timingSource")) &&
+               exportBackend.contains(QStringLiteral(
+                   "const TimelineClip &timingOwner = timingSource")) &&
+               exportBackend.contains(QStringLiteral(
+                   "const TimelineClip &effectsOwner = clip")) &&
+               exportBackend.contains(QStringLiteral(
+                   "const TimelineClip &matteOwner = clip")),
+           "export must apply the same parent/parent/child/child ownership rule");
+}
+
 void TestDirectVulkanHandoffPipelineContract::directPreviewUsesQtUpdateContract() {
   const QString source =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString surface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   QVERIFY2(!source.isEmpty(),
            "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(!surface.isEmpty(),
+           "vulkan_preview_surface.cpp must be readable");
   const qsizetype frameReady = source.lastIndexOf(QStringLiteral("m_window->frameReady();"));
-  const qsizetype schedule = source.indexOf(
-      QStringLiteral("m_owner->schedulePreviewUpdate();"), frameReady);
+  const qsizetype rendererEnd = source.indexOf(
+      QStringLiteral("\n}\n\nvoid DirectVulkanPreviewRenderer::physicalDeviceLost"), frameReady);
+  const QString afterFrameReady =
+      frameReady >= 0 && rendererEnd > frameReady
+          ? source.mid(frameReady, rendererEnd - frameReady)
+          : QString();
   QVERIFY2(source.contains(QStringLiteral("requestUpdate();")) &&
                !source.contains(QStringLiteral("m_updateDeliveryQueued")) &&
                !source.contains(QStringLiteral("kStalePreviewUpdateMs")) &&
-               frameReady >= 0 && schedule > frameReady,
-           "preview rendering must use QVulkanWindow's documented continuous-rendering contract: request the next update directly after frameReady without a second retry state machine");
+               source.contains(QStringLiteral("if (!m_updatePending)")) &&
+               frameReady >= 0 && rendererEnd > frameReady &&
+               !afterFrameReady.contains(QStringLiteral("schedulePreviewUpdate")) &&
+               surface.contains(QStringLiteral("setCurrentPlaybackSample")) &&
+               surface.contains(QStringLiteral("requestNativeUpdate();")),
+           "preview rendering must accept only latched Qt update requests and let timeline playback ticks schedule frames instead of self-rearming a UI-starving present loop");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -181,6 +237,26 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(previewSurface.contains(QStringLiteral(
                "applyCorrectionPolygonsToMaskImage")),
            "Mask Matte correction polygons must be applied to the preview matte");
+  const QString previewState =
+      readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskImage")) &&
+               previewState.contains(QStringLiteral(
+                   "frameCrossfadeMaskTextureEnabled")) &&
+               previewSurface.contains(QStringLiteral(
+                   "markerStatus.frameCrossfadeMaskImage")) &&
+               previewSurface.contains(QStringLiteral(
+                   "markerStatus.frameCrossfadePresentedSourceFrame")),
+           "masked speech-boundary crossfades must resolve the matte for the "
+           "secondary presented source frame");
+  QVERIFY2(source.contains(QStringLiteral(
+               "frameCrossfadeMaskUploadResults.insert")) &&
+               source.contains(QStringLiteral(
+                   "status.frameCrossfadeMaskImage")) &&
+               source.contains(QStringLiteral("frameCrossfadeMaskReady")) &&
+               source.contains(QStringLiteral(
+                   "!status->maskTextureEnabled")),
+           "the secondary crossfade descriptor must own its matching matte "
+           "and every masked clip must fail closed when that upload is unavailable");
   const QString trackPreviewSources = readSourceFiles({
       QStringLiteral("editor_inspector_bindings.cpp"),
       QStringLiteral("vulkan_preview_surface.cpp"),
@@ -522,6 +598,19 @@ void TestDirectVulkanHandoffPipelineContract::
                    "mediaOwnerPayloadMatches(providerStatus, status)")),
            "children must reuse one canonical owner result and fail closed when "
            "their cloned payload identity diverges");
+  const qsizetype childReuseBegin = backend.indexOf(QStringLiteral(
+      "const DirectVulkanFrameHandoffPipeline::Result ownerResult ="));
+  const qsizetype childReuseEnd = backend.indexOf(
+      QStringLiteral("const auto prepareAuxiliaryFrame"), childReuseBegin);
+  const QString childReuseBody =
+      childReuseBegin >= 0 && childReuseEnd > childReuseBegin
+          ? backend.mid(childReuseBegin, childReuseEnd - childReuseBegin)
+          : QString();
+  QVERIFY2(childReuseBody.contains(QStringLiteral("setSampledImage")) &&
+               !childReuseBody.contains(QStringLiteral("pipeline->record")) &&
+               !childReuseBody.contains(QStringLiteral("uploadImageTexture")),
+           "a Mask Matte consumer must bind its owner's prepared image and "
+           "must never upload or import that primary FrameHandle independently");
   QVERIFY2(backend.contains(QStringLiteral("const QString ownerSecondaryKey")) &&
                backend.contains(QStringLiteral(
                    "mediaOwnerHandoffResults.value(ownerSecondaryKey)")) &&

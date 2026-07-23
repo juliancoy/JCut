@@ -1,6 +1,7 @@
 #include "transcript_document_core.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -360,6 +361,151 @@ std::string TranscriptDocumentCore::speakerLabel(const std::string& speakerId) c
     return name.empty() ? trimmedSpeaker : name;
 }
 
+std::string TranscriptDocumentCore::speakerTitle(const std::string& speakerId) const
+{
+    const std::string label = speakerLabel(speakerId);
+    const auto profiles = m_root.find("speaker_profiles");
+    if (profiles == m_root.end() || !profiles->is_object()) return label;
+    const auto profile = profiles->find(trimAscii(speakerId));
+    if (profile == profiles->end() || !profile->is_object()) return label;
+    const std::string organization = trimAscii(stringValue(*profile, "organization"));
+    return organization.empty() ? label : label + " - " + organization;
+}
+
+TranscriptSpeakerLocationCore TranscriptDocumentCore::speakerLocation(
+    const std::string& speakerId,
+    std::int64_t sourceFrame) const
+{
+    TranscriptSpeakerLocationCore result;
+    const auto profiles = m_root.find("speaker_profiles");
+    if (profiles == m_root.end() || !profiles->is_object()) return result;
+    const auto profile = profiles->find(trimAscii(speakerId));
+    if (profile == profiles->end() || !profile->is_object()) return result;
+    const auto finiteNumber = [](const json& object, const char* key, double fallback) {
+        const auto value = object.find(key);
+        if (value == object.end() || !value->is_number()) return fallback;
+        const double number = value->get<double>();
+        return std::isfinite(number) ? number : fallback;
+    };
+    const json& location = profile->value("location", json::object());
+    result.x = std::clamp(finiteNumber(location, "x", 0.5), 0.0, 1.0);
+    result.y = std::clamp(finiteNumber(location, "y", 0.85), 0.0, 1.0);
+    json framing = profile->value("framing", json::object());
+    if (!framing.is_object() || framing.empty()) {
+        framing = profile->value("tracking", json::object());
+    }
+    if (!framing.is_object()) return result;
+    const std::string mode = trimAscii(stringValue(framing, "mode"));
+    std::string normalizedMode = mode;
+    std::transform(normalizedMode.begin(), normalizedMode.end(), normalizedMode.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool enabled = framing.contains("enabled")
+        ? (framing["enabled"].is_boolean() && framing["enabled"].get<bool>())
+        : true;
+    if (!enabled || normalizedMode == "manual" ||
+        normalizedMode == "referencepoints") return result;
+
+    struct Keyframe { std::int64_t frame; double x; double y; };
+    std::vector<Keyframe> keyframes;
+    const json& values = framing.value("keyframes", json::array());
+    if (values.is_array()) {
+        for (const json& value : values) {
+            if (!value.is_object() || !value.contains("frame") ||
+                !value["frame"].is_number()) continue;
+            const double frameValue = value["frame"].get<double>();
+            if (!std::isfinite(frameValue)) continue;
+            keyframes.push_back({
+                static_cast<std::int64_t>(std::llround(frameValue)),
+                std::clamp(finiteNumber(value, "x", result.x), 0.0, 1.0),
+                std::clamp(finiteNumber(value, "y", result.y), 0.0, 1.0),
+            });
+        }
+    }
+    std::stable_sort(keyframes.begin(), keyframes.end(),
+        [](const Keyframe& left, const Keyframe& right) {
+            return left.frame < right.frame;
+        });
+    if (keyframes.empty()) {
+        result.valid = true;
+        return result;
+    }
+    if (keyframes.size() == 1 || sourceFrame <= keyframes.front().frame) {
+        result.x = keyframes.front().x;
+        result.y = keyframes.front().y;
+        result.valid = true;
+        return result;
+    }
+    if (sourceFrame >= keyframes.back().frame) {
+        result.x = keyframes.back().x;
+        result.y = keyframes.back().y;
+        result.valid = true;
+        return result;
+    }
+    for (std::size_t index = 1; index < keyframes.size(); ++index) {
+        const Keyframe& previous = keyframes[index - 1];
+        const Keyframe& next = keyframes[index];
+        if (sourceFrame > next.frame) continue;
+        const double linearT = std::clamp(
+            static_cast<double>(sourceFrame - previous.frame) /
+                std::max<std::int64_t>(1, next.frame - previous.frame),
+            0.0, 1.0);
+        const double smoothT = linearT * linearT * (3.0 - 2.0 * linearT);
+        const double t = linearT * 0.2 + smoothT * 0.8;
+        result.x = previous.x + (next.x - previous.x) * t;
+        result.y = previous.y + (next.y - previous.y) * t;
+        result.valid = true;
+        return result;
+    }
+    return result;
+}
+
+std::vector<TranscriptSpeakerProfileCore> TranscriptDocumentCore::speakerProfiles() const
+{
+    std::vector<TranscriptSpeakerProfileCore> profiles;
+    const auto ensureProfile = [&](const std::string& rawId) -> TranscriptSpeakerProfileCore& {
+        const std::string id = trimAscii(rawId);
+        const auto found = std::find_if(
+            profiles.begin(), profiles.end(),
+            [&](const TranscriptSpeakerProfileCore& profile) {
+                return profile.id == id;
+            });
+        if (found != profiles.end()) return *found;
+        profiles.push_back(TranscriptSpeakerProfileCore{.id = id});
+        return profiles.back();
+    };
+    const auto storedProfiles = m_root.find("speaker_profiles");
+    if (storedProfiles != m_root.end() && storedProfiles->is_object()) {
+        for (auto it = storedProfiles->begin(); it != storedProfiles->end(); ++it) {
+            if (!it.value().is_object() || trimAscii(it.key()).empty()) continue;
+            TranscriptSpeakerProfileCore& profile = ensureProfile(it.key());
+            profile.name = trimAscii(stringValue(it.value(), "name"));
+            profile.organization = trimAscii(stringValue(it.value(), "organization"));
+            const json location = it.value().value("location", json::object());
+            if (location.is_object()) {
+                const auto x = location.find("x");
+                const auto y = location.find("y");
+                if (x != location.end() && x->is_number()) {
+                    const double value = x->get<double>();
+                    if (std::isfinite(value)) profile.x = std::clamp(value, 0.0, 1.0);
+                }
+                if (y != location.end() && y->is_number()) {
+                    const double value = y->get<double>();
+                    if (std::isfinite(value)) profile.y = std::clamp(value, 0.0, 1.0);
+                }
+            }
+        }
+    }
+    for (const Word& word : m_words) {
+        const std::string id = trimAscii(
+            word.speaker.empty() ? word.segmentSpeaker : word.speaker);
+        if (!id.empty()) ++ensureProfile(id).wordCount;
+    }
+    std::sort(profiles.begin(), profiles.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.id < rhs.id;
+    });
+    return profiles;
+}
+
 std::vector<TranscriptRow> TranscriptDocumentCore::projectRows(
     const TranscriptTiming& timing) const
 {
@@ -398,6 +544,7 @@ std::vector<TranscriptRow> TranscriptDocumentCore::projectRows(
             ? word.speaker
             : (!word.segmentSpeaker.empty() ? word.segmentSpeaker : "Unknown");
         row.speakerLabel = speakerLabel(row.speakerId);
+        row.speakerTitle = speakerTitle(row.speakerId);
         row.text = word.text;
         row.editFlags = word.editFlags;
         row.skipped = word.skipped;

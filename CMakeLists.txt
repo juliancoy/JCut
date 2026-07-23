@@ -29,6 +29,7 @@ find_package(PkgConfig REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(X11 REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test
              OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
@@ -331,11 +332,20 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/image_sequence_directory\\.cpp$"
     # Built once in the Qt-free transcript projection core and reused by both frontends.
     ".*/transcript_document_core\\.cpp$"
+    ".*/transcript_overlay_core\\.cpp$"
     # Built once in the Qt-free decoded-frame payload core and reused by Qt adapters.
     ".*/frame_payload_core\\.cpp$"
     # Explicitly attached only to editor_core below; ImGui must not compile private QRhi APIs.
     ".*/frame_handle_qrhi_adapter\\.cpp$"
     ".*/transcript_cut_session_core\\.cpp$"
+    # Built once in Qt-free shared services and reused by the Qt and ImGui paths.
+    ".*/audio_time_stretch_core\\.cpp$"
+    ".*/mask_frame_map_core\\.cpp$"
+    ".*/standalone_audio_mixer\\.cpp$"
+    ".*/standalone_export_renderer\\.cpp$"
+    ".*/standalone_timeline_renderer\\.cpp$"
+    ".*/standalone_preview_renderer\\.cpp$"
+    ".*/proxy_generation_job_core\\.cpp$"
     # 3D model import/runtime sources depend on motive3d engine files that are not
     # part of this repository build graph (eg. primitive/texture engine runtime).
     # Exclude them from the editor target so standard builds remain reproducible.
@@ -474,8 +484,14 @@ target_include_directories(jcut_vulkan_frame_import_core
 target_link_libraries(jcut_vulkan_frame_import_core PUBLIC Vulkan::Vulkan)
 
 add_library(jcut_transcript_document_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/face_artifact_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/face_processing_job_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/speaker_title_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_mining_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_mutation_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_cut_session_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_core.cpp
 )
 set_target_properties(jcut_transcript_document_core PROPERTIES
     AUTOMOC OFF
@@ -487,6 +503,7 @@ target_include_directories(jcut_transcript_document_core
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
 )
+target_link_libraries(jcut_transcript_document_core PUBLIC ZLIB::ZLIB)
 
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
@@ -564,6 +581,7 @@ endif()
 
 add_library(jcut_media_path_core STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/image_sequence_directory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/proxy_path_core.cpp
 )
 set_target_properties(jcut_media_path_core PROPERTIES
     AUTOMOC OFF
@@ -574,6 +592,41 @@ target_include_directories(jcut_media_path_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(editor_core PUBLIC jcut_media_path_core)
+
+add_library(jcut_audio_time_stretch_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch_core.cpp
+)
+set_target_properties(jcut_audio_time_stretch_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_audio_time_stretch_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(jcut_audio_time_stretch_core PUBLIC
+    JCUT_HAVE_RUBBERBAND=${JCUT_HAVE_RUBBERBAND}
+)
+if(TARGET PkgConfig::RUBBERBAND)
+    target_link_libraries(jcut_audio_time_stretch_core PUBLIC PkgConfig::RUBBERBAND)
+endif()
+target_link_libraries(editor_core PUBLIC jcut_audio_time_stretch_core)
+
+add_library(jcut_mask_frame_map_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/mask_frame_map_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mask_sidecar_core.cpp
+)
+set_target_properties(jcut_mask_frame_map_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_mask_frame_map_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_mask_frame_map_core PUBLIC PkgConfig::FFMPEG)
+target_link_libraries(editor_core PUBLIC jcut_mask_frame_map_core)
 
 # Keep preview/decode QObject metadata out of editor_test_support's widget-facing
 # AUTOMOC unit. Pulling one aggregate MOC object into jcut_imgui would otherwise
@@ -698,6 +751,8 @@ target_link_libraries(jcut_runtime_support
     PUBLIC
         jcut_frame_payload_core
         jcut_media_path_core
+        jcut_audio_time_stretch_core
+        jcut_mask_frame_map_core
         Qt6::Core
         Qt6::Gui
         Threads::Threads
@@ -788,6 +843,7 @@ target_include_directories(jcut_editor_core
 target_link_libraries(jcut_editor_core
     PUBLIC
         jcut_transcript_document_core
+        jcut_media_path_core
         Threads::Threads
 )
 
@@ -844,26 +900,6 @@ if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_editor_runtime jcut_vulkan_shaders)
 endif()
 
-add_library(jcut_imgui_qt_adapters STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_audio_runtime.cpp
-)
-set_target_properties(jcut_imgui_qt_adapters PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-)
-target_include_directories(jcut_imgui_qt_adapters
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
-)
-jcut_use_qt_widgets_headers_only(jcut_imgui_qt_adapters)
-target_link_libraries(jcut_imgui_qt_adapters
-    PUBLIC
-        jcut_editor_runtime
-        Vulkan::Vulkan
-)
-
 add_library(jcut_imgui_vulkan_import STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_vulkan_frame_importer.cpp
 )
@@ -883,6 +919,7 @@ target_link_libraries(jcut_imgui_vulkan_import
 )
 
 add_library(jcut_imgui_standalone_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/proxy_generation_job_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_audio_mixer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_export_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_timeline_renderer.cpp
@@ -901,7 +938,30 @@ target_link_libraries(jcut_imgui_standalone_runtime
     PUBLIC
         jcut_editor_core
         jcut_media_path_core
+        jcut_audio_time_stretch_core
+        jcut_mask_frame_map_core
         PkgConfig::FFMPEG
+        PkgConfig::FONT_RENDER
+        Threads::Threads
+)
+
+add_library(jcut_imgui_audio_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_audio_runtime.cpp
+)
+set_target_properties(jcut_imgui_audio_runtime PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_imgui_audio_runtime
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_imgui_audio_runtime
+    PUBLIC
+        jcut_imgui_standalone_runtime
+        rtaudio
         Threads::Threads
 )
 
@@ -918,12 +978,10 @@ target_include_directories(jcut_imgui_runtime
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
 )
-jcut_use_qt_widgets_headers_only(jcut_imgui_runtime)
 target_link_libraries(jcut_imgui_runtime
     PUBLIC
         jcut_imgui_standalone_runtime
-        jcut_editor_runtime
-        jcut_imgui_qt_adapters
+        jcut_imgui_audio_runtime
         jcut_imgui_vulkan_import
         Vulkan::Vulkan
 )

@@ -103,5 +103,14 @@ std::int64_t transcriptCatalogDirectoryWriteTime(
 TranscriptCutSession loadTranscriptCutSession(
     const TranscriptSourceSpec& source,
     const TranscriptCutSessionOptions& options = {});
+std::optional<std::string> createTranscriptCutVersion(
+    const TranscriptCutSession& session,
+    std::string* errorOut = nullptr);
+bool renameTranscriptCut(const TranscriptCutSession& session,
+                         const std::string& label,
+                         std::string* errorOut = nullptr);
+bool deleteTranscriptCut(const TranscriptCutSession& session,
+                         std::string* fallbackPathOut = nullptr,
+                         std::string* errorOut = nullptr);
 
 } // namespace jcut

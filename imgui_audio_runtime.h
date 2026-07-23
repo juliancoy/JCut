@@ -17,13 +17,15 @@ struct ImGuiAudioStatus {
     bool hasPlayableAudio = false;
     bool clockAvailable = false;
     bool outputUnavailable = false;
+    unsigned int requestedBufferFrames = 1024;
+    unsigned int actualBufferFrames = 0;
     std::vector<std::string> scheduledSourcePaths;
     std::string message;
 };
 
 // Qt-free public boundary for ImGui timeline-audio playback. The implementation
-// is intentionally hidden so the existing AudioEngine can remain the backend
-// until a fully neutral audio implementation replaces it.
+// is hidden so RtAudio, FFmpeg decode state, and callback synchronization do not
+// leak into shell code or the stable document-facing API.
 class ImGuiAudioRuntime {
 public:
     ImGuiAudioRuntime();
@@ -37,6 +39,7 @@ public:
     void synchronize(const EditorDocumentCore& document,
                      const std::string& mediaRoot);
     ImGuiAudioStatus status() const;
+    void setBufferFrames(unsigned int frames);
     void shutdown();
 
 private:

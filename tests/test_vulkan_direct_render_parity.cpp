@@ -510,10 +510,17 @@ private slots:
         QFile previewSurface(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"));
         QVERIFY2(previewSurface.open(QIODevice::ReadOnly), "Unable to open Vulkan preview surface.");
         const QString previewSurfaceSource = QString::fromUtf8(previewSurface.readAll());
-        QVERIFY2(previewSurfaceSource.contains(QStringLiteral("render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, m_interaction.tracks)")),
-                 "Preview must use the shared progressive edge stretch layer policy for mask foreground suppression.");
-        QVERIFY2(previewSurfaceSource.contains(QStringLiteral("maskForegroundStatusBySourceId.insert")),
-                 "Preview must retain independently graded mask foreground layers during progressive edge stretch.");
+        QVERIFY2(previewSurfaceSource.contains(QStringLiteral(
+                     "clipWithResolvedTimingOwner(clip, m_interaction.clips)")) &&
+                     previewSurfaceSource.contains(QStringLiteral(
+                         "evaluateEffectiveVisualEffectsAtPosition(")),
+                 "Preview status construction must evaluate effects through the resolved timing owner; "
+                 "the direct presenter applies the shared progressive-edge layer policy.");
+        QVERIFY2(previewSurfaceSource.contains(QStringLiteral(
+                     "status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled")) &&
+                     source.contains(QStringLiteral(
+                         "if (maskReady && status->maskForegroundLayerEnabled)")),
+                 "Preview status and the direct presenter must retain independently graded mask foreground layers during progressive edge stretch.");
 
         QFile offscreen(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
         QVERIFY2(offscreen.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");

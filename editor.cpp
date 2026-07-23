@@ -450,13 +450,6 @@ EditorWindow::EditorWindow(quint16 controlPort)
                                {QStringLiteral("history_entry_count"), result.value(QStringLiteral("history_entries")).toArray().size()}
                            });
 
-        QJsonObject startupRoot = result.value(QStringLiteral("root")).toObject();
-        if (synchronizeProjectRootForState(&startupRoot)) {
-            setupStartupLoad();
-            return;
-        }
-        m_projectRootRedirectDepth = 0;
-
         m_historyEntries = result.value(QStringLiteral("history_entries")).toArray();
         m_historyIndex = result.value(QStringLiteral("history_index")).toInt(-1);
         if (result.value(QStringLiteral("history_sanitized")).toBool(false)) {
@@ -464,7 +457,7 @@ EditorWindow::EditorWindow(quint16 controlPort)
         }
 
         startupProfileMark(QStringLiteral("load_state.apply_state.begin"));
-        applyStateJson(startupRoot);
+        applyStateJson(result.value(QStringLiteral("root")).toObject());
         startupProfileMark(QStringLiteral("load_state.apply_state.end"));
 
         const bool deferHistoryLoad = result.value(QStringLiteral("defer_history")).toBool(false);

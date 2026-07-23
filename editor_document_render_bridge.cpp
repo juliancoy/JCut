@@ -124,6 +124,12 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.clipRole = clipRoleFromCore(clip.clipRole);
         timelineClip.linkedSourceClipId =
             QString::fromStdString(clip.linkedSourceClipId).trimmed();
+        timelineClip.generatedFromMaskId =
+            QString::fromStdString(clip.generatedFromMaskId).trimmed();
+        timelineClip.syncLockedToSource = clip.syncLockedToSource;
+        timelineClip.sourceTransformLocked = clip.sourceTransformLocked;
+        timelineClip.zLevel = clip.zLevel;
+        timelineClip.zLevelUserSet = clip.zLevelUserSet;
         timelineClip.filePath = QString::fromStdString(clip.sourcePath);
         timelineClip.proxyPath = QString::fromStdString(clip.proxyPath);
         timelineClip.useProxy = clip.useProxy;
@@ -175,6 +181,28 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskInvert = clip.maskInvert;
         timelineClip.maskShowOnly = clip.maskShowOnly;
         timelineClip.maskOpacity = clip.maskOpacity;
+        timelineClip.maskGradeEnabled = clip.maskGradeEnabled;
+        timelineClip.maskGradeBrightness = clip.maskGradeBrightness;
+        timelineClip.maskGradeContrast = clip.maskGradeContrast;
+        timelineClip.maskGradeSaturation = clip.maskGradeSaturation;
+        const auto copyMaskCurveToQt = [](const std::vector<EditorPoint>& source) {
+            QVector<QPointF> result;
+            result.reserve(static_cast<qsizetype>(source.size()));
+            for (const EditorPoint& point : source) {
+                result.push_back(QPointF(point.x, point.y));
+            }
+            return result;
+        };
+        timelineClip.maskGradeCurvePointsR = copyMaskCurveToQt(clip.maskGradeCurvePointsR);
+        timelineClip.maskGradeCurvePointsG = copyMaskCurveToQt(clip.maskGradeCurvePointsG);
+        timelineClip.maskGradeCurvePointsB = copyMaskCurveToQt(clip.maskGradeCurvePointsB);
+        timelineClip.maskGradeCurvePointsLuma = copyMaskCurveToQt(clip.maskGradeCurvePointsLuma);
+        timelineClip.maskGradeCurveSmoothingEnabled = clip.maskGradeCurveSmoothingEnabled;
+        timelineClip.maskDropShadowEnabled = clip.maskDropShadowEnabled;
+        timelineClip.maskDropShadowRadius = clip.maskDropShadowRadius;
+        timelineClip.maskDropShadowOffsetX = clip.maskDropShadowOffsetX;
+        timelineClip.maskDropShadowOffsetY = clip.maskDropShadowOffsetY;
+        timelineClip.maskDropShadowOpacity = clip.maskDropShadowOpacity;
         timelineClip.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
         timelineClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         timelineClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
@@ -184,6 +212,17 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.effectSpeed = clip.effectSpeed;
         timelineClip.effectScale = clip.effectScale;
         timelineClip.effectAlternateDirection = clip.effectAlternateDirection;
+        timelineClip.effectSkipAwareTiming = clip.effectSkipAwareTiming;
+        timelineClip.differenceReferenceFrames = clip.differenceReferenceFrames;
+        timelineClip.differenceThreshold = clip.differenceThreshold;
+        timelineClip.differenceSoftness = clip.differenceSoftness;
+        timelineClip.temporalEchoCount = clip.temporalEchoCount;
+        timelineClip.temporalEchoSpacingFrames = clip.temporalEchoSpacingFrames;
+        timelineClip.temporalEchoDecay = clip.temporalEchoDecay;
+        timelineClip.tilingPattern = editor::tilingPatternFromJson(
+            QString::fromStdString(clip.tilingPattern));
+        timelineClip.tilingSpacing = clip.tilingSpacing;
+        timelineClip.tilingWrap = clip.tilingWrap;
         for (const EditorCorrectionPolygon& polygon : clip.correctionPolygons) {
             TimelineClip::CorrectionPolygon value;
             value.enabled = polygon.enabled;
@@ -197,7 +236,31 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.transcriptOverlay.enabled = clip.transcriptOverlay.enabled;
         timelineClip.transcriptOverlay.showBackground = clip.transcriptOverlay.showBackground;
         timelineClip.transcriptOverlay.backgroundOpacity = clip.transcriptOverlay.backgroundOpacity;
+        timelineClip.transcriptOverlay.backgroundCornerRadius = clip.transcriptOverlay.backgroundCornerRadius;
+        timelineClip.transcriptOverlay.backgroundPadding = clip.transcriptOverlay.backgroundPadding;
+        timelineClip.transcriptOverlay.backgroundFrameEnabled = clip.transcriptOverlay.backgroundFrameEnabled;
+        timelineClip.transcriptOverlay.backgroundFrameColor = QColor(QString::fromStdString(clip.transcriptOverlay.backgroundFrameColor));
+        timelineClip.transcriptOverlay.backgroundFrameOpacity = clip.transcriptOverlay.backgroundFrameOpacity;
+        timelineClip.transcriptOverlay.backgroundFrameWidth = clip.transcriptOverlay.backgroundFrameWidth;
+        timelineClip.transcriptOverlay.backgroundFrameGap = clip.transcriptOverlay.backgroundFrameGap;
         timelineClip.transcriptOverlay.showShadow = clip.transcriptOverlay.showShadow;
+        timelineClip.transcriptOverlay.shadowColor = QColor(QString::fromStdString(clip.transcriptOverlay.shadowColor));
+        timelineClip.transcriptOverlay.shadowOpacity = clip.transcriptOverlay.shadowOpacity;
+        timelineClip.transcriptOverlay.shadowOffsetX = clip.transcriptOverlay.shadowOffsetX;
+        timelineClip.transcriptOverlay.shadowOffsetY = clip.transcriptOverlay.shadowOffsetY;
+        timelineClip.transcriptOverlay.textOutlineEnabled = clip.transcriptOverlay.textOutlineEnabled;
+        timelineClip.transcriptOverlay.textOutlineWidth = clip.transcriptOverlay.textOutlineWidth;
+        timelineClip.transcriptOverlay.textOutlineColor = QColor(QString::fromStdString(clip.transcriptOverlay.textOutlineColor));
+        timelineClip.transcriptOverlay.textOutlineOpacity = clip.transcriptOverlay.textOutlineOpacity;
+        using TextExtrudeMode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+        timelineClip.transcriptOverlay.textExtrudeMode =
+            clip.transcriptOverlay.textExtrudeMode == "stacked_copies"
+                ? TextExtrudeMode::StackedCopies
+                : (clip.transcriptOverlay.textExtrudeMode == "eroded_solid"
+                    ? TextExtrudeMode::ErodedSolid : TextExtrudeMode::None);
+        timelineClip.transcriptOverlay.textExtrudeDepth = clip.transcriptOverlay.textExtrudeDepth;
+        timelineClip.transcriptOverlay.textExtrudeBevelScale = clip.transcriptOverlay.textExtrudeBevelScale;
+        timelineClip.transcriptOverlay.showSpeakerTitle = clip.transcriptOverlay.showSpeakerTitle;
         timelineClip.transcriptOverlay.highlightCurrentWord = clip.transcriptOverlay.highlightCurrentWord;
         timelineClip.transcriptOverlay.autoScroll = clip.transcriptOverlay.autoScroll;
         timelineClip.transcriptOverlay.useManualPlacement = clip.transcriptOverlay.useManualPlacement;
@@ -272,6 +335,20 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
             });
         }
         for (const EditorTitleKeyframe& keyframe : clip.titleKeyframes) {
+            const auto materialStyle = [](const std::string& name) {
+                using Style = TimelineClip::TitleKeyframe::MaterialStyle;
+                if (name == "neon") return Style::Neon;
+                if (name == "diagonal_stripes") return Style::DiagonalStripes;
+                if (name == "grid") return Style::Grid;
+                if (name == "image_pattern") return Style::ImagePattern;
+                return Style::Solid;
+            };
+            const auto extrudeMode = [](const std::string& name) {
+                using Mode = TimelineClip::TitleKeyframe::TextExtrudeMode;
+                if (name == "stacked_copies") return Mode::StackedCopies;
+                if (name == "eroded_solid") return Mode::ErodedSolid;
+                return Mode::None;
+            };
             TimelineClip::TitleKeyframe value;
             value.frame = keyframe.frame;
             value.text = QString::fromStdString(keyframe.text);
@@ -284,6 +361,39 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
             value.italic = keyframe.italic;
             value.color = QColor(QString::fromStdString(keyframe.color));
             value.linearInterpolation = keyframe.linearInterpolation;
+            value.autoFitToOutput = keyframe.autoFitToOutput;
+            value.logoPath = QString::fromStdString(keyframe.logoPath);
+            value.textMaterialStyle = materialStyle(keyframe.textMaterialStyle);
+            value.textPatternImagePath = QString::fromStdString(keyframe.textPatternImagePath);
+            value.textPatternScale = keyframe.textPatternScale;
+            value.dropShadowEnabled = keyframe.dropShadowEnabled;
+            value.dropShadowColor = QColor(QString::fromStdString(keyframe.dropShadowColor));
+            value.dropShadowOpacity = keyframe.dropShadowOpacity;
+            value.dropShadowOffsetX = keyframe.dropShadowOffsetX;
+            value.dropShadowOffsetY = keyframe.dropShadowOffsetY;
+            value.windowEnabled = keyframe.windowEnabled;
+            value.windowColor = QColor(QString::fromStdString(keyframe.windowColor));
+            value.windowOpacity = keyframe.windowOpacity;
+            value.windowPadding = keyframe.windowPadding;
+            value.windowWidth = keyframe.windowWidth;
+            value.windowFrameEnabled = keyframe.windowFrameEnabled;
+            value.windowFrameColor = QColor(QString::fromStdString(keyframe.windowFrameColor));
+            value.windowFrameOpacity = keyframe.windowFrameOpacity;
+            value.windowFrameWidth = keyframe.windowFrameWidth;
+            value.windowFrameGap = keyframe.windowFrameGap;
+            value.windowFrameMaterialStyle = materialStyle(keyframe.windowFrameMaterialStyle);
+            value.windowFramePatternImagePath = QString::fromStdString(keyframe.windowFramePatternImagePath);
+            value.windowFramePatternScale = keyframe.windowFramePatternScale;
+            value.vulkan3DEnabled = keyframe.vulkan3DEnabled;
+            value.vulkan3DExtrudeEnabled = keyframe.vulkan3DExtrudeEnabled;
+            value.textExtrudeMode = extrudeMode(keyframe.textExtrudeMode);
+            value.vulkan3DExtrudeDepth = keyframe.vulkan3DExtrudeDepth;
+            value.vulkan3DBevelScale = keyframe.vulkan3DBevelScale;
+            value.vulkan3DYawDegrees = keyframe.vulkan3DYawDegrees;
+            value.vulkan3DPitchDegrees = keyframe.vulkan3DPitchDegrees;
+            value.vulkan3DRollDegrees = keyframe.vulkan3DRollDegrees;
+            value.vulkan3DDepth = keyframe.vulkan3DDepth;
+            value.vulkan3DScale = keyframe.vulkan3DScale;
             timelineClip.titleKeyframes.push_back(std::move(value));
         }
         const auto mediaIt = mediaKindById.find(clip.sourcePath);

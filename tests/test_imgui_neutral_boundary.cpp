@@ -21,6 +21,8 @@ using AudioSynchronizeMember =
                                       const std::string&);
 using AudioStatusMember =
     jcut::ImGuiAudioStatus (jcut::ImGuiAudioRuntime::*)() const;
+using AudioBufferMember =
+    void (jcut::ImGuiAudioRuntime::*)(unsigned int);
 using FrameImportMember =
     bool (jcut::imgui::VulkanFrameImporter::*)(
         const render_detail::OffscreenVulkanFrame&,
@@ -35,6 +37,9 @@ static_assert(std::is_same_v<
 static_assert(std::is_same_v<
               decltype(&jcut::ImGuiAudioRuntime::status),
               AudioStatusMember>);
+static_assert(std::is_same_v<
+              decltype(&jcut::ImGuiAudioRuntime::setBufferFrames),
+              AudioBufferMember>);
 static_assert(std::is_same_v<
               decltype(&jcut::imgui::VulkanFrameImporter::importFrame),
               FrameImportMember>);

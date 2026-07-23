@@ -127,9 +127,9 @@ void MaskTab::wire()
     }
     if (m_widgets.zLevelSpin) {
         connect(m_widgets.zLevelSpin, qOverload<int>(&QSpinBox::valueChanged),
-                this, [this](int) { apply(false); });
+                this, [this](int) { apply(false, true); });
         connect(m_widgets.zLevelSpin, &QSpinBox::editingFinished,
-                this, [this]() { apply(true); });
+                this, [this]() { apply(true, true); });
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
@@ -341,7 +341,7 @@ void MaskTab::refresh()
     m_updating = false;
 }
 
-void MaskTab::apply(bool pushHistory)
+void MaskTab::apply(bool pushHistory, bool zLevelEdited)
 {
     if (m_updating || !m_deps.updateClipById) {
         return;
@@ -434,8 +434,8 @@ void MaskTab::apply(bool pushHistory)
     const QString id = selectedClip->id;
     const bool updated = m_deps.updateClipById(
         id,
-        [this, requestedDirectory, clearedChildAssociation](TimelineClip& clip) {
-        if (m_widgets.zLevelSpin) {
+        [this, requestedDirectory, clearedChildAssociation, zLevelEdited](TimelineClip& clip) {
+        if (zLevelEdited && m_widgets.zLevelSpin) {
             clip.zLevel = m_widgets.zLevelSpin->value();
             clip.zLevelUserSet = true;
         }

@@ -3,6 +3,8 @@
 #include "clip_serialization.h"
 #include "editor_shared.h"
 #include "editor_tab_edit_effects.h"
+#include "json_io_utils.h"
+#include "transcript_document_mutation_core.h"
 
 #include <QApplication>
 #include <QAbstractItemView>
@@ -1397,11 +1399,18 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
     const int wordId = item->data(Qt::UserRole + 16).toInt();
     const bool isGap = item->data(Qt::UserRole + 4).toBool();
     if (isGap || wordId < 0) return;
-    TranscriptDocumentWord* word = transcriptWordById(wordId);
+    const TranscriptDocumentWord* word = transcriptWordById(wordId);
     if (!word) {
         refresh();
         return;
     }
+    jcut::TranscriptWordRef reference;
+    reference.segmentIndex = item->data(Qt::UserRole + 5).toInt();
+    reference.wordIndex = item->data(Qt::UserRole + 6).toInt();
+    reference.originalSegmentIndex = item->data(Qt::UserRole + 13).toInt();
+    reference.originalWordIndex = item->data(Qt::UserRole + 14).toInt();
+    reference.renderOrder = item->data(Qt::UserRole + 15).toInt();
+    jcut::TranscriptWordPatch patch;
     if (item->column() == kTranscriptColSourceStart || item->column() == kTranscriptColSourceEnd) {
         double seconds = 0.0;
         if (!m_transcriptEngine.parseTranscriptTime(item->text(), &seconds)) {
@@ -1416,32 +1425,26 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
                 ? qMax(0.0, seconds - offsetSeconds + prependSeconds)
                 : qMax(0.0, seconds - offsetSeconds - postpendSeconds);
         if (item->column() == kTranscriptColSourceStart) {
-            const double currentEnd = word->endSeconds;
-            const double currentStart = word->startSeconds;
-            if (!qFuzzyCompare(currentStart + 1.0, qMin(rawSeconds, currentEnd) + 1.0)) {
-                if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
-                    word->editTags.push_back(QString(kTranscriptEditTimingTag));
-                }
-            }
-            word->startSeconds = qMin(rawSeconds, currentEnd);
+            patch.startSeconds = rawSeconds;
         } else {
-            const double currentStart = word->startSeconds;
-            const double currentEnd = word->endSeconds;
-            if (!qFuzzyCompare(currentEnd + 1.0, qMax(rawSeconds, currentStart) + 1.0)) {
-                if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
-                    word->editTags.push_back(QString(kTranscriptEditTimingTag));
-                }
-            }
-            word->endSeconds = qMax(rawSeconds, currentStart);
+            patch.endSeconds = rawSeconds;
         }
     } else if (item->column() == kTranscriptColText) {
-        if (word->text != item->text()) {
-            if (!word->editTags.contains(QString(kTranscriptEditTextTag))) {
-                word->editTags.push_back(QString(kTranscriptEditTextTag));
-            }
-        }
-        word->text = item->text();
+        patch.text = item->text().toStdString();
     } else {
+        return;
+    }
+    nlohmann::json root = jcut::jsonio::toJson(
+        QJsonValue(serializeInMemoryTranscriptDocument().object()));
+    std::string mutationError;
+    if (!jcut::patchTranscriptWord(&root, reference, patch, &mutationError)) {
+        refresh();
+        return;
+    }
+    const QJsonValue converted = jcut::jsonio::fromJson(root);
+    if (!converted.isObject() ||
+        !rebuildInMemoryTranscriptDocument(QJsonDocument(converted.toObject()))) {
+        refresh();
         return;
     }
     rehydrateLoadedTranscriptDocumentFromMemory();

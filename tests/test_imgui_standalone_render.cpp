@@ -12,6 +12,7 @@
 #include <QTemporaryDir>
 
 #include <fstream>
+#include <array>
 
 class TestImGuiStandaloneRender : public QObject {
     Q_OBJECT
@@ -19,6 +20,15 @@ class TestImGuiStandaloneRender : public QObject {
 private slots:
     void testRenderPreviewFrameDecodesImageClip();
     void testLegacyClipWithoutMediaKindIsVisual();
+    void testStandalonePreviewCompositesOpacityAndTrackVisualModes();
+    void testStandalonePreviewAppliesMaskMatteAndFailsClosed();
+    void testStandalonePreviewRendersSourceTilingPatterns();
+    void testStandalonePreviewRendersDifferenceMatteAndTemporalEcho();
+    void testStandalonePreviewRendersGeneratedRepeatEffects();
+    void testStandalonePreviewRendersSinglePassPixelEffects();
+    void testStandalonePreviewRendersAnimatedTitleClip();
+    void testStandalonePreviewRendersAdvancedTitleTreatments();
+    void testStandalonePreviewRendersTranscriptOverlayFromActiveCut();
     void testPreviewKeepsZeroCopyWithCpuFallbackContract();
     void testStandaloneImportProbeReportsAudioPresence();
     void testImageSequenceDirectoryProbeAndRender();
@@ -110,6 +120,32 @@ bool writeSolidBmp(const QString& path,
     return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
 }
 
+bool writeSplitMaskPgm(const QString& path, int width = 4, int height = 4)
+{
+    std::ofstream output(path.toStdString(), std::ios::binary);
+    if (!output || width <= 1 || height <= 0) return false;
+    output << "P5\n" << width << ' ' << height << "\n255\n";
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            output.put(static_cast<char>(x < width / 2 ? 255 : 0));
+        }
+    }
+    return output.good();
+}
+
+bool writePatternPpm(const QString& path)
+{
+    std::ofstream output(path.toStdString(), std::ios::binary);
+    if (!output) return false;
+    output << "P6\n4 2\n255\n";
+    const unsigned char pixels[] = {
+        255, 0, 0,  0, 255, 0,  0, 0, 255,  255, 255, 0,
+        0, 255, 255,  255, 0, 255,  255, 255, 255,  32, 32, 32,
+    };
+    output.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+    return output.good();
+}
+
 QString readSourceFile(const QString& relativePath)
 {
     QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + relativePath);
@@ -168,6 +204,717 @@ void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
         result.image.bytes[offset + 1] > 0 ||
         result.image.bytes[offset + 2] > 0;
     QVERIFY(nonBlack);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersSourceTilingPatterns()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath = tempDir.filePath(QStringLiteral("tile.bmp"));
+    QVERIFY(writeSolidBmp(imagePath, 240, 24, 12, 4, 4));
+
+    jcut::EditorDocumentCore document;
+    document.projectName = "Source tiling";
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.trackId = 1;
+    clip.label = "tile";
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourcePath = imagePath.toStdString();
+    clip.mediaKind = "image";
+    clip.effectPreset = "source_tile";
+    clip.effectRows = 4;
+    clip.effectScale = 1.0;
+    clip.tilingSpacing = 1.0;
+    clip.tilingPattern = "grid";
+    document.clips.push_back(clip);
+
+    constexpr jcut::core::SizeI outputSize{32, 24};
+    const auto grid = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 0});
+    QVERIFY2(grid.success, grid.message.c_str());
+
+    document.clips.front().tilingPattern = "encircle";
+    const auto encircle = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 0});
+    QVERIFY2(encircle.success, encircle.message.c_str());
+    QVERIFY(grid.image.bytes != encircle.image.bytes);
+
+    int foregroundPixels = 0;
+    int backgroundPixels = 0;
+    for (int y = 0; y < encircle.image.size.height; ++y) {
+        for (int x = 0; x < encircle.image.size.width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>(
+                y * encircle.image.strideBytes + x * 4);
+            if (encircle.image.bytes[offset] > 200 &&
+                encircle.image.bytes[offset + 1] < 40) {
+                ++foregroundPixels;
+            } else if (encircle.image.bytes[offset] == 12 &&
+                       encircle.image.bytes[offset + 1] == 14) {
+                ++backgroundPixels;
+            }
+        }
+    }
+    QVERIFY(foregroundPixels > 0);
+    QVERIFY(backgroundPixels > 0);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersDifferenceMatteAndTemporalEcho()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString sequencePath = tempDir.filePath(QStringLiteral("sequence"));
+    QVERIFY(QDir().mkpath(sequencePath));
+    QVERIFY(writeSolidBmp(sequencePath + QStringLiteral("/frame000.bmp"), 255, 0, 0));
+    QVERIFY(writeSolidBmp(sequencePath + QStringLiteral("/frame001.bmp"), 0, 0, 255));
+    QVERIFY(writeSolidBmp(sequencePath + QStringLiteral("/frame002.bmp"), 0, 255, 0));
+    QVERIFY(writeSolidBmp(sequencePath + QStringLiteral("/frame003.bmp"), 255, 255, 0));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.trackId = 1;
+    clip.label = "sequence";
+    clip.startFrame = 0;
+    clip.durationFrames = 4;
+    clip.sourceDurationFrames = 4;
+    clip.sourcePath = sequencePath.toStdString();
+    clip.mediaKind = "video";
+    clip.effectPreset = "difference_matte";
+    clip.differenceReferenceFrames = 1;
+    clip.differenceThreshold = 0.1;
+    clip.differenceSoftness = 0.01;
+    document.clips.push_back(clip);
+
+    const auto difference = jcut::standalone_render::renderTimelineFrame({
+        document, {4, 4}, 1.0, {}});
+    QVERIFY2(difference.success, difference.message.c_str());
+    const std::size_t center = static_cast<std::size_t>(
+        2 * difference.image.strideBytes + 2 * 4);
+    QVERIFY(difference.image.bytes[center] > 245);
+    QVERIFY(difference.image.bytes[center + 1] > 245);
+    QVERIFY(difference.image.bytes[center + 2] > 245);
+
+    document.clips.front().effectPreset = "temporal_echo";
+    document.clips.front().temporalEchoCount = 1;
+    document.clips.front().temporalEchoSpacingFrames = 1;
+    document.clips.front().temporalEchoDecay = 0.5;
+    const auto echo = jcut::standalone_render::renderTimelineFrame({
+        document, {4, 4}, 1.0, {}});
+    QVERIFY2(echo.success, echo.message.c_str());
+    const std::size_t echoCenter = static_cast<std::size_t>(
+        2 * echo.image.strideBytes + 2 * 4);
+    QVERIFY(echo.image.bytes[echoCenter] >= 120);
+    QVERIFY(echo.image.bytes[echoCenter] <= 135);
+    QVERIFY(echo.image.bytes[echoCenter + 2] >= 120);
+    QVERIFY(echo.image.bytes[echoCenter + 2] <= 135);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersGeneratedRepeatEffects()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath = tempDir.filePath(QStringLiteral("source.ppm"));
+    QVERIFY(writePatternPpm(imagePath));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "generated-effect";
+    clip.trackId = 1;
+    clip.label = "source";
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourcePath = imagePath.toStdString();
+    clip.mediaKind = "image";
+    clip.effectRows = 6;
+    clip.effectScale = 0.8;
+    clip.effectSpeed = 1.0;
+    clip.effectAlternateDirection = true;
+    document.clips.push_back(clip);
+
+    const auto base = jcut::standalone_render::renderTimelineFrame({
+        document, {64, 48}, 0.0, {}});
+    QVERIFY2(base.success, base.message.c_str());
+    const std::array<const char*, 7> presets = {
+        "news_logo_ticker",
+        "alternating_motion_background",
+        "directional_trim_ticker",
+        "person_orbit",
+        "freeze_pattern",
+        "step_repeat",
+        "vulkan_3d_synth",
+    };
+    for (const char* preset : presets) {
+        document.clips.front().effectPreset = preset;
+        const auto first = jcut::standalone_render::renderTimelineFrame({
+            document, {64, 48}, 0.0, {}});
+        const auto animated = jcut::standalone_render::renderTimelineFrame({
+            document, {64, 48}, 12.0, {}});
+        QVERIFY2(first.success, first.message.c_str());
+        QVERIFY2(animated.success, animated.message.c_str());
+        QVERIFY2(first.image.bytes != base.image.bytes, preset);
+        QVERIFY2(first.image.bytes != animated.image.bytes, preset);
+    }
+
+    document.clips.front().effectPreset = "person_orbit";
+    document.clips.front().effectSkipAwareTiming = true;
+    document.renderSyncMarkers.push_back({"generated-effect", 3, true, 4});
+    const auto skipAware = jcut::standalone_render::renderTimelineFrame({
+        document, {64, 48}, 12.0, {}});
+    document.clips.front().effectSkipAwareTiming = false;
+    const auto rawClock = jcut::standalone_render::renderTimelineFrame({
+        document, {64, 48}, 12.0, {}});
+    QVERIFY(skipAware.image.bytes != rawClock.image.bytes);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersSinglePassPixelEffects()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath = tempDir.filePath(QStringLiteral("pattern.ppm"));
+    QVERIFY(writePatternPpm(imagePath));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.trackId = 1;
+    clip.label = "pattern";
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourcePath = imagePath.toStdString();
+    clip.mediaKind = "image";
+    clip.effectRows = 2;
+    clip.effectScale = 1.4;
+    clip.effectSpeed = 1.0;
+    document.clips.push_back(clip);
+
+    const auto base = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 0.0, {}});
+    QVERIFY2(base.success, base.message.c_str());
+    const std::array<const char*, 20> presets = {
+        "mirror_ring", "kaleidoscope", "quad_mirror", "infinite_mirror",
+        "tessellation", "hexagonal_prism", "droste", "polar_tunnel",
+        "tiny_planet", "twirl_vortex", "ripple_shockwave", "displacement_map",
+        "glass_refraction", "slit_scan", "pixel_sorting", "datamosh_glitch",
+        "rgb_split", "halftone_mosaic", "sobel_edges", "neon_glow",
+    };
+    for (const char* preset : presets) {
+        document.clips.front().effectPreset = preset;
+        const auto rendered = jcut::standalone_render::renderTimelineFrame({
+            document, {96, 64}, 7.0, {}});
+        QVERIFY2(rendered.success, rendered.message.c_str());
+        QVERIFY2(rendered.image.bytes != base.image.bytes, preset);
+    }
+
+    document.clips.front().effectPreset = "progressive_edge_stretch";
+    document.clips.front().effectRows = 12;
+    document.clips.front().effectScale = 1.2;
+    const auto progressive = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 0.0, {}});
+    QVERIFY2(progressive.success, progressive.message.c_str());
+    QVERIFY(progressive.image.bytes != base.image.bytes);
+    const std::size_t topCenter = static_cast<std::size_t>(48 * 4);
+    QVERIFY(progressive.image.bytes[topCenter] != 12 ||
+            progressive.image.bytes[topCenter + 1] != 14);
+
+    document.clips.front().effectPreset = "neon_glow";
+    const auto neonFirst = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 0.0, {}});
+    const auto neonAnimated = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 12.0, {}});
+    QVERIFY(neonFirst.image.bytes != neonAnimated.image.bytes);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewCompositesOpacityAndTrackVisualModes()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString redPath = tempDir.filePath(QStringLiteral("red.bmp"));
+    const QString bluePath = tempDir.filePath(QStringLiteral("blue.bmp"));
+    QVERIFY(writeSolidBmp(redPath, 255, 0, 0, 4, 4));
+    QVERIFY(writeSolidBmp(bluePath, 0, 0, 255, 4, 4));
+
+    jcut::EditorDocumentCore document;
+    jcut::EditorTrack bottomTrack;
+    bottomTrack.id = 1;
+    bottomTrack.label = "Bottom";
+    jcut::EditorTrack topTrack;
+    topTrack.id = 2;
+    topTrack.label = "Top";
+    document.tracks = {bottomTrack, topTrack};
+    jcut::EditorClip bottom;
+    bottom.id = 1;
+    bottom.trackId = 1;
+    bottom.startFrame = 0;
+    bottom.durationFrames = 30;
+    bottom.sourcePath = redPath.toStdString();
+    bottom.mediaKind = "image";
+    jcut::EditorClip top = bottom;
+    top.id = 2;
+    top.trackId = 2;
+    top.sourcePath = bluePath.toStdString();
+    top.opacity = 0.5;
+    document.clips = {bottom, top};
+
+    auto render = [&]() {
+        return jcut::standalone_render::renderTimelineFrame({
+            document, {4, 4}, 0.0, {}});
+    };
+    auto center = [](const jcut::core::ImageBuffer& image, int channel) {
+        return image.bytes[static_cast<std::size_t>(
+            2 * image.strideBytes + 2 * 4 + channel)];
+    };
+
+    jcut::standalone_render::TimelineRenderResult result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QVERIFY(center(result.image, 0) >= 126 && center(result.image, 0) <= 129);
+    QCOMPARE(center(result.image, 1), static_cast<std::uint8_t>(0));
+    QVERIFY(center(result.image, 2) >= 127 && center(result.image, 2) <= 129);
+
+    document.tracks[1].visualMode = 2;
+    result = render();
+    QCOMPARE(center(result.image, 0), static_cast<std::uint8_t>(255));
+    QCOMPARE(center(result.image, 2), static_cast<std::uint8_t>(0));
+
+    document.clips[0].brightness = -1.0;
+    result = render();
+    QCOMPARE(center(result.image, 0), static_cast<std::uint8_t>(0));
+    QCOMPARE(center(result.image, 1), static_cast<std::uint8_t>(0));
+    QCOMPARE(center(result.image, 2), static_cast<std::uint8_t>(0));
+    document.clips[0].brightness = 0.0;
+
+    jcut::EditorTransformKeyframe transformStart;
+    transformStart.frame = 0;
+    jcut::EditorTransformKeyframe transformEnd;
+    transformEnd.frame = 10;
+    transformEnd.translationX = 2.0;
+    document.clips[0].transformKeyframes = {transformStart, transformEnd};
+    result = jcut::standalone_render::renderTimelineFrame({
+        document, {4, 4}, 5.0, {}});
+    QVERIFY2(result.success, result.message.c_str());
+    const std::size_t leftCenter = static_cast<std::size_t>(
+        2 * result.image.strideBytes);
+    QCOMPARE(result.image.bytes[leftCenter], static_cast<std::uint8_t>(12));
+    QCOMPARE(center(result.image, 0), static_cast<std::uint8_t>(255));
+    document.clips[0].transformKeyframes.clear();
+
+    document.tracks[1].visualMode = 1;
+    result = render();
+    QCOMPARE(center(result.image, 0), static_cast<std::uint8_t>(0));
+    QCOMPARE(center(result.image, 2), static_cast<std::uint8_t>(255));
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewAppliesMaskMatteAndFailsClosed()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString sourcePath = tempDir.filePath(QStringLiteral("red.bmp"));
+    QVERIFY(writeSolidBmp(sourcePath, 255, 0, 0, 4, 4));
+    const QString maskDir = tempDir.filePath(QStringLiteral("manual_mask"));
+    QVERIFY(QDir().mkpath(maskDir));
+    QVERIFY(writeSolidBmp(
+        QDir(maskDir).filePath(QStringLiteral("frame_000001.png")),
+        255, 255, 255, 4, 4));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Mask Matte", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "matte-1";
+    clip.trackId = 1;
+    clip.startFrame = 0;
+    clip.durationFrames = 10;
+    clip.sourcePath = sourcePath.toStdString();
+    clip.mediaKind = "image";
+    clip.clipRole = "mask_matte";
+    clip.maskEnabled = true;
+    clip.maskFramesDir = maskDir.toStdString();
+    jcut::EditorCorrectionPolygon correction;
+    correction.pointsNormalized = {
+        {0.5, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.5, 1.0}};
+    clip.correctionPolygons.push_back(correction);
+    document.clips.push_back(clip);
+
+    auto render = [&]() {
+        return jcut::standalone_render::renderTimelineFrame({
+            document, {4, 4}, 0.0, {}});
+    };
+    auto pixel = [](const jcut::core::ImageBuffer& image, int x, int channel) {
+        return image.bytes[static_cast<std::size_t>(
+            2 * image.strideBytes + x * 4 + channel)];
+    };
+    auto result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(pixel(result.image, 0, 0), static_cast<std::uint8_t>(255));
+    QCOMPARE(pixel(result.image, 3, 0), static_cast<std::uint8_t>(12));
+
+    document.clips[0].correctionPolygons.clear();
+    QVERIFY(writeSplitMaskPgm(
+        QDir(maskDir).filePath(QStringLiteral("frame_000001.png"))));
+    document.clips[0].clipRole = "media";
+    document.clips[0].maskGradeEnabled = true;
+    document.clips[0].maskGradeBrightness = -1.0;
+    result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(pixel(result.image, 0, 0), static_cast<std::uint8_t>(0));
+    QCOMPARE(pixel(result.image, 3, 0), static_cast<std::uint8_t>(255));
+
+    document.clips[0].clipRole = "mask_matte";
+    document.clips[0].maskGradeEnabled = false;
+    document.clips[0].maskDropShadowEnabled = true;
+    document.clips[0].maskDropShadowRadius = 0.0;
+    document.clips[0].maskDropShadowOffsetX = 2.0;
+    document.clips[0].maskDropShadowOffsetY = 0.0;
+    document.clips[0].maskDropShadowOpacity = 1.0;
+    result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(pixel(result.image, 0, 0), static_cast<std::uint8_t>(255));
+    QCOMPARE(pixel(result.image, 2, 0), static_cast<std::uint8_t>(0));
+
+    document.clips[0].maskDropShadowEnabled = false;
+    document.clips[0].maskRepeatEnabled = true;
+    document.clips[0].effectRows = 3;
+    document.clips[0].maskRepeatDeltaX = 1.0;
+    document.clips[0].maskRepeatDeltaY = 0.0;
+    result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(pixel(result.image, 2, 0), static_cast<std::uint8_t>(255));
+
+    document.clips[0].maskRepeatEnabled = false;
+    document.clips[0].clipRole = "media";
+    document.clips[0].effectRows = 2;
+    document.clips[0].effectScale = 1.0;
+    document.clips[0].tilingSpacing = 0.1;
+    for (const char* preset : {
+             "speaker_mask_dilation",
+             "speaker_mask_dilation_pulse",
+             "speaker_mask_dilation_rings"}) {
+        document.clips[0].effectPreset = preset;
+        result = render();
+        QVERIFY2(result.success, result.message.c_str());
+        QVERIFY2(pixel(result.image, 2, 1) > 0, preset);
+    }
+
+    document.clips[0].effectPreset = "none";
+    document.clips[0].clipRole = "mask_matte";
+    document.clips[0].maskFramesDir = tempDir.filePath(
+        QStringLiteral("missing_mask")).toStdString();
+    result = render();
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(pixel(result.image, 0, 0), static_cast<std::uint8_t>(12));
+    QCOMPARE(pixel(result.image, 3, 0), static_cast<std::uint8_t>(12));
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersAnimatedTitleClip()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Titles", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "title-1";
+    clip.trackId = 1;
+    clip.label = "Title";
+    clip.startFrame = 0;
+    clip.durationFrames = 20;
+    clip.mediaKind = "title";
+    clip.videoEnabled = true;
+    jcut::EditorTitleKeyframe first;
+    first.frame = 0;
+    first.text = "JCut";
+    first.fontSize = 36.0;
+    first.color = "#ff0000";
+    jcut::EditorTitleKeyframe last = first;
+    last.frame = 10;
+    last.translationX = 40.0;
+    last.opacity = 0.5;
+    clip.titleKeyframes = {first, last};
+    document.clips.push_back(clip);
+
+    const auto centroidAndCount = [](const jcut::core::ImageBuffer& image) {
+        double xSum = 0.0;
+        int count = 0;
+        for (int y = 0; y < image.size.height; ++y) {
+            for (int x = 0; x < image.size.width; ++x) {
+                const std::size_t offset = static_cast<std::size_t>(
+                    y * image.strideBytes + x * 4);
+                if (image.bytes[offset] > 80 &&
+                    image.bytes[offset] > image.bytes[offset + 1] * 2) {
+                    xSum += x;
+                    ++count;
+                }
+            }
+        }
+        return std::pair<double, int>{count > 0 ? xSum / count : 0.0, count};
+    };
+
+    const auto start = jcut::standalone_render::renderTimelineFrame({
+        document, {320, 180}, 0.0, {}});
+    QVERIFY2(start.success, start.message.c_str());
+    const auto [startX, startCount] = centroidAndCount(start.image);
+    QVERIFY(startCount > 20);
+
+    const auto midpointTitle = jcut::evaluateEditorClipTitleAtLocalFrame(
+        document.clips.front(), 5);
+    QCOMPARE(midpointTitle.text, std::string("JCut"));
+    QCOMPARE(midpointTitle.translationX, 20.0);
+    QCOMPARE(midpointTitle.opacity, 0.75);
+    const auto midpoint = jcut::standalone_render::renderTimelineFrame({
+        document, {320, 180}, 5.0, {}});
+    QVERIFY2(midpoint.success, midpoint.message.c_str());
+    const auto [midpointX, midpointCount] = centroidAndCount(midpoint.image);
+    QVERIFY(midpointCount > 20);
+    QVERIFY(midpointX > startX + 15.0);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersAdvancedTitleTreatments()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString textPatternPath = tempDir.filePath(QStringLiteral("text-pattern.bmp"));
+    const QString framePatternPath = tempDir.filePath(QStringLiteral("frame-pattern.bmp"));
+    const QString logoPath = tempDir.filePath(QStringLiteral("logo.bmp"));
+    QVERIFY(writeSolidBmp(textPatternPath, 0, 255, 0, 12, 12));
+    QVERIFY(writeSolidBmp(framePatternPath, 0, 0, 255, 12, 12));
+    QVERIFY(writeSolidBmp(logoPath, 255, 255, 0, 24, 24));
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Titles", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "advanced-title";
+    clip.trackId = 1;
+    clip.label = "Advanced Title";
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.mediaKind = "title";
+    clip.videoEnabled = true;
+    jcut::EditorTitleKeyframe title;
+    title.text = "Advanced";
+    title.fontSize = 42.0;
+    title.color = "#00ff00";
+    title.autoFitToOutput = true;
+    title.logoPath = logoPath.toStdString();
+    title.textMaterialStyle = "image_pattern";
+    title.textPatternImagePath = textPatternPath.toStdString();
+    title.textPatternScale = 1.4;
+    title.dropShadowEnabled = true;
+    title.dropShadowColor = "#000000";
+    title.dropShadowOpacity = 0.9;
+    title.dropShadowOffsetX = 5.0;
+    title.dropShadowOffsetY = 5.0;
+    title.windowEnabled = true;
+    title.windowColor = "#ff0000";
+    title.windowOpacity = 1.0;
+    title.windowPadding = 12.0;
+    title.windowWidth = 240.0;
+    title.windowFrameEnabled = true;
+    title.windowFrameColor = "#0000ff";
+    title.windowFrameOpacity = 1.0;
+    title.windowFrameWidth = 4.0;
+    title.windowFrameGap = 2.0;
+    title.windowFrameMaterialStyle = "image_pattern";
+    title.windowFramePatternImagePath = framePatternPath.toStdString();
+    title.windowFramePatternScale = 1.0;
+    title.vulkan3DEnabled = true;
+    title.vulkan3DExtrudeEnabled = true;
+    title.textExtrudeMode = "stacked_copies";
+    title.vulkan3DExtrudeDepth = 0.12;
+    title.vulkan3DBevelScale = 0.8;
+    title.vulkan3DYawDegrees = 18.0;
+    title.vulkan3DPitchDegrees = -10.0;
+    title.vulkan3DRollDegrees = 7.0;
+    title.vulkan3DDepth = 0.5;
+    title.vulkan3DScale = 1.1;
+    clip.titleKeyframes.push_back(title);
+    document.clips.push_back(clip);
+
+    constexpr jcut::core::SizeI outputSize{320, 180};
+    const auto advanced = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 0.0, tempDir.path().toStdString()});
+    QVERIFY2(advanced.success, advanced.message.c_str());
+    int redPixels = 0;
+    int bluePixels = 0;
+    int greenPixels = 0;
+    int yellowPixels = 0;
+    for (int y = 0; y < advanced.image.size.height; ++y) {
+        for (int x = 0; x < advanced.image.size.width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>(
+                y * advanced.image.strideBytes + x * 4);
+            const auto red = advanced.image.bytes[offset];
+            const auto green = advanced.image.bytes[offset + 1];
+            const auto blue = advanced.image.bytes[offset + 2];
+            if (red > 180 && green < 60 && blue < 60) ++redPixels;
+            if (blue > 120 && red < 100 && green < 100) ++bluePixels;
+            if (green > 140 && red < 120 && blue < 150) ++greenPixels;
+            if (red > 180 && green > 180 && blue < 80) ++yellowPixels;
+        }
+    }
+    QVERIFY2(redPixels > 500, "title window was not rendered");
+    QVERIFY2(bluePixels > 100, "material title window frame was not rendered");
+    QVERIFY2(greenPixels > 20, "material title glyphs were not rendered");
+    QVERIFY2(yellowPixels > 100, "title logo asset was not rendered");
+
+    auto& basic = document.clips.front().titleKeyframes.front();
+    basic.textMaterialStyle = "solid";
+    basic.dropShadowEnabled = false;
+    basic.windowEnabled = false;
+    basic.windowFrameEnabled = false;
+    basic.vulkan3DEnabled = false;
+    basic.vulkan3DExtrudeEnabled = false;
+    basic.textExtrudeMode = "none";
+    const auto plain = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 0.0, tempDir.path().toStdString()});
+    QVERIFY2(plain.success, plain.message.c_str());
+    QVERIFY(advanced.image.bytes != plain.image.bytes);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFromActiveCut()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString audioPath = tempDir.filePath(QStringLiteral("voice.wav"));
+    const QString transcriptPath = tempDir.filePath(QStringLiteral("voice.json"));
+    QVERIFY(writeSilentPcmWav(audioPath));
+
+    QFile transcript(transcriptPath);
+    QVERIFY(transcript.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray transcriptJson = R"json({
+  "speaker_profiles": {"S1": {
+    "name": "Alice",
+    "organization": "CompAI",
+    "location": {"x": 0.9, "y": 0.5},
+    "framing": {"enabled": true, "keyframes": []}
+  }},
+  "segments": [{
+    "speaker": "S1",
+    "words": [
+      {"word": "Hello", "start": 0.0, "end": 0.49, "speaker": "S1"},
+      {"word": "world", "start": 0.5, "end": 1.0, "speaker": "S1"}
+    ]
+  }]
+})json";
+    QCOMPARE(transcript.write(transcriptJson), qint64{transcriptJson.size()});
+    transcript.close();
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Dialogue", true});
+    document.exportRequest.transcriptPrependMs = 0;
+    document.exportRequest.transcriptPostpendMs = 0;
+    document.exportRequest.transcriptOffsetMs = 0;
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "dialogue-1";
+    clip.trackId = 1;
+    clip.label = "Voice";
+    clip.startFrame = 0;
+    clip.durationFrames = 60;
+    clip.sourcePath = audioPath.toStdString();
+    clip.mediaKind = "audio";
+    clip.sourceFps = 30.0;
+    clip.hasAudio = true;
+    clip.audioPresenceKnown = true;
+    clip.transcriptActiveCutPath = transcriptPath.toStdString();
+    clip.transcriptOverlay.enabled = true;
+    clip.transcriptOverlay.useManualPlacement = true;
+    clip.transcriptOverlay.showBackground = true;
+    clip.transcriptOverlay.backgroundColor = "#000000";
+    clip.transcriptOverlay.backgroundOpacity = 1.0;
+    clip.transcriptOverlay.backgroundCornerRadius = 12.0;
+    clip.transcriptOverlay.backgroundPadding = 16.0;
+    clip.transcriptOverlay.backgroundFrameEnabled = true;
+    clip.transcriptOverlay.backgroundFrameColor = "#ff0000";
+    clip.transcriptOverlay.backgroundFrameOpacity = 1.0;
+    clip.transcriptOverlay.backgroundFrameWidth = 3.0;
+    clip.transcriptOverlay.backgroundFrameGap = 2.0;
+    clip.transcriptOverlay.showShadow = true;
+    clip.transcriptOverlay.shadowColor = "#0000ff";
+    clip.transcriptOverlay.shadowOpacity = 0.8;
+    clip.transcriptOverlay.shadowOffsetX = 3.0;
+    clip.transcriptOverlay.shadowOffsetY = 3.0;
+    clip.transcriptOverlay.textOutlineEnabled = true;
+    clip.transcriptOverlay.textOutlineColor = "#ff0000";
+    clip.transcriptOverlay.textOutlineOpacity = 1.0;
+    clip.transcriptOverlay.textOutlineWidth = 1.0;
+    clip.transcriptOverlay.textExtrudeMode = "stacked_copies";
+    clip.transcriptOverlay.textExtrudeDepth = 0.10;
+    clip.transcriptOverlay.textExtrudeBevelScale = 0.7;
+    clip.transcriptOverlay.showSpeakerTitle = true;
+    clip.transcriptOverlay.highlightCurrentWord = true;
+    clip.transcriptOverlay.highlightColor = "#00ff00";
+    clip.transcriptOverlay.highlightTextColor = "#000000";
+    clip.transcriptOverlay.textColor = "#ffffff";
+    clip.transcriptOverlay.fontFamily = "DejaVu Sans";
+    clip.transcriptOverlay.fontPointSize = 28;
+    clip.transcriptOverlay.boxWidth = 260.0;
+    clip.transcriptOverlay.boxHeight = 100.0;
+    clip.transcriptOverlay.maxLines = 2;
+    clip.transcriptOverlay.maxCharsPerLine = 28;
+    document.clips.push_back(clip);
+
+    constexpr jcut::core::SizeI outputSize{320, 180};
+    const auto firstWord = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(firstWord.success, firstWord.message.c_str());
+    QCOMPARE(firstWord.image.size.width, outputSize.width);
+    QCOMPARE(firstWord.image.size.height, outputSize.height);
+
+    int greenPixels = 0;
+    int whitePixels = 0;
+    int redPixels = 0;
+    for (int y = 0; y < firstWord.image.size.height; ++y) {
+        for (int x = 0; x < firstWord.image.size.width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>(
+                y * firstWord.image.strideBytes + x * 4);
+            const auto red = firstWord.image.bytes[offset];
+            const auto green = firstWord.image.bytes[offset + 1];
+            const auto blue = firstWord.image.bytes[offset + 2];
+            if (green > 180 && red < 60 && blue < 60) ++greenPixels;
+            if (red > 180 && green > 180 && blue > 180) ++whitePixels;
+            if (red > 180 && green < 60 && blue < 60) ++redPixels;
+        }
+    }
+    QVERIFY2(greenPixels > 100, "active transcript word highlight was not rendered");
+    QVERIFY2(whitePixels > 20, "inactive transcript word typography was not rendered");
+    QVERIFY2(redPixels > 100, "transcript frame/outline styling was not rendered");
+
+    document.clips.front().transcriptOverlay.showSpeakerTitle = false;
+    const auto withoutSpeakerTitle = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(withoutSpeakerTitle.success, withoutSpeakerTitle.message.c_str());
+    QVERIFY(firstWord.image.bytes != withoutSpeakerTitle.image.bytes);
+    document.clips.front().transcriptOverlay.showSpeakerTitle = true;
+
+    document.clips.front().transcriptOverlay.useManualPlacement = false;
+    document.clips.front().transcriptOverlay.translationX = -1.0;
+    const auto speakerPlaced = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(speakerPlaced.success, speakerPlaced.message.c_str());
+    const std::size_t trackedFrame = static_cast<std::size_t>(
+        42 * speakerPlaced.image.strideBytes + 200 * 4);
+    QVERIFY(speakerPlaced.image.bytes[trackedFrame] > 180);
+    QVERIFY(speakerPlaced.image.bytes[trackedFrame + 1] < 60);
+    QVERIFY(speakerPlaced.image.bytes[trackedFrame + 2] < 60);
+    document.clips.front().transcriptOverlay.useManualPlacement = true;
+    document.clips.front().transcriptOverlay.translationX = 0.0;
+
+    const auto secondWord = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 20.0, tempDir.path().toStdString()});
+    QVERIFY2(secondWord.success, secondWord.message.c_str());
+    QVERIFY(firstWord.image.bytes != secondWord.image.bytes);
+
+    document.clips.front().transcriptOverlay.translationX = 0.5;
+    const auto shifted = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(shifted.success, shifted.message.c_str());
+    const std::size_t formerlyCovered = static_cast<std::size_t>(45 * shifted.image.strideBytes + 35 * 4);
+    QCOMPARE(shifted.image.bytes[formerlyCovered], std::uint8_t{12});
+    QCOMPARE(shifted.image.bytes[formerlyCovered + 1], std::uint8_t{14});
+    QCOMPARE(shifted.image.bytes[formerlyCovered + 2], std::uint8_t{18});
 }
 
 void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
@@ -255,28 +1002,31 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  !shell.contains(QStringLiteral("#include \"audio_engine.h\"")) &&
                  !shell.contains(QStringLiteral("QVector<")),
              "the ImGui shell must consume audio through the Qt-free facade");
-    QVERIFY2(audioRuntime.contains(QStringLiteral("AudioEngine m_audioEngine")) &&
-                 audioRuntime.contains(QStringLiteral("normalizedPlaybackAudioWarpMode")) &&
-                 audioRuntime.contains(QStringLiteral("effectivePlaybackAudioWarpRate")) &&
-                 audioRuntime.contains(QStringLiteral("setTimelineStateAtFrame")) &&
+    QVERIFY2(audioRuntime.contains(QStringLiteral("#include \"RtAudio.h\"")) &&
+                 audioRuntime.contains(QStringLiteral("standalone_audio_mixer.h")) &&
+                 audioRuntime.contains(QStringLiteral("mixAudioChunk")) &&
+                 audioRuntime.contains(QStringLiteral("normalizedPlaybackSpeed")) &&
                  audioRuntime.contains(QStringLiteral("{\"fadeSamples\", clip.fadeSamples}")) &&
                  audioRuntime.contains(QStringLiteral("std::launch::async")) &&
-                 audioRuntime.contains(QStringLiteral("kAudioWarmTimeoutMs")),
-             "the facade must preserve the existing audio engine, clip-fade invalidation, and playback-warp policy");
-    QVERIFY2(audioRuntime.contains(QStringLiteral("audioSourceIdentitySignature")) &&
+                 audioRuntime.contains(QStringLiteral("buffering audio")) &&
+                 !audioRuntime.contains(QStringLiteral("#include \"audio_engine.h\"")) &&
+                 !audioRuntime.contains(QStringLiteral("QVector<")),
+             "the facade must use the Qt-free RtAudio/standalone mixer with clip-fade invalidation, asynchronous decode, and playback-speed mapping");
+    QVERIFY2(audioRuntime.contains(QStringLiteral("fileIdentity")) &&
                  audioRuntime.contains(QStringLiteral("last_write_time")) &&
                  audioRuntime.contains(QStringLiteral("replace_extension(\".wav\")")) &&
-                 audioRuntime.contains(QStringLiteral("invalidateAudioSourceCaches")),
+                 audioRuntime.contains(QStringLiteral("probeStandaloneMedia")),
              "source availability polling must cover replacements and derived WAV sidecars");
     QVERIFY2(shell.contains(QStringLiteral("holdForAudioWarmup")) &&
                  shell.contains(QStringLiteral("preTickAudioStatus.buffering")),
              "transport must remain at the requested frame while audio warms asynchronously");
-    QVERIFY2(audioRuntime.contains(
-                 QStringLiteral("playbackAudioWarmupPermanentlyFailed")) &&
-                 audioRuntime.contains(QStringLiteral("decode still pending")) &&
-                 !audioRuntime.contains(
-                     QStringLiteral("continuing playback without warmed audio")),
-             "a timed-out but pending decode must remain gated until ready or terminal");
+    QVERIFY2(audioRuntime.contains(QStringLiteral("m_decodeFuture.valid()")) &&
+                 audioRuntime.contains(QStringLiteral("!m_cacheReady")) &&
+                 audioRuntime.contains(QStringLiteral("m_decodeFailed")) &&
+                 audioRuntime.contains(QStringLiteral("startOutputLocked")) &&
+                 !audioRuntime.contains(QStringLiteral(
+                     "continuing playback without warmed audio")),
+             "pending Qt-free decode must remain gated until its cache is ready");
     QVERIFY2(shell.contains(QStringLiteral("probeStandaloneMedia")) &&
                  shell.contains(QStringLiteral("mediaInfo.hasAudio")) &&
                  shell.contains(QStringLiteral("probeUnknownAudioPresence")),
@@ -421,8 +1171,13 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral("UpsertTitleKeyframeCommand")) &&
                  shell.contains(QStringLiteral("RemoveTitleKeyframeCommand")) &&
                  shell.contains(QStringLiteral("title-frame-")) &&
-                 shell.contains(QStringLiteral("SmallButton(\"Load\")")),
-             "the title inspector must edit every neutral title field and support row load/seek/removal");
+                 shell.contains(QStringLiteral("SmallButton(\"Load\")")) &&
+                 shell.contains(QStringLiteral("previewTitleDragActive")) &&
+                 shell.contains(QStringLiteral("evaluateEditorClipTitleAtLocalFrame")) &&
+                 shell.contains(QStringLiteral("io.MouseDelta.x * outputWidth")) &&
+                 shell.contains(QStringLiteral("beginRuntimeHistoryTransaction(shellState)")) &&
+                 shell.contains(QStringLiteral("endRuntimeHistoryTransaction(shellState)")),
+             "titles must expose every neutral field, row load/seek/removal, and direct output-space preview dragging as one undoable transaction");
     QVERIFY2(shell.contains(QStringLiteral("parseHexRgbColor")) &&
                  shell.contains(QStringLiteral("formatHexRgbColor")) &&
                  shell.contains(QStringLiteral("editHexRgbColor")) &&
@@ -588,10 +1343,13 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  legacyFrameHandoff.contains(QStringLiteral("m_externalFrameImporter.recordFrameCopy")),
              "the ImGui frame importer must use the shared Qt-free opaque-FD core without changing caller-owned ready-semaphore behavior");
 
-    QVERIFY2(preview.contains(QStringLiteral("renderPreviewFrameCore(")) &&
-                 preview.contains(QStringLiteral("false,\n                    false")) &&
-                 preview.contains(QStringLiteral("false,\n                    true")),
-             "standalone preview must request zero-copy Vulkan first, then CPU readback fallback");
+    QVERIFY2(preview.contains(QStringLiteral("renderTimelineFrame(")) &&
+                 preview.contains(QStringLiteral("request.allowCpuFallback")) &&
+                 preview.contains(QStringLiteral(
+                     "standalone Vulkan preview backend unavailable")) &&
+                 !preview.contains(QStringLiteral("renderPreviewFrameCore(")) &&
+                 !preview.contains(QStringLiteral("render_runtime.h")),
+             "the Qt-free preview facade must use the standalone renderer and report unavailable Vulkan output without pulling the Qt render runtime back into the binary");
 }
 
 void TestImGuiStandaloneRender::testStandaloneImportProbeReportsAudioPresence()
@@ -702,6 +1460,24 @@ void TestImGuiStandaloneRender::testImageSequenceDirectoryProbeAndRender()
             firstFrame.image.bytes[firstOffset + 1]);
     QVERIFY(secondFrame.image.bytes[secondOffset + 1] >
             secondFrame.image.bytes[secondOffset]);
+
+    document.clips.front().sourceInFrame = 1;
+    document.clips.front().sourceDurationFrames = 4;
+    const auto trimmedFrame = jcut::standalone_render::renderTimelineFrame(
+        {document, {32, 32}, 0.0, {}});
+    QVERIFY2(trimmedFrame.success, trimmedFrame.message.c_str());
+    const std::size_t trimmedOffset = centerOffset(trimmedFrame.image);
+    QVERIFY(trimmedFrame.image.bytes[trimmedOffset + 1] >
+            trimmedFrame.image.bytes[trimmedOffset]);
+
+    document.clips.front().sourceInFrame = 0;
+    document.clips.front().playbackRate = 2.0;
+    const auto spedFrame = jcut::standalone_render::renderTimelineFrame(
+        {document, {32, 32}, 1.0, {}});
+    QVERIFY2(spedFrame.success, spedFrame.message.c_str());
+    const std::size_t spedOffset = centerOffset(spedFrame.image);
+    QVERIFY(spedFrame.image.bytes[spedOffset + 2] >
+            spedFrame.image.bytes[spedOffset]);
 }
 
 void TestImGuiStandaloneRender::testLegacyUnknownAudioPresenceIsProbedOnLoad()
@@ -778,6 +1554,10 @@ void TestImGuiStandaloneRender::testAudioFacadeRefreshesIdleTimelineStatus()
     QVERIFY(document.clips.front().hasAudio);
 
     jcut::ImGuiAudioRuntime runtime;
+    QCOMPARE(runtime.status().requestedBufferFrames, 1024U);
+    runtime.setBufferFrames(256);
+    QCOMPARE(runtime.status().requestedBufferFrames, 256U);
+    QCOMPARE(runtime.status().actualBufferFrames, 0U);
     runtime.synchronize(document, tempDir.path().toStdString());
 
     const jcut::ImGuiAudioStatus missing = runtime.status();

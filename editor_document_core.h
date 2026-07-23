@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -181,6 +182,42 @@ struct EditorTitleKeyframe {
     bool italic = false;
     std::string color = "#ffffff";
     bool linearInterpolation = true;
+    bool autoFitToOutput = false;
+    std::string logoPath;
+    // Canonical material values: solid, neon, diagonal_stripes, grid,
+    // and image_pattern.
+    std::string textMaterialStyle = "solid";
+    std::string textPatternImagePath;
+    double textPatternScale = 1.0;
+    bool dropShadowEnabled = true;
+    std::string dropShadowColor = "#ff000000";
+    double dropShadowOpacity = 0.6;
+    double dropShadowOffsetX = 2.0;
+    double dropShadowOffsetY = 2.0;
+    bool windowEnabled = false;
+    std::string windowColor = "#ff000000";
+    double windowOpacity = 0.35;
+    double windowPadding = 16.0;
+    double windowWidth = 0.0;
+    bool windowFrameEnabled = false;
+    std::string windowFrameColor = "#ffffffff";
+    double windowFrameOpacity = 1.0;
+    double windowFrameWidth = 2.0;
+    double windowFrameGap = 4.0;
+    std::string windowFrameMaterialStyle = "solid";
+    std::string windowFramePatternImagePath;
+    double windowFramePatternScale = 1.0;
+    bool vulkan3DEnabled = false;
+    bool vulkan3DExtrudeEnabled = false;
+    // Canonical extrusion values: none, stacked_copies, eroded_solid.
+    std::string textExtrudeMode = "none";
+    double vulkan3DExtrudeDepth = 0.0;
+    double vulkan3DBevelScale = 0.0;
+    double vulkan3DYawDegrees = 0.0;
+    double vulkan3DPitchDegrees = 0.0;
+    double vulkan3DRollDegrees = 0.0;
+    double vulkan3DDepth = 0.0;
+    double vulkan3DScale = 1.0;
 };
 
 struct EditorCorrectionPolygon {
@@ -194,7 +231,28 @@ struct EditorTranscriptOverlayState {
     bool enabled = false;
     bool showBackground = true;
     double backgroundOpacity = 120.0 / 255.0;
+    double backgroundCornerRadius = 14.0;
+    double backgroundPadding = 16.0;
+    bool backgroundFrameEnabled = false;
+    std::string backgroundFrameColor = "#ffffffff";
+    double backgroundFrameOpacity = 1.0;
+    double backgroundFrameWidth = 2.0;
+    double backgroundFrameGap = 4.0;
     bool showShadow = true;
+    std::string shadowColor = "#ff000000";
+    double shadowOpacity = 0.78;
+    double shadowOffsetX = 5.0;
+    double shadowOffsetY = 5.0;
+    bool textOutlineEnabled = false;
+    double textOutlineWidth = 0.0;
+    std::string textOutlineColor = "#ff000000";
+    double textOutlineOpacity = 0.80;
+    // Canonical values mirror the Qt TextExtrudeMode storage names:
+    // none, stacked_copies, and eroded_solid.
+    std::string textExtrudeMode = "none";
+    double textExtrudeDepth = 0.16;
+    double textExtrudeBevelScale = 0.7;
+    bool showSpeakerTitle = false;
     bool highlightCurrentWord = true;
     bool autoScroll = false;
     bool useManualPlacement = false;
@@ -310,6 +368,20 @@ struct EditorClip {
     bool maskInvert = false;
     bool maskShowOnly = false;
     double maskOpacity = 1.0;
+    bool maskGradeEnabled = false;
+    double maskGradeBrightness = 0.0;
+    double maskGradeContrast = 1.0;
+    double maskGradeSaturation = 1.0;
+    std::vector<EditorPoint> maskGradeCurvePointsR = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> maskGradeCurvePointsG = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> maskGradeCurvePointsB = {{0.0, 0.0}, {1.0, 1.0}};
+    std::vector<EditorPoint> maskGradeCurvePointsLuma = {{0.0, 0.0}, {1.0, 1.0}};
+    bool maskGradeCurveSmoothingEnabled = true;
+    bool maskDropShadowEnabled = false;
+    double maskDropShadowRadius = 12.0;
+    double maskDropShadowOffsetX = 0.0;
+    double maskDropShadowOffsetY = 4.0;
+    double maskDropShadowOpacity = 0.45;
     bool maskForegroundLayerEnabled = false;
     bool maskRepeatEnabled = false;
     double maskRepeatDeltaX = 160.0;
@@ -319,12 +391,27 @@ struct EditorClip {
     double effectSpeed = 1.0;
     double effectScale = 1.0;
     bool effectAlternateDirection = true;
+    bool effectSkipAwareTiming = true;
+    int differenceReferenceFrames = 1;
+    double differenceThreshold = 0.10;
+    double differenceSoftness = 0.05;
+    int temporalEchoCount = 4;
+    int temporalEchoSpacingFrames = 2;
+    double temporalEchoDecay = 0.65;
+    std::string tilingPattern = "grid";
+    double tilingSpacing = 1.0;
+    bool tilingWrap = true;
     std::vector<EditorCorrectionPolygon> correctionPolygons;
     // Known values match clip_serialization.cpp: media, mask_matte,
     // effect_synth, and speaker_title. Unknown future values remain opaque.
     // Keep these at the end so existing aggregate initializers stay compatible.
     std::string clipRole = "media";
     std::string linkedSourceClipId;
+    std::string generatedFromMaskId;
+    bool syncLockedToSource = false;
+    bool sourceTransformLocked = false;
+    int zLevel = std::numeric_limits<int>::min();
+    bool zLevelUserSet = false;
     // Audio edge-fade length at 48 kHz. Qt persists this per clip and uses
     // 250 samples as its click-suppression default when no crossfade has been
     // applied.
@@ -366,6 +453,13 @@ struct EditorDocumentCore {
     EditorTransportState transport;
     EditorPanelState panels;
     render::RenderRequestCore exportRequest;
+    // Runtime-only transcript payloads participate in globally ordered undo/
+    // redo. They are intentionally omitted by every project serializer.
+    struct TranscriptHistoryDocument {
+        std::string path;
+        std::string jsonPayload;
+    };
+    std::vector<TranscriptHistoryDocument> transcriptHistoryDocuments;
 };
 
 inline std::string trimmedEditorClipId(std::string_view value)

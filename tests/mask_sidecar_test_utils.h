@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include <string>
 #include <sys/stat.h>
 
 namespace mask_sidecar_test {
@@ -20,11 +21,38 @@ inline QJsonObject sourceIdentity(const QString& path)
     if (!info.isFile() || !source.open(QIODevice::ReadOnly)) {
         return {};
     }
+#if defined(Q_OS_WIN)
+    struct _stat64 sourceStat {};
+    const std::wstring nativePath = info.absoluteFilePath().toStdWString();
+    if (::_wstat64(nativePath.c_str(), &sourceStat) != 0) {
+        return {};
+    }
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtime) * 1000000000;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctime) * 1000000000;
+#else
     struct stat sourceStat {};
     const QByteArray nativePath = QFile::encodeName(info.absoluteFilePath());
     if (::stat(nativePath.constData(), &sourceStat) != 0) {
         return {};
     }
+#if defined(Q_OS_DARWIN)
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtimespec.tv_sec) * 1000000000 +
+        sourceStat.st_mtimespec.tv_nsec;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctimespec.tv_sec) * 1000000000 +
+        sourceStat.st_ctimespec.tv_nsec;
+#else
+    const qint64 modifiedNanoseconds =
+        static_cast<qint64>(sourceStat.st_mtim.tv_sec) * 1000000000 +
+        sourceStat.st_mtim.tv_nsec;
+    const qint64 changedNanoseconds =
+        static_cast<qint64>(sourceStat.st_ctim.tv_sec) * 1000000000 +
+        sourceStat.st_ctim.tv_nsec;
+#endif
+#endif
     QCryptographicHash headTail(QCryptographicHash::Sha256);
     QCryptographicHash middle(QCryptographicHash::Sha256);
     for (QCryptographicHash* digest : {&headTail, &middle}) {
@@ -55,11 +83,9 @@ inline QJsonObject sourceIdentity(const QString& path)
         {QStringLiteral("path"), info.absoluteFilePath()},
         {QStringLiteral("size"), info.size()},
         {QStringLiteral("mtime_ns"),
-         QString::number(static_cast<qint64>(sourceStat.st_mtim.tv_sec) * 1000000000 +
-                         sourceStat.st_mtim.tv_nsec)},
+         QString::number(modifiedNanoseconds)},
         {QStringLiteral("ctime_ns"),
-         QString::number(static_cast<qint64>(sourceStat.st_ctim.tv_sec) * 1000000000 +
-                         sourceStat.st_ctim.tv_nsec)},
+         QString::number(changedNanoseconds)},
         {QStringLiteral("device"),
          QString::number(static_cast<qulonglong>(sourceStat.st_dev))},
         {QStringLiteral("inode"),

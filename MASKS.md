@@ -30,7 +30,17 @@ explicit concerns:
 
 The source parent and Mask Matte child may share a decoded video frame, but they
 never share evaluated visual effects. Preview diagnostics expose this distinction
-as `media_owner_clip_id` and `effects_owner_clip_id`.
+through four explicit owner IDs:
+
+| Concern | Owner |
+| --- | --- |
+| Media | source parent |
+| Timing | source parent |
+| Effects | Mask Matte child |
+| Matte | Mask Matte child |
+
+Preview and export must fail closed if a Mask Matte layer does not resolve to
+that parent/parent/child/child mapping.
 
 The following parent fields are authoritative and are always derived for a child;
 copies stored on the child are serialization or UI caches only:

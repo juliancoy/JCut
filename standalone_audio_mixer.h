@@ -16,10 +16,22 @@ inline constexpr std::int64_t kSamplesPerTimelineFrame = kSampleRate / 30;
 struct DecodedAudioClip {
     std::vector<float> samples;
     std::int64_t sourceStartSample = 0;
+    // Maps canonical source-sample positions into this cache. A clip decoded
+    // through pitch-preserving speed conversion uses 1/playbackRate.
+    double sourceSampleScale = 1.0;
     bool valid = false;
 };
 
 using DecodedAudioCache = std::unordered_map<int, DecodedAudioClip>;
+
+// Decodes every enabled audio clip to the mixer's canonical 48 kHz stereo
+// float layout. Relative media paths are resolved against rootDirectory.
+// A clip that explicitly advertises audio but cannot be decoded is reported as
+// an export error instead of silently producing a video-only file.
+[[nodiscard]] bool decodeDocumentAudio(const EditorDocumentCore& document,
+                                       const std::string& rootDirectory,
+                                       DecodedAudioCache* cacheOut,
+                                       std::string* errorOut = nullptr);
 
 [[nodiscard]] std::int64_t clipTimelineStartSamples(const EditorClip& clip);
 [[nodiscard]] std::int64_t clipTimelineDurationSamples(const EditorClip& clip);

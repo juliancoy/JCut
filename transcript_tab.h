@@ -227,6 +227,7 @@ private:
     };
     struct TranscriptDocumentWord
     {
+        QJsonObject metadata;
         int wordId = -1;
         QString text;
         double startSeconds = 0.0;

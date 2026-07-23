@@ -121,7 +121,6 @@ private:
     QWidget *buildEditorPane();
 
     void loadState();
-    bool synchronizeProjectRootForState(QJsonObject* root);
     void openTranscriptionWindow(const QString &filePath, const QString &label);
     void openSamDetectorWindow(const QString& clipId);
     void openBiRefNetDetectorWindow(const QString& clipId);
@@ -734,7 +733,6 @@ private:
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
-    int m_projectRootRedirectDepth = 0;
     bool m_pendingSaveAfterLoad = false;
     bool m_pendingSaveAfterPlayback = false;
     static constexpr int kDefaultAutosaveIntervalMinutes = 5;

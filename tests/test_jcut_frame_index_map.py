@@ -188,6 +188,22 @@ class FrameIndexMapTest(unittest.TestCase):
                 self.map_path.write_text(contents, encoding="utf-8")
                 self.assertIsNone(frame_map.inspect_frame_index_map(self.map_path))
 
+    def test_duplicate_rounded_source_keys_preserve_every_ordinal(self) -> None:
+        self.map_path.write_text(
+            "# source_frame\tmask_frame\n0\t0\n0\t1\n2\t2\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            frame_map.inspect_frame_index_map(self.map_path),
+            {
+                "mapped_frame_count": 3,
+                "min_source_frame": 0,
+                "max_source_frame": 2,
+                "max_mask_frame": 2,
+                "expected_output_frame_count": 3,
+            },
+        )
+
     def test_adoption_rejects_downsampled_or_source_mismatched_maps(self) -> None:
         with self.assertRaisesRegex(ValueError, "full-rate"):
             frame_map.adopt_existing_frame_index_map(

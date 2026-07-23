@@ -1,6 +1,12 @@
 #include "../editor_document_core_json.h"
 #include "../editor_runtime.h"
+#include "../face_artifact_core.h"
+#include "../face_processing_job_core.h"
+#include "../proxy_path_core.h"
+#include "../speaker_title_core.h"
 #include "../transcript_cut_session_core.h"
+#include "../transcript_document_mutation_core.h"
+#include "../transcript_mining_core.h"
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +16,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <zlib.h>
 
 namespace {
 
@@ -64,6 +71,78 @@ bool writeBytes(const fs::path& path, const std::string& bytes)
 bool writeJson(const fs::path& path, const json& root)
 {
     return writeBytes(path, root.dump(2) + "\n");
+}
+
+bool writeJcutBoxV2(const fs::path& path, const json& root)
+{
+    const std::vector<std::uint8_t> cbor = json::to_cbor(root);
+    uLongf compressedSize = compressBound(cbor.size());
+    std::vector<unsigned char> compressed(compressedSize);
+    if (compress2(
+            compressed.data(), &compressedSize,
+            cbor.data(), cbor.size(), 6) != Z_OK) {
+        return false;
+    }
+    compressed.resize(compressedSize);
+    std::string bytes("JCUTBOX1", 8);
+    const auto appendLittle = [&](std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) {
+            bytes.push_back(static_cast<char>((value >> shift) & 0xffU));
+        }
+    };
+    appendLittle(2);
+    appendLittle(static_cast<std::uint32_t>(compressed.size() + 4));
+    const std::uint32_t unpacked = static_cast<std::uint32_t>(cbor.size());
+    bytes.push_back(static_cast<char>((unpacked >> 24U) & 0xffU));
+    bytes.push_back(static_cast<char>((unpacked >> 16U) & 0xffU));
+    bytes.push_back(static_cast<char>((unpacked >> 8U) & 0xffU));
+    bytes.push_back(static_cast<char>(unpacked & 0xffU));
+    bytes.append(
+        reinterpret_cast<const char*>(compressed.data()), compressed.size());
+    return writeBytes(path, bytes);
+}
+
+std::string qtCompressed(const std::vector<std::uint8_t>& payload)
+{
+    uLongf compressedSize = compressBound(payload.size());
+    std::vector<unsigned char> compressed(compressedSize);
+    if (compress2(
+            compressed.data(), &compressedSize,
+            payload.data(), payload.size(), 6) != Z_OK) {
+        return {};
+    }
+    compressed.resize(compressedSize);
+    std::string bytes;
+    const std::uint32_t size = static_cast<std::uint32_t>(payload.size());
+    bytes.push_back(static_cast<char>((size >> 24U) & 0xffU));
+    bytes.push_back(static_cast<char>((size >> 16U) & 0xffU));
+    bytes.push_back(static_cast<char>((size >> 8U) & 0xffU));
+    bytes.push_back(static_cast<char>(size & 0xffU));
+    bytes.append(
+        reinterpret_cast<const char*>(compressed.data()), compressed.size());
+    return bytes;
+}
+
+void appendBigEndian(std::string* bytes, std::uint32_t value)
+{
+    bytes->push_back(static_cast<char>((value >> 24U) & 0xffU));
+    bytes->push_back(static_cast<char>((value >> 16U) & 0xffU));
+    bytes->push_back(static_cast<char>((value >> 8U) & 0xffU));
+    bytes->push_back(static_cast<char>(value & 0xffU));
+}
+
+bool writeQtBinaryJson(const fs::path& path, const json& root)
+{
+    const std::string payload = root.dump();
+    const std::string compressed = qtCompressed(
+        std::vector<std::uint8_t>(payload.begin(), payload.end()));
+    std::string bytes;
+    appendBigEndian(&bytes, 0x4A435554U);
+    appendBigEndian(&bytes, 1);
+    appendBigEndian(
+        &bytes, static_cast<std::uint32_t>(compressed.size()));
+    bytes += compressed;
+    return writeBytes(path, bytes);
 }
 
 json transcriptRoot(const std::string& firstWord,
@@ -322,11 +401,608 @@ void testImGuiAndRichRenderWiringContracts()
            "ImGui cache checks transcript file metadata");
     expect(imgui.find("SetClipTranscriptActiveCutCommand") != std::string::npos,
            "cut combo updates the neutral active-cut field");
+    expect(imgui.find("jcut::insertTranscriptWord") != std::string::npos &&
+               imgui.find("jcut::restoreTranscriptWord") != std::string::npos &&
+               imgui.find("SetTranscriptHistoryDocumentCommand") != std::string::npos,
+           "ImGui binds shared row actions into global runtime history");
+    expect(imgui.find("jcut::createTranscriptCutVersion") != std::string::npos &&
+               imgui.find("jcut::deleteTranscriptCut") != std::string::npos,
+           "ImGui binds shared transcript cut lifecycle");
     expect(imgui.find("lastSavedLegacyExtensionSignature") != std::string::npos,
            "legacy transcript view state participates in dirty tracking");
     expect(transcriptEngine.find("clip.transcriptActiveCutPath.trimmed()") !=
                std::string::npos,
            "rich TranscriptEngine consumes the neutral active-cut field");
+}
+
+void testNeutralWordMutationPreservesUnknownFieldsAndSavesAtomically()
+{
+    TemporaryDirectory temp;
+    const fs::path path = temp.path / "clip_editable.json";
+    json root = transcriptRoot("hello", true);
+    root["segments"][0]["words"][0]["future_word_field"] = "keep";
+    const auto document = jcut::TranscriptDocumentCore::fromJson(root);
+    expect(document.has_value(), "mutation fixture parses");
+    if (!document) return;
+    const auto rows = document->rows();
+    const auto row = std::find_if(rows.begin(), rows.end(), [](const auto& value) {
+        return value.text == "hello";
+    });
+    expect(row != rows.end(), "mutation target projects to a row");
+    if (row == rows.end()) return;
+
+    jcut::TranscriptWordPatch patch;
+    patch.startSeconds = 0.05;
+    patch.endSeconds = 0.25;
+    patch.text = "edited";
+    patch.skipped = true;
+    std::string error;
+    expect(jcut::patchTranscriptWord(&root, row->word, patch, &error),
+           "neutral patch changes a projected word");
+    const json& word = root["segments"][0]["words"][0];
+    expect(word.value("word", std::string{}) == "edited" &&
+               word.value("start", 0.0) == 0.05 &&
+               word.value("end", 0.0) == 0.25 && word.value("skipped", false),
+           "text, timing, and skipped state use Qt-compatible fields");
+    expect(word.value("future_word_field", std::string{}) == "keep" &&
+               root["future_root_field"].value("preserved", false),
+           "unknown root and word fields survive mutation");
+    expect(jcut::saveTranscriptDocumentAtomic(path.string(), root, &error),
+           "mutated transcript saves atomically");
+    expect(!fs::exists(path.string() + ".jcut.tmp"),
+           "atomic save leaves no temporary file");
+
+    expect(jcut::deleteTranscriptWord(&root, row->word, &error),
+           "neutral deletion removes the addressed word");
+    expect(root["segments"][0]["words"].size() == 1 &&
+               root.value("transcript_deleted_edits", 0) == 1,
+           "deletion matches Qt word-count bookkeeping");
+}
+
+void testNeutralInsertExpandRestoreAndReorderMatchQtSemantics()
+{
+    json original = transcriptRoot("first", true);
+    original["segments"][0]["words"][0]["render_order"] = 0;
+    original["segments"][0]["words"][1]["render_order"] = 1;
+    json edited = original;
+    auto document = jcut::TranscriptDocumentCore::fromJson(edited);
+    expect(document.has_value(), "advanced mutation fixture parses");
+    if (!document) return;
+    auto rows = document->rows();
+    const auto first = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.text == "first";
+    });
+    expect(first != rows.end(), "advanced mutation anchor projects");
+    if (first == rows.end()) return;
+
+    std::string error;
+    const auto inserted =
+        jcut::insertTranscriptWord(&edited, first->word, false, &error);
+    expect(inserted.has_value(), "word inserts below the selected render row");
+    if (!inserted) return;
+    const json& insertedWord =
+        edited["segments"][static_cast<std::size_t>(inserted->segmentIndex)]["words"]
+              [static_cast<std::size_t>(inserted->wordIndex)];
+    expect(insertedWord.value("word", std::string{}) == "[new]" &&
+               insertedWord.value("original_segment_index", 0) == -1 &&
+               insertedWord.value("render_order", -1) == 1,
+           "inserted word uses Qt defaults and render position");
+    expect(edited["segments"][0]["words"][2].value("render_order", -1) == 2,
+           "insertion normalizes following render order");
+
+    expect(jcut::expandTranscriptWordTiming(&edited, *inserted, &error),
+           "inserted word expands to adjacent raw boundaries");
+    const json& expanded =
+        edited["segments"][0]["words"][static_cast<std::size_t>(inserted->wordIndex)];
+    expect(expanded.value("start", -1.0) == 0.1 &&
+               expanded.value("end", -1.0) == 0.3,
+           "expand uses previous end and next start");
+
+    expect(jcut::moveTranscriptWordRenderOrder(&edited, *inserted, 1, &error),
+           "word moves down in render order");
+    expect(expanded.value("render_order", -1) == 2 &&
+               edited["segments"][0]["words"][2].value("render_order", -1) == 1,
+           "reorder swaps normalized render positions without moving source words");
+
+    jcut::TranscriptWordPatch patch;
+    patch.text = "changed";
+    patch.startSeconds = 0.4;
+    patch.endSeconds = 0.5;
+    patch.skipped = true;
+    expect(jcut::patchTranscriptWord(&edited, first->word, patch, &error),
+           "original-backed word can be changed before restore");
+    expect(jcut::restoreTranscriptWord(&edited, first->word, original, &error),
+           "word restores from original segment/word identity");
+    const json& restored = edited["segments"][0]["words"][0];
+    expect(restored.value("word", std::string{}) == "first" &&
+               restored.value("start", -1.0) == 0.0 &&
+               restored.value("end", -1.0) == 0.1 &&
+               !restored.value("skipped", false) &&
+               !restored.contains("transcript_edits"),
+           "restore resets Qt-managed content and edit tags");
+}
+
+void testNeutralCutLifecycleMatchesQtGuardsAndMetadata()
+{
+    TemporaryDirectory temp;
+    const fs::path mediaPath = temp.path / "clip.wav";
+    const fs::path originalPath = temp.path / "clip.json";
+    writeBytes(mediaPath, "audio");
+    writeJson(originalPath, transcriptRoot("first", true));
+    jcut::TranscriptSourceSpec source;
+    source.sourcePath = mediaPath.string();
+    jcut::TranscriptCutSessionOptions options;
+    options.ensureEditable = true;
+    jcut::TranscriptCutSession session =
+        jcut::loadTranscriptCutSession(source, options);
+    expect(session.ok() && session.activeCutMutable,
+           "cut lifecycle starts on the ensured editable cut");
+
+    std::string error;
+    const auto version = jcut::createTranscriptCutVersion(session, &error);
+    expect(version.has_value() && fs::exists(*version) &&
+               fs::path(*version).filename() == "clip_editable_v2.json",
+           "new cut uses Qt numeric version naming");
+    if (!version) return;
+    options.requestedActivePath = *version;
+    session = jcut::loadTranscriptCutSession(source, options);
+    expect(session.ok() && session.activePath == *version,
+           "created cut is discoverable and selectable");
+    expect(jcut::renameTranscriptCut(session, "Director Review", &error),
+           "mutable cut label saves");
+    session = jcut::loadTranscriptCutSession(source, options);
+    expect(std::any_of(
+               session.catalog.cuts.begin(), session.catalog.cuts.end(),
+               [&](const auto& cut) {
+                   return cut.path == *version && cut.label == "Director Review";
+               }),
+           "saved cut label is rediscovered");
+
+    std::string fallback;
+    expect(jcut::deleteTranscriptCut(session, &fallback, &error) &&
+               !fs::exists(*version) &&
+               fallback == session.catalog.editablePath,
+           "mutable cut deletion selects the base editable fallback");
+    options.requestedActivePath = session.catalog.originalPath;
+    session = jcut::loadTranscriptCutSession(source, options);
+    expect(!jcut::deleteTranscriptCut(session, &fallback, &error) &&
+               fs::exists(originalPath),
+           "original cut remains immutable during deletion");
+}
+
+void testNeutralSpeakerRosterAndProfileMutation()
+{
+    json root = transcriptRoot("hello", true);
+    root["speaker_profiles"]["S1"]["organization"] = "Example Org";
+    root["speaker_profiles"]["S1"]["location"] = {{"x", 0.2}, {"y", 0.7}};
+    root["speaker_profiles"]["S1"]["future_profile_field"] = "keep";
+    auto document = jcut::TranscriptDocumentCore::fromJson(root);
+    expect(document.has_value(), "speaker roster fixture parses");
+    if (!document) return;
+    const auto profiles = document->speakerProfiles();
+    expect(profiles.size() == 1 && profiles.front().id == "S1" &&
+               profiles.front().name == "Alice" &&
+               profiles.front().organization == "Example Org" &&
+               profiles.front().wordCount == 2 &&
+               profiles.front().x == 0.2 && profiles.front().y == 0.7,
+           "speaker roster combines profiles, locations, and word counts");
+
+    jcut::TranscriptSpeakerProfilePatch patch;
+    patch.name = "Alicia";
+    patch.organization = "New Org";
+    patch.x = 2.0;
+    patch.y = -1.0;
+    std::string error;
+    expect(jcut::patchTranscriptSpeakerProfile(&root, "S1", patch, &error),
+           "speaker profile patch applies");
+    const json& profile = root["speaker_profiles"]["S1"];
+    expect(profile.value("name", std::string{}) == "Alicia" &&
+               profile.value("organization", std::string{}) == "New Org" &&
+               profile["location"].value("x", -1.0) == 1.0 &&
+               profile["location"].value("y", -1.0) == 0.0 &&
+               profile.value("future_profile_field", std::string{}) == "keep",
+           "speaker profile patch clamps location and preserves unknown fields");
+}
+
+void testNeutralFaceArtifactInspectionAndTrackAssignment()
+{
+    TemporaryDirectory temp;
+    const fs::path transcriptPath = temp.path / "clip_editable.json";
+    writeJson(transcriptPath, transcriptRoot("hello", true));
+    const std::string clipId = "clip-1";
+    const json facedetections = {
+        {"schema", "jcut_facedetections_v1"},
+        {"continuity_facedetections_by_clip", {
+            {clipId, {
+                {"run_id", "run-7"},
+                {"detector_mode", "scrfd"},
+                {"raw_frames_count", 12},
+                {"raw_tracks_frame_domain", "source_absolute"},
+                {"raw_tracks", json::array({
+                    {
+                        {"track_id", 4},
+                        {"first_frame", 10},
+                        {"last_frame", 20},
+                        {"state", "confirmed"},
+                        {"detections", json::array({
+                            {{"frame", 10}, {"x", 0.25}, {"y", 0.4},
+                             {"box", 0.3}, {"score", 0.92}}
+                        })}
+                    },
+                    {
+                        {"track_id", 9},
+                        {"first_frame", 30},
+                        {"last_frame", 40},
+                        {"state", "confirmed"},
+                        {"detections", json::array({
+                            {{"frame", 30}, {"x", 0.7}, {"y", 0.5},
+                             {"box", 0.2}, {"score", 0.88}}
+                        })}
+                    }
+                })}
+            }}
+        }}
+    };
+    const fs::path artifactPath =
+        jcut::faceArtifactCandidatePaths(transcriptPath.string()).front();
+    expect(writeJcutBoxV2(artifactPath, facedetections),
+           "Qt-compatible compressed face artifact written");
+    const json identity = {
+        {"schema", "jcut_identity_v1"},
+        {"identity_clusters_by_clip", {
+            {clipId, {{"clusters", json::array({json::object(), json::object()})}}}
+        }},
+        {"identity_assignments_by_clip", {
+            {clipId, {{"track_identity_map", json::array({
+                {{"track_id", 4}, {"identity_id", "S1"}}
+            })}}}
+        }}
+    };
+    expect(writeJcutBoxV2(
+               jcut::faceIdentityArtifactPath(transcriptPath.string()), identity),
+           "Qt-compatible identity artifact written");
+
+    const jcut::FaceArtifactInspectionCore inspection =
+        jcut::inspectFaceArtifacts(transcriptPath.string(), clipId);
+    expect(inspection.ok() && inspection.tracks.size() == 2 &&
+               inspection.detectorMode == "scrfd" &&
+               inspection.rawFrameCount == 12 &&
+               inspection.identityClusterCount == 2 &&
+               inspection.identityAssignmentCount == 1,
+           "neutral artifact reader exposes continuity and identity diagnostics");
+    if (inspection.tracks.size() == 2) {
+        expect(inspection.tracks[0].trackId == 4 &&
+                   inspection.tracks[0].sampleCount == 1 &&
+                   inspection.tracks[0].x == 0.25 &&
+                   inspection.tracks[1].trackId == 9,
+               "neutral track summaries retain IDs, coverage, and anchor geometry");
+    }
+
+    json transcript = transcriptRoot("hello", true);
+    transcript["future_root_field"]["assignment_keep"] = true;
+    std::string error;
+    const std::vector<jcut::TranscriptTrackAssignmentAnchor> anchors{
+        {4, "stream-4", 10, 0.25, 0.4, 0.3},
+        {9, "stream-9", 30, 0.7, 0.5, 0.2},
+    };
+    expect(jcut::setTranscriptSpeakerTrackAssignments(
+               &transcript, clipId, "S1", anchors, true,
+               "2026-07-22T00:00:00Z", &error),
+           "neutral assignment mutation applies selected tracks");
+    auto assignments =
+        jcut::transcriptSpeakerTrackAssignments(transcript, clipId);
+    expect(assignments.size() == 2 &&
+               assignments[0].trackId == 4 &&
+               assignments[1].trackId == 9 &&
+               assignments[0].identityId == "S1" &&
+               transcript["future_root_field"].value("assignment_keep", false),
+           "assignment projection and mutation preserve compatible schema and unknown fields");
+    expect(jcut::setTranscriptSpeakerTrackAssignments(
+               &transcript, clipId, "S1", {}, true,
+               "2026-07-22T00:01:00Z", &error),
+           "replace-with-empty clears one speaker's assignments");
+    expect(jcut::transcriptSpeakerTrackAssignments(transcript, clipId).empty(),
+           "speaker assignment clearing is scoped and observable");
+}
+
+void testNeutralFaceProcessingJobContract()
+{
+    expect(jcut::faceTrackAnchorTimelineFrame(
+               160, 100, 300, 120, 2.0) == 330,
+           "face reference maps source-absolute anchors through clip rate");
+    expect(jcut::faceTrackAnchorTimelineFrame(
+               9999, 100, 300, 120, 1.0) == 419,
+           "face reference navigation clamps to the selected clip");
+
+    const fs::path media = "/project/My Camera.mov";
+    const std::string output = jcut::faceProcessingSidecarDirectory(
+        media.string(), "clip / 7");
+    expect(output == "/project/My_Camera.jcut/facedetections/clip_7",
+           "neutral face job uses the Qt media-sidecar and clip-token layout");
+
+    jcut::FaceProcessingJobRequest request;
+    request.executablePath = "/build/jcut_vulkan_facedetections_offscreen";
+    request.mediaPath = media.string();
+    request.clipId = "clip / 7";
+    request.outputDirectory = output;
+    request.detectorSettingsPath = "/project/My Camera_detectorsettings.json";
+    request.startFrame = 12;
+    request.maxFrames = 90;
+    request.stride = 3;
+    request.detectorWorkers = 4;
+    request.detectorPipelineSlots = 4;
+    request.primaryFaceOnly = true;
+    request.smallFaceFallback = false;
+    request.scrfdTiling = true;
+    const std::vector<std::string> command =
+        jcut::faceProcessingCommand(request);
+    const auto has = [&](const std::string& value) {
+        return std::find(command.begin(), command.end(), value) != command.end();
+    };
+    expect(!command.empty() && command.front() == request.executablePath &&
+               command.size() > 1 && command[1] == request.mediaPath,
+           "neutral face job launches the existing offscreen executable directly");
+    expect(has("--detector") && has("scrfd-ncnn-vulkan") &&
+               has("--params-file") && has("--start-frame") &&
+               has("--max-frames") && has("--out-dir") &&
+               has("--primary-face-only") &&
+               has("--no-small-face-fallback") && has("--scrfd-tiling") &&
+               has("--no-control-window") && has("--no-preview-window"),
+           "neutral face job retains Qt generator options and headless UI policy");
+
+    TemporaryDirectory temporary;
+    const fs::path transcriptPath = temporary.path / "session.json";
+    const fs::path artifactDirectory = temporary.path / "generated";
+    fs::create_directories(artifactDirectory);
+    expect(writeJson(transcriptPath, transcriptRoot("hello", true)),
+           "face import transcript fixture written");
+    const json generated = {
+        {"schema", "jcut_facedetections_v1"},
+        {"continuity_facedetections_by_clip", {
+            {"facedetections-offscreen-source", {
+                {"run_id", "offscreen"},
+                {"detector_mode", "scrfd"},
+                {"streams_frame_domain", "source_absolute"},
+                {"future_generator_field", 17}
+            }}
+        }}
+    };
+    expect(writeQtBinaryJson(
+               artifactDirectory / "continuity_facedetections.bin", generated),
+           "Qt binary generator continuity fixture written");
+    const json track = {
+        {"type", "track"},
+        {"track_id", 12},
+        {"stream_id", "stream-12"},
+        {"state", "confirmed"},
+        {"detections", json::array({
+            {{"frame", 40}, {"x", 0.3}, {"y", 0.4},
+             {"box", 0.2}, {"score", 0.9}}
+        })}
+    };
+    const json summary = {
+        {"type", "frame_summary"}, {"frame", 40}, {"count", 1}};
+    std::string trackData =
+        qtCompressed(json::to_cbor(track)) +
+        qtCompressed(json::to_cbor(summary));
+    expect(writeBytes(artifactDirectory / "tracks.dat", trackData),
+           "Qt compressed-CBOR indexed track records written");
+    std::string importError;
+    expect(jcut::importGeneratedFaceArtifacts(
+               artifactDirectory.string(), transcriptPath.string(),
+               "clip-12", &importError),
+           "neutral generator importer materializes transcript JCUTBOX1 artifact: " +
+               importError);
+    const jcut::FaceArtifactInspectionCore imported =
+        jcut::inspectFaceArtifacts(transcriptPath.string(), "clip-12");
+    expect(imported.ok() && imported.tracks.size() == 1 &&
+               imported.tracks.front().trackId == 12 &&
+               imported.detectorMode == "scrfd",
+           "imported generator tracks are immediately consumable by ImGui and Qt");
+    json importedRoot;
+    expect(jcut::loadJcutBoxDocument(
+               jcut::faceArtifactCandidatePaths(
+                   transcriptPath.string()).front(),
+               &importedRoot, &importError) &&
+               importedRoot["continuity_facedetections_by_clip"]["clip-12"]
+                   .value("future_generator_field", 0) == 17,
+           "generator import preserves unknown continuity fields");
+}
+
+void testNeutralSpeakerTitleGenerationAndReplacement()
+{
+    json root = {
+        {"speaker_profiles", {
+            {"S1", {
+                {"name", "Alice"},
+                {"organization", "Example Org"},
+                {"primary_color", "#aabbcc"},
+                {"secondary_color", "#112233"},
+                {"accent_color", "#44ccff"},
+                {"logo_path", "/assets/alice.png"}
+            }},
+            {"S2", {{"name", "Bob"}}}
+        }},
+        {"segments", json::array({
+            {{"words", json::array({
+                {{"word", "hello"}, {"start", 0.0}, {"end", 0.2},
+                 {"speaker", "S1"}},
+                {{"word", "again"}, {"start", 0.3}, {"end", 0.5},
+                 {"speaker", "S1"}},
+                {{"word", "response"}, {"start", 1.0}, {"end", 1.3},
+                 {"speaker", "S2"}},
+                {{"word", "return"}, {"start", 2.0}, {"end", 2.2},
+                 {"speaker", "S1"}}
+            })}}
+        })}
+    };
+    std::string error;
+    auto transcript = jcut::TranscriptDocumentCore::fromJson(root, &error);
+    expect(transcript.has_value(),
+           "speaker-title transcript fixture parses: " + error);
+    if (!transcript) return;
+
+    jcut::EditorClip source;
+    source.id = 7;
+    source.trackId = 1;
+    source.persistentId = "source-7";
+    source.startFrame = 100;
+    source.durationFrames = 120;
+    source.sourceInFrame = 0;
+    source.sourceDurationFrames = 120;
+    source.playbackRate = 1.0;
+    source.mediaKind = "video";
+    jcut::SpeakerTitleFlyInSettingsCore settings;
+    settings.style = jcut::SpeakerTitleFlyInStyleCore::SlideFromRight;
+    settings.showSpeakerOrganization = true;
+    const std::vector<jcut::EditorClip> generated =
+        jcut::makeSpeakerTitleClipsCore(source, *transcript, 0, settings);
+    expect(generated.size() == 3,
+           "speaker introductions are generated only at speaker changes");
+    if (generated.size() == 3) {
+        expect(generated[0].label == "Speaker: Alice\nExample Org" &&
+                   generated[0].clipRole == "speaker_title" &&
+                   generated[0].linkedSourceClipId == "source-7" &&
+                   generated[0].titleKeyframes.size() >= 4 &&
+                   generated[0].titleKeyframes[1].color == "#aabbcc" &&
+                   generated[1].startFrame == 130 &&
+                   generated[2].startFrame == 160,
+               "neutral titles retain profile styling, ownership, timing, and fly-in keyframes");
+    }
+
+    jcut::EditorDocumentCore document;
+    document.projectName = "Speaker titles";
+    document.tracks.push_back({1, "Video", true});
+    document.clips.push_back(source);
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(std::move(document));
+    const auto applied = runtime.execute(jcut::EditorCommand{
+        jcut::ReplaceSpeakerTitleClipsCommand{7, generated}});
+    const jcut::EditorDocumentCore after = runtime.snapshot();
+    const auto titleCount = std::count_if(
+        after.clips.begin(), after.clips.end(),
+        [](const auto& clip) {
+            return jcut::canonicalEditorClipRole(clip.clipRole) ==
+                "speaker_title";
+        });
+    expect(applied.applied && titleCount == 3 &&
+               after.tracks.size() >= 2,
+           "runtime atomically places generated titles on dedicated lanes");
+    expect(runtime.execute(
+               jcut::EditorCommand{jcut::UndoCommand{}}).applied &&
+               runtime.snapshot().clips.size() == 1,
+           "speaker-title replacement is one undoable edit");
+}
+
+void testNeutralTranscriptMiningProposals()
+{
+    json root = {
+        {"speaker_profiles", {
+            {"S1", json::object()},
+            {"S2", {{"name", "Existing Name"}}}
+        }},
+        {"segments", json::array({
+            {
+                {"speaker", "S1"},
+                {"words", json::array({
+                    {{"word", "Alice"}, {"speaker", "S1"}},
+                    {{"word", "Smith."}, {"speaker", "S1"}},
+                    {{"word", "Metro"}, {"speaker", "S1"}},
+                    {{"word", "City"}, {"speaker", "S1"}},
+                    {{"word", "Council"}, {"speaker", "S1"}},
+                    {{"word", "aside"}, {"speaker", "S9"}}
+                })}
+            }
+        })},
+        {"future_root_field", {{"mining_keep", true}}}
+    };
+    const auto names = jcut::mineTranscriptSpeakerNames(root);
+    const auto organizations = jcut::mineTranscriptOrganizations(root);
+    const auto cleanup = jcut::mineSpuriousSpeakerAssignments(root);
+    expect(!names.empty() && names.front().targetId == "S1" &&
+               names.front().proposedValue == "Alice Smith",
+           "neutral mining finds Qt-compatible person-name candidates");
+    expect(!organizations.empty() &&
+               organizations.front().proposedValue ==
+                   "Metro City Council",
+           "neutral mining finds Qt-compatible organization candidates");
+    expect(cleanup.size() == 1 &&
+               cleanup.front().currentValue == "S9" &&
+               cleanup.front().proposedValue == "S1",
+           "neutral mining proposes one-off speaker cleanup");
+    std::vector<jcut::TranscriptMiningProposal> selected;
+    if (!names.empty()) selected.push_back(names.front());
+    if (!organizations.empty()) selected.push_back(organizations.front());
+    if (!cleanup.empty()) selected.push_back(cleanup.front());
+    std::string error;
+    expect(jcut::applyTranscriptMiningProposals(
+               &root, selected, &error),
+           "selected mining proposals apply: " + error);
+    expect(root["speaker_profiles"]["S1"].value("name", "") ==
+                   "Alice Smith" &&
+               root["speaker_profiles"]["S1"].value(
+                   "organization", "") == "Metro City Council" &&
+               root["segments"][0]["words"][5].value("speaker", "") ==
+                   "S1" &&
+               root["future_root_field"].value("mining_keep", false),
+           "mining application preserves unknown fields and scopes edits");
+}
+
+void testNeutralProxyDiscoveryAndRuntimeCommand()
+{
+    TemporaryDirectory temporary;
+    expect(!temporary.path.empty(), "proxy test creates temporary directory");
+    if (temporary.path.empty()) return;
+
+    const fs::path sourcePath = temporary.path / "interview.mov";
+    const fs::path proxyPath = temporary.path / "interview.proxy.mp4";
+    expect(writeBytes(sourcePath, "source") &&
+               writeBytes(proxyPath, "proxy"),
+           "proxy test fixture writes source and proxy files");
+    const std::vector<std::string> candidates =
+        jcut::proxyCandidatePaths(sourcePath.string());
+    expect(candidates.size() == 3 &&
+               candidates[1] == proxyPath.string() &&
+               jcut::proxyPathIsUsable(proxyPath.string()) &&
+               jcut::discoverExistingProxyPath(sourcePath.string()) ==
+                   proxyPath.string(),
+           "neutral proxy discovery matches Qt-compatible default names");
+
+    jcut::EditorDocumentCore document;
+    document.projectName = "Proxy";
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip source;
+    source.id = 1;
+    source.trackId = 1;
+    source.persistentId = "source-1";
+    source.sourcePath = sourcePath.string();
+    source.durationFrames = 30;
+    document.clips.push_back(source);
+    jcut::EditorClip matte = source;
+    matte.id = 2;
+    matte.persistentId = "matte-2";
+    matte.clipRole = "mask_matte";
+    matte.linkedSourceClipId = "source-1";
+    document.clips.push_back(matte);
+
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(std::move(document));
+    const auto attached = runtime.execute(jcut::EditorCommand{
+        jcut::SetClipProxyCommand{1, proxyPath.string(), true}});
+    const jcut::EditorDocumentCore attachedDocument = runtime.snapshot();
+    expect(attached.applied &&
+               attachedDocument.clips[0].proxyPath == proxyPath.string() &&
+               attachedDocument.clips[0].useProxy &&
+               attachedDocument.clips[1].proxyPath == proxyPath.string() &&
+               attachedDocument.clips[1].useProxy,
+           "proxy attach is undoable and propagates to generated mask children");
+    expect(!runtime.execute(jcut::EditorCommand{
+                jcut::SetClipProxyCommand{2, {}, false}}).applied,
+           "direct mask-child proxy edits are rejected");
+    expect(runtime.execute(
+               jcut::EditorCommand{jcut::UndoCommand{}}).applied &&
+               runtime.snapshot().clips[0].proxyPath.empty(),
+           "proxy association undo restores the source and child cache");
 }
 
 } // namespace
@@ -337,6 +1013,15 @@ int main()
     testCatalogSelectionRowsAndInvalidation();
     testNeutralActiveCutRoundTripAndCommand();
     testImGuiAndRichRenderWiringContracts();
+    testNeutralWordMutationPreservesUnknownFieldsAndSavesAtomically();
+    testNeutralInsertExpandRestoreAndReorderMatchQtSemantics();
+    testNeutralCutLifecycleMatchesQtGuardsAndMetadata();
+    testNeutralSpeakerRosterAndProfileMutation();
+    testNeutralFaceArtifactInspectionAndTrackAssignment();
+    testNeutralFaceProcessingJobContract();
+    testNeutralSpeakerTitleGenerationAndReplacement();
+    testNeutralTranscriptMiningProposals();
+    testNeutralProxyDiscoveryAndRuntimeCommand();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " transcript cut session assertion(s) failed\n";

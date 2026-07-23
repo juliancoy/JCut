@@ -40,6 +40,34 @@ std::string stringOr(const json& object, const char* key, const std::string& fal
     return it->get<std::string>();
 }
 
+std::vector<jcut::EditorPoint> editorPointsOrIdentity(
+    const json& object, const char* key)
+{
+    std::vector<jcut::EditorPoint> points;
+    const auto found = object.find(key);
+    if (found != object.end() && found->is_array()) {
+        for (const json& point : *found) {
+            if (point.is_object()) {
+                points.push_back({
+                    valueOr(point, "x", 0.0),
+                    valueOr(point, "y", 0.0)});
+            }
+        }
+    }
+    return points.empty()
+        ? std::vector<jcut::EditorPoint>{{0.0, 0.0}, {1.0, 1.0}}
+        : points;
+}
+
+json editorPointsJson(const std::vector<jcut::EditorPoint>& points)
+{
+    json result = json::array();
+    for (const jcut::EditorPoint& point : points) {
+        result.push_back({{"x", point.x}, {"y", point.y}});
+    }
+    return result;
+}
+
 std::string clipKindFromState(const json& clip)
 {
     const std::string mediaType = stringOr(clip, "mediaType", "unknown");
@@ -184,19 +212,52 @@ void parseTitleKeyframes(const json& values,
         if (!value.is_object()) {
             continue;
         }
-        keyframes->push_back({
-            valueOr(value, "frame", std::int64_t{0}),
-            stringOr(value, "text"),
-            valueOr(value, "translationX", 0.0),
-            valueOr(value, "translationY", 0.0),
-            valueOr(value, "fontSize", 48.0),
-            valueOr(value, "opacity", 1.0),
-            stringOr(value, "fontFamily", "DejaVu Sans"),
-            valueOr(value, "bold", true),
-            valueOr(value, "italic", false),
-            stringOr(value, "color", "#ffffff"),
-            valueOr(value, "linearInterpolation", true)
-        });
+        jcut::EditorTitleKeyframe keyframe;
+        keyframe.frame = valueOr(value, "frame", std::int64_t{0});
+        keyframe.text = stringOr(value, "text");
+        keyframe.translationX = valueOr(value, "translationX", 0.0);
+        keyframe.translationY = valueOr(value, "translationY", 0.0);
+        keyframe.fontSize = valueOr(value, "fontSize", 48.0);
+        keyframe.opacity = valueOr(value, "opacity", 1.0);
+        keyframe.fontFamily = stringOr(value, "fontFamily", "DejaVu Sans");
+        keyframe.bold = valueOr(value, "bold", true);
+        keyframe.italic = valueOr(value, "italic", false);
+        keyframe.color = stringOr(value, "color", "#ffffff");
+        keyframe.linearInterpolation = valueOr(value, "linearInterpolation", true);
+        keyframe.autoFitToOutput = valueOr(value, "autoFitToOutput", false);
+        keyframe.logoPath = stringOr(value, "logoPath");
+        keyframe.textMaterialStyle = stringOr(value, "textMaterialStyle", "solid");
+        keyframe.textPatternImagePath = stringOr(value, "textPatternImagePath");
+        keyframe.textPatternScale = valueOr(value, "textPatternScale", 1.0);
+        keyframe.dropShadowEnabled = valueOr(value, "dropShadowEnabled", true);
+        keyframe.dropShadowColor = stringOr(value, "dropShadowColor", "#ff000000");
+        keyframe.dropShadowOpacity = valueOr(value, "dropShadowOpacity", 0.6);
+        keyframe.dropShadowOffsetX = valueOr(value, "dropShadowOffsetX", 2.0);
+        keyframe.dropShadowOffsetY = valueOr(value, "dropShadowOffsetY", 2.0);
+        keyframe.windowEnabled = valueOr(value, "windowEnabled", false);
+        keyframe.windowColor = stringOr(value, "windowColor", "#ff000000");
+        keyframe.windowOpacity = valueOr(value, "windowOpacity", 0.35);
+        keyframe.windowPadding = valueOr(value, "windowPadding", 16.0);
+        keyframe.windowWidth = valueOr(value, "windowWidth", 0.0);
+        keyframe.windowFrameEnabled = valueOr(value, "windowFrameEnabled", false);
+        keyframe.windowFrameColor = stringOr(value, "windowFrameColor", "#ffffffff");
+        keyframe.windowFrameOpacity = valueOr(value, "windowFrameOpacity", 1.0);
+        keyframe.windowFrameWidth = valueOr(value, "windowFrameWidth", 2.0);
+        keyframe.windowFrameGap = valueOr(value, "windowFrameGap", 4.0);
+        keyframe.windowFrameMaterialStyle = stringOr(value, "windowFrameMaterialStyle", "solid");
+        keyframe.windowFramePatternImagePath = stringOr(value, "windowFramePatternImagePath");
+        keyframe.windowFramePatternScale = valueOr(value, "windowFramePatternScale", 1.0);
+        keyframe.vulkan3DEnabled = valueOr(value, "vulkan3DEnabled", false);
+        keyframe.vulkan3DExtrudeEnabled = valueOr(value, "vulkan3DExtrudeEnabled", false);
+        keyframe.textExtrudeMode = stringOr(value, "textExtrudeMode", "none");
+        keyframe.vulkan3DExtrudeDepth = valueOr(value, "vulkan3DExtrudeDepth", 0.0);
+        keyframe.vulkan3DBevelScale = valueOr(value, "vulkan3DBevelScale", 0.0);
+        keyframe.vulkan3DYawDegrees = valueOr(value, "vulkan3DYawDegrees", 0.0);
+        keyframe.vulkan3DPitchDegrees = valueOr(value, "vulkan3DPitchDegrees", 0.0);
+        keyframe.vulkan3DRollDegrees = valueOr(value, "vulkan3DRollDegrees", 0.0);
+        keyframe.vulkan3DDepth = valueOr(value, "vulkan3DDepth", 0.0);
+        keyframe.vulkan3DScale = valueOr(value, "vulkan3DScale", 1.0);
+        keyframes->push_back(std::move(keyframe));
     }
 }
 
@@ -208,7 +269,26 @@ void parseTranscriptOverlay(const json& value, jcut::EditorTranscriptOverlayStat
     overlay->enabled = valueOr(value, "enabled", overlay->enabled);
     overlay->showBackground = valueOr(value, "showBackground", overlay->showBackground);
     overlay->backgroundOpacity = valueOr(value, "backgroundOpacity", overlay->backgroundOpacity);
+    overlay->backgroundCornerRadius = valueOr(value, "backgroundCornerRadius", overlay->backgroundCornerRadius);
+    overlay->backgroundPadding = valueOr(value, "backgroundPadding", overlay->backgroundPadding);
+    overlay->backgroundFrameEnabled = valueOr(value, "backgroundFrameEnabled", overlay->backgroundFrameEnabled);
+    overlay->backgroundFrameColor = stringOr(value, "backgroundFrameColor", overlay->backgroundFrameColor);
+    overlay->backgroundFrameOpacity = valueOr(value, "backgroundFrameOpacity", overlay->backgroundFrameOpacity);
+    overlay->backgroundFrameWidth = valueOr(value, "backgroundFrameWidth", overlay->backgroundFrameWidth);
+    overlay->backgroundFrameGap = valueOr(value, "backgroundFrameGap", overlay->backgroundFrameGap);
     overlay->showShadow = valueOr(value, "showShadow", overlay->showShadow);
+    overlay->shadowColor = stringOr(value, "shadowColor", overlay->shadowColor);
+    overlay->shadowOpacity = valueOr(value, "shadowOpacity", overlay->shadowOpacity);
+    overlay->shadowOffsetX = valueOr(value, "shadowOffsetX", overlay->shadowOffsetX);
+    overlay->shadowOffsetY = valueOr(value, "shadowOffsetY", overlay->shadowOffsetY);
+    overlay->textOutlineEnabled = valueOr(value, "textOutlineEnabled", overlay->textOutlineEnabled);
+    overlay->textOutlineWidth = valueOr(value, "textOutlineWidth", overlay->textOutlineWidth);
+    overlay->textOutlineColor = stringOr(value, "textOutlineColor", overlay->textOutlineColor);
+    overlay->textOutlineOpacity = valueOr(value, "textOutlineOpacity", overlay->textOutlineOpacity);
+    overlay->textExtrudeMode = stringOr(value, "textExtrudeMode", overlay->textExtrudeMode);
+    overlay->textExtrudeDepth = valueOr(value, "textExtrudeDepth", overlay->textExtrudeDepth);
+    overlay->textExtrudeBevelScale = valueOr(value, "textExtrudeBevelScale", overlay->textExtrudeBevelScale);
+    overlay->showSpeakerTitle = valueOr(value, "showSpeakerTitle", overlay->showSpeakerTitle);
     overlay->highlightCurrentWord = valueOr(value, "highlightCurrentWord", overlay->highlightCurrentWord);
     overlay->autoScroll = valueOr(value, "autoScroll", overlay->autoScroll);
     overlay->useManualPlacement = valueOr(value, "useManualPlacement", overlay->useManualPlacement);
@@ -239,6 +319,12 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
         stringOr(value, "clipRole", "media"));
     clip->linkedSourceClipId = jcut::trimmedEditorClipId(
         stringOr(value, "linkedSourceClipId"));
+    clip->generatedFromMaskId = stringOr(value, "generatedFromMaskId");
+    clip->syncLockedToSource = valueOr(value, "syncLockedToSource", false);
+    clip->sourceTransformLocked = valueOr(value, "sourceTransformLocked", false);
+    clip->zLevel = valueOr(
+        value, "zLevel", std::numeric_limits<int>::min());
+    clip->zLevelUserSet = valueOr(value, "zLevelUserSet", false);
     clip->proxyPath = stringOr(value, "proxyPath");
     clip->useProxy = valueOr(value, "useProxy", true);
     clip->mediaKind = stringOr(value, "mediaKind", clipKindFromState(value));
@@ -299,6 +385,21 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskInvert = valueOr(value, "maskInvert", false);
     clip->maskShowOnly = valueOr(value, "maskShowOnly", false);
     clip->maskOpacity = valueOr(value, "maskOpacity", 1.0);
+    clip->maskGradeEnabled = valueOr(value, "maskGradeEnabled", false);
+    clip->maskGradeBrightness = valueOr(value, "maskGradeBrightness", 0.0);
+    clip->maskGradeContrast = valueOr(value, "maskGradeContrast", 1.0);
+    clip->maskGradeSaturation = valueOr(value, "maskGradeSaturation", 1.0);
+    clip->maskGradeCurvePointsR = editorPointsOrIdentity(value, "maskGradeCurvePointsR");
+    clip->maskGradeCurvePointsG = editorPointsOrIdentity(value, "maskGradeCurvePointsG");
+    clip->maskGradeCurvePointsB = editorPointsOrIdentity(value, "maskGradeCurvePointsB");
+    clip->maskGradeCurvePointsLuma = editorPointsOrIdentity(value, "maskGradeCurvePointsLuma");
+    clip->maskGradeCurveSmoothingEnabled = valueOr(
+        value, "maskGradeCurveSmoothingEnabled", true);
+    clip->maskDropShadowEnabled = valueOr(value, "maskDropShadowEnabled", false);
+    clip->maskDropShadowRadius = valueOr(value, "maskDropShadowRadius", 12.0);
+    clip->maskDropShadowOffsetX = valueOr(value, "maskDropShadowOffsetX", 0.0);
+    clip->maskDropShadowOffsetY = valueOr(value, "maskDropShadowOffsetY", 4.0);
+    clip->maskDropShadowOpacity = valueOr(value, "maskDropShadowOpacity", 0.45);
     clip->maskForegroundLayerEnabled = valueOr(value, "maskForegroundLayerEnabled", false);
     clip->maskRepeatEnabled = valueOr(value, "maskRepeatEnabled", false);
     clip->maskRepeatDeltaX = valueOr(value, "maskRepeatDeltaX", 160.0);
@@ -308,6 +409,16 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->effectSpeed = valueOr(value, "effectSpeed", 1.0);
     clip->effectScale = valueOr(value, "effectScale", 1.0);
     clip->effectAlternateDirection = valueOr(value, "effectAlternateDirection", true);
+    clip->effectSkipAwareTiming = valueOr(value, "effectSkipAwareTiming", true);
+    clip->differenceReferenceFrames = valueOr(value, "differenceReferenceFrames", 1);
+    clip->differenceThreshold = valueOr(value, "differenceThreshold", 0.10);
+    clip->differenceSoftness = valueOr(value, "differenceSoftness", 0.05);
+    clip->temporalEchoCount = valueOr(value, "temporalEchoCount", 4);
+    clip->temporalEchoSpacingFrames = valueOr(value, "temporalEchoSpacingFrames", 2);
+    clip->temporalEchoDecay = valueOr(value, "temporalEchoDecay", 0.65);
+    clip->tilingPattern = stringOr(value, "tilingPattern", "grid");
+    clip->tilingSpacing = valueOr(value, "tilingSpacing", 1.0);
+    clip->tilingWrap = valueOr(value, "tilingWrap", true);
     const json& polygons = value.value("correctionPolygons", json::array());
     if (polygons.is_array()) {
         for (const json& polygonValue : polygons) {
@@ -859,7 +970,40 @@ json titleKeyframesJson(const std::vector<jcut::EditorTitleKeyframe>& keyframes)
             {"bold", keyframe.bold},
             {"italic", keyframe.italic},
             {"color", keyframe.color},
-            {"linearInterpolation", keyframe.linearInterpolation}
+            {"linearInterpolation", keyframe.linearInterpolation},
+            {"autoFitToOutput", keyframe.autoFitToOutput},
+            {"logoPath", keyframe.logoPath},
+            {"textMaterialStyle", keyframe.textMaterialStyle},
+            {"textPatternImagePath", keyframe.textPatternImagePath},
+            {"textPatternScale", keyframe.textPatternScale},
+            {"dropShadowEnabled", keyframe.dropShadowEnabled},
+            {"dropShadowColor", keyframe.dropShadowColor},
+            {"dropShadowOpacity", keyframe.dropShadowOpacity},
+            {"dropShadowOffsetX", keyframe.dropShadowOffsetX},
+            {"dropShadowOffsetY", keyframe.dropShadowOffsetY},
+            {"windowEnabled", keyframe.windowEnabled},
+            {"windowColor", keyframe.windowColor},
+            {"windowOpacity", keyframe.windowOpacity},
+            {"windowPadding", keyframe.windowPadding},
+            {"windowWidth", keyframe.windowWidth},
+            {"windowFrameEnabled", keyframe.windowFrameEnabled},
+            {"windowFrameColor", keyframe.windowFrameColor},
+            {"windowFrameOpacity", keyframe.windowFrameOpacity},
+            {"windowFrameWidth", keyframe.windowFrameWidth},
+            {"windowFrameGap", keyframe.windowFrameGap},
+            {"windowFrameMaterialStyle", keyframe.windowFrameMaterialStyle},
+            {"windowFramePatternImagePath", keyframe.windowFramePatternImagePath},
+            {"windowFramePatternScale", keyframe.windowFramePatternScale},
+            {"vulkan3DEnabled", keyframe.vulkan3DEnabled},
+            {"vulkan3DExtrudeEnabled", keyframe.vulkan3DExtrudeEnabled},
+            {"textExtrudeMode", keyframe.textExtrudeMode},
+            {"vulkan3DExtrudeDepth", keyframe.vulkan3DExtrudeDepth},
+            {"vulkan3DBevelScale", keyframe.vulkan3DBevelScale},
+            {"vulkan3DYawDegrees", keyframe.vulkan3DYawDegrees},
+            {"vulkan3DPitchDegrees", keyframe.vulkan3DPitchDegrees},
+            {"vulkan3DRollDegrees", keyframe.vulkan3DRollDegrees},
+            {"vulkan3DDepth", keyframe.vulkan3DDepth},
+            {"vulkan3DScale", keyframe.vulkan3DScale}
         });
     }
     return values;
@@ -871,7 +1015,26 @@ json transcriptOverlayJson(const jcut::EditorTranscriptOverlayState& overlay)
         {"enabled", overlay.enabled},
         {"showBackground", overlay.showBackground},
         {"backgroundOpacity", overlay.backgroundOpacity},
+        {"backgroundCornerRadius", overlay.backgroundCornerRadius},
+        {"backgroundPadding", overlay.backgroundPadding},
+        {"backgroundFrameEnabled", overlay.backgroundFrameEnabled},
+        {"backgroundFrameColor", overlay.backgroundFrameColor},
+        {"backgroundFrameOpacity", overlay.backgroundFrameOpacity},
+        {"backgroundFrameWidth", overlay.backgroundFrameWidth},
+        {"backgroundFrameGap", overlay.backgroundFrameGap},
         {"showShadow", overlay.showShadow},
+        {"shadowColor", overlay.shadowColor},
+        {"shadowOpacity", overlay.shadowOpacity},
+        {"shadowOffsetX", overlay.shadowOffsetX},
+        {"shadowOffsetY", overlay.shadowOffsetY},
+        {"textOutlineEnabled", overlay.textOutlineEnabled},
+        {"textOutlineWidth", overlay.textOutlineWidth},
+        {"textOutlineColor", overlay.textOutlineColor},
+        {"textOutlineOpacity", overlay.textOutlineOpacity},
+        {"textExtrudeMode", overlay.textExtrudeMode},
+        {"textExtrudeDepth", overlay.textExtrudeDepth},
+        {"textExtrudeBevelScale", overlay.textExtrudeBevelScale},
+        {"showSpeakerTitle", overlay.showSpeakerTitle},
         {"highlightCurrentWord", overlay.highlightCurrentWord},
         {"autoScroll", overlay.autoScroll},
         {"useManualPlacement", overlay.useManualPlacement},
@@ -1000,6 +1163,11 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["clipRole"] = jcut::editorClipRoleForStorage(clip.clipRole);
     (*out)["linkedSourceClipId"] =
         jcut::trimmedEditorClipId(clip.linkedSourceClipId);
+    (*out)["generatedFromMaskId"] = clip.generatedFromMaskId;
+    (*out)["syncLockedToSource"] = clip.syncLockedToSource;
+    (*out)["sourceTransformLocked"] = clip.sourceTransformLocked;
+    (*out)["zLevel"] = clip.zLevel;
+    (*out)["zLevelUserSet"] = clip.zLevelUserSet;
     (*out)["proxyPath"] = clip.proxyPath;
     (*out)["useProxy"] = clip.useProxy;
     (*out)["mediaKind"] = clip.mediaKind;
@@ -1062,6 +1230,20 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["maskInvert"] = clip.maskInvert;
     (*out)["maskShowOnly"] = clip.maskShowOnly;
     (*out)["maskOpacity"] = clip.maskOpacity;
+    (*out)["maskGradeEnabled"] = clip.maskGradeEnabled;
+    (*out)["maskGradeBrightness"] = clip.maskGradeBrightness;
+    (*out)["maskGradeContrast"] = clip.maskGradeContrast;
+    (*out)["maskGradeSaturation"] = clip.maskGradeSaturation;
+    (*out)["maskGradeCurvePointsR"] = editorPointsJson(clip.maskGradeCurvePointsR);
+    (*out)["maskGradeCurvePointsG"] = editorPointsJson(clip.maskGradeCurvePointsG);
+    (*out)["maskGradeCurvePointsB"] = editorPointsJson(clip.maskGradeCurvePointsB);
+    (*out)["maskGradeCurvePointsLuma"] = editorPointsJson(clip.maskGradeCurvePointsLuma);
+    (*out)["maskGradeCurveSmoothingEnabled"] = clip.maskGradeCurveSmoothingEnabled;
+    (*out)["maskDropShadowEnabled"] = clip.maskDropShadowEnabled;
+    (*out)["maskDropShadowRadius"] = clip.maskDropShadowRadius;
+    (*out)["maskDropShadowOffsetX"] = clip.maskDropShadowOffsetX;
+    (*out)["maskDropShadowOffsetY"] = clip.maskDropShadowOffsetY;
+    (*out)["maskDropShadowOpacity"] = clip.maskDropShadowOpacity;
     (*out)["maskForegroundLayerEnabled"] = clip.maskForegroundLayerEnabled;
     (*out)["maskRepeatEnabled"] = clip.maskRepeatEnabled;
     (*out)["maskRepeatDeltaX"] = clip.maskRepeatDeltaX;
@@ -1071,6 +1253,16 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["effectSpeed"] = clip.effectSpeed;
     (*out)["effectScale"] = clip.effectScale;
     (*out)["effectAlternateDirection"] = clip.effectAlternateDirection;
+    (*out)["effectSkipAwareTiming"] = clip.effectSkipAwareTiming;
+    (*out)["differenceReferenceFrames"] = clip.differenceReferenceFrames;
+    (*out)["differenceThreshold"] = clip.differenceThreshold;
+    (*out)["differenceSoftness"] = clip.differenceSoftness;
+    (*out)["temporalEchoCount"] = clip.temporalEchoCount;
+    (*out)["temporalEchoSpacingFrames"] = clip.temporalEchoSpacingFrames;
+    (*out)["temporalEchoDecay"] = clip.temporalEchoDecay;
+    (*out)["tilingPattern"] = clip.tilingPattern;
+    (*out)["tilingSpacing"] = clip.tilingSpacing;
+    (*out)["tilingWrap"] = clip.tilingWrap;
     json polygons = json::array();
     for (const jcut::EditorCorrectionPolygon& polygon : clip.correctionPolygons) {
         json points = json::array();

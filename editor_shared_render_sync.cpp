@@ -14,29 +14,28 @@ struct RenderSyncClipLookup {
 };
 
 struct RenderSyncLookupCache {
-    const QVector<RenderSyncMarker>* source = nullptr;
-    int size = -1;
-    quint64 signature = 0;
+    bool initialized = false;
+    QVector<RenderSyncMarker> markers;
     QHash<QString, RenderSyncClipLookup> byClip;
 };
 
-quint64 markerQuickSignature(const QVector<RenderSyncMarker>& markers) {
-    quint64 sig = static_cast<quint64>(markers.size()) * 1469598103934665603ULL;
-    if (markers.isEmpty()) {
-        return sig;
+bool renderSyncMarkersEqual(const QVector<RenderSyncMarker>& left,
+                            const QVector<RenderSyncMarker>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
     }
-    auto mixMarker = [&sig](const RenderSyncMarker& marker) {
-        sig ^= static_cast<quint64>(qHash(marker.clipId));
-        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(marker.frame);
-        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(marker.count);
-        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(static_cast<int>(marker.action));
-    };
-    mixMarker(markers.constFirst());
-    if (markers.size() > 1) {
-        mixMarker(markers[markers.size() / 2]);
-        mixMarker(markers.constLast());
+    for (qsizetype index = 0; index < left.size(); ++index) {
+        const RenderSyncMarker& leftMarker = left.at(index);
+        const RenderSyncMarker& rightMarker = right.at(index);
+        if (leftMarker.clipId != rightMarker.clipId ||
+            leftMarker.frame != rightMarker.frame ||
+            leftMarker.count != rightMarker.count ||
+            leftMarker.action != rightMarker.action) {
+            return false;
+        }
     }
-    return sig;
+    return true;
 }
 
 int markerDelta(const RenderSyncMarker& marker) {
@@ -82,11 +81,13 @@ void rebuildRenderSyncLookupCache(RenderSyncLookupCache& cache,
 const RenderSyncClipLookup* lookupForClip(const QVector<RenderSyncMarker>& markers,
                                           const QString& clipId) {
     thread_local RenderSyncLookupCache cache;
-    const quint64 signature = markerQuickSignature(markers);
-    if (cache.source != &markers || cache.size != markers.size() || cache.signature != signature) {
-        cache.source = &markers;
-        cache.size = markers.size();
-        cache.signature = signature;
+    if (!cache.initialized || !renderSyncMarkersEqual(cache.markers, markers)) {
+        cache.markers = markers;
+        // QVector is implicitly shared. Detach so even callers that retain and
+        // mutate a raw element pointer cannot mutate the cache's comparison
+        // snapshot along with the source vector.
+        cache.markers.detach();
+        cache.initialized = true;
         rebuildRenderSyncLookupCache(cache, markers);
     }
     auto it = cache.byClip.constFind(clipId);

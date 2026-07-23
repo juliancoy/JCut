@@ -1,6 +1,4 @@
 #include "standalone_preview_renderer.h"
-#include "editor_document_render_bridge.h"
-#include "render_runtime.h"
 #include "standalone_timeline_renderer.h"
 
 #include <filesystem>
@@ -42,77 +40,28 @@ PreviewRenderResult renderPreviewFrame(const PreviewRenderRequest& request)
     const EditorDocumentCore renderDocument =
         documentWithResolvedMediaPaths(request.document, request.rootDirectory);
 
-    render::RenderRequestCore renderRequest = renderDocument.exportRequest;
-    renderRequest.outputSize = request.outputSize.valid()
+    const core::SizeI outputSize = request.outputSize.valid()
         ? request.outputSize
         : renderDocument.exportRequest.outputSize;
-
-    if (renderRequest.outputSize.valid()) {
-        const render::TimelineRenderData timelineData =
-            render::buildTimelineRenderData(renderDocument);
-        if (request.preferVulkanFrame) {
-            const render::PreviewFrameResultCore qtResult =
-                render::renderPreviewFrameCore(
-                    renderRequest,
-                    timelineData,
-                    static_cast<std::int64_t>(request.timelineFrame),
-                    false,
-                    false);
-            if (qtResult.success && qtResult.vulkanFrame.valid) {
-                PreviewRenderResult result;
-                result.success = true;
-                result.message = qtResult.effectiveRenderBackend.empty()
-                    ? std::string("preview frame rendered as Vulkan frame")
-                    : std::string("preview frame rendered as Vulkan frame with ") +
-                          qtResult.effectiveRenderBackend;
-                result.vulkanFrame = qtResult.vulkanFrame;
-                return result;
-            }
-        }
-
-        if (request.allowCpuFallback) {
-            const render::PreviewFrameResultCore qtResult =
-                render::renderPreviewFrameCore(
-                    renderRequest,
-                    timelineData,
-                    static_cast<std::int64_t>(request.timelineFrame),
-                    false,
-                    true);
-            if (qtResult.success && !qtResult.image.empty()) {
-                PreviewRenderResult result;
-                result.success = true;
-                result.message = qtResult.effectiveRenderBackend.empty()
-                    ? std::string("preview frame rendered with CPU fallback")
-                    : std::string("preview frame rendered with CPU fallback from ") +
-                          qtResult.effectiveRenderBackend;
-                result.image = qtResult.image;
-                result.vulkanFrame = qtResult.vulkanFrame;
-                return result;
-            }
-        }
-
-        const TimelineRenderResult fallbackResult = renderTimelineFrame({
-            renderDocument,
-            renderRequest.outputSize,
-            static_cast<double>(request.timelineFrame),
-            {}});
+    if (!request.allowCpuFallback) {
         PreviewRenderResult result;
-        result.success = fallbackResult.success;
-        result.message = fallbackResult.message;
-        result.image = fallbackResult.image;
-        result.sourcePath = fallbackResult.sourcePath;
+        result.message = request.preferVulkanFrame
+            ? "standalone Vulkan preview backend unavailable"
+            : "CPU preview fallback disabled";
         return result;
     }
 
     const TimelineRenderResult timelineResult = renderTimelineFrame({
         renderDocument,
-        renderRequest.outputSize,
+        outputSize,
         static_cast<double>(request.timelineFrame),
         {}});
 
     PreviewRenderResult result;
     result.success = timelineResult.success;
-    result.message = timelineResult.message;
+    result.message = request.preferVulkanFrame && timelineResult.success
+        ? "Qt-free CPU preview fallback: " + timelineResult.message
+        : timelineResult.message;
     result.image = timelineResult.image;
     result.sourcePath = timelineResult.sourcePath;
     return result;

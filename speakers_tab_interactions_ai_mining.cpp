@@ -2,6 +2,8 @@
 #include "speakers_tab_internal.h"
 #include "speaker_document_edit_ops.h"
 
+#include "json_io_utils.h"
+#include "transcript_mining_core.h"
 #include "transcript_engine.h"
 
 #include <QCheckBox>
@@ -196,48 +198,16 @@ bool SpeakersTab::runAiFindSpeakerNames()
     }
     QJsonObject root = m_transcriptSession.rootObject();
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-    const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
-    const QRegularExpression nameRe(
-        QStringLiteral("\\b([A-Z][A-Za-z'\\-]{1,30}(?:\\s+[A-Z][A-Za-z'\\-]{1,30}){1,3})\\b"));
     QVector<AiProposalRow> proposals;
-    for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
-        const QString speakerId = it.key();
-        const QString text = it.value().join(QLatin1Char(' '));
-        QHash<QString, int> counts;
-        QRegularExpressionMatchIterator matchIt = nameRe.globalMatch(text);
-        while (matchIt.hasNext()) {
-            const QString name = matchIt.next().captured(1).trimmed();
-            if (looksLikeSpeakerPersonName(name)) {
-                counts[name] += 1;
-            }
-        }
-        QString bestName = profiles.value(speakerId).toObject()
-                               .value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
-        int bestCount = 0;
-        for (auto cIt = counts.constBegin(); cIt != counts.constEnd(); ++cIt) {
-            if (cIt.value() > bestCount) {
-                bestCount = cIt.value();
-                bestName = cIt.key();
-            }
-        }
-        if (bestName.isEmpty()) {
-            continue;
-        }
-        const QJsonObject profile = profiles.value(speakerId).toObject();
-        const QString currentName = profile.value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
-        if (currentName == bestName) {
-            continue;
-        }
-        const int totalCandidates = qMax(1, it.value().size());
-        const qreal confidence = qBound<qreal>(0.30, static_cast<qreal>(bestCount) / totalCandidates, 0.98);
+    for (const jcut::TranscriptMiningProposal& proposal :
+         jcut::mineTranscriptSpeakerNames(jcut::jsonio::toJson(root))) {
         proposals.push_back(AiProposalRow{
-            speakerId,
+            QString::fromStdString(proposal.targetId),
             QStringLiteral("Name"),
-            currentName,
-            bestName,
-            confidence,
-            QStringLiteral("Most frequent person-name pattern in this speaker's transcript words.")});
+            QString::fromStdString(proposal.currentValue),
+            QString::fromStdString(proposal.proposedValue),
+            proposal.confidence,
+            QString::fromStdString(proposal.rationale)});
     }
     if (proposals.isEmpty()) {
         QMessageBox::information(nullptr,
@@ -316,49 +286,16 @@ bool SpeakersTab::runAiFindOrganizations()
     }
     QJsonObject root = m_transcriptSession.rootObject();
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-    const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
-    const QRegularExpression orgRe(QStringLiteral(
-        "\\b([A-Z][A-Za-z&]{2,}(?:\\s+[A-Z][A-Za-z&]{2,}){0,4}\\s+"
-        "(Council|Committee|Party|University|College|County|City|Campaign|Association))\\b"));
     QVector<AiProposalRow> proposals;
-    for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
-        const QString speakerId = it.key();
-        const QString text = it.value().join(QLatin1Char(' '));
-        QHash<QString, int> counts;
-        QRegularExpressionMatchIterator matchIt = orgRe.globalMatch(text);
-        while (matchIt.hasNext()) {
-            const QString org = matchIt.next().captured(1).trimmed();
-            if (!org.isEmpty()) {
-                counts[org] += 1;
-            }
-        }
-        QString bestOrg;
-        int bestCount = 0;
-        for (auto cIt = counts.constBegin(); cIt != counts.constEnd(); ++cIt) {
-            if (cIt.value() > bestCount) {
-                bestCount = cIt.value();
-                bestOrg = cIt.key();
-            }
-        }
-        if (bestOrg.isEmpty()) {
-            continue;
-        }
-        const QJsonObject profile = profiles.value(speakerId).toObject();
-        const QString currentOrg =
-            profile.value(QString(kTranscriptSpeakerOrganizationKey)).toString().trimmed();
-        if (currentOrg == bestOrg) {
-            continue;
-        }
-        const int totalMentions = qMax(1, it.value().size());
-        const qreal confidence = qBound<qreal>(0.30, static_cast<qreal>(bestCount) / totalMentions, 0.98);
+    for (const jcut::TranscriptMiningProposal& proposal :
+         jcut::mineTranscriptOrganizations(jcut::jsonio::toJson(root))) {
         proposals.push_back(AiProposalRow{
-            speakerId,
+            QString::fromStdString(proposal.targetId),
             QStringLiteral("Organization"),
-            currentOrg,
-            bestOrg,
-            confidence,
-            QStringLiteral("Organization suffix match (Council/Committee/University/etc.) with highest frequency.")});
+            QString::fromStdString(proposal.currentValue),
+            QString::fromStdString(proposal.proposedValue),
+            proposal.confidence,
+            QString::fromStdString(proposal.rationale)});
     }
     if (proposals.isEmpty()) {
         QMessageBox::information(nullptr,
@@ -411,6 +348,71 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
         return false;
     }
     QJsonObject root = m_transcriptSession.rootObject();
+    const std::vector<jcut::TranscriptMiningProposal> coreProposals =
+        jcut::mineSpuriousSpeakerAssignments(jcut::jsonio::toJson(root));
+    if (coreProposals.empty()) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Clean Assignments"),
+            QStringLiteral("No spurious one-off speaker assignments found."));
+        return false;
+    }
+    QVector<AiProposalRow> reviewRows;
+    reviewRows.reserve(static_cast<qsizetype>(coreProposals.size()));
+    for (const jcut::TranscriptMiningProposal& proposal : coreProposals) {
+        reviewRows.push_back({
+            QString::fromStdString(proposal.targetId),
+            QStringLiteral("Speaker"),
+            QString::fromStdString(proposal.currentValue),
+            QString::fromStdString(proposal.proposedValue),
+            proposal.confidence,
+            QString::fromStdString(proposal.rationale)});
+    }
+    if (!confirmAiProposals(
+            nullptr,
+            QStringLiteral("Clean Spurious Assignments (AI)"),
+            QStringLiteral("Review proposed speaker reassignments before applying."),
+            reviewRows)) {
+        return false;
+    }
+    nlohmann::json neutralRoot = jcut::jsonio::toJson(root);
+    std::string applyError;
+    if (!jcut::applyTranscriptMiningProposals(
+            &neutralRoot, coreProposals, &applyError)) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Clean Assignments"),
+            QString::fromStdString(applyError));
+        return false;
+    }
+    root = jcut::jsonio::fromJson(neutralRoot).toObject();
+    const bool neutralUpdated = updateLoadedTranscriptDocument(
+        [&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        });
+    if (!neutralUpdated || !saveLoadedTranscriptDocument()) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Clean Assignments"),
+            QStringLiteral(
+                "Failed to save transcript after assignment cleanup."));
+        return false;
+    }
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
+    refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
+    QMessageBox::information(
+        nullptr,
+        QStringLiteral("Clean Assignments"),
+        QStringLiteral("Reassigned %1 one-off speaker word labels.")
+            .arg(coreProposals.size()));
+    return true;
+
+#if 0 // Replaced by transcript_mining_core above.
     QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     QHash<QString, int> wordCountBySpeaker;
     for (const QJsonValue& segValue : segments) {
@@ -562,5 +564,6 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
                              QStringLiteral("Reassigned %1 one-off speaker word labels.")
                                  .arg(reassignedCount));
     return true;
+#endif
 }
 #include "speaker_document_edit_ops.h"

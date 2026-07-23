@@ -179,6 +179,60 @@ QImage applyCorrectionMasksToCpuImage(const QImage& source,
     return masked.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
+VulkanPreviewClipFrameStatus maskChildStatusFromParentMediaAndTiming(
+    const VulkanPreviewClipFrameStatus& parent)
+{
+    VulkanPreviewClipFrameStatus child;
+    child.decodePath = parent.decodePath;
+    child.frameSelection = parent.frameSelection;
+    child.requestedSourceFrame = parent.requestedSourceFrame;
+    child.presentedSourceFrame = parent.presentedSourceFrame;
+    child.frameSize = parent.frameSize;
+    child.active = parent.active;
+    child.exact = parent.exact;
+    child.hasFrame = parent.hasFrame;
+    child.hardwareFrame = parent.hardwareFrame;
+    child.gpuTexture = parent.gpuTexture;
+    child.cpuImage = parent.cpuImage;
+    child.exactFrameAvailable = parent.exactFrameAvailable;
+    child.selectedFrameAvailable = parent.selectedFrameAvailable;
+    child.staleFrameRejected = parent.staleFrameRejected;
+    child.upToDate = parent.upToDate;
+    child.currentFrameFailure = parent.currentFrameFailure;
+    child.targetRect = parent.targetRect;
+    child.fittedRect = parent.fittedRect;
+    child.transform = parent.transform;
+    child.visualTimelineFramePosition = parent.visualTimelineFramePosition;
+    child.frame = parent.frame;
+    child.frameCrossfadeActive = parent.frameCrossfadeActive;
+    child.frameCrossfadeTimelineFrame = parent.frameCrossfadeTimelineFrame;
+    child.frameCrossfadeRequestedSourceFrame =
+        parent.frameCrossfadeRequestedSourceFrame;
+    child.frameCrossfadePresentedSourceFrame =
+        parent.frameCrossfadePresentedSourceFrame;
+    child.frameCrossfadeOpacity = parent.frameCrossfadeOpacity;
+    child.frameCrossfadeFrameSize = parent.frameCrossfadeFrameSize;
+    child.frameCrossfadeFrame = parent.frameCrossfadeFrame;
+    child.externalVulkanFrame = parent.externalVulkanFrame;
+    child.sampledFramePregraded = parent.sampledFramePregraded;
+    if (parent.sampledFramePregraded) {
+        child.drawSuppressed = true;
+        child.missingReason = QStringLiteral("media_owner_frame_is_pregraded");
+    }
+    child.sampledFrameNeedsYFlip = parent.sampledFrameNeedsYFlip;
+    child.externalPhysicalDevice = parent.externalPhysicalDevice;
+    child.externalDevice = parent.externalDevice;
+    child.externalQueue = parent.externalQueue;
+    child.externalQueueFamilyIndex = parent.externalQueueFamilyIndex;
+    child.externalImage = parent.externalImage;
+    child.externalImageView = parent.externalImageView;
+    child.externalImageMemory = parent.externalImageMemory;
+    child.externalImageLayout = parent.externalImageLayout;
+    child.externalImageFormat = parent.externalImageFormat;
+    child.externalReadySemaphoreFd = parent.externalReadySemaphoreFd;
+    return child;
+}
+
 } // namespace
 
 VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
@@ -1868,7 +1922,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         VulkanPreviewClipFrameStatus status;
         status.clipId = clip.id;
         status.mediaOwnerClipId = clip.id;
+        status.timingOwnerClipId = clip.id;
         status.effectsOwnerClipId = clip.id;
+        status.matteOwnerClipId = clip.id;
         status.label = clip.label;
         status.decodePath = QStringLiteral("missing");
         status.frameSelection = frameSelection.selection;
@@ -2077,6 +2133,13 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                         qBound(0.0f, frameCrossfade.secondaryOpacity, 1.0f);
                     status.frameCrossfadeFrame = secondaryFrame;
                     status.frameCrossfadeFrameSize = secondaryFrame.size();
+                    if (gpuMaskEnabled) {
+                        status.frameCrossfadeMaskImage = rawClipMaskImage(
+                            clip,
+                            qMax<int64_t>(0, status.frameCrossfadePresentedSourceFrame));
+                        status.frameCrossfadeMaskTextureEnabled =
+                            !status.frameCrossfadeMaskImage.isNull();
+                    }
                     maxFrameLag = qMax(
                         maxFrameLag,
                         qAbs(status.frameCrossfadeRequestedSourceFrame -
@@ -2127,14 +2190,27 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 if (statusByClipId.contains(sourceId) &&
                     timingSource.startFrame <= visualFramePosition &&
                     visualFramePosition < timingSource.startFrame + timingSource.durationFrames) {
-                    VulkanPreviewClipFrameStatus markerStatus = statusByClipId.value(sourceId);
+                    const VulkanPreviewClipFrameStatus& parentStatus =
+                        statusByClipId.value(sourceId);
+                    VulkanPreviewClipFrameStatus markerStatus =
+                        maskChildStatusFromParentMediaAndTiming(parentStatus);
                     markerStatus.clipId = clip.id;
                     markerStatus.label = clip.label;
                     markerStatus.mediaOwnerClipId = sourceId;
+                    markerStatus.timingOwnerClipId = sourceId;
                     markerStatus.effectsOwnerClipId = clip.id;
+                    markerStatus.matteOwnerClipId = clip.id;
                     markerStatus.maskImage = rawClipMaskImage(
                         clip, qMax<int64_t>(0, markerStatus.presentedSourceFrame));
                     markerStatus.maskTextureEnabled = !markerStatus.maskImage.isNull();
+                    markerStatus.frameCrossfadeMaskImage = markerStatus.frameCrossfadeActive
+                        ? rawClipMaskImage(
+                              clip,
+                              qMax<int64_t>(
+                                  0, markerStatus.frameCrossfadePresentedSourceFrame))
+                        : QImage{};
+                    markerStatus.frameCrossfadeMaskTextureEnabled =
+                        !markerStatus.frameCrossfadeMaskImage.isNull();
                     markerStatus.maskClipSource = true;
                     markerStatus.maskForegroundLayerEnabled = false;
                     markerStatus.maskShowOnly = clip.maskShowOnly;
@@ -2151,8 +2227,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskErode = clip.maskErode;
                     markerStatus.maskBlur = clip.maskBlur;
                     markerStatus.maskInvert = clip.maskInvert;
-                    markerStatus.drawSuppressed = false;
-                    markerStatus.missingReason.clear();
+                    markerStatus.drawSuppressed = markerStatus.sampledFramePregraded;
+                    if (!markerStatus.sampledFramePregraded) {
+                        markerStatus.missingReason.clear();
+                    }
                     // The marker reuses the linked source's decoded frame and
                     // mask texture, but visual effects belong to the child
                     // Mask Matte itself. Cloning the entire source status here
@@ -2192,6 +2270,21 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                         } else {
                             markerStatus.correctionsSupported = false;
                             ++correctionsUnavailableCount;
+                        }
+                        if (markerStatus.frameCrossfadeMaskTextureEnabled) {
+                            const QImage correctedSecondaryMask =
+                                applyCorrectionPolygonsToMaskImage(
+                                    markerStatus.frameCrossfadeMaskImage,
+                                    matteEffects.correctionPolygons);
+                            if (!correctedSecondaryMask.isNull()) {
+                                markerStatus.frameCrossfadeMaskImage =
+                                    correctedSecondaryMask;
+                            } else {
+                                markerStatus.frameCrossfadeMaskImage = {};
+                                markerStatus.frameCrossfadeMaskTextureEnabled = false;
+                                markerStatus.correctionsSupported = false;
+                                ++correctionsUnavailableCount;
+                            }
                         }
                     }
                     // Decode state belongs to the source, but source-only

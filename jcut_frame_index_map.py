@@ -678,6 +678,7 @@ def write_jcut_frame_index_map(
     min_source_frame: int | None = None
     max_source_frame: int | None = None
     max_mask_frame = -1
+    previous_source_frame: int | None = None
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{map_path.name}.",
@@ -703,6 +704,19 @@ def write_jcut_frame_index_map(
                     if not math.isfinite(timestamp):
                         raise RuntimeError("ffprobe returned a non-finite frame timestamp")
                     source_frame = int(timestamp * source_fps + 0.5)
+                    if source_frame < 0:
+                        raise RuntimeError(
+                            "A decoded frame maps to a negative DecoderContext "
+                            f"source-frame key ({source_frame}); refusing an ambiguous map."
+                        )
+                    if (
+                        previous_source_frame is not None
+                        and source_frame < previous_source_frame
+                    ):
+                        raise RuntimeError(
+                            "Decoded source-frame keys are not nondecreasing: "
+                            f"{source_frame} follows {previous_source_frame}."
+                        )
                     mask_frame = decoded_ordinal
                     output.write(f"{source_frame}\t{mask_frame}\n")
                     min_source_frame = (
@@ -716,6 +730,7 @@ def write_jcut_frame_index_map(
                         else max(max_source_frame, source_frame)
                     )
                     max_mask_frame = max(max_mask_frame, mask_frame)
+                    previous_source_frame = source_frame
                     decoded_ordinal += 1
             output.flush()
             os.fsync(output.fileno())
@@ -770,6 +785,7 @@ def decoded_ordinal_for_source_frame(
         text=True,
     )
     try:
+        previous_source_frame: int | None = None
         if probe.stdout is not None:
             for decoded_ordinal, line in enumerate(probe.stdout):
                 value = line.strip().split(",", 1)[0]
@@ -780,7 +796,25 @@ def decoded_ordinal_for_source_frame(
                         f"ffprobe returned an invalid frame PTS: {value!r}"
                     ) from error
                 source_frame = int((pts * time_base) * source_fps + 0.5)
+                if source_frame < 0:
+                    raise RuntimeError(
+                        "A decoded frame maps to a negative DecoderContext "
+                        f"source-frame key ({source_frame}); refusing an ambiguous lookup."
+                    )
+                if (
+                    previous_source_frame is not None
+                    and source_frame < previous_source_frame
+                ):
+                    raise RuntimeError(
+                        "Decoded source-frame keys are not nondecreasing: "
+                        f"{source_frame} follows {previous_source_frame}."
+                    )
+                previous_source_frame = source_frame
                 if source_frame >= requested_source_frame:
+                    # DecoderContext stops at the first presentation-order
+                    # frame whose rounded PTS key reaches the request. Equal
+                    # rounded keys are valid for VFR media, so first-match is
+                    # the deterministic contract shared with runtime lookup.
                     return decoded_ordinal, source_frame
         _, stderr = probe.communicate()
         if probe.returncode != 0:

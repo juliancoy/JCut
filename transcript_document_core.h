@@ -45,6 +45,7 @@ struct TranscriptRow {
     double rawEndSeconds = 0.0;
     std::string speakerId;
     std::string speakerLabel;
+    std::string speakerTitle;
     std::string text;
     std::uint32_t editFlags = TranscriptEditNone;
     bool skipped = false;
@@ -63,6 +64,21 @@ struct TranscriptRowBuildOptions {
     bool adjustOverlaps = true;
     bool insertGaps = true;
     bool includeOutsideActiveCut = false;
+};
+
+struct TranscriptSpeakerLocationCore {
+    double x = 0.5;
+    double y = 0.85;
+    bool valid = false;
+};
+
+struct TranscriptSpeakerProfileCore {
+    std::string id;
+    std::string name;
+    std::string organization;
+    double x = 0.5;
+    double y = 0.85;
+    std::size_t wordCount = 0;
 };
 
 // Qt-free, read-only projection of a WhisperX-style transcript document.
@@ -84,6 +100,10 @@ public:
     std::vector<TranscriptRow> rows(
         const TranscriptRowBuildOptions& options = {},
         const TranscriptDocumentCore* originalDocument = nullptr) const;
+    TranscriptSpeakerLocationCore speakerLocation(
+        const std::string& speakerId,
+        std::int64_t sourceFrame) const;
+    std::vector<TranscriptSpeakerProfileCore> speakerProfiles() const;
 
 private:
     struct Word {
@@ -103,7 +123,7 @@ private:
 
     std::vector<TranscriptRow> projectRows(const TranscriptTiming& timing) const;
     std::string speakerLabel(const std::string& speakerId) const;
-
+    std::string speakerTitle(const std::string& speakerId) const;
     nlohmann::json m_root;
     std::vector<Word> m_words;
     std::vector<std::size_t> m_renderOrder;
