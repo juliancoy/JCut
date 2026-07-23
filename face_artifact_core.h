@@ -44,6 +44,15 @@ struct SpeakerTrackAssignmentCore {
     std::string identityId;
     std::string streamId;
     std::int64_t sourceFrame = -1;
+    double rotationDegrees = 0.0;
+};
+
+struct FaceTrackingSampleCore {
+    double x = 0.5;
+    double y = 0.5;
+    double box = -1.0;
+    double score = 0.0;
+    bool valid = false;
 };
 
 std::vector<std::string> faceArtifactCandidatePaths(
@@ -69,5 +78,26 @@ FaceArtifactInspectionCore inspectFaceArtifacts(
 std::vector<SpeakerTrackAssignmentCore> transcriptSpeakerTrackAssignments(
     const nlohmann::json& transcriptRoot,
     const std::string& clipId);
+std::vector<SpeakerTrackAssignmentCore>
+transcriptSpeakerTrackAssignmentsAtFrame(
+    const nlohmann::json& transcriptRoot,
+    const std::string& clipId,
+    const std::string& speakerId,
+    std::int64_t sourceFrame);
+FaceTrackingSampleCore sampleFaceContinuityTrack(
+    const std::string& transcriptPath,
+    const std::string& clipId,
+    int trackId,
+    const std::string& streamId,
+    std::int64_t sourceFrame,
+    double minConfidence,
+    std::int64_t sourceInFrame = 0,
+    double localTimelineFrame = -1.0,
+    int gapHoldFrames = 0,
+    int centerSmoothingFrames = 0,
+    int zoomSmoothingFrames = 0,
+    int smoothingMode = 0,
+    double centerSmoothingStrength = 1.0,
+    double zoomSmoothingStrength = 1.0);
 
 } // namespace jcut

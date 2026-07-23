@@ -214,11 +214,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* clearRenderSyncAction = menu.addAction(QStringLiteral("Clear Clip Render Sync At Playhead"));
     const RenderSyncMarker* currentSyncMarker = renderSyncMarkerAtFrame(targetClipId, m_currentFrame);
     const bool hasTargetClip = !targetClipId.isEmpty();
-    const int splitSegmentIndex = exportSegmentIndexAtFrame(m_currentFrame);
     splitExportRangeAction->setEnabled(
-        splitSegmentIndex >= 0 &&
-        m_currentFrame > m_exportRanges[splitSegmentIndex].startFrame &&
-        m_currentFrame <= m_exportRanges[splitSegmentIndex].endFrame);
+        jcut::export_range::canSplitAt(
+            m_exportRanges, m_currentFrame));
     duplicateRenderFrameAction->setEnabled(hasTargetClip);
     skipRenderFrameAction->setEnabled(hasTargetClip);
     clearRenderSyncAction->setEnabled(currentSyncMarker != nullptr);
@@ -522,61 +520,30 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == setExportStartAction) {
-        if (m_exportRanges.isEmpty()) {
-            m_exportRanges = {ExportRangeSegment{0, totalFrames()}};
-        }
-        m_exportRanges.first().startFrame = qMin(m_currentFrame, m_exportRanges.first().endFrame);
-        normalizeExportRanges();
-        if (exportRangeChanged) {
-            exportRangeChanged();
-        }
-        update();
+        editExportRanges(
+            jcut::export_range::Edit::SetStartAtPlayhead,
+            m_currentFrame);
         return;
     }
 
     if (selected == setExportEndAction) {
-        if (m_exportRanges.isEmpty()) {
-            m_exportRanges = {ExportRangeSegment{0, totalFrames()}};
-        }
-        m_exportRanges.last().endFrame = qMax(m_currentFrame, m_exportRanges.last().startFrame);
-        normalizeExportRanges();
-        if (exportRangeChanged) {
-            exportRangeChanged();
-        }
-        update();
+        editExportRanges(
+            jcut::export_range::Edit::SetEndAtPlayhead,
+            m_currentFrame);
         return;
     }
 
     if (selected == splitExportRangeAction) {
-        if (splitSegmentIndex < 0 || splitSegmentIndex >= m_exportRanges.size()) {
-            return;
-        }
-        const ExportRangeSegment segment = m_exportRanges[splitSegmentIndex];
-        if (m_currentFrame <= segment.startFrame || m_currentFrame > segment.endFrame) {
-            return;
-        }
-        ExportRangeSegment left = segment;
-        ExportRangeSegment right = segment;
-        left.endFrame = m_currentFrame - 1;
-        right.startFrame = m_currentFrame;
-        m_exportRanges.removeAt(splitSegmentIndex);
-        m_exportRanges.insert(splitSegmentIndex, right);
-        m_exportRanges.insert(splitSegmentIndex, left);
-        normalizeExportRanges();
-        if (exportRangeChanged) {
-            exportRangeChanged();
-        }
-        update();
+        editExportRanges(
+            jcut::export_range::Edit::SplitAtPlayhead,
+            m_currentFrame);
         return;
     }
 
     if (selected == resetExportRangeAction) {
-        m_exportRanges = {ExportRangeSegment{0, totalFrames()}};
-        normalizeExportRanges();
-        if (exportRangeChanged) {
-            exportRangeChanged();
-        }
-        update();
+        editExportRanges(
+            jcut::export_range::Edit::Reset,
+            m_currentFrame);
         return;
     }
 

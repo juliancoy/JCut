@@ -1,8 +1,10 @@
 #include "face_artifact_core.h"
+#include "speaker_framing_smoothing_core.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -527,6 +529,396 @@ std::vector<SpeakerTrackAssignmentCore> transcriptSpeakerTrackAssignments(
     std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
         return lhs.trackId < rhs.trackId;
     });
+    return result;
+}
+
+std::vector<SpeakerTrackAssignmentCore>
+transcriptSpeakerTrackAssignmentsAtFrame(
+    const json& transcriptRoot,
+    const std::string& clipId,
+    const std::string& speakerId,
+    std::int64_t sourceFrame)
+{
+    std::vector<SpeakerTrackAssignmentCore> result;
+    const json& clip = transcriptRoot
+        .value("speaker_flow", json::object())
+        .value("clips", json::object())
+        .value(clipId, json::object());
+    const json& resolved =
+        clip.value("resolved_current", json::object());
+    json sections =
+        resolved.value("section_track_map", json::array());
+    if (!sections.is_array() || sections.empty()) {
+        sections = clip.value("section_track_map", json::array());
+    }
+    if (sections.is_array()) {
+        for (const json& section : sections) {
+            if (!section.is_object() ||
+                stringValue(section, "speaker_id") != speakerId) {
+                continue;
+            }
+            const std::int64_t start = section.value(
+                "start_frame", std::int64_t{-1});
+            const std::int64_t end = section.value(
+                "end_frame",
+                std::numeric_limits<std::int64_t>::max());
+            if ((start >= 0 && sourceFrame < start) ||
+                (end >= 0 && sourceFrame > end)) {
+                continue;
+            }
+            json tracks = section.value("tracks", json::array());
+            if (!tracks.is_array() || tracks.empty()) {
+                tracks = json::array({section});
+            }
+            for (const json& row : tracks) {
+                if (!row.is_object()) continue;
+                SpeakerTrackAssignmentCore assignment;
+                assignment.trackId = row.value("track_id", -1);
+                assignment.streamId = stringValue(row, "stream_id");
+                assignment.identityId = speakerId;
+                assignment.sourceFrame = sourceFrame;
+                assignment.rotationDegrees = std::clamp(
+                    finiteNumber(section, "rotation", 0.0),
+                    -180.0,
+                    180.0);
+                if (assignment.trackId >= 0 ||
+                    !assignment.streamId.empty()) {
+                    result.push_back(std::move(assignment));
+                }
+            }
+            if (!result.empty()) return result;
+        }
+    }
+    for (SpeakerTrackAssignmentCore assignment :
+         transcriptSpeakerTrackAssignments(transcriptRoot, clipId)) {
+        if (assignment.identityId == speakerId) {
+            result.push_back(std::move(assignment));
+        }
+    }
+    return result;
+}
+
+FaceTrackingSampleCore sampleFaceContinuityTrack(
+    const std::string& transcriptPath,
+    const std::string& clipId,
+    int trackId,
+    const std::string& streamId,
+    std::int64_t sourceFrame,
+    double minConfidence,
+    std::int64_t sourceInFrame,
+    double localTimelineFrame,
+    int gapHoldFrames,
+    int centerSmoothingFrames,
+    int zoomSmoothingFrames,
+    int smoothingMode,
+    double centerSmoothingStrength,
+    double zoomSmoothingStrength)
+{
+    FaceTrackingSampleCore result;
+    json artifact;
+    bool loaded = false;
+    for (const std::string& path :
+         faceArtifactCandidatePaths(transcriptPath)) {
+        if (loadJcutBoxDocument(path, &artifact, nullptr)) {
+            loaded = true;
+            break;
+        }
+    }
+    if (!loaded) return result;
+    std::string ignoredClipId;
+    const json* continuity = clipRoot(
+        artifact,
+        "continuity_facedetections_by_clip",
+        clipId,
+        &ignoredClipId,
+        nullptr);
+    if (!continuity) {
+        continuity = clipRoot(
+            artifact,
+            "continuity_facestreams_by_clip",
+            clipId,
+            &ignoredClipId,
+            nullptr);
+    }
+    if (!continuity) return result;
+    const json* rows = nullptr;
+    const auto rawTracks = continuity->find("raw_tracks");
+    const auto streams = continuity->find("streams");
+    if (rawTracks != continuity->end() && rawTracks->is_array()) {
+        rows = &*rawTracks;
+    } else if (streams != continuity->end() && streams->is_array()) {
+        rows = &*streams;
+    }
+    if (!rows) return result;
+
+    const json* matched = nullptr;
+    for (const json& row : *rows) {
+        if (!row.is_object()) continue;
+        const bool trackMatches =
+            trackId >= 0 && row.value("track_id", -1) == trackId;
+        const bool streamMatches =
+            !streamId.empty() &&
+            stringValue(row, "stream_id") == streamId;
+        if (trackMatches || streamMatches) {
+            matched = &row;
+            break;
+        }
+    }
+    if (!matched) return result;
+    std::string frameDomain = stringValue(*matched, "frame_domain");
+    if (frameDomain.empty()) {
+        frameDomain = stringValue(
+            *continuity,
+            rawTracks != continuity->end() &&
+                    rawTracks->is_array()
+                ? "raw_tracks_frame_domain"
+                : "streams_frame_domain");
+    }
+    std::transform(
+        frameDomain.begin(),
+        frameDomain.end(),
+        frameDomain.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+    double lookupPosition = static_cast<double>(
+        std::max<std::int64_t>(0, sourceFrame));
+    if (frameDomain == "source_relative" ||
+        frameDomain == "source-relative") {
+        lookupPosition = static_cast<double>(
+            std::max<std::int64_t>(
+                0, sourceFrame - sourceInFrame));
+    } else if (
+        frameDomain == "clip_timeline_30fps" ||
+        frameDomain == "clip-timeline-30fps" ||
+        frameDomain == "timeline") {
+        lookupPosition = std::max(
+            0.0,
+            localTimelineFrame >= 0.0
+                ? localTimelineFrame
+                : static_cast<double>(sourceFrame));
+    }
+    const json* values = nullptr;
+    const auto detections = matched->find("detections");
+    const auto keyframes = matched->find("keyframes");
+    if (detections != matched->end() && detections->is_array()) {
+        values = &*detections;
+    } else if (keyframes != matched->end() && keyframes->is_array()) {
+        values = &*keyframes;
+    }
+    if (!values || values->empty()) return result;
+    struct Sample {
+        std::int64_t frame = 0;
+        double x = 0.5;
+        double y = 0.5;
+        double box = -1.0;
+        double score = 0.0;
+    };
+    std::vector<Sample> samples;
+    for (const json& value : *values) {
+        if (!value.is_object()) continue;
+        Sample sample;
+        sample.frame = value.value("frame", std::int64_t{-1});
+        if (sample.frame < 0) continue;
+        sample.x = std::clamp(
+            finiteNumber(value, "x", 0.5), 0.0, 1.0);
+        sample.y = std::clamp(
+            finiteNumber(value, "y", 0.5), 0.0, 1.0);
+        sample.box = std::clamp(
+            finiteNumber(
+                value,
+                "box",
+                finiteNumber(value, "box_size", -1.0)),
+            -1.0,
+            1.0);
+        sample.score = std::clamp(
+            finiteNumber(
+                value,
+                "score",
+                finiteNumber(value, "confidence", 1.0)),
+            0.0,
+            1.0);
+        samples.push_back(sample);
+    }
+    std::stable_sort(
+        samples.begin(),
+        samples.end(),
+        [](const Sample& left, const Sample& right) {
+            return left.frame < right.frame;
+        });
+    if (samples.empty()) return result;
+    std::vector<std::int64_t> steps;
+    for (std::size_t index = 1; index < samples.size(); ++index) {
+        const std::int64_t step =
+            samples[index].frame - samples[index - 1].frame;
+        if (step > 0) steps.push_back(step);
+    }
+    std::sort(steps.begin(), steps.end());
+    const std::int64_t typicalStep = steps.empty()
+        ? 1
+        : std::max<std::int64_t>(
+              1, steps[steps.size() / 2]);
+    const std::int64_t edgeHold = std::max<std::int64_t>(
+        typicalStep,
+        std::clamp(gapHoldFrames, 0, 240));
+    const double confidenceFloor =
+        std::clamp(minConfidence, 0.0, 1.0);
+    const auto assign = [&](const Sample& sample) {
+        if (sample.score < confidenceFloor || sample.box <= 0.0) {
+            return false;
+        }
+        result.x = sample.x;
+        result.y = sample.y;
+        result.box = sample.box;
+        result.score = sample.score;
+        result.valid = true;
+        return true;
+    };
+    using RobustSample =
+        speaker_framing_smoothing::Sample;
+    const auto applySmoothing = [&]() {
+        if (!result.valid) return;
+        const std::int64_t lookupFrame =
+            std::max<std::int64_t>(
+                0,
+                static_cast<std::int64_t>(
+                    std::floor(lookupPosition)));
+        const int centerWindow =
+            std::clamp(centerSmoothingFrames, 0, 500);
+        const int zoomWindow =
+            std::clamp(zoomSmoothingFrames, 0, 500);
+        std::vector<RobustSample> xValues;
+        std::vector<RobustSample> yValues;
+        std::vector<RobustSample> boxValues;
+        if (centerWindow > 1) {
+            xValues.push_back(
+                {result.x, lookupFrame, result.score});
+            yValues.push_back(
+                {result.y, lookupFrame, result.score});
+        }
+        if (zoomWindow > 1) {
+            boxValues.push_back({
+                std::log(std::max(0.01, result.box)),
+                lookupFrame,
+                result.score});
+        }
+        const int centerBefore = centerWindow / 2;
+        const int centerAfter =
+            centerWindow - centerBefore - 1;
+        const int zoomBefore = zoomWindow / 2;
+        const int zoomAfter = zoomWindow - zoomBefore - 1;
+        for (const Sample& sample : samples) {
+            if (sample.frame == lookupFrame || sample.box <= 0.0) {
+                continue;
+            }
+            if (centerWindow > 1 &&
+                sample.frame >= lookupFrame - centerBefore &&
+                sample.frame <= lookupFrame + centerAfter) {
+                xValues.push_back(
+                    {sample.x, sample.frame, sample.score});
+                yValues.push_back(
+                    {sample.y, sample.frame, sample.score});
+            }
+            if (zoomWindow > 1 &&
+                sample.frame >= lookupFrame - zoomBefore &&
+                sample.frame <= lookupFrame + zoomAfter) {
+                boxValues.push_back({
+                    std::log(std::max(0.01, sample.box)),
+                    sample.frame,
+                    sample.score});
+            }
+        }
+        if (centerWindow > 1) {
+            result.x = std::clamp(
+                speaker_framing_smoothing::robustSmoothedScalar(
+                    result.x,
+                    xValues,
+                    lookupFrame,
+                    centerWindow,
+                    smoothingMode,
+                    centerSmoothingStrength,
+                    0.015),
+                0.0,
+                1.0);
+            result.y = std::clamp(
+                speaker_framing_smoothing::robustSmoothedScalar(
+                    result.y,
+                    yValues,
+                    lookupFrame,
+                    centerWindow,
+                    smoothingMode,
+                    centerSmoothingStrength,
+                    0.015),
+                0.0,
+                1.0);
+        }
+        if (zoomWindow > 1) {
+            result.box = std::clamp(
+                std::exp(
+                    speaker_framing_smoothing::robustSmoothedScalar(
+                    std::log(std::max(0.01, result.box)),
+                    boxValues,
+                    lookupFrame,
+                    zoomWindow,
+                    smoothingMode,
+                    zoomSmoothingStrength,
+                    0.08)),
+                0.01,
+                1.0);
+        }
+    };
+    if (samples.size() == 1 ||
+        lookupPosition <= samples.front().frame) {
+        if (std::abs(
+                lookupPosition -
+                static_cast<double>(samples.front().frame)) <=
+            edgeHold) {
+            assign(samples.front());
+            applySmoothing();
+        }
+        return result;
+    }
+    if (lookupPosition >= samples.back().frame) {
+        if (std::abs(
+                lookupPosition -
+                static_cast<double>(samples.back().frame)) <=
+            edgeHold) {
+            assign(samples.back());
+            applySmoothing();
+        }
+        return result;
+    }
+    for (std::size_t index = 1; index < samples.size(); ++index) {
+        const Sample& previous = samples[index - 1];
+        const Sample& next = samples[index];
+        if (lookupPosition > next.frame) continue;
+        if (next.frame - previous.frame >
+            std::max<std::int64_t>(2, typicalStep * 2)) {
+            return result;
+        }
+        if (previous.score < confidenceFloor ||
+            next.score < confidenceFloor ||
+            previous.box <= 0.0 ||
+            next.box <= 0.0) {
+            return result;
+        }
+        const double amount = std::clamp(
+            (lookupPosition -
+             static_cast<double>(previous.frame)) /
+                static_cast<double>(std::max<std::int64_t>(
+                    1, next.frame - previous.frame)),
+            0.0,
+            1.0);
+        result.x = previous.x + (next.x - previous.x) * amount;
+        result.y = previous.y + (next.y - previous.y) * amount;
+        result.box =
+            previous.box + (next.box - previous.box) * amount;
+        result.score =
+            previous.score + (next.score - previous.score) * amount;
+        result.valid = true;
+        applySmoothing();
+        return result;
+    }
     return result;
 }
 

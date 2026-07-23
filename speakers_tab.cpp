@@ -12,6 +12,7 @@
 #include "editor_shared_keyframes.h"
 #include "json_io_utils.h"
 #include "speaker_flow_debug.h"
+#include "speaker_section_core.h"
 #include "transcript_engine.h"
 
 #include <QBuffer>
@@ -2072,115 +2073,33 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         }
     }
 
-    const QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
     QVector<SpeakerSectionRow> rows;
-    SpeakerSectionRow currentRow;
-    auto flushCurrentRow = [&rows, &currentRow, minimumWords]() {
-        if (currentRow.speakerId.isEmpty()) {
-            return;
+    const auto coreSections = jcut::projectSpeakerSectionsCore(
+        jcut::jsonio::toJson(transcriptRoot),
+        minimumWords,
+        kTimelineFps);
+    rows.reserve(static_cast<qsizetype>(coreSections.size()));
+    for (const jcut::SpeakerSectionCore& coreSection :
+         coreSections) {
+        SpeakerSectionRow row;
+        row.speakerId =
+            QString::fromStdString(coreSection.speakerId);
+        row.displayLabel =
+            QString::fromStdString(coreSection.displayLabel);
+        row.startTimelineFrame = coreSection.startFrame;
+        row.endTimelineFrame = coreSection.endFrame;
+        row.wordCount =
+            static_cast<int>(coreSection.wordCount);
+        row.snippetWords.reserve(
+            static_cast<qsizetype>(
+                coreSection.snippetWords.size()));
+        for (const std::string& word :
+             coreSection.snippetWords) {
+            row.snippetWords.push_back(
+                QString::fromStdString(word));
         }
-        if (currentRow.wordCount >= minimumWords) {
-            rows.push_back(currentRow);
-        }
-        currentRow = SpeakerSectionRow{};
-    };
-
-    for (const QJsonValue& segValue : segments) {
-        const QJsonObject segmentObj = segValue.toObject();
-        const QString segmentSpeaker =
-            segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-        if (!words.isEmpty()) {
-            for (const QJsonValue& wordValue : words) {
-                const QJsonObject wordObj = wordValue.toObject();
-                if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
-                    continue;
-                }
-                QString speakerId =
-                    wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-                if (speakerId.isEmpty()) {
-                    speakerId = segmentSpeaker;
-                }
-                if (speakerId.isEmpty()) {
-                    flushCurrentRow();
-                    continue;
-                }
-                const QString text = wordObj.value(QStringLiteral("text")).toString().trimmed();
-                const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-                const double endSeconds =
-                    wordObj.value(QStringLiteral("end")).toDouble(startSeconds);
-                const int64_t startFrame =
-                    startSeconds >= 0.0
-                        ? qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)))
-                        : -1;
-                const int64_t endFrame =
-                    endSeconds >= 0.0
-                        ? qMax<int64_t>(0, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)))
-                        : startFrame;
-                if (currentRow.speakerId != speakerId) {
-                    flushCurrentRow();
-                    currentRow.speakerId = speakerId;
-                    const QString displayName =
-                        profiles.value(speakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
-                    currentRow.displayLabel = displayName.isEmpty() ? speakerId : displayName;
-                    currentRow.startTimelineFrame = startFrame;
-                    currentRow.endTimelineFrame = endFrame;
-                } else if (endFrame >= 0) {
-                    currentRow.endTimelineFrame = qMax(currentRow.endTimelineFrame, endFrame);
-                }
-                if (currentRow.startTimelineFrame < 0 && startFrame >= 0) {
-                    currentRow.startTimelineFrame = startFrame;
-                }
-                ++currentRow.wordCount;
-                if (!text.isEmpty() && currentRow.snippetWords.size() < 14) {
-                    currentRow.snippetWords.push_back(text);
-                }
-            }
-            continue;
-        }
-
-        if (segmentSpeaker.isEmpty()) {
-            flushCurrentRow();
-            continue;
-        }
-        const QString text = segmentObj.value(QStringLiteral("text")).toString().simplified();
-        const double startSeconds = segmentObj.value(QStringLiteral("start")).toDouble(-1.0);
-        const double endSeconds = segmentObj.value(QStringLiteral("end")).toDouble(startSeconds);
-        const int64_t startFrame =
-            startSeconds >= 0.0
-                ? qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)))
-                : -1;
-        const int64_t endFrame =
-            endSeconds >= 0.0
-                ? qMax<int64_t>(0, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)))
-                : startFrame;
-        if (currentRow.speakerId != segmentSpeaker) {
-            flushCurrentRow();
-            currentRow.speakerId = segmentSpeaker;
-            const QString displayName =
-                profiles.value(segmentSpeaker).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
-            currentRow.displayLabel = displayName.isEmpty() ? segmentSpeaker : displayName;
-            currentRow.startTimelineFrame = startFrame;
-            currentRow.endTimelineFrame = endFrame;
-        } else if (endFrame >= 0) {
-            currentRow.endTimelineFrame = qMax(currentRow.endTimelineFrame, endFrame);
-        }
-        if (currentRow.startTimelineFrame < 0 && startFrame >= 0) {
-            currentRow.startTimelineFrame = startFrame;
-        }
-        ++currentRow.wordCount;
-        if (!text.isEmpty()) {
-            const QStringList wordsForSnippet = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-            for (const QString& word : wordsForSnippet) {
-                if (currentRow.snippetWords.size() >= 14) {
-                    break;
-                }
-                currentRow.snippetWords.push_back(word);
-            }
-        }
+        rows.push_back(std::move(row));
     }
-    flushCurrentRow();
 
     auto collectSectionKeyframes =
         [clip, &timelineClips](const SpeakerSectionRow& section) {

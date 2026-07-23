@@ -72,10 +72,20 @@ struct TranscriptSpeakerLocationCore {
     bool valid = false;
 };
 
+struct TranscriptSpeakerTrackingSampleCore {
+    double x = 0.5;
+    double y = 0.5;
+    double boxSize = -1.0;
+    bool valid = false;
+};
+
 struct TranscriptSpeakerProfileCore {
     std::string id;
     std::string name;
     std::string organization;
+    std::string primaryColor;
+    std::string secondaryColor;
+    std::string accentColor;
     double x = 0.5;
     double y = 0.85;
     std::size_t wordCount = 0;
@@ -103,6 +113,10 @@ public:
     TranscriptSpeakerLocationCore speakerLocation(
         const std::string& speakerId,
         std::int64_t sourceFrame) const;
+    TranscriptSpeakerTrackingSampleCore speakerTrackingSample(
+        const std::string& speakerId,
+        std::int64_t transcriptFrame,
+        double minConfidence) const;
     std::vector<TranscriptSpeakerProfileCore> speakerProfiles() const;
 
 private:

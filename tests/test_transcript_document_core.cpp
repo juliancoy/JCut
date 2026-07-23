@@ -1,4 +1,6 @@
 #include "../transcript_document_core.h"
+#include "../speaker_section_core.h"
+#include "../speaker_section_export_core.h"
 
 #include <cmath>
 #include <cstdint>
@@ -268,6 +270,44 @@ void testOutsideActiveCutProjection()
            "inserted words with no original address stay in the active cut");
 }
 
+void testSpeakerTrackingSamplesPreserveFramingContract()
+{
+    const auto document = jcut::TranscriptDocumentCore::fromJson({
+        {"speaker_profiles", {
+            {"S1", {
+                {"framing", {
+                    {"enabled", true},
+                    {"mode", "AutoTrackLinear"},
+                    {"keyframes", json::array({
+                        {
+                            {"frame", 0}, {"x", 0.2}, {"y", 0.3},
+                            {"box_size", 0.1}, {"confidence", 0.9},
+                        },
+                        {
+                            {"frame", 30}, {"x", 0.8}, {"y", 0.7},
+                            {"box_size", 0.3}, {"confidence", 0.7},
+                        },
+                    })},
+                }},
+            }},
+        }},
+        {"segments", json::array()},
+    });
+    expect(document.has_value(), "speaker tracking fixture parses");
+    if (!document) return;
+    const jcut::TranscriptSpeakerTrackingSampleCore middle =
+        document->speakerTrackingSample("S1", 15, 0.5);
+    expect(middle.valid, "eligible profile framing resolves");
+    expect(std::abs(middle.x - 0.5) < 1.0e-12 &&
+               std::abs(middle.y - 0.5) < 1.0e-12 &&
+               std::abs(middle.boxSize - 0.2) < 1.0e-12,
+           "profile location and box interpolate linearly like Qt");
+    expect(!document->speakerTrackingSample("S1", 15, 0.8).valid,
+           "confidence floor rejects an interval with a low endpoint");
+    expect(!document->speakerTrackingSample("missing", 15, 0.0).valid,
+           "unknown speaker fails closed");
+}
+
 void testInvalidDocumentsAndTimingFallback()
 {
     std::string error;
@@ -299,6 +339,242 @@ void testInvalidDocumentsAndTimingFallback()
            "invalid words are hidden and invalid FPS falls back to 30");
 }
 
+void testSpeakerSectionProjectionAndMutation()
+{
+    json root = {
+        {"root_extension", "keep"},
+        {"speaker_profiles", {
+            {"S1", {{"name", "Alice"}}},
+            {"S2", {{"name", "Bob"}}},
+        }},
+        {"segments", json::array({
+            {
+                {"speaker", "S1"},
+                {"words", json::array({
+                    {{"word", "hello"}, {"start", 0.0}, {"end", 0.05}},
+                    {{"text", "there"}, {"start", 0.1}, {"end", 0.2},
+                     {"word_extension", 7}},
+                    {{"word", "hidden"}, {"start", 0.3}, {"end", 0.4},
+                     {"skipped", true}},
+                    {{"word", "bob"}, {"speaker", "S2"},
+                     {"start", 1.0}, {"end", 1.1}},
+                    {{"word", "again"}, {"speaker", "S1"},
+                     {"start", 2.0}, {"end", 2.1}},
+                })},
+            },
+        })},
+    };
+
+    const auto sections =
+        jcut::projectSpeakerSectionsCore(root, 1, 30.0);
+    expect(sections.size() == 3,
+           "speaker changes project three contiguous sections");
+    if (sections.size() == 3) {
+        expect(sections[0].speakerId == "S1" &&
+                   sections[0].displayLabel == "Alice" &&
+                   sections[0].startFrame == 0 &&
+                   sections[0].endFrame == 6 &&
+                   sections[0].wordCount == 2,
+               "first section matches Qt frame, label, and word policy");
+        expect(sections[0].snippetWords ==
+                   std::vector<std::string>({"hello", "there"}),
+               "section snippets accept word and text spellings");
+        expect(sections[1].speakerId == "S2" &&
+                   sections[1].startFrame == 30,
+               "explicit word speaker starts a new section");
+        expect(sections[2].speakerId == "S1" &&
+                   sections[2].startFrame == 60,
+               "returning speaker starts a distinct section");
+    }
+    const auto filtered =
+        jcut::projectSpeakerSectionsCore(root, 2, 30.0);
+    expect(filtered.size() == 1 &&
+               filtered.front().wordCount == 2,
+           "minimum word preference filters short sections");
+
+    std::string error;
+    expect(jcut::setSpeakerSectionSkippedCore(
+               &root, "S1", 0, 6, true, 30.0, &error),
+           "section skip changes active words in the inclusive range");
+    expect(error.empty(), "successful section skip clears errors");
+    expect(root["segments"][0]["words"][0]["skipped"] == true &&
+               root["segments"][0]["words"][1]["skipped"] == true &&
+               root["segments"][0]["words"][1]["word_extension"] == 7 &&
+               root["root_extension"] == "keep",
+           "section skip preserves unknown word and root fields");
+    expect(!jcut::setSpeakerSectionSkippedCore(
+               &root, "S1", 0, 6, true, 30.0, &error) &&
+               error.empty(),
+           "repeating a section skip is a successful no-op");
+    expect(jcut::setSpeakerSectionSkippedCore(
+               &root, "S1", 0, 6, false, 30.0, &error),
+           "section unskip restores the same inclusive range");
+
+    root["speaker_flow"] = {
+        {"clips", {
+            {"clip-a", {
+                {"resolved_current", {
+                    {"section_track_map", json::array({
+                        {
+                            {"section_key", "S1|0|6"},
+                            {"speaker_id", "S1"},
+                            {"start_frame", 0},
+                            {"end_frame", 6},
+                            {"unknown_section_field", "keep"},
+                            {"tracks", json::array({
+                                {{"track_id", 7},
+                                 {"stream_id", "T7"},
+                                 {"unknown_track_field", 9}},
+                            })},
+                        },
+                    })},
+                }},
+            }},
+        }},
+    };
+    jcut::SpeakerSectionOptionsCore options;
+    options.rotationDegrees = 22.5;
+    options.gradingEnabled = true;
+    options.gradingBrightness = 0.25;
+    options.gradingContrast = 1.4;
+    options.gradingSaturation = 0.8;
+    options.maskEnabled = true;
+    options.maskOpacity = 0.7;
+    options.maskFeather = 4.0;
+    options.maskBlur = 2.0;
+    options.maskDilate = 3.0;
+    options.maskInvert = true;
+    expect(jcut::setSpeakerSectionOptionsCore(
+               &root, "clip-a", "S1", 0, 6, 2, options),
+           "section options upsert changes the shared assignment row");
+    const auto storedOptions = jcut::speakerSectionOptionsCore(
+        root, "clip-a", "S1", 0, 6);
+    expect(storedOptions.stored &&
+               storedOptions.rotationDegrees == 22.5 &&
+               storedOptions.gradingEnabled &&
+               storedOptions.gradingBrightness == 0.25 &&
+               storedOptions.maskEnabled &&
+               storedOptions.maskOpacity == 0.7 &&
+               storedOptions.maskInvert,
+           "section options read back through the neutral schema");
+    const json& storedSection = root["speaker_flow"]["clips"]["clip-a"]
+        ["resolved_current"]["section_track_map"][0];
+    expect(storedSection["unknown_section_field"] == "keep" &&
+               storedSection["tracks"][0]["unknown_track_field"] == 9 &&
+               storedSection["tracks"][0]["rotation"] == 22.5,
+           "section options preserve unknowns and mirror rotation to tracks");
+    expect(!jcut::setSpeakerSectionOptionsCore(
+               &root, "clip-a", "S1", 0, 6, 2, options),
+           "repeating identical section options is a no-op");
+
+    const std::vector<jcut::TranscriptTrackAssignmentAnchor> addedAnchors{
+        {7, "T7", 12, 0.25, 0.35, 0.3},
+        {8, "raw_detection", 18, 0.65, 0.45, 0.2},
+    };
+    expect(jcut::setSpeakerSectionTrackAssignmentsCore(
+               &root,
+               "clip-a",
+               "S1",
+               0,
+               6,
+               2,
+               addedAnchors,
+               false),
+           "selected continuity tracks add to one section");
+    const json& assignedSection = root["speaker_flow"]["clips"]["clip-a"]
+        ["resolved_current"]["section_track_map"][0];
+    expect(assignedSection["tracks"].size() == 2 &&
+               assignedSection["tracks"][0]["track_id"] == 7 &&
+               assignedSection["tracks"][0]["unknown_track_field"] == 9 &&
+               assignedSection["tracks"][1]["track_id"] == 8 &&
+               assignedSection["tracks"][1]["stream_id"] == "T8" &&
+               assignedSection["section_options"]["mask"]["enabled"] == true,
+           "section assignment normalizes anchors and preserves options and track extensions");
+    const std::vector<jcut::TranscriptTrackAssignmentAnchor> replacement{
+        {8, "T8", 20, 0.6, 0.4, 0.25},
+    };
+    expect(jcut::setSpeakerSectionTrackAssignmentsCore(
+               &root,
+               "clip-a",
+               "S1",
+               0,
+               6,
+               2,
+               replacement,
+               true),
+           "replacement keeps only explicitly selected section tracks");
+    expect(root["speaker_flow"]["clips"]["clip-a"]["resolved_current"]
+                   ["section_track_map"][0]["tracks"].size() == 1 &&
+               root["speaker_flow"]["clips"]["clip-a"]["resolved_current"]
+                   ["section_track_map"][0]["track_id"] == 8,
+           "replacement synchronizes the legacy primary-track fields");
+    expect(jcut::setSpeakerSectionTrackAssignmentsCore(
+               &root,
+               "clip-a",
+               "S1",
+               0,
+               6,
+               2,
+               {},
+               true),
+           "empty replacement clears a section assignment");
+    const json& clearedSection = root["speaker_flow"]["clips"]["clip-a"]
+        ["resolved_current"]["section_track_map"][0];
+    expect(clearedSection["tracks"].empty() &&
+               !clearedSection.contains("track_id") &&
+               clearedSection["section_options"]["grading"]["enabled"] == true,
+           "clearing tracks retains the section and its options");
+    const json clearedRoot = root;
+    expect(!jcut::setSpeakerSectionTrackAssignmentsCore(
+               &root,
+               "clip-a",
+               "S1",
+               0,
+               6,
+               2,
+               {},
+               true) &&
+               root == clearedRoot,
+           "repeating section-track clear is a side-effect-free no-op");
+
+    json malformed = root;
+    malformed["speaker_flow"]["clips"]["clip-a"]["resolved_current"]
+        ["section_track_map"][0]["section_options"] = "invalid";
+    const auto malformedOptions = jcut::speakerSectionOptionsCore(
+        malformed, "clip-a", "S1", 0, 6);
+    expect(malformedOptions.stored &&
+               !malformedOptions.gradingEnabled &&
+               !malformedOptions.maskEnabled,
+           "malformed legacy section options fall back without throwing");
+    malformed["speaker_flow"] = "invalid";
+    expect(!jcut::speakerSectionOptionsCore(
+                malformed, "clip-a", "S1", 0, 6).stored,
+           "malformed speaker-flow containers fail closed");
+
+    const auto exportSections =
+        jcut::coalescedSpeakerSectionExports({
+            {"S1", "Alice", 0, 6, 2, 1, {7, 7}},
+            {"S1", "Alice", 7, 12, 3, 2, {8}},
+            {"S2", "Bob / Guest", 13, 18, 4, 3, {}},
+        });
+    expect(exportSections.size() == 2 &&
+               exportSections[0].sourceStartFrame == 0 &&
+               exportSections[0].sourceEndFrame == 12 &&
+               exportSections[0].wordCount == 5 &&
+               exportSections[0].trackIds ==
+                   std::vector<int>({7, 8}),
+           "bulk section export coalesces adjacent same-speaker rows and tracks");
+    expect(jcut::speakerSectionExportTitle(
+               exportSections[0]) ==
+               "Alice tracks 7-8" &&
+               jcut::sanitizedSpeakerSectionExportBase(
+                   exportSections[1]) ==
+                   "Bob_Guest_no_track" &&
+               jcut::speakerSectionExportSpeedSuffix(1.25) ==
+                   "_1.25x",
+           "bulk section export titles and filenames are deterministic");
+}
+
 } // namespace
 
 int main()
@@ -307,7 +583,9 @@ int main()
     testTimingOverlapAndFormatting();
     testGapsAndRenderFrames();
     testOutsideActiveCutProjection();
+    testSpeakerTrackingSamplesPreserveFramingContract();
     testInvalidDocumentsAndTimingFallback();
+    testSpeakerSectionProjectionAndMutation();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " transcript document core assertion(s) failed\n";

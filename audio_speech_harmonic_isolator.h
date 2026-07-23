@@ -12,7 +12,8 @@ namespace editor::audio {
 // speech content without changing the requested transport duration.
 class SpeechHarmonicIsolator final {
 public:
-    static constexpr int kAlgorithmVersion = 1;
+    static constexpr int kAlgorithmVersion =
+        jcut::audio::kSpeechHarmonicIsolationAlgorithmVersion;
 
     struct Request {
         const QVector<float>* samples = nullptr;

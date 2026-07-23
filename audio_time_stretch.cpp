@@ -5,9 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace {
-
-jcut::audio::StretchSettings toCoreSettings(
+jcut::audio::StretchSettings toCoreStretchSettings(
     const AudioTimeStretchRubberBandSettings& settings)
 {
     jcut::audio::StretchSettings result;
@@ -51,6 +49,8 @@ jcut::audio::StretchSettings toCoreSettings(
     return result;
 }
 
+namespace {
+
 QVector<float> toQVector(std::vector<float> values)
 {
     return QVector<float>(values.cbegin(), values.cend());
@@ -87,7 +87,7 @@ QVector<float> timeStretchPreservePitchRubberBand(
         interleavedSamples.cbegin(), interleavedSamples.cend());
     return toQVector(jcut::audio::timeStretchPreservePitch(
         input, channelCount, sampleRate, speed, progressCallback,
-        toCoreSettings(settings)));
+        toCoreStretchSettings(settings)));
 }
 
 QVector<float> timeStretchPreservePitchSola(

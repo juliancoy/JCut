@@ -2,6 +2,11 @@
 
 #include "vulkan_text_renderer.h"
 #include "title_mesh_extrusion.h"
+#include "title_3d_projection_core.h"
+
+#include <QMatrix4x4>
+#include <QVector3D>
+#include <QVector4D>
 
 class TestVulkanTextGeneration : public QObject {
     Q_OBJECT
@@ -20,6 +25,7 @@ private slots:
     void transcriptOverlayKeepsFirstLineStableAcrossLineCounts();
     void emptyInputsDoNotGenerateText();
     void titleContourMeshHasFrontBackSideAndBevelGeometry();
+    void neutralTitleProjectionMatchesQtVulkanMvp();
 };
 
 namespace {
@@ -517,6 +523,154 @@ void TestVulkanTextGeneration::titleContourMeshHasFrontBackSideAndBevelGeometry(
     QVERIFY(frontCount > 0);
     QVERIFY2(frontY / frontCount > 0.0,
              "screen-space mesh orientation must keep the foot of L below its stem");
+}
+
+void TestVulkanTextGeneration::neutralTitleProjectionMatchesQtVulkanMvp()
+{
+    constexpr int width = 640;
+    constexpr int height = 360;
+    constexpr float cameraDistance = 5.2f;
+    constexpr float fovDegrees = 43.0f;
+    const QRectF rect(95.0, 74.0, 218.0, 82.0);
+    const QPointF titleCenter(331.0, 193.0);
+    const qreal aspect =
+        static_cast<qreal>(width) / static_cast<qreal>(height);
+    const qreal halfViewHeight =
+        std::tan((fovDegrees * M_PI / 180.0) * 0.5) *
+        cameraDistance;
+    const qreal halfViewWidth = halfViewHeight * aspect;
+    const auto screenToWorld = [&](const QPointF& point) {
+        return QVector3D(
+            static_cast<float>(
+                ((2.0 * point.x() / width) - 1.0) *
+                halfViewWidth),
+            static_cast<float>(
+                ((2.0 * point.y() / height) - 1.0) *
+                halfViewHeight),
+            0.0f);
+    };
+    const QVector3D centerWorld =
+        screenToWorld(titleCenter);
+    const QPointF localCenter =
+        rect.center() - titleCenter;
+    const QVector3D localWorld(
+        static_cast<float>(
+            (localCenter.x() / width) * 2.0 *
+            halfViewWidth),
+        static_cast<float>(
+            (localCenter.y() / height) * 2.0 *
+            halfViewHeight),
+        0.0f);
+
+    jcut::Title3DProjectionCore projection;
+    projection.enabled = true;
+    projection.yawDegrees = 37.0;
+    projection.pitchDegrees = -19.0;
+    projection.rollDegrees = 11.0;
+    projection.depth = 0.85;
+    projection.scale = 1.27;
+
+    QMatrix4x4 qtProjection;
+    qtProjection.perspective(
+        fovDegrees,
+        static_cast<float>(aspect),
+        0.1f,
+        32.0f);
+    QMatrix4x4 view;
+    view.lookAt(
+        QVector3D(0.0f, 0.0f, cameraDistance),
+        QVector3D(0.0f, 0.0f, 0.0f),
+        QVector3D(0.0f, 1.0f, 0.0f));
+    QMatrix4x4 model;
+    model.translate(centerWorld);
+    model.rotate(
+        static_cast<float>(projection.yawDegrees),
+        0.0f,
+        1.0f,
+        0.0f);
+    model.rotate(
+        static_cast<float>(projection.pitchDegrees),
+        1.0f,
+        0.0f,
+        0.0f);
+    model.rotate(
+        static_cast<float>(projection.rollDegrees),
+        0.0f,
+        0.0f,
+        1.0f);
+    model.translate(
+        localWorld.x(),
+        localWorld.y(),
+        static_cast<float>(projection.depth));
+    model.scale(
+        static_cast<float>(
+            (rect.width() / width) *
+            halfViewWidth *
+            projection.scale),
+        static_cast<float>(
+            (rect.height() / height) *
+            halfViewHeight *
+            projection.scale),
+        1.0f);
+    const QMatrix4x4 mvp =
+        qtProjection * view * model;
+
+    for (const auto& corner : {
+             std::pair{-1.0, -1.0},
+             std::pair{1.0, -1.0},
+             std::pair{-1.0, 1.0},
+             std::pair{1.0, 1.0}}) {
+        const QVector4D clip =
+            mvp * QVector4D(
+                      static_cast<float>(corner.first),
+                      static_cast<float>(corner.second),
+                      0.0f,
+                      1.0f);
+        QVERIFY(std::abs(clip.w()) > 0.0001f);
+        const double expectedX =
+            (clip.x() / clip.w() + 1.0) *
+            width * 0.5;
+        const double expectedY =
+            (clip.y() / clip.w() + 1.0) *
+            height * 0.5;
+        const double sourceX =
+            corner.first < 0.0 ? rect.left() : rect.right();
+        const double sourceY =
+            corner.second < 0.0 ? rect.top() : rect.bottom();
+        const jcut::TitleProjectedPointCore actual =
+            jcut::projectTitle3DPointCore(
+                sourceX,
+                sourceY,
+                rect.center().x(),
+                rect.center().y(),
+                titleCenter.x(),
+                titleCenter.y(),
+                width,
+                height,
+                projection);
+        QVERIFY(actual.valid);
+        QVERIFY2(
+            std::abs(actual.x - expectedX) < 0.001,
+            "neutral title X projection diverged from Qt's Vulkan MVP");
+        QVERIFY2(
+            std::abs(actual.y - expectedY) < 0.001,
+            "neutral title Y projection diverged from Qt's Vulkan MVP");
+    }
+
+    projection.enabled = false;
+    const auto identity = jcut::projectTitle3DPointCore(
+        17.25,
+        28.5,
+        rect.center().x(),
+        rect.center().y(),
+        titleCenter.x(),
+        titleCenter.y(),
+        width,
+        height,
+        projection);
+    QVERIFY(identity.valid);
+    QCOMPARE(identity.x, 17.25);
+    QCOMPARE(identity.y, 28.5);
 }
 
 QTEST_MAIN(TestVulkanTextGeneration)

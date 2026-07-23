@@ -1,5 +1,6 @@
 #include "decoder_ffmpeg_utils.h"
 #include "debug_controls.h"
+#include "ffmpeg_hardware_device_core.h"
 
 #include <QThread>
 
@@ -104,14 +105,7 @@ std::mutex& ffmpegDecodeMutex()
 }
 
 AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) {
-    const AVPixelFormat preferred =
-        static_cast<AVPixelFormat>(reinterpret_cast<intptr_t>(ctx->opaque));
-    for (const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
-        if (*p == preferred) {
-            return *p;
-        }
-    }
-    return AV_PIX_FMT_NONE;
+    return jcut::selectFfmpegHardwarePixelFormat(ctx, pix_fmts);
 }
 
 AVPixelFormat get_alpha_compatible_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) {

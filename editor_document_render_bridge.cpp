@@ -128,6 +128,35 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
             QString::fromStdString(clip.generatedFromMaskId).trimmed();
         timelineClip.syncLockedToSource = clip.syncLockedToSource;
         timelineClip.sourceTransformLocked = clip.sourceTransformLocked;
+        timelineClip.speakerFramingEnabled =
+            clip.speakerFramingEnabled;
+        timelineClip.speakerFramingBakedTargetXNorm =
+            clip.speakerFramingBakedTargetXNorm;
+        timelineClip.speakerFramingBakedTargetYNorm =
+            clip.speakerFramingBakedTargetYNorm;
+        timelineClip.speakerFramingBakedTargetBoxNorm =
+            clip.speakerFramingBakedTargetBoxNorm;
+        timelineClip.speakerFramingMinConfidence =
+            clip.speakerFramingMinConfidence;
+        timelineClip.speakerFramingManualTrackId =
+            clip.speakerFramingManualTrackId;
+        timelineClip.speakerFramingManualStreamId =
+            QString::fromStdString(
+                clip.speakerFramingManualStreamId);
+        timelineClip.speakerFramingCenterSmoothingFrames =
+            clip.speakerFramingCenterSmoothingFrames;
+        timelineClip.speakerFramingZoomSmoothingFrames =
+            clip.speakerFramingZoomSmoothingFrames;
+        timelineClip.speakerFramingSmoothingMode =
+            clip.speakerFramingSmoothingMode;
+        timelineClip.speakerFramingCenterSmoothingStrength =
+            clip.speakerFramingCenterSmoothingStrength;
+        timelineClip.speakerFramingZoomSmoothingStrength =
+            clip.speakerFramingZoomSmoothingStrength;
+        timelineClip.speakerFramingGapHoldFrames =
+            clip.speakerFramingGapHoldFrames;
+        timelineClip.speakerSectionMinimumWords =
+            std::clamp(clip.speakerSectionMinimumWords, 0, 1000);
         timelineClip.zLevel = clip.zLevel;
         timelineClip.zLevelUserSet = clip.zLevelUserSet;
         timelineClip.filePath = QString::fromStdString(clip.sourcePath);
@@ -279,6 +308,42 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.transcriptOverlay.backgroundColor = QColor(QString::fromStdString(clip.transcriptOverlay.backgroundColor));
         timelineClip.transcriptOverlay.highlightColor = QColor(QString::fromStdString(clip.transcriptOverlay.highlightColor));
         timelineClip.transcriptOverlay.highlightTextColor = QColor(QString::fromStdString(clip.transcriptOverlay.highlightTextColor));
+        for (const EditorBoolKeyframe& keyframe :
+             clip.speakerFramingEnabledKeyframes) {
+            TimelineClip::BoolKeyframe value;
+            value.frame = keyframe.frame;
+            value.enabled = keyframe.enabled;
+            timelineClip.speakerFramingEnabledKeyframes.push_back(
+                value);
+        }
+        const auto copySpeakerFramingKeyframes =
+            [](const std::vector<EditorTransformKeyframe>& source) {
+                QVector<TimelineClip::TransformKeyframe> result;
+                result.reserve(
+                    static_cast<qsizetype>(source.size()));
+                for (const EditorTransformKeyframe& keyframe :
+                     source) {
+                    TimelineClip::TransformKeyframe value;
+                    value.frame = keyframe.frame;
+                    value.title =
+                        QString::fromStdString(keyframe.title);
+                    value.translationX = keyframe.translationX;
+                    value.translationY = keyframe.translationY;
+                    value.rotation = keyframe.rotation;
+                    value.scaleX = keyframe.scaleX;
+                    value.scaleY = keyframe.scaleY;
+                    value.linearInterpolation =
+                        keyframe.linearInterpolation;
+                    result.push_back(std::move(value));
+                }
+                return result;
+            };
+        timelineClip.speakerFramingKeyframes =
+            copySpeakerFramingKeyframes(
+                clip.speakerFramingKeyframes);
+        timelineClip.speakerFramingTargetKeyframes =
+            copySpeakerFramingKeyframes(
+                clip.speakerFramingTargetKeyframes);
         for (const EditorTransformKeyframe& keyframe : clip.transformKeyframes) {
             TimelineClip::TransformKeyframe value;
             value.frame = keyframe.frame;

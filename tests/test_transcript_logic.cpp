@@ -10,6 +10,7 @@
 #include "../editor_shared_keyframes.h"
 #include "../editor_shared_transcript.h"
 #include "../clip_serialization.h"
+#include "../speaker_framing_core.h"
 #include "../transcript_overlay_cache_key.h"
 #include "../overlay_text_style.h"
 #include "../transcript_engine.h"
@@ -123,6 +124,7 @@ private slots:
     void testSharedOverlayStyleConvertsWithoutLosingCommonProperties();
     void testNonVideoClipsDoNotPersistProxyEnabled();
     void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
+    void testBakedSpeakerFramingUsesSharedCore();
     void testSpeakerFramingRuntimeSpeakerDescendsFromTranscript();
     void testSpeakerFramingGapHoldPersistsTranscriptSpeaker();
     void testSpeakerFramingSmoothingAppliesToAssignedContinuityTracks();
@@ -1525,6 +1527,109 @@ void TestTranscriptLogic::testSpeakerFramingEnabledKeyframesOverrideGlobalFallba
     QVERIFY(evaluateClipSpeakerFramingEnabledAtFrame(clip, 115));
     QVERIFY(evaluateClipSpeakerFramingEnabledAtFrame(clip, 144));
     QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 145));
+}
+
+void TestTranscriptLogic::testBakedSpeakerFramingUsesSharedCore() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip");
+    clip.mediaType = ClipMediaType::Video;
+    clip.startFrame = 100;
+    clip.durationFrames = 90;
+    clip.sourceDurationFrames = 90;
+    clip.sourceFrameSize = QSize(800, 600);
+    clip.speakerFramingEnabled = false;
+    clip.speakerFramingBakedTargetXNorm = 0.45;
+    clip.speakerFramingBakedTargetYNorm = 0.40;
+    clip.speakerFramingBakedTargetBoxNorm = 0.20;
+    clip.speakerFramingEnabledKeyframes.push_back(
+        TimelineClip::BoolKeyframe{0, true});
+    clip.speakerFramingKeyframes.push_back(
+        TimelineClip::TransformKeyframe{
+            0, QString(), -40.0, 25.0, 2.0, 1.2, 1.1, true});
+    clip.speakerFramingKeyframes.push_back(
+        TimelineClip::TransformKeyframe{
+            20, QString(), 80.0, -15.0, 6.0, 1.8, 1.5, true});
+    clip.speakerFramingTargetKeyframes.push_back(
+        TimelineClip::TransformKeyframe{
+            0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
+    clip.speakerFramingTargetKeyframes.push_back(
+        TimelineClip::TransformKeyframe{
+            20, QString(), 0.60, 0.45, 0.0, 0.30, 0.30, true});
+    normalizeClipTransformKeyframes(clip);
+
+    jcut::speaker_framing::State shared;
+    shared.enabled = clip.speakerFramingEnabled;
+    shared.bakedTargetXNorm = clip.speakerFramingBakedTargetXNorm;
+    shared.bakedTargetYNorm = clip.speakerFramingBakedTargetYNorm;
+    shared.bakedTargetBoxNorm = clip.speakerFramingBakedTargetBoxNorm;
+    for (const TimelineClip::BoolKeyframe& keyframe :
+         clip.speakerFramingEnabledKeyframes) {
+        shared.enabledKeyframes.push_back(
+            {keyframe.frame, keyframe.enabled});
+    }
+    const auto copyTransforms =
+        [](const QVector<TimelineClip::TransformKeyframe>& source) {
+            std::vector<jcut::speaker_framing::Transform> result;
+            for (const TimelineClip::TransformKeyframe& keyframe : source) {
+                result.push_back({
+                    keyframe.frame,
+                    keyframe.translationX,
+                    keyframe.translationY,
+                    keyframe.rotation,
+                    keyframe.scaleX,
+                    keyframe.scaleY,
+                    keyframe.linearInterpolation});
+            }
+            return result;
+        };
+    shared.framingKeyframes =
+        copyTransforms(clip.speakerFramingKeyframes);
+    shared.targetKeyframes =
+        copyTransforms(clip.speakerFramingTargetKeyframes);
+
+    constexpr qreal timelinePosition = 110.5;
+    const TimelineClip::TransformKeyframe qt =
+        evaluateClipSpeakerFramingAtPosition(
+            clip, timelinePosition, QSize(1000, 1000));
+    const jcut::speaker_framing::Transform neutral =
+        jcut::speaker_framing::evaluateBaked(
+            shared,
+            timelinePosition - clip.startFrame,
+            {800.0, 600.0},
+            {1000.0, 1000.0});
+
+    QVERIFY(std::abs(qt.translationX - neutral.translationX) < 0.000001);
+    QVERIFY(std::abs(qt.translationY - neutral.translationY) < 0.000001);
+    QVERIFY(std::abs(qt.rotation - neutral.rotation) < 0.000001);
+    QVERIFY(std::abs(qt.scaleX - neutral.scaleX) < 0.000001);
+    QVERIFY(std::abs(qt.scaleY - neutral.scaleY) < 0.000001);
+    QCOMPARE(qt.linearInterpolation, neutral.linearInterpolation);
+
+    const TimelineClip::TransformKeyframe qtFace =
+        evaluateClipSpeakerFramingForFaceBoxAtPosition(
+            clip,
+            timelinePosition,
+            QPointF(0.62, 0.44),
+            0.18,
+            12.0,
+            QSize(1000, 1000));
+    const jcut::speaker_framing::Transform neutralFace =
+        jcut::speaker_framing::evaluateFaceBox(
+            shared,
+            timelinePosition - clip.startFrame,
+            0.62,
+            0.44,
+            0.18,
+            12.0,
+            {800.0, 600.0},
+            {1000.0, 1000.0});
+    QVERIFY(std::abs(qtFace.translationX -
+                     neutralFace.translationX) < 0.000001);
+    QVERIFY(std::abs(qtFace.translationY -
+                     neutralFace.translationY) < 0.000001);
+    QVERIFY(std::abs(qtFace.rotation - neutralFace.rotation) < 0.000001);
+    QVERIFY(std::abs(qtFace.scaleX - neutralFace.scaleX) < 0.000001);
+    QVERIFY(std::abs(qtFace.scaleY - neutralFace.scaleY) < 0.000001);
 }
 
 void TestTranscriptLogic::testSpeakerFramingRuntimeSpeakerDescendsFromTranscript() {

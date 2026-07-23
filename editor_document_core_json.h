@@ -10,6 +10,10 @@
 namespace jcut {
 
 nlohmann::json toJson(const EditorDocumentCore& document);
+nlohmann::json toLegacyClipJson(
+    const EditorClip& clip,
+    int trackIndex = 0,
+    const nlohmann::json* baseClip = nullptr);
 
 nlohmann::json toLegacyStateJson(
     const EditorDocumentCore& document,

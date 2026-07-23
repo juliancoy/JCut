@@ -279,6 +279,16 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
         release();
         return false;
     }
+    if (!m_hardwareFrameImporter.initialize(
+            context.physicalDevice,
+            context.device,
+            context.queue,
+            context.queueFamilyIndex,
+            jcutVulkanShaderDirectory().toStdString(),
+            errorMessage)) {
+        release();
+        return false;
+    }
 
     m_initialized = true;
     return true;
@@ -287,6 +297,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
 void VulkanDetectorFrameHandoff::release()
 {
     finishPendingUpload(nullptr, nullptr);
+    m_hardwareFrameImporter.release();
     m_externalFrameImporter.release();
     if (m_context.device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(m_context.device);
@@ -1079,6 +1090,28 @@ bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer comma
                                                            double* uploadMs,
                                                            std::string* errorMessage)
 {
+    if (uploadMs) {
+        *uploadMs = 0.0;
+    }
+    if (!m_initialized || commandBuffer == VK_NULL_HANDLE ||
+        frame.isNull() || !frame.data()) {
+        setStdError(
+            errorMessage,
+            QStringLiteral(
+                "Invalid frame handoff command-buffer upload state."));
+        m_lastMode = FrameHandoffMode::Invalid;
+        return false;
+    }
+    m_lastProbe = probeHardwareInterop(frame);
+    if (m_hardwareFrameImporter.importFrame(
+            frame.data()->payload, errorMessage)) {
+        m_lastMode = FrameHandoffMode::HardwareDirect;
+        m_lastHardwareDirectAttemptReason.clear();
+        return true;
+    }
+    m_lastMode = FrameHandoffMode::Invalid;
+    return false;
+#if 0
     QString qtError;
     m_lastYuvRgbMatrix.clear();
     if (!m_initialized || commandBuffer == VK_NULL_HANDLE || frame.isNull()) {
@@ -1115,6 +1148,7 @@ bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer comma
     }
     m_lastMode = FrameHandoffMode::HardwareDirect;
     return true;
+#endif
 }
 
 bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHandle& frame,
@@ -1552,6 +1586,28 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
                                                    double* uploadMs,
                                                    QString* errorMessage)
 {
+    if (uploadMs) {
+        *uploadMs = 0.0;
+    }
+    if (frame.isNull() || !frame.data()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("no hardware frame present");
+        }
+        return false;
+    }
+    std::string neutralError;
+    if (m_hardwareFrameImporter.importFrame(
+            frame.data()->payload, &neutralError)) {
+        m_lastHardwareDirectAttemptReason.clear();
+        return true;
+    }
+    if (errorMessage) {
+        *errorMessage = neutralError.empty()
+            ? QStringLiteral("shared hardware-frame importer failed")
+            : QString::fromStdString(neutralError);
+    }
+    return false;
+#if 0
 #if !JCUT_HAS_CUDA_DRIVER
     Q_UNUSED(frame)
     Q_UNUSED(uploadMs)
@@ -1858,6 +1914,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     }
     return true;
 #endif
+#endif
 }
 
 bool VulkanDetectorFrameHandoff::importOffscreenFrame(
@@ -1887,6 +1944,9 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(
 
 VkImage VulkanDetectorFrameHandoff::image() const
 {
+    if (m_lastMode == FrameHandoffMode::HardwareDirect) {
+        return m_hardwareFrameImporter.externalImage().image;
+    }
     return m_lastMode == FrameHandoffMode::ExternalMemoryImport
         ? m_externalFrameImporter.externalImage().image
         : m_image;
@@ -1894,6 +1954,9 @@ VkImage VulkanDetectorFrameHandoff::image() const
 
 VkImageLayout VulkanDetectorFrameHandoff::imageLayout() const
 {
+    if (m_lastMode == FrameHandoffMode::HardwareDirect) {
+        return m_hardwareFrameImporter.externalImage().imageLayout;
+    }
     return m_lastMode == FrameHandoffMode::ExternalMemoryImport
         ? m_externalFrameImporter.externalImage().imageLayout
         : m_imageLayout;
@@ -1901,6 +1964,9 @@ VkImageLayout VulkanDetectorFrameHandoff::imageLayout() const
 
 VkFormat VulkanDetectorFrameHandoff::imageFormat() const
 {
+    if (m_lastMode == FrameHandoffMode::HardwareDirect) {
+        return m_hardwareFrameImporter.externalImage().imageFormat;
+    }
     return m_lastMode == FrameHandoffMode::ExternalMemoryImport
         ? m_externalFrameImporter.externalImage().imageFormat
         : m_imageFormat;
@@ -1920,6 +1986,20 @@ FrameHandoffResourceStats VulkanDetectorFrameHandoff::resourceStats() const
 
 VulkanExternalImage VulkanDetectorFrameHandoff::externalImage() const
 {
+    if (m_lastMode == FrameHandoffMode::HardwareDirect) {
+        const jcut::vulkan_import::ExternalImage imported =
+            m_hardwareFrameImporter.externalImage();
+        VulkanExternalImage image;
+        image.imageView = imported.imageView;
+        image.imageLayout = imported.imageLayout;
+        image.size = imported.size;
+        image.sourceIsSrgb = imported.sourceIsSrgb;
+        image.sourceX = imported.sourceX;
+        image.sourceY = imported.sourceY;
+        image.sourceWidth = imported.sourceWidth;
+        image.sourceHeight = imported.sourceHeight;
+        return image;
+    }
     if (m_lastMode == FrameHandoffMode::ExternalMemoryImport) {
         const jcut::vulkan_import::ExternalImage imported =
             m_externalFrameImporter.externalImage();

@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "playback_range_core.h"
 #include "audio_source_key.h"
 #include "debug_controls.h"
 #include "playback_clock_coordinator.h"
@@ -554,45 +555,21 @@ int64_t EditorWindow::stepForwardFrame(int64_t currentFrame) const
     if (!m_timeline) return 0;
     const int64_t lastFrame = lastPlayableFrame();
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return qMin<int64_t>(lastFrame, currentFrame + 1);
-    }
-
-    for (const ExportRangeSegment& range : ranges) {
-        if (currentFrame < range.startFrame) {
-            return qMin<int64_t>(lastFrame, range.startFrame);
-        }
-        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
-            return qMin<int64_t>(lastFrame, currentFrame + 1);
-        }
-    }
-    return lastFrame;
+    const auto sharedRanges =
+        jcut::normalizedPlaybackRangesCore(ranges, lastFrame);
+    return jcut::stepPlaybackFrameCore(
+        sharedRanges, currentFrame, 1, lastFrame);
 }
 
 int64_t EditorWindow::stepBackwardFrame(int64_t currentFrame) const
 {
     if (!m_timeline) return 0;
+    const int64_t lastFrame = lastPlayableFrame();
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return qMax<int64_t>(0, currentFrame - 1);
-    }
-
-    for (int i = ranges.size() - 1; i >= 0; --i) {
-        const ExportRangeSegment& range = ranges.at(i);
-        if (currentFrame > range.endFrame) {
-            return range.endFrame;
-        }
-        if (currentFrame > range.startFrame && currentFrame <= range.endFrame) {
-            return currentFrame - 1;
-        }
-        if (currentFrame == range.startFrame) {
-            if (i > 0) {
-                return ranges.at(i - 1).endFrame;
-            }
-            return 0;
-        }
-    }
-    return 0;
+    const auto sharedRanges =
+        jcut::normalizedPlaybackRangesCore(ranges, lastFrame);
+    return jcut::stepPlaybackFrameCore(
+        sharedRanges, currentFrame, -1, lastFrame);
 }
 
 QString EditorWindow::clipLabelForId(const QString &clipId) const

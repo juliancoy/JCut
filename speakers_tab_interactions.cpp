@@ -4,7 +4,9 @@
 #include "editor_shared_keyframes.h"
 #include "editor_shared_transcript.h"
 #include "keyframe_table_shared.h"
+#include "json_io_utils.h"
 #include "speaker_document_edit_ops.h"
+#include "speaker_section_core.h"
 
 #include "decoder_context.h"
 #include "facedetections_artifact_utils.h"
@@ -1353,51 +1355,20 @@ bool SpeakersTab::setSpeakerSectionSkipped(const QString& speakerId,
 
     bool changed = false;
     const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& root) {
-        QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-        for (int segIndex = 0; segIndex < segments.size(); ++segIndex) {
-            QJsonObject segmentObj = segments.at(segIndex).toObject();
-            const QString segmentSpeaker =
-                segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-            QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-            for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
-                QJsonObject wordObj = words.at(wordIndex).toObject();
-                QString wordSpeaker =
-                    wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-                if (wordSpeaker.isEmpty()) {
-                    wordSpeaker = segmentSpeaker;
-                }
-                if (wordSpeaker != targetSpeaker) {
-                    continue;
-                }
-                const QString wordText =
-                    wordObj.value(QStringLiteral("word"))
-                        .toString(wordObj.value(QStringLiteral("text")).toString())
-                        .trimmed();
-                const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-                if (wordText.isEmpty() || startSeconds < 0.0) {
-                    continue;
-                }
-                const int64_t wordFrame =
-                    qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-                if (wordFrame < startTimelineFrame || wordFrame > endTimelineFrame) {
-                    continue;
-                }
-                const bool previous = wordObj.value(QStringLiteral("skipped")).toBool(false);
-                if (previous == skipped) {
-                    continue;
-                }
-                wordObj[QStringLiteral("skipped")] = skipped;
-                words.replace(wordIndex, wordObj);
-                changed = true;
-            }
-            segmentObj[QStringLiteral("words")] = words;
-            segments.replace(segIndex, segmentObj);
+        nlohmann::json neutralRoot =
+            jcut::jsonio::toJson(root);
+        changed = jcut::setSpeakerSectionSkippedCore(
+            &neutralRoot,
+            targetSpeaker.toStdString(),
+            startTimelineFrame,
+            endTimelineFrame,
+            skipped,
+            kTimelineFps);
+        if (changed) {
+            root = jcut::jsonio::fromJson(
+                neutralRoot).toObject();
         }
-        if (!changed) {
-            return false;
-        }
-        root[QStringLiteral("segments")] = segments;
-        return true;
+        return changed;
     });
     if (!updated) {
         return !changed;

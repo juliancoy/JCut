@@ -1,4 +1,5 @@
 #include "editor_ai_helpers.h"
+#include "ai_gateway_core.h"
 
 #include <QCryptographicHash>
 #include <QPainter>
@@ -60,9 +61,6 @@ QPixmap buildFallbackAvatar(const QString& identity)
 
 QString normalizeBaseUrl(QString value)
 {
-    value = value.trimmed();
-    while (value.endsWith(QLatin1Char('/'))) {
-        value.chop(1);
-    }
-    return value;
+    return QString::fromStdString(
+        jcut::ai::normalizeGatewayBaseUrl(value.toStdString()));
 }

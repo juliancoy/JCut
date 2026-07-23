@@ -1,5 +1,6 @@
 #pragma once
 
+#include "decoder_policy_core.h"
 #include "editor_document_core.h"
 #include "render_contract_types.h"
 
@@ -14,6 +15,7 @@ struct ExportRenderRequest {
     std::string rootDirectory;
     std::int64_t imageSequenceFrameNumberOffset = 0;
     std::int64_t outputFrameLimit = 0;
+    DecoderPolicySettingsCore decoderPolicy;
 };
 
 using ExportProgressCallback = std::function<bool(const render::RenderProgressCore&)>;

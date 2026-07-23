@@ -15,6 +15,342 @@
 
 namespace jcut::audio {
 
+bool streamTimeStretchPreservePitch(
+    std::size_t inputFrameCount,
+    int channelCount,
+    int sampleRate,
+    double speed,
+    const StretchInputProvider& inputProvider,
+    const StretchOutputConsumer& outputConsumer,
+    const std::function<void(double)>& progressCallback,
+    const StretchSettings& settings)
+{
+#if JCUT_HAVE_RUBBERBAND
+    const int channels = std::max(1, channelCount);
+    const int effectiveSampleRate = std::max(1, sampleRate);
+    if (inputFrameCount == 0 || channelCount <= 0 ||
+        sampleRate <= 0 || !std::isfinite(speed) ||
+        speed <= 0.0 || !inputProvider ||
+        !outputConsumer) {
+        return false;
+    }
+    const long double expectedFramesValue =
+        static_cast<long double>(inputFrameCount) / speed;
+    if (expectedFramesValue <= 0.0L ||
+        expectedFramesValue >
+            static_cast<long double>(
+                std::numeric_limits<std::size_t>::max() /
+                static_cast<std::size_t>(channels))) {
+        return false;
+    }
+    const std::size_t expectedFrames =
+        std::max<std::size_t>(
+            1,
+            static_cast<std::size_t>(
+                std::llround(expectedFramesValue)));
+    auto reportProgress = [&](double value) {
+        if (progressCallback) {
+            progressCallback(
+                std::clamp(value, 0.0, 1.0));
+        }
+    };
+    constexpr std::size_t kBlockFrames = 65536;
+    if (std::abs(speed - 1.0) < 0.0001) {
+        std::vector<float> block(
+            std::min(kBlockFrames, inputFrameCount) *
+            static_cast<std::size_t>(channels));
+        for (std::size_t start = 0;
+             start < inputFrameCount;
+             start += kBlockFrames) {
+            const std::size_t count =
+                std::min(
+                    kBlockFrames,
+                    inputFrameCount - start);
+            if (!inputProvider(
+                    start, count, block.data()) ||
+                !outputConsumer(block.data(), count)) {
+                return false;
+            }
+            reportProgress(
+                static_cast<double>(start + count) /
+                static_cast<double>(inputFrameCount));
+        }
+        return true;
+    }
+
+    RubberBand::RubberBandStretcher::Options options =
+        RubberBand::RubberBandStretcher::
+            OptionProcessOffline;
+    options = static_cast<
+        RubberBand::RubberBandStretcher::Options>(
+        options |
+        (settings.engine == StretchEngine::Faster
+             ? RubberBand::RubberBandStretcher::
+                   OptionEngineFaster
+             : RubberBand::RubberBandStretcher::
+                   OptionEngineFiner));
+    if (settings.threading == StretchThreading::Never) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionThreadingNever);
+    } else if (settings.threading ==
+               StretchThreading::Always) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionThreadingAlways);
+    }
+    if (settings.window == StretchWindow::Short) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionWindowShort);
+    } else if (settings.window == StretchWindow::Long) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionWindowLong);
+    }
+    if (settings.pitch == StretchPitch::HighSpeed) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionPitchHighSpeed);
+    } else if (
+        settings.pitch == StretchPitch::HighConsistency) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionPitchHighConsistency);
+    } else {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionPitchHighQuality);
+    }
+    if (settings.channelsTogether) {
+        options = static_cast<
+            RubberBand::RubberBandStretcher::Options>(
+            options |
+            RubberBand::RubberBandStretcher::
+                OptionChannelsTogether);
+    }
+
+    RubberBand::RubberBandStretcher stretcher(
+        static_cast<std::size_t>(effectiveSampleRate),
+        static_cast<std::size_t>(channels),
+        options,
+        1.0 / speed,
+        1.0);
+    stretcher.setExpectedInputDuration(inputFrameCount);
+    const std::size_t processFrames =
+        std::max<std::size_t>(
+            1,
+            std::min(
+                kBlockFrames,
+                stretcher.getProcessSizeLimit()));
+    stretcher.setMaxProcessSize(processFrames);
+
+    std::vector<float> interleavedInput(
+        processFrames *
+        static_cast<std::size_t>(channels));
+    std::vector<std::vector<float>> planarInput(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(processFrames));
+    std::vector<const float*> inputPointers(
+        static_cast<std::size_t>(channels));
+    for (int channel = 0; channel < channels; ++channel) {
+        inputPointers[static_cast<std::size_t>(channel)] =
+            planarInput[static_cast<std::size_t>(channel)]
+                .data();
+    }
+    auto runPass = [&](double progressStart,
+                       double progressEnd,
+                       auto&& pass) {
+        for (std::size_t start = 0;
+             start < inputFrameCount;
+             start += processFrames) {
+            const std::size_t count = std::min(
+                processFrames,
+                inputFrameCount - start);
+            if (!inputProvider(
+                    start,
+                    count,
+                    interleavedInput.data())) {
+                return false;
+            }
+            for (int channel = 0;
+                 channel < channels;
+                 ++channel) {
+                float* destination =
+                    planarInput[
+                        static_cast<std::size_t>(
+                            channel)]
+                        .data();
+                for (std::size_t frame = 0;
+                     frame < count;
+                     ++frame) {
+                    destination[frame] =
+                        interleavedInput[
+                            frame *
+                                static_cast<
+                                    std::size_t>(
+                                    channels) +
+                            static_cast<std::size_t>(
+                                channel)];
+                }
+            }
+            if (!pass(
+                    inputPointers.data(),
+                    count,
+                    start + count >=
+                        inputFrameCount)) {
+                return false;
+            }
+            reportProgress(
+                progressStart +
+                (progressEnd - progressStart) *
+                    static_cast<double>(
+                        start + count) /
+                    static_cast<double>(
+                        inputFrameCount));
+        }
+        return true;
+    };
+
+    reportProgress(0.0);
+    if (!runPass(
+            0.0,
+            0.20,
+            [&](const float* const* block,
+                std::size_t count,
+                bool final) {
+                stretcher.study(block, count, final);
+                return true;
+            })) {
+        return false;
+    }
+
+    std::vector<std::vector<float>> planarOutput(
+        static_cast<std::size_t>(channels),
+        std::vector<float>(kBlockFrames));
+    std::vector<float*> outputPointers(
+        static_cast<std::size_t>(channels));
+    for (int channel = 0; channel < channels; ++channel) {
+        outputPointers[static_cast<std::size_t>(channel)] =
+            planarOutput[static_cast<std::size_t>(channel)]
+                .data();
+    }
+    std::vector<float> interleavedOutput(
+        kBlockFrames *
+        static_cast<std::size_t>(channels));
+    std::size_t deliveredFrames = 0;
+    bool complete = false;
+    auto drain = [&]() {
+        while (deliveredFrames < expectedFrames) {
+            const int available = stretcher.available();
+            if (available < 0) {
+                complete = true;
+                return true;
+            }
+            if (available == 0) {
+                return true;
+            }
+            const std::size_t count = std::min({
+                static_cast<std::size_t>(available),
+                kBlockFrames,
+                expectedFrames - deliveredFrames});
+            const std::size_t read = stretcher.retrieve(
+                outputPointers.data(), count);
+            if (read == 0) {
+                return false;
+            }
+            for (std::size_t frame = 0;
+                 frame < read;
+                 ++frame) {
+                for (int channel = 0;
+                     channel < channels;
+                     ++channel) {
+                    interleavedOutput[
+                        frame *
+                            static_cast<std::size_t>(
+                                channels) +
+                        static_cast<std::size_t>(
+                            channel)] =
+                        std::clamp(
+                            planarOutput[
+                                static_cast<std::size_t>(
+                                    channel)][frame],
+                            -1.0f,
+                            1.0f);
+                }
+            }
+            if (!outputConsumer(
+                    interleavedOutput.data(), read)) {
+                return false;
+            }
+            deliveredFrames += read;
+        }
+        return true;
+    };
+    if (!runPass(
+            0.20,
+            0.95,
+            [&](const float* const* block,
+                std::size_t count,
+                bool final) {
+                stretcher.process(block, count, final);
+                return drain();
+            })) {
+        return false;
+    }
+    for (int attempt = 0;
+         attempt < 1024 && !complete &&
+         deliveredFrames < expectedFrames;
+         ++attempt) {
+        if (!drain()) {
+            return false;
+        }
+    }
+    if (deliveredFrames < expectedFrames) {
+        std::fill(
+            interleavedOutput.begin(),
+            interleavedOutput.end(),
+            0.0f);
+        while (deliveredFrames < expectedFrames) {
+            const std::size_t count = std::min(
+                kBlockFrames,
+                expectedFrames - deliveredFrames);
+            if (!outputConsumer(
+                    interleavedOutput.data(), count)) {
+                return false;
+            }
+            deliveredFrames += count;
+        }
+    }
+    reportProgress(1.0);
+    return deliveredFrames == expectedFrames;
+#else
+    (void)inputFrameCount;
+    (void)channelCount;
+    (void)sampleRate;
+    (void)speed;
+    (void)inputProvider;
+    (void)outputConsumer;
+    (void)progressCallback;
+    (void)settings;
+    return false;
+#endif
+}
+
 std::vector<float> timeStretchPreservePitch(
     const std::vector<float>& interleavedSamples,
     int channelCount,
@@ -193,6 +529,34 @@ std::vector<float> timeStretchPreservePitch(
     (void)settings;
     return {};
 #endif
+}
+
+std::vector<float> isolateSpeechHarmonics(
+    const std::vector<float>& interleavedSamples,
+    int channelCount,
+    int sampleRate,
+    double transportSpeed,
+    const std::function<void(double)>& progressCallback,
+    const StretchSettings& settings)
+{
+    if (interleavedSamples.empty() || channelCount <= 0 || sampleRate <= 0 ||
+        !std::isfinite(transportSpeed) || transportSpeed <= 0.0) {
+        return {};
+    }
+    const auto report = [&progressCallback](double value) {
+        if (progressCallback) {
+            progressCallback(std::clamp(value, 0.0, 1.0));
+        }
+    };
+    const std::vector<float> isolated = timeStretchPreservePitch(
+        interleavedSamples, channelCount, sampleRate, transportSpeed * 2.0,
+        [&report](double value) { report(value * 0.5); }, settings);
+    if (isolated.empty()) {
+        return {};
+    }
+    return timeStretchPreservePitch(
+        isolated, channelCount, sampleRate, 0.5,
+        [&report](double value) { report(0.5 + value * 0.5); }, settings);
 }
 
 } // namespace jcut::audio

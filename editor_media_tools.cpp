@@ -3,6 +3,8 @@
 #include "decoder_context.h"
 #include "decoder_ffmpeg_utils.h"
 #include "processing_job_manifest.h"
+#include "prompt_mask_job_core.h"
+#include "transcription_job_core.h"
 #include <QApplication>
 #include <QDialog>
 #include <QDir>
@@ -1012,7 +1014,22 @@ void EditorWindow::openTranscriptionWindow(const QString &filePath, const QStrin
                 }
             });
 
-    process->start(QStringLiteral("/bin/bash"), {scriptPath, QFileInfo(filePath).absoluteFilePath()});
+    const jcut::jobs::TranscriptionJobPlanCore plan =
+        jcut::jobs::buildTranscriptionJobPlanCore({
+            0,
+            scriptPath.toStdString(),
+            QFileInfo(filePath).absoluteFilePath().toStdString()});
+    QStringList arguments;
+    for (std::size_t index = 1; index < plan.command.size();
+         ++index) {
+        arguments.push_back(
+            QString::fromStdString(plan.command[index]));
+    }
+    process->setWorkingDirectory(
+        QString::fromStdString(plan.workingDirectory));
+    process->start(
+        QString::fromStdString(plan.command.front()),
+        arguments);
     dialog->show();
 }
 
@@ -1428,34 +1445,43 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         samOptimizationArgsPreview += QStringLiteral(" ") + shellQuote(arg);
     }
 
+    jcut::masks::PromptMaskJobRequest sharedPromptMaskRequest;
+    sharedPromptMaskRequest.scriptPath = scriptPath.toStdString();
+    sharedPromptMaskRequest.mediaPath =
+        inputInfo.absoluteFilePath().toStdString();
+    sharedPromptMaskRequest.prompt = prompt.toStdString();
+    sharedPromptMaskRequest.modelCachePath = modelCachePath.toStdString();
+    sharedPromptMaskRequest.runtimeCachePath = runtimeCachePath.toStdString();
+    sharedPromptMaskRequest.currentMaskDirectory =
+        currentMaskDir.toStdString();
+    sharedPromptMaskRequest.scaleWidth = scaleWidth;
+    sharedPromptMaskRequest.prescaleWidth = prescaleWidth;
+    sharedPromptMaskRequest.extractFps = extractFps;
+    sharedPromptMaskRequest.intermediateFramesFormat =
+        intermediateFramesFormat.toStdString();
+    sharedPromptMaskRequest.compileModel = compileModel;
+    sharedPromptMaskRequest.videoMode = useVideoMode;
+    sharedPromptMaskRequest.writeBinaryMasks = writeBinaryMasks;
+    sharedPromptMaskRequest.unionWithCurrentMask = unionWithCurrentMask;
+    sharedPromptMaskRequest.writeMaskPreviewFrames =
+        writeMaskPreviewFrames;
+    sharedPromptMaskRequest.exportCentersJson = exportCentersJson;
+    sharedPromptMaskRequest.runDockerAsRoot = runDockerAsRoot;
+    const jcut::masks::PromptMaskJobPlan sharedPromptMaskPlan =
+        jcut::masks::buildPromptMaskJobPlan(
+            sharedPromptMaskRequest);
     const QString samJobRoot =
-        jcut::jobs::defaultJobRootForInput(inputInfo.absoluteFilePath(),
-                                           QStringLiteral("sam3"),
-                                           prompt);
-    const QString samManifestPath = jcut::jobs::manifestPathForJobRoot(samJobRoot);
-    const QString samPromptOutputStem =
-        QStringLiteral("%1_sam3_%2")
-            .arg(inputInfo.completeBaseName(),
-                 jcut::jobs::sanitizedJobComponent(prompt));
+        QString::fromStdString(sharedPromptMaskPlan.jobRoot);
+    const QString samManifestPath =
+        QString::fromStdString(sharedPromptMaskPlan.manifestPath);
     const QString centersPath =
-        inputInfo.dir().absoluteFilePath(QStringLiteral("%1.jsonl")
-                                             .arg(samPromptOutputStem));
+        QString::fromStdString(sharedPromptMaskPlan.centersPath);
     const QString binaryMasksPath =
-        inputInfo.dir().absoluteFilePath(QStringLiteral("%1_binary_masks")
-                                             .arg(samPromptOutputStem));
-    QString currentMaskComponent = QFileInfo(currentMaskDir).fileName();
-    currentMaskComponent.remove(QStringLiteral("%1_sam3_").arg(inputInfo.completeBaseName()));
-    currentMaskComponent.remove(QStringLiteral("_binary_masks"));
-    const QString combinedMasksPath = unionWithCurrentMask
-        ? inputInfo.dir().absoluteFilePath(
-              QStringLiteral("%1_sam3_%2_or_%3_binary_masks")
-                  .arg(inputInfo.completeBaseName(),
-                       jcut::jobs::sanitizedJobComponent(currentMaskComponent),
-                       jcut::jobs::sanitizedJobComponent(prompt)))
-        : QString();
+        QString::fromStdString(sharedPromptMaskPlan.binaryMasksPath);
+    const QString combinedMasksPath =
+        QString::fromStdString(sharedPromptMaskPlan.combinedMasksPath);
     const QString defaultOutputPath =
-        inputInfo.dir().absoluteFilePath(QStringLiteral("%1.mp4")
-                                             .arg(samPromptOutputStem));
+        QString::fromStdString(sharedPromptMaskPlan.defaultOutputPath);
     QJsonObject artifacts{
         {QStringLiteral("job_root"), samJobRoot},
         {QStringLiteral("manifest"), samManifestPath},
@@ -1716,29 +1742,10 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     });
 
     QString manifestError;
-    QStringList launchCommand{scriptPath,
-                              inputInfo.absoluteFilePath(),
-                              QStringLiteral("--prompt"),
-                              prompt};
-    if (useVideoMode) {
-        launchCommand << QStringLiteral("--video-mode");
+    QStringList launchCommand;
+    for (const std::string& argument : sharedPromptMaskPlan.command) {
+        launchCommand << QString::fromStdString(argument);
     }
-    if (writeBinaryMasks) {
-        launchCommand << QStringLiteral("--binary-mask-dir") << binaryMasksPath;
-    }
-    if (unionWithCurrentMask) {
-        launchCommand << QStringLiteral("--union-mask-dir") << currentMaskDir
-                      << QStringLiteral("--combined-binary-mask-dir") << combinedMasksPath;
-    }
-    if (writeMaskPreviewFrames) {
-        launchCommand << QStringLiteral("--write-mask-preview-frames");
-    }
-    if (exportCentersJson) {
-        launchCommand << QStringLiteral("--centers-json") << centersPath;
-    } else {
-        launchCommand << QStringLiteral("--no-centers-json");
-    }
-    launchCommand << samOptimizationArgs;
     QJsonObject manifest =
         jcut::jobs::makeManifest(QStringLiteral("sam3"),
                                  samJobRoot,

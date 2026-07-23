@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "birefnet_job_core.h"
 
 #include "editor_shared_render_sync.h"
 #include "inspector_pane.h"
@@ -489,15 +490,32 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     const double alphaTolerance = alphaToleranceSpin->value() / 100.0;
     settings.setValue(
         QStringLiteral("birefnet/alphaTolerancePercent"), alphaToleranceSpin->value());
-    const QString outputDir = inputInfo.dir().absoluteFilePath(
-        QStringLiteral("%1_birefnet_alpha_masks").arg(inputInfo.completeBaseName()));
-    const QString jobRoot = jcut::jobs::defaultJobRootForInput(
-        inputInfo.absoluteFilePath(), QStringLiteral("birefnet"), model.section(QLatin1Char('/'), -1));
-    const QString manifestPath = jcut::jobs::manifestPathForJobRoot(jobRoot);
-    const QString jobLogPath = QDir(jobRoot).absoluteFilePath(QStringLiteral("job.log"));
-    const QString progressPath = QDir(jobRoot).absoluteFilePath(QStringLiteral("progress.json"));
+    jcut::jobs::BiRefNetJobRequestCore sharedRequest;
+    sharedRequest.scriptPath = scriptPath.toStdString();
+    sharedRequest.mediaPath = inputInfo.absoluteFilePath().toStdString();
+    sharedRequest.model = model.toStdString();
+    sharedRequest.revision = revision.toStdString();
+    sharedRequest.modelCachePath = modelCache.toStdString();
+    sharedRequest.runtimeCachePath = runtimeCache.toStdString();
+    sharedRequest.device =
+        deviceCombo->currentData().toString().toStdString();
+    sharedRequest.fp16 = fp16->isChecked();
+    sharedRequest.runDockerAsRoot = rootMode->isChecked();
+    sharedRequest.alphaTolerance = alphaTolerance;
+    jcut::jobs::BiRefNetJobPlanCore sharedPlan =
+        jcut::jobs::buildBiRefNetJobPlanCore(sharedRequest);
+    const QString outputDir =
+        QString::fromStdString(sharedPlan.outputDirectory);
+    const QString jobRoot =
+        QString::fromStdString(sharedPlan.jobRoot);
+    const QString manifestPath =
+        QString::fromStdString(sharedPlan.manifestPath);
+    const QString jobLogPath =
+        QString::fromStdString(sharedPlan.logPath);
+    const QString progressPath =
+        QString::fromStdString(sharedPlan.progressPath);
     const QString containerName =
-        jcut::jobs::stableDockerContainerName(QStringLiteral("birefnet"), jobRoot);
+        QString::fromStdString(sharedPlan.containerName);
     bool restart = false;
     if (QFileInfo::exists(manifestPath)) {
         QJsonObject oldManifest;
@@ -538,16 +556,13 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     }
     QDir().mkpath(outputDir);
 
-    QStringList command{scriptPath, inputInfo.absoluteFilePath(),
-                        QStringLiteral("--output-dir"), outputDir,
-                        QStringLiteral("--model"), model,
-                        QStringLiteral("--revision"), revision,
-                        QStringLiteral("--alpha-tolerance"), QString::number(alphaTolerance, 'f', 4),
-                        QStringLiteral("--live-preview"),
-                        QStringLiteral("--live-preview-every"), QStringLiteral("1"),
-                        QStringLiteral("--progress-every"), QStringLiteral("1")};
-    if (deviceCombo->currentData().toString() == QStringLiteral("cpu")) command << QStringLiteral("--cpu");
-    if (!fp16->isChecked()) command << QStringLiteral("--fp32");
+    sharedRequest.restart = restart;
+    sharedPlan =
+        jcut::jobs::buildBiRefNetJobPlanCore(sharedRequest);
+    QStringList command;
+    for (const std::string& argument : sharedPlan.command) {
+        command.push_back(QString::fromStdString(argument));
+    }
     QJsonObject manifest = jcut::jobs::makeManifest(
         QStringLiteral("birefnet"), jobRoot, inputInfo.absoluteFilePath(),
         QJsonObject{{QStringLiteral("model"), model},
@@ -620,15 +635,18 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     process->setWorkingDirectory(QDir::currentPath());
     process->setProcessChannelMode(QProcess::MergedChannels);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-    environment.insert(QStringLiteral("BIREFNET_MODEL_CACHE"), modelCache);
-    environment.insert(QStringLiteral("BIREFNET_RUNTIME_CACHE"), runtimeCache);
-    environment.insert(QStringLiteral("BIREFNET_CONTAINER_NAME"), containerName);
-    environment.insert(QStringLiteral("BIREFNET_JOB_ROOT"), jobRoot);
+    for (const auto& [name, value] : sharedPlan.environment) {
+        environment.insert(
+            QString::fromStdString(name),
+            QString::fromStdString(value));
+    }
+    // The Qt adapter reads QProcess output itself, so retain the script's
+    // tee-backed durable log. The neutral process controller captures merged
+    // output directly to this same path and therefore omits this override.
     environment.insert(QStringLiteral("BIREFNET_LOG_PATH"), jobLogPath);
-    if (rootMode->isChecked()) environment.insert(QStringLiteral("BIREFNET_DOCKER_RUN_AS_ROOT"), QStringLiteral("1"));
     process->setProcessEnvironment(environment);
     const QString livePreviewPath =
-        QDir(outputDir).filePath(QStringLiteral("jcut_live_preview.png"));
+        QString::fromStdString(sharedPlan.livePreviewPath);
     QFile::remove(livePreviewPath);
     auto* previewTimer = new QTimer(progress);
     previewTimer->setInterval(250);

@@ -1,4 +1,5 @@
 #include "track_avatar_utils.h"
+#include "face_avatar_crop_core.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -28,29 +29,22 @@ QImage renderTrackAvatarImage(const QImage& image,
     const qreal boxRight = keyframeObj.value(QStringLiteral("box_right")).toDouble(-1.0);
     const qreal boxBottom = keyframeObj.value(QStringLiteral("box_bottom")).toDouble(-1.0);
 
-    const int width = image.width();
-    const int height = image.height();
-    const int minSide = qMax(1, qMin(width, height));
-    QRect cropRect;
-    if (boxLeft >= 0.0 && boxTop >= 0.0 && boxRight > boxLeft && boxBottom > boxTop &&
-        boxRight <= 1.0 && boxBottom <= 1.0) {
-        const int left = qBound(0, static_cast<int>(std::floor(boxLeft * width)), qMax(0, width - 1));
-        const int top = qBound(0, static_cast<int>(std::floor(boxTop * height)), qMax(0, height - 1));
-        const int right = qBound(left + 1, static_cast<int>(std::ceil(boxRight * width)), width);
-        const int bottom = qBound(top + 1, static_cast<int>(std::ceil(boxBottom * height)), height);
-        cropRect = QRect(left, top, right - left, bottom - top);
-    }
-    if (!cropRect.isValid() || cropRect.isEmpty()) {
-        int side = qMax(40, minSide / 3);
-        if (boxSizeNorm > 0.0) {
-            side = qBound(40, static_cast<int>(std::round(boxSizeNorm * minSide)), minSide);
-        }
-        const int cx = static_cast<int>(std::round(locX * static_cast<qreal>(width)));
-        const int cy = static_cast<int>(std::round(locY * static_cast<qreal>(height)));
-        const int left = qBound(0, cx - (side / 2), qMax(0, width - side));
-        const int top = qBound(0, cy - (side / 2), qMax(0, height - side));
-        cropRect = QRect(left, top, qMin(side, width - left), qMin(side, height - top));
-    }
+    const jcut::FaceAvatarCropRectCore cropGeometry =
+        jcut::faceAvatarCropRectCore(
+            image.width(),
+            image.height(),
+            locX,
+            locY,
+            boxSizeNorm,
+            boxLeft,
+            boxTop,
+            boxRight,
+            boxBottom);
+    const QRect cropRect(
+        cropGeometry.left,
+        cropGeometry.top,
+        cropGeometry.width,
+        cropGeometry.height);
 
     QImage crop = image.copy(cropRect)
                       .scaled(avatarSize,

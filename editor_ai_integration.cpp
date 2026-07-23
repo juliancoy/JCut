@@ -1,11 +1,12 @@
 #include "editor.h"
 #include "editor_ai_helpers.h"
+#include "ai_credential_store_core.h"
+#include "ai_gateway_core.h"
 
 #include <cppmonetize/AuthIdentity.h>
 #include <cppmonetize/ApiErrorUtils.h>
 #include <cppmonetize/MonetizeClient.h>
 #include <cppmonetize/OAuthDesktopFlow.h>
-#include <cppmonetize/TokenStore.h>
 
 #include <QDateTime>
 #include <QDesktopServices>
@@ -88,7 +89,10 @@ QString aiDisplayIdentity(const QString& explicitIdentity, const QString& access
     if (!trimmed.isEmpty()) {
         return trimmed;
     }
-    return cppmonetize::parseAccessTokenIdentity(accessToken).displayIdentity();
+    return QString::fromStdString(
+        jcut::ai::parseAccessTokenProfileCore(
+            accessToken.toStdString())
+            .displayIdentity());
 }
 
 bool looksLikeSpeakerOrganizationName(const QString& value)
@@ -358,17 +362,17 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut,
         legacyAiSecureStoreServiceNameForBase(QStringLiteral("unset-gateway"))};
 
     for (const QString& serviceName : serviceNames) {
-        cppmonetize::TokenStoreConfig cfg;
-        cfg.appName = QStringLiteral("jcut");
-        cfg.orgName = QStringLiteral("jcut");
-        cfg.serviceName = serviceName;
-        auto store = cppmonetize::createDefaultTokenStore(cfg);
-        const auto sessionResult = cppmonetize::loadStoredAuthSession(*store);
-        if (!sessionResult.hasValue()) {
+        jcut::ai::CredentialStoreConfigCore config;
+        config.serviceName = serviceName.toStdString();
+        const jcut::ai::CredentialStoreResultCore sessionResult =
+            jcut::ai::loadStoredCredentialsCore(config);
+        if (!sessionResult.ok) {
             continue;
         }
-        const cppmonetize::StoredAuthSession session = sessionResult.value();
-        const QString token = session.accessToken.trimmed();
+        const jcut::ai::StoredCredentialsCore& session =
+            sessionResult.credentials;
+        const QString token =
+            QString::fromStdString(session.accessToken).trimmed();
         if (token.isEmpty()) {
             continue;
         }
@@ -376,10 +380,12 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut,
             *tokenOut = token;
         }
         if (refreshTokenOut) {
-            *refreshTokenOut = session.refreshToken.trimmed();
+            *refreshTokenOut =
+                QString::fromStdString(session.refreshToken).trimmed();
         }
         if (userIdOut) {
-            *userIdOut = session.userId.trimmed();
+            *userIdOut =
+                QString::fromStdString(session.userId).trimmed();
         }
         return true;
     }
@@ -400,19 +406,20 @@ bool EditorWindow::writeAiTokenToSecureStore(const QString& token,
         return false;
     }
 
-    cppmonetize::TokenStoreConfig cfg;
-    cfg.appName = QStringLiteral("jcut");
-    cfg.orgName = QStringLiteral("jcut");
-    cfg.serviceName = aiSecureStoreServiceName();
-    auto store = cppmonetize::createDefaultTokenStore(cfg);
-    const auto writeResult = cppmonetize::storeStoredAuthSession(
-        *store,
-        cppmonetize::StoredAuthSession{token.trimmed(),
-                                       refreshToken.trimmed(),
-                                       m_aiUserId.trimmed()});
-    if (!writeResult.hasValue()) {
+    jcut::ai::CredentialStoreConfigCore config;
+    config.serviceName =
+        aiSecureStoreServiceName().toStdString();
+    const jcut::ai::CredentialStoreResultCore writeResult =
+        jcut::ai::storeCredentialsCore(
+            jcut::ai::StoredCredentialsCore{
+                token.trimmed().toStdString(),
+                refreshToken.trimmed().toStdString(),
+                m_aiUserId.trimmed().toStdString()},
+            config);
+    if (!writeResult.ok) {
         if (errorOut) {
-            *errorOut = writeResult.error().message;
+            *errorOut =
+                QString::fromStdString(writeResult.error);
         }
         return false;
     }
@@ -472,7 +479,10 @@ bool EditorWindow::refreshAiAuthTokenFromSecureStore()
     if (!email.isEmpty()) {
         m_aiUserId = email;
     } else if (m_aiUserId.trimmed().isEmpty()) {
-        m_aiUserId = cppmonetize::parseAccessTokenIdentity(m_aiAuthToken).displayIdentity();
+        m_aiUserId = QString::fromStdString(
+            jcut::ai::parseAccessTokenProfileCore(
+                m_aiAuthToken.toStdString())
+                .displayIdentity());
     }
 
     QString secureStoreError;
@@ -497,17 +507,16 @@ bool EditorWindow::clearAiTokenFromSecureStore(QString* errorOut) const
     QString lastError;
     bool anySuccess = false;
     for (const QString& serviceName : serviceNames) {
-        cppmonetize::TokenStoreConfig cfg;
-        cfg.appName = QStringLiteral("jcut");
-        cfg.orgName = QStringLiteral("jcut");
-        cfg.serviceName = serviceName;
-        auto store = cppmonetize::createDefaultTokenStore(cfg);
-        const auto clearResult = store->clear();
-        if (clearResult.hasValue()) {
+        jcut::ai::CredentialStoreConfigCore config;
+        config.serviceName = serviceName.toStdString();
+        const jcut::ai::CredentialStoreResultCore clearResult =
+            jcut::ai::clearStoredCredentialsCore(config);
+        if (clearResult.ok) {
             anySuccess = true;
             continue;
         }
-        const QString err = clearResult.error().message.trimmed();
+        const QString err =
+            QString::fromStdString(clearResult.error).trimmed();
         if (!err.isEmpty()) {
             lastError = err;
         }
@@ -550,7 +559,10 @@ void EditorWindow::updateProfileAvatarButton()
         m_profileAvatarButton->setToolTip(
             QStringLiteral("AI unavailable: credentials required. Log In to continue."));
     } else {
-        const QString requestedAvatarUrl = cppmonetize::profileImageUrlFromAccessToken(m_aiAuthToken);
+        const QString requestedAvatarUrl = QString::fromStdString(
+            jcut::ai::parseAccessTokenProfileCore(
+                m_aiAuthToken.toStdString())
+                .avatarUrl);
         if (requestedAvatarUrl != m_aiProfileAvatarUrl) {
             m_aiProfileAvatarUrl = requestedAvatarUrl;
             m_aiProfileAvatarPixmap = QPixmap();
@@ -823,7 +835,10 @@ void EditorWindow::configureAiGatewayLogin()
     m_aiRejectedAuthToken.clear();
     QString bestUser = email.trimmed();
     if (bestUser.isEmpty()) {
-        bestUser = cppmonetize::parseAccessTokenIdentity(m_aiAuthToken).displayIdentity();
+        bestUser = QString::fromStdString(
+            jcut::ai::parseAccessTokenProfileCore(
+                m_aiAuthToken.toStdString())
+                .displayIdentity());
     }
     m_aiUserId = bestUser;
 

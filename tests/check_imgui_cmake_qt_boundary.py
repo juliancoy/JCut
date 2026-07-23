@@ -17,6 +17,7 @@ def main() -> int:
 
     manifest = manifest_path.read_text(encoding="utf-8")
     required_targets = {
+        "jcut_ai_gateway_core",
         "jcut_frame_payload_core",
         "jcut_transcript_document_core",
         "jcut_media_path_core",

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "editor_document_core.h"
+#include "export_range_core.h"
+#include "playback_range_core.h"
+#include "speaker_framing_core.h"
 
 #include <cstddef>
 #include <string>
@@ -23,6 +26,12 @@ struct UndoCommand {};
 struct RedoCommand {};
 struct SetPlaybackActiveCommand { bool active = false; };
 struct SetPlaybackSpeedCommand { float speed = 1.0f; };
+struct SetPlaybackLoopEnabledCommand { bool enabled = false; };
+struct SetPreviewViewModeCommand { std::string mode = "video"; };
+struct SetTransportAudioCommand {
+    bool muted = false;
+    float volume = 0.8f;
+};
 struct SetPreviewZoomCommand { float zoom = 1.0f; };
 struct SeekToFrameCommand { int frame = 0; };
 struct StepFrameCommand { int delta = 0; };
@@ -122,7 +131,19 @@ struct SetClipProxyCommand {
     std::string proxyPath;
     bool useProxy = true;
 };
+struct EditorClipMetadataUpdate {
+    int clipId = 0;
+    std::string mediaKind;
+    bool hasAudio = false;
+    double sourceFps = 30.0;
+    std::int64_t sourceDurationFrames = 0;
+    int durationFrames = 1;
+};
+struct RefreshClipMetadataCommand {
+    std::vector<EditorClipMetadataUpdate> updates;
+};
 struct SetClipLockedCommand { int clipId = 0; bool locked = false; };
+struct SetSelectedClipsLockedCommand { bool locked = false; };
 // Matches the Qt timeline's clip-speed action: changing rate rescales the
 // clip's timeline duration and ripples later clips on the same track.
 struct SetClipPlaybackRateCommand {
@@ -161,6 +182,9 @@ enum class EditorKeyframeChannel {
     Grading,
     Opacity,
     Transform,
+    SpeakerFramingEnabled,
+    SpeakerFraming,
+    SpeakerFramingTarget,
 };
 struct RemoveClipKeyframeCommand {
     int clipId = 0;
@@ -174,6 +198,42 @@ struct SetClipTransformCommand {
     double rotation = 0.0;
     double scaleX = 1.0;
     double scaleY = 1.0;
+};
+struct SetClipSourceTransformLockedCommand {
+    int clipId = 0;
+    bool locked = false;
+};
+struct SetClipSpeakerFramingCommand {
+    int clipId = 0;
+    bool enabled = false;
+    double bakedTargetXNorm = 0.5;
+    double bakedTargetYNorm = 0.35;
+    double bakedTargetBoxNorm = -1.0;
+    double minConfidence = 0.08;
+    int manualTrackId = -1;
+    std::string manualStreamId;
+    int centerSmoothingFrames = 0;
+    int zoomSmoothingFrames = 0;
+    int smoothingMode = 0;
+    double centerSmoothingStrength = 1.0;
+    double zoomSmoothingStrength = 1.0;
+    int gapHoldFrames = 0;
+};
+struct SetClipSpeakerSectionMinimumWordsCommand {
+    int clipId = 0;
+    int minimumWords = 10;
+};
+struct UpsertSpeakerFramingEnabledKeyframeCommand {
+    int clipId = 0;
+    EditorBoolKeyframe keyframe;
+};
+struct UpsertSpeakerFramingKeyframeCommand {
+    int clipId = 0;
+    EditorTransformKeyframe keyframe;
+};
+struct UpsertSpeakerFramingTargetKeyframeCommand {
+    int clipId = 0;
+    EditorTransformKeyframe keyframe;
 };
 struct UpsertTransformKeyframeCommand {
     int clipId = 0;
@@ -291,6 +351,12 @@ struct SetClipAudioCommand {
     double pan = 0.0;
     bool solo = false;
 };
+struct SetAudioDynamicsCommand {
+    audio::DynamicsSettingsCore settings;
+};
+struct SetAudioTreatmentCommand {
+    EditorAudioTreatment treatment = EditorAudioTreatment::PreservePitch;
+};
 struct SetTrackPropertiesCommand {
     int trackId = 0;
     std::string label;
@@ -321,6 +387,14 @@ struct SetExportRangeCommand {
     std::int64_t startFrame = 0;
     std::int64_t endFrame = 0;
 };
+struct SetExportRangesCommand {
+    std::vector<EditorExportRange> ranges;
+};
+using ExportRangeEdit = export_range::Edit;
+struct EditExportRangesCommand {
+    ExportRangeEdit edit = ExportRangeEdit::Reset;
+    std::int64_t frame = 0;
+};
 struct SetWaveformVisibleCommand { bool visible = true; };
 struct SetTranscriptVisibleCommand { bool visible = true; };
 struct SeedTranscriptHistoryDocumentCommand {
@@ -346,6 +420,9 @@ using EditorCommand = std::variant<
     RedoCommand,
     SetPlaybackActiveCommand,
     SetPlaybackSpeedCommand,
+    SetPlaybackLoopEnabledCommand,
+    SetPreviewViewModeCommand,
+    SetTransportAudioCommand,
     SetPreviewZoomCommand,
     SeekToFrameCommand,
     StepFrameCommand,
@@ -375,7 +452,9 @@ using EditorCommand = std::variant<
     TrimClipEndCommand,
     SetClipLabelCommand,
     SetClipProxyCommand,
+    RefreshClipMetadataCommand,
     SetClipLockedCommand,
+    SetSelectedClipsLockedCommand,
     SetClipPlaybackRateCommand,
     MoveClipCommand,
     MoveSelectedClipsCommand,
@@ -388,6 +467,12 @@ using EditorCommand = std::variant<
     UpsertOpacityKeyframeCommand,
     RemoveClipKeyframeCommand,
     SetClipTransformCommand,
+    SetClipSourceTransformLockedCommand,
+    SetClipSpeakerFramingCommand,
+    SetClipSpeakerSectionMinimumWordsCommand,
+    UpsertSpeakerFramingEnabledKeyframeCommand,
+    UpsertSpeakerFramingKeyframeCommand,
+    UpsertSpeakerFramingTargetKeyframeCommand,
     UpsertTransformKeyframeCommand,
     CommitPreviewTransformCommand,
     SetClipMaskEffectCommand,
@@ -402,12 +487,16 @@ using EditorCommand = std::variant<
     ClearCorrectionPolygonsCommand,
     SetCorrectionsEnabledCommand,
     SetClipAudioCommand,
+    SetAudioDynamicsCommand,
+    SetAudioTreatmentCommand,
     SetTrackPropertiesCommand,
     SetTrackStateCommand,
     AddRenderSyncMarkerCommand,
     RemoveRenderSyncMarkerCommand,
     ClearRenderSyncMarkersCommand,
     SetExportRangeCommand,
+    SetExportRangesCommand,
+    EditExportRangesCommand,
     SetWaveformVisibleCommand,
     SetTranscriptVisibleCommand,
     SeedTranscriptHistoryDocumentCommand,
@@ -448,6 +537,41 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document);
 [[nodiscard]] EditorTransformKeyframe evaluateEditorClipTransformAtLocalFrame(
     const EditorClip& clip,
     std::int64_t localFrame);
+
+// Resolves a source-transform chain by persistent clip identity and evaluates
+// the terminal source at the same timeline position. Missing links and cycles
+// fail safely to the requested clip's own transform.
+[[nodiscard]] EditorTransformKeyframe
+evaluateEditorClipRenderTransformAtTimelineFrame(
+    const EditorDocumentCore& document,
+    const EditorClip& clip,
+    std::int64_t timelineFrame);
+
+// Evaluates durable/baked Qt speaker framing without transcript or UI
+// dependencies. `applied` is true only when framing is enabled at the frame
+// and baked transform keys are available.
+[[nodiscard]] EditorTransformKeyframe
+evaluateEditorClipBakedSpeakerFramingAtLocalFrame(
+    const EditorClip& clip,
+    double localFrame,
+    int sourceWidth,
+    int sourceHeight,
+    int outputWidth,
+    int outputHeight,
+    bool* applied = nullptr);
+EditorTransformKeyframe
+evaluateEditorClipSpeakerFramingForFaceBoxAtLocalFrame(
+    const EditorClip& clip,
+    double localFrame,
+    double locationXNorm,
+    double locationYNorm,
+    double boxSizeNorm,
+    double rotationDegrees,
+    int sourceWidth,
+    int sourceHeight,
+    int outputWidth,
+    int outputHeight,
+    bool* applied = nullptr);
 
 // Evaluates title keyframes without depending on either UI toolkit. Discrete
 // text/font/style fields follow the preceding keyframe; numeric fields honor

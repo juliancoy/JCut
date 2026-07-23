@@ -1,6 +1,7 @@
 #include "grading_tab.h"
 #include "clip_serialization.h"
 #include "decoder_context.h"
+#include "editor_auto_oppose_core.h"
 #include "editor_shared.h"
 #include "grading_histogram_widget.h"
 #include "keyframe_table_shared.h"
@@ -20,18 +21,8 @@
 #include <QSpinBox>
 #include <cmath>
 namespace {
-struct GradeProbeSample {
-    int64_t localFrame = 0;
-    double lumaMean = 0.0;
-    double saturationMean = 0.0;
-    double contrastSpread = 0.0;
-};
-struct OpposeGradeEvent {
-    int64_t localFrame = 0;
-    double brightnessDelta = 0.0;
-    double contrastMul = 1.0;
-    double saturationMul = 1.0;
-};
+using GradeProbeSample = jcut::EditorGradeProbeSampleCore;
+using OpposeGradeEvent = jcut::EditorOpposeGradeEventCore;
 
 bool probeFrameGradeStats(const QImage& image, GradeProbeSample* outSample)
 {
@@ -43,43 +34,12 @@ bool probeFrameGradeStats(const QImage& image, GradeProbeSample* outSample)
         return false;
     }
 
-    const int width = rgba.width();
-    const int height = rgba.height();
-    const int pixelCount = width * height;
-    const int step =
-        qMax(1, static_cast<int>(std::sqrt(static_cast<double>(qMax(1, pixelCount / 32000)))));
-
-    double sumLuma = 0.0;
-    double sumSat = 0.0;
-    double sumLumaSq = 0.0;
-    int samples = 0;
-    for (int y = 0; y < height; y += step) {
-        const uchar* row = rgba.constScanLine(y);
-        for (int x = 0; x < width; x += step) {
-            const int idx = x * 4;
-            const double r = static_cast<double>(row[idx]) / 255.0;
-            const double g = static_cast<double>(row[idx + 1]) / 255.0;
-            const double b = static_cast<double>(row[idx + 2]) / 255.0;
-            const double luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
-            const double maxv = qMax(r, qMax(g, b));
-            const double minv = qMin(r, qMin(g, b));
-            const double sat = maxv - minv;
-            sumLuma += luma;
-            sumLumaSq += luma * luma;
-            sumSat += sat;
-            ++samples;
-        }
-    }
-    if (samples <= 0) {
-        return false;
-    }
-
-    const double invCount = 1.0 / static_cast<double>(samples);
-    outSample->lumaMean = sumLuma * invCount;
-    outSample->saturationMean = sumSat * invCount;
-    const double varLuma = qMax(0.0, (sumLumaSq * invCount) - (outSample->lumaMean * outSample->lumaMean));
-    outSample->contrastSpread = std::sqrt(varLuma);
-    return true;
+    return jcut::probeEditorGradeStatsRgba(
+        rgba.constBits(),
+        rgba.width(),
+        rgba.height(),
+        rgba.bytesPerLine(),
+        outSample);
 }
 
 QVector<OpposeGradeEvent> detectOpposeGradeEvents(const QVector<GradeProbeSample>& samples,
@@ -90,60 +50,24 @@ QVector<OpposeGradeEvent> detectOpposeGradeEvents(const QVector<GradeProbeSample
                                                   double jumpContrastThreshold,
                                                   double brightnessStrength)
 {
-    QVector<OpposeGradeEvent> events;
-    if (samples.size() < 2) {
-        return events;
+    std::vector<GradeProbeSample> neutralSamples;
+    neutralSamples.reserve(static_cast<std::size_t>(samples.size()));
+    for (const GradeProbeSample& sample : samples) {
+        neutralSamples.push_back(sample);
     }
-
-    const int gap = qMax(1, minFrameGap);
-    int64_t lastEventFrame = -1000000;
-
-    double targetLuma = samples.constFirst().lumaMean;
-    double targetSat = samples.constFirst().saturationMean;
-    double targetSpread = samples.constFirst().contrastSpread;
-
-    for (int i = 1; i < samples.size(); ++i) {
-        const GradeProbeSample& previous = samples.at(i - 1);
-        const GradeProbeSample& current = samples.at(i);
-
-        const double jumpLuma = std::abs(current.lumaMean - previous.lumaMean);
-        const double jumpSat = std::abs(current.saturationMean - previous.saturationMean);
-        const double jumpSpread = std::abs(current.contrastSpread - previous.contrastSpread);
-        const bool majorJump = (jumpLuma >= jumpLumaThreshold) ||
-                               (jumpSat >= jumpSaturationThreshold) ||
-                               (jumpSpread >= jumpContrastThreshold);
-        if (!majorJump) {
-            targetLuma = (targetLuma * 0.96) + (current.lumaMean * 0.04);
-            targetSat = (targetSat * 0.96) + (current.saturationMean * 0.04);
-            targetSpread = (targetSpread * 0.96) + (current.contrastSpread * 0.04);
-            continue;
-        }
-
-        if (current.localFrame - lastEventFrame < gap) {
-            continue;
-        }
-
-        OpposeGradeEvent event;
-        event.localFrame = current.localFrame;
-        event.brightnessDelta =
-            qBound(-2.0, -(current.lumaMean - targetLuma) * brightnessStrength, 2.0);
-        event.saturationMul = qBound(0.45, targetSat / qMax(0.03, current.saturationMean), 2.2);
-        event.contrastMul = qBound(0.50, targetSpread / qMax(0.02, current.contrastSpread), 2.0);
-
-        const bool hasMeaningfulAdjustment = std::abs(event.brightnessDelta) >= 0.04 ||
-                                             std::abs(event.contrastMul - 1.0) >= 0.06 ||
-                                             std::abs(event.saturationMul - 1.0) >= 0.06;
-        if (!hasMeaningfulAdjustment) {
-            continue;
-        }
-
-        events.push_back(event);
-        lastEventFrame = current.localFrame;
-        if (events.size() >= maxEvents) {
-            break;
-        }
-    }
-    return events;
+    const std::vector<OpposeGradeEvent> neutralEvents =
+        jcut::detectEditorOpposeGradeEvents(
+            neutralSamples,
+            jcut::EditorAutoOpposeSettingsCore{
+                140,
+                minFrameGap,
+                maxEvents,
+                jumpLumaThreshold,
+                jumpSaturationThreshold,
+                jumpContrastThreshold,
+                brightnessStrength});
+    return QVector<OpposeGradeEvent>(
+        neutralEvents.begin(), neutralEvents.end());
 }
 
 bool comboHasAlphaItem(const QComboBox* combo)

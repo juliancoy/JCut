@@ -1,4 +1,5 @@
 #include "audio_engine.h"
+#include "audio_dynamics_core.h"
 #include "audio_speech_harmonic_isolator.h"
 
 #include "audio_clip_fade.h"
@@ -4037,6 +4038,36 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
   const bool stereoToMonoEnabled =
       m_stereoToMonoEnabled.load(std::memory_order_acquire);
 
+  jcut::audio::DynamicsSettingsCore sharedDynamics;
+  sharedDynamics.amplifyEnabled = amplifyEnabled;
+  sharedDynamics.amplifyDb = amplifyDb;
+  sharedDynamics.normalizeEnabled = normalizeEnabled;
+  sharedDynamics.normalizeTargetDb = normalizeTargetDb;
+  sharedDynamics.selectiveNormalizeEnabled =
+      selectiveNormalizeEnabled;
+  sharedDynamics.selectiveNormalizeMinSegmentSeconds =
+      selectiveNormalizeMinSegmentSeconds;
+  sharedDynamics.selectiveNormalizePeakDb =
+      selectiveNormalizePeakDb;
+  sharedDynamics.selectiveNormalizePasses =
+      selectiveNormalizePasses;
+  sharedDynamics.peakReductionEnabled = peakReductionEnabled;
+  sharedDynamics.peakThresholdDb = peakThresholdDb;
+  sharedDynamics.limiterEnabled = limiterEnabled;
+  sharedDynamics.limiterThresholdDb = limiterThresholdDb;
+  sharedDynamics.compressorEnabled = compressorEnabled;
+  sharedDynamics.compressorThresholdDb = compressorThresholdDb;
+  sharedDynamics.compressorRatio = compressorRatio;
+  sharedDynamics.softClipEnabled = softClipEnabled;
+  sharedDynamics.stereoToMonoEnabled = stereoToMonoEnabled;
+  jcut::audio::processAudioDynamicsCore(
+      output,
+      frames,
+      m_channelCount,
+      m_sampleRate,
+      sharedDynamics);
+
+#if 0
   auto dbToAmpLocal = [](float db) -> float {
     return std::pow(10.0f, db / 20.0f);
   };
@@ -4193,6 +4224,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       }
     }
   }
+#endif
 
   const float masterGain =
       context.muted ? 0.0f : static_cast<float>(context.volume);

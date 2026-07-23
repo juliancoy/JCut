@@ -17,6 +17,29 @@
 
 namespace {
 
+std::vector<jcut::export_range::Range> sharedExportRanges(
+    const QVector<ExportRangeSegment>& ranges)
+{
+    std::vector<jcut::export_range::Range> result;
+    result.reserve(static_cast<std::size_t>(ranges.size()));
+    for (const ExportRangeSegment& range : ranges) {
+        result.push_back({range.startFrame, range.endFrame});
+    }
+    return result;
+}
+
+QVector<ExportRangeSegment> qtExportRanges(
+    const std::vector<jcut::export_range::Range>& ranges)
+{
+    QVector<ExportRangeSegment> result;
+    result.reserve(static_cast<qsizetype>(ranges.size()));
+    for (const jcut::export_range::Range& range : ranges) {
+        result.push_back(
+            {range.startFrame, range.endFrame});
+    }
+    return result;
+}
+
 void upsertTransformKeyframe(QVector<TimelineClip::TransformKeyframe>& keyframes,
                              const TimelineClip::TransformKeyframe& keyframe) {
     for (TimelineClip::TransformKeyframe& existing : keyframes) {
@@ -1538,35 +1561,10 @@ void TimelineWidget::normalizeExportRange() {
 }
 
 void TimelineWidget::normalizeExportRanges() {
-    const int64_t total = totalFrames();
-    if (m_exportRanges.isEmpty()) {
-        m_exportRanges = {ExportRangeSegment{0, total}};
-    } else {
-        for (ExportRangeSegment& segment : m_exportRanges) {
-            segment.startFrame = qBound<int64_t>(0, segment.startFrame, total);
-            segment.endFrame = qBound<int64_t>(0, segment.endFrame, total);
-            if (segment.endFrame < segment.startFrame) {
-                std::swap(segment.startFrame, segment.endFrame);
-            }
-        }
-    }
-    std::sort(m_exportRanges.begin(), m_exportRanges.end(), [](const ExportRangeSegment& a, const ExportRangeSegment& b) {
-        if (a.startFrame == b.startFrame) {
-            return a.endFrame < b.endFrame;
-        }
-        return a.startFrame < b.startFrame;
-    });
-    QVector<ExportRangeSegment> normalized;
-    normalized.reserve(m_exportRanges.size());
-    for (const ExportRangeSegment& segment : std::as_const(m_exportRanges)) {
-        if (!normalized.isEmpty() &&
-            normalized.constLast().startFrame == segment.startFrame &&
-            normalized.constLast().endFrame == segment.endFrame) {
-            continue;
-        }
-        normalized.push_back(segment);
-    }
-    m_exportRanges = normalized;
+    std::vector<jcut::export_range::Range> ranges =
+        sharedExportRanges(m_exportRanges);
+    jcut::export_range::normalize(&ranges, totalFrames());
+    m_exportRanges = qtExportRanges(ranges);
 }
 
 int TimelineWidget::exportSegmentIndexAtFrame(int64_t frame) const {
@@ -2035,6 +2033,24 @@ void TimelineWidget::setExportRanges(const QVector<ExportRangeSegment>& ranges) 
     m_exportRanges = ranges;
     normalizeExportRanges();
     update();
+}
+
+bool TimelineWidget::editExportRanges(
+    jcut::export_range::Edit edit,
+    int64_t frame)
+{
+    std::vector<jcut::export_range::Range> ranges =
+        sharedExportRanges(m_exportRanges);
+    if (!jcut::export_range::apply(
+            &ranges, totalFrames(), edit, frame)) {
+        return false;
+    }
+    m_exportRanges = qtExportRanges(ranges);
+    if (exportRangeChanged) {
+        exportRangeChanged();
+    }
+    update();
+    return true;
 }
 
 bool TimelineWidget::isVisualMediaType(ClipMediaType type) const {

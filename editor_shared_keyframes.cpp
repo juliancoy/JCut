@@ -5,6 +5,8 @@
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
 #include "speaker_track_assignment_service.h"
+#include "speaker_framing_core.h"
+#include "speaker_framing_smoothing_core.h"
 #include "transcript_engine.h"
 #include "transform_skip_aware_timing.h"
 
@@ -600,25 +602,9 @@ QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize)
 
 qreal smoothingAmountForStrength(qreal strength)
 {
-    const qreal boundedStrength =
-        qBound<qreal>(0.0, strength, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
-    if (boundedStrength <= 0.0) {
-        return 0.0;
-    }
-    return 1.0 - std::exp(-boundedStrength);
-}
-
-qreal medianValue(QVector<qreal> values)
-{
-    if (values.isEmpty()) {
-        return 0.0;
-    }
-    std::sort(values.begin(), values.end());
-    const int middle = values.size() / 2;
-    if ((values.size() % 2) == 1) {
-        return values.at(middle);
-    }
-    return (values.at(middle - 1) + values.at(middle)) * 0.5;
+    return static_cast<qreal>(
+        jcut::speaker_framing_smoothing::amountForStrength(
+            strength));
 }
 
 qreal robustSmoothedScalar(qreal original,
@@ -629,54 +615,24 @@ qreal robustSmoothedScalar(qreal original,
                            qreal strength,
                            qreal minRobustScale)
 {
-    if (samples.size() <= 1 || windowFrames <= 1) {
-        return original;
-    }
-    const qreal amount = smoothingAmountForStrength(strength);
-    if (amount <= 0.0) {
-        return original;
-    }
-
-    QVector<qreal> values;
-    values.reserve(samples.size());
+    std::vector<jcut::speaker_framing_smoothing::Sample>
+        sharedSamples;
+    sharedSamples.reserve(static_cast<std::size_t>(samples.size()));
     for (const RobustScalarSample& sample : samples) {
-        values.push_back(sample.value);
+        sharedSamples.push_back({
+            static_cast<double>(sample.value),
+            sample.frame,
+            static_cast<double>(sample.confidence)});
     }
-    const qreal median = medianValue(values);
-
-    QVector<qreal> deviations;
-    deviations.reserve(samples.size());
-    for (const RobustScalarSample& sample : samples) {
-        deviations.push_back(std::abs(sample.value - median));
-    }
-    const qreal mad = medianValue(deviations);
-    const qreal modeScale = smoothingMode == kSpeakerFramingSmoothingLowPass
-        ? 3.25
-        : (smoothingMode == kSpeakerFramingSmoothingBoth ? 2.75 : 2.25);
-    const qreal robustScale = qMax(minRobustScale, qMax<qreal>(mad * modeScale, 0.000001));
-    const qreal sigmaFrames = qMax<qreal>(1.0, static_cast<qreal>(windowFrames) / 3.0);
-
-    qreal weightedSum = 0.0;
-    qreal weightSum = 0.0;
-    for (const RobustScalarSample& sample : samples) {
-        const qreal normalizedResidual = std::abs(sample.value - median) / robustScale;
-        if (normalizedResidual >= 1.0) {
-            continue;
-        }
-        const qreal residualWeight =
-            std::pow(1.0 - (normalizedResidual * normalizedResidual), 2.0);
-        const qreal frameDistance = std::abs(static_cast<qreal>(sample.frame - lookupFrame));
-        const qreal temporalWeight =
-            std::exp(-0.5 * std::pow(frameDistance / sigmaFrames, 2.0));
-        const qreal confidenceWeight =
-            0.25 + (0.75 * qBound<qreal>(0.0, sample.confidence, 1.0));
-        const qreal weight = residualWeight * temporalWeight * confidenceWeight;
-        weightedSum += sample.value * weight;
-        weightSum += weight;
-    }
-
-    const qreal robustTarget = weightSum > 0.0 ? weightedSum / weightSum : median;
-    return original + ((robustTarget - original) * amount);
+    return static_cast<qreal>(
+        jcut::speaker_framing_smoothing::robustSmoothedScalar(
+            original,
+            sharedSamples,
+            lookupFrame,
+            windowFrames,
+            smoothingMode,
+            strength,
+            minRobustScale));
 }
 
 bool streamSampleAtFrame(const TimelineClip& clip,
@@ -1530,6 +1486,64 @@ TimelineClip::TransformKeyframe interpolatedSpeakerFramingKeyframe(
     state.linearInterpolation = current.linearInterpolation;
     return state;
 }
+
+jcut::speaker_framing::State sharedSpeakerFramingState(
+    const TimelineClip& clip)
+{
+    jcut::speaker_framing::State state;
+    state.enabled = clip.speakerFramingEnabled;
+    state.bakedTargetXNorm =
+        clip.speakerFramingBakedTargetXNorm;
+    state.bakedTargetYNorm =
+        clip.speakerFramingBakedTargetYNorm;
+    state.bakedTargetBoxNorm =
+        clip.speakerFramingBakedTargetBoxNorm;
+    state.enabledKeyframes.reserve(
+        static_cast<std::size_t>(
+            clip.speakerFramingEnabledKeyframes.size()));
+    for (const TimelineClip::BoolKeyframe& keyframe :
+         clip.speakerFramingEnabledKeyframes) {
+        state.enabledKeyframes.push_back(
+            {keyframe.frame, keyframe.enabled});
+    }
+    const auto copyTransforms =
+        [](const QVector<TimelineClip::TransformKeyframe>& source) {
+            std::vector<jcut::speaker_framing::Transform> result;
+            result.reserve(
+                static_cast<std::size_t>(source.size()));
+            for (const TimelineClip::TransformKeyframe& keyframe :
+                 source) {
+                result.push_back({
+                    keyframe.frame,
+                    keyframe.translationX,
+                    keyframe.translationY,
+                    keyframe.rotation,
+                    keyframe.scaleX,
+                    keyframe.scaleY,
+                    keyframe.linearInterpolation});
+            }
+            return result;
+        };
+    state.framingKeyframes =
+        copyTransforms(clip.speakerFramingKeyframes);
+    state.targetKeyframes =
+        copyTransforms(clip.speakerFramingTargetKeyframes);
+    return state;
+}
+
+TimelineClip::TransformKeyframe qtSpeakerFramingTransform(
+    const jcut::speaker_framing::Transform& source)
+{
+    TimelineClip::TransformKeyframe result;
+    result.frame = source.frame;
+    result.translationX = source.translationX;
+    result.translationY = source.translationY;
+    result.rotation = source.rotation;
+    result.scaleX = source.scaleX;
+    result.scaleY = source.scaleY;
+    result.linearInterpolation = source.linearInterpolation;
+    return result;
+}
 } // namespace
 
 
@@ -2065,37 +2079,22 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
 
     const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);
     const QSize sourceSize = sourceSizeForClipCached(clip, safeOutput);
-    const QRectF fittedRect = fitRectForSourceInOutput(sourceSize, safeOutput);
-    const qreal fittedCenterX = fittedRect.center().x();
-    const qreal fittedCenterY = fittedRect.center().y();
-    const qreal fittedWidth = qMax<qreal>(1.0, fittedRect.width());
-    const qreal fittedHeight = qMax<qreal>(1.0, fittedRect.height());
-    const qreal fittedMinSide = qMax<qreal>(1.0, qMin(fittedWidth, fittedHeight));
-    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.width()));
-    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.height()));
-    const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
-    const qreal targetXPx = targetXNorm * outputWidth;
-    const qreal targetYPx = targetYNorm * outputHeight;
-    const qreal faceSideOutputPx = qMax<qreal>(1.0, safeBoxSizeNorm * fittedMinSide);
-    const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
-    const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
-    const qreal localX = (qBound<qreal>(0.0, locationNorm.x(), 1.0) - 0.5) * fittedWidth;
-    const qreal localY = (qBound<qreal>(0.0, locationNorm.y(), 1.0) - 0.5) * fittedHeight;
-    constexpr qreal kPi = 3.141592653589793238462643383279502884;
-    const qreal radians = boundedRotation * (kPi / 180.0);
-    const qreal scaledLocalX = scale * localX;
-    const qreal scaledLocalY = scale * localY;
-    const qreal rotatedLocalX = (std::cos(radians) * scaledLocalX) -
-                                (std::sin(radians) * scaledLocalY);
-    const qreal rotatedLocalY = (std::sin(radians) * scaledLocalX) +
-                                (std::cos(radians) * scaledLocalY);
-    state.frame = static_cast<int64_t>(std::floor(localFrame));
-    state.translationX = targetXPx - (fittedCenterX + rotatedLocalX);
-    state.translationY = targetYPx - (fittedCenterY + rotatedLocalY);
-    state.rotation = boundedRotation;
-    state.scaleX = scale;
-    state.scaleY = scale;
-    state.linearInterpolation = true;
+    const QRectF fittedRect =
+        fitRectForSourceInOutput(sourceSize, safeOutput);
+    state = qtSpeakerFramingTransform(
+        jcut::speaker_framing::evaluateFaceBox(
+            sharedSpeakerFramingState(clip),
+            localFrame,
+            locationNorm.x(),
+            locationNorm.y(),
+            boxSizeNorm,
+            rotationDegrees,
+            {
+                static_cast<double>(sourceSize.width()),
+                static_cast<double>(sourceSize.height())},
+            {
+                static_cast<double>(safeOutput.width()),
+                static_cast<double>(safeOutput.height())}));
     if (diagnosticsOut) {
         diagnosticsOut->insert(QStringLiteral("target_box_norm"), QJsonObject{
             {QStringLiteral("x"), targetXNorm},
@@ -2682,25 +2681,21 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             outputSize,
             diagnosticsOut);
     }
-    if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
-        state = clip.speakerFramingKeyframes.constFirst();
-    } else {
-        const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingKeyframes, localFrame);
-        if (upperIndex >= clip.speakerFramingKeyframes.size()) {
-            state = clip.speakerFramingKeyframes.constLast();
-        } else {
-            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes.at(upperIndex - 1);
-            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes.at(upperIndex);
-            state = qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(previous.frame) + 1.0)
-                ? previous
-                : interpolatedSpeakerFramingKeyframe(previous, current, localFrame);
-        }
-    }
-
-    const TimelineClip::TransformKeyframe target =
-        evaluateClipSpeakerFramingTargetAtPosition(clip, timelineFramePosition);
-    TimelineClip::TransformKeyframe retargeted =
-        retargetSpeakerFramingTransform(state, target, clip, outputSize);
+    const QSize safeOutput =
+        outputSize.isValid() ? outputSize : QSize(1080, 1920);
+    const QSize sourceSize =
+        sourceSizeForClipCached(clip, safeOutput);
+    const TimelineClip::TransformKeyframe retargeted =
+        qtSpeakerFramingTransform(
+            jcut::speaker_framing::evaluateBaked(
+                sharedSpeakerFramingState(clip),
+                localFrame,
+                {
+                    static_cast<double>(sourceSize.width()),
+                    static_cast<double>(sourceSize.height())},
+                {
+                    static_cast<double>(safeOutput.width()),
+                    static_cast<double>(safeOutput.height())}));
     if (diagnosticsOut) {
         diagnosticsOut->insert(QStringLiteral("sample_source"), QStringLiteral("speaker_framing_keyframe"));
         diagnosticsOut->insert(QStringLiteral("speaker_framing_transform"),

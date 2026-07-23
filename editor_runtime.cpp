@@ -1,4 +1,5 @@
 #include "editor_runtime.h"
+#include "editor_media_presence_core.h"
 
 #include "editor_document_core_json.h"
 #include "editor_grading_core.h"
@@ -7,6 +8,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -16,14 +18,92 @@
 
 namespace {
 
-constexpr float kMinPlaybackSpeed = 0.25f;
-constexpr float kMaxPlaybackSpeed = 2.0f;
+constexpr float kMinPlaybackSpeed = 0.1f;
+constexpr float kMaxPlaybackSpeed = 3.0f;
 constexpr float kMinPreviewZoom = 0.5f;
 constexpr float kMaxPreviewZoom = 3.0f;
 constexpr double kDefaultTimelineFps = 30.0;
 constexpr std::int64_t kEditorAudioSampleRate = 48000;
 constexpr std::int64_t kEditorSamplesPerFrame =
     kEditorAudioSampleRate / 30;
+
+std::int64_t qtTimelineExtentFrame(
+    const jcut::EditorDocumentCore& document)
+{
+    std::int64_t extent = 300;
+    for (const jcut::EditorClip& clip : document.clips) {
+        extent = std::max(
+            extent,
+            static_cast<std::int64_t>(clip.startFrame) +
+                clip.durationFrames +
+                static_cast<std::int64_t>(kDefaultTimelineFps));
+    }
+    return extent;
+}
+
+std::vector<jcut::export_range::Range> sharedExportRanges(
+    const std::vector<jcut::EditorExportRange>& ranges)
+{
+    std::vector<jcut::export_range::Range> result;
+    result.reserve(ranges.size());
+    for (const jcut::EditorExportRange& range : ranges) {
+        result.push_back({range.startFrame, range.endFrame});
+    }
+    return result;
+}
+
+void storeSharedExportRanges(
+    const std::vector<jcut::export_range::Range>& ranges,
+    std::vector<jcut::EditorExportRange>* destination)
+{
+    if (!destination) {
+        return;
+    }
+    destination->clear();
+    destination->reserve(ranges.size());
+    for (const jcut::export_range::Range& range : ranges) {
+        destination->push_back(
+            {range.startFrame, range.endFrame});
+    }
+}
+
+void synchronizeExportRequestRanges(
+    jcut::EditorDocumentCore* document)
+{
+    if (!document || document->exportRanges.empty()) {
+        return;
+    }
+    document->exportRequest.exportStartFrame =
+        document->exportRanges.front().startFrame;
+    document->exportRequest.exportEndFrame =
+        document->exportRanges.back().endFrame;
+    document->exportRequest.exportRangeCount =
+        document->exportRanges.size();
+}
+
+int playbackStartFrame(
+    const jcut::EditorDocumentCore& document,
+    int timelineEndFrame)
+{
+    const auto ranges = jcut::normalizedPlaybackRangesCore(
+        document.exportRanges, timelineEndFrame);
+    if (ranges.empty()) {
+        return document.transport.currentFrame >= timelineEndFrame
+            ? 0
+            : document.transport.currentFrame;
+    }
+    const auto playable = std::find_if(
+        ranges.begin(), ranges.end(),
+        [&](const jcut::PlaybackRangeCore& range) {
+            return document.transport.currentFrame <= range.endFrame;
+        });
+    return static_cast<int>(
+        playable == ranges.end()
+            ? ranges.front().startFrame
+            : std::max<std::int64_t>(
+                  document.transport.currentFrame,
+                  playable->startFrame));
+}
 
 double normalizedScale(double value)
 {
@@ -36,22 +116,12 @@ double normalizedScale(double value)
 
 bool mediaKindHasVisuals(const std::string& mediaKind)
 {
-    return mediaKind == "video" || mediaKind == "image" ||
-        mediaKind == "title" || mediaKind == "graphics";
+    return jcut::editorMediaKindHasVisualsCore(mediaKind);
 }
 
 bool editorClipHasVisuals(const jcut::EditorClip& clip)
 {
-    if (mediaKindHasVisuals(clip.mediaKind)) {
-        return true;
-    }
-    if (clip.mediaKind == "audio") {
-        return false;
-    }
-    // Legacy documents can omit mediaKind while still carrying the visual
-    // enablement used by the neutral render bridge. Treat unknown/future kinds
-    // as visual when that persisted signal says the clip has a video layer.
-    return clip.videoEnabled;
+    return jcut::editorClipHasVisualsCore(clip);
 }
 
 std::string trimmed(std::string value)
@@ -1366,7 +1436,9 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::TrimClipEndCommand> ||
                    std::is_same_v<T, jcut::SetClipLabelCommand> ||
                    std::is_same_v<T, jcut::SetClipProxyCommand> ||
+                   std::is_same_v<T, jcut::RefreshClipMetadataCommand> ||
                    std::is_same_v<T, jcut::SetClipLockedCommand> ||
+                   std::is_same_v<T, jcut::SetSelectedClipsLockedCommand> ||
                    std::is_same_v<T, jcut::SetClipPlaybackRateCommand> ||
                    std::is_same_v<T, jcut::MoveClipCommand> ||
                    std::is_same_v<T, jcut::MoveSelectedClipsCommand> ||
@@ -1379,6 +1451,12 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::UpsertOpacityKeyframeCommand> ||
                    std::is_same_v<T, jcut::RemoveClipKeyframeCommand> ||
                    std::is_same_v<T, jcut::SetClipTransformCommand> ||
+                   std::is_same_v<T, jcut::SetClipSourceTransformLockedCommand> ||
+                   std::is_same_v<T, jcut::SetClipSpeakerFramingCommand> ||
+                   std::is_same_v<T, jcut::SetClipSpeakerSectionMinimumWordsCommand> ||
+                   std::is_same_v<T, jcut::UpsertSpeakerFramingEnabledKeyframeCommand> ||
+                   std::is_same_v<T, jcut::UpsertSpeakerFramingKeyframeCommand> ||
+                   std::is_same_v<T, jcut::UpsertSpeakerFramingTargetKeyframeCommand> ||
                    std::is_same_v<T, jcut::UpsertTransformKeyframeCommand> ||
                    std::is_same_v<T, jcut::CommitPreviewTransformCommand> ||
                    std::is_same_v<T, jcut::SetClipMaskEffectCommand> ||
@@ -1393,12 +1471,16 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::ClearCorrectionPolygonsCommand> ||
                    std::is_same_v<T, jcut::SetCorrectionsEnabledCommand> ||
                    std::is_same_v<T, jcut::SetClipAudioCommand> ||
+                   std::is_same_v<T, jcut::SetAudioDynamicsCommand> ||
+                   std::is_same_v<T, jcut::SetAudioTreatmentCommand> ||
                    std::is_same_v<T, jcut::SetTrackPropertiesCommand> ||
                    std::is_same_v<T, jcut::SetTrackStateCommand> ||
                    std::is_same_v<T, jcut::AddRenderSyncMarkerCommand> ||
                    std::is_same_v<T, jcut::RemoveRenderSyncMarkerCommand> ||
                    std::is_same_v<T, jcut::ClearRenderSyncMarkersCommand> ||
                    std::is_same_v<T, jcut::SetExportRangeCommand> ||
+                   std::is_same_v<T, jcut::SetExportRangesCommand> ||
+                   std::is_same_v<T, jcut::EditExportRangesCommand> ||
                    std::is_same_v<T, jcut::SetExportSizeCommand> ||
                    std::is_same_v<T, jcut::SetExportFpsCommand> ||
                    std::is_same_v<T, jcut::SetExportOutputPathCommand> ||
@@ -1966,6 +2048,217 @@ EditorTransformKeyframe evaluateEditorClipTransformAtLocalFrame(
     return offset;
 }
 
+EditorTransformKeyframe evaluateEditorClipRenderTransformAtTimelineFrame(
+    const EditorDocumentCore& document,
+    const EditorClip& clip,
+    std::int64_t timelineFrame)
+{
+    const auto evaluateOwn = [&](const EditorClip& candidate) {
+        return evaluateEditorClipTransformAtLocalFrame(
+            candidate,
+            timelineFrame -
+                static_cast<std::int64_t>(candidate.startFrame));
+    };
+    const bool followsSource =
+        clip.sourceTransformLocked ||
+        canonicalEditorClipRole(clip.clipRole) == "mask_matte";
+    std::string sourceId =
+        trimmedEditorClipId(clip.linkedSourceClipId);
+    if (!followsSource || sourceId.empty()) {
+        return evaluateOwn(clip);
+    }
+
+    std::unordered_set<std::string> visited;
+    visited.insert(trimmedEditorClipId(clip.persistentId));
+    const EditorClip* source = nullptr;
+    while (!sourceId.empty()) {
+        if (!visited.insert(sourceId).second) {
+            return evaluateOwn(clip);
+        }
+        const auto sourceIt = std::find_if(
+            document.clips.begin(),
+            document.clips.end(),
+            [&](const EditorClip& candidate) {
+                return trimmedEditorClipId(
+                           candidate.persistentId) == sourceId;
+            });
+        if (sourceIt == document.clips.end()) {
+            return evaluateOwn(clip);
+        }
+        source = &*sourceIt;
+        const std::string parentId =
+            trimmedEditorClipId(source->linkedSourceClipId);
+        if (!source->sourceTransformLocked || parentId.empty()) {
+            break;
+        }
+        sourceId = parentId;
+    }
+    if (!source) {
+        return evaluateOwn(clip);
+    }
+    EditorTransformKeyframe result = evaluateOwn(*source);
+    result.frame = std::clamp<std::int64_t>(
+        timelineFrame - static_cast<std::int64_t>(clip.startFrame),
+        0,
+        std::max(0, clip.durationFrames - 1));
+    return result;
+}
+
+EditorTransformKeyframe
+evaluateEditorClipBakedSpeakerFramingAtLocalFrame(
+    const EditorClip& clip,
+    double localFrame,
+    int sourceWidth,
+    int sourceHeight,
+    int outputWidth,
+    int outputHeight,
+    bool* applied)
+{
+    speaker_framing::State state;
+    state.enabled = clip.speakerFramingEnabled;
+    state.bakedTargetXNorm =
+        clip.speakerFramingBakedTargetXNorm;
+    state.bakedTargetYNorm =
+        clip.speakerFramingBakedTargetYNorm;
+    state.bakedTargetBoxNorm =
+        clip.speakerFramingBakedTargetBoxNorm;
+    state.enabledKeyframes.reserve(
+        clip.speakerFramingEnabledKeyframes.size());
+    for (const EditorBoolKeyframe& keyframe :
+         clip.speakerFramingEnabledKeyframes) {
+        state.enabledKeyframes.push_back(
+            {keyframe.frame, keyframe.enabled});
+    }
+    const auto copyTransforms =
+        [](const std::vector<EditorTransformKeyframe>& source) {
+            std::vector<speaker_framing::Transform> result;
+            result.reserve(source.size());
+            for (const EditorTransformKeyframe& keyframe : source) {
+                result.push_back({
+                    keyframe.frame,
+                    keyframe.translationX,
+                    keyframe.translationY,
+                    keyframe.rotation,
+                    keyframe.scaleX,
+                    keyframe.scaleY,
+                    keyframe.linearInterpolation});
+            }
+            return result;
+        };
+    state.framingKeyframes =
+        copyTransforms(clip.speakerFramingKeyframes);
+    state.targetKeyframes =
+        copyTransforms(clip.speakerFramingTargetKeyframes);
+    const bool enabled = speaker_framing::enabledAt(
+        state,
+        static_cast<std::int64_t>(std::floor(localFrame)));
+    const bool hasBakedFraming =
+        enabled && !state.framingKeyframes.empty();
+    if (applied) {
+        *applied = hasBakedFraming;
+    }
+    const speaker_framing::Transform value =
+        speaker_framing::evaluateBaked(
+            state,
+            localFrame,
+            {
+                static_cast<double>(sourceWidth),
+                static_cast<double>(sourceHeight)},
+            {
+                static_cast<double>(outputWidth),
+                static_cast<double>(outputHeight)});
+    EditorTransformKeyframe result;
+    result.frame = value.frame;
+    result.translationX = value.translationX;
+    result.translationY = value.translationY;
+    result.rotation = value.rotation;
+    result.scaleX = value.scaleX;
+    result.scaleY = value.scaleY;
+    result.linearInterpolation = value.linearInterpolation;
+    return result;
+}
+
+EditorTransformKeyframe
+evaluateEditorClipSpeakerFramingForFaceBoxAtLocalFrame(
+    const EditorClip& clip,
+    double localFrame,
+    double locationXNorm,
+    double locationYNorm,
+    double boxSizeNorm,
+    double rotationDegrees,
+    int sourceWidth,
+    int sourceHeight,
+    int outputWidth,
+    int outputHeight,
+    bool* applied)
+{
+    speaker_framing::State state;
+    state.enabled = clip.speakerFramingEnabled;
+    state.enabledKeyframes.reserve(
+        clip.speakerFramingEnabledKeyframes.size());
+    for (const EditorBoolKeyframe& keyframe :
+         clip.speakerFramingEnabledKeyframes) {
+        state.enabledKeyframes.push_back(
+            {keyframe.frame, keyframe.enabled});
+    }
+    state.targetKeyframes.reserve(
+        clip.speakerFramingTargetKeyframes.size());
+    for (const EditorTransformKeyframe& keyframe :
+         clip.speakerFramingTargetKeyframes) {
+        state.targetKeyframes.push_back({
+            keyframe.frame,
+            keyframe.translationX,
+            keyframe.translationY,
+            keyframe.rotation,
+            keyframe.scaleX,
+            keyframe.scaleY,
+            keyframe.linearInterpolation});
+    }
+    const bool enabled = speaker_framing::enabledAt(
+        state,
+        static_cast<std::int64_t>(std::floor(localFrame)));
+    const speaker_framing::Transform target =
+        speaker_framing::evaluate(
+            state.targetKeyframes,
+            localFrame,
+            true,
+            speaker_framing::Transform{
+                0, 0.5, 0.35, 0.0, -1.0, -1.0, true});
+    const bool canApply =
+        enabled &&
+        clip.speakerFramingKeyframes.empty() &&
+        target.scaleX > 0.0 &&
+        boxSizeNorm > 0.0;
+    if (applied) {
+        *applied = canApply;
+    }
+    const speaker_framing::Transform value =
+        canApply
+        ? speaker_framing::evaluateFaceBox(
+              state,
+              localFrame,
+              locationXNorm,
+              locationYNorm,
+              boxSizeNorm,
+              rotationDegrees,
+              {
+                  static_cast<double>(sourceWidth),
+                  static_cast<double>(sourceHeight)},
+              {
+                  static_cast<double>(outputWidth),
+                  static_cast<double>(outputHeight)})
+        : speaker_framing::Transform{};
+    EditorTransformKeyframe result;
+    result.frame = value.frame;
+    result.translationX = value.translationX;
+    result.translationY = value.translationY;
+    result.rotation = value.rotation;
+    result.scaleX = value.scaleX;
+    result.scaleY = value.scaleY;
+    result.linearInterpolation = value.linearInterpolation;
+    return result;
+}
+
 EditorTitleKeyframe evaluateEditorClipTitleAtLocalFrame(
     const EditorClip& clip,
     std::int64_t localFrame)
@@ -2344,7 +2637,14 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
             using T = std::decay_t<decltype(typedCommand)>;
 
             if constexpr (std::is_same_v<T, TogglePlaybackCommand>) {
-                m_document.transport.playbackActive = !m_document.transport.playbackActive;
+                const bool nextActive =
+                    !m_document.transport.playbackActive;
+                if (nextActive) {
+                    m_document.transport.currentFrame =
+                        playbackStartFrame(
+                            m_document, timelineEndFrame());
+                }
+                m_document.transport.playbackActive = nextActive;
                 return {true, m_document.transport.playbackActive ? "playback started" : "playback paused"};
             } else if constexpr (std::is_same_v<T, UndoCommand>) {
                 if (m_undoStack.empty()) {
@@ -2375,12 +2675,36 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 m_frameAccumulator = 0.0;
                 return {true, "edit redone"};
             } else if constexpr (std::is_same_v<T, SetPlaybackActiveCommand>) {
+                if (typedCommand.active &&
+                    !m_document.transport.playbackActive) {
+                    m_document.transport.currentFrame =
+                        playbackStartFrame(
+                            m_document, timelineEndFrame());
+                }
                 m_document.transport.playbackActive = typedCommand.active;
                 return {true, typedCommand.active ? "playback started" : "playback paused"};
             } else if constexpr (std::is_same_v<T, SetPlaybackSpeedCommand>) {
                 m_document.transport.playbackSpeed =
                     std::clamp(typedCommand.speed, kMinPlaybackSpeed, kMaxPlaybackSpeed);
                 return {true, "playback speed updated"};
+            } else if constexpr (
+                std::is_same_v<T, SetPlaybackLoopEnabledCommand>) {
+                m_document.transport.playbackLoopEnabled =
+                    typedCommand.enabled;
+                return {true, typedCommand.enabled
+                    ? "playback loop enabled"
+                    : "playback loop disabled"};
+            } else if constexpr (
+                std::is_same_v<T, SetPreviewViewModeCommand>) {
+                m_document.transport.previewViewMode =
+                    typedCommand.mode == "audio" ? "audio" : "video";
+                return {true, "preview view mode updated"};
+            } else if constexpr (
+                std::is_same_v<T, SetTransportAudioCommand>) {
+                m_document.transport.audioMuted = typedCommand.muted;
+                m_document.transport.audioVolume =
+                    std::clamp(typedCommand.volume, 0.0f, 1.0f);
+                return {true, "transport audio updated"};
             } else if constexpr (std::is_same_v<T, SetPreviewZoomCommand>) {
                 m_document.transport.previewZoom =
                     std::clamp(typedCommand.zoom, kMinPreviewZoom, kMaxPreviewZoom);
@@ -2391,8 +2715,20 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 m_frameAccumulator = 0.0;
                 return {true, "playhead moved"};
             } else if constexpr (std::is_same_v<T, StepFrameCommand>) {
-                m_document.transport.currentFrame =
-                    std::clamp(m_document.transport.currentFrame + typedCommand.delta, 0, timelineEndFrame());
+                const int endFrame = timelineEndFrame();
+                const auto ranges = normalizedPlaybackRangesCore(
+                    m_document.exportRanges, endFrame);
+                const int direction = typedCommand.delta < 0 ? -1 : 1;
+                for (int step = 0;
+                     step < std::abs(typedCommand.delta);
+                     ++step) {
+                    m_document.transport.currentFrame = static_cast<int>(
+                        stepPlaybackFrameCore(
+                            ranges,
+                            m_document.transport.currentFrame,
+                            direction,
+                            endFrame));
+                }
                 m_frameAccumulator = 0.0;
                 return {true, "playhead stepped"};
             } else if constexpr (std::is_same_v<T, SetProjectNameCommand>) {
@@ -3128,6 +3464,70 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     ? "clip proxy association cleared"
                     : (nextUseProxy ? "clip proxy enabled"
                                     : "clip proxy disabled")};
+            } else if constexpr (
+                std::is_same_v<T, RefreshClipMetadataCommand>) {
+                if (typedCommand.updates.empty()) {
+                    return {false, "no clip metadata updates supplied"};
+                }
+                bool changed = false;
+                int updatedCount = 0;
+                for (const EditorClipMetadataUpdate& update :
+                     typedCommand.updates) {
+                    EditorClip* clip = findClip(
+                        &m_document.clips, update.clipId);
+                    if (!clip ||
+                        canonicalEditorClipRole(clip->clipRole) ==
+                            "mask_matte") {
+                        continue;
+                    }
+                    const std::string mediaKind =
+                        update.mediaKind.empty()
+                        ? clip->mediaKind
+                        : update.mediaKind;
+                    const double sourceFps =
+                        std::isfinite(update.sourceFps) &&
+                            update.sourceFps > 0.001
+                        ? update.sourceFps
+                        : 30.0;
+                    const std::int64_t sourceDuration =
+                        std::max<std::int64_t>(
+                            0, update.sourceDurationFrames);
+                    const int duration =
+                        std::max(1, update.durationFrames);
+                    const std::int64_t sourceInFrame =
+                        sourceDuration > 0
+                        ? std::clamp<std::int64_t>(
+                              clip->sourceInFrame,
+                              0,
+                              sourceDuration - 1)
+                        : std::max<std::int64_t>(
+                              0, clip->sourceInFrame);
+                    changed = changed ||
+                        clip->mediaKind != mediaKind ||
+                        clip->hasAudio != update.hasAudio ||
+                        std::abs(clip->sourceFps - sourceFps) > 0.0001 ||
+                        clip->sourceDurationFrames != sourceDuration ||
+                        clip->sourceInFrame != sourceInFrame ||
+                        clip->durationFrames != duration;
+                    clip->mediaKind = mediaKind;
+                    clip->hasAudio = update.hasAudio;
+                    clip->sourceFps = sourceFps;
+                    clip->sourceDurationFrames = sourceDuration;
+                    clip->sourceInFrame = sourceInFrame;
+                    clip->durationFrames = duration;
+                    ++updatedCount;
+                }
+                if (!changed) {
+                    return {false, updatedCount > 0
+                        ? "clip metadata is unchanged"
+                        : "no matching clips found"};
+                }
+                normalizeMaskMatteParentCaches(&m_document);
+                return {true,
+                        std::to_string(updatedCount) +
+                            " clip metadata record" +
+                            (updatedCount == 1 ? "" : "s") +
+                            " refreshed"};
             } else if constexpr (std::is_same_v<T, SetClipLockedCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -3140,6 +3540,33 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 }
                 clip->locked = typedCommand.locked;
                 return {true, typedCommand.locked ? "clip locked" : "clip unlocked"};
+            } else if constexpr (
+                std::is_same_v<T, SetSelectedClipsLockedCommand>) {
+                bool found = false;
+                bool changed = false;
+                for (EditorClip& clip : m_document.clips) {
+                    if (!clip.selected ||
+                        canonicalEditorClipRole(clip.clipRole) ==
+                            "mask_matte") {
+                        continue;
+                    }
+                    found = true;
+                    if (clip.locked != typedCommand.locked) {
+                        clip.locked = typedCommand.locked;
+                        changed = true;
+                    }
+                }
+                if (!found) {
+                    return {false, "no editable clips selected"};
+                }
+                if (!changed) {
+                    return {false, typedCommand.locked
+                        ? "selected clips are already locked"
+                        : "selected clips are already unlocked"};
+                }
+                return {true, typedCommand.locked
+                    ? "selected clips locked"
+                    : "selected clips unlocked"};
             } else if constexpr (
                 std::is_same_v<T, SetClipPlaybackRateCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
@@ -3432,9 +3859,9 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 if (!clip) {
                     return {false, "clip not found"};
                 }
-                clip->brightness = std::clamp(typedCommand.brightness, -1.0, 1.0);
-                clip->contrast = std::clamp(typedCommand.contrast, 0.0, 4.0);
-                clip->saturation = std::clamp(typedCommand.saturation, 0.0, 4.0);
+                clip->brightness = std::clamp(typedCommand.brightness, -10.0, 10.0);
+                clip->contrast = std::clamp(typedCommand.contrast, -10.0, 10.0);
+                clip->saturation = std::clamp(typedCommand.saturation, -10.0, 10.0);
                 clip->gradingPreviewEnabled = typedCommand.previewEnabled;
                 return {true, "clip grading updated"};
             } else if constexpr (std::is_same_v<T, ResetClipGradingCommand>) {
@@ -3464,9 +3891,9 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 EditorGradingKeyframe keyframe = typedCommand.keyframe;
                 keyframe.frame = std::clamp<std::int64_t>(
                     keyframe.frame, 0, std::max(0, clip->durationFrames - 1));
-                keyframe.brightness = std::clamp(keyframe.brightness, -1.0, 1.0);
-                keyframe.contrast = std::clamp(keyframe.contrast, 0.0, 4.0);
-                keyframe.saturation = std::clamp(keyframe.saturation, 0.0, 4.0);
+                keyframe.brightness = std::clamp(keyframe.brightness, -10.0, 10.0);
+                keyframe.contrast = std::clamp(keyframe.contrast, -10.0, 10.0);
+                keyframe.saturation = std::clamp(keyframe.saturation, -10.0, 10.0);
                 keyframe.opacity = std::clamp(keyframe.opacity, 0.0, 1.0);
                 keyframe.shadowsR = std::clamp(keyframe.shadowsR, -2.0, 2.0);
                 keyframe.shadowsG = std::clamp(keyframe.shadowsG, -2.0, 2.0);
@@ -3527,6 +3954,21 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     removed = removeKeyframeAtFrame(
                         &clip->transformKeyframes, typedCommand.frame);
                     break;
+                case EditorKeyframeChannel::SpeakerFramingEnabled:
+                    removed = removeKeyframeAtFrame(
+                        &clip->speakerFramingEnabledKeyframes,
+                        typedCommand.frame);
+                    break;
+                case EditorKeyframeChannel::SpeakerFraming:
+                    removed = removeKeyframeAtFrame(
+                        &clip->speakerFramingKeyframes,
+                        typedCommand.frame);
+                    break;
+                case EditorKeyframeChannel::SpeakerFramingTarget:
+                    removed = removeKeyframeAtFrame(
+                        &clip->speakerFramingTargetKeyframes,
+                        typedCommand.frame);
+                    break;
                 }
                 return removed
                     ? CommandResult{true, "clip keyframe removed"}
@@ -3542,6 +3984,175 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->baseScaleX = normalizedScale(typedCommand.scaleX);
                 clip->baseScaleY = normalizedScale(typedCommand.scaleY);
                 return {true, "clip transform updated"};
+            } else if constexpr (
+                std::is_same_v<T, SetClipSourceTransformLockedCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                if (clip->locked) {
+                    return {false, "clip is locked"};
+                }
+                if (!editorClipHasVisuals(*clip)) {
+                    return {false, "clip has no visual transform"};
+                }
+                if (typedCommand.locked &&
+                    trimmedEditorClipId(
+                        clip->linkedSourceClipId).empty()) {
+                    return {false, "clip has no linked source"};
+                }
+                clip->sourceTransformLocked =
+                    typedCommand.locked;
+                return {
+                    true,
+                    typedCommand.locked
+                        ? "clip transform locked to source"
+                        : "clip source transform unlocked"};
+            } else if constexpr (
+                std::is_same_v<T, SetClipSpeakerFramingCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                if (clip->locked) {
+                    return {false, "clip is locked"};
+                }
+                if (!editorClipHasVisuals(*clip)) {
+                    return {false, "clip has no visual framing"};
+                }
+                clip->speakerFramingEnabled = typedCommand.enabled;
+                clip->speakerFramingBakedTargetXNorm =
+                    std::clamp(
+                        typedCommand.bakedTargetXNorm, 0.0, 1.0);
+                clip->speakerFramingBakedTargetYNorm =
+                    std::clamp(
+                        typedCommand.bakedTargetYNorm, 0.0, 1.0);
+                clip->speakerFramingBakedTargetBoxNorm =
+                    std::clamp(
+                        typedCommand.bakedTargetBoxNorm, -1.0, 1.0);
+                clip->speakerFramingMinConfidence =
+                    std::clamp(
+                        typedCommand.minConfidence, 0.0, 1.0);
+                clip->speakerFramingManualTrackId =
+                    std::max(-1, typedCommand.manualTrackId);
+                clip->speakerFramingManualStreamId =
+                    trimmed(typedCommand.manualStreamId);
+                clip->speakerFramingCenterSmoothingFrames =
+                    std::clamp(
+                        typedCommand.centerSmoothingFrames, 0, 500);
+                clip->speakerFramingZoomSmoothingFrames =
+                    std::clamp(
+                        typedCommand.zoomSmoothingFrames, 0, 500);
+                clip->speakerFramingSmoothingMode =
+                    std::clamp(typedCommand.smoothingMode, 0, 2);
+                clip->speakerFramingCenterSmoothingStrength =
+                    std::clamp(
+                        typedCommand.centerSmoothingStrength,
+                        0.0,
+                        5.0);
+                clip->speakerFramingZoomSmoothingStrength =
+                    std::clamp(
+                        typedCommand.zoomSmoothingStrength,
+                        0.0,
+                        5.0);
+                clip->speakerFramingGapHoldFrames =
+                    std::clamp(
+                        typedCommand.gapHoldFrames, 0, 240);
+                return {true, "speaker framing settings updated"};
+            } else if constexpr (
+                std::is_same_v<
+                    T,
+                    SetClipSpeakerSectionMinimumWordsCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                const int minimumWords =
+                    std::clamp(typedCommand.minimumWords, 0, 1000);
+                if (clip->speakerSectionMinimumWords == minimumWords) {
+                    return {
+                        false,
+                        "speaker section minimum is unchanged"};
+                }
+                clip->speakerSectionMinimumWords = minimumWords;
+                return {
+                    true,
+                    "speaker section minimum updated"};
+            } else if constexpr (
+                std::is_same_v<
+                    T,
+                    UpsertSpeakerFramingEnabledKeyframeCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                EditorBoolKeyframe keyframe = typedCommand.keyframe;
+                keyframe.frame = std::clamp<std::int64_t>(
+                    keyframe.frame,
+                    0,
+                    std::max(0, clip->durationFrames - 1));
+                upsertKeyframe(
+                    &clip->speakerFramingEnabledKeyframes,
+                    std::move(keyframe));
+                return {
+                    true,
+                    "speaker framing enable keyframe updated"};
+            } else if constexpr (
+                std::is_same_v<
+                    T,
+                    UpsertSpeakerFramingKeyframeCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                EditorTransformKeyframe keyframe =
+                    typedCommand.keyframe;
+                keyframe.frame = std::clamp<std::int64_t>(
+                    keyframe.frame,
+                    0,
+                    std::max(0, clip->durationFrames - 1));
+                keyframe.rotation =
+                    std::clamp(keyframe.rotation, -360.0, 360.0);
+                keyframe.scaleX = normalizedScale(keyframe.scaleX);
+                keyframe.scaleY = normalizedScale(keyframe.scaleY);
+                upsertKeyframe(
+                    &clip->speakerFramingKeyframes,
+                    std::move(keyframe));
+                return {true, "speaker framing keyframe updated"};
+            } else if constexpr (
+                std::is_same_v<
+                    T,
+                    UpsertSpeakerFramingTargetKeyframeCommand>) {
+                EditorClip* clip = findClip(
+                    &m_document.clips, typedCommand.clipId);
+                if (!clip) {
+                    return {false, "clip not found"};
+                }
+                EditorTransformKeyframe keyframe =
+                    typedCommand.keyframe;
+                keyframe.frame = std::clamp<std::int64_t>(
+                    keyframe.frame,
+                    0,
+                    std::max(0, clip->durationFrames - 1));
+                keyframe.translationX =
+                    std::clamp(keyframe.translationX, 0.0, 1.0);
+                keyframe.translationY =
+                    std::clamp(keyframe.translationY, 0.0, 1.0);
+                keyframe.rotation = 0.0;
+                keyframe.scaleX =
+                    std::clamp(keyframe.scaleX, -1.0, 1.0);
+                keyframe.scaleY = keyframe.scaleX;
+                upsertKeyframe(
+                    &clip->speakerFramingTargetKeyframes,
+                    std::move(keyframe));
+                return {
+                    true,
+                    "speaker framing target keyframe updated"};
             } else if constexpr (std::is_same_v<T, UpsertTransformKeyframeCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -4020,6 +4631,21 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->audioPan = std::clamp(typedCommand.pan, -1.0, 1.0);
                 clip->audioSolo = typedCommand.solo;
                 return {true, "clip audio updated"};
+            } else if constexpr (std::is_same_v<T, SetAudioDynamicsCommand>) {
+                const audio::DynamicsSettingsCore normalized =
+                    audio::normalizedDynamicsSettingsCore(
+                        typedCommand.settings);
+                if (m_document.audioDynamics == normalized) {
+                    return {false, "audio dynamics unchanged"};
+                }
+                m_document.audioDynamics = normalized;
+                return {true, "audio dynamics updated"};
+            } else if constexpr (std::is_same_v<T, SetAudioTreatmentCommand>) {
+                if (m_document.audioTreatment == typedCommand.treatment) {
+                    return {false, "audio treatment unchanged"};
+                }
+                m_document.audioTreatment = typedCommand.treatment;
+                return {true, "audio treatment updated"};
             } else if constexpr (std::is_same_v<T, SetTrackPropertiesCommand>) {
                 const std::size_t trackIndex =
                     trackIndexForId(m_document.tracks, typedCommand.trackId);
@@ -4146,14 +4772,48 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 return {true, "render sync markers cleared"};
             } else if constexpr (std::is_same_v<T, SetExportRangeCommand>) {
                 if (typedCommand.startFrame < 0 ||
-                    typedCommand.endFrame <= typedCommand.startFrame) {
+                    typedCommand.endFrame < typedCommand.startFrame) {
                     return {false, "invalid export range"};
                 }
                 m_document.exportRanges = {{typedCommand.startFrame, typedCommand.endFrame}};
-                m_document.exportRequest.exportStartFrame = typedCommand.startFrame;
-                m_document.exportRequest.exportEndFrame = typedCommand.endFrame;
-                m_document.exportRequest.exportRangeCount = 1;
+                synchronizeExportRequestRanges(&m_document);
                 return {true, "export range updated"};
+            } else if constexpr (
+                std::is_same_v<T, SetExportRangesCommand>) {
+                if (typedCommand.ranges.empty()) {
+                    return {false, "export ranges are empty"};
+                }
+                std::vector<export_range::Range> ranges =
+                    sharedExportRanges(typedCommand.ranges);
+                export_range::normalize(
+                    &ranges,
+                    qtTimelineExtentFrame(m_document));
+                std::vector<EditorExportRange> next;
+                storeSharedExportRanges(ranges, &next);
+                if (next == m_document.exportRanges) {
+                    return {false, "export ranges unchanged"};
+                }
+                m_document.exportRanges = std::move(next);
+                synchronizeExportRequestRanges(&m_document);
+                return {true, "export ranges updated"};
+            } else if constexpr (std::is_same_v<T, EditExportRangesCommand>) {
+                const std::int64_t extent =
+                    qtTimelineExtentFrame(m_document);
+                std::vector<export_range::Range> ranges =
+                    sharedExportRanges(m_document.exportRanges);
+                if (!export_range::apply(
+                        &ranges,
+                        extent,
+                        typedCommand.edit,
+                        typedCommand.frame)) {
+                    return {
+                        false,
+                        "export range cannot split at playhead"};
+                }
+                storeSharedExportRanges(
+                    ranges, &m_document.exportRanges);
+                synchronizeExportRequestRanges(&m_document);
+                return {true, "export ranges updated"};
             } else if constexpr (std::is_same_v<T, SetWaveformVisibleCommand>) {
                 m_document.panels.showWaveform = typedCommand.visible;
                 return {true, "waveform visibility updated"};
@@ -4276,10 +4936,22 @@ void EditorRuntime::tick(const TickParams& params)
 
     m_frameAccumulator -= static_cast<double>(wholeFrames);
     const int endFrame = timelineEndFrame();
-    m_document.transport.currentFrame = std::min(m_document.transport.currentFrame + wholeFrames, endFrame);
-    if (m_document.transport.currentFrame >= endFrame) {
-        m_document.transport.currentFrame = endFrame;
-        m_document.transport.playbackActive = false;
+    const auto ranges = normalizedPlaybackRangesCore(
+        m_document.exportRanges, endFrame);
+    const PlaybackAdvanceCore advance = advancePlaybackFramesCore(
+        ranges,
+        m_document.transport.currentFrame,
+        wholeFrames,
+        endFrame);
+    m_document.transport.currentFrame =
+        static_cast<int>(advance.frame);
+    if (advance.reachedEnd) {
+        if (m_document.transport.playbackLoopEnabled) {
+            m_document.transport.currentFrame = static_cast<int>(
+                ranges.empty() ? 0 : ranges.front().startFrame);
+        } else {
+            m_document.transport.playbackActive = false;
+        }
         m_frameAccumulator = 0.0;
     }
 }

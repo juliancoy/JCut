@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -109,6 +110,108 @@ bool requiredOutputsExist(const fs::path& directory, std::string* missingOut)
     return true;
 }
 
+void setArgumentValue(std::vector<std::string>* arguments,
+                      const std::string& name,
+                      const std::string& value)
+{
+    if (!arguments) return;
+    const auto position = std::find(arguments->begin(), arguments->end(), name);
+    if (position != arguments->end() &&
+        std::next(position) != arguments->end()) {
+        *std::next(position) = value;
+        return;
+    }
+    arguments->push_back(name);
+    arguments->push_back(value);
+}
+
+std::string benchmarkSlotCsv(const std::vector<int>& configured)
+{
+    std::vector<int> slots;
+    for (const int value : configured) {
+        const int clamped = std::clamp(value, 1, 10);
+        if (std::find(slots.begin(), slots.end(), clamped) == slots.end()) {
+            slots.push_back(clamped);
+        }
+    }
+    if (slots.empty()) slots = {1, 2, 4, 8};
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        if (index > 0) stream << ',';
+        stream << slots[index];
+    }
+    return stream.str();
+}
+
+bool readJsonObject(const fs::path& path, json* valueOut)
+{
+    if (!valueOut) return false;
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    try {
+        json parsed = json::parse(input);
+        if (!parsed.is_object()) return false;
+        *valueOut = std::move(parsed);
+        return true;
+    } catch (const json::exception&) {
+        return false;
+    }
+}
+
+bool parsePipelineBenchmarkLog(const fs::path& path,
+                               json* benchmarkOut,
+                               std::string* errorOut)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (errorOut) *errorOut = "benchmark log could not be read";
+        return false;
+    }
+    const std::string output(
+        (std::istreambuf_iterator<char>(input)),
+        std::istreambuf_iterator<char>());
+    const std::size_t prefix = output.find("pipeline_benchmark ");
+    const std::size_t objectStart =
+        output.find('{', prefix == std::string::npos ? 0 : prefix);
+    const std::size_t objectEnd = output.rfind('}');
+    if (objectStart == std::string::npos ||
+        objectEnd == std::string::npos ||
+        objectEnd <= objectStart) {
+        if (errorOut) {
+            *errorOut = "benchmark output did not contain a JSON result";
+        }
+        return false;
+    }
+    try {
+        json benchmark = json::parse(
+            output.substr(objectStart, objectEnd - objectStart + 1));
+        if (!benchmark.is_object()) {
+            if (errorOut) *errorOut = "benchmark result was not an object";
+            return false;
+        }
+        const int workers =
+            benchmark.value("best_detector_workers", -1);
+        const int slots =
+            benchmark.value("best_detector_pipeline_slots", -1);
+        if (workers < 1 || slots < 1) {
+            if (errorOut) {
+                *errorOut =
+                    "benchmark did not identify a valid worker/slot topology";
+            }
+            return false;
+        }
+        if (benchmarkOut) *benchmarkOut = std::move(benchmark);
+        return true;
+    } catch (const json::exception& exception) {
+        if (errorOut) {
+            *errorOut =
+                std::string("benchmark JSON could not be parsed: ") +
+                exception.what();
+        }
+        return false;
+    }
+}
+
 } // namespace
 
 struct FaceProcessingJobController::Impl {
@@ -142,7 +245,11 @@ struct FaceProcessingJobController::Impl {
                 {"max_frames", request.maxFrames},
                 {"stride", request.stride},
                 {"detector_workers", request.detectorWorkers},
-                {"detector_pipeline_slots", request.detectorPipelineSlots}}},
+                {"detector_pipeline_slots", request.detectorPipelineSlots},
+                {"control_window", request.controlWindow},
+                {"live_preview", request.livePreview},
+                {"restart_from_scratch", request.restartFromScratch},
+                {"apply_clip_grading", request.applyClipGrading}}},
             {"artifacts", {
                 {"manifest", current.manifestPath},
                 {"checkpoint", (fs::path(current.outputDirectory) / "facedetections.part").string()},
@@ -162,6 +269,123 @@ struct FaceProcessingJobController::Impl {
 
     void run()
     {
+        if (request.benchmarkTopology) {
+            publish(FaceProcessingJobSnapshot::State::Starting,
+                    "Benchmarking face-detector worker topology.");
+            std::vector<std::string> benchmarkCommand = command;
+            benchmarkCommand.push_back("--benchmark-pipeline-slots");
+            benchmarkCommand.push_back(
+                benchmarkSlotCsv(request.benchmarkPipelineSlots));
+            const int benchmarkFrames = std::min(
+                std::clamp(request.benchmarkFrames, 60, 5000),
+                request.maxFrames > 0
+                    ? static_cast<int>(std::min<std::int64_t>(
+                          request.maxFrames, 5000))
+                    : 5000);
+            setArgumentValue(
+                &benchmarkCommand, "--max-frames",
+                std::to_string(std::max(1, benchmarkFrames)));
+
+            const fs::path benchmarkLog =
+                fs::path(current.outputDirectory) / "pipeline_benchmark.log";
+            posix_spawn_file_actions_t benchmarkActions;
+            posix_spawn_file_actions_init(&benchmarkActions);
+            posix_spawn_file_actions_addopen(
+                &benchmarkActions, STDOUT_FILENO, benchmarkLog.c_str(),
+                O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            posix_spawn_file_actions_adddup2(
+                &benchmarkActions, STDOUT_FILENO, STDERR_FILENO);
+            std::vector<char*> arguments;
+            arguments.reserve(benchmarkCommand.size() + 1);
+            for (std::string& item : benchmarkCommand) {
+                arguments.push_back(item.data());
+            }
+            arguments.push_back(nullptr);
+            pid_t benchmarkChild = -1;
+            const int spawnResult = posix_spawn(
+                &benchmarkChild, benchmarkCommand.front().c_str(),
+                &benchmarkActions, nullptr, arguments.data(), environ);
+            posix_spawn_file_actions_destroy(&benchmarkActions);
+            if (spawnResult != 0) {
+                publish(FaceProcessingJobSnapshot::State::Failed,
+                        "Could not start face topology benchmark (error " +
+                            std::to_string(spawnResult) + ").");
+                return;
+            }
+            int benchmarkStatus = 0;
+            bool termSent = false;
+            auto cancelStarted = std::chrono::steady_clock::time_point{};
+            while (::waitpid(
+                       benchmarkChild, &benchmarkStatus, WNOHANG) == 0) {
+                if (cancelRequested.load()) {
+                    if (!termSent) {
+                        ::kill(benchmarkChild, SIGTERM);
+                        termSent = true;
+                        cancelStarted = std::chrono::steady_clock::now();
+                    } else if (
+                        std::chrono::steady_clock::now() - cancelStarted >
+                        std::chrono::seconds(3)) {
+                        ::kill(benchmarkChild, SIGKILL);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (cancelRequested.load()) {
+                publish(FaceProcessingJobSnapshot::State::Paused,
+                        "Face topology benchmark canceled.");
+                return;
+            }
+            const int benchmarkExitCode = WIFEXITED(benchmarkStatus)
+                ? WEXITSTATUS(benchmarkStatus) : 128;
+            if (benchmarkExitCode != 0) {
+                publish(FaceProcessingJobSnapshot::State::Failed,
+                        "Face topology benchmark failed; inspect pipeline_benchmark.log.",
+                        static_cast<int>(benchmarkChild), benchmarkExitCode);
+                return;
+            }
+            json benchmark;
+            std::string benchmarkError;
+            if (!parsePipelineBenchmarkLog(
+                    benchmarkLog, &benchmark, &benchmarkError)) {
+                publish(FaceProcessingJobSnapshot::State::Failed,
+                        benchmarkError);
+                return;
+            }
+            request.detectorWorkers = std::clamp(
+                benchmark.value("best_detector_workers", 2), 1, 10);
+            request.detectorPipelineSlots = std::clamp(
+                benchmark.value(
+                    "best_detector_pipeline_slots", 2), 1, 10);
+            command = faceProcessingCommand(request);
+            const json launchControl{
+                {"schema", "jcut_facedetections_launch_control_v1"},
+                {"mode", "auto"},
+                {"detector_workers", request.detectorWorkers},
+                {"detector_pipeline_slots",
+                 request.detectorPipelineSlots},
+                {"benchmark_frames",
+                 std::clamp(request.benchmarkFrames, 60, 5000)},
+                {"benchmark_pipeline_slots",
+                 request.benchmarkPipelineSlots},
+                {"last_benchmark", benchmark},
+            };
+            if (!writeJsonAtomically(
+                    fs::path(current.outputDirectory) /
+                        "launch_control.json",
+                    launchControl)) {
+                publish(FaceProcessingJobSnapshot::State::Failed,
+                        "Face topology benchmark succeeded, but its launch control could not be saved.");
+                return;
+            }
+            publish(
+                FaceProcessingJobSnapshot::State::Starting,
+                "Topology benchmark selected " +
+                    std::to_string(request.detectorWorkers) +
+                    " worker(s) and " +
+                    std::to_string(request.detectorPipelineSlots) +
+                    " pipeline slot(s).");
+        }
+
         const fs::path logPath(current.logPath);
         posix_spawn_file_actions_t actions;
         posix_spawn_file_actions_init(&actions);
@@ -278,7 +502,9 @@ std::vector<std::string> faceProcessingCommand(
         request.scrfdTiling ? "--scrfd-tiling" : "--no-scrfd-tiling",
         request.allowCpuUploadFallback
             ? "--allow-cpu-upload-fallback" : "--require-zero-copy",
-        "--no-control-window", "--no-preview-window", "--no-preview-files",
+        request.controlWindow ? "--control-window" : "--no-control-window",
+        request.livePreview ? "--preview-window" : "--no-preview-window",
+        "--no-preview-files",
     };
     if (!request.detectorSettingsPath.empty()) {
         command.insert(command.end(), {
@@ -288,7 +514,43 @@ std::vector<std::string> faceProcessingCommand(
         command.insert(command.end(), {
             "--max-frames", std::to_string(request.maxFrames)});
     }
+    if (request.applyClipGrading && !request.clipJsonPath.empty()) {
+        command.insert(command.end(), {
+            "--clip-json", request.clipJsonPath,
+            "--apply-clip-grading"});
+    }
     return command;
+}
+
+FaceProcessingLaunchControl loadFaceProcessingLaunchControl(
+    const std::string& outputDirectory)
+{
+    FaceProcessingLaunchControl result;
+    json control;
+    const fs::path path =
+        fs::path(outputDirectory) / "launch_control.json";
+    if (!fs::exists(path)) return result;
+    if (!readJsonObject(path, &control)) {
+        result.error = "Saved face launch control is not valid JSON.";
+        return result;
+    }
+    const json benchmark = control.value("last_benchmark", json::object());
+    const int workers = benchmark.value(
+        "best_detector_workers",
+        control.value("detector_workers", -1));
+    const int slots = benchmark.value(
+        "best_detector_pipeline_slots",
+        control.value("detector_pipeline_slots", -1));
+    if (workers < 1 || slots < 1) {
+        result.error =
+            "Saved face launch control has no valid topology recommendation.";
+        return result;
+    }
+    result.hasRecommendation = true;
+    result.detectorWorkers = std::clamp(workers, 1, 10);
+    result.detectorPipelineSlots = std::clamp(slots, 1, 10);
+    result.benchmarkJson = benchmark.dump();
+    return result;
 }
 
 FaceProcessingJobController::FaceProcessingJobController()
@@ -323,8 +585,63 @@ bool FaceProcessingJobController::start(
         if (errorOut) *errorOut = "Could not create the face job directory.";
         return false;
     }
-    impl_->request = request;
-    impl_->command = faceProcessingCommand(request);
+    if (request.restartFromScratch) {
+        for (const char* name :
+             {"facedetections.part",
+              "facedetections.part.resume_index.json"}) {
+            error.clear();
+            fs::remove(fs::path(request.outputDirectory) / name, error);
+            if (error) {
+                if (errorOut) {
+                    *errorOut =
+                        "Could not clear the face job resume checkpoint.";
+                }
+                return false;
+            }
+        }
+    }
+    FaceProcessingJobRequest prepared = request;
+    if (prepared.applyClipGrading) {
+        if (prepared.clipJson.empty()) {
+            if (errorOut) {
+                *errorOut =
+                    "Clip grading was requested without clip JSON.";
+            }
+            return false;
+        }
+        json parsedClip;
+        try {
+            parsedClip = json::parse(prepared.clipJson);
+        } catch (const json::exception& exception) {
+            if (errorOut) {
+                *errorOut =
+                    std::string("Clip grading JSON is invalid: ") +
+                    exception.what();
+            }
+            return false;
+        }
+        if (!parsedClip.is_object()) {
+            if (errorOut) {
+                *errorOut = "Clip grading JSON must be an object.";
+            }
+            return false;
+        }
+        prepared.clipJsonPath =
+            (fs::path(prepared.outputDirectory) /
+             "clip_input.json").string();
+        if (!writeJsonAtomically(
+                prepared.clipJsonPath, parsedClip)) {
+            if (errorOut) {
+                *errorOut =
+                    "Could not write the face-detector clip grading input.";
+            }
+            return false;
+        }
+    } else {
+        prepared.clipJsonPath.clear();
+    }
+    impl_->request = std::move(prepared);
+    impl_->command = faceProcessingCommand(impl_->request);
     impl_->cancelRequested.store(false);
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);

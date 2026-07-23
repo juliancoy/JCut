@@ -144,84 +144,21 @@ bool parseDebugLogLevel(const QString& text, DebugLogLevel* levelOut) {
 }
 
 QString decodePreferenceToString(DecodePreference preference) {
-    switch (preference) {
-    case DecodePreference::Auto: return QStringLiteral("auto");
-    case DecodePreference::HardwareZeroCopy: return QStringLiteral("hardware_zero_copy");
-    case DecodePreference::Hardware: return QStringLiteral("hardware");
-    case DecodePreference::Software: return QStringLiteral("software");
-    }
-    return QStringLiteral("auto");
+    return QString::fromStdString(jcut::decodePreferenceCoreName(preference));
 }
 
 bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut) {
-    if (!preferenceOut) {
-        return false;
-    }
-    const QString normalized = text.trimmed().toLower();
-    if (normalized == QStringLiteral("auto")) {
-        *preferenceOut = DecodePreference::Auto;
-        return true;
-    }
-    if (normalized == QStringLiteral("hardware_zero_copy") ||
-        normalized == QStringLiteral("zero_copy") ||
-        normalized == QStringLiteral("zerocopy") ||
-        normalized == QStringLiteral("cuda_gl")) {
-        *preferenceOut = DecodePreference::HardwareZeroCopy;
-        return true;
-    }
-    if (normalized == QStringLiteral("hardware") ||
-        normalized == QStringLiteral("gpu") ||
-        normalized == QStringLiteral("prefer_hardware")) {
-        *preferenceOut = DecodePreference::Hardware;
-        return true;
-    }
-    if (normalized == QStringLiteral("software") ||
-        normalized == QStringLiteral("cpu") ||
-        normalized == QStringLiteral("software_only")) {
-        *preferenceOut = DecodePreference::Software;
-        return true;
-    }
-    return false;
+    return jcut::parseDecodePreferenceCore(
+        text.toStdString(), preferenceOut);
 }
 
 QString h26xSoftwareThreadingModeToString(H26xSoftwareThreadingMode mode) {
-    switch (mode) {
-    case H26xSoftwareThreadingMode::Auto: return QStringLiteral("auto");
-    case H26xSoftwareThreadingMode::SingleThread: return QStringLiteral("single_thread");
-    case H26xSoftwareThreadingMode::SliceThreads: return QStringLiteral("slice_threads");
-    case H26xSoftwareThreadingMode::FrameAndSliceThreads: return QStringLiteral("frame_and_slice_threads");
-    }
-    return QStringLiteral("auto");
+    return QString::fromStdString(jcut::h26xThreadingModeCoreName(mode));
 }
 
 bool parseH26xSoftwareThreadingMode(const QString& text, H26xSoftwareThreadingMode* modeOut) {
-    if (!modeOut) {
-        return false;
-    }
-    const QString normalized = text.trimmed().toLower();
-    if (normalized == QStringLiteral("auto")) {
-        *modeOut = H26xSoftwareThreadingMode::Auto;
-        return true;
-    }
-    if (normalized == QStringLiteral("single_thread") ||
-        normalized == QStringLiteral("single") ||
-        normalized == QStringLiteral("stability")) {
-        *modeOut = H26xSoftwareThreadingMode::SingleThread;
-        return true;
-    }
-    if (normalized == QStringLiteral("slice_threads") ||
-        normalized == QStringLiteral("slice") ||
-        normalized == QStringLiteral("balanced")) {
-        *modeOut = H26xSoftwareThreadingMode::SliceThreads;
-        return true;
-    }
-    if (normalized == QStringLiteral("frame_and_slice_threads") ||
-        normalized == QStringLiteral("frame_slice") ||
-        normalized == QStringLiteral("performance")) {
-        *modeOut = H26xSoftwareThreadingMode::FrameAndSliceThreads;
-        return true;
-    }
-    return false;
+    return jcut::parseH26xThreadingModeCore(
+        text.toStdString(), modeOut);
 }
 
 QString rubberBandEnginePreferenceToString(RubberBandEnginePreference preference) {

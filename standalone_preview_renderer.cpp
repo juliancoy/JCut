@@ -43,27 +43,54 @@ PreviewRenderResult renderPreviewFrame(const PreviewRenderRequest& request)
     const core::SizeI outputSize = request.outputSize.valid()
         ? request.outputSize
         : renderDocument.exportRequest.outputSize;
-    if (!request.allowCpuFallback) {
-        PreviewRenderResult result;
-        result.message = request.preferVulkanFrame
-            ? "standalone Vulkan preview backend unavailable"
-            : "CPU preview fallback disabled";
-        return result;
-    }
-
     const TimelineRenderResult timelineResult = renderTimelineFrame({
         renderDocument,
         outputSize,
         static_cast<double>(request.timelineFrame),
-        {}});
+        {},
+        request.decoderPolicy,
+        request.preferVulkanFrame,
+        request.allowCpuFallback});
 
     PreviewRenderResult result;
     result.success = timelineResult.success;
-    result.message = request.preferVulkanFrame && timelineResult.success
+    result.message =
+        request.preferVulkanFrame &&
+            timelineResult.success &&
+            !timelineResult.hardwareFrame
         ? "Qt-free CPU preview fallback: " + timelineResult.message
         : timelineResult.message;
     result.image = timelineResult.image;
+    result.hardwareFrame = timelineResult.hardwareFrame;
+    result.hardwareDirectEligible =
+        timelineResult.hardwareDirectEligible;
+    result.hardwareDirectFallbackReason =
+        timelineResult.hardwareDirectFallbackReason;
+    result.hardwarePresentationTransformValid =
+        timelineResult.hardwarePresentationTransformValid;
+    result.hardwarePresentationTransform =
+        timelineResult.hardwarePresentationTransform;
+    result.hardwarePresentationOpacity =
+        timelineResult.hardwarePresentationOpacity;
+    result.hardwarePresentationGrade =
+        timelineResult.hardwarePresentationGrade;
+    result.hardwareOverlayImage =
+        timelineResult.hardwareOverlayImage;
+    result.hardwareOverlayX =
+        timelineResult.hardwareOverlayX;
+    result.hardwareOverlayY =
+        timelineResult.hardwareOverlayY;
     result.sourcePath = timelineResult.sourcePath;
+    result.requestedDecodePreference =
+        timelineResult.requestedDecodePreference;
+    result.effectiveDecodePreference =
+        timelineResult.effectiveDecodePreference;
+    result.hardwareAccelerated =
+        timelineResult.hardwareAccelerated;
+    result.hardwareDeviceLabel =
+        timelineResult.hardwareDeviceLabel;
+    result.hardwareFallbackReason =
+        timelineResult.hardwareFallbackReason;
     return result;
 }
 

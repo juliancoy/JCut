@@ -5,11 +5,15 @@
 #include <QTemporaryDir>
 #include <QVector>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 #include "../debug_controls.h"
 #include "../waveform_service.h"
+#include "../waveform_envelope_core.h"
 
 namespace {
 
@@ -111,6 +115,7 @@ class TestWaveformService : public QObject {
 private slots:
     void testDecodeReadinessAndShape();
     void testEnvelopeTracksAmplitudeAcrossRange();
+    void testNeutralEnvelopeMatchesQtFixtures();
     void testProcessedVariantCachingAndBaseIsolation();
 };
 
@@ -166,6 +171,100 @@ void TestWaveformService::testEnvelopeTracksAmplitudeAcrossRange() {
     QVERIFY(rightPeakAvg > leftPeakAvg + 0.35f);
     QVERIFY(rightPeakAvg > 0.70f);
     QVERIFY(leftPeakAvg < 0.35f);
+}
+
+void TestWaveformService::testNeutralEnvelopeMatchesQtFixtures() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    constexpr int sampleRate = 48000;
+    QVector<float> samples(sampleRate * 2, 0.0f);
+    for (int frame = 0; frame < sampleRate; ++frame) {
+        samples[frame] = 0.2f;
+    }
+    for (int frame = sampleRate;
+         frame < samples.size();
+         ++frame) {
+        samples[frame] = 0.8f;
+    }
+    const QString wavPath = writeMonoPcm16Wav(
+        dir.filePath(QStringLiteral("neutral-step.wav")),
+        samples,
+        sampleRate);
+    QVERIFY(!wavPath.isEmpty());
+
+    for (const auto range :
+         {std::pair<std::int64_t, std::int64_t>{
+              0, sampleRate},
+          {sampleRate, sampleRate * 2}}) {
+        QVector<float> qtMinimum;
+        QVector<float> qtMaximum;
+        QVERIFY(queryEnvelopeWithWait(
+            wavPath,
+            range.first,
+            range.second,
+            128,
+            &qtMinimum,
+            &qtMaximum));
+        std::vector<float> neutralMinimum;
+        std::vector<float> neutralMaximum;
+        QVERIFY(jcut::audio::queryWaveformEnvelope(
+            {samples.constData(),
+             samples.size(),
+             1,
+             0,
+             1.0},
+            range.first,
+            range.second,
+            128,
+            &neutralMinimum,
+            &neutralMaximum));
+        QCOMPARE(neutralMinimum.size(), std::size_t{128});
+        QCOMPARE(neutralMaximum.size(), std::size_t{128});
+        // Qt's cached pyramid deliberately lets a coarse source bin bleed
+        // across a range boundary. Compare the stable interior; boundary
+        // conservatism is renderer-specific and the neutral query remains
+        // exact to its requested source interval.
+        for (int column = 8; column < 120; ++column) {
+            const float qtPeak = columnPeak(
+                qtMinimum, qtMaximum, column);
+            const float neutralPeak = std::max(
+                std::abs(neutralMinimum[
+                    static_cast<std::size_t>(column)]),
+                std::abs(neutralMaximum[
+                    static_cast<std::size_t>(column)]));
+            QVERIFY2(
+                std::abs(qtPeak - neutralPeak) < 0.025f,
+                qPrintable(QStringLiteral(
+                    "range=%1..%2 column=%3 qt=%4 neutral=%5")
+                    .arg(range.first)
+                    .arg(range.second)
+                    .arg(column)
+                    .arg(qtPeak)
+                    .arg(neutralPeak)));
+        }
+    }
+
+    std::vector<float> offsetMinimum;
+    std::vector<float> offsetMaximum;
+    QVERIFY(jcut::audio::queryWaveformEnvelope(
+        {samples.constData(),
+         samples.size(),
+         1,
+         sampleRate,
+         0.5},
+        sampleRate,
+        sampleRate * 3,
+        64,
+        &offsetMinimum,
+        &offsetMaximum));
+    QVERIFY(std::all_of(
+        offsetMaximum.begin(),
+        offsetMaximum.end(),
+        [](float value) {
+            return value >= 0.19f &&
+                value <= 0.81f;
+        }));
 }
 
 void TestWaveformService::testProcessedVariantCachingAndBaseIsolation() {

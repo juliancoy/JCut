@@ -1382,10 +1382,14 @@ void TestDirectVulkanHandoffPipelineContract::
                debugControls.contains(QStringLiteral(
                    "preference = DecodePreference::Hardware")),
            "runtime debug decode preference must reject CPU software decode");
+  const QString decoderPolicyCore =
+      readSourceFile(QStringLiteral("decoder_policy_core.cpp"));
   QVERIFY2(debugControls.contains(
-               QStringLiteral("*preferenceOut = DecodePreference::HardwareZeroCopy;")),
-           "explicit hardware-zero-copy state must survive parsing so direct "
-           "Vulkan playback can request hardware frame handles");
+               QStringLiteral("jcut::parseDecodePreferenceCore(")) &&
+               decoderPolicyCore.contains(QStringLiteral(
+                   "*preferenceOut = DecodePreferenceCore::HardwareZeroCopy;")),
+           "the Qt adapter must delegate to the shared parser, where explicit "
+           "hardware-zero-copy state survives for direct Vulkan playback");
   const QString decoderContext = readSourceFile(QStringLiteral("decoder_context.cpp"));
   QVERIFY2(decoderContext.contains(QStringLiteral("std::defer_lock")) &&
                decoderContext.contains(QStringLiteral("if (!m_info.hardwareAccelerated)")) &&

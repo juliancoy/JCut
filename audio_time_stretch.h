@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio_time_stretch_core.h"
+
 #include <functional>
 
 #include <QVector>
@@ -40,6 +42,9 @@ struct AudioTimeStretchRubberBandSettings {
     RubberBandPitchMode pitch = RubberBandPitchMode::HighSpeed;
     bool channelsTogether = true;
 };
+
+jcut::audio::StretchSettings toCoreStretchSettings(
+    const AudioTimeStretchRubberBandSettings& settings);
 
 QVector<float> timeStretchPreservePitch(const QVector<float>& interleavedSamples,
                                         int channelCount,

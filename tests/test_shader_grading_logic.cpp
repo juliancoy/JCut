@@ -279,6 +279,57 @@ void TestShaderGradingLogic::testNv12HandoffShaderStoresCanonicalRgba()
              "NV12 UV byte loader must not mask away the second chroma byte.");
     QVERIFY2(shader.contains(QStringLiteral("1.402 * v")),
              "NV12 handoff shader must support full-range BT.601/SMPTE170M sources.");
+    QVERIFY2(
+        shader.contains(QStringLiteral("applyBaseGrade(")) &&
+            shader.contains(QStringLiteral("applyTonalGrade(")) &&
+            shader.contains(QStringLiteral("applyCurves(")) &&
+            shader.contains(QStringLiteral("pc.brightness")) &&
+            shader.contains(QStringLiteral("pc.contrast")) &&
+            shader.contains(QStringLiteral("pc.saturation")) &&
+            shader.contains(QStringLiteral("pc.shadowsR")) &&
+            shader.contains(QStringLiteral("pc.midtonesG")) &&
+            shader.contains(QStringLiteral("pc.highlightsB")) &&
+            shader.indexOf(QStringLiteral("nv12ToRgb(yValue")) <
+                shader.indexOf(QStringLiteral(
+                    "imageStore(outImage")),
+        "NV12 hardware handoff must apply neutral tonal, curve, and base BCS grading "
+        "on GPU after color conversion and before storing canonical RGBA.");
+    const int tonalCall = shader.indexOf(
+        QStringLiteral("applyTonalGrade(\n        nv12ToRgb"));
+    const int baseCall = shader.indexOf(
+        QStringLiteral("applyBaseGrade(applyCurves(applyTonalGrade("));
+    QVERIFY2(tonalCall >= 0 && baseCall >= 0,
+             "NV12 handoff must apply tonal and curve grading before base BCS grading.");
+    QVERIFY2(
+        shader.contains(QStringLiteral(
+            "max(rgb, vec3(0.0))")) &&
+            shader.contains(QStringLiteral(
+                "max(vec3(0.01), vec3(1.0) + midtones * midtoneWeight)")),
+        "NV12 tonal midtones must use the same safe-pow bounds as CPU grading.");
+    QVERIFY2(
+        shader.contains(QStringLiteral(
+            "layout(std430, binding = 3) readonly buffer CurveLut")) &&
+            shader.contains(QStringLiteral(
+                "curveByte(redIndex, 0u)")) &&
+            shader.contains(QStringLiteral(
+                "curveByte(greenIndex, 8u)")) &&
+            shader.contains(QStringLiteral(
+                "curveByte(blueIndex, 16u)")) &&
+            shader.contains(QStringLiteral(
+                "float mappedLuma = curveByte(lumaIndex, 24u);")) &&
+            shader.contains(QStringLiteral(
+                "rgb *= mappedLuma / mappedInput;")),
+        "NV12 direct grading must apply independent RGB LUTs followed by "
+        "the compositor's chroma-preserving luma LUT.");
+    const int tonalStage = shader.indexOf(
+        QStringLiteral("applyTonalGrade("));
+    const int curveStage = shader.indexOf(
+        QStringLiteral("applyCurves(applyTonalGrade("));
+    const int baseStage = shader.indexOf(
+        QStringLiteral("applyBaseGrade(applyCurves("));
+    QVERIFY2(
+        tonalStage >= 0 && curveStage >= 0 && baseStage >= 0,
+        "NV12 grading stages must be nested in tonal, curve, then base order.");
 }
 
 void TestShaderGradingLogic::testCpuLumaCurvePreservesChroma()

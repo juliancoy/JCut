@@ -56,6 +56,14 @@ QJsonArray rectDiagnosticArray(const QVector<QRectF> &rects) {
   return array;
 }
 
+QString renderTranscriptPath(const TimelineClip &clip) {
+  const QString persisted =
+      clip.transcriptActiveCutPath.trimmed();
+  return persisted.isEmpty()
+      ? activeTranscriptPathForClipFile(clip.filePath)
+      : persisted;
+}
+
 VkRect2D scissorFromRect(const QRectF& rect, const QSize& outputSize) {
   const int outputWidth = qMax(1, outputSize.width());
   const int outputHeight = qMax(1, outputSize.height());
@@ -4132,7 +4140,7 @@ public:
     QVector<TranscriptTextInput> inputs;
     for (const TimelineClip &clip : orderedClips) {
       const QString transcriptPath =
-          activeTranscriptPathForClipFile(clip.filePath);
+          renderTranscriptPath(clip);
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }
@@ -4217,7 +4225,7 @@ public:
         continue;
       }
       const QString transcriptPath =
-          activeTranscriptPathForClipFile(clip.filePath);
+          renderTranscriptPath(clip);
       if (transcriptPath.trimmed().isEmpty()) {
         continue;
       }

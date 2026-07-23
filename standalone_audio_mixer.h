@@ -14,11 +14,17 @@ inline constexpr int kChannelCount = 2;
 inline constexpr std::int64_t kSamplesPerTimelineFrame = kSampleRate / 30;
 
 struct DecodedAudioClip {
+    struct TranscriptNormalizeSegment {
+        std::int64_t startSourceSample = 0;
+        std::int64_t endSourceSampleExclusive = 0;
+        float gain = 1.0f;
+    };
     std::vector<float> samples;
     std::int64_t sourceStartSample = 0;
     // Maps canonical source-sample positions into this cache. A clip decoded
     // through pitch-preserving speed conversion uses 1/playbackRate.
     double sourceSampleScale = 1.0;
+    std::vector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
     bool valid = false;
 };
 
@@ -31,7 +37,9 @@ using DecodedAudioCache = std::unordered_map<int, DecodedAudioClip>;
 [[nodiscard]] bool decodeDocumentAudio(const EditorDocumentCore& document,
                                        const std::string& rootDirectory,
                                        DecodedAudioCache* cacheOut,
-                                       std::string* errorOut = nullptr);
+                                       std::string* errorOut = nullptr,
+                                       const std::vector<EditorExportRange>*
+                                           timelineRanges = nullptr);
 
 [[nodiscard]] std::int64_t clipTimelineStartSamples(const EditorClip& clip);
 [[nodiscard]] std::int64_t clipTimelineDurationSamples(const EditorClip& clip);

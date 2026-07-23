@@ -10,6 +10,8 @@
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
 #include "preview_face_track_click_policy.h"
+#include "json_io_utils.h"
+#include "speaker_section_core.h"
 #include "speaker_track_assignment_service.h"
 #include "track_avatar_utils.h"
 #include "transcript_engine.h"
@@ -2123,57 +2125,59 @@ bool SpeakersTab::assignTrackToContiguousSections(const QString& clipId,
 
     const QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
-    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-    QJsonObject clipRoot = clipsRoot.value(trimmedClipId).toObject();
-    clipRoot[QStringLiteral("clip_id")] = trimmedClipId;
-    clipRoot[QStringLiteral("updated_at_utc")] = timestamp;
-    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
-    resolvedPayload[QStringLiteral("updated_at_utc")] = timestamp;
-
-    QJsonArray nextMap;
-    QHash<QString, QJsonObject> existingSectionRows;
-    QSet<QString> targetSectionKeys;
-    for (const QPair<int64_t, int64_t>& section : validSections) {
-        targetSectionKeys.insert(contiguousSectionKey(trimmedSpeakerId, section.first, section.second));
-    }
-    for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
-        const QJsonObject row = value.toObject();
-        const QString rowSectionKey = row.value(QStringLiteral("section_key")).toString();
-        if (targetSectionKeys.contains(rowSectionKey)) {
-            existingSectionRows.insert(rowSectionKey, row);
-            continue;
-        }
-        nextMap.push_back(row);
-    }
-
     const QString effectiveResolutionSource = inputResolutionSource.trimmed().isEmpty()
         ? QStringLiteral("contiguous_section_click")
         : inputResolutionSource.trimmed();
+    nlohmann::json neutralRoot =
+        jcut::jsonio::toJson(transcriptRoot);
+    const std::vector<jcut::TranscriptTrackAssignmentAnchor> anchors{
+        {
+            trackId,
+            inputStreamId.toStdString(),
+            sourceFrame,
+            xNorm,
+            yNorm,
+            boxSizeNorm,
+        },
+    };
+    bool assignmentChanged = false;
     for (const QPair<int64_t, int64_t>& section : validSections) {
-        const QString sectionKey = contiguousSectionKey(trimmedSpeakerId, section.first, section.second);
-        QJsonObject sectionRow = existingSectionRows.value(sectionKey);
-        sectionRow[QStringLiteral("section_key")] = sectionKey;
-        sectionRow[QStringLiteral("speaker_id")] = trimmedSpeakerId;
-        sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(section.first);
-        sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(section.second);
-        sectionRow[QStringLiteral("word_count")] =
-            sectionWordCountFromTranscriptRoot(transcriptRoot, trimmedSpeakerId, section.first, section.second);
-        sectionRow[QStringLiteral("resolution_source")] = effectiveResolutionSource;
-        sectionRow[QStringLiteral("updated_at_utc")] = timestamp;
-        sectionRow = sectionRowWithTrackEntries(
-            sectionRow,
-            sectionTrackEntriesWithTrack(
-                sectionRow, trackId, inputStreamId, sourceFrame, xNorm, yNorm, boxSizeNorm));
-        nextMap.push_back(sectionRow);
+        std::string mutationError;
+        const bool changed =
+            jcut::setSpeakerSectionTrackAssignmentsCore(
+                &neutralRoot,
+                trimmedClipId.toStdString(),
+                trimmedSpeakerId.toStdString(),
+                section.first,
+                section.second,
+                static_cast<std::size_t>(std::max(
+                    0,
+                    sectionWordCountFromTranscriptRoot(
+                        transcriptRoot,
+                        trimmedSpeakerId,
+                        section.first,
+                        section.second))),
+                anchors,
+                false,
+                effectiveResolutionSource.toStdString(),
+                timestamp.toStdString(),
+                &mutationError);
+        if (!changed && !mutationError.empty()) {
+            updateSectionAssignmentProfile(
+                false,
+                QString::fromStdString(mutationError));
+            return false;
+        }
+        assignmentChanged = assignmentChanged || changed;
     }
-
-    resolvedPayload[QStringLiteral("section_track_map")] = nextMap;
-    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
-    clipsRoot[trimmedClipId] = clipRoot;
-    speakerFlow[QStringLiteral("clips")] = clipsRoot;
-    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+    if (!assignmentChanged) {
+        updateSectionAssignmentProfile(
+            false,
+            QStringLiteral("section_assignment_no_change"));
+        return false;
+    }
+    transcriptRoot =
+        jcut::jsonio::fromJson(neutralRoot).toObject();
     buildPayloadMs = phaseTimer.elapsed();
     phaseTimer.restart();
 
@@ -2594,58 +2598,66 @@ bool SpeakersTab::saveSpeakerSectionOptions(int row, const QJsonObject& options)
     const QString speakerId = speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
     const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
     const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
-    const QString sectionKey = contiguousSectionKey(speakerId, startFrame, endFrame);
     if (clip->id.trimmed().isEmpty() || speakerId.isEmpty() || startFrame < 0 || endFrame < startFrame) {
         return false;
     }
 
-    bool changed = false;
-    bool foundSectionRow = false;
     QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
-    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-    QJsonObject clipRoot = clipsRoot.value(clip->id.trimmed()).toObject();
-    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
-    QJsonArray nextMap;
-    for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
-        QJsonObject sectionRow = value.toObject();
-        if (sectionRow.value(QStringLiteral("section_key")).toString() == sectionKey) {
-            foundSectionRow = true;
-            if (sectionRow.value(QStringLiteral("section_options")).toObject() != options) {
-                changed = true;
-            }
-            sectionRow[QStringLiteral("section_options")] = options;
-        }
-        nextMap.push_back(sectionRow);
-    }
-    if (!foundSectionRow) {
-        QJsonObject sectionRow;
-        sectionRow[QStringLiteral("section_key")] = sectionKey;
-        sectionRow[QStringLiteral("speaker_id")] = speakerId;
-        sectionRow[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
-        sectionRow[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
-        sectionRow[QStringLiteral("word_count")] =
-            sectionWordCountFromTranscriptRoot(transcriptRoot, speakerId, startFrame, endFrame);
-        sectionRow[QStringLiteral("resolution_source")] = QStringLiteral("contiguous_section_options");
-        sectionRow[QStringLiteral("rotation")] = 0.0;
-        sectionRow[QStringLiteral("tracks")] = QJsonArray();
-        sectionRow[QStringLiteral("section_options")] = options;
-        nextMap.push_back(sectionRow);
-        changed = true;
-    }
-    if (!changed) {
+    nlohmann::json neutralRoot =
+        jcut::jsonio::toJson(transcriptRoot);
+    jcut::SpeakerSectionOptionsCore neutralOptions =
+        jcut::speakerSectionOptionsCore(
+            neutralRoot,
+            clip->id.trimmed().toStdString(),
+            speakerId.toStdString(),
+            startFrame,
+            endFrame);
+    const QJsonObject grading =
+        options.value(QStringLiteral("grading")).toObject();
+    const QJsonObject mask =
+        options.value(QStringLiteral("mask")).toObject();
+    neutralOptions.gradingEnabled =
+        grading.value(QStringLiteral("enabled")).toBool(false);
+    neutralOptions.gradingBrightness =
+        grading.value(QStringLiteral("brightness")).toDouble(0.0);
+    neutralOptions.gradingContrast =
+        grading.value(QStringLiteral("contrast")).toDouble(1.0);
+    neutralOptions.gradingSaturation =
+        grading.value(QStringLiteral("saturation")).toDouble(1.0);
+    neutralOptions.maskEnabled =
+        mask.value(QStringLiteral("enabled")).toBool(false);
+    neutralOptions.maskOpacity =
+        mask.value(QStringLiteral("opacity")).toDouble(1.0);
+    neutralOptions.maskFeather =
+        mask.value(QStringLiteral("feather")).toDouble(0.0);
+    neutralOptions.maskBlur =
+        mask.value(QStringLiteral("blur")).toDouble(0.0);
+    neutralOptions.maskDilate =
+        mask.value(QStringLiteral("dilate")).toDouble(0.0);
+    neutralOptions.maskInvert =
+        mask.value(QStringLiteral("invert")).toBool(false);
+    const QString timestamp =
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    if (!jcut::setSpeakerSectionOptionsCore(
+            &neutralRoot,
+            clip->id.trimmed().toStdString(),
+            speakerId.toStdString(),
+            startFrame,
+            endFrame,
+            static_cast<std::size_t>(
+                std::max(
+                    0,
+                    sectionWordCountFromTranscriptRoot(
+                        transcriptRoot,
+                        speakerId,
+                        startFrame,
+                        endFrame))),
+            neutralOptions,
+            timestamp.toStdString())) {
         return true;
     }
-
-    const QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    resolvedPayload[QStringLiteral("updated_at_utc")] = timestamp;
-    resolvedPayload[QStringLiteral("section_track_map")] = nextMap;
-    clipRoot[QStringLiteral("updated_at_utc")] = timestamp;
-    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
-    clipsRoot[clip->id.trimmed()] = clipRoot;
-    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    speakerFlow[QStringLiteral("clips")] = clipsRoot;
-    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+    transcriptRoot =
+        jcut::jsonio::fromJson(neutralRoot).toObject();
 
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
@@ -2658,7 +2670,6 @@ bool SpeakersTab::saveSpeakerSectionOptions(int row, const QJsonObject& options)
         refresh();
         return false;
     }
-    const QJsonObject grading = options.value(QStringLiteral("grading")).toObject();
     if (grading.value(QStringLiteral("enabled")).toBool(false) && m_speakerDeps.updateClipById) {
         const int64_t sectionStartLocalFrame =
             qBound<int64_t>(0,

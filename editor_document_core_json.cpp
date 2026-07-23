@@ -2,6 +2,7 @@
 #include "render_contract_json.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -10,6 +11,11 @@
 namespace {
 
 using json = nlohmann::json;
+
+float normalizedPlaybackSpeedValue(float speed)
+{
+    return std::clamp(speed, 0.1f, 3.0f);
+}
 
 template <typename T>
 T valueOr(const json& object, const char* key, T fallback)
@@ -124,6 +130,23 @@ void parseTransformKeyframes(const json& values,
             valueOr(value, "scaleY", 1.0),
             valueOr(value, "linearInterpolation", true)
         });
+    }
+}
+
+void parseBoolKeyframes(
+    const json& values,
+    std::vector<jcut::EditorBoolKeyframe>* keyframes)
+{
+    if (!values.is_array() || !keyframes) {
+        return;
+    }
+    for (const json& value : values) {
+        if (!value.is_object()) {
+            continue;
+        }
+        keyframes->push_back({
+            valueOr(value, "frame", std::int64_t{0}),
+            valueOr(value, "enabled", false)});
     }
 }
 
@@ -358,6 +381,36 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->audioSolo = valueOr(value, "audioSolo", false);
     clip->audioLinkedToVideo = valueOr(value, "audioLinkedToVideo", true);
     clip->fadeSamples = std::max(0, valueOr(value, "fadeSamples", 250));
+    clip->speakerFramingEnabled =
+        valueOr(value, "speakerFramingEnabled", false);
+    clip->speakerFramingBakedTargetXNorm =
+        valueOr(value, "speakerFramingBakedTargetXNorm", 0.5);
+    clip->speakerFramingBakedTargetYNorm =
+        valueOr(value, "speakerFramingBakedTargetYNorm", 0.35);
+    clip->speakerFramingBakedTargetBoxNorm =
+        valueOr(value, "speakerFramingBakedTargetBoxNorm", -1.0);
+    clip->speakerFramingMinConfidence =
+        valueOr(value, "speakerFramingMinConfidence", 0.08);
+    clip->speakerFramingManualTrackId =
+        valueOr(value, "speakerFramingManualTrackId", -1);
+    clip->speakerFramingManualStreamId =
+        stringOr(value, "speakerFramingManualStreamId");
+    clip->speakerFramingCenterSmoothingFrames =
+        valueOr(value, "speakerFramingCenterSmoothingFrames", 0);
+    clip->speakerFramingZoomSmoothingFrames =
+        valueOr(value, "speakerFramingZoomSmoothingFrames", 0);
+    clip->speakerFramingSmoothingMode =
+        valueOr(value, "speakerFramingSmoothingMode", 0);
+    clip->speakerFramingCenterSmoothingStrength =
+        valueOr(value, "speakerFramingCenterSmoothingStrength", 1.0);
+    clip->speakerFramingZoomSmoothingStrength =
+        valueOr(value, "speakerFramingZoomSmoothingStrength", 1.0);
+    clip->speakerFramingGapHoldFrames =
+        valueOr(value, "speakerFramingGapHoldFrames", 0);
+    clip->speakerSectionMinimumWords = std::clamp(
+        valueOr(value, "speakerSectionMinimumWords", 10),
+        0,
+        1000);
     clip->brightness = valueOr(value, "brightness", 0.0);
     clip->contrast = valueOr(value, "contrast", 1.0);
     clip->saturation = valueOr(value, "saturation", 1.0);
@@ -369,6 +422,17 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->baseScaleY = valueOr(value, "baseScaleY", 1.0);
     clip->gradingPreviewEnabled = valueOr(value, "gradingPreviewEnabled", true);
     parseTransformKeyframes(value.value("transformKeyframes", json::array()), &clip->transformKeyframes);
+    parseBoolKeyframes(
+        value.value(
+            "speakerFramingEnabledKeyframes", json::array()),
+        &clip->speakerFramingEnabledKeyframes);
+    parseTransformKeyframes(
+        value.value("speakerFramingKeyframes", json::array()),
+        &clip->speakerFramingKeyframes);
+    parseTransformKeyframes(
+        value.value(
+            "speakerFramingTargetKeyframes", json::array()),
+        &clip->speakerFramingTargetKeyframes);
     parseGradingKeyframes(value.value("gradingKeyframes", json::array()), &clip->gradingKeyframes);
     parseOpacityKeyframes(value.value("opacityKeyframes", json::array()), &clip->opacityKeyframes);
     parseTitleKeyframes(value.value("titleKeyframes", json::array()), &clip->titleKeyframes);
@@ -445,6 +509,15 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
         }
     }
     normalizeParsedKeyframes(&clip->transformKeyframes, clip->durationFrames);
+    normalizeParsedKeyframes(
+        &clip->speakerFramingEnabledKeyframes,
+        clip->durationFrames);
+    normalizeParsedKeyframes(
+        &clip->speakerFramingKeyframes,
+        clip->durationFrames);
+    normalizeParsedKeyframes(
+        &clip->speakerFramingTargetKeyframes,
+        clip->durationFrames);
     normalizeParsedKeyframes(&clip->gradingKeyframes, clip->durationFrames);
     normalizeParsedKeyframes(&clip->opacityKeyframes, clip->durationFrames);
     normalizeParsedKeyframes(&clip->titleKeyframes, clip->durationFrames);
@@ -470,6 +543,104 @@ void parseExtendedTrack(const json& value, jcut::EditorTrack* track)
     track->childClipId = stringOr(value, "childClipId");
 }
 
+void parseAudioDynamics(const json& root,
+                        bool legacyRoot,
+                        jcut::audio::DynamicsSettingsCore* settings)
+{
+    if (!settings || !root.is_object()) return;
+    const json& value = legacyRoot
+        ? root
+        : root.value("audioDynamics", json::object());
+    const auto key = [legacyRoot](const char* coreName) {
+        return legacyRoot
+            ? std::string("audio") +
+                static_cast<char>(std::toupper(
+                    static_cast<unsigned char>(coreName[0]))) +
+                std::string(coreName + 1)
+            : std::string(coreName);
+    };
+    settings->amplifyEnabled =
+        valueOr(value, key("amplifyEnabled").c_str(), false);
+    settings->amplifyDb =
+        valueOr(value, key("amplifyDb").c_str(), 0.0);
+    settings->normalizeEnabled =
+        valueOr(value, key("normalizeEnabled").c_str(), false);
+    settings->normalizeTargetDb =
+        valueOr(value, key("normalizeTargetDb").c_str(), -1.0);
+    settings->selectiveNormalizeEnabled = valueOr(
+        value, key("selectiveNormalizeEnabled").c_str(), false);
+    settings->selectiveNormalizeMinSegmentSeconds = valueOr(
+        value,
+        key("selectiveNormalizeMinSegmentSeconds").c_str(),
+        0.5);
+    settings->selectiveNormalizePeakDb = valueOr(
+        value, key("selectiveNormalizePeakDb").c_str(), -12.0);
+    settings->selectiveNormalizePasses = valueOr(
+        value, key("selectiveNormalizePasses").c_str(), 1);
+    settings->selectiveNormalizeOverlayVisible = valueOr(
+        value, key("selectiveNormalizeOverlayVisible").c_str(), true);
+    settings->transcriptNormalizeEnabled = valueOr(
+        value, key("transcriptNormalizeEnabled").c_str(), false);
+    settings->peakReductionEnabled = valueOr(
+        value, key("peakReductionEnabled").c_str(), false);
+    settings->peakThresholdDb =
+        valueOr(value, key("peakThresholdDb").c_str(), -6.0);
+    settings->limiterEnabled =
+        valueOr(value, key("limiterEnabled").c_str(), false);
+    settings->limiterThresholdDb =
+        valueOr(value, key("limiterThresholdDb").c_str(), -1.0);
+    settings->compressorEnabled =
+        valueOr(value, key("compressorEnabled").c_str(), false);
+    settings->compressorThresholdDb =
+        valueOr(value, key("compressorThresholdDb").c_str(), -18.0);
+    settings->compressorRatio =
+        valueOr(value, key("compressorRatio").c_str(), 3.0);
+    settings->softClipEnabled =
+        valueOr(value, key("softClipEnabled").c_str(), false);
+    settings->stereoToMonoEnabled =
+        valueOr(value, key("stereoToMonoEnabled").c_str(), false);
+    settings->waveformPreviewPostProcessing = valueOr(
+        value, key("waveformPreviewPostProcessing").c_str(), true);
+    *settings =
+        jcut::audio::normalizedDynamicsSettingsCore(*settings);
+}
+
+json audioDynamicsJson(
+    const jcut::audio::DynamicsSettingsCore& requested)
+{
+    const auto settings =
+        jcut::audio::normalizedDynamicsSettingsCore(requested);
+    return {
+        {"amplifyEnabled", settings.amplifyEnabled},
+        {"amplifyDb", settings.amplifyDb},
+        {"normalizeEnabled", settings.normalizeEnabled},
+        {"normalizeTargetDb", settings.normalizeTargetDb},
+        {"selectiveNormalizeEnabled",
+         settings.selectiveNormalizeEnabled},
+        {"selectiveNormalizeMinSegmentSeconds",
+         settings.selectiveNormalizeMinSegmentSeconds},
+        {"selectiveNormalizePeakDb",
+         settings.selectiveNormalizePeakDb},
+        {"selectiveNormalizePasses",
+         settings.selectiveNormalizePasses},
+        {"selectiveNormalizeOverlayVisible",
+         settings.selectiveNormalizeOverlayVisible},
+        {"transcriptNormalizeEnabled",
+         settings.transcriptNormalizeEnabled},
+        {"peakReductionEnabled", settings.peakReductionEnabled},
+        {"peakThresholdDb", settings.peakThresholdDb},
+        {"limiterEnabled", settings.limiterEnabled},
+        {"limiterThresholdDb", settings.limiterThresholdDb},
+        {"compressorEnabled", settings.compressorEnabled},
+        {"compressorThresholdDb", settings.compressorThresholdDb},
+        {"compressorRatio", settings.compressorRatio},
+        {"softClipEnabled", settings.softClipEnabled},
+        {"stereoToMonoEnabled", settings.stereoToMonoEnabled},
+        {"waveformPreviewPostProcessing",
+         settings.waveformPreviewPostProcessing}
+    };
+}
+
 bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std::string* errorOut)
 {
     if (!root.is_object()) {
@@ -480,6 +651,9 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
     }
 
     document->projectName = stringOr(root, "projectName", "Untitled Project");
+    document->audioTreatment = jcut::editorAudioTreatmentFromId(
+        stringOr(root, "audioTreatment", "time_stretch"));
+    parseAudioDynamics(root, false, &document->audioDynamics);
 
     const json& mediaItems = root.value("mediaItems", json::array());
     if (!mediaItems.is_array()) {
@@ -575,7 +749,18 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
     const json& transport = root.value("transport", json::object());
     if (transport.is_object()) {
         document->transport.playbackActive = valueOr(transport, "playbackActive", false);
-        document->transport.playbackSpeed = valueOr(transport, "playbackSpeed", 1.0f);
+        document->transport.playbackSpeed =
+            normalizedPlaybackSpeedValue(
+                valueOr(transport, "playbackSpeed", 1.0f));
+        document->transport.playbackLoopEnabled =
+            valueOr(transport, "playbackLoopEnabled", false);
+        document->transport.previewViewMode =
+            stringOr(transport, "previewViewMode", "video") == "audio"
+            ? "audio" : "video";
+        document->transport.audioMuted =
+            valueOr(transport, "audioMuted", false);
+        document->transport.audioVolume = std::clamp(
+            valueOr(transport, "audioVolume", 0.8f), 0.0f, 1.0f);
         document->transport.previewZoom = valueOr(transport, "previewZoom", 1.0f);
         document->transport.currentFrame = valueOr(transport, "currentFrame", 0);
     }
@@ -653,6 +838,12 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             document->exportRequest.outputMode = jcut::render::RenderOutputMode::EncodedFile;
         }
     }
+    if (document->exportRequest.imageSequenceFormat.empty()) {
+        document->exportRequest.imageSequenceFormat =
+            document->exportRequest.outputFormat == "png"
+            ? "png"
+            : "jpeg";
+    }
 
     return true;
 }
@@ -667,9 +858,23 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     }
 
     document->projectName = stringOr(root, "projectName", "Untitled Project");
+    document->audioTreatment = jcut::editorAudioTreatmentFromId(
+        stringOr(root, "playbackAudioWarpMode", "time_stretch"));
+    parseAudioDynamics(root, true, &document->audioDynamics);
     document->transport.currentFrame = valueOr(root, "currentFrame", 0);
     document->transport.playbackActive = valueOr(root, "playing", false);
-    document->transport.playbackSpeed = valueOr(root, "playbackSpeed", 1.0f);
+    document->transport.playbackSpeed =
+        normalizedPlaybackSpeedValue(
+            valueOr(root, "playbackSpeed", 1.0f));
+    document->transport.playbackLoopEnabled =
+        valueOr(root, "playbackLoopEnabled", false);
+    document->transport.previewViewMode =
+        stringOr(root, "previewViewMode", "video") == "audio"
+        ? "audio" : "video";
+    document->transport.audioMuted =
+        valueOr(root, "audioMuted", false);
+    document->transport.audioVolume = std::clamp(
+        valueOr(root, "audioVolume", 0.8f), 0.0f, 1.0f);
     document->transport.previewZoom = valueOr(root, "timelineZoom", 1.0f);
     document->panels.showWaveform = valueOr(root, "audioWaveformVisible", true);
     document->panels.showTranscript = true;
@@ -871,12 +1076,16 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     document->exportRequest.trackCount = document->tracks.size();
 
     const std::string format = document->exportRequest.outputFormat;
+    if (document->exportRequest.imageSequenceFormat.empty()) {
+        // Qt persists this independent preference even while exporting a
+        // video container. Canonicalize the neutral document to the same
+        // default so opening the same project through either shell does not
+        // produce a dirty snapshot before the first edit.
+        document->exportRequest.imageSequenceFormat =
+            format == "png" ? "png" : "jpeg";
+    }
     if (document->exportRequest.createVideoFromImageSequence ||
         format == "png" || format == "jpg" || format == "jpeg") {
-        if (document->exportRequest.imageSequenceFormat.empty()) {
-            document->exportRequest.imageSequenceFormat =
-                format == "png" ? "png" : "jpeg";
-        }
         document->exportRequest.outputMode =
             jcut::render::RenderOutputMode::EncodedFileAndImageSequence;
     } else {
@@ -900,6 +1109,18 @@ json transformKeyframesJson(const std::vector<jcut::EditorTransformKeyframe>& ke
             {"scaleY", keyframe.scaleY},
             {"linearInterpolation", keyframe.linearInterpolation}
         });
+    }
+    return values;
+}
+
+json boolKeyframesJson(
+    const std::vector<jcut::EditorBoolKeyframe>& keyframes)
+{
+    json values = json::array();
+    for (const jcut::EditorBoolKeyframe& keyframe : keyframes) {
+        values.push_back({
+            {"frame", keyframe.frame},
+            {"enabled", keyframe.enabled}});
     }
     return values;
 }
@@ -1193,6 +1414,34 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["audioSolo"] = clip.audioSolo;
     (*out)["audioLinkedToVideo"] = clip.audioLinkedToVideo;
     (*out)["fadeSamples"] = std::max(0, clip.fadeSamples);
+    (*out)["speakerFramingEnabled"] =
+        clip.speakerFramingEnabled;
+    (*out)["speakerFramingBakedTargetXNorm"] =
+        clip.speakerFramingBakedTargetXNorm;
+    (*out)["speakerFramingBakedTargetYNorm"] =
+        clip.speakerFramingBakedTargetYNorm;
+    (*out)["speakerFramingBakedTargetBoxNorm"] =
+        clip.speakerFramingBakedTargetBoxNorm;
+    (*out)["speakerFramingMinConfidence"] =
+        clip.speakerFramingMinConfidence;
+    (*out)["speakerFramingManualTrackId"] =
+        clip.speakerFramingManualTrackId;
+    (*out)["speakerFramingManualStreamId"] =
+        clip.speakerFramingManualStreamId;
+    (*out)["speakerFramingCenterSmoothingFrames"] =
+        clip.speakerFramingCenterSmoothingFrames;
+    (*out)["speakerFramingZoomSmoothingFrames"] =
+        clip.speakerFramingZoomSmoothingFrames;
+    (*out)["speakerFramingSmoothingMode"] =
+        clip.speakerFramingSmoothingMode;
+    (*out)["speakerFramingCenterSmoothingStrength"] =
+        clip.speakerFramingCenterSmoothingStrength;
+    (*out)["speakerFramingZoomSmoothingStrength"] =
+        clip.speakerFramingZoomSmoothingStrength;
+    (*out)["speakerFramingGapHoldFrames"] =
+        clip.speakerFramingGapHoldFrames;
+    (*out)["speakerSectionMinimumWords"] =
+        std::clamp(clip.speakerSectionMinimumWords, 0, 1000);
     (*out)["brightness"] = clip.brightness;
     (*out)["contrast"] = clip.contrast;
     (*out)["saturation"] = clip.saturation;
@@ -1206,6 +1455,24 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["transformKeyframes"] = mergeObjectsByFrame(
         out->value("transformKeyframes", json::array()),
         transformKeyframesJson(clip.transformKeyframes));
+    (*out)["speakerFramingEnabledKeyframes"] =
+        mergeObjectsByFrame(
+            out->value(
+                "speakerFramingEnabledKeyframes", json::array()),
+            boolKeyframesJson(
+                clip.speakerFramingEnabledKeyframes));
+    (*out)["speakerFramingKeyframes"] =
+        mergeObjectsByFrame(
+            out->value(
+                "speakerFramingKeyframes", json::array()),
+            transformKeyframesJson(
+                clip.speakerFramingKeyframes));
+    (*out)["speakerFramingTargetKeyframes"] =
+        mergeObjectsByFrame(
+            out->value(
+                "speakerFramingTargetKeyframes", json::array()),
+            transformKeyframesJson(
+                clip.speakerFramingTargetKeyframes));
     (*out)["gradingKeyframes"] = mergeObjectsByFrame(
         out->value("gradingKeyframes", json::array()),
         gradingKeyframesJson(clip.gradingKeyframes));
@@ -1380,6 +1647,14 @@ const json* findPreservedClipJson(const json& baseTimeline,
 
 namespace jcut {
 
+nlohmann::json toLegacyClipJson(
+    const EditorClip& clip,
+    int trackIndex,
+    const nlohmann::json* baseClip)
+{
+    return legacyClipJson(clip, trackIndex, baseClip);
+}
+
 nlohmann::json toJson(const EditorDocumentCore& document)
 {
     json mediaItems = json::array();
@@ -1446,6 +1721,12 @@ nlohmann::json toJson(const EditorDocumentCore& document)
         {"transport", {
             {"playbackActive", document.transport.playbackActive},
             {"playbackSpeed", document.transport.playbackSpeed},
+            {"playbackLoopEnabled",
+             document.transport.playbackLoopEnabled},
+            {"previewViewMode",
+             document.transport.previewViewMode},
+            {"audioMuted", document.transport.audioMuted},
+            {"audioVolume", document.transport.audioVolume},
             {"previewZoom", document.transport.previewZoom},
             {"currentFrame", document.transport.currentFrame}
         }},
@@ -1454,6 +1735,9 @@ nlohmann::json toJson(const EditorDocumentCore& document)
             {"showTranscript", document.panels.showTranscript},
             {"showScopes", document.panels.showScopes}
         }},
+        {"audioTreatment",
+         std::string(jcut::editorAudioTreatmentId(document.audioTreatment))},
+        {"audioDynamics", audioDynamicsJson(document.audioDynamics)},
         {"exportRequest", jcut::render::toJson(document.exportRequest)}
     };
 }
@@ -1466,9 +1750,18 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["currentFrame"] = document.transport.currentFrame;
     root["playing"] = document.transport.playbackActive;
     root["playbackSpeed"] = document.transport.playbackSpeed;
+    root["playbackLoopEnabled"] =
+        document.transport.playbackLoopEnabled;
+    root["previewViewMode"] =
+        document.transport.previewViewMode;
+    root["audioMuted"] = document.transport.audioMuted;
+    root["audioVolume"] = document.transport.audioVolume;
     root["exportPlaybackSpeed"] = document.exportRequest.playbackSpeed;
     root["timelineZoom"] = document.transport.previewZoom;
     root["audioWaveformVisible"] = document.panels.showWaveform;
+    root["playbackAudioWarpMode"] =
+        std::string(jcut::editorAudioTreatmentId(document.audioTreatment));
+    root["playbackAudioWarpModeExplicit"] = true;
     root["outputWidth"] = document.exportRequest.outputSize.width;
     root["outputHeight"] = document.exportRequest.outputSize.height;
     root["timelineFps"] = document.exportRequest.outputFps;
@@ -1498,6 +1791,14 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["transcriptOffsetMs"] = document.exportRequest.transcriptOffsetMs;
     root["exportStartFrame"] = document.exportRequest.exportStartFrame;
     root["exportEndFrame"] = document.exportRequest.exportEndFrame;
+    const json dynamics = audioDynamicsJson(document.audioDynamics);
+    for (const auto& [name, value] : dynamics.items()) {
+        std::string legacyName = "audio";
+        legacyName.push_back(static_cast<char>(std::toupper(
+            static_cast<unsigned char>(name.front()))));
+        legacyName.append(name.substr(1));
+        root[legacyName] = value;
+    }
 
     json renderSyncMarkers = json::array();
     for (const EditorRenderSyncMarker& marker : document.renderSyncMarkers) {

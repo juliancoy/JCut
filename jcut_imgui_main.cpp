@@ -1,19 +1,31 @@
 #include "editor_runtime.h"
+#include "ai_credential_store_core.h"
+#include "ai_gateway_core.h"
+#include "birefnet_job_core.h"
+#include "editor_auto_oppose_core.h"
 #include "editor_document_core_json.h"
 #include "editor_grading_core.h"
+#include "editor_media_presence_core.h"
 #include "editor_scale_to_fill.h"
+#include "editor_timeline_mapping_core.h"
 #include "face_artifact_core.h"
+#include "face_avatar_crop_core.h"
 #include "face_processing_job_core.h"
 #include "imgui_audio_runtime.h"
 #include "image_sequence_directory.h"
 #include "mask_sidecar_core.h"
+#include "prompt_mask_job_core.h"
 #include "imgui_project_io.h"
 #include "imgui_vulkan_frame_importer.h"
+#include "vulkan_hardware_frame_import_core.h"
 #include "preview_resize_core.h"
+#include "timeline_snap_core.h"
 #include "proxy_path_core.h"
 #include "proxy_generation_job_core.h"
 #include "render_contract_json.h"
 #include "runtime_control_server.h"
+#include "speaker_section_core.h"
+#include "speaker_section_export_core.h"
 #include "speaker_title_core.h"
 #include "standalone_export_renderer.h"
 #include "standalone_preview_renderer.h"
@@ -21,6 +33,7 @@
 #include "transcript_cut_session_core.h"
 #include "transcript_document_mutation_core.h"
 #include "transcript_mining_core.h"
+#include "transcription_job_core.h"
 
 #include "external/imgui/imgui.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
@@ -44,17 +57,24 @@
 #include <cmath>
 #include <condition_variable>
 #include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <optional>
+#include <set>
+#include <spawn.h>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <mutex>
 #include <limits>
 #include <system_error>
@@ -65,9 +85,43 @@
 #include <variant>
 #include <vector>
 
+extern char** environ;
+
 namespace {
 
 namespace fs = std::filesystem;
+
+bool openDesktopPath(const fs::path& path, std::string* errorOut = nullptr)
+{
+    if (errorOut) errorOut->clear();
+    if (path.empty()) {
+        if (errorOut) *errorOut = "No path was provided.";
+        return false;
+    }
+    const std::string pathText = path.lexically_normal().string();
+    std::array<char*, 3> arguments{
+        const_cast<char*>("xdg-open"),
+        const_cast<char*>(pathText.c_str()),
+        nullptr,
+    };
+    pid_t child = -1;
+    const int spawnResult = posix_spawnp(
+        &child, "xdg-open", nullptr, nullptr, arguments.data(), environ);
+    if (spawnResult != 0) {
+        if (errorOut) {
+            *errorOut =
+                "Could not launch the desktop file browser (error " +
+                std::to_string(spawnResult) + ").";
+        }
+        return false;
+    }
+    std::thread([child]() {
+        int status = 0;
+        while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+    }).detach();
+    return true;
+}
 
 enum class TimelineDragMode {
     None,
@@ -83,6 +137,30 @@ enum class PreviewTransformDragMode {
     ResizeX,
     ResizeY,
     ResizeBoth,
+    Rotate,
+};
+
+enum class InspectorDeleteTargetKind {
+    None,
+    ClipKeyframe,
+    TitleKeyframe,
+    SyncMarker,
+    TranscriptWord,
+};
+
+struct InspectorDeleteTarget {
+    InspectorDeleteTargetKind kind = InspectorDeleteTargetKind::None;
+    int clipId = -1;
+    jcut::EditorKeyframeChannel channel =
+        jcut::EditorKeyframeChannel::Grading;
+    std::int64_t frame = -1;
+    std::string markerClipId;
+    bool markerSkipFrame = false;
+    std::string transcriptPath;
+    int transcriptSegmentIndex = -1;
+    int transcriptWordIndex = -1;
+    std::uint64_t documentGeneration = 0;
+    std::uint64_t focusedUiFrame = 0;
 };
 
 enum class TimelineToolMode {
@@ -160,6 +238,13 @@ struct TranscriptInspectorCache {
     std::string speakerOrganizationDraft;
     double speakerXDraft = 0.5;
     double speakerYDraft = 0.85;
+    bool speakerSectionsExpanded = false;
+    bool speakerSectionOptionsPopupRequested = false;
+    std::string speakerSectionOptionsSpeakerId;
+    std::int64_t speakerSectionOptionsStartFrame = -1;
+    std::int64_t speakerSectionOptionsEndFrame = -1;
+    std::size_t speakerSectionOptionsWordCount = 0;
+    jcut::SpeakerSectionOptionsCore speakerSectionOptionsDraft;
     std::string faceArtifactContext;
     jcut::FaceArtifactInspectionCore faceInspection;
     std::vector<int> selectedFaceTrackIds;
@@ -172,6 +257,12 @@ struct TranscriptInspectorCache {
     bool faceJobSmallFaceFallback = true;
     bool faceJobTiling = false;
     bool faceJobAllowCpuFallback = true;
+    bool faceJobControlWindow = false;
+    bool faceJobLivePreview = false;
+    bool faceJobRestartFromScratch = false;
+    bool faceJobUseProxySource = false;
+    bool faceJobBenchmarkTopology = false;
+    bool faceJobApplyClipGrading = false;
     int speakerTitleStyle = 0;
     double speakerTitleDurationSeconds = 3.0;
     double speakerTitleDelaySeconds = 0.35;
@@ -192,6 +283,30 @@ struct RenderSyncMarkerDraft {
     std::uint64_t documentGeneration = 0;
 };
 
+struct AutoOpposeJobResult {
+    int clipId = 0;
+    std::uint64_t documentGeneration = 0;
+    int decodedSamples = 0;
+    std::vector<jcut::EditorOpposeGradeEventCore> events;
+    std::string message;
+};
+
+struct AiChatMessage {
+    std::string role;
+    std::string content;
+};
+
+struct AiActivityEntry {
+    std::string time;
+    std::string phase;
+    std::string summary;
+};
+
+enum class AiTaskPurpose {
+    Chat,
+    CloudSpeakerMining,
+};
+
 struct ShellState {
     jcut::EditorRuntime runtime;
     std::mutex runtimeMutex;
@@ -207,7 +322,10 @@ struct ShellState {
     std::string statusMessage;
     jcut::ImGuiAudioRuntime audioRuntime;
     jcut::FaceProcessingJobController faceProcessingJob;
+    jcut::masks::PromptMaskJobController promptMaskJob;
     jcut::ProxyGenerationJobController proxyGenerationJob;
+    jcut::jobs::TranscriptionJobControllerCore transcriptionJob;
+    jcut::jobs::BiRefNetJobControllerCore birefnetJob;
     nlohmann::json legacyStateRoot;
     nlohmann::json legacyStateOverrides = nlohmann::json::object();
     std::string lastSavedLegacyExtensionSignature;
@@ -233,9 +351,96 @@ struct ShellState {
     std::vector<jcut::ImGuiProjectHistoryEntry> projectHistoryEntries;
     std::string projectHistoryError;
     bool projectHistoryRefreshRequested = true;
+    std::string jobsTextPreviewLabel;
+    std::string jobsTextPreviewPath;
+    std::string jobsTextPreview;
+    std::string jobsTextPreviewError;
+    bool featureAiPanel = true;
+    bool featureAiSpeakerCleanup = true;
+    std::string aiGatewayBaseUrl =
+        "https://ivwutugdrpugjqglxabw.supabase.co";
+    std::string aiSessionToken;
+    std::string aiRefreshToken;
+    std::string aiUserId;
+    std::string aiCredentialStatus;
+    bool aiCredentialLoadAttempted = false;
+    std::string aiSelectedModel = "deepseek-chat";
+    int aiUsageBudgetCap = 200;
+    int aiUsageRequests = 0;
+    int aiUsageFailures = 0;
+    int aiRequestTimeoutMs = 15000;
+    int aiRequestRetries = 1;
+    bool aiAccountRefreshRunning = false;
+    std::future<jcut::ai::AccountSnapshotCore> aiAccountFuture;
+    jcut::ai::AccountSnapshotCore aiAccount;
+    bool aiTokenRefreshRunning = false;
+    std::future<jcut::ai::RefreshedSessionCore> aiTokenRefreshFuture;
+    bool aiBrowserLoginRunning = false;
+    std::atomic_bool aiBrowserLoginCancelRequested{false};
+    std::future<jcut::ai::BrowserLoginCore> aiBrowserLoginFuture;
+    bool aiCheckoutRunning = false;
+    std::future<jcut::ai::CheckoutLaunchCore> aiCheckoutFuture;
+    bool aiTaskRunning = false;
+    AiTaskPurpose aiTaskPurpose = AiTaskPurpose::Chat;
+    std::string aiTaskTranscriptSourceKey;
+    std::future<jcut::ai::TaskResponseCore> aiTaskFuture;
+    std::vector<std::chrono::steady_clock::time_point>
+        aiRecentRequestTimes;
+    std::string aiChatPrompt;
+    std::vector<AiChatMessage> aiChatMessages;
+    std::vector<AiActivityEntry> aiActivityEntries;
+    bool aiAvatarRunning = false;
+    std::future<jcut::ai::RemoteImageCore> aiAvatarFuture;
+    std::string aiAvatarRequestedUrl;
+    std::string aiAvatarLoadedUrl;
+    std::string aiAvatarError;
+    std::string aiAvatarCachePath;
+    ImTextureID aiAvatarTextureId = 0;
+    jcut::core::SizeI aiAvatarSize{};
+    std::string faceReferenceDesiredKey;
+    std::string faceReferenceSourcePath;
+    std::vector<jcut::FaceContinuityTrackCore>
+        faceReferenceTracks;
+    std::string faceReferencePendingKey;
+    std::string faceReferenceLoadedKey;
+    std::string faceReferenceError;
+    bool faceReferenceRunning = false;
+    std::future<
+        jcut::standalone_render::StandaloneDecodedFrameResult>
+        faceReferenceFuture;
+    ImTextureID faceReferenceTextureId = 0;
+    jcut::core::SizeI faceReferenceSize{};
+    std::string sectionAvatarDesiredKey;
+    std::string sectionAvatarSourcePath;
+    std::vector<jcut::FaceContinuityTrackCore>
+        sectionAvatarTracks;
+    std::string sectionAvatarPendingKey;
+    std::string sectionAvatarLoadedKey;
+    std::string sectionAvatarError;
+    bool sectionAvatarRunning = false;
+    std::future<
+        jcut::standalone_render::StandaloneDecodedFrameResult>
+        sectionAvatarFuture;
+    ImTextureID sectionAvatarTextureId = 0;
+    jcut::core::SizeI sectionAvatarSize{};
+    int selectedPipelineStage = 0;
+    std::string requestedInspectorTab;
+    jcut::EditorAutoOpposeSettingsCore autoOpposeSettings;
+    std::future<AutoOpposeJobResult> autoOpposeFuture;
+    bool autoOpposeRunning = false;
+    int autoOpposeClipId = 0;
     std::string mediaGalleryPath;
     std::string mediaHoveredPath;
     std::string mediaSelectedPath;
+    ImTextureID mediaThumbnailTextureId = 0;
+    jcut::core::SizeI mediaThumbnailSize{};
+    std::string mediaThumbnailLoadedPath;
+    std::string mediaThumbnailPendingPath;
+    std::string mediaThumbnailError;
+    bool mediaThumbnailRunning = false;
+    std::future<
+        jcut::standalone_render::StandaloneDecodedFrameResult>
+        mediaThumbnailFuture;
     std::array<char, 512> exportOutputPath{};
     int proxyPathDraftClipId = -1;
     std::string proxyPathDraft;
@@ -246,12 +451,24 @@ struct ShellState {
     int historyMaxEntries = 100;
     int historyMaxMegabytes = 16;
     int audioBufferFrames = 1024;
+    std::string audioOutputDeviceName;
+    jcut::DecoderPolicySettingsCore decoderPolicy;
+    jcut::DecoderPolicySettingsCore previewDecoderPolicy;
+    jcut::DecoderPolicySettingsCore exportDecoderPolicy;
+    std::future<jcut::standalone_render::StandaloneDecodeBenchmarkResult>
+        decodeBenchmarkFuture;
+    bool decodeBenchmarkRunning = false;
+    jcut::standalone_render::StandaloneDecodeBenchmarkResult
+        decodeBenchmarkResult;
     std::chrono::steady_clock::time_point nextAutosaveAt =
         std::chrono::steady_clock::now() + std::chrono::minutes(5);
     int titleDraftClipId = -1;
     jcut::EditorTitleKeyframe titleDraft;
     InspectorKeyframeDraft keyframeDraft;
+    InspectorDeleteTarget inspectorDeleteTarget;
+    std::uint64_t uiFrameCounter = 0;
     TranscriptInspectorCache transcriptCache;
+    bool transcriptDeletePopupRequested = false;
     std::unordered_map<std::string, jcut::TranscriptFileStamp>
         transcriptHistoryExpectedStamps;
     RenderSyncMarkerDraft renderSyncMarkerDraft;
@@ -269,6 +486,7 @@ struct ShellState {
     int timelineContextClipId = 0;
     std::string timelineContextClipPersistentId;
     std::int64_t timelineContextFrame = 0;
+    int timelineContextClickFrame = 0;
     std::uint64_t timelineContextDocumentGeneration = 0;
     float timelineDragMouseX = 0.0f;
     float timelineDragMouseY = 0.0f;
@@ -308,10 +526,60 @@ struct ShellState {
     int maskSidecarContextClipId = -1;
     std::string maskSidecarDirectoryDraft;
     std::vector<jcut::masks::MaskSidecarCore> maskSidecars;
+    int promptMaskSourceClipId = -1;
+    int promptMaskLastState = -1;
+    int transcriptionLastState = -1;
+    std::string transcriptionStdinDraft;
+    int birefnetLastState = -1;
+    int birefnetSourceClipId = -1;
+    std::string birefnetModel = "ZhengPeng7/BiRefNet-matting";
+    std::string birefnetRevision =
+        "57f9f68b43ba337c75762b14cf3075d659007268";
+    std::string birefnetModelCachePath;
+    std::string birefnetRuntimeCachePath;
+    int birefnetDevice = 0;
+    bool birefnetFp16 = true;
+    bool birefnetDockerRoot = false;
+    bool birefnetRestart = false;
+    float birefnetAlphaTolerancePercent = 0.0f;
+    ImTextureID birefnetLivePreviewTextureId = 0;
+    jcut::core::SizeI birefnetLivePreviewSize{};
+    std::string birefnetLivePreviewLoadedPath;
+    std::uintmax_t birefnetLivePreviewLoadedSize = 0;
+    fs::file_time_type birefnetLivePreviewLoadedTime{};
+    bool birefnetLivePreviewHasStamp = false;
+    std::string birefnetLivePreviewError;
+    std::chrono::steady_clock::time_point
+        nextBiRefNetLivePreviewRefresh{};
+    std::string promptMaskPrompt =
+        "a microphone mounted on a microphone stand";
+    std::string promptMaskModelCachePath;
+    std::string promptMaskRuntimeCachePath;
+    int promptMaskScaleWidth = 0;
+    int promptMaskPrescaleWidth = 0;
+    float promptMaskExtractFps = 0.0f;
+    int promptMaskFrameFormat = 0;
+    bool promptMaskCompileModel = false;
+    bool promptMaskVideoMode = false;
+    bool promptMaskWriteBinaryMasks = true;
+    bool promptMaskUnionCurrent = false;
+    bool promptMaskWritePreviewFrames = false;
+    bool promptMaskExportCenters = false;
+    bool promptMaskDockerRoot = false;
+    bool promptMaskRestart = false;
     jcut::EditorDocumentCore previewDocument;
     std::string previewRootDirectory;
     jcut::standalone_render::PreviewRenderResult previewResult;
     ImTextureID previewTextureId = 0;
+    ImTextureID previewOverlayTextureId = 0;
+    jcut::core::SizeI previewOverlaySize{};
+    int previewOverlayX = 0;
+    int previewOverlayY = 0;
+    bool previewHardwarePresentationTransformValid = false;
+    jcut::EditorTransformKeyframe
+        previewHardwarePresentationTransform;
+    double previewHardwarePresentationOpacity = 1.0;
+    jcut::core::SizeI previewHardwareSourceSize{};
     std::mutex exportMutex;
     std::condition_variable exportCondition;
     std::thread exportWorker;
@@ -324,6 +592,16 @@ struct ShellState {
     std::uint64_t exportCompletedGeneration = 0;
     std::uint64_t exportStatusGeneration = 0;
     jcut::EditorDocumentCore exportDocument;
+    struct QueuedExport {
+        jcut::EditorDocumentCore document;
+        std::string label;
+    };
+    std::vector<QueuedExport> exportQueue;
+    std::size_t exportQueueTotal = 0;
+    std::size_t exportQueueCurrent = 0;
+    std::size_t exportQueueCompleted = 0;
+    std::size_t exportQueueFailed = 0;
+    std::string exportQueueLabel;
     std::string exportRootDirectory;
     jcut::render::RenderProgressCore exportProgress;
     jcut::render::RenderResultCore exportResult;
@@ -575,6 +853,43 @@ std::string readTextFile(const fs::path& path)
                        std::istreambuf_iterator<char>());
 }
 
+std::string readTextFileTail(const fs::path& path,
+                             std::size_t maximumBytes,
+                             std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        if (errorOut) *errorOut = "file could not be opened";
+        return {};
+    }
+    stream.seekg(0, std::ios::end);
+    const std::streamoff byteCount = stream.tellg();
+    if (byteCount < 0) {
+        if (errorOut) *errorOut = "file size could not be read";
+        return {};
+    }
+    const std::streamoff readOffset =
+        byteCount > static_cast<std::streamoff>(maximumBytes)
+        ? byteCount - static_cast<std::streamoff>(maximumBytes)
+        : 0;
+    stream.seekg(readOffset, std::ios::beg);
+    std::string content(
+        (std::istreambuf_iterator<char>(stream)),
+        std::istreambuf_iterator<char>());
+    if (!stream.eof() && stream.fail()) {
+        if (errorOut) *errorOut = "file could not be read";
+        return {};
+    }
+    if (readOffset > 0) {
+        content.insert(
+            0,
+            "[showing the final " + std::to_string(maximumBytes) +
+                " bytes]\n");
+    }
+    return content;
+}
+
 bool writeTextFileAtomically(const fs::path& path, const std::string& content)
 {
     std::error_code ec;
@@ -651,8 +966,46 @@ std::optional<fs::path> firstExistingPath(const std::vector<fs::path>& candidate
     return std::nullopt;
 }
 
+fs::path defaultApplicationCachePath()
+{
+    if (const char* value = std::getenv("XDG_CACHE_HOME");
+        value && *value) {
+        return fs::path(value) / "PanelTalkEditor" / "JCut";
+    }
+    if (const char* value = std::getenv("HOME"); value && *value) {
+        return fs::path(value) / ".cache" / "PanelTalkEditor" / "JCut";
+    }
+    return fs::current_path() / ".cache";
+}
+
+std::optional<fs::path> sam3ScriptPath()
+{
+    const fs::path executable = executableDirPath();
+    return firstExistingPath({
+        fs::current_path() / "sam3.sh",
+        executable / "sam3.sh",
+        executable.parent_path() / "sam3.sh",
+    });
+}
+
 void loadUiPreferences(ShellState* shellState)
 {
+    if (shellState->promptMaskModelCachePath.empty()) {
+        shellState->promptMaskModelCachePath =
+            (defaultApplicationCachePath() / "sam3" / "hf").string();
+    }
+    if (shellState->promptMaskRuntimeCachePath.empty()) {
+        shellState->promptMaskRuntimeCachePath =
+            (defaultApplicationCachePath() / "sam3" / "runtime").string();
+    }
+    if (shellState->birefnetModelCachePath.empty()) {
+        shellState->birefnetModelCachePath =
+            (defaultApplicationCachePath() / "birefnet" / "hf").string();
+    }
+    if (shellState->birefnetRuntimeCachePath.empty()) {
+        shellState->birefnetRuntimeCachePath =
+            (defaultApplicationCachePath() / "birefnet" / "runtime").string();
+    }
     if (shellState->preferencesPath.empty()) {
         return;
     }
@@ -668,9 +1021,88 @@ void loadUiPreferences(ShellState* shellState)
             kMaxUiFontSize);
         shellState->audioBufferFrames = std::clamp(
             root.value("audioBufferFrames", 1024), 64, 8192);
+        shellState->audioOutputDeviceName =
+            root.value("audioOutputDeviceName", std::string{});
+        jcut::DecodePreferenceCore decodePreference =
+            jcut::DecodePreferenceCore::Auto;
+        (void)jcut::parseDecodePreferenceCore(
+            root.value("standaloneDecodePreference", std::string("auto")),
+            &decodePreference);
+        shellState->decoderPolicy.decodePreference = decodePreference;
+        jcut::DecodeHardwareDeviceCore hardwareDevice =
+            jcut::DecodeHardwareDeviceCore::Auto;
+        (void)jcut::parseDecodeHardwareDeviceCore(
+            root.value(
+                "standaloneDecodeHardwareDevice",
+                std::string("auto")),
+            &hardwareDevice);
+        shellState->decoderPolicy.hardwareDevice = hardwareDevice;
+        shellState->promptMaskModelCachePath =
+            root.value("sam3ModelCachePath", std::string{});
+        shellState->promptMaskRuntimeCachePath =
+            root.value("sam3RuntimeCachePath", std::string{});
+        shellState->promptMaskScaleWidth =
+            std::clamp(root.value("sam3ScaleWidth", 0), 0, 8192);
+        shellState->promptMaskPrescaleWidth =
+            std::clamp(root.value("sam3PrescaleWidth", 0), 0, 8192);
+        shellState->promptMaskExtractFps =
+            std::clamp(root.value("sam3ExtractFps", 0.0f), 0.0f, 240.0f);
+        shellState->promptMaskFrameFormat =
+            root.value("sam3IntermediateFramesFormat", std::string("jpg")) ==
+                    "png"
+                ? 1
+                : 0;
+        shellState->promptMaskCompileModel =
+            root.value("sam3CompileModel", false);
+        shellState->birefnetModel =
+            root.value("birefnetModel", shellState->birefnetModel);
+        shellState->birefnetRevision =
+            root.value("birefnetRevision", shellState->birefnetRevision);
+        shellState->birefnetModelCachePath =
+            root.value("birefnetModelCachePath", std::string{});
+        shellState->birefnetRuntimeCachePath =
+            root.value("birefnetRuntimeCachePath", std::string{});
+        shellState->birefnetDevice =
+            std::clamp(root.value("birefnetDevice", 0), 0, 1);
+        shellState->birefnetFp16 =
+            root.value("birefnetFp16", true);
+        shellState->birefnetDockerRoot =
+            root.value("birefnetDockerRoot", false);
+        shellState->birefnetAlphaTolerancePercent = std::clamp(
+            root.value("birefnetAlphaTolerancePercent", 0.0f),
+            0.0f,
+            99.0f);
     } catch (...) {
         shellState->uiFontSize = kDefaultUiFontSize;
         shellState->audioBufferFrames = 1024;
+        shellState->audioOutputDeviceName.clear();
+        shellState->decoderPolicy.decodePreference =
+            jcut::DecodePreferenceCore::Auto;
+        shellState->decoderPolicy.hardwareDevice =
+            jcut::DecodeHardwareDeviceCore::Auto;
+        shellState->promptMaskModelCachePath.clear();
+        shellState->promptMaskRuntimeCachePath.clear();
+        shellState->promptMaskScaleWidth = 0;
+        shellState->promptMaskPrescaleWidth = 0;
+        shellState->promptMaskExtractFps = 0.0f;
+        shellState->promptMaskFrameFormat = 0;
+        shellState->promptMaskCompileModel = false;
+    }
+    if (shellState->promptMaskModelCachePath.empty()) {
+        shellState->promptMaskModelCachePath =
+            (defaultApplicationCachePath() / "sam3" / "hf").string();
+    }
+    if (shellState->promptMaskRuntimeCachePath.empty()) {
+        shellState->promptMaskRuntimeCachePath =
+            (defaultApplicationCachePath() / "sam3" / "runtime").string();
+    }
+    if (shellState->birefnetModelCachePath.empty()) {
+        shellState->birefnetModelCachePath =
+            (defaultApplicationCachePath() / "birefnet" / "hf").string();
+    }
+    if (shellState->birefnetRuntimeCachePath.empty()) {
+        shellState->birefnetRuntimeCachePath =
+            (defaultApplicationCachePath() / "birefnet" / "runtime").string();
     }
 }
 
@@ -682,6 +1114,30 @@ void saveUiPreferences(const ShellState& shellState)
     const nlohmann::json root{
         {"uiFontSize", shellState.uiFontSize},
         {"audioBufferFrames", shellState.audioBufferFrames},
+        {"audioOutputDeviceName", shellState.audioOutputDeviceName},
+        {"standaloneDecodePreference",
+         jcut::decodePreferenceCoreName(
+             shellState.decoderPolicy.decodePreference)},
+        {"standaloneDecodeHardwareDevice",
+         jcut::decodeHardwareDeviceCoreName(
+             shellState.decoderPolicy.hardwareDevice)},
+        {"sam3ModelCachePath", shellState.promptMaskModelCachePath},
+        {"sam3RuntimeCachePath", shellState.promptMaskRuntimeCachePath},
+        {"sam3ScaleWidth", shellState.promptMaskScaleWidth},
+        {"sam3PrescaleWidth", shellState.promptMaskPrescaleWidth},
+        {"sam3ExtractFps", shellState.promptMaskExtractFps},
+        {"sam3IntermediateFramesFormat",
+         shellState.promptMaskFrameFormat == 1 ? "png" : "jpg"},
+        {"sam3CompileModel", shellState.promptMaskCompileModel},
+        {"birefnetModel", shellState.birefnetModel},
+        {"birefnetRevision", shellState.birefnetRevision},
+        {"birefnetModelCachePath", shellState.birefnetModelCachePath},
+        {"birefnetRuntimeCachePath", shellState.birefnetRuntimeCachePath},
+        {"birefnetDevice", shellState.birefnetDevice},
+        {"birefnetFp16", shellState.birefnetFp16},
+        {"birefnetDockerRoot", shellState.birefnetDockerRoot},
+        {"birefnetAlphaTolerancePercent",
+         shellState.birefnetAlphaTolerancePercent},
     };
     writeTextFileAtomically(shellState.preferencesPath, root.dump(2) + "\n");
 }
@@ -742,6 +1198,7 @@ void requestPreviewRender(ShellState* shellState)
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
         shellState->previewDocument = snapshot;
+        shellState->previewDecoderPolicy = shellState->decoderPolicy;
         shellState->previewRootDirectory = shellState->mediaRootDirectory.empty()
             ? shellState->projectRootPath
             : shellState->mediaRootDirectory;
@@ -785,6 +1242,13 @@ bool requestExportRender(ShellState* shellState)
         return false;
     }
     shellState->exportDocument = snapshot;
+    shellState->exportQueue.clear();
+    shellState->exportQueueCurrent = 0;
+    shellState->exportQueueTotal = 1;
+    shellState->exportQueueCompleted = 0;
+    shellState->exportQueueFailed = 0;
+    shellState->exportQueueLabel.clear();
+    shellState->exportDecoderPolicy = shellState->decoderPolicy;
     shellState->exportRootDirectory = shellState->mediaRootDirectory.empty()
         ? shellState->projectRootPath
         : shellState->mediaRootDirectory;
@@ -796,6 +1260,153 @@ bool requestExportRender(ShellState* shellState)
     ++shellState->exportRequestGeneration;
     shellState->exportCondition.notify_one();
     return true;
+}
+
+bool requestExportBatch(
+    ShellState* shellState,
+    std::vector<ShellState::QueuedExport> queue)
+{
+    if (queue.empty()) return false;
+    std::lock_guard<std::mutex> lock(
+        shellState->exportMutex);
+    if (shellState->exportRunning ||
+        shellState->exportRequested) {
+        return false;
+    }
+    shellState->exportQueue = std::move(queue);
+    shellState->exportRootDirectory =
+        shellState->mediaRootDirectory.empty()
+        ? shellState->projectRootPath
+        : shellState->mediaRootDirectory;
+    shellState->exportRequested = true;
+    shellState->exportCancelRequested = false;
+    shellState->exportHasProgress = false;
+    shellState->exportProgress = {};
+    shellState->exportResult = {};
+    shellState->exportQueueCurrent = 0;
+    shellState->exportQueueTotal =
+        shellState->exportQueue.size();
+    shellState->exportQueueCompleted = 0;
+    shellState->exportQueueFailed = 0;
+    shellState->exportQueueLabel.clear();
+    ++shellState->exportRequestGeneration;
+    shellState->exportCondition.notify_one();
+    return true;
+}
+
+std::size_t requestSpeakerSectionExportBatch(
+    ShellState* shellState,
+    const jcut::EditorDocumentCore& snapshot,
+    const jcut::EditorClip& clip,
+    const nlohmann::json& transcriptRoot,
+    const std::vector<jcut::SpeakerSectionCore>& sections,
+    std::size_t* skippedOut = nullptr)
+{
+    if (skippedOut) *skippedOut = 0;
+    const fs::path configuredPath(
+        shellState->exportOutputPath.data());
+    if (configuredPath.empty()) return 0;
+    fs::path outputDirectory =
+        configuredPath.parent_path();
+    if (outputDirectory.empty()) {
+        outputDirectory = fs::current_path();
+    }
+    const std::string format =
+        snapshot.exportRequest.outputFormat.empty()
+        ? "mp4"
+        : snapshot.exportRequest.outputFormat;
+    const std::string extension =
+        format == "mov_mjpeg" ? "mov" : format;
+    const std::string clipIdentity =
+        clip.persistentId.empty()
+        ? std::to_string(clip.id)
+        : clip.persistentId;
+
+    std::vector<jcut::SpeakerSectionExportCore> candidates;
+    candidates.reserve(sections.size());
+    for (std::size_t index = 0;
+         index < sections.size();
+         ++index) {
+        const auto& section = sections[index];
+        jcut::SpeakerSectionExportCore candidate;
+        candidate.speakerId = section.speakerId;
+        candidate.speakerDisplayName =
+            section.displayLabel;
+        candidate.sourceStartFrame =
+            section.startFrame;
+        candidate.sourceEndFrame =
+            section.endFrame;
+        candidate.wordCount = section.wordCount;
+        candidate.sectionOrdinal =
+            static_cast<int>(index + 1);
+        for (const auto& assignment :
+             jcut::transcriptSpeakerTrackAssignmentsAtFrame(
+                 transcriptRoot,
+                 clipIdentity,
+                 section.speakerId,
+                 section.startFrame)) {
+            candidate.trackIds.push_back(
+                assignment.trackId);
+        }
+        candidates.push_back(std::move(candidate));
+    }
+    candidates =
+        jcut::coalescedSpeakerSectionExports(
+            candidates);
+
+    std::vector<ShellState::QueuedExport> queue;
+    std::set<std::string> reservedPaths;
+    std::size_t skipped = 0;
+    for (const auto& section : candidates) {
+        const auto ranges =
+            jcut::editorTimelineRangesForTranscriptSection(
+                snapshot,
+                clip,
+                section.sourceStartFrame,
+                section.sourceEndFrame);
+        if (ranges.empty()) {
+            ++skipped;
+            continue;
+        }
+        const fs::path outputPath =
+            outputDirectory /
+            (jcut::sanitizedSpeakerSectionExportBase(
+                 section) +
+             jcut::speakerSectionExportSpeedSuffix(
+                 snapshot.exportRequest.playbackSpeed) +
+             "." + extension);
+        const std::string normalizedOutput =
+            pathString(outputPath);
+        std::error_code existsError;
+        if (reservedPaths.contains(
+                normalizedOutput) ||
+            fs::exists(outputPath, existsError)) {
+            ++skipped;
+            continue;
+        }
+        reservedPaths.insert(normalizedOutput);
+        jcut::EditorDocumentCore document =
+            snapshot;
+        document.exportRanges = ranges;
+        document.exportRequest.exportStartFrame =
+            ranges.front().startFrame;
+        document.exportRequest.exportEndFrame =
+            ranges.back().endFrame;
+        document.exportRequest.exportRangeCount =
+            ranges.size();
+        document.exportRequest.outputPath =
+            normalizedOutput;
+        queue.push_back({
+            std::move(document),
+            jcut::speakerSectionExportTitle(section),
+        });
+    }
+    if (skippedOut) *skippedOut = skipped;
+    const std::size_t count = queue.size();
+    return requestExportBatch(
+        shellState, std::move(queue))
+        ? count
+        : 0;
 }
 
 void cancelExportRender(ShellState* shellState)
@@ -926,6 +1537,436 @@ fs::path resolvedClipMediaPathForProbe(const ShellState& shellState,
         }
     }
     return resolve(clip.sourcePath);
+}
+
+fs::path resolvedClipSourcePath(const ShellState& shellState,
+                                const jcut::EditorClip& clip)
+{
+    const fs::path mediaRoot = !shellState.mediaRootDirectory.empty()
+        ? fs::path(shellState.mediaRootDirectory)
+        : fs::path(shellState.projectRootPath);
+    fs::path path(clip.sourcePath);
+    if (path.is_relative() && !mediaRoot.empty()) {
+        path = mediaRoot / path;
+    }
+    return path.lexically_normal();
+}
+
+fs::path resolvedClipProxyPath(const ShellState& shellState,
+                               const jcut::EditorClip& clip)
+{
+    const fs::path mediaRoot = !shellState.mediaRootDirectory.empty()
+        ? fs::path(shellState.mediaRootDirectory)
+        : fs::path(shellState.projectRootPath);
+    fs::path path(clip.proxyPath);
+    if (path.is_relative() && !mediaRoot.empty()) {
+        path = mediaRoot / path;
+    }
+    return path.lexically_normal();
+}
+
+jcut::EditorDocumentCore runtimeSnapshot(ShellState* shellState);
+void beginRuntimeHistoryTransaction(ShellState* shellState);
+void endRuntimeHistoryTransaction(ShellState* shellState);
+
+void startAutoOpposeJob(ShellState* shellState,
+                        const jcut::EditorDocumentCore& snapshot,
+                        const jcut::EditorClip& clip)
+{
+    if (shellState->autoOpposeRunning) {
+        return;
+    }
+    if (!jcut::editorClipHasVisualsCore(clip) ||
+        clip.mediaKind == "title" || clip.sourcePath.empty()) {
+        shellState->statusMessage =
+            "Auto Oppose requires a selected decoded visual clip";
+        return;
+    }
+    const std::string sourcePath =
+        pathString(resolvedClipMediaPathForProbe(*shellState, clip));
+    const jcut::standalone_render::StandaloneMediaInfo mediaInfo =
+        jcut::standalone_render::probeStandaloneMedia(sourcePath);
+    if (!mediaInfo.probed || !mediaInfo.hasVideo) {
+        shellState->statusMessage =
+            "Auto Oppose could not open the selected clip";
+        return;
+    }
+    const jcut::EditorAutoOpposeSettingsCore settings =
+        shellState->autoOpposeSettings;
+    const jcut::DecoderPolicySettingsCore decoderPolicy =
+        shellState->decoderPolicy;
+    const std::uint64_t documentGeneration =
+        shellState->documentGeneration;
+    const jcut::core::SizeI decodeSize = mediaInfo.frameSize.valid()
+        ? mediaInfo.frameSize
+        : jcut::core::SizeI{640, 360};
+    shellState->autoOpposeRunning = true;
+    shellState->autoOpposeClipId = clip.id;
+    shellState->statusMessage = "Auto Oppose is analyzing clip frames";
+    shellState->autoOpposeFuture = std::async(
+        std::launch::async,
+        [clip,
+         sourcePath,
+         settings,
+         decoderPolicy,
+         decodeSize,
+         documentGeneration]() {
+            AutoOpposeJobResult result;
+            result.clipId = clip.id;
+            result.documentGeneration = documentGeneration;
+            const std::int64_t duration =
+                std::max<std::int64_t>(1, clip.durationFrames);
+            const int targetSamples =
+                std::max(30, settings.sampleTarget);
+            const std::int64_t sampleStep =
+                std::max<std::int64_t>(1, duration / targetSamples);
+            std::vector<jcut::EditorGradeProbeSampleCore> samples;
+            samples.reserve(static_cast<std::size_t>(targetSamples + 4));
+            jcut::standalone_render::StandaloneMediaFrameDecoder decoder(
+                sourcePath, decoderPolicy);
+            for (std::int64_t localFrame = 0;
+                 localFrame < duration;
+                 localFrame += sampleStep) {
+                const double playbackRate =
+                    std::isfinite(clip.playbackRate) &&
+                        clip.playbackRate > 0.001
+                    ? std::min(clip.playbackRate, 64.0)
+                    : 1.0;
+                std::int64_t sourceFrame =
+                    std::max<std::int64_t>(0, clip.sourceInFrame) +
+                    static_cast<std::int64_t>(std::llround(
+                        localFrame * playbackRate));
+                if (clip.sourceDurationFrames > 0) {
+                    sourceFrame = std::min<std::int64_t>(
+                        sourceFrame,
+                        std::max<std::int64_t>(
+                            0, clip.sourceDurationFrames - 1));
+                }
+                const auto decoded = decoder.decodeFrame(
+                        static_cast<int>(std::min<std::int64_t>(
+                            sourceFrame,
+                            std::numeric_limits<int>::max())),
+                        decodeSize);
+                if (!decoded.success || decoded.image.empty()) {
+                    continue;
+                }
+                jcut::EditorGradeProbeSampleCore sample;
+                sample.localFrame = localFrame;
+                if (jcut::probeEditorGradeStatsRgba(
+                        decoded.image.bytes.data(),
+                        decoded.image.size.width,
+                        decoded.image.size.height,
+                        decoded.image.strideBytes,
+                        &sample)) {
+                    samples.push_back(sample);
+                }
+            }
+            result.decodedSamples = static_cast<int>(samples.size());
+            if (samples.size() < 2) {
+                result.message =
+                    "Auto Oppose found fewer than two decodable samples";
+                return result;
+            }
+            result.events =
+                jcut::detectEditorOpposeGradeEvents(samples, settings);
+            result.message = result.events.empty()
+                ? "Auto Oppose found no major grade changes"
+                : "Auto Oppose analysis completed";
+            return result;
+        });
+}
+
+void pollAutoOpposeJob(ShellState* shellState)
+{
+    if (!shellState->autoOpposeRunning ||
+        !shellState->autoOpposeFuture.valid() ||
+        shellState->autoOpposeFuture.wait_for(
+            std::chrono::milliseconds(0)) != std::future_status::ready) {
+        return;
+    }
+    AutoOpposeJobResult result;
+    try {
+        result = shellState->autoOpposeFuture.get();
+    } catch (const std::exception& exception) {
+        shellState->autoOpposeRunning = false;
+        shellState->statusMessage =
+            std::string("Auto Oppose failed: ") + exception.what();
+        return;
+    }
+    shellState->autoOpposeRunning = false;
+    if (result.documentGeneration != shellState->documentGeneration) {
+        shellState->statusMessage =
+            "Auto Oppose result discarded because the project changed";
+        return;
+    }
+    if (result.events.empty()) {
+        shellState->statusMessage = result.message;
+        return;
+    }
+    jcut::EditorDocumentCore snapshot = runtimeSnapshot(shellState);
+    const auto selected = std::find_if(
+        snapshot.clips.begin(),
+        snapshot.clips.end(),
+        [&result](const jcut::EditorClip& candidate) {
+            return candidate.id == result.clipId;
+        });
+    if (selected == snapshot.clips.end()) {
+        shellState->statusMessage =
+            "Auto Oppose result discarded because the clip was removed";
+        return;
+    }
+    jcut::EditorClip workingClip = *selected;
+    beginRuntimeHistoryTransaction(shellState);
+    int appliedEvents = 0;
+    for (const jcut::EditorOpposeGradeEventCore& event : result.events) {
+        jcut::EditorGradingKeyframe keyframe =
+            jcut::evaluateEditorClipGradingAtLocalFrame(
+                workingClip, event.localFrame);
+        keyframe.frame = std::clamp<std::int64_t>(
+            event.localFrame,
+            0,
+            std::max<std::int64_t>(0, workingClip.durationFrames - 1));
+        keyframe.brightness = std::clamp(
+            keyframe.brightness + event.brightnessDelta, -10.0, 10.0);
+        keyframe.contrast = std::clamp(
+            keyframe.contrast * event.contrastMul, 0.05, 10.0);
+        keyframe.saturation = std::clamp(
+            keyframe.saturation * event.saturationMul, 0.0, 10.0);
+        const jcut::CommandResult commandResult = applyCommand(
+            shellState,
+            jcut::UpsertGradingKeyframeCommand{
+                workingClip.id, keyframe});
+        if (!commandResult.applied) {
+            break;
+        }
+        auto existing = std::find_if(
+            workingClip.gradingKeyframes.begin(),
+            workingClip.gradingKeyframes.end(),
+            [&keyframe](const jcut::EditorGradingKeyframe& candidate) {
+                return candidate.frame == keyframe.frame;
+            });
+        if (existing == workingClip.gradingKeyframes.end()) {
+            workingClip.gradingKeyframes.push_back(keyframe);
+        } else {
+            *existing = keyframe;
+        }
+        ++appliedEvents;
+    }
+    endRuntimeHistoryTransaction(shellState);
+    shellState->statusMessage =
+        "Auto Oppose generated " + std::to_string(appliedEvents) +
+        " opposing keyframe" + (appliedEvents == 1 ? "" : "s") +
+        " from " + std::to_string(result.decodedSamples) + " samples";
+}
+
+void refreshClipMetadata(ShellState* shellState,
+                         const jcut::EditorDocumentCore& snapshot,
+                         int contextClipId)
+{
+    std::vector<jcut::EditorClipMetadataUpdate> updates;
+    int missingCount = 0;
+    const bool hasSelection = std::any_of(
+        snapshot.clips.begin(),
+        snapshot.clips.end(),
+        [](const jcut::EditorClip& clip) { return clip.selected; });
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        if ((hasSelection ? !clip.selected : clip.id != contextClipId) ||
+            jcut::canonicalEditorClipRole(clip.clipRole) == "mask_matte") {
+            continue;
+        }
+        jcut::EditorClip sourceClip = clip;
+        sourceClip.useProxy = false;
+        sourceClip.proxyPath.clear();
+        const fs::path sourcePath =
+            resolvedClipMediaPathForProbe(*shellState, sourceClip);
+        const auto mediaInfo =
+            jcut::standalone_render::probeStandaloneMedia(
+                pathString(sourcePath));
+        if (!mediaInfo.probed) {
+            ++missingCount;
+            continue;
+        }
+        const double previousFps =
+            clip.sourceFps > 0.001 ? clip.sourceFps : 30.0;
+        const std::int64_t previousFullDuration =
+            clip.sourceDurationFrames > 0
+            ? std::max<std::int64_t>(
+                  1,
+                  std::llround(
+                      static_cast<double>(clip.sourceDurationFrames) /
+                      previousFps * 30.0))
+            : 0;
+        const bool lookedLikeFullSource =
+            clip.sourceInFrame == 0 &&
+            previousFullDuration > 0 &&
+            std::abs(
+                static_cast<std::int64_t>(clip.durationFrames) -
+                previousFullDuration) <= 1;
+        const double sourceFps =
+            mediaInfo.videoFps > 0.001 ? mediaInfo.videoFps : previousFps;
+        const std::int64_t sourceDuration =
+            mediaInfo.sourceDurationFrames > 0
+            ? mediaInfo.sourceDurationFrames
+            : clip.sourceDurationFrames;
+        int duration = clip.durationFrames;
+        if (lookedLikeFullSource && mediaInfo.durationFrames > 0) {
+            duration = static_cast<int>(std::clamp<std::int64_t>(
+                mediaInfo.durationFrames,
+                1,
+                std::numeric_limits<int>::max()));
+        }
+        if (sourceDuration > 0) {
+            const std::int64_t sourceIn = std::clamp<std::int64_t>(
+                clip.sourceInFrame, 0, sourceDuration - 1);
+            const std::int64_t availableTimelineFrames =
+                std::max<std::int64_t>(
+                    1,
+                    std::llround(
+                        static_cast<double>(sourceDuration - sourceIn) /
+                        sourceFps * 30.0));
+            duration = static_cast<int>(std::clamp<std::int64_t>(
+                std::min<std::int64_t>(duration, availableTimelineFrames),
+                1,
+                std::numeric_limits<int>::max()));
+        }
+        updates.push_back({
+            clip.id,
+            mediaInfo.mediaKind,
+            mediaInfo.hasAudio,
+            sourceFps,
+            sourceDuration,
+            duration});
+    }
+    if (updates.empty()) {
+        shellState->statusMessage =
+            missingCount > 0
+            ? "metadata refresh found no readable selected sources"
+            : "metadata refresh found no selected clips";
+        return;
+    }
+    const jcut::CommandResult result = applyCommand(
+        shellState,
+        jcut::RefreshClipMetadataCommand{std::move(updates)});
+    if (result.applied && missingCount > 0) {
+        shellState->statusMessage +=
+            "; " + std::to_string(missingCount) + " source" +
+            (missingCount == 1 ? "" : "s") + " missing";
+    }
+}
+
+void startTranscriptionJob(ShellState* shellState,
+                           const jcut::EditorClip& clip)
+{
+    jcut::EditorClip sourceClip = clip;
+    sourceClip.useProxy = false;
+    sourceClip.proxyPath.clear();
+    const std::string mediaPath = pathString(
+        resolvedClipMediaPathForProbe(*shellState, sourceClip));
+    const std::string scriptPath = pathString(
+        fs::absolute(fs::path("whisperx.sh")));
+    std::string error;
+    if (!shellState->transcriptionJob.start(
+            {clip.id, scriptPath, mediaPath}, &error)) {
+        shellState->statusMessage = error.empty()
+            ? "transcription could not be started"
+            : error;
+        return;
+    }
+    shellState->requestedInspectorTab = "Jobs";
+    shellState->statusMessage =
+        "WhisperX transcription started";
+}
+
+void pollTranscriptionJob(ShellState* shellState)
+{
+    const jcut::jobs::TranscriptionJobSnapshotCore snapshot =
+        shellState->transcriptionJob.snapshot();
+    const int state = static_cast<int>(snapshot.state);
+    if (state == shellState->transcriptionLastState) return;
+    shellState->transcriptionLastState = state;
+    if (!snapshot.status.empty()) {
+        shellState->statusMessage = snapshot.status;
+    }
+    if (snapshot.state ==
+            jcut::jobs::ProcessJobSnapshotCore::State::Completed &&
+        snapshot.outputReady) {
+        shellState->transcriptCache = {};
+        shellState->requestedInspectorTab = "Transcript";
+    }
+}
+
+void startBiRefNetJob(ShellState* shellState,
+                      const jcut::EditorClip& clip)
+{
+    jcut::EditorClip sourceClip = clip;
+    sourceClip.useProxy = false;
+    sourceClip.proxyPath.clear();
+    jcut::jobs::BiRefNetJobRequestCore request;
+    request.clipId = clip.id;
+    request.scriptPath =
+        pathString(fs::absolute(fs::path("birefnet.sh")));
+    request.mediaPath = pathString(
+        resolvedClipMediaPathForProbe(*shellState, sourceClip));
+    request.model = shellState->birefnetModel;
+    request.revision = shellState->birefnetRevision;
+    request.modelCachePath = shellState->birefnetModelCachePath;
+    request.runtimeCachePath =
+        shellState->birefnetRuntimeCachePath;
+    request.device =
+        shellState->birefnetDevice == 1 ? "cpu" : "cuda";
+    request.fp16 = shellState->birefnetFp16;
+    request.runDockerAsRoot =
+        shellState->birefnetDockerRoot;
+    request.restart = shellState->birefnetRestart;
+    request.alphaTolerance = std::clamp(
+        static_cast<double>(
+            shellState->birefnetAlphaTolerancePercent) /
+            100.0,
+        0.0,
+        0.99);
+    std::string error;
+    if (!shellState->birefnetJob.start(request, &error)) {
+        shellState->statusMessage = error.empty()
+            ? "BiRefNet could not be started"
+            : error;
+        return;
+    }
+    shellState->birefnetLivePreviewTextureId = 0;
+    shellState->birefnetLivePreviewSize = {};
+    shellState->birefnetLivePreviewLoadedPath.clear();
+    shellState->birefnetLivePreviewHasStamp = false;
+    shellState->birefnetLivePreviewError.clear();
+    shellState->birefnetSourceClipId = clip.id;
+    shellState->birefnetLastState = -1;
+    shellState->requestedInspectorTab = "Jobs";
+    shellState->statusMessage =
+        "BiRefNet alpha generation started";
+}
+
+void pollBiRefNetJob(ShellState* shellState)
+{
+    const jcut::jobs::BiRefNetJobSnapshotCore snapshot =
+        shellState->birefnetJob.snapshot();
+    const int state = static_cast<int>(snapshot.state);
+    if (state == shellState->birefnetLastState) return;
+    shellState->birefnetLastState = state;
+    if (!snapshot.status.empty()) {
+        shellState->statusMessage = snapshot.status;
+    }
+    if (snapshot.state ==
+            jcut::jobs::ProcessJobSnapshotCore::State::Completed &&
+        snapshot.outputReady &&
+        shellState->birefnetSourceClipId > 0) {
+        applyCommand(
+            shellState,
+            jcut::MaterializeMaskMatteCommand{
+                shellState->birefnetSourceClipId,
+                snapshot.outputDirectory,
+                "birefnet-alpha",
+                "BiRefNet Alpha"});
+        shellState->maskSidecarContextClipId = -1;
+        shellState->requestedInspectorTab = "Masks";
+    }
 }
 
 void scaleClipToFillPreview(ShellState* shellState,
@@ -1112,6 +2153,23 @@ std::size_t selectedClipCount(const jcut::EditorDocumentCore& snapshot)
         [](const jcut::EditorClip& clip) { return clip.selected; }));
 }
 
+bool selectedClipsCanSplitAtFrame(
+    const jcut::EditorDocumentCore& snapshot,
+    std::int64_t frame)
+{
+    return std::any_of(
+        snapshot.clips.begin(),
+        snapshot.clips.end(),
+        [frame](const jcut::EditorClip& clip) {
+            return clip.selected && !clip.locked &&
+                jcut::canonicalEditorClipRole(clip.clipRole) !=
+                    "mask_matte" &&
+                frame > clip.startFrame &&
+                frame < static_cast<std::int64_t>(clip.startFrame) +
+                    clip.durationFrames;
+        });
+}
+
 void deleteSelectedClips(ShellState* shellState)
 {
     applyCommand(shellState, jcut::DeleteSelectedClipsCommand{});
@@ -1193,6 +2251,100 @@ PreviewHistogram currentPreviewHistogram(ShellState* shellState)
 {
     std::lock_guard<std::mutex> lock(shellState->previewMutex);
     return computePreviewHistogram(shellState->previewResult.image);
+}
+
+struct PipelineStageCore {
+    std::string label;
+    std::string kind;
+    std::string state;
+    std::string detail;
+    bool active = false;
+    bool exact = false;
+    std::vector<std::pair<std::string, std::string>> facts;
+};
+
+std::vector<PipelineStageCore> previewPipelineStages(
+    const jcut::standalone_render::PreviewRenderResult& result,
+    bool lastUsedZeroCopy,
+    bool zeroCopyAvailable,
+    const std::string& zeroCopyFailure)
+{
+    std::vector<PipelineStageCore> stages;
+    stages.push_back({
+        "Timeline Map", "mapping",
+        result.sourcePath.empty() ? "idle" : "ready",
+        result.sourcePath.empty()
+            ? "No active source at the playhead"
+            : "Timeline/source timing resolved",
+        !result.sourcePath.empty(),
+        true,
+        {
+            {"Source", result.sourcePath.empty() ? "-" : result.sourcePath},
+        }});
+    stages.push_back({
+        "Decode", "decoder",
+        result.success ? "ready" : "blocked",
+        result.message.empty() ? "Waiting for decode" : result.message,
+        result.success,
+        result.success,
+        {
+            {"Preference", jcut::decodePreferenceCoreName(
+                result.effectiveDecodePreference)},
+            {"Hardware", result.hardwareAccelerated ? "yes" : "no"},
+            {"Device", result.hardwareDeviceLabel.empty()
+                 ? "software" : result.hardwareDeviceLabel},
+            {"Retained hardware frame",
+             result.hardwareFrame ? "yes" : "no"},
+        }});
+    stages.push_back({
+        "GPU Import", "surface",
+        lastUsedZeroCopy
+            ? "live exact"
+            : (zeroCopyAvailable ? "fallback" : "blocked"),
+        lastUsedZeroCopy
+            ? "External Vulkan frame is bound directly"
+            : (zeroCopyFailure.empty()
+                   ? "No importable external frame"
+                   : zeroCopyFailure),
+        lastUsedZeroCopy,
+        lastUsedZeroCopy,
+        {
+            {"GPU frame", result.vulkanFrame.valid ? "valid" : "none"},
+            {"Direct eligible",
+             result.hardwareDirectEligible ? "yes" : "no"},
+            {"Available", zeroCopyAvailable ? "yes" : "no"},
+        }});
+    stages.push_back({
+        "Composite", "composite",
+        !result.image.empty()
+            ? "live exact"
+            : (lastUsedZeroCopy ? "bypassed" : "blocked"),
+        !result.image.empty()
+            ? "Standalone rich composition produced a CPU frame"
+            : (lastUsedZeroCopy
+                   ? "Direct frame bypassed CPU composition"
+                   : "No composited frame"),
+        !result.image.empty(),
+        !result.image.empty(),
+        {
+            {"CPU frame", result.image.empty() ? "none" : "valid"},
+            {"Fallback reason",
+             result.hardwareDirectFallbackReason.empty()
+                 ? "-" : result.hardwareDirectFallbackReason},
+        }});
+    stages.push_back({
+        "Present", "surface",
+        result.success ? "ready" : "blocked",
+        lastUsedZeroCopy
+            ? "Vulkan external image → X11 swapchain"
+            : "Uploaded RGBA image → X11 Vulkan swapchain",
+        result.success,
+        true,
+        {
+            {"Path", lastUsedZeroCopy ? "zero-copy" : "CPU upload"},
+            {"Window", "raw X11/Vulkan"},
+        }});
+    return stages;
 }
 
 void importFilesystemMedia(ShellState* shellState,
@@ -1358,6 +2510,70 @@ void reloadProjectPreferenceState(ShellState* shellState)
         *shellState, "historyMaxEntries", 100, 10, 500);
     shellState->historyMaxMegabytes = legacyIntValue(
         *shellState, "historyMaxMegabytes", 16, 1, 256);
+    jcut::H26xThreadingModeCore threading =
+        jcut::H26xThreadingModeCore::Auto;
+    (void)jcut::parseH26xThreadingModeCore(
+        legacyStringValue(
+            *shellState, "debugH26xSoftwareThreadingMode"),
+        &threading);
+    shellState->decoderPolicy.h26xThreadingMode = threading;
+    shellState->decoderPolicy.deterministic = legacyBoolValue(
+        *shellState, "debugDeterministicPipeline", false);
+    shellState->decoderPolicy.decoderLaneCount = legacyIntValue(
+        *shellState, "debugDecoderLaneCount", 0, 0, 16);
+    shellState->featureAiPanel = legacyBoolValue(
+        *shellState, "feature_ai_panel", true);
+    shellState->featureAiSpeakerCleanup = legacyBoolValue(
+        *shellState, "feature_ai_speaker_cleanup", true);
+    const std::string configuredGateway =
+        legacyStringValue(*shellState, "aiProxyBaseUrl");
+    if (!configuredGateway.empty()) {
+        shellState->aiGatewayBaseUrl =
+            jcut::ai::normalizeGatewayBaseUrl(configuredGateway);
+    } else if (const char* environmentGateway = std::getenv("SUPABASE_URL");
+               environmentGateway && *environmentGateway) {
+        shellState->aiGatewayBaseUrl =
+            jcut::ai::normalizeGatewayBaseUrl(environmentGateway);
+    }
+    const std::string configuredModel =
+        legacyStringValue(*shellState, "aiSelectedModel");
+    if (!configuredModel.empty()) {
+        shellState->aiSelectedModel = configuredModel;
+    }
+    shellState->aiUsageBudgetCap = legacyIntValue(
+        *shellState, "aiUsageBudgetCap", 200, 1, 1000000);
+    shellState->aiUsageRequests = legacyIntValue(
+        *shellState, "aiUsageRequests", 0, 0, 1000000);
+    shellState->aiUsageFailures = legacyIntValue(
+        *shellState, "aiUsageFailures", 0, 0, 1000000);
+    if (shellState->aiSessionToken.empty()) {
+        if (const char* environmentToken = std::getenv("JCUT_AI_AUTH_TOKEN");
+            environmentToken && *environmentToken) {
+            shellState->aiSessionToken = environmentToken;
+            shellState->aiCredentialStatus =
+                "Using JCUT_AI_AUTH_TOKEN for this session.";
+            shellState->aiCredentialLoadAttempted = true;
+        } else if (!shellState->aiCredentialLoadAttempted) {
+            shellState->aiCredentialLoadAttempted = true;
+            const jcut::ai::CredentialStoreResultCore credentials =
+                jcut::ai::loadStoredCredentialsCore();
+            if (credentials.ok &&
+                !credentials.credentials.accessToken.empty()) {
+                shellState->aiSessionToken =
+                    credentials.credentials.accessToken;
+                shellState->aiRefreshToken =
+                    credentials.credentials.refreshToken;
+                shellState->aiUserId =
+                    credentials.credentials.userId;
+                shellState->aiCredentialStatus =
+                    credentials.usedSystemStore
+                    ? "Loaded credentials from the system secret store."
+                    : "Loaded credentials from the private config fallback.";
+            } else if (!credentials.error.empty()) {
+                shellState->aiCredentialStatus = credentials.error;
+            }
+        }
+    }
     shellState->nextAutosaveAt =
         std::chrono::steady_clock::now() +
         std::chrono::minutes(shellState->autosaveIntervalMinutes);
@@ -1375,6 +2591,21 @@ std::string legacyExtensionSignature(const ShellState& shellState)
         {"autosaveMaxBackups", shellState.autosaveMaxBackups},
         {"historyMaxEntries", shellState.historyMaxEntries},
         {"historyMaxMegabytes", shellState.historyMaxMegabytes},
+        {"debugH26xSoftwareThreadingMode",
+         jcut::h26xThreadingModeCoreName(
+             shellState.decoderPolicy.h26xThreadingMode)},
+        {"debugDeterministicPipeline",
+         shellState.decoderPolicy.deterministic},
+        {"debugDecoderLaneCount",
+         shellState.decoderPolicy.decoderLaneCount},
+        {"aiProxyBaseUrl", shellState.aiGatewayBaseUrl},
+        {"aiSelectedModel", shellState.aiSelectedModel},
+        {"feature_ai_panel", shellState.featureAiPanel},
+        {"feature_ai_speaker_cleanup",
+         shellState.featureAiSpeakerCleanup},
+        {"aiUsageBudgetCap", shellState.aiUsageBudgetCap},
+        {"aiUsageRequests", shellState.aiUsageRequests},
+        {"aiUsageFailures", shellState.aiUsageFailures},
     }.dump();
 }
 
@@ -1490,6 +2721,11 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"hasPlayableAudio", audioStatus.hasPlayableAudio},
             {"clockAvailable", audioStatus.clockAvailable},
             {"outputUnavailable", audioStatus.outputUnavailable},
+            {"requestedBufferFrames", audioStatus.requestedBufferFrames},
+            {"actualBufferFrames", audioStatus.actualBufferFrames},
+            {"requestedOutputDevice",
+             audioStatus.requestedOutputDeviceName},
+            {"activeOutputDevice", audioStatus.activeOutputDeviceName},
             {"scheduledSourcePaths", audioStatus.scheduledSourcePaths},
             {"status", audioStatus.message}
         }},
@@ -1498,11 +2734,31 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
             {"success", previewResult.success},
             {"message", previewResult.message},
             {"sourcePath", previewResult.sourcePath},
+            {"decode", {
+                {"requested", jcut::decodePreferenceCoreName(
+                    previewResult.requestedDecodePreference)},
+                {"requestedDevice",
+                 jcut::decodeHardwareDeviceCoreName(
+                     shellState->decoderPolicy.hardwareDevice)},
+                {"effective", jcut::decodePreferenceCoreName(
+                    previewResult.effectiveDecodePreference)},
+                {"hardwareAccelerated",
+                 previewResult.hardwareAccelerated},
+                {"device", previewResult.hardwareDeviceLabel},
+                {"fallbackReason",
+                 previewResult.hardwareFallbackReason}
+            }},
             {"zeroCopyVulkan", {
                 {"ready", previewZeroCopyAvailable},
                 {"presentedFrames", previewLastUsedZeroCopy ? previewCompletedGeneration : 0},
                 {"failures", previewZeroCopyFailureReason.empty() ? 0 : 1},
                 {"failureReason", previewZeroCopyFailureReason},
+                {"hardwareFrameRetained",
+                 static_cast<bool>(previewResult.hardwareFrame)},
+                {"hardwareDirectEligible",
+                 previewResult.hardwareDirectEligible},
+                {"hardwareDirectFallbackReason",
+                 previewResult.hardwareDirectFallbackReason},
                 {"lastFrameValid", previewResult.vulkanFrame.valid},
                 {"lastFrameWidth", previewResult.vulkanFrame.size.width},
                 {"lastFrameHeight", previewResult.vulkanFrame.size.height}
@@ -1736,6 +2992,7 @@ void resetProjectUiState(ShellState* shellState)
     shellState->timelineContextClipId = 0;
     shellState->timelineContextClipPersistentId.clear();
     shellState->timelineContextFrame = 0;
+    shellState->timelineContextClickFrame = 0;
     shellState->timelineContextDocumentGeneration = 0;
     invalidateProjectHistoryCache(shellState);
 }
@@ -2129,6 +3386,7 @@ void runPreviewWorker(ShellState* shellState)
         std::string rootDirectory;
         std::uint64_t generation = 0;
         bool preferVulkanFrame = true;
+        jcut::DecoderPolicySettingsCore decoderPolicy;
         {
             std::unique_lock<std::mutex> lock(shellState->previewMutex);
             shellState->previewCondition.wait(lock, [shellState]() {
@@ -2143,6 +3401,7 @@ void runPreviewWorker(ShellState* shellState)
             document = shellState->previewDocument;
             rootDirectory = shellState->previewRootDirectory;
             generation = shellState->previewRequestGeneration;
+            decoderPolicy = shellState->previewDecoderPolicy;
             preferVulkanFrame = !shellState->previewCpuFallbackPreferred &&
                 !document.panels.showScopes;
             shellState->previewRenderRequested = false;
@@ -2158,7 +3417,8 @@ void runPreviewWorker(ShellState* shellState)
                     document.transport.currentFrame,
                     rootDirectory,
                     preferVulkanFrame,
-                    true});
+                    true,
+                    decoderPolicy});
 
         {
             std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -2173,9 +3433,10 @@ void runPreviewWorker(ShellState* shellState)
 void runExportWorker(ShellState* shellState)
 {
     for (;;) {
-        jcut::EditorDocumentCore document;
+        std::vector<ShellState::QueuedExport> queue;
         std::string rootDirectory;
         std::uint64_t generation = 0;
+        jcut::DecoderPolicySettingsCore decoderPolicy;
         {
             std::unique_lock<std::mutex> lock(shellState->exportMutex);
             shellState->exportCondition.wait(lock, [shellState]() {
@@ -2184,9 +3445,18 @@ void runExportWorker(ShellState* shellState)
             if (shellState->exportStopRequested && !shellState->exportRequested) {
                 return;
             }
-            document = shellState->exportDocument;
+            queue = std::move(shellState->exportQueue);
+            shellState->exportQueue.clear();
+            if (queue.empty()) {
+                queue.push_back({
+                    shellState->exportDocument,
+                    "Export",
+                });
+            }
+            shellState->exportQueueTotal = queue.size();
             rootDirectory = shellState->exportRootDirectory;
             generation = shellState->exportRequestGeneration;
+            decoderPolicy = shellState->exportDecoderPolicy;
             shellState->exportRequested = false;
             shellState->exportRunning = true;
             shellState->exportHasProgress = false;
@@ -2194,19 +3464,92 @@ void runExportWorker(ShellState* shellState)
             shellState->exportResult = {};
         }
 
-        const jcut::render::RenderResultCore result =
-            jcut::standalone_render::exportTimelineToFile(
-                jcut::standalone_render::ExportRenderRequest{document, rootDirectory},
-                [shellState](const jcut::render::RenderProgressCore& progress) {
-                    std::lock_guard<std::mutex> lock(shellState->exportMutex);
-                    shellState->exportProgress = progress;
-                    shellState->exportHasProgress = true;
-                    return !shellState->exportCancelRequested && !shellState->exportStopRequested;
-                });
+        jcut::render::RenderResultCore summary;
+        summary.success = true;
+        std::size_t completed = 0;
+        std::size_t failed = 0;
+        for (std::size_t index = 0;
+             index < queue.size();
+             ++index) {
+            {
+                std::lock_guard<std::mutex> lock(
+                    shellState->exportMutex);
+                if (shellState->exportCancelRequested ||
+                    shellState->exportStopRequested) {
+                    summary.cancelled = true;
+                    summary.success = false;
+                    break;
+                }
+                shellState->exportQueueCurrent = index + 1;
+                shellState->exportQueueLabel =
+                    queue[index].label;
+            }
+            const jcut::render::RenderResultCore result =
+                jcut::standalone_render::exportTimelineToFile(
+                    jcut::standalone_render::ExportRenderRequest{
+                        queue[index].document,
+                        rootDirectory,
+                        0,
+                        0,
+                        decoderPolicy},
+                    [shellState](
+                        const jcut::render::RenderProgressCore&
+                            progress) {
+                        std::lock_guard<std::mutex> lock(
+                            shellState->exportMutex);
+                        shellState->exportProgress = progress;
+                        shellState->exportHasProgress = true;
+                        return !shellState->
+                                    exportCancelRequested &&
+                            !shellState->exportStopRequested;
+                    });
+            summary.framesRendered +=
+                result.framesRendered;
+            summary.elapsedMs += result.elapsedMs;
+            summary.encoderLabel = result.encoderLabel;
+            summary.usedGpu =
+                summary.usedGpu || result.usedGpu;
+            summary.usedHardwareEncode =
+                summary.usedHardwareEncode ||
+                result.usedHardwareEncode;
+            if (result.success) {
+                ++completed;
+            } else {
+                ++failed;
+                summary.success = false;
+                if (result.cancelled) {
+                    summary.cancelled = true;
+                }
+                if (!result.message.empty()) {
+                    summary.message = result.message;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(
+                    shellState->exportMutex);
+                shellState->exportResult = result;
+                shellState->exportQueueCompleted = completed;
+                shellState->exportQueueFailed = failed;
+            }
+            if (result.cancelled) break;
+        }
+        if (summary.cancelled) {
+            summary.message = "export batch cancelled after " +
+                std::to_string(completed) + " completed";
+        } else if (failed > 0) {
+            summary.message = "export batch finished: " +
+                std::to_string(completed) + " completed, " +
+                std::to_string(failed) + " failed";
+        } else if (queue.size() > 1) {
+            summary.message = "export batch completed: " +
+                std::to_string(completed) + " files";
+        } else if (summary.message.empty()) {
+            summary.message = "export completed";
+        }
 
         {
             std::lock_guard<std::mutex> lock(shellState->exportMutex);
-            shellState->exportResult = result;
+            shellState->exportResult = summary;
             shellState->exportRunning = false;
             shellState->exportCompletedGeneration = generation;
         }
@@ -2410,55 +3753,35 @@ TimelineSnapResult snapTimelineMoveStart(const jcut::EditorDocumentCore& snapsho
                                          int anchorClipId,
                                          int proposedStartFrame)
 {
-    const auto anchorIt = std::find_if(
-        snapshot.clips.begin(), snapshot.clips.end(),
-        [&](const jcut::EditorClip& clip) { return clip.id == anchorClipId; });
-    if (anchorIt == snapshot.clips.end()) {
-        return {std::max(0, proposedStartFrame), -1};
-    }
-
-    const std::int64_t proposedStart = std::max(0, proposedStartFrame);
-    const std::int64_t proposedEnd = proposedStart + anchorIt->durationFrames;
-    const std::int64_t threshold = timelineSnapThresholdFrames();
-    std::int64_t bestStart = proposedStart;
-    std::int64_t bestBoundary = -1;
-    std::int64_t bestDistance = threshold + 1;
-    auto consider = [&](std::int64_t boundary) {
-        const std::int64_t startDistance = boundary >= proposedStart
-            ? boundary - proposedStart
-            : proposedStart - boundary;
-        if (startDistance <= threshold && startDistance < bestDistance) {
-            bestDistance = startDistance;
-            bestStart = boundary;
-            bestBoundary = boundary;
-        }
-        const std::int64_t endDistance = boundary >= proposedEnd
-            ? boundary - proposedEnd
-            : proposedEnd - boundary;
-        if (endDistance <= threshold && endDistance < bestDistance) {
-            bestDistance = endDistance;
-            bestStart = std::max<std::int64_t>(0, boundary - anchorIt->durationFrames);
-            bestBoundary = boundary;
-        }
-    };
-
-    consider(0);
+    std::vector<jcut::timeline::SnapClip> clips;
+    clips.reserve(snapshot.clips.size());
     for (const jcut::EditorClip& clip : snapshot.clips) {
-        // All selected clips move as one aggregate. Their internal boundaries
-        // must not attract the group back toward its previous position.
-        if (clip.selected) {
+        if (jcut::canonicalEditorClipRole(clip.clipRole) ==
+            "mask_matte") {
             continue;
         }
-        consider(clip.startFrame);
-        consider(static_cast<std::int64_t>(clip.startFrame) + clip.durationFrames);
+        clips.push_back({
+            clip.id,
+            clip.startFrame,
+            clip.durationFrames,
+            clip.selected});
     }
-
+    const jcut::timeline::GroupMoveSnap result =
+        jcut::timeline::snapSelectedGroupMove(
+            clips,
+            anchorClipId,
+            proposedStartFrame,
+            timelineSnapThresholdFrames());
     return {
         static_cast<int>(std::clamp<std::int64_t>(
-            bestStart, 0, std::numeric_limits<int>::max())),
-        bestDistance <= threshold
+            result.anchorStartFrame,
+            0,
+            std::numeric_limits<int>::max())),
+        result.boundaryFrame >= 0
             ? static_cast<int>(std::clamp<std::int64_t>(
-                  bestBoundary, 0, std::numeric_limits<int>::max()))
+                  result.boundaryFrame,
+                  0,
+                  std::numeric_limits<int>::max()))
             : -1};
 }
 
@@ -2780,6 +4103,15 @@ struct X11Platform {
 };
 
 struct VulkanShell {
+    struct AuxiliaryTexture {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        jcut::core::SizeI size{};
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+    };
+
     X11Platform* platform = nullptr;
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -2801,9 +4133,19 @@ struct VulkanShell {
     jcut::imgui::VulkanFrameImporter previewHandoff;
     bool previewHandoffInitialized = false;
     std::string previewHandoffStatus;
+    jcut::vulkan_import::VulkanHardwareFrameImportCore
+        hardwareFrameHandoff;
+    bool hardwareFrameHandoffInitialized = false;
+    std::string hardwareFrameHandoffStatus;
     VkDescriptorSet previewTextureSet = VK_NULL_HANDLE;
     VkImageView boundPreviewView = VK_NULL_HANDLE;
     VkImageLayout boundPreviewLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    AuxiliaryTexture birefnetLivePreviewTexture;
+    AuxiliaryTexture mediaThumbnailTexture;
+    AuxiliaryTexture aiProfileAvatarTexture;
+    AuxiliaryTexture faceReferenceTexture;
+    AuxiliaryTexture sectionAvatarTexture;
+    AuxiliaryTexture previewOverlayTexture;
 
     bool queueSupportsPresent(VkPhysicalDevice candidate, uint32_t family) const
     {
@@ -3175,9 +4517,10 @@ struct VulkanShell {
         return true;
     }
 
-    void transitionPreviewImage(VkCommandBuffer commandBuffer,
-                                VkImageLayout oldLayout,
-                                VkImageLayout newLayout)
+    void transitionImage(VkCommandBuffer commandBuffer,
+                         VkImage image,
+                         VkImageLayout oldLayout,
+                         VkImageLayout newLayout)
     {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -3185,7 +4528,7 @@ struct VulkanShell {
         barrier.newLayout = newLayout;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = previewImage;
+        barrier.image = image;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
@@ -3218,6 +4561,14 @@ struct VulkanShell {
                              nullptr,
                              1,
                              &barrier);
+    }
+
+    void transitionPreviewImage(VkCommandBuffer commandBuffer,
+                                VkImageLayout oldLayout,
+                                VkImageLayout newLayout)
+    {
+        transitionImage(
+            commandBuffer, previewImage, oldLayout, newLayout);
     }
 
     void releasePreviewTextureResources()
@@ -3355,6 +4706,238 @@ struct VulkanShell {
         return previewTextureSet != VK_NULL_HANDLE;
     }
 
+    void releaseAuxiliaryTexture(AuxiliaryTexture* texture)
+    {
+        if (!texture || device == VK_NULL_HANDLE) return;
+        if (texture->descriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(texture->descriptor);
+            texture->descriptor = VK_NULL_HANDLE;
+        }
+        if (texture->view != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, texture->view, nullptr);
+            texture->view = VK_NULL_HANDLE;
+        }
+        if (texture->image != VK_NULL_HANDLE) {
+            vkDestroyImage(device, texture->image, nullptr);
+            texture->image = VK_NULL_HANDLE;
+        }
+        if (texture->memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, texture->memory, nullptr);
+            texture->memory = VK_NULL_HANDLE;
+        }
+        texture->size = {};
+        texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    bool createAuxiliaryTexture(
+        AuxiliaryTexture* texture,
+        const jcut::core::SizeI& size,
+        std::string* error)
+    {
+        if (!texture || !size.valid()) {
+            if (error) *error = "Invalid auxiliary texture size.";
+            return false;
+        }
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent = {
+            static_cast<uint32_t>(size.width),
+            static_cast<uint32_t>(size.height),
+            1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage =
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(
+                device, &imageInfo, nullptr,
+                &texture->image) != VK_SUCCESS) {
+            if (error) *error =
+                "Failed to create Vulkan auxiliary image.";
+            return false;
+        }
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(
+            device, texture->image, &requirements);
+        const uint32_t memoryType = findMemoryType(
+            requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX) {
+            if (error) *error =
+                "No suitable memory type for Vulkan auxiliary image.";
+            releaseAuxiliaryTexture(texture);
+            return false;
+        }
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(
+                device, &allocInfo, nullptr,
+                &texture->memory) != VK_SUCCESS) {
+            if (error) *error =
+                "Failed to allocate Vulkan auxiliary image memory.";
+            releaseAuxiliaryTexture(texture);
+            return false;
+        }
+        if (vkBindImageMemory(
+                device, texture->image, texture->memory, 0) !=
+            VK_SUCCESS) {
+            if (error) *error =
+                "Failed to bind Vulkan auxiliary image memory.";
+            releaseAuxiliaryTexture(texture);
+            return false;
+        }
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType =
+            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = texture->image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(
+                device, &viewInfo, nullptr,
+                &texture->view) != VK_SUCCESS) {
+            if (error) *error =
+                "Failed to create Vulkan auxiliary image view.";
+            releaseAuxiliaryTexture(texture);
+            return false;
+        }
+        texture->size = size;
+        texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        return true;
+    }
+
+    bool uploadAuxiliaryImage(
+        const jcut::core::ImageBuffer& image,
+        AuxiliaryTexture* texture,
+        ImTextureID* textureOut,
+        std::string* error)
+    {
+        if (!texture || image.empty() ||
+            image.format != jcut::core::PixelFormat::Rgba8) {
+            if (error) *error = "Invalid CPU auxiliary image.";
+            return false;
+        }
+        const VkDeviceSize byteCount =
+            static_cast<VkDeviceSize>(image.size.width) *
+            static_cast<VkDeviceSize>(image.size.height) * 4;
+        std::vector<std::uint8_t> packed;
+        const std::uint8_t* uploadBytes = image.bytes.data();
+        if (image.strideBytes != image.size.width * 4) {
+            packed.resize(static_cast<std::size_t>(byteCount));
+            for (int y = 0; y < image.size.height; ++y) {
+                std::memcpy(
+                    packed.data() +
+                        static_cast<std::size_t>(
+                            y * image.size.width * 4),
+                    image.bytes.data() +
+                        static_cast<std::size_t>(
+                            y * image.strideBytes),
+                    static_cast<std::size_t>(
+                        image.size.width * 4));
+            }
+            uploadBytes = packed.data();
+        }
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        if (!createBuffer(
+                byteCount,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &stagingBuffer,
+                &stagingMemory,
+                error)) {
+            return false;
+        }
+        const auto releaseStaging = [&]() {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            vkFreeMemory(device, stagingMemory, nullptr);
+        };
+        void* mapped = nullptr;
+        if (vkMapMemory(
+                device, stagingMemory, 0, byteCount, 0,
+                &mapped) != VK_SUCCESS ||
+            !mapped) {
+            if (error) *error =
+                "Failed to map Vulkan auxiliary upload memory.";
+            releaseStaging();
+            return false;
+        }
+        std::memcpy(
+            mapped, uploadBytes,
+            static_cast<std::size_t>(byteCount));
+        vkUnmapMemory(device, stagingMemory);
+        if (texture->image == VK_NULL_HANDLE ||
+            texture->size.width != image.size.width ||
+            texture->size.height != image.size.height) {
+            vkDeviceWaitIdle(device);
+            releaseAuxiliaryTexture(texture);
+            if (!createAuxiliaryTexture(
+                    texture, image.size, error)) {
+                releaseStaging();
+                return false;
+            }
+        }
+        VkCommandBuffer commands = beginUploadCommands(error);
+        if (commands == VK_NULL_HANDLE) {
+            releaseStaging();
+            return false;
+        }
+        transitionImage(
+            commands,
+            texture->image,
+            texture->layout,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy copyRegion{};
+        copyRegion.imageSubresource.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageExtent = {
+            static_cast<uint32_t>(image.size.width),
+            static_cast<uint32_t>(image.size.height),
+            1};
+        vkCmdCopyBufferToImage(
+            commands,
+            stagingBuffer,
+            texture->image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &copyRegion);
+        transitionImage(
+            commands,
+            texture->image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const bool submitted =
+            endUploadCommands(commands, error);
+        releaseStaging();
+        if (!submitted) return false;
+        texture->layout =
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (texture->descriptor == VK_NULL_HANDLE) {
+            texture->descriptor = ImGui_ImplVulkan_AddTexture(
+                previewSampler,
+                texture->view,
+                texture->layout);
+        }
+        if (textureOut) {
+            *textureOut = reinterpret_cast<ImTextureID>(
+                texture->descriptor);
+        }
+        return texture->descriptor != VK_NULL_HANDLE;
+    }
+
     bool setupSwapchain(int width, int height, std::string* error)
     {
         windowData.Surface = surface;
@@ -3446,6 +5029,21 @@ struct VulkanShell {
             : (handoffError.empty()
                 ? std::string("Vulkan external frame import unavailable")
                 : handoffError);
+        handoffError.clear();
+        hardwareFrameHandoffInitialized =
+            hardwareFrameHandoff.initialize(
+                physicalDevice,
+                device,
+                queue,
+                queueFamily,
+                JCUT_VULKAN_SHADER_DIR,
+                &handoffError);
+        hardwareFrameHandoffStatus =
+            hardwareFrameHandoffInitialized
+            ? std::string("ready")
+            : (handoffError.empty()
+                ? std::string("decoded hardware-frame import unavailable")
+                : handoffError);
         return true;
     }
 
@@ -3486,6 +5084,80 @@ struct VulkanShell {
         }
         if (textureOut) {
             *textureOut = reinterpret_cast<ImTextureID>(previewTextureSet);
+        }
+        return previewTextureSet != VK_NULL_HANDLE;
+    }
+
+    bool bindHardwarePreviewFrame(
+        const jcut::core::FramePayloadCore& frame,
+        const jcut::EditorGradingKeyframe& grade,
+        ImTextureID* textureOut,
+        std::string* error)
+    {
+        if (!hardwareFrameHandoffInitialized) {
+            if (error) {
+                *error = hardwareFrameHandoffStatus.empty()
+                    ? "decoded hardware-frame import unavailable"
+                    : hardwareFrameHandoffStatus;
+            }
+            return false;
+        }
+        jcut::vulkan_import::HardwareFrameColorGradeCore hardwareGrade;
+        hardwareGrade.brightness = static_cast<float>(grade.brightness);
+        hardwareGrade.contrast = static_cast<float>(grade.contrast);
+        hardwareGrade.saturation = static_cast<float>(grade.saturation);
+        hardwareGrade.shadowsR = static_cast<float>(grade.shadowsR);
+        hardwareGrade.shadowsG = static_cast<float>(grade.shadowsG);
+        hardwareGrade.shadowsB = static_cast<float>(grade.shadowsB);
+        hardwareGrade.midtonesR = static_cast<float>(grade.midtonesR);
+        hardwareGrade.midtonesG = static_cast<float>(grade.midtonesG);
+        hardwareGrade.midtonesB = static_cast<float>(grade.midtonesB);
+        hardwareGrade.highlightsR =
+            static_cast<float>(grade.highlightsR);
+        hardwareGrade.highlightsG =
+            static_cast<float>(grade.highlightsG);
+        hardwareGrade.highlightsB =
+            static_cast<float>(grade.highlightsB);
+        hardwareGrade.curvesEnabled =
+            !jcut::editorGradingCurveIsIdentity(grade.curvePointsR) ||
+            !jcut::editorGradingCurveIsIdentity(grade.curvePointsG) ||
+            !jcut::editorGradingCurveIsIdentity(grade.curvePointsB) ||
+            !jcut::editorGradingCurveIsIdentity(grade.curvePointsLuma);
+        if (hardwareGrade.curvesEnabled) {
+            hardwareGrade.curveLut =
+                jcut::editorPackedGradingCurveLut(grade);
+        }
+        if (!hardwareFrameHandoff.importFrame(
+                frame, hardwareGrade, error)) {
+            return false;
+        }
+        const jcut::vulkan_import::ExternalImage external =
+            hardwareFrameHandoff.externalImage();
+        if (external.imageView == VK_NULL_HANDLE ||
+            !external.size.valid()) {
+            if (error) {
+                *error =
+                    "decoded hardware-frame Vulkan image is unavailable";
+            }
+            return false;
+        }
+        if (previewTextureSet == VK_NULL_HANDLE ||
+            boundPreviewView != external.imageView ||
+            boundPreviewLayout != external.imageLayout) {
+            if (previewTextureSet != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(previewTextureSet);
+                previewTextureSet = VK_NULL_HANDLE;
+            }
+            previewTextureSet = ImGui_ImplVulkan_AddTexture(
+                previewSampler,
+                external.imageView,
+                external.imageLayout);
+            boundPreviewView = external.imageView;
+            boundPreviewLayout = external.imageLayout;
+        }
+        if (textureOut) {
+            *textureOut =
+                reinterpret_cast<ImTextureID>(previewTextureSet);
         }
         return previewTextureSet != VK_NULL_HANDLE;
     }
@@ -3599,7 +5271,21 @@ struct VulkanShell {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
         }
+        releaseAuxiliaryTexture(
+            &birefnetLivePreviewTexture);
+        releaseAuxiliaryTexture(
+            &mediaThumbnailTexture);
+        releaseAuxiliaryTexture(
+            &aiProfileAvatarTexture);
+        releaseAuxiliaryTexture(
+            &faceReferenceTexture);
+        releaseAuxiliaryTexture(
+            &sectionAvatarTexture);
+        releaseAuxiliaryTexture(
+            &previewOverlayTexture);
         releasePreviewTextureResources();
+        hardwareFrameHandoff.release();
+        hardwareFrameHandoffInitialized = false;
         previewHandoff.release();
         previewHandoffInitialized = false;
         ImGui_ImplVulkan_Shutdown();
@@ -3668,8 +5354,32 @@ void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
                 requestCpuFallbackFrame = true;
             }
         }
+    } else if (vulkanShell && previewResult.hardwareFrame) {
+        ImTextureID texture = 0;
+        std::string error;
+        if (vulkanShell->bindHardwarePreviewFrame(
+                *previewResult.hardwareFrame,
+                previewResult.hardwarePresentationGrade,
+                &texture,
+                &error)) {
+            shellState->previewTextureId = texture;
+            uploadedTexture = true;
+            usedZeroCopy = true;
+            zeroCopyAvailable = true;
+        } else {
+            zeroCopyAvailable = false;
+            zeroCopyFailureReason = error.empty()
+                ? "decoded hardware-frame Vulkan handoff failed"
+                : error;
+            if (previewResult.image.empty()) {
+                requestCpuFallbackFrame = true;
+            }
+        }
     } else if (!previewResult.vulkanFrame.valid) {
         zeroCopyFailureReason = "preview renderer did not return a Vulkan frame";
+        if (previewResult.image.empty()) {
+            requestCpuFallbackFrame = true;
+        }
     }
 
     if (!usedZeroCopy && vulkanShell && !previewResult.image.empty()) {
@@ -3685,10 +5395,59 @@ void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
             }
         }
     }
+    shellState->previewOverlayTextureId = 0;
+    shellState->previewOverlaySize = {};
+    shellState->previewOverlayX = 0;
+    shellState->previewOverlayY = 0;
+    if (usedZeroCopy &&
+        vulkanShell &&
+        !previewResult.hardwareOverlayImage.empty()) {
+        ImTextureID overlayTexture = 0;
+        std::string overlayError;
+        if (vulkanShell->uploadAuxiliaryImage(
+                previewResult.hardwareOverlayImage,
+                &vulkanShell->previewOverlayTexture,
+                &overlayTexture,
+                &overlayError)) {
+            shellState->previewOverlayTextureId =
+                overlayTexture;
+            shellState->previewOverlaySize =
+                previewResult.hardwareOverlayImage.size;
+            shellState->previewOverlayX =
+                previewResult.hardwareOverlayX;
+            shellState->previewOverlayY =
+                previewResult.hardwareOverlayY;
+        } else {
+            requestCpuFallbackFrame = true;
+            usedZeroCopy = false;
+            zeroCopyAvailable = false;
+            uploadedTexture = false;
+            zeroCopyFailureReason =
+                overlayError.empty()
+                ? "Vulkan transcript overlay upload failed"
+                : std::move(overlayError);
+        }
+    }
 
     if (!uploadedTexture) {
         shellState->previewTextureId = 0;
     }
+    shellState->previewHardwarePresentationTransformValid =
+        usedZeroCopy &&
+        static_cast<bool>(previewResult.hardwareFrame) &&
+        previewResult.hardwarePresentationTransformValid;
+    shellState->previewHardwarePresentationTransform =
+        previewResult.hardwarePresentationTransform;
+    shellState->previewHardwarePresentationOpacity =
+        std::clamp(
+            previewResult.hardwarePresentationOpacity,
+            0.0,
+            1.0);
+    shellState->previewHardwareSourceSize =
+        shellState->previewHardwarePresentationTransformValid &&
+            previewResult.hardwareFrame
+        ? previewResult.hardwareFrame->size()
+        : jcut::core::SizeI{};
 
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -3707,6 +5466,591 @@ void uploadPreviewTexture(ShellState* shellState, VulkanShell* vulkanShell)
         requestPreviewRender(shellState);
     }
 }
+
+void refreshBiRefNetLivePreviewTexture(
+    ShellState* shellState,
+    VulkanShell* vulkanShell)
+{
+    if (!shellState || !vulkanShell) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now <
+        shellState->nextBiRefNetLivePreviewRefresh) {
+        return;
+    }
+    shellState->nextBiRefNetLivePreviewRefresh =
+        now + std::chrono::milliseconds(250);
+    const jcut::jobs::BiRefNetJobSnapshotCore snapshot =
+        shellState->birefnetJob.snapshot();
+    if (snapshot.livePreviewPath.empty()) return;
+    const fs::path previewPath(snapshot.livePreviewPath);
+    std::error_code error;
+    if (!fs::is_regular_file(previewPath, error) || error) {
+        return;
+    }
+    error.clear();
+    const std::uintmax_t fileSize =
+        fs::file_size(previewPath, error);
+    if (error || fileSize == 0) return;
+    error.clear();
+    const fs::file_time_type modified =
+        fs::last_write_time(previewPath, error);
+    if (error) return;
+    if (shellState->birefnetLivePreviewHasStamp &&
+        shellState->birefnetLivePreviewLoadedPath ==
+            snapshot.livePreviewPath &&
+        shellState->birefnetLivePreviewLoadedSize ==
+            fileSize &&
+        shellState->birefnetLivePreviewLoadedTime ==
+            modified) {
+        return;
+    }
+    jcut::core::SizeI decodeSize{640, 360};
+    const jcut::standalone_render::StandaloneMediaInfo info =
+        jcut::standalone_render::probeStandaloneMedia(
+            snapshot.livePreviewPath);
+    if (info.frameSize.valid()) {
+        const double scale = std::min(
+            1.0,
+            std::min(
+                1280.0 /
+                    static_cast<double>(
+                        info.frameSize.width),
+                720.0 /
+                    static_cast<double>(
+                        info.frameSize.height)));
+        decodeSize = {
+            std::max(
+                1,
+                static_cast<int>(std::lround(
+                    info.frameSize.width * scale))),
+            std::max(
+                1,
+                static_cast<int>(std::lround(
+                    info.frameSize.height * scale)))};
+    }
+    jcut::DecoderPolicySettingsCore policy =
+        shellState->previewDecoderPolicy;
+    policy.decodePreference =
+        jcut::DecodePreferenceCore::Software;
+    const auto decoded =
+        jcut::standalone_render::decodeStandaloneMediaFrame(
+            snapshot.livePreviewPath,
+            0,
+            decodeSize,
+            policy);
+    if (!decoded.success || decoded.image.empty()) {
+        shellState->birefnetLivePreviewError =
+            decoded.message.empty()
+            ? "BiRefNet live preview is not yet readable"
+            : decoded.message;
+        return;
+    }
+    ImTextureID texture = 0;
+    std::string uploadError;
+    if (!vulkanShell->uploadAuxiliaryImage(
+            decoded.image,
+            &vulkanShell->birefnetLivePreviewTexture,
+            &texture,
+            &uploadError)) {
+        shellState->birefnetLivePreviewError =
+            uploadError.empty()
+            ? "BiRefNet live preview upload failed"
+            : std::move(uploadError);
+        return;
+    }
+    shellState->birefnetLivePreviewTextureId = texture;
+    shellState->birefnetLivePreviewSize =
+        decoded.image.size;
+    shellState->birefnetLivePreviewLoadedPath =
+        snapshot.livePreviewPath;
+    shellState->birefnetLivePreviewLoadedSize = fileSize;
+    shellState->birefnetLivePreviewLoadedTime = modified;
+    shellState->birefnetLivePreviewHasStamp = true;
+    shellState->birefnetLivePreviewError.clear();
+}
+
+void refreshMediaThumbnailTexture(
+    ShellState* shellState,
+    VulkanShell* vulkanShell)
+{
+    if (!shellState || !vulkanShell) return;
+    if (shellState->mediaThumbnailRunning &&
+        shellState->mediaThumbnailFuture.valid() &&
+        shellState->mediaThumbnailFuture.wait_for(
+            std::chrono::seconds(0)) == std::future_status::ready) {
+        const auto decoded =
+            shellState->mediaThumbnailFuture.get();
+        shellState->mediaThumbnailRunning = false;
+        if (!decoded.success || decoded.image.empty()) {
+            shellState->mediaThumbnailError =
+                decoded.message.empty()
+                    ? "Media thumbnail could not be decoded."
+                    : decoded.message;
+        } else {
+            ImTextureID texture = 0;
+            std::string uploadError;
+            if (vulkanShell->uploadAuxiliaryImage(
+                    decoded.image,
+                    &vulkanShell->mediaThumbnailTexture,
+                    &texture,
+                    &uploadError)) {
+                shellState->mediaThumbnailTextureId = texture;
+                shellState->mediaThumbnailSize =
+                    decoded.image.size;
+                shellState->mediaThumbnailLoadedPath =
+                    shellState->mediaThumbnailPendingPath;
+                shellState->mediaThumbnailError.clear();
+            } else {
+                shellState->mediaThumbnailError =
+                    uploadError.empty()
+                        ? "Media thumbnail upload failed."
+                        : std::move(uploadError);
+            }
+        }
+    }
+
+    const std::string requestedPath =
+        !shellState->mediaHoveredPath.empty()
+            ? shellState->mediaHoveredPath
+            : shellState->mediaSelectedPath;
+    if (shellState->mediaThumbnailRunning ||
+        requestedPath.empty() ||
+        requestedPath == shellState->mediaThumbnailLoadedPath ||
+        requestedPath == shellState->mediaThumbnailPendingPath ||
+        !isImportableMediaPath(requestedPath)) {
+        return;
+    }
+    shellState->mediaThumbnailPendingPath = requestedPath;
+    shellState->mediaThumbnailRunning = true;
+    shellState->mediaThumbnailError.clear();
+    jcut::DecoderPolicySettingsCore policy =
+        shellState->previewDecoderPolicy;
+    policy.decodePreference = jcut::DecodePreferenceCore::Software;
+    shellState->mediaThumbnailFuture = std::async(
+        std::launch::async,
+        [requestedPath, policy]() {
+            jcut::core::SizeI decodeSize{480, 270};
+            const auto info =
+                jcut::standalone_render::probeStandaloneMedia(
+                    requestedPath);
+            if (info.frameSize.valid()) {
+                const double scale = std::min(
+                    1.0,
+                    std::min(
+                        480.0 /
+                            static_cast<double>(
+                                info.frameSize.width),
+                        270.0 /
+                            static_cast<double>(
+                                info.frameSize.height)));
+                decodeSize = {
+                    std::max(
+                        1,
+                        static_cast<int>(std::lround(
+                            info.frameSize.width * scale))),
+                    std::max(
+                        1,
+                        static_cast<int>(std::lround(
+                            info.frameSize.height * scale)))};
+            }
+            return jcut::standalone_render::
+                decodeStandaloneMediaFrame(
+                    requestedPath, 0, decodeSize, policy);
+        });
+}
+
+void refreshAiProfileAvatarTexture(
+    ShellState* shellState,
+    VulkanShell* vulkanShell)
+{
+    if (!shellState || !vulkanShell) return;
+    const jcut::ai::AccessTokenProfileCore profile =
+        jcut::ai::parseAccessTokenProfileCore(
+            shellState->aiSessionToken);
+    const std::string desiredUrl = profile.avatarUrl;
+
+    if (!shellState->aiAvatarLoadedUrl.empty() &&
+        shellState->aiAvatarLoadedUrl != desiredUrl) {
+        vulkanShell->releaseAuxiliaryTexture(
+            &vulkanShell->aiProfileAvatarTexture);
+        shellState->aiAvatarTextureId = 0;
+        shellState->aiAvatarSize = {};
+        shellState->aiAvatarLoadedUrl.clear();
+        if (!shellState->aiAvatarCachePath.empty()) {
+            std::error_code ignored;
+            fs::remove(shellState->aiAvatarCachePath, ignored);
+            shellState->aiAvatarCachePath.clear();
+        }
+    }
+
+    if (shellState->aiAvatarRunning &&
+        shellState->aiAvatarFuture.valid() &&
+        shellState->aiAvatarFuture.wait_for(
+            std::chrono::seconds(0)) ==
+            std::future_status::ready) {
+        jcut::ai::RemoteImageCore downloaded =
+            shellState->aiAvatarFuture.get();
+        shellState->aiAvatarRunning = false;
+        if (downloaded.url == desiredUrl && downloaded.ok) {
+            const fs::path cachePath =
+                fs::temp_directory_path() /
+                ("jcut-imgui-avatar-" +
+                 std::to_string(
+                     static_cast<unsigned long long>(::getpid())) +
+                 "-" +
+                 std::to_string(
+                     std::hash<std::string>{}(downloaded.url)) +
+                 ".image");
+            const fs::path partialPath =
+                cachePath.string() + ".part";
+            std::ofstream output(
+                partialPath,
+                std::ios::binary | std::ios::trunc);
+            output.write(
+                reinterpret_cast<const char*>(
+                    downloaded.bytes.data()),
+                static_cast<std::streamsize>(
+                    downloaded.bytes.size()));
+            output.close();
+            std::error_code fileError;
+            if (!output || !fs::exists(partialPath, fileError)) {
+                shellState->aiAvatarError =
+                    "Profile avatar cache write failed.";
+                fs::remove(partialPath, fileError);
+            } else {
+                fs::rename(partialPath, cachePath, fileError);
+                if (fileError) {
+                    shellState->aiAvatarError =
+                        "Profile avatar cache commit failed: " +
+                        fileError.message();
+                    fs::remove(partialPath, fileError);
+                } else {
+                    jcut::DecoderPolicySettingsCore policy =
+                        shellState->previewDecoderPolicy;
+                    policy.decodePreference =
+                        jcut::DecodePreferenceCore::Software;
+                    const auto decoded =
+                        jcut::standalone_render::
+                            decodeStandaloneMediaFrame(
+                                cachePath.string(),
+                                0,
+                                {96, 96},
+                                policy);
+                    if (!decoded.success ||
+                        decoded.image.empty()) {
+                        shellState->aiAvatarError =
+                            decoded.message.empty()
+                            ? "Profile avatar image could not be decoded."
+                            : decoded.message;
+                        fs::remove(cachePath, fileError);
+                    } else {
+                        ImTextureID texture = 0;
+                        std::string uploadError;
+                        if (vulkanShell->uploadAuxiliaryImage(
+                                decoded.image,
+                                &vulkanShell->
+                                    aiProfileAvatarTexture,
+                                &texture,
+                                &uploadError)) {
+                            shellState->aiAvatarTextureId =
+                                texture;
+                            shellState->aiAvatarSize =
+                                decoded.image.size;
+                            shellState->aiAvatarLoadedUrl =
+                                downloaded.url;
+                            shellState->aiAvatarCachePath =
+                                cachePath.string();
+                            shellState->aiAvatarError.clear();
+                        } else {
+                            shellState->aiAvatarError =
+                                uploadError.empty()
+                                ? "Profile avatar upload failed."
+                                : std::move(uploadError);
+                            fs::remove(cachePath, fileError);
+                        }
+                    }
+                }
+            }
+        } else if (downloaded.url == desiredUrl) {
+            shellState->aiAvatarError =
+                downloaded.error.message.empty()
+                ? "Profile avatar download failed."
+                : downloaded.error.message;
+        }
+    }
+
+    if (desiredUrl.empty()) {
+        if (!shellState->aiAvatarRunning) {
+            shellState->aiAvatarRequestedUrl.clear();
+            shellState->aiAvatarError.clear();
+        }
+        return;
+    }
+    if (shellState->aiAvatarRunning ||
+        shellState->aiAvatarLoadedUrl == desiredUrl ||
+        shellState->aiAvatarRequestedUrl == desiredUrl) {
+        return;
+    }
+    shellState->aiAvatarRequestedUrl = desiredUrl;
+    shellState->aiAvatarError.clear();
+    shellState->aiAvatarRunning = true;
+    shellState->aiAvatarFuture = std::async(
+        std::launch::async,
+        [desiredUrl]() {
+            return jcut::ai::downloadRemoteImageCore(
+                desiredUrl, 10000, 4u * 1024u * 1024u);
+        });
+}
+
+jcut::standalone_render::StandaloneDecodedFrameResult
+decodeFaceAvatarStrip(
+    const std::string& sourcePath,
+    const std::vector<jcut::FaceContinuityTrackCore>& tracks,
+    jcut::DecoderPolicySettingsCore policy,
+    int avatarSize,
+    int gapPixels)
+{
+    jcut::standalone_render::StandaloneDecodedFrameResult result;
+    if (sourcePath.empty() || tracks.empty()) {
+        result.message = "Face reference source or tracks are empty.";
+        return result;
+    }
+    policy.decodePreference = jcut::DecodePreferenceCore::Software;
+    jcut::core::SizeI decodeSize{1280, 720};
+    const auto info =
+        jcut::standalone_render::probeStandaloneMedia(sourcePath);
+    if (info.frameSize.valid()) {
+        const double scale = std::min(
+            1.0,
+            std::min(
+                1280.0 / info.frameSize.width,
+                720.0 / info.frameSize.height));
+        decodeSize = {
+            std::max(
+                1,
+                static_cast<int>(std::lround(
+                    info.frameSize.width * scale))),
+            std::max(
+                1,
+                static_cast<int>(std::lround(
+                    info.frameSize.height * scale)))};
+    }
+    std::vector<jcut::core::ImageBuffer> avatars;
+    avatars.reserve(tracks.size());
+    for (const auto& track : tracks) {
+        auto decoded =
+            jcut::standalone_render::decodeStandaloneMediaFrame(
+                sourcePath,
+                static_cast<int>(
+                    std::clamp<std::int64_t>(
+                        track.firstFrame,
+                        0,
+                        std::numeric_limits<int>::max())),
+                decodeSize,
+                policy);
+        if (!decoded.success || decoded.image.empty()) {
+            result.message = decoded.message.empty()
+                ? "Face reference could not be decoded."
+                : decoded.message;
+            return result;
+        }
+        jcut::core::ImageBuffer avatar =
+            jcut::cropFaceAvatarImageCore(
+                decoded.image,
+                track.x,
+                track.y,
+                track.box,
+                avatarSize);
+        if (avatar.empty()) {
+            result.message = "Face reference crop is empty.";
+            return result;
+        }
+        avatars.push_back(std::move(avatar));
+    }
+    result.image =
+        jcut::faceAvatarStripImageCore(avatars, gapPixels);
+    result.success = !result.image.empty();
+    if (!result.success) {
+        result.message = "Face reference strip is empty.";
+    }
+    return result;
+}
+
+void refreshFaceReferenceTexture(
+    ShellState* shellState,
+    VulkanShell* vulkanShell)
+{
+    if (!shellState || !vulkanShell) return;
+    if (!shellState->faceReferenceLoadedKey.empty() &&
+        shellState->faceReferenceLoadedKey !=
+            shellState->faceReferenceDesiredKey) {
+        vulkanShell->releaseAuxiliaryTexture(
+            &vulkanShell->faceReferenceTexture);
+        shellState->faceReferenceTextureId = 0;
+        shellState->faceReferenceSize = {};
+        shellState->faceReferenceLoadedKey.clear();
+    }
+    if (shellState->faceReferenceRunning &&
+        shellState->faceReferenceFuture.valid() &&
+        shellState->faceReferenceFuture.wait_for(
+            std::chrono::seconds(0)) ==
+            std::future_status::ready) {
+        const auto decoded =
+            shellState->faceReferenceFuture.get();
+        shellState->faceReferenceRunning = false;
+        if (shellState->faceReferencePendingKey ==
+            shellState->faceReferenceDesiredKey) {
+            if (!decoded.success || decoded.image.empty()) {
+                shellState->faceReferenceError =
+                    decoded.message.empty()
+                    ? "Face reference could not be decoded."
+                    : decoded.message;
+            } else {
+                ImTextureID texture = 0;
+                std::string uploadError;
+                if (vulkanShell->uploadAuxiliaryImage(
+                        decoded.image,
+                        &vulkanShell->faceReferenceTexture,
+                        &texture,
+                        &uploadError)) {
+                    shellState->faceReferenceTextureId = texture;
+                    shellState->faceReferenceSize =
+                        decoded.image.size;
+                    shellState->faceReferenceLoadedKey =
+                        shellState->faceReferencePendingKey;
+                    shellState->faceReferenceError.clear();
+                } else {
+                    shellState->faceReferenceError =
+                        uploadError.empty()
+                        ? "Face reference upload failed."
+                        : std::move(uploadError);
+                }
+            }
+        }
+    }
+    if (shellState->faceReferenceDesiredKey.empty()) {
+        if (!shellState->faceReferenceRunning) {
+            shellState->faceReferencePendingKey.clear();
+            shellState->faceReferenceError.clear();
+        }
+        return;
+    }
+    if (shellState->faceReferenceRunning ||
+        shellState->faceReferenceLoadedKey ==
+            shellState->faceReferenceDesiredKey ||
+        shellState->faceReferencePendingKey ==
+            shellState->faceReferenceDesiredKey) {
+        return;
+    }
+    const std::string key =
+        shellState->faceReferenceDesiredKey;
+    const std::string sourcePath =
+        shellState->faceReferenceSourcePath;
+    const std::vector<jcut::FaceContinuityTrackCore> tracks =
+        shellState->faceReferenceTracks;
+    const jcut::DecoderPolicySettingsCore policy =
+        shellState->previewDecoderPolicy;
+    shellState->faceReferencePendingKey = key;
+    shellState->faceReferenceRunning = true;
+    shellState->faceReferenceError.clear();
+    shellState->faceReferenceFuture = std::async(
+        std::launch::async,
+        [sourcePath, tracks, policy]() {
+            return decodeFaceAvatarStrip(
+                sourcePath, tracks, policy, 160, 4);
+        });
+}
+
+void refreshSectionAvatarTexture(
+    ShellState* shellState,
+    VulkanShell* vulkanShell)
+{
+    if (!shellState || !vulkanShell) return;
+    if (!shellState->sectionAvatarLoadedKey.empty() &&
+        shellState->sectionAvatarLoadedKey !=
+            shellState->sectionAvatarDesiredKey) {
+        vulkanShell->releaseAuxiliaryTexture(
+            &vulkanShell->sectionAvatarTexture);
+        shellState->sectionAvatarTextureId = 0;
+        shellState->sectionAvatarSize = {};
+        shellState->sectionAvatarLoadedKey.clear();
+    }
+    if (shellState->sectionAvatarRunning &&
+        shellState->sectionAvatarFuture.valid() &&
+        shellState->sectionAvatarFuture.wait_for(
+            std::chrono::seconds(0)) ==
+            std::future_status::ready) {
+        const auto decoded =
+            shellState->sectionAvatarFuture.get();
+        shellState->sectionAvatarRunning = false;
+        if (shellState->sectionAvatarPendingKey ==
+            shellState->sectionAvatarDesiredKey) {
+            if (!decoded.success || decoded.image.empty()) {
+                shellState->sectionAvatarError =
+                    decoded.message.empty()
+                    ? "Section avatars could not be decoded."
+                    : decoded.message;
+            } else {
+                ImTextureID texture = 0;
+                std::string uploadError;
+                if (vulkanShell->uploadAuxiliaryImage(
+                        decoded.image,
+                        &vulkanShell->sectionAvatarTexture,
+                        &texture,
+                        &uploadError)) {
+                    shellState->sectionAvatarTextureId = texture;
+                    shellState->sectionAvatarSize =
+                        decoded.image.size;
+                    shellState->sectionAvatarLoadedKey =
+                        shellState->sectionAvatarPendingKey;
+                    shellState->sectionAvatarError.clear();
+                } else {
+                    shellState->sectionAvatarError =
+                        uploadError.empty()
+                        ? "Section avatar upload failed."
+                        : std::move(uploadError);
+                }
+            }
+        }
+    }
+    if (shellState->sectionAvatarDesiredKey.empty()) {
+        if (!shellState->sectionAvatarRunning) {
+            shellState->sectionAvatarPendingKey.clear();
+            shellState->sectionAvatarError.clear();
+        }
+        return;
+    }
+    if (shellState->sectionAvatarRunning ||
+        shellState->sectionAvatarLoadedKey ==
+            shellState->sectionAvatarDesiredKey ||
+        shellState->sectionAvatarPendingKey ==
+            shellState->sectionAvatarDesiredKey) {
+        return;
+    }
+    const std::string key =
+        shellState->sectionAvatarDesiredKey;
+    const std::string sourcePath =
+        shellState->sectionAvatarSourcePath;
+    const std::vector<jcut::FaceContinuityTrackCore> tracks =
+        shellState->sectionAvatarTracks;
+    const jcut::DecoderPolicySettingsCore policy =
+        shellState->previewDecoderPolicy;
+    shellState->sectionAvatarPendingKey = key;
+    shellState->sectionAvatarRunning = true;
+    shellState->sectionAvatarError.clear();
+    shellState->sectionAvatarFuture = std::async(
+        std::launch::async,
+        [sourcePath, tracks, policy]() {
+            return decodeFaceAvatarStrip(
+                sourcePath, tracks, policy, 80, 2);
+        });
+}
+
+void removeInspectorKeyframe(
+    ShellState* shellState,
+    int clipId,
+    jcut::EditorKeyframeChannel channel,
+    std::int64_t frame);
 
 void handleKeyboardShortcuts(ShellState* shellState,
                              const jcut::EditorDocumentCore& snapshot)
@@ -3772,14 +6116,16 @@ void handleKeyboardShortcuts(ShellState* shellState,
         applyCommand(shellState, jcut::DuplicateSelectedClipsCommand{});
     }
 
-    const jcut::EditorClip* currentClip = selectedClip(snapshot);
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_B)) {
-        if (currentClip) {
-            applyCommand(shellState, jcut::SplitClipCommand{
-                currentClip->id,
+        if (selectedClipsCanSplitAtFrame(
+                snapshot, snapshot.transport.currentFrame)) {
+            applyCommand(
+                shellState,
+                jcut::SplitSelectedClipsCommand{
                 snapshot.transport.currentFrame});
         } else {
-            shellState->statusMessage = "split unavailable: no clip selected";
+            shellState->statusMessage =
+                "split unavailable: no selected clip intersects playhead";
         }
     }
     if (ImGui::GetIO().KeyMods == ImGuiMod_None &&
@@ -3798,8 +6144,66 @@ void handleKeyboardShortcuts(ShellState* shellState,
         shellState->timelineToolMode = TimelineToolMode::Select;
         shellState->statusMessage = "select tool enabled";
     }
-    if (ImGui::IsKeyChordPressed(ImGuiKey_Delete)) {
-        deleteSelectedClips(shellState);
+    const bool deletePressed =
+        ImGui::IsKeyChordPressed(ImGuiKey_Delete);
+    const bool rowBackspacePressed =
+        ImGui::IsKeyChordPressed(ImGuiKey_Backspace);
+    if (deletePressed || rowBackspacePressed) {
+        InspectorDeleteTarget& target =
+            shellState->inspectorDeleteTarget;
+        const bool focusedInspectorTarget =
+            target.kind != InspectorDeleteTargetKind::None &&
+            target.documentGeneration == shellState->documentGeneration &&
+            target.focusedUiFrame + 1 == shellState->uiFrameCounter;
+        if (focusedInspectorTarget) {
+            if (target.kind ==
+                InspectorDeleteTargetKind::TitleKeyframe) {
+                applyCommand(
+                    shellState,
+                    jcut::RemoveTitleKeyframeCommand{
+                        target.clipId, target.frame});
+            } else if (
+                target.kind ==
+                InspectorDeleteTargetKind::SyncMarker) {
+                applyCommand(
+                    shellState,
+                    jcut::RemoveRenderSyncMarkerCommand{
+                        target.markerClipId,
+                        target.frame,
+                        target.markerSkipFrame});
+            } else if (
+                target.kind ==
+                InspectorDeleteTargetKind::TranscriptWord) {
+                const TranscriptInspectorCache& cache =
+                    shellState->transcriptCache;
+                if (cache.clipId == target.clipId &&
+                    cache.session.activeCutMutable &&
+                    cache.session.activePath ==
+                        target.transcriptPath &&
+                    cache.selectionDraftValid &&
+                    cache.selectedWord.segmentIndex ==
+                        target.transcriptSegmentIndex &&
+                    cache.selectedWord.wordIndex ==
+                        target.transcriptWordIndex) {
+                    shellState->transcriptDeletePopupRequested =
+                        true;
+                } else {
+                    shellState->statusMessage =
+                        "transcript delete canceled after selection change";
+                }
+            } else {
+                removeInspectorKeyframe(
+                    shellState,
+                    target.clipId,
+                    target.channel,
+                    target.frame);
+            }
+            target = {};
+        } else if (deletePressed) {
+            // Qt reserves unmodified Backspace for focused row/table removal;
+            // only Delete falls through to timeline clip deletion.
+            deleteSelectedClips(shellState);
+        }
     }
     if (repeatingShortcut(ImGuiKey_LeftArrow, ImGuiMod_Alt)) {
         applyCommand(shellState, jcut::NudgeSelectedClipCommand{-1});
@@ -3874,9 +6278,8 @@ void drawMenuBar(ShellState* shellState, const jcut::EditorDocumentCore& snapsho
     }
     const jcut::EditorClip* currentClip = selectedClip(snapshot);
     const std::size_t selectionCount = selectedClipCount(snapshot);
-    const bool canSplit = currentClip &&
-        snapshot.transport.currentFrame > currentClip->startFrame &&
-        snapshot.transport.currentFrame < currentClip->startFrame + currentClip->durationFrames;
+    const bool canSplit = selectedClipsCanSplitAtFrame(
+        snapshot, snapshot.transport.currentFrame);
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo)) {
             applyCommand(shellState, jcut::UndoCommand{});
@@ -3903,9 +6306,16 @@ void drawMenuBar(ShellState* shellState, const jcut::EditorDocumentCore& snapsho
             applyCommand(shellState, jcut::SelectAllClipsCommand{});
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Split At Playhead", "Ctrl+B", false, canSplit)) {
-            applyCommand(shellState, jcut::SplitClipCommand{
-                currentClip->id,
+        if (ImGui::MenuItem(
+                selectionCount > 1
+                    ? "Split Selected At Playhead"
+                    : "Split At Playhead",
+                "Ctrl+B",
+                false,
+                canSplit)) {
+            applyCommand(
+                shellState,
+                jcut::SplitSelectedClipsCommand{
                 snapshot.transport.currentFrame});
         }
         if (ImGui::MenuItem(selectionCount == 1
@@ -4143,6 +6553,35 @@ void drawMediaPanel(ShellState* shellState, const jcut::EditorDocumentCore& snap
                     if (!selectable) {
                         ImGui::EndDisabled();
                     }
+                    if (ImGui::BeginPopupContextItem(
+                            "FilesystemMediaContext")) {
+                        const fs::path desktopPath =
+                            isDir && !isSequence
+                                ? entryPath
+                                : entryPath.parent_path();
+                        if (ImGui::MenuItem(
+                                isDir && !isSequence
+                                    ? "Open Folder"
+                                    : "Open Containing Folder")) {
+                            std::string openError;
+                            if (openDesktopPath(
+                                    desktopPath, &openError)) {
+                                shellState->statusMessage =
+                                    "opened " + pathString(desktopPath);
+                            } else {
+                                shellState->statusMessage =
+                                    std::move(openError);
+                            }
+                        }
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Copy Absolute Path")) {
+                            ImGui::SetClipboardText(
+                                entryPathText.c_str());
+                            shellState->statusMessage =
+                                "absolute media path copied";
+                        }
+                        ImGui::EndPopup();
+                    }
                     ImGui::PopID();
                 }
             }
@@ -4153,6 +6592,46 @@ void drawMediaPanel(ShellState* shellState, const jcut::EditorDocumentCore& snap
             if (!previewPath.empty()) {
                 ImGui::Separator();
                 ImGui::TextWrapped("%s", previewPath.c_str());
+                if (shellState->mediaThumbnailTextureId != 0 &&
+                    shellState->mediaThumbnailSize.valid() &&
+                    shellState->mediaThumbnailLoadedPath ==
+                        previewPath) {
+                    const float availableWidth =
+                        std::max(
+                            1.0f,
+                            ImGui::GetContentRegionAvail().x);
+                    const float scale = std::min(
+                        1.0f,
+                        std::min(
+                            availableWidth /
+                                static_cast<float>(
+                                    shellState
+                                        ->mediaThumbnailSize.width),
+                            180.0f /
+                                static_cast<float>(
+                                    shellState
+                                        ->mediaThumbnailSize.height)));
+                    ImGui::Image(
+                        shellState->mediaThumbnailTextureId,
+                        ImVec2(
+                            shellState->mediaThumbnailSize.width *
+                                scale,
+                            shellState->mediaThumbnailSize.height *
+                                scale));
+                } else if (
+                    shellState->mediaThumbnailRunning &&
+                    shellState->mediaThumbnailPendingPath ==
+                        previewPath) {
+                    ImGui::TextDisabled(
+                        "Loading thumbnail...");
+                } else if (
+                    !shellState->mediaThumbnailError.empty() &&
+                    shellState->mediaThumbnailPendingPath ==
+                        previewPath) {
+                    ImGui::TextDisabled(
+                        "%s",
+                        shellState->mediaThumbnailError.c_str());
+                }
                 const bool previewImportable = isImportableMediaPath(previewPath);
                 if (previewImportable && ImGui::Button("Import Selected")) {
                     importFilesystemMedia(shellState, snapshot, previewPath, false);
@@ -4179,6 +6658,8 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     ImGui::SetNextWindowSize(layout.preview.size, layoutCondition);
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
     ImGui::Begin("Preview", nullptr, flags);
+    const bool videoPreviewMode =
+        snapshot.transport.previewViewMode != "audio";
     ImVec2 avail = ImGui::GetContentRegionAvail();
     const float controlsHeight = 96.0f;
     const float canvasHeight = std::max(180.0f, avail.y - controlsHeight);
@@ -4208,21 +6689,22 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     }
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 canvasMax(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y);
-    const bool mouseInsideCanvas = ImGui::IsMouseHoveringRect(canvasPos, canvasMax);
+    const bool mouseInsideCanvas = videoPreviewMode &&
+        ImGui::IsMouseHoveringRect(canvasPos, canvasMax);
     const jcut::EditorClip* previewTitleClip = selectedClip(snapshot);
-    const bool selectedTitleIsActive = previewTitleClip &&
+    const bool selectedTitleIsActive = videoPreviewMode && previewTitleClip &&
         previewTitleClip->mediaKind == "title" &&
         snapshot.transport.currentFrame >= previewTitleClip->startFrame &&
         snapshot.transport.currentFrame <
             previewTitleClip->startFrame + std::max(1, previewTitleClip->durationFrames);
-    const bool selectedTransformClipIsActive = previewTitleClip &&
+    const bool selectedTransformClipIsActive = videoPreviewMode && previewTitleClip &&
         previewTitleClip->mediaKind != "audio" &&
         previewTitleClip->mediaKind != "title" &&
         snapshot.transport.currentFrame >= previewTitleClip->startFrame &&
         snapshot.transport.currentFrame <
             previewTitleClip->startFrame + std::max(1, previewTitleClip->durationFrames);
     const jcut::EditorClip* correctionClip = previewTitleClip;
-    const bool correctionClipIsActive = correctionClip &&
+    const bool correctionClipIsActive = videoPreviewMode && correctionClip &&
         correctionClip->mediaKind != "audio" &&
         shellState->correctionClipId == correctionClip->id &&
         snapshot.transport.currentFrame >= correctionClip->startFrame &&
@@ -4376,6 +6858,9 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     ImVec2 transformBottomHandleMax{};
     ImVec2 transformCornerHandleMin{};
     ImVec2 transformCornerHandleMax{};
+    ImVec2 transformRotationHandleMin{};
+    ImVec2 transformRotationHandleMax{};
+    ImVec2 transformRotationHandleCenter{};
     if (selectedTransformClipIsActive) {
         selectedPreviewTransform = shellState->previewTransformDragMode !=
                 PreviewTransformDragMode::None
@@ -4427,6 +6912,26 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
         transformCornerHandleMax = {
             transformBoundsMax.x + kHandleRadius,
             transformBoundsMax.y + kHandleRadius};
+        transformRotationHandleCenter = {
+            std::clamp(
+                center.x,
+                frameMin.x + kHandleRadius,
+                frameMax.x - kHandleRadius),
+            transformBoundsMin.y - 26.0f};
+        if (transformRotationHandleCenter.y - kHandleRadius < frameMin.y) {
+            transformRotationHandleCenter.y =
+                transformBoundsMin.y + 26.0f;
+        }
+        transformRotationHandleCenter.y = std::clamp(
+            transformRotationHandleCenter.y,
+            frameMin.y + kHandleRadius,
+            frameMax.y - kHandleRadius);
+        transformRotationHandleMin = {
+            transformRotationHandleCenter.x - kHandleRadius,
+            transformRotationHandleCenter.y - kHandleRadius};
+        transformRotationHandleMax = {
+            transformRotationHandleCenter.x + kHandleRadius,
+            transformRotationHandleCenter.y + kHandleRadius};
     }
     const auto pointInRect = [](const ImVec2& point, const ImVec2& minimum,
                                 const ImVec2& maximum) {
@@ -4443,7 +6948,12 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     if (selectedTransformClipIsActive && !correctionInteractionActive &&
         mouseInsideProgram && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         PreviewTransformDragMode dragMode = PreviewTransformDragMode::None;
-        if (pointInRect(io.MousePos, transformCornerHandleMin, transformCornerHandleMax)) {
+        if (pointInRect(
+                io.MousePos,
+                transformRotationHandleMin,
+                transformRotationHandleMax)) {
+            dragMode = PreviewTransformDragMode::Rotate;
+        } else if (pointInRect(io.MousePos, transformCornerHandleMin, transformCornerHandleMax)) {
             dragMode = PreviewTransformDragMode::ResizeBoth;
         } else if (pointInRect(io.MousePos, transformRightHandleMin, transformRightHandleMax)) {
             dragMode = PreviewTransformDragMode::ResizeX;
@@ -4477,6 +6987,23 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
             if (shellState->previewTransformDragMode == PreviewTransformDragMode::Move) {
                 next.translationX += deltaX / std::max(0.0001, previewScaleX);
                 next.translationY += deltaY / std::max(0.0001, previewScaleY);
+            } else if (
+                shellState->previewTransformDragMode ==
+                PreviewTransformDragMode::Rotate) {
+                const jcut::preview::PointD center{
+                    (shellState->previewTransformDragOriginBoundsMin.x +
+                     shellState->previewTransformDragOriginBoundsMax.x) *
+                        0.5,
+                    (shellState->previewTransformDragOriginBoundsMin.y +
+                     shellState->previewTransformDragOriginBoundsMax.y) *
+                        0.5};
+                next.rotation = jcut::preview::rotationForPointerDrag(
+                    next.rotation,
+                    center,
+                    {shellState->previewTransformDragOriginMouse.x,
+                     shellState->previewTransformDragOriginMouse.y},
+                    {io.MousePos.x, io.MousePos.y},
+                    io.KeyShift ? 15.0 : 0.0);
             } else {
                 const double originWidth = std::max(
                     1.0f, shellState->previewTransformDragOriginBoundsMax.x -
@@ -4584,13 +7111,146 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     }
 
     drawList->PushClipRect(canvasPos, canvasMax, true);
-    drawList->AddRectFilled(frameMin, frameMax, IM_COL32(42, 46, 54, 255), 4.0f);
-    if (shellState->previewTextureId != 0) {
-        drawList->AddImage(shellState->previewTextureId,
-                           frameMin,
-                           frameMax,
-                           ImVec2(0.0f, 0.0f),
-                           ImVec2(1.0f, 1.0f));
+    drawList->AddRectFilled(
+        frameMin,
+        frameMax,
+        videoPreviewMode
+            ? IM_COL32(12, 14, 18, 255)
+            : IM_COL32(42, 46, 54, 255),
+        4.0f);
+    if (videoPreviewMode && shellState->previewTextureId != 0) {
+        if (shellState->
+                previewHardwarePresentationTransformValid) {
+            const jcut::EditorTransformKeyframe& transform =
+                shellState->
+                    previewHardwarePresentationTransform;
+            const jcut::preview::RectD outputRect{
+                frameMin.x, frameMin.y, frameWidth, frameHeight};
+            const jcut::preview::PointD outputSize{
+                static_cast<double>(std::max(
+                    1, snapshot.exportRequest.outputSize.width)),
+                static_cast<double>(std::max(
+                    1, snapshot.exportRequest.outputSize.height))};
+            const jcut::preview::RectD imageRect =
+                jcut::preview::fittedPresentationRect(
+                    outputRect,
+                    outputSize,
+                    {
+                        static_cast<double>(std::max(
+                            1,
+                            shellState->
+                                previewHardwareSourceSize.width)),
+                        static_cast<double>(std::max(
+                            1,
+                            shellState->
+                                previewHardwareSourceSize.height))});
+            const auto quad =
+                jcut::preview::transformedPresentationQuad(
+                    imageRect,
+                    outputRect,
+                    outputSize,
+                    {
+                        transform.translationX,
+                        transform.translationY},
+                    {transform.scaleX, transform.scaleY},
+                    transform.rotation);
+            const auto screenPoint = [](const auto& point) {
+                return ImVec2(
+                    static_cast<float>(point.x),
+                    static_cast<float>(point.y));
+            };
+            const ImU32 tint = IM_COL32(
+                255, 255, 255,
+                static_cast<int>(std::lround(
+                    shellState->
+                        previewHardwarePresentationOpacity *
+                    255.0)));
+            drawList->AddImageQuad(
+                shellState->previewTextureId,
+                screenPoint(quad[0]),
+                screenPoint(quad[1]),
+                screenPoint(quad[2]),
+                screenPoint(quad[3]),
+                ImVec2(0.0f, 0.0f),
+                ImVec2(1.0f, 0.0f),
+                ImVec2(1.0f, 1.0f),
+                ImVec2(0.0f, 1.0f),
+                tint);
+        } else {
+            drawList->AddImage(
+                shellState->previewTextureId,
+                frameMin,
+                frameMax,
+                ImVec2(0.0f, 0.0f),
+                ImVec2(1.0f, 1.0f));
+        }
+        if (shellState->previewOverlayTextureId != 0) {
+            const float outputWidth = static_cast<float>(
+                std::max(
+                    1,
+                    snapshot.exportRequest.outputSize.width));
+            const float outputHeight = static_cast<float>(
+                std::max(
+                    1,
+                    snapshot.exportRequest.outputSize.height));
+            const ImVec2 overlayMin{
+                frameMin.x +
+                    frameWidth *
+                    static_cast<float>(
+                        shellState->previewOverlayX) /
+                    outputWidth,
+                frameMin.y +
+                    frameHeight *
+                    static_cast<float>(
+                        shellState->previewOverlayY) /
+                    outputHeight};
+            const ImVec2 overlayMax{
+                overlayMin.x +
+                    frameWidth *
+                    static_cast<float>(
+                        shellState->
+                            previewOverlaySize.width) /
+                    outputWidth,
+                overlayMin.y +
+                    frameHeight *
+                    static_cast<float>(
+                        shellState->
+                            previewOverlaySize.height) /
+                    outputHeight};
+            drawList->AddImage(
+                shellState->previewOverlayTextureId,
+                overlayMin,
+                overlayMax,
+                ImVec2(0.0f, 0.0f),
+                ImVec2(1.0f, 1.0f));
+        }
+    } else if (!videoPreviewMode) {
+        const jcut::ImGuiAudioStatus audioStatus =
+            shellState->audioRuntime.status();
+        const float waveformCenterY =
+            (frameMin.y + frameMax.y) * 0.5f;
+        const float waveformHalfHeight =
+            frameHeight * 0.38f;
+        drawList->AddLine(
+            ImVec2(frameMin.x + 10.0f, waveformCenterY),
+            ImVec2(frameMax.x - 10.0f, waveformCenterY),
+            IM_COL32(72, 82, 94, 255));
+        for (std::size_t point = 0;
+             point < audioStatus.recentWaveform.size();
+             ++point) {
+            const float x = frameMin.x + 10.0f +
+                (frameWidth - 20.0f) *
+                    static_cast<float>(point) /
+                    static_cast<float>(
+                        audioStatus.recentWaveform.size() - 1);
+            const float amplitude =
+                audioStatus.recentWaveform[point] *
+                waveformHalfHeight;
+            drawList->AddLine(
+                ImVec2(x, waveformCenterY - amplitude),
+                ImVec2(x, waveformCenterY + amplitude),
+                IM_COL32(92, 210, 178, 230));
+        }
     }
     drawList->AddRect(frameMin, frameMax, IM_COL32(160, 110, 56, 255), 4.0f, 0, 2.0f);
     const float inset = std::clamp(0.12f / std::max(0.5f, zoom), 0.04f, 0.18f);
@@ -4599,8 +7259,14 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
     drawList->AddRect(safeMin, safeMax, IM_COL32(236, 160, 74, 255), 4.0f, 0, 2.0f);
     drawList->AddText(ImVec2(frameMin.x + 14.0f, frameMin.y + 12.0f),
                       IM_COL32(242, 242, 242, 255),
-                      "Program");
-    std::string previewDetail = "Frame " + std::to_string(snapshot.transport.currentFrame);
+                      videoPreviewMode ? "Program" : "Audio Preview");
+    std::string previewDetail =
+        "Frame " + std::to_string(snapshot.transport.currentFrame);
+    if (!videoPreviewMode) {
+        const jcut::ImGuiAudioStatus audioStatus =
+            shellState->audioRuntime.status();
+        previewDetail += " | " + audioStatus.message;
+    }
     {
         std::lock_guard<std::mutex> lock(shellState->previewMutex);
         if (!shellState->previewResult.message.empty()) {
@@ -4670,8 +7336,30 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
         drawHandle(transformRightHandleMin, transformRightHandleMax);
         drawHandle(transformBottomHandleMin, transformBottomHandleMax);
         drawHandle(transformCornerHandleMin, transformCornerHandleMax);
+        drawList->AddLine(
+            ImVec2(
+                (transformBoundsMin.x + transformBoundsMax.x) * 0.5f,
+                transformBoundsMin.y),
+            transformRotationHandleCenter,
+            outlineColor,
+            2.0f);
+        drawList->AddCircleFilled(
+            transformRotationHandleCenter,
+            7.0f,
+            IM_COL32(24, 28, 34, 245));
+        drawList->AddCircle(
+            transformRotationHandleCenter,
+            7.0f,
+            outlineColor,
+            0,
+            2.0f);
         if (mouseInsideProgram) {
-            if (pointInRect(io.MousePos, transformCornerHandleMin, transformCornerHandleMax)) {
+            if (pointInRect(
+                    io.MousePos,
+                    transformRotationHandleMin,
+                    transformRotationHandleMax)) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            } else if (pointInRect(io.MousePos, transformCornerHandleMin, transformCornerHandleMax)) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
             } else if (pointInRect(io.MousePos, transformRightHandleMin, transformRightHandleMax)) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -4788,22 +7476,128 @@ void drawPreviewPanel(ShellState* shellState, const jcut::EditorDocumentCore& sn
 
     ImGui::Dummy(canvasSize);
     ImGui::Separator();
-    if (ImGui::Button(snapshot.transport.playbackActive ? "Pause" : "Play")) {
-        applyCommand(shellState, jcut::TogglePlaybackCommand{});
+    const int transportEndFrame = [&]() {
+        int endFrame = 0;
+        for (const jcut::EditorClip& clip : snapshot.clips) {
+            endFrame = std::max(
+                endFrame, clip.startFrame + clip.durationFrames);
+        }
+        return endFrame;
+    }();
+    if (ImGui::Button("|<")) {
+        applyCommand(shellState, jcut::SeekToFrameCommand{0});
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Go to start");
     }
     ImGui::SameLine();
     if (ImGui::ArrowButton("StepBack", ImGuiDir_Left)) {
         applyCommand(shellState, jcut::StepFrameCommand{-1});
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Previous playable frame");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(snapshot.transport.playbackActive ? "Pause" : "Play")) {
+        applyCommand(shellState, jcut::TogglePlaybackCommand{});
+    }
     ImGui::SameLine();
     if (ImGui::ArrowButton("StepForward", ImGuiDir_Right)) {
         applyCommand(shellState, jcut::StepFrameCommand{1});
     }
-    float speed = snapshot.transport.playbackSpeed;
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Next playable frame");
+    }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::SliderFloat("Speed", &speed, 0.25f, 2.0f, "%.2fx")) {
-        applyCommand(shellState, jcut::SetPlaybackSpeedCommand{speed});
+    if (ImGui::Button(">|")) {
+        applyCommand(
+            shellState, jcut::SeekToFrameCommand{transportEndFrame});
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Go to end");
+    }
+    constexpr std::array<float, 9> transportSpeeds = {
+        0.1f, 0.25f, 0.5f, 0.75f, 1.0f,
+        1.25f, 1.5f, 2.0f, 3.0f};
+    constexpr std::array<const char*, 9> transportSpeedLabels = {
+        "10%", "25%", "50%", "75%", "100%",
+        "125%", "150%", "200%", "300%"};
+    int speedIndex = 0;
+    float nearestSpeedDistance =
+        std::numeric_limits<float>::max();
+    for (int index = 0;
+         index < static_cast<int>(transportSpeeds.size());
+         ++index) {
+        const float distance = std::abs(
+            snapshot.transport.playbackSpeed -
+            transportSpeeds[static_cast<std::size_t>(index)]);
+        if (distance < nearestSpeedDistance) {
+            speedIndex = index;
+            nearestSpeedDistance = distance;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(76.0f);
+    if (ImGui::Combo(
+            "Speed",
+            &speedIndex,
+            transportSpeedLabels.data(),
+            static_cast<int>(transportSpeedLabels.size()))) {
+        applyCommand(
+            shellState,
+            jcut::SetPlaybackSpeedCommand{
+                transportSpeeds[static_cast<std::size_t>(speedIndex)]});
+    }
+    bool playbackLoopEnabled =
+        snapshot.transport.playbackLoopEnabled;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Loop", &playbackLoopEnabled)) {
+        applyCommand(
+            shellState,
+            jcut::SetPlaybackLoopEnabledCommand{
+                playbackLoopEnabled});
+    }
+    constexpr std::array<const char*, 2> previewModeLabels = {
+        "Video", "Audio"};
+    int previewModeIndex = videoPreviewMode ? 0 : 1;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(82.0f);
+    if (ImGui::Combo(
+            "View",
+            &previewModeIndex,
+            previewModeLabels.data(),
+            static_cast<int>(previewModeLabels.size()))) {
+        applyCommand(
+            shellState,
+            jcut::SetPreviewViewModeCommand{
+                previewModeIndex == 1 ? "audio" : "video"});
+    }
+    bool transportAudioMuted =
+        snapshot.transport.audioMuted;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Mute", &transportAudioMuted)) {
+        applyCommand(
+            shellState,
+            jcut::SetTransportAudioCommand{
+                transportAudioMuted,
+                snapshot.transport.audioVolume});
+    }
+    float transportAudioVolume =
+        snapshot.transport.audioVolume;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::SliderFloat(
+            "Volume",
+            &transportAudioVolume,
+            0.0f,
+            1.0f,
+            "%.2f",
+            ImGuiSliderFlags_None)) {
+        applyCommand(
+            shellState,
+            jcut::SetTransportAudioCommand{
+                snapshot.transport.audioMuted,
+                transportAudioVolume});
     }
     float zoomValue = snapshot.transport.previewZoom;
     ImGui::SameLine();
@@ -4858,6 +7652,10 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
 
     int hoveredClipId = 0;
     int hoveredTrackId = 0;
+    int hoveredTrackVisualToggleId = 0;
+    int hoveredTrackAudioToggleId = 0;
+    bool hoveredTrackVisualToggleAvailable = false;
+    bool hoveredTrackAudioToggleAvailable = false;
     bool hoveredClipIsMaskMatte = false;
     TimelineDragMode hoveredMode = TimelineDragMode::None;
     const jcut::EditorRenderSyncMarker* hoveredRenderSyncMarker = nullptr;
@@ -4881,6 +7679,54 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                        ? IM_COL32(158, 168, 178, 255)
                        : IM_COL32(224, 228, 232, 255)),
             timelineTrackLabel.c_str());
+        const jcut::EditorTrackMediaPresenceCore trackPresence =
+            jcut::editorTrackMediaPresenceCore(snapshot, track.id);
+        const ImVec2 visualToggleMin(
+            origin.x + kTimelineLabelWidth - 44.0f, y + 4.0f);
+        const ImVec2 visualToggleMax(
+            origin.x + kTimelineLabelWidth - 27.0f,
+            y + kTimelineClipHeight - 4.0f);
+        const ImVec2 audioToggleMin(
+            origin.x + kTimelineLabelWidth - 23.0f, y + 4.0f);
+        const ImVec2 audioToggleMax(
+            origin.x + kTimelineLabelWidth - 6.0f,
+            y + kTimelineClipHeight - 4.0f);
+        const ImU32 disabledToggleColor = IM_COL32(66, 70, 76, 255);
+        const ImU32 visualToggleColor = !trackPresence.hasVisual
+            ? disabledToggleColor
+            : (track.visualMode == 2
+                   ? IM_COL32(115, 72, 72, 255)
+                   : (track.visualMode == 1
+                          ? IM_COL32(191, 145, 66, 255)
+                          : IM_COL32(70, 143, 102, 255)));
+        const ImU32 audioToggleColor =
+            !trackPresence.hasAudio || generatedChildTrack
+            ? disabledToggleColor
+            : (track.audioEnabled
+                   ? IM_COL32(70, 143, 102, 255)
+                   : IM_COL32(115, 72, 72, 255));
+        drawList->AddRectFilled(
+            visualToggleMin, visualToggleMax, visualToggleColor, 3.0f);
+        drawList->AddRectFilled(
+            audioToggleMin, audioToggleMax, audioToggleColor, 3.0f);
+        drawList->AddText(
+            ImVec2(visualToggleMin.x + 4.0f, visualToggleMin.y + 1.0f),
+            IM_COL32(238, 240, 242, 255),
+            "V");
+        drawList->AddText(
+            ImVec2(audioToggleMin.x + 4.0f, audioToggleMin.y + 1.0f),
+            IM_COL32(238, 240, 242, 255),
+            "A");
+        if (ImGui::IsMouseHoveringRect(
+                visualToggleMin, visualToggleMax)) {
+            hoveredTrackVisualToggleId = track.id;
+            hoveredTrackVisualToggleAvailable = trackPresence.hasVisual;
+        }
+        if (ImGui::IsMouseHoveringRect(audioToggleMin, audioToggleMax)) {
+            hoveredTrackAudioToggleId = track.id;
+            hoveredTrackAudioToggleAvailable =
+                trackPresence.hasAudio && !generatedChildTrack;
+        }
         drawList->AddRectFilled(ImVec2(origin.x + kTimelineLabelWidth, y),
                                 ImVec2(origin.x + avail.x - 12.0f, y + kTimelineClipHeight),
                                 generatedChildTrack
@@ -4909,6 +7755,70 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                                     clipMax,
                                     color,
                                     4.0f);
+            if (snapshot.panels.showWaveform &&
+                track.audioWaveformVisible &&
+                clip.hasAudio &&
+                clip.audioEnabled) {
+                const int waveformColumns = std::clamp(
+                    static_cast<int>(
+                        std::floor(clipWidth - 4.0f)),
+                    16,
+                    512);
+                std::vector<float> waveformMinimum;
+                std::vector<float> waveformMaximum;
+                if (shellState->audioRuntime.queryClipWaveform(
+                        clip.id,
+                        waveformColumns,
+                        &waveformMinimum,
+                        &waveformMaximum)) {
+                    const float waveformCenter =
+                        (clipMin.y + clipMax.y) * 0.5f;
+                    const float waveformRadius =
+                        std::max(
+                            1.0f,
+                            (clipMax.y - clipMin.y) *
+                                0.38f);
+                    const float waveformSpan =
+                        std::max(
+                            1.0f,
+                            clipMax.x - clipMin.x - 4.0f);
+                    const ImU32 waveformColor =
+                        clip.selected
+                        ? IM_COL32(70, 66, 48, 205)
+                        : IM_COL32(222, 237, 245, 190);
+                    for (int column = 0;
+                         column < waveformColumns;
+                         ++column) {
+                        const float x =
+                            clipMin.x + 2.0f +
+                            (static_cast<float>(column) +
+                             0.5f) *
+                                waveformSpan /
+                                waveformColumns;
+                        const float minimum =
+                            waveformMinimum[
+                                static_cast<std::size_t>(
+                                    column)];
+                        const float maximum =
+                            waveformMaximum[
+                                static_cast<std::size_t>(
+                                    column)];
+                        drawList->AddLine(
+                            ImVec2(
+                                x,
+                                waveformCenter -
+                                    maximum *
+                                        waveformRadius),
+                            ImVec2(
+                                x,
+                                waveformCenter -
+                                    minimum *
+                                        waveformRadius),
+                            waveformColor,
+                            1.0f);
+                    }
+                }
+            }
             drawList->AddText(ImVec2(clipStart + 8.0f, y + 6.0f), IM_COL32(245, 245, 245, 255), clip.label.c_str());
             if (clip.locked) {
                 drawList->AddText(
@@ -4946,6 +7856,17 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                 }
             }
         }
+    }
+    if (hoveredTrackVisualToggleId != 0) {
+        ImGui::SetTooltip(
+            hoveredTrackVisualToggleAvailable
+                ? "Cycle track visual mode: Enabled / Force Opaque / Hidden"
+                : "No visual clips on this track");
+    } else if (hoveredTrackAudioToggleId != 0) {
+        ImGui::SetTooltip(
+            hoveredTrackAudioToggleAvailable
+                ? "Toggle track audio"
+                : "No audio clips on this track");
     }
 
     // Render-sync decisions belong to a persistent source clip and occupy a
@@ -5034,7 +7955,47 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
 
     const bool mouseInsideCanvas = ImGui::IsMouseHoveringRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y));
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && mouseInsideCanvas) {
-        if (hoveredClipId != 0) {
+        if (hoveredTrackVisualToggleId != 0) {
+            if (hoveredTrackVisualToggleAvailable) {
+                const auto trackIt = std::find_if(
+                    snapshot.tracks.begin(), snapshot.tracks.end(),
+                    [&](const jcut::EditorTrack& track) {
+                        return track.id == hoveredTrackVisualToggleId;
+                    });
+                if (trackIt != snapshot.tracks.end()) {
+                    applyCommand(shellState, jcut::SetTrackStateCommand{
+                        trackIt->id,
+                        (std::clamp(trackIt->visualMode, 0, 2) + 1) % 3,
+                        trackIt->audioEnabled,
+                        trackIt->audioGain,
+                        trackIt->audioMuted,
+                        trackIt->audioSolo,
+                        trackIt->gradingPreviewEnabled,
+                    });
+                }
+            }
+            clearTimelineDrag(shellState);
+        } else if (hoveredTrackAudioToggleId != 0) {
+            if (hoveredTrackAudioToggleAvailable) {
+                const auto trackIt = std::find_if(
+                    snapshot.tracks.begin(), snapshot.tracks.end(),
+                    [&](const jcut::EditorTrack& track) {
+                        return track.id == hoveredTrackAudioToggleId;
+                    });
+                if (trackIt != snapshot.tracks.end()) {
+                    applyCommand(shellState, jcut::SetTrackStateCommand{
+                        trackIt->id,
+                        trackIt->visualMode,
+                        !trackIt->audioEnabled,
+                        trackIt->audioGain,
+                        trackIt->audioMuted,
+                        trackIt->audioSolo,
+                        trackIt->gradingPreviewEnabled,
+                    });
+                }
+            }
+            clearTimelineDrag(shellState);
+        } else if (hoveredClipId != 0) {
             if (shellState->timelineToolMode == TimelineToolMode::Razor &&
                 !hoveredClipIsMaskMatte) {
                 const auto hoveredIt = std::find_if(
@@ -5135,7 +8096,7 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             ImGui::OpenPopup("TimelineSyncMarkerContext");
         }
     } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-               mouseInsideCanvas && hoveredClipId != 0) {
+               mouseInsideCanvas) {
         const auto hoveredIt = std::find_if(
             snapshot.clips.begin(), snapshot.clips.end(),
             [&](const jcut::EditorClip& clip) {
@@ -5151,6 +8112,8 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             ? std::string{}
             : hoveredIt->persistentId;
         shellState->timelineContextFrame = snapshot.transport.currentFrame;
+        shellState->timelineContextClickFrame =
+            frameFromTimelineX(origin.x, mousePos.x);
         shellState->timelineContextDocumentGeneration =
             shellState->documentGeneration;
         ImGui::OpenPopup("TimelineClipContext");
@@ -5274,11 +8237,69 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         const jcut::EditorClip* contextClip = contextIt == snapshot.clips.end()
             ? nullptr
             : &*contextIt;
-        if (!contextClip) {
+        const bool contextDocumentValid =
+            shellState->timelineContextDocumentGeneration ==
+            shellState->documentGeneration;
+        const bool contextClipValid =
+            shellState->timelineContextClipId == 0 ||
+            contextClip != nullptr;
+        if (!contextDocumentValid || !contextClipValid) {
             shellState->statusMessage =
-                "clip menu closed after document change";
+                "timeline menu closed after document change";
             ImGui::CloseCurrentPopup();
         }
+        if (ImGui::BeginMenu("Export Range")) {
+            const std::int64_t playhead =
+                snapshot.transport.currentFrame;
+            if (ImGui::MenuItem("Set Start At Playhead")) {
+                applyCommand(
+                    shellState,
+                    jcut::EditExportRangesCommand{
+                        jcut::ExportRangeEdit::SetStartAtPlayhead,
+                        playhead});
+            }
+            if (ImGui::MenuItem("Set End At Playhead")) {
+                applyCommand(
+                    shellState,
+                    jcut::EditExportRangesCommand{
+                        jcut::ExportRangeEdit::SetEndAtPlayhead,
+                        playhead});
+            }
+            const bool canSplitExportRange =
+                jcut::export_range::canSplitAt(
+                    snapshot.exportRanges, playhead);
+            if (ImGui::MenuItem(
+                    "Split At Playhead",
+                    nullptr,
+                    false,
+                    canSplitExportRange)) {
+                applyCommand(
+                    shellState,
+                    jcut::EditExportRangesCommand{
+                        jcut::ExportRangeEdit::SplitAtPlayhead,
+                        playhead});
+            }
+            if (ImGui::MenuItem("Reset")) {
+                applyCommand(
+                    shellState,
+                    jcut::EditExportRangesCommand{
+                        jcut::ExportRangeEdit::Reset,
+                        playhead});
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Create Title")) {
+            const jcut::CommandResult result = applyCommand(
+                shellState,
+                jcut::CreateTitleClipCommand{
+                    shellState->timelineContextClickFrame,
+                    jcut::kEditorDefaultTitleDurationFrames});
+            if (result.applied) {
+                shellState->titleDraftClipId = -1;
+            }
+        }
+        ImGui::Separator();
+        ImGui::BeginDisabled(contextClip == nullptr);
         if (ImGui::MenuItem("Cut", "Ctrl+X", false, contextClip != nullptr)) {
             applyCommand(shellState, jcut::CutSelectedClipsCommand{});
         }
@@ -5304,14 +8325,28 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             applyCommand(shellState, jcut::NudgeSelectedClipCommand{1});
         }
         ImGui::Separator();
-        const bool canSplit = contextClip &&
-            !contextClip->locked &&
-            snapshot.transport.currentFrame > contextClip->startFrame &&
-            snapshot.transport.currentFrame <
-                contextClip->startFrame + contextClip->durationFrames;
-        if (ImGui::MenuItem("Split At Playhead", "Ctrl+B", false, canSplit)) {
-            applyCommand(shellState, jcut::SplitClipCommand{
-                contextClip->id, snapshot.transport.currentFrame});
+        const std::size_t contextSelectionCount =
+            selectedClipCount(snapshot);
+        const bool groupSelection = contextSelectionCount > 1;
+        const bool canSplit = selectedClipsCanSplitAtFrame(
+            snapshot, snapshot.transport.currentFrame);
+        if (ImGui::MenuItem(
+                groupSelection
+                    ? "Split Selected At Playhead"
+                    : "Split At Playhead",
+                "Ctrl+B",
+                false,
+                canSplit)) {
+            if (groupSelection) {
+                applyCommand(
+                    shellState,
+                    jcut::SplitSelectedClipsCommand{
+                        snapshot.transport.currentFrame});
+            } else if (contextClip) {
+                applyCommand(shellState, jcut::SplitClipCommand{
+                    contextClip->id,
+                    snapshot.transport.currentFrame});
+            }
         }
         if (ImGui::BeginMenu("Playback Speed",
                              contextClip && !contextClip->locked)) {
@@ -5339,6 +8374,23 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             contextClip) {
             scaleClipToFillPreview(shellState, snapshot, *contextClip);
         }
+        const bool canLockTransformToSource =
+            contextClip &&
+            !contextClip->locked &&
+            !contextClip->linkedSourceClipId.empty() &&
+            contextClip->mediaKind != "audio";
+        if (ImGui::MenuItem(
+                "Lock Transform To Source",
+                nullptr,
+                contextClip && contextClip->sourceTransformLocked,
+                canLockTransformToSource) &&
+            contextClip) {
+            applyCommand(
+                shellState,
+                jcut::SetClipSourceTransformLockedCommand{
+                    contextClip->id,
+                    !contextClip->sourceTransformLocked});
+        }
         if (ImGui::BeginMenu("Render Sync", contextClip != nullptr)) {
             if (contextClip) {
                 drawRenderSyncContextActions(
@@ -5348,6 +8400,104 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     shellState->timelineContextFrame);
             }
             ImGui::EndMenu();
+        }
+        if (contextClip) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Copy Clip Name")) {
+                ImGui::SetClipboardText(contextClip->label.c_str());
+                shellState->statusMessage = "clip name copied";
+            }
+            const bool isTitle = contextClip->mediaKind == "title";
+            if (ImGui::MenuItem(
+                    "Copy title", nullptr, false, isTitle)) {
+                const std::int64_t localFrame = std::clamp<std::int64_t>(
+                    shellState->timelineContextFrame -
+                        contextClip->startFrame,
+                    0,
+                    std::max(0, contextClip->durationFrames - 1));
+                const jcut::EditorTitleKeyframe title =
+                    jcut::evaluateEditorClipTitleAtLocalFrame(
+                        *contextClip, localFrame);
+                ImGui::SetClipboardText(title.text.c_str());
+                shellState->statusMessage = "title text copied";
+            }
+            if (ImGui::MenuItem("Grading...")) {
+                shellState->requestedInspectorTab = "Grade";
+            }
+            if (ImGui::MenuItem("Refresh")) {
+                refreshClipMetadata(
+                    shellState, snapshot, contextClip->id);
+            }
+            if (ImGui::MenuItem("Sync...")) {
+                shellState->requestedInspectorTab = "Sync";
+            }
+            if (ImGui::BeginMenu(
+                    "Generated Clips",
+                    jcut::editorClipHasVisualsCore(*contextClip))) {
+                if (ImGui::MenuItem("Add Mask Matte Layer")) {
+                    shellState->maskSidecarContextClipId =
+                        contextClip->id;
+                    shellState->requestedInspectorTab = "Masks";
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu(
+                    "Rotoscope",
+                    jcut::editorClipHasVisualsCore(*contextClip) &&
+                        !isTitle)) {
+                if (ImGui::MenuItem("Run SAM 3...")) {
+                    shellState->promptMaskSourceClipId =
+                        contextClip->id;
+                    shellState->requestedInspectorTab = "Masks";
+                }
+                if (ImGui::MenuItem("Run BiRefNet...")) {
+                    shellState->birefnetSourceClipId =
+                        contextClip->id;
+                    shellState->requestedInspectorTab = "Masks";
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Transcript")) {
+                if (ImGui::MenuItem(
+                        "Transcribe",
+                        nullptr,
+                        false,
+                        contextClip->hasAudio)) {
+                    startTranscriptionJob(
+                        shellState, *contextClip);
+                }
+                if (ImGui::MenuItem("Open Transcript Tools")) {
+                    shellState->requestedInspectorTab = "Transcript";
+                }
+                if (ImGui::MenuItem("Apply Speaker Title Fly-In")) {
+                    shellState->requestedInspectorTab = "Speakers";
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu(
+                    "Proxy",
+                    jcut::editorClipHasVisualsCore(*contextClip) &&
+                        !isTitle)) {
+                if (ImGui::MenuItem("Open Proxy Controls")) {
+                    shellState->requestedInspectorTab = "Clip";
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu(
+                    "FaceDetections",
+                    jcut::editorClipHasVisualsCore(*contextClip) &&
+                        !isTitle)) {
+                if (ImGui::MenuItem("Generate / Inspect...")) {
+                    shellState->requestedInspectorTab = "Speakers";
+                }
+                if (ImGui::MenuItem("Open Job Status")) {
+                    shellState->requestedInspectorTab = "Jobs";
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Properties")) {
+                shellState->requestedInspectorTab = "Properties";
+            }
         }
         if (ImGui::MenuItem("Reset Grading", nullptr, false,
                             contextClip != nullptr) && contextClip) {
@@ -5360,11 +8510,32 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         }
         if (contextClip) {
             ImGui::Separator();
-            if (ImGui::MenuItem(contextClip->locked ? "Unlock" : "Lock")) {
+            const bool anySelectedUnlocked = std::any_of(
+                snapshot.clips.begin(),
+                snapshot.clips.end(),
+                [](const jcut::EditorClip& clip) {
+                    return clip.selected &&
+                        jcut::canonicalEditorClipRole(clip.clipRole) !=
+                            "mask_matte" &&
+                        !clip.locked;
+                });
+            if (groupSelection &&
+                ImGui::MenuItem(
+                    anySelectedUnlocked
+                        ? "Lock Selected"
+                        : "Unlock Selected")) {
+                applyCommand(
+                    shellState,
+                    jcut::SetSelectedClipsLockedCommand{
+                        anySelectedUnlocked});
+            } else if (!groupSelection &&
+                       ImGui::MenuItem(
+                           contextClip->locked ? "Unlock" : "Lock")) {
                 applyCommand(shellState, jcut::SetClipLockedCommand{
                     contextClip->id, !contextClip->locked});
             }
         }
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
 
@@ -5876,6 +9047,75 @@ bool drawFrameSeekCell(ShellState* shellState,
     return true;
 }
 
+void markInspectorDeleteTargetForLastItem(
+    ShellState* shellState,
+    InspectorDeleteTargetKind kind,
+    int clipId,
+    jcut::EditorKeyframeChannel channel,
+    std::int64_t frame)
+{
+    if (!ImGui::IsItemFocused()) {
+        return;
+    }
+    shellState->inspectorDeleteTarget = {
+        kind,
+        clipId,
+        channel,
+        frame,
+        {},
+        false,
+        {},
+        -1,
+        -1,
+        shellState->documentGeneration,
+        shellState->uiFrameCounter};
+}
+
+void markSyncDeleteTargetForLastItem(
+    ShellState* shellState,
+    const jcut::EditorRenderSyncMarker& marker)
+{
+    if (!ImGui::IsItemFocused()) {
+        return;
+    }
+    shellState->inspectorDeleteTarget = {
+        InspectorDeleteTargetKind::SyncMarker,
+        -1,
+        jcut::EditorKeyframeChannel::Transform,
+        marker.frame,
+        marker.clipId,
+        marker.skipFrame,
+        {},
+        -1,
+        -1,
+        shellState->documentGeneration,
+        shellState->uiFrameCounter};
+}
+
+void markTranscriptDeleteTargetForLastItem(
+    ShellState* shellState,
+    int clipId,
+    const jcut::TranscriptCutSession& transcript,
+    const jcut::TranscriptRow& row)
+{
+    if (!transcript.activeCutMutable ||
+        !ImGui::IsItemFocused()) {
+        return;
+    }
+    shellState->inspectorDeleteTarget = {
+        InspectorDeleteTargetKind::TranscriptWord,
+        clipId,
+        jcut::EditorKeyframeChannel::Transform,
+        -1,
+        {},
+        false,
+        transcript.activePath,
+        row.word.segmentIndex,
+        row.word.wordIndex,
+        shellState->documentGeneration,
+        shellState->uiFrameCounter};
+}
+
 void replaceRenderSyncMarker(
     ShellState* shellState,
     const jcut::EditorRenderSyncMarker& marker,
@@ -6043,7 +9283,8 @@ void drawKeyframeDraftEditor(ShellState* shellState,
 
 bool drawGradingCurvePointEditor(const char* channelLabel,
                                  std::vector<jcut::EditorPoint>* points,
-                                 bool editsDisabled)
+                                 bool threePointLock,
+                                 bool smoothingEnabled = true)
 {
     if (!points) {
         return false;
@@ -6053,16 +9294,192 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
     bool curveChanged = false;
     ImGui::PushID(channelLabel);
     if (ImGui::TreeNode(channelLabel)) {
-        if (editsDisabled) {
+        if (threePointLock) {
             ImGui::TextDisabled(
-                "RGB points follow Lift / Gamma / Gain while three-point lock is enabled");
+                "Point X positions follow Lift / Gamma / Gain while three-point lock is enabled");
         }
-        ImGui::BeginDisabled(editsDisabled);
 
         constexpr double kCurveXMinimum = 0.0;
         constexpr double kCurveXMaximum = 1.0;
         constexpr double kCurveYMinimum = -1.0;
         constexpr double kCurveYMaximum = 2.0;
+
+        // Match the Qt curve widget's interaction model: click the plot to add
+        // a point, drag handles with fixed endpoint X positions, and
+        // right-click an interior point to remove it.
+        const ImVec2 canvasSize(
+            std::max(180.0f, ImGui::GetContentRegionAvail().x),
+            180.0f);
+        const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton(
+            "CurveCanvas",
+            canvasSize,
+            ImGuiButtonFlags_MouseButtonLeft |
+                ImGuiButtonFlags_MouseButtonRight);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImVec2 canvasEnd(
+            canvasOrigin.x + canvasSize.x,
+            canvasOrigin.y + canvasSize.y);
+        drawList->AddRectFilled(
+            canvasOrigin, canvasEnd, IM_COL32(16, 22, 30, 255));
+        drawList->AddRect(
+            canvasOrigin, canvasEnd, IM_COL32(70, 84, 102, 255));
+        for (int gridIndex = 1; gridIndex < 4; ++gridIndex) {
+            const float fraction = static_cast<float>(gridIndex) / 4.0f;
+            drawList->AddLine(
+                ImVec2(canvasOrigin.x + canvasSize.x * fraction, canvasOrigin.y),
+                ImVec2(canvasOrigin.x + canvasSize.x * fraction, canvasEnd.y),
+                IM_COL32(55, 66, 80, 150));
+            drawList->AddLine(
+                ImVec2(canvasOrigin.x, canvasOrigin.y + canvasSize.y * fraction),
+                ImVec2(canvasEnd.x, canvasOrigin.y + canvasSize.y * fraction),
+                IM_COL32(55, 66, 80, 150));
+        }
+        const auto pointToCanvas = [&](const jcut::EditorPoint& point) {
+            const double displayY =
+                0.5 - ((point.y - point.x) * 0.5);
+            return ImVec2(
+                canvasOrigin.x +
+                    static_cast<float>(point.x) * canvasSize.x,
+                canvasOrigin.y +
+                    static_cast<float>(displayY) * canvasSize.y);
+        };
+        const auto canvasToPoint = [&](const ImVec2& position) {
+            const double x = std::clamp(
+                static_cast<double>((position.x - canvasOrigin.x) /
+                                    canvasSize.x),
+                0.0,
+                1.0);
+            const double displayY = std::clamp(
+                static_cast<double>((position.y - canvasOrigin.y) /
+                                    canvasSize.y),
+                0.0,
+                1.0);
+            return jcut::EditorPoint{
+                x,
+                std::clamp(
+                    x + ((0.5 - displayY) * 2.0), -1.0, 2.0)};
+        };
+        drawList->PushClipRect(canvasOrigin, canvasEnd, true);
+        const ImU32 curveColor =
+            std::strcmp(channelLabel, "Red") == 0
+            ? IM_COL32(244, 92, 92, 255)
+            : (std::strcmp(channelLabel, "Green") == 0
+                   ? IM_COL32(90, 220, 130, 255)
+                   : (std::strcmp(channelLabel, "Blue") == 0
+                          ? IM_COL32(90, 150, 245, 255)
+                          : IM_COL32(232, 205, 90, 255)));
+        ImVec2 previousCurvePoint = pointToCanvas(jcut::EditorPoint{
+            0.0,
+            jcut::sampleEditorGradingCurveAt(
+                *points, 0.0, smoothingEnabled)});
+        constexpr int kCurveSegments = 128;
+        for (int segment = 1; segment <= kCurveSegments; ++segment) {
+            const double x =
+                static_cast<double>(segment) / kCurveSegments;
+            const ImVec2 curvePoint = pointToCanvas(jcut::EditorPoint{
+                x,
+                jcut::sampleEditorGradingCurveAt(
+                    *points, x, smoothingEnabled)});
+            drawList->AddLine(
+                previousCurvePoint, curvePoint, curveColor, 2.0f);
+            previousCurvePoint = curvePoint;
+        }
+
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        const ImGuiID activePointStorageId =
+            ImGui::GetID("ActiveCurvePoint");
+        int activePoint = storage->GetInt(activePointStorageId, -1);
+        const ImVec2 mousePosition = ImGui::GetIO().MousePos;
+        const auto nearestPoint = [&]() {
+            int nearest = -1;
+            float nearestDistanceSquared = 9.0f * 9.0f;
+            for (std::size_t index = 0; index < points->size(); ++index) {
+                const ImVec2 handle = pointToCanvas(points->at(index));
+                const float dx = handle.x - mousePosition.x;
+                const float dy = handle.y - mousePosition.y;
+                const float distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared <= nearestDistanceSquared) {
+                    nearestDistanceSquared = distanceSquared;
+                    nearest = static_cast<int>(index);
+                }
+            }
+            return nearest;
+        };
+        const bool canvasHovered = ImGui::IsItemHovered();
+        if (canvasHovered &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+            !threePointLock) {
+            const int hit = nearestPoint();
+            if (hit > 0 &&
+                hit + 1 < static_cast<int>(points->size())) {
+                points->erase(points->begin() + hit);
+                curveChanged = true;
+                activePoint = -1;
+            }
+        }
+        if (canvasHovered &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            activePoint = nearestPoint();
+            if (activePoint < 0 && !threePointLock) {
+                const jcut::EditorPoint added =
+                    canvasToPoint(mousePosition);
+                auto insertion = std::upper_bound(
+                    points->begin(),
+                    points->end(),
+                    added.x,
+                    [](double x, const jcut::EditorPoint& point) {
+                        return x < point.x;
+                    });
+                activePoint = static_cast<int>(
+                    std::distance(points->begin(), insertion));
+                points->insert(insertion, added);
+                curveChanged = true;
+            }
+        }
+        if (activePoint >= 0 &&
+            activePoint < static_cast<int>(points->size()) &&
+            ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            jcut::EditorPoint dragged = canvasToPoint(mousePosition);
+            if (activePoint == 0) {
+                dragged.x = 0.0;
+            } else if (activePoint + 1 ==
+                       static_cast<int>(points->size())) {
+                dragged.x = 1.0;
+            } else if (threePointLock) {
+                dragged.x = 0.5;
+            } else {
+                dragged.x = std::clamp(
+                    dragged.x,
+                    points->at(static_cast<std::size_t>(activePoint - 1)).x +
+                        0.001,
+                    points->at(static_cast<std::size_t>(activePoint + 1)).x -
+                        0.001);
+            }
+            points->at(static_cast<std::size_t>(activePoint)) = dragged;
+            curveChanged = true;
+        }
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            activePoint = -1;
+        }
+        storage->SetInt(activePointStorageId, activePoint);
+        for (std::size_t index = 0; index < points->size(); ++index) {
+            const ImVec2 handle = pointToCanvas(points->at(index));
+            drawList->AddCircleFilled(
+                handle,
+                static_cast<int>(index) == activePoint ? 6.0f : 4.5f,
+                curveColor);
+            drawList->AddCircle(
+                handle, 6.0f, IM_COL32(245, 248, 252, 220));
+        }
+        drawList->PopClipRect();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                threePointLock
+                    ? "Drag Lift, Gamma, or Gain points"
+                    : "Click to add; drag to adjust; right-click an interior point to remove");
+        }
+
         std::optional<std::size_t> pointToRemove;
         if (ImGui::BeginTable(
                 "CurvePointTable",
@@ -6079,7 +9496,7 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
                 ImGui::PushID(static_cast<int>(pointIndex));
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::BeginDisabled(endpoint);
+                ImGui::BeginDisabled(endpoint || threePointLock);
                 curveChanged |= ImGui::SliderScalar(
                     "##X",
                     ImGuiDataType_Double,
@@ -6100,7 +9517,7 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
                     &kCurveYMaximum,
                     "%.3f");
                 ImGui::TableNextColumn();
-                if (endpoint) {
+                if (endpoint || threePointLock) {
                     ImGui::TextDisabled("Fixed X");
                 } else if (ImGui::SmallButton("Remove")) {
                     pointToRemove = pointIndex;
@@ -6114,6 +9531,7 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
             points->erase(points->begin() + static_cast<std::ptrdiff_t>(*pointToRemove));
             curveChanged = true;
         }
+        ImGui::BeginDisabled(threePointLock);
         if (ImGui::SmallButton("Add point")) {
             std::size_t insertionIndex = 1;
             double widestGap = -1.0;
@@ -6133,6 +9551,7 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
                     (previous.y + next.y) * 0.5});
             curveChanged = true;
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset channel")) {
             *points = {{0.0, 0.0}, {1.0, 1.0}};
@@ -6142,7 +9561,6 @@ bool drawGradingCurvePointEditor(const char* channelLabel,
             *points = jcut::sanitizeEditorGradingCurve(*points);
         }
 
-        ImGui::EndDisabled();
         ImGui::TreePop();
     }
     ImGui::PopID();
@@ -6271,6 +9689,8 @@ void drawTracksTable(ShellState* shellState, const jcut::EditorDocumentCore& sna
         const jcut::EditorTrack& track = snapshot.tracks[trackIndex];
         const bool generatedChildTrack =
             jcut::isGeneratedEditorChildTrack(track);
+        const jcut::EditorTrackMediaPresenceCore trackPresence =
+            jcut::editorTrackMediaPresenceCore(snapshot, track.id);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         const std::string trackNumber = std::to_string(trackIndex + 1);
@@ -6350,6 +9770,7 @@ void drawTracksTable(ShellState* shellState, const jcut::EditorDocumentCore& sna
             track.gradingPreviewEnabled,
         };
         ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!trackPresence.hasVisual);
         int visualMode = std::clamp(trackState.visualMode, 0, 2);
         ImGui::SetNextItemWidth(104.0f);
         if (ImGui::Combo("##visualMode", &visualMode, kTrackVisualModeLabels,
@@ -6357,13 +9778,26 @@ void drawTracksTable(ShellState* shellState, const jcut::EditorDocumentCore& sna
             trackState.visualMode = visualMode;
             applyCommand(shellState, trackState);
         }
+        ImGui::EndDisabled();
+        if (!trackPresence.hasVisual &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("No visual clips on this track");
+        }
         ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!trackPresence.hasVisual);
         bool gradingPreviewEnabled = trackState.gradingPreviewEnabled;
         if (ImGui::Checkbox("##gradingPreviewEnabled", &gradingPreviewEnabled)) {
             trackState.gradingPreviewEnabled = gradingPreviewEnabled;
             applyCommand(shellState, trackState);
         }
-        ImGui::BeginDisabled(generatedChildTrack);
+        ImGui::EndDisabled();
+        if (!trackPresence.hasVisual &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("No visual clips on this track");
+        }
+        const bool audioControlsDisabled =
+            generatedChildTrack || !trackPresence.hasAudio;
+        ImGui::BeginDisabled(audioControlsDisabled);
         ImGui::TableNextColumn();
         bool audioEnabled = trackState.audioEnabled;
         if (ImGui::Checkbox("##audioEnabled", &audioEnabled)) {
@@ -6393,13 +9827,667 @@ void drawTracksTable(ShellState* shellState, const jcut::EditorDocumentCore& sna
             applyCommand(shellState, trackState);
         }
         ImGui::EndDisabled();
+        if (audioControlsDisabled &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip(
+                generatedChildTrack
+                    ? "Generated child lanes do not expose audio controls"
+                    : "No audio clips on this track");
+        }
         ImGui::PopID();
     }
     ImGui::EndTable();
 }
 
+void startAiAccountRefresh(ShellState* shellState);
+void startAiTokenRefresh(ShellState* shellState);
+
+void appendAiActivity(
+    ShellState* shellState,
+    std::string phase,
+    std::string summary)
+{
+    if (!shellState) return;
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    localtime_r(&now, &local);
+    std::array<char, 16> timeBuffer{};
+    std::strftime(
+        timeBuffer.data(), timeBuffer.size(),
+        "%H:%M:%S", &local);
+    shellState->aiActivityEntries.push_back(
+        AiActivityEntry{
+            timeBuffer.data(),
+            std::move(phase),
+            std::move(summary)});
+    if (shellState->aiActivityEntries.size() > 200) {
+        shellState->aiActivityEntries.erase(
+            shellState->aiActivityEntries.begin(),
+            shellState->aiActivityEntries.begin() +
+                static_cast<std::ptrdiff_t>(
+                    shellState->aiActivityEntries.size() - 200));
+    }
+}
+
+void drawAiProfileAvatar(
+    const ShellState& shellState,
+    const std::string& identity)
+{
+    constexpr float size = 40.0f;
+    const ImVec2 minimum = ImGui::GetCursorScreenPos();
+    const ImVec2 maximum{
+        minimum.x + size, minimum.y + size};
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const bool subscribed =
+        shellState.aiAccount.usage.hasSubscription;
+    const bool entitled =
+        shellState.aiAccount.entitlements.entitled;
+    const ImU32 ringColor = subscribed
+        ? IM_COL32(237, 196, 78, 255)
+        : entitled
+            ? IM_COL32(76, 190, 112, 255)
+            : IM_COL32(108, 116, 128, 255);
+    drawList->AddCircleFilled(
+        ImVec2(
+            (minimum.x + maximum.x) * 0.5f,
+            (minimum.y + maximum.y) * 0.5f),
+        size * 0.5f,
+        ringColor,
+        32);
+    const ImVec2 imageMinimum{
+        minimum.x + 3.0f, minimum.y + 3.0f};
+    const ImVec2 imageMaximum{
+        maximum.x - 3.0f, maximum.y - 3.0f};
+    if (shellState.aiAvatarTextureId != 0 &&
+        shellState.aiAvatarSize.valid()) {
+        ImVec2 uvMinimum{0.0f, 0.0f};
+        ImVec2 uvMaximum{1.0f, 1.0f};
+        if (shellState.aiAvatarSize.width >
+            shellState.aiAvatarSize.height) {
+            const float inset =
+                (shellState.aiAvatarSize.width -
+                 shellState.aiAvatarSize.height) /
+                (2.0f * shellState.aiAvatarSize.width);
+            uvMinimum.x = inset;
+            uvMaximum.x = 1.0f - inset;
+        } else if (shellState.aiAvatarSize.height >
+                   shellState.aiAvatarSize.width) {
+            const float inset =
+                (shellState.aiAvatarSize.height -
+                 shellState.aiAvatarSize.width) /
+                (2.0f * shellState.aiAvatarSize.height);
+            uvMinimum.y = inset;
+            uvMaximum.y = 1.0f - inset;
+        }
+        drawList->AddImageRounded(
+            shellState.aiAvatarTextureId,
+            imageMinimum,
+            imageMaximum,
+            uvMinimum,
+            uvMaximum,
+            IM_COL32_WHITE,
+            (size - 6.0f) * 0.5f);
+    } else {
+        drawList->AddCircleFilled(
+            ImVec2(
+                (imageMinimum.x + imageMaximum.x) * 0.5f,
+                (imageMinimum.y + imageMaximum.y) * 0.5f),
+            (size - 6.0f) * 0.5f,
+            IM_COL32(33, 42, 56, 255),
+            32);
+        std::string initials;
+        for (unsigned char character : identity) {
+            if (character == '@' || initials.size() == 2) break;
+            if (std::isalnum(character)) {
+                initials.push_back(static_cast<char>(
+                    std::toupper(character)));
+            }
+        }
+        if (initials.empty()) initials = "JC";
+        const ImVec2 textSize =
+            ImGui::CalcTextSize(initials.c_str());
+        drawList->AddText(
+            ImVec2(
+                minimum.x + (size - textSize.x) * 0.5f,
+                minimum.y + (size - textSize.y) * 0.5f),
+            IM_COL32(245, 247, 250, 255),
+            initials.c_str());
+    }
+    ImGui::Dummy(ImVec2(size, size));
+    if (ImGui::IsItemHovered() &&
+        !shellState.aiAvatarError.empty()) {
+        ImGui::SetTooltip(
+            "%s", shellState.aiAvatarError.c_str());
+    }
+}
+
+void pollAiOperations(ShellState* shellState)
+{
+    if (shellState->aiCheckoutRunning &&
+        shellState->aiCheckoutFuture.valid() &&
+        shellState->aiCheckoutFuture.wait_for(
+            std::chrono::seconds(0)) == std::future_status::ready) {
+        const jcut::ai::CheckoutLaunchCore checkout =
+            shellState->aiCheckoutFuture.get();
+        shellState->aiCheckoutRunning = false;
+        shellState->statusMessage = checkout.ok
+            ? "Subscription checkout opened in the browser."
+            : "Checkout failed: " + checkout.error.message;
+        appendAiActivity(
+            shellState,
+            checkout.ok ? "Checkout" : "Checkout error",
+            shellState->statusMessage);
+    }
+    if (shellState->aiBrowserLoginRunning &&
+        shellState->aiBrowserLoginFuture.valid() &&
+        shellState->aiBrowserLoginFuture.wait_for(
+            std::chrono::seconds(0)) == std::future_status::ready) {
+        const jcut::ai::BrowserLoginCore login =
+            shellState->aiBrowserLoginFuture.get();
+        shellState->aiBrowserLoginRunning = false;
+        if (login.ok) {
+            shellState->aiSessionToken = login.accessToken;
+            shellState->aiRefreshToken = login.refreshToken;
+            shellState->aiUserId = login.userId;
+            const jcut::ai::CredentialStoreResultCore stored =
+                jcut::ai::storeCredentialsCore(
+                    jcut::ai::StoredCredentialsCore{
+                        shellState->aiSessionToken,
+                        shellState->aiRefreshToken,
+                        shellState->aiUserId});
+            shellState->aiCredentialStatus = stored.ok
+                ? "Browser login completed and saved."
+                : "Browser login completed for this session; save failed: " +
+                    stored.error;
+            shellState->statusMessage =
+                shellState->aiCredentialStatus;
+            startAiAccountRefresh(shellState);
+        } else {
+            shellState->aiCredentialStatus =
+                "Browser login failed: " + login.error.message;
+            shellState->statusMessage =
+                shellState->aiCredentialStatus;
+        }
+        appendAiActivity(
+            shellState,
+            login.ok ? "Login" : "Login error",
+            shellState->aiCredentialStatus);
+    }
+    if (shellState->aiTokenRefreshRunning &&
+        shellState->aiTokenRefreshFuture.valid() &&
+        shellState->aiTokenRefreshFuture.wait_for(
+            std::chrono::seconds(0)) == std::future_status::ready) {
+        const jcut::ai::RefreshedSessionCore refreshed =
+            shellState->aiTokenRefreshFuture.get();
+        shellState->aiTokenRefreshRunning = false;
+        if (refreshed.ok) {
+            shellState->aiSessionToken = refreshed.accessToken;
+            shellState->aiRefreshToken = refreshed.refreshToken;
+            if (!refreshed.userId.empty()) {
+                shellState->aiUserId = refreshed.userId;
+            }
+            const jcut::ai::CredentialStoreResultCore stored =
+                jcut::ai::storeCredentialsCore(
+                    jcut::ai::StoredCredentialsCore{
+                        shellState->aiSessionToken,
+                        shellState->aiRefreshToken,
+                        shellState->aiUserId});
+            shellState->aiCredentialStatus = stored.ok
+                ? "Login token refreshed and saved."
+                : "Token refreshed for this session; save failed: " +
+                    stored.error;
+            shellState->statusMessage =
+                shellState->aiCredentialStatus;
+            startAiAccountRefresh(shellState);
+        } else {
+            shellState->aiCredentialStatus =
+                "Token refresh failed: " + refreshed.error.message;
+            shellState->statusMessage =
+                shellState->aiCredentialStatus;
+        }
+        appendAiActivity(
+            shellState,
+            refreshed.ok ? "Token refresh" : "Token error",
+            shellState->aiCredentialStatus);
+    }
+    if (shellState->aiAccountRefreshRunning &&
+        shellState->aiAccountFuture.valid() &&
+        shellState->aiAccountFuture.wait_for(std::chrono::seconds(0)) ==
+            std::future_status::ready) {
+        shellState->aiAccount = shellState->aiAccountFuture.get();
+        shellState->aiAccountRefreshRunning = false;
+        if (!shellState->aiAccount.ok &&
+            (shellState->aiAccount.error.httpStatus == 401 ||
+             shellState->aiAccount.error.httpStatus == 403) &&
+            !shellState->aiRefreshToken.empty()) {
+            startAiTokenRefresh(shellState);
+        }
+        if (shellState->aiAccount.ok) {
+            const jcut::ai::EntitlementsCore& entitlements =
+                shellState->aiAccount.entitlements;
+            if (!entitlements.models.empty() &&
+                std::find(entitlements.models.begin(),
+                          entitlements.models.end(),
+                          shellState->aiSelectedModel) ==
+                    entitlements.models.end()) {
+                shellState->aiSelectedModel = entitlements.models.front();
+                setLegacyStateOverride(
+                    shellState, "aiSelectedModel",
+                    shellState->aiSelectedModel);
+            }
+            if (entitlements.projectBudget > 0) {
+                shellState->aiUsageBudgetCap =
+                    entitlements.projectBudget;
+                setLegacyStateOverride(
+                    shellState, "aiUsageBudgetCap",
+                    shellState->aiUsageBudgetCap);
+            }
+            if (entitlements.timeoutMs > 0) {
+                shellState->aiRequestTimeoutMs =
+                    entitlements.timeoutMs;
+            }
+            shellState->aiRequestRetries =
+                std::clamp(entitlements.retries, 0, 3);
+        }
+        shellState->statusMessage = shellState->aiAccount.status;
+        appendAiActivity(
+            shellState,
+            shellState->aiAccount.ok
+                ? "Access refresh"
+                : "Access error",
+            shellState->aiAccount.status);
+    }
+    if (shellState->aiTaskRunning &&
+        shellState->aiTaskFuture.valid() &&
+        shellState->aiTaskFuture.wait_for(std::chrono::seconds(0)) ==
+            std::future_status::ready) {
+        jcut::ai::TaskResponseCore response =
+            shellState->aiTaskFuture.get();
+        shellState->aiTaskRunning = false;
+        if (response.ok) {
+            shellState->aiUsageRequests += 1;
+            setLegacyStateOverride(
+                shellState, "aiUsageRequests",
+                shellState->aiUsageRequests);
+            if (shellState->aiTaskPurpose ==
+                AiTaskPurpose::CloudSpeakerMining) {
+                TranscriptInspectorCache& cache =
+                    shellState->transcriptCache;
+                std::string parseError;
+                std::vector<jcut::TranscriptMiningProposal> proposals;
+                if (cache.sourceKey ==
+                        shellState->aiTaskTranscriptSourceKey &&
+                    cache.session.activeDocument) {
+                    try {
+                        proposals =
+                            jcut::parseCloudSpeakerMiningResponse(
+                                cache.session.activeDocument->root(),
+                                nlohmann::json::parse(
+                                    response.responseJson),
+                                &parseError);
+                    } catch (const nlohmann::json::exception& exception) {
+                        parseError = exception.what();
+                    }
+                } else {
+                    parseError =
+                        "Transcript changed while cloud mining was running.";
+                }
+                cache.miningProposalLabel =
+                    "Cloud speaker-profile candidates";
+                cache.miningProposals = std::move(proposals);
+                cache.miningProposalSelected.assign(
+                    cache.miningProposals.size(), 1);
+                shellState->statusMessage =
+                    cache.miningProposals.empty()
+                    ? parseError
+                    : "Cloud speaker-profile proposals are ready for review.";
+            } else {
+                shellState->aiChatMessages.push_back(AiChatMessage{
+                    "Assistant",
+                    response.text.empty()
+                        ? std::string("No text response returned.")
+                        : std::move(response.text)});
+                shellState->statusMessage = "AI response received";
+            }
+            appendAiActivity(
+                shellState,
+                shellState->aiTaskPurpose ==
+                        AiTaskPurpose::CloudSpeakerMining
+                    ? "Speaker mining"
+                    : "Chat",
+                shellState->statusMessage);
+        } else {
+            shellState->aiUsageFailures += 1;
+            setLegacyStateOverride(
+                shellState, "aiUsageFailures",
+                shellState->aiUsageFailures);
+            const std::string failure =
+                response.error.message.empty()
+                ? std::string("AI request failed")
+                : std::move(response.error.message);
+            if (shellState->aiTaskPurpose ==
+                AiTaskPurpose::Chat) {
+                shellState->aiChatMessages.push_back(
+                    AiChatMessage{"Error", failure});
+            }
+            shellState->statusMessage = failure;
+            appendAiActivity(
+                shellState, "AI request error", failure);
+        }
+    }
+}
+
+void startAiCheckout(ShellState* shellState)
+{
+    if (!shellState || shellState->aiCheckoutRunning ||
+        shellState->aiSessionToken.empty()) {
+        return;
+    }
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    const std::string token = shellState->aiSessionToken;
+    std::vector<std::string> slugs;
+    if (const char* configured =
+            std::getenv("JCUT_AI_SUBSCRIPTION_SLUG");
+        configured && *configured) {
+        slugs.emplace_back(configured);
+    }
+    for (const char* fallback :
+         {"jsynth-pro-subscription",
+          "jcut-ai-subscription",
+          "ai-platform"}) {
+        if (std::find(slugs.begin(), slugs.end(), fallback) ==
+            slugs.end()) {
+            slugs.emplace_back(fallback);
+        }
+    }
+    shellState->aiCheckoutRunning = true;
+    shellState->statusMessage =
+        "Starting subscription checkout...";
+    appendAiActivity(
+        shellState, "Checkout",
+        shellState->statusMessage);
+    shellState->aiCheckoutFuture = std::async(
+        std::launch::async,
+        [config = std::move(config),
+         token,
+         slugs = std::move(slugs)] {
+            return jcut::ai::launchSubscriptionCheckoutCore(
+                config, token, slugs);
+        });
+}
+
+void startAiBrowserLogin(ShellState* shellState)
+{
+    if (!shellState || shellState->aiBrowserLoginRunning) return;
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    shellState->aiBrowserLoginCancelRequested.store(false);
+    shellState->aiBrowserLoginRunning = true;
+    shellState->aiCredentialStatus =
+        "Browser login started; complete sign-in in your browser.";
+    appendAiActivity(
+        shellState, "Login",
+        shellState->aiCredentialStatus);
+    shellState->aiBrowserLoginFuture = std::async(
+        std::launch::async,
+        [config = std::move(config), shellState] {
+            return jcut::ai::runSupabaseBrowserLoginCore(
+                config,
+                "google",
+                180000,
+                &shellState->aiBrowserLoginCancelRequested);
+        });
+}
+
+void startAiTokenRefresh(ShellState* shellState)
+{
+    if (!shellState || shellState->aiTokenRefreshRunning ||
+        shellState->aiRefreshToken.empty()) {
+        return;
+    }
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    const std::string refreshToken = shellState->aiRefreshToken;
+    shellState->aiTokenRefreshRunning = true;
+    shellState->aiCredentialStatus = "Refreshing login token...";
+    appendAiActivity(
+        shellState, "Token refresh",
+        shellState->aiCredentialStatus);
+    shellState->aiTokenRefreshFuture = std::async(
+        std::launch::async,
+        [config = std::move(config), refreshToken] {
+            return jcut::ai::refreshSupabaseSessionCore(
+                config, refreshToken);
+        });
+}
+
+void startAiAccountRefresh(ShellState* shellState)
+{
+    if (!shellState || shellState->aiAccountRefreshRunning) return;
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    const std::string token = shellState->aiSessionToken;
+    shellState->aiAccountRefreshRunning = true;
+    shellState->aiAccount.status = "Refreshing account access...";
+    appendAiActivity(
+        shellState, "Access refresh",
+        shellState->aiAccount.status);
+    shellState->aiAccountFuture = std::async(
+        std::launch::async,
+        [config = std::move(config), token] {
+            return jcut::ai::refreshAccountCore(config, token);
+        });
+}
+
+nlohmann::json buildAiProjectContextCore(
+    const jcut::EditorDocumentCore& snapshot)
+{
+    nlohmann::json clips = nlohmann::json::array();
+    int selectedClip = 0;
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        if (clip.selected) selectedClip = clip.id;
+        clips.push_back(nlohmann::json{
+            {"id", clip.id},
+            {"label", clip.label},
+            {"file_path", clip.sourcePath},
+            {"track_id", clip.trackId},
+            {"start_frame", clip.startFrame},
+            {"duration_frames", clip.durationFrames},
+            {"has_audio", clip.hasAudio},
+            {"media_type", clip.mediaKind},
+        });
+    }
+    return nlohmann::json{
+        {"current_frame", snapshot.transport.currentFrame},
+        {"selected_clip_id", selectedClip},
+        {"clips", std::move(clips)},
+    };
+}
+
+void startAiChatRequest(ShellState* shellState,
+                        const jcut::EditorDocumentCore& snapshot)
+{
+    if (!shellState || shellState->aiTaskRunning) return;
+    const std::string prompt = shellState->aiChatPrompt;
+    if (prompt.empty()) return;
+    if (!shellState->featureAiPanel) {
+        shellState->statusMessage =
+            "AI disabled: feature_ai_panel=false";
+        return;
+    }
+    if (!shellState->aiAccount.aiEnabled) {
+        shellState->statusMessage =
+            "Refresh account access before sending AI requests";
+        return;
+    }
+    if (shellState->aiUsageRequests >=
+        shellState->aiUsageBudgetCap) {
+        shellState->statusMessage =
+            "AI project request budget is exhausted";
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::erase_if(
+        shellState->aiRecentRequestTimes,
+        [now](const auto& requestTime) {
+            return now - requestTime >= std::chrono::minutes(1);
+        });
+    const int requestsPerMinute = std::max(
+        1,
+        shellState->aiAccount.entitlements.requestsPerMinute);
+    if (static_cast<int>(
+            shellState->aiRecentRequestTimes.size()) >=
+        requestsPerMinute) {
+        shellState->statusMessage =
+            "AI rate limit reached (" +
+            std::to_string(requestsPerMinute) +
+            " requests/min)";
+        return;
+    }
+
+    shellState->aiChatMessages.push_back({"You", prompt});
+    shellState->aiChatPrompt.clear();
+    while (shellState->aiChatMessages.size() > 30) {
+        shellState->aiChatMessages.erase(
+            shellState->aiChatMessages.begin());
+    }
+    std::string conversation;
+    for (const AiChatMessage& message :
+         shellState->aiChatMessages) {
+        conversation += "[" + message.role + "]\n" +
+            message.content + "\n\n";
+    }
+    nlohmann::json payload{
+        {"task", "chat_agent"},
+        {"instructions",
+         "You are JCut Agent. Use the provided conversation and project "
+         "context to answer accurately. Give concise, actionable responses."},
+        {"transcript_text", std::move(conversation)},
+    };
+    const nlohmann::json context =
+        buildAiProjectContextCore(snapshot);
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    const std::string token = shellState->aiSessionToken;
+    std::vector<std::string> models{
+        shellState->aiSelectedModel.empty()
+            ? std::string("deepseek-chat")
+            : shellState->aiSelectedModel};
+    for (const std::string& fallback :
+         shellState->aiAccount.entitlements.fallbackOrder) {
+        if (!fallback.empty() &&
+            std::find(models.begin(), models.end(), fallback) ==
+                models.end()) {
+            models.push_back(fallback);
+        }
+    }
+    const int retries = shellState->aiRequestRetries;
+    shellState->aiTaskRunning = true;
+    shellState->aiTaskPurpose = AiTaskPurpose::Chat;
+    shellState->aiTaskTranscriptSourceKey.clear();
+    shellState->aiRecentRequestTimes.push_back(now);
+    shellState->statusMessage = "Submitting AI chat request...";
+    appendAiActivity(
+        shellState, "Chat",
+        shellState->statusMessage);
+    shellState->aiTaskFuture = std::async(
+        std::launch::async,
+        [config = std::move(config),
+         token,
+         models = std::move(models),
+         retries,
+         payload = std::move(payload),
+         context]() {
+            jcut::ai::TaskResponseCore last;
+            for (const std::string& model : models) {
+                for (int attempt = 0; attempt <= retries; ++attempt) {
+                    last = jcut::ai::submitTaskCore(
+                        config, token, "chat", model, payload, context);
+                    if (last.ok) return last;
+                    if (last.error.httpStatus == 401 ||
+                        last.error.httpStatus == 403) {
+                        return last;
+                    }
+                }
+            }
+            return last;
+        });
+}
+
+void startCloudSpeakerMining(
+    ShellState* shellState,
+    const nlohmann::json& transcriptRoot,
+    const std::string& transcriptSourceKey,
+    const jcut::EditorDocumentCore& snapshot)
+{
+    if (!shellState || shellState->aiTaskRunning ||
+        !shellState->featureAiSpeakerCleanup ||
+        !shellState->aiAccount.aiEnabled) {
+        if (shellState) {
+            shellState->statusMessage =
+                "Cloud speaker mining requires enabled AI access.";
+        }
+        return;
+    }
+    if (shellState->aiUsageRequests >=
+        shellState->aiUsageBudgetCap) {
+        shellState->statusMessage =
+            "AI project request budget is exhausted";
+        return;
+    }
+    jcut::ai::GatewayConfigCore config;
+    config.baseUrl = shellState->aiGatewayBaseUrl;
+    config.timeoutMs = shellState->aiRequestTimeoutMs;
+    const std::string token = shellState->aiSessionToken;
+    const std::string model = shellState->aiSelectedModel;
+    const nlohmann::json payload =
+        jcut::buildCloudSpeakerMiningPayload(transcriptRoot);
+    const nlohmann::json context =
+        buildAiProjectContextCore(snapshot);
+    shellState->aiTaskRunning = true;
+    shellState->aiTaskPurpose =
+        AiTaskPurpose::CloudSpeakerMining;
+    shellState->aiTaskTranscriptSourceKey =
+        transcriptSourceKey;
+    shellState->statusMessage =
+        "Mining cloud speaker profiles...";
+    appendAiActivity(
+        shellState, "Speaker mining",
+        shellState->statusMessage);
+    shellState->aiTaskFuture = std::async(
+        std::launch::async,
+        [config = std::move(config),
+         token,
+         model,
+         payload,
+         context] {
+            return jcut::ai::submitTaskCore(
+                config,
+                token,
+                "mine_transcript_speakers",
+                model,
+                payload,
+                context);
+        });
+}
+
 void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& snapshot)
 {
+    pollAiOperations(shellState);
+    const std::string requestedInspectorTab =
+        std::exchange(shellState->requestedInspectorTab, {});
+    const auto inspectorTabFlags = [&requestedInspectorTab](
+                                       const char* label) {
+        return requestedInspectorTab == label
+            ? ImGuiTabItemFlags_SetSelected
+            : ImGuiTabItemFlags_None;
+    };
     const bool focusOutput = std::exchange(shellState->focusInspectorOutputRequested, false);
     const bool focusProjects = std::exchange(shellState->focusInspectorProjectsRequested, false);
     const ShellLayout layout = computeShellLayout();
@@ -6408,7 +10496,7 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
         : ImGuiCond_FirstUseEver;
     ImGui::SetNextWindowPos(layout.inspector.pos, layoutCondition);
     ImGui::SetNextWindowSize(layout.inspector.size, layoutCondition);
-    if (focusOutput || focusProjects) {
+    if (focusOutput || focusProjects || !requestedInspectorTab.empty()) {
         ImGui::SetNextWindowFocus();
     }
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
@@ -6424,7 +10512,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
     const std::int64_t fadeEndFrame =
         std::min(currentClipLocalFrame + 15, currentClipLastFrame);
     if (ImGui::BeginTabBar("InspectorTabs")) {
-        if (ImGui::BeginTabItem("Grade")) {
+        if (ImGui::BeginTabItem(
+                "Grade", nullptr, inspectorTabFlags("Grade"))) {
             drawInspectorHeading("Grade", snapshot, currentClip);
             float saturation = currentClip ? static_cast<float>(currentClip->saturation) : 1.0f;
             float brightness = currentClip ? static_cast<float>(currentClip->brightness) : 0.0f;
@@ -6432,11 +10521,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             bool gradePreview = currentClip ? currentClip->gradingPreviewEnabled : false;
             ImGui::BeginDisabled(!currentClip);
             bool gradingChanged = false;
-            gradingChanged |= ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f, "%.2f");
+            gradingChanged |= ImGui::SliderFloat("Saturation", &saturation, -10.0f, 10.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
-            gradingChanged |= ImGui::SliderFloat("Brightness", &brightness, -1.0f, 1.0f, "%.2f");
+            gradingChanged |= ImGui::SliderFloat("Brightness", &brightness, -10.0f, 10.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
-            gradingChanged |= ImGui::SliderFloat("Contrast", &contrast, 0.0f, 2.0f, "%.2f");
+            gradingChanged |= ImGui::SliderFloat("Contrast", &contrast, -10.0f, 10.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
             gradingChanged |= ImGui::Checkbox("Preview", &gradePreview);
             if (gradingChanged && currentClip) {
@@ -6556,19 +10645,123 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         ImGui::Checkbox(
                             "Curve smoothing", &draft->curveSmoothingEnabled);
                         if (ImGui::TreeNode("Curves")) {
+                            const auto applyLockedTone = [](
+                                const std::vector<jcut::EditorPoint>& curve,
+                                double* shadows,
+                                double* midtones,
+                                double* highlights) {
+                                const jcut::EditorToneValues tones =
+                                    jcut::editorToneValuesFromThreePointCurve(curve);
+                                *shadows = tones.shadows;
+                                *midtones = tones.midtones;
+                                *highlights = tones.highlights;
+                            };
+                            const bool redCurveChanged =
+                                drawGradingCurvePointEditor(
+                                    "Red",
+                                    &draft->curvePointsR,
+                                    draft->curveThreePointLock,
+                                    draft->curveSmoothingEnabled);
+                            const bool greenCurveChanged =
+                                drawGradingCurvePointEditor(
+                                    "Green",
+                                    &draft->curvePointsG,
+                                    draft->curveThreePointLock,
+                                    draft->curveSmoothingEnabled);
+                            const bool blueCurveChanged =
+                                drawGradingCurvePointEditor(
+                                    "Blue",
+                                    &draft->curvePointsB,
+                                    draft->curveThreePointLock,
+                                    draft->curveSmoothingEnabled);
+                            if (draft->curveThreePointLock) {
+                                if (redCurveChanged) {
+                                    applyLockedTone(
+                                        draft->curvePointsR,
+                                        &draft->shadowsR,
+                                        &draft->midtonesR,
+                                        &draft->highlightsR);
+                                }
+                                if (greenCurveChanged) {
+                                    applyLockedTone(
+                                        draft->curvePointsG,
+                                        &draft->shadowsG,
+                                        &draft->midtonesG,
+                                        &draft->highlightsG);
+                                }
+                                if (blueCurveChanged) {
+                                    applyLockedTone(
+                                        draft->curvePointsB,
+                                        &draft->shadowsB,
+                                        &draft->midtonesB,
+                                        &draft->highlightsB);
+                                }
+                            }
                             drawGradingCurvePointEditor(
-                                "Red", &draft->curvePointsR, draft->curveThreePointLock);
-                            drawGradingCurvePointEditor(
-                                "Green", &draft->curvePointsG, draft->curveThreePointLock);
-                            drawGradingCurvePointEditor(
-                                "Blue", &draft->curvePointsB, draft->curveThreePointLock);
-                            drawGradingCurvePointEditor(
-                                "Luma", &draft->curvePointsLuma, false);
+                                "Luma",
+                                &draft->curvePointsLuma,
+                                false,
+                                draft->curveSmoothingEnabled);
                             ImGui::TreePop();
                         }
                     });
-            ImGui::BeginDisabled();
-            ImGui::Button("Auto Oppose (Qt workflow)");
+            if (ImGui::TreeNode("Auto Oppose Settings")) {
+                jcut::EditorAutoOpposeSettingsCore& settings =
+                    shellState->autoOpposeSettings;
+                ImGui::SliderInt(
+                    "Analysis Density", &settings.sampleTarget, 30, 2000);
+                ImGui::SliderInt(
+                    "Min Event Gap", &settings.minEventGapFrames, 1, 300);
+                ImGui::SliderInt(
+                    "Max Events", &settings.maxEvents, 1, 200);
+                constexpr double kJumpThresholdMinimum = 0.01;
+                constexpr double kJumpThresholdMaximum = 0.5;
+                ImGui::SliderScalar(
+                    "Luma Jump Threshold",
+                    ImGuiDataType_Double,
+                    &settings.jumpLumaThreshold,
+                    &kJumpThresholdMinimum,
+                    &kJumpThresholdMaximum,
+                    "%.3f");
+                settings.jumpLumaThreshold =
+                    std::clamp(settings.jumpLumaThreshold, 0.01, 0.5);
+                ImGui::SliderScalar(
+                    "Saturation Jump Threshold",
+                    ImGuiDataType_Double,
+                    &settings.jumpSaturationThreshold,
+                    &kJumpThresholdMinimum,
+                    &kJumpThresholdMaximum,
+                    "%.3f");
+                settings.jumpSaturationThreshold =
+                    std::clamp(settings.jumpSaturationThreshold, 0.01, 0.5);
+                ImGui::SliderScalar(
+                    "Contrast Jump Threshold",
+                    ImGuiDataType_Double,
+                    &settings.jumpContrastThreshold,
+                    &kJumpThresholdMinimum,
+                    &kJumpThresholdMaximum,
+                    "%.3f");
+                settings.jumpContrastThreshold =
+                    std::clamp(settings.jumpContrastThreshold, 0.01, 0.5);
+                constexpr double kOpposeStrengthMinimum = 0.5;
+                constexpr double kOpposeStrengthMaximum = 6.0;
+                ImGui::SliderScalar(
+                    "Brightness Oppose Strength",
+                    ImGuiDataType_Double,
+                    &settings.brightnessStrength,
+                    &kOpposeStrengthMinimum,
+                    &kOpposeStrengthMaximum,
+                    "%.2f");
+                ImGui::TreePop();
+            }
+            ImGui::BeginDisabled(
+                !currentClip || shellState->autoOpposeRunning);
+            if (ImGui::Button(
+                    shellState->autoOpposeRunning
+                        ? "Auto Oppose: Analyzing..."
+                        : "Auto Oppose")) {
+                startAutoOpposeJob(shellState, snapshot, *currentClip);
+            }
             ImGui::EndDisabled();
             if (ImGui::BeginTable(
                     "GradeKeys",
@@ -6592,6 +10785,12 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             keyframe.frame,
                             static_cast<std::int64_t>(currentClip->startFrame) + keyframe.frame,
                             "grading-frame-" + std::to_string(keyframe.frame));
+                        markInspectorDeleteTargetForLastItem(
+                            shellState,
+                            InspectorDeleteTargetKind::ClipKeyframe,
+                            currentClip->id,
+                            jcut::EditorKeyframeChannel::Grading,
+                            keyframe.frame);
                         ImGui::TableNextColumn();
                         ImGui::Text("%.2f", keyframe.brightness);
                         ImGui::TableNextColumn();
@@ -6702,6 +10901,12 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             keyframe.frame,
                             static_cast<std::int64_t>(currentClip->startFrame) + keyframe.frame,
                             "opacity-frame-" + std::to_string(keyframe.frame));
+                        markInspectorDeleteTargetForLastItem(
+                            shellState,
+                            InspectorDeleteTargetKind::ClipKeyframe,
+                            currentClip->id,
+                            jcut::EditorKeyframeChannel::Opacity,
+                            keyframe.frame);
                         ImGui::TableNextColumn();
                         ImGui::Text("%.2f", keyframe.opacity);
                         ImGui::TableNextColumn();
@@ -6959,7 +11164,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Masks")) {
+        if (ImGui::BeginTabItem(
+                "Masks", nullptr, inspectorTabFlags("Masks"))) {
             drawInspectorHeading("Masks", snapshot, currentClip);
             const jcut::EditorClip* maskSourceClip = nullptr;
             const jcut::EditorClip* maskEditClip = nullptr;
@@ -6993,6 +11199,339 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             if (!maskSourceClip) {
                 shellState->maskSidecarContextClipId = -1;
                 shellState->maskSidecars.clear();
+            }
+            ImGui::SeparatorText("BiRefNet Alpha Generator");
+            const jcut::jobs::BiRefNetJobSnapshotCore birefnetJob =
+                shellState->birefnetJob.snapshot();
+            if (birefnetJob.state !=
+                    jcut::jobs::ProcessJobSnapshotCore::State::Idle) {
+                ImGui::TextWrapped("%s", birefnetJob.status.c_str());
+                if (birefnetJob.totalFrames > 0) {
+                    ImGui::ProgressBar(
+                        static_cast<float>(
+                            std::clamp(
+                                birefnetJob.percent / 100.0,
+                                0.0,
+                                1.0)),
+                        ImVec2(-1.0f, 0.0f));
+                    ImGui::TextDisabled(
+                        "%lld / %lld frames",
+                        static_cast<long long>(
+                            birefnetJob.currentFrame),
+                        static_cast<long long>(
+                            birefnetJob.totalFrames));
+                }
+                if (!birefnetJob.livePreviewPath.empty()) {
+                    ImGui::TextDisabled(
+                        "Live preview: %s",
+                        birefnetJob.livePreviewPath.c_str());
+                }
+                if (shellState->birefnetLivePreviewTextureId != 0 &&
+                    shellState->birefnetLivePreviewSize.valid()) {
+                    const float availableWidth = std::max(
+                        160.0f,
+                        ImGui::GetContentRegionAvail().x);
+                    const float width = std::min(
+                        availableWidth, 960.0f);
+                    const float height = width *
+                        static_cast<float>(
+                            shellState->
+                                birefnetLivePreviewSize.height) /
+                        static_cast<float>(
+                            shellState->
+                                birefnetLivePreviewSize.width);
+                    ImGui::Image(
+                        shellState->
+                            birefnetLivePreviewTextureId,
+                        ImVec2(width, height));
+                } else if (!shellState->
+                               birefnetLivePreviewError.empty()) {
+                    ImGui::TextDisabled(
+                        "%s",
+                        shellState->
+                            birefnetLivePreviewError.c_str());
+                } else if (birefnetJob.active()) {
+                    ImGui::TextDisabled(
+                        "Waiting for the first BiRefNet live preview...");
+                }
+            }
+            if (maskSourceClip) {
+                ImGui::BeginDisabled(birefnetJob.active());
+                inputTextForString<512>(
+                    "BiRefNet Model",
+                    &shellState->birefnetModel);
+                inputTextForString<512>(
+                    "BiRefNet Revision",
+                    &shellState->birefnetRevision);
+                inputTextForString<512>(
+                    "BiRefNet Model Cache",
+                    &shellState->birefnetModelCachePath);
+                inputTextForString<512>(
+                    "BiRefNet Runtime Cache",
+                    &shellState->birefnetRuntimeCachePath);
+                const char* devices[] = {"CUDA", "CPU"};
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::Combo(
+                    "BiRefNet Device",
+                    &shellState->birefnetDevice,
+                    devices,
+                    IM_ARRAYSIZE(devices));
+                ImGui::BeginDisabled(
+                    shellState->birefnetDevice == 1);
+                ImGui::Checkbox(
+                    "BiRefNet FP16",
+                    &shellState->birefnetFp16);
+                ImGui::EndDisabled();
+                if (shellState->birefnetDevice == 1) {
+                    shellState->birefnetFp16 = false;
+                }
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::SliderFloat(
+                    "Alpha Tolerance (%)",
+                    &shellState->birefnetAlphaTolerancePercent,
+                    0.0f,
+                    99.0f,
+                    "%.1f");
+                ImGui::Checkbox(
+                    "Run BiRefNet Docker container as root",
+                    &shellState->birefnetDockerRoot);
+                ImGui::Checkbox(
+                    "Restart and replace prior BiRefNet output",
+                    &shellState->birefnetRestart);
+                if (ImGui::Button("Run BiRefNet Job")) {
+                    startBiRefNetJob(
+                        shellState, *maskSourceClip);
+                    saveUiPreferences(*shellState);
+                }
+                ImGui::EndDisabled();
+                if (birefnetJob.active()) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel BiRefNet Job")) {
+                        shellState->birefnetJob.cancel();
+                    }
+                }
+            } else {
+                ImGui::TextWrapped(
+                    "Select a video source or generated Mask Matte child to run BiRefNet.");
+            }
+            ImGui::SeparatorText("Prompt Mask Generator");
+            const jcut::masks::PromptMaskJobSnapshot promptJob =
+                shellState->promptMaskJob.snapshot();
+            const int promptJobState =
+                static_cast<int>(promptJob.state);
+            if (shellState->promptMaskLastState != promptJobState) {
+                shellState->promptMaskLastState = promptJobState;
+                if (promptJob.state ==
+                        jcut::masks::PromptMaskJobSnapshot::State::Completed) {
+                    if (shellState->promptMaskSourceClipId > 0 &&
+                        !promptJob.selectedMaskPath.empty()) {
+                        applyCommand(
+                            shellState,
+                            jcut::MaterializeMaskMatteCommand{
+                                shellState->promptMaskSourceClipId,
+                                promptJob.selectedMaskPath,
+                                promptJob.selectedMaskId,
+                                promptJob.selectedMaskName});
+                    }
+                    shellState->statusMessage = promptJob.status;
+                    shellState->maskSidecarContextClipId = -1;
+                } else if (
+                    promptJob.state ==
+                        jcut::masks::PromptMaskJobSnapshot::State::Failed ||
+                    promptJob.state ==
+                        jcut::masks::PromptMaskJobSnapshot::State::Paused) {
+                    shellState->statusMessage = promptJob.status;
+                }
+            }
+            if (promptJob.state !=
+                    jcut::masks::PromptMaskJobSnapshot::State::Idle) {
+                ImGui::TextWrapped("%s", promptJob.status.c_str());
+                if (!promptJob.selectedMaskPath.empty()) {
+                    ImGui::TextDisabled(
+                        "Result: %s",
+                        promptJob.selectedMaskPath.c_str());
+                }
+                if (!promptJob.logPath.empty()) {
+                    ImGui::TextDisabled(
+                        "Log: %s", promptJob.logPath.c_str());
+                }
+            }
+            if (maskSourceClip) {
+                ImGui::BeginDisabled(promptJob.active());
+                inputTextForString<512>(
+                    "Text Prompt", &shellState->promptMaskPrompt);
+                inputTextForString<512>(
+                    "SAM3 Model Cache",
+                    &shellState->promptMaskModelCachePath);
+                inputTextForString<512>(
+                    "SAM3 Runtime Cache",
+                    &shellState->promptMaskRuntimeCachePath);
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::InputInt(
+                    "Scale Width",
+                    &shellState->promptMaskScaleWidth,
+                    64,
+                    256);
+                shellState->promptMaskScaleWidth = std::clamp(
+                    shellState->promptMaskScaleWidth, 0, 8192);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::InputInt(
+                    "Prescale Width",
+                    &shellState->promptMaskPrescaleWidth,
+                    64,
+                    256);
+                shellState->promptMaskPrescaleWidth = std::clamp(
+                    shellState->promptMaskPrescaleWidth, 0, 8192);
+                ImGui::BeginDisabled(
+                    shellState->promptMaskVideoMode ||
+                    shellState->promptMaskWriteBinaryMasks);
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::InputFloat(
+                    "Extract FPS",
+                    &shellState->promptMaskExtractFps,
+                    1.0f,
+                    5.0f,
+                    "%.3f");
+                shellState->promptMaskExtractFps = std::clamp(
+                    shellState->promptMaskExtractFps, 0.0f, 240.0f);
+                ImGui::EndDisabled();
+                const char* frameFormats[] = {"JPEG", "PNG"};
+                ImGui::BeginDisabled(
+                    shellState->promptMaskVideoMode);
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::Combo(
+                    "Intermediate Frames",
+                    &shellState->promptMaskFrameFormat,
+                    frameFormats,
+                    IM_ARRAYSIZE(frameFormats));
+                ImGui::EndDisabled();
+                ImGui::Checkbox(
+                    "Enable torch.compile",
+                    &shellState->promptMaskCompileModel);
+                const bool videoModeChanged = ImGui::Checkbox(
+                    "Run SAM video mode",
+                    &shellState->promptMaskVideoMode);
+                if (videoModeChanged) {
+                    shellState->promptMaskWriteBinaryMasks =
+                        !shellState->promptMaskVideoMode;
+                    shellState->promptMaskUnionCurrent = false;
+                    shellState->promptMaskWritePreviewFrames = false;
+                }
+                ImGui::BeginDisabled(shellState->promptMaskVideoMode);
+                ImGui::Checkbox(
+                    "Write binary mask frames",
+                    &shellState->promptMaskWriteBinaryMasks);
+                const bool canUnion =
+                    maskEditClip && !maskEditClip->maskFramesDir.empty();
+                ImGui::BeginDisabled(
+                    !shellState->promptMaskWriteBinaryMasks ||
+                    !canUnion);
+                ImGui::Checkbox(
+                    "Union with selected matte",
+                    &shellState->promptMaskUnionCurrent);
+                ImGui::EndDisabled();
+                if (!canUnion) {
+                    shellState->promptMaskUnionCurrent = false;
+                }
+                ImGui::Checkbox(
+                    "Write masked preview frames",
+                    &shellState->promptMaskWritePreviewFrames);
+                ImGui::EndDisabled();
+                ImGui::Checkbox(
+                    "Export centers JSONL",
+                    &shellState->promptMaskExportCenters);
+                ImGui::Checkbox(
+                    "Run Docker container as root",
+                    &shellState->promptMaskDockerRoot);
+                ImGui::Checkbox(
+                    "Restart and replace prior prompt outputs",
+                    &shellState->promptMaskRestart);
+                if (ImGui::Button("Run Prompt Mask Job")) {
+                    const std::optional<fs::path> script =
+                        sam3ScriptPath();
+                    jcut::masks::PromptMaskJobRequest request;
+                    request.scriptPath =
+                        script ? script->string() : std::string{};
+                    request.mediaPath =
+                        resolvedClipMediaPathForProbe(
+                            *shellState, *maskSourceClip).string();
+                    request.prompt = shellState->promptMaskPrompt;
+                    request.modelCachePath =
+                        shellState->promptMaskModelCachePath;
+                    request.runtimeCachePath =
+                        shellState->promptMaskRuntimeCachePath;
+                    request.currentMaskDirectory =
+                        canUnion ? maskEditClip->maskFramesDir
+                                 : std::string{};
+                    if (!request.currentMaskDirectory.empty()) {
+                        fs::path current(
+                            request.currentMaskDirectory);
+                        if (current.is_relative() &&
+                            !shellState->projectRootPath.empty()) {
+                            current =
+                                fs::path(shellState->projectRootPath) /
+                                current;
+                        }
+                        request.currentMaskDirectory =
+                            current.lexically_normal().string();
+                    }
+                    request.scaleWidth =
+                        shellState->promptMaskScaleWidth;
+                    request.prescaleWidth =
+                        shellState->promptMaskPrescaleWidth;
+                    request.extractFps =
+                        shellState->promptMaskExtractFps;
+                    request.intermediateFramesFormat =
+                        shellState->promptMaskFrameFormat == 1
+                            ? "png"
+                            : "jpg";
+                    request.compileModel =
+                        shellState->promptMaskCompileModel;
+                    request.videoMode =
+                        shellState->promptMaskVideoMode;
+                    request.writeBinaryMasks =
+                        shellState->promptMaskWriteBinaryMasks;
+                    request.unionWithCurrentMask =
+                        shellState->promptMaskUnionCurrent;
+                    request.writeMaskPreviewFrames =
+                        shellState->promptMaskWritePreviewFrames;
+                    request.exportCentersJson =
+                        shellState->promptMaskExportCenters;
+                    request.runDockerAsRoot =
+                        shellState->promptMaskDockerRoot;
+                    request.restartPolicy =
+                        shellState->promptMaskRestart
+                            ? jcut::masks::
+                                  PromptMaskRestartPolicy::Restart
+                            : jcut::masks::
+                                  PromptMaskRestartPolicy::Resume;
+                    std::string error;
+                    shellState->promptMaskSourceClipId =
+                        maskSourceClip->id;
+                    if (!shellState->promptMaskJob.start(
+                            request, &error)) {
+                        shellState->statusMessage =
+                            error.empty()
+                                ? "prompt-mask job could not start"
+                                : error;
+                    } else {
+                        shellState->promptMaskLastState = -1;
+                        shellState->statusMessage =
+                            "SAM3 prompt-mask job started";
+                        saveUiPreferences(*shellState);
+                    }
+                }
+                ImGui::EndDisabled();
+                if (promptJob.active()) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel Prompt Mask Job")) {
+                        shellState->promptMaskJob.cancel();
+                    }
+                }
+            } else {
+                ImGui::TextWrapped(
+                    "Select a video source or generated Mask Matte child to run SAM3.");
             }
             ImGui::SeparatorText("Generated Mask Sidecars");
             if (maskSourceClip) {
@@ -7165,13 +11704,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 "Mask Curve Smoothing", &gradeCurveSmoothing);
             bool maskCurveChanged = false;
             maskCurveChanged |= drawGradingCurvePointEditor(
-                "Mask Red Curve", &gradeCurveR, false);
+                "Mask Red Curve", &gradeCurveR, false, gradeCurveSmoothing);
             maskCurveChanged |= drawGradingCurvePointEditor(
-                "Mask Green Curve", &gradeCurveG, false);
+                "Mask Green Curve", &gradeCurveG, false, gradeCurveSmoothing);
             maskCurveChanged |= drawGradingCurvePointEditor(
-                "Mask Blue Curve", &gradeCurveB, false);
+                "Mask Blue Curve", &gradeCurveB, false, gradeCurveSmoothing);
             maskCurveChanged |= drawGradingCurvePointEditor(
-                "Mask Luma Curve", &gradeCurveLuma, false);
+                "Mask Luma Curve", &gradeCurveLuma, false, gradeCurveSmoothing);
             if (maskCurveChanged) {
                 beginRuntimeHistoryTransaction(shellState);
                 maskChanged = true;
@@ -7639,6 +12178,12 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                                 "title-frame-" + std::to_string(keyframe.frame))) {
                             hydrateTitleDraft(shellState, currentClip->id, keyframe);
                         }
+                        markInspectorDeleteTargetForLastItem(
+                            shellState,
+                            InspectorDeleteTargetKind::TitleKeyframe,
+                            currentClip->id,
+                            jcut::EditorKeyframeChannel::Transform,
+                            keyframe.frame);
                         ImGui::TableNextColumn();
                         ImGui::TextWrapped("%s", keyframe.text.c_str());
                         ImGui::TableNextColumn();
@@ -7688,7 +12233,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Sync")) {
+        if (ImGui::BeginTabItem(
+                "Sync", nullptr, inspectorTabFlags("Sync"))) {
             drawInspectorHeading("Sync", snapshot, currentClip);
             ImGui::BeginDisabled(!currentClip);
             if (ImGui::Button("Duplicate Frame") && currentClip) {
@@ -7724,7 +12270,19 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     ImGui::TableNextRow();
                     ImGui::PushID(static_cast<int>(markerIndex));
                     ImGui::TableNextColumn();
-                    ImGui::TextWrapped("%s", marker.clipId.c_str());
+                    const std::string syncOwnerLabel =
+                        marker.clipId + "##sync-owner";
+                    if (ImGui::Selectable(syncOwnerLabel.c_str())) {
+                        applyCommand(
+                            shellState,
+                            jcut::SeekToFrameCommand{
+                                static_cast<int>(
+                                    std::clamp<std::int64_t>(
+                                        marker.frame,
+                                        0,
+                                        std::numeric_limits<int>::max()))});
+                    }
+                    markSyncDeleteTargetForLastItem(shellState, marker);
                     ImGui::TableNextColumn();
                     std::int64_t frame = marker.frame;
                     ImGui::SetNextItemWidth(84.0f);
@@ -7837,6 +12395,373 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 applyCommand(shellState, jcut::SetClipTransformCommand{
                     currentClip->id, tx, ty, rotation, -scaleX, scaleY});
             }
+            if (ImGui::CollapsingHeader(
+                    "Automatic Speaker Framing",
+                    ImGuiTreeNodeFlags_DefaultOpen)) {
+                bool framingEnabled =
+                    currentClip && currentClip->speakerFramingEnabled;
+                float bakedTargetX = currentClip
+                    ? static_cast<float>(
+                          currentClip->speakerFramingBakedTargetXNorm)
+                    : 0.5f;
+                float bakedTargetY = currentClip
+                    ? static_cast<float>(
+                          currentClip->speakerFramingBakedTargetYNorm)
+                    : 0.35f;
+                float bakedTargetBox = currentClip
+                    ? static_cast<float>(
+                          currentClip->speakerFramingBakedTargetBoxNorm)
+                    : -1.0f;
+                float minimumConfidence = currentClip
+                    ? static_cast<float>(
+                          currentClip->speakerFramingMinConfidence)
+                    : 0.08f;
+                int manualTrackId = currentClip
+                    ? currentClip->speakerFramingManualTrackId : -1;
+                std::string manualStreamId = currentClip
+                    ? currentClip->speakerFramingManualStreamId
+                    : std::string{};
+                int centerSmoothingFrames = currentClip
+                    ? currentClip->speakerFramingCenterSmoothingFrames : 0;
+                int zoomSmoothingFrames = currentClip
+                    ? currentClip->speakerFramingZoomSmoothingFrames : 0;
+                int smoothingMode = currentClip
+                    ? currentClip->speakerFramingSmoothingMode : 0;
+                float centerSmoothingStrength = currentClip
+                    ? static_cast<float>(
+                          currentClip
+                              ->speakerFramingCenterSmoothingStrength)
+                    : 1.0f;
+                float zoomSmoothingStrength = currentClip
+                    ? static_cast<float>(
+                          currentClip
+                              ->speakerFramingZoomSmoothingStrength)
+                    : 1.0f;
+                int gapHoldFrames = currentClip
+                    ? currentClip->speakerFramingGapHoldFrames : 0;
+                bool framingSettingsChanged = false;
+                framingSettingsChanged |= ImGui::Checkbox(
+                    "Enabled##speakerFraming", &framingEnabled);
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Baked Target X",
+                    &bakedTargetX,
+                    0.0f,
+                    1.0f,
+                    "%.3f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Baked Target Y",
+                    &bakedTargetY,
+                    0.0f,
+                    1.0f,
+                    "%.3f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Baked Target Box",
+                    &bakedTargetBox,
+                    -1.0f,
+                    1.0f,
+                    "%.3f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Minimum Confidence",
+                    &minimumConfidence,
+                    0.0f,
+                    1.0f,
+                    "%.3f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::InputInt(
+                    "Manual Track ID", &manualTrackId);
+                framingSettingsChanged |= inputTextForString<128>(
+                    "Manual Stream ID", &manualStreamId);
+                framingSettingsChanged |= ImGui::SliderInt(
+                    "Center Smoothing Frames",
+                    &centerSmoothingFrames,
+                    0,
+                    500);
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderInt(
+                    "Zoom Smoothing Frames",
+                    &zoomSmoothingFrames,
+                    0,
+                    500);
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                constexpr const char* smoothingModes[] = {
+                    "Centered",
+                    "Causal",
+                    "Forward"};
+                framingSettingsChanged |= ImGui::Combo(
+                    "Smoothing Mode",
+                    &smoothingMode,
+                    smoothingModes,
+                    IM_ARRAYSIZE(smoothingModes));
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Center Smoothing Strength",
+                    &centerSmoothingStrength,
+                    0.0f,
+                    5.0f,
+                    "%.2f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderFloat(
+                    "Zoom Smoothing Strength",
+                    &zoomSmoothingStrength,
+                    0.0f,
+                    5.0f,
+                    "%.2f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                framingSettingsChanged |= ImGui::SliderInt(
+                    "Gap Hold Frames", &gapHoldFrames, 0, 240);
+                beginRuntimeHistoryTransactionForLastItem(shellState);
+                if (framingSettingsChanged && currentClip) {
+                    applyCommand(
+                        shellState,
+                        jcut::SetClipSpeakerFramingCommand{
+                            currentClip->id,
+                            framingEnabled,
+                            bakedTargetX,
+                            bakedTargetY,
+                            bakedTargetBox,
+                            minimumConfidence,
+                            manualTrackId,
+                            manualStreamId,
+                            centerSmoothingFrames,
+                            zoomSmoothingFrames,
+                            smoothingMode,
+                            centerSmoothingStrength,
+                            zoomSmoothingStrength,
+                            gapHoldFrames});
+                }
+
+                if (ImGui::Button("Enable At Playhead") &&
+                    currentClip) {
+                    applyCommand(
+                        shellState,
+                        jcut::UpsertSpeakerFramingEnabledKeyframeCommand{
+                            currentClip->id,
+                            {currentClipLocalFrame, true}});
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Disable At Playhead") &&
+                    currentClip) {
+                    applyCommand(
+                        shellState,
+                        jcut::UpsertSpeakerFramingEnabledKeyframeCommand{
+                            currentClip->id,
+                            {currentClipLocalFrame, false}});
+                }
+
+                const auto latestTransformAtPlayhead =
+                    [&](const std::vector<jcut::EditorTransformKeyframe>&
+                            keyframes,
+                        jcut::EditorTransformKeyframe fallback) {
+                        for (const auto& keyframe : keyframes) {
+                            if (keyframe.frame >
+                                currentClipLocalFrame) {
+                                break;
+                            }
+                            fallback = keyframe;
+                        }
+                        fallback.frame = currentClipLocalFrame;
+                        return fallback;
+                    };
+                jcut::EditorTransformKeyframe framingDraft{
+                    currentClipLocalFrame,
+                    "Baked Framing",
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                    true};
+                jcut::EditorTransformKeyframe targetDraft{
+                    currentClipLocalFrame,
+                    "Framing Target",
+                    0.5,
+                    0.35,
+                    0.0,
+                    -1.0,
+                    -1.0,
+                    true};
+                if (currentClip) {
+                    framingDraft = latestTransformAtPlayhead(
+                        currentClip->speakerFramingKeyframes,
+                        framingDraft);
+                    targetDraft = latestTransformAtPlayhead(
+                        currentClip->speakerFramingTargetKeyframes,
+                        targetDraft);
+                }
+                ImGui::SeparatorText("Baked Transform At Playhead");
+                ImGui::InputDouble(
+                    "Baked Translate X",
+                    &framingDraft.translationX,
+                    1.0,
+                    10.0,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Baked Translate Y",
+                    &framingDraft.translationY,
+                    1.0,
+                    10.0,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Baked Rotation",
+                    &framingDraft.rotation,
+                    0.1,
+                    1.0,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Baked Scale X",
+                    &framingDraft.scaleX,
+                    0.01,
+                    0.1,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Baked Scale Y",
+                    &framingDraft.scaleY,
+                    0.01,
+                    0.1,
+                    "%.3f");
+                if (ImGui::Button("Set Baked Transform") &&
+                    currentClip) {
+                    applyCommand(
+                        shellState,
+                        jcut::UpsertSpeakerFramingKeyframeCommand{
+                            currentClip->id, framingDraft});
+                }
+                ImGui::SeparatorText("Dynamic Target At Playhead");
+                ImGui::InputDouble(
+                    "Target X",
+                    &targetDraft.translationX,
+                    0.01,
+                    0.1,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Target Y",
+                    &targetDraft.translationY,
+                    0.01,
+                    0.1,
+                    "%.3f");
+                ImGui::InputDouble(
+                    "Target Box",
+                    &targetDraft.scaleX,
+                    0.01,
+                    0.1,
+                    "%.3f");
+                targetDraft.scaleY = targetDraft.scaleX;
+                if (ImGui::Button("Set Dynamic Target") &&
+                    currentClip) {
+                    applyCommand(
+                        shellState,
+                        jcut::UpsertSpeakerFramingTargetKeyframeCommand{
+                            currentClip->id, targetDraft});
+                }
+
+                const auto drawFramingRows =
+                    [&](const char* tableId,
+                        const char* label,
+                        const std::vector<jcut::EditorTransformKeyframe>&
+                            keyframes,
+                        jcut::EditorKeyframeChannel channel) {
+                        ImGui::SeparatorText(label);
+                        if (!ImGui::BeginTable(
+                                tableId,
+                                4,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg)) {
+                            return;
+                        }
+                        ImGui::TableSetupColumn("Frame");
+                        ImGui::TableSetupColumn("Position");
+                        ImGui::TableSetupColumn("Scale");
+                        ImGui::TableSetupColumn("Actions");
+                        ImGui::TableHeadersRow();
+                        for (const auto& keyframe : keyframes) {
+                            ImGui::PushID(
+                                static_cast<int>(keyframe.frame));
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::Text(
+                                "%lld",
+                                static_cast<long long>(
+                                    keyframe.frame));
+                            ImGui::TableNextColumn();
+                            ImGui::Text(
+                                "%.3f, %.3f",
+                                keyframe.translationX,
+                                keyframe.translationY);
+                            ImGui::TableNextColumn();
+                            ImGui::Text(
+                                "%.3f, %.3f",
+                                keyframe.scaleX,
+                                keyframe.scaleY);
+                            ImGui::TableNextColumn();
+                            if (ImGui::SmallButton("Seek")) {
+                                applyCommand(
+                                    shellState,
+                                    jcut::SeekToFrameCommand{
+                                        currentClip->startFrame +
+                                        static_cast<int>(
+                                            keyframe.frame)});
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Remove")) {
+                                applyCommand(
+                                    shellState,
+                                    jcut::RemoveClipKeyframeCommand{
+                                        currentClip->id,
+                                        channel,
+                                        keyframe.frame});
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::EndTable();
+                    };
+                if (currentClip) {
+                    ImGui::SeparatorText("Enable Keyframes");
+                    for (const auto& keyframe :
+                         currentClip
+                             ->speakerFramingEnabledKeyframes) {
+                        ImGui::PushID(
+                            static_cast<int>(keyframe.frame));
+                        ImGui::Text(
+                            "Frame %lld: %s",
+                            static_cast<long long>(keyframe.frame),
+                            keyframe.enabled ? "Enabled" : "Disabled");
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Seek")) {
+                            applyCommand(
+                                shellState,
+                                jcut::SeekToFrameCommand{
+                                    currentClip->startFrame +
+                                    static_cast<int>(keyframe.frame)});
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Remove")) {
+                            applyCommand(
+                                shellState,
+                                jcut::RemoveClipKeyframeCommand{
+                                    currentClip->id,
+                                    jcut::EditorKeyframeChannel::
+                                        SpeakerFramingEnabled,
+                                    keyframe.frame});
+                        }
+                        ImGui::PopID();
+                    }
+                    drawFramingRows(
+                        "SpeakerFramingBakedKeys",
+                        "Baked Transform Keyframes",
+                        currentClip->speakerFramingKeyframes,
+                        jcut::EditorKeyframeChannel::
+                            SpeakerFraming);
+                    drawFramingRows(
+                        "SpeakerFramingTargetKeys",
+                        "Dynamic Target Keyframes",
+                        currentClip
+                            ->speakerFramingTargetKeyframes,
+                        jcut::EditorKeyframeChannel::
+                            SpeakerFramingTarget);
+                }
+            }
             const jcut::EditorTransformKeyframe transformInitial{
                 currentClipLocalFrame,
                 {},
@@ -7892,6 +12817,12 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             keyframe.frame,
                             static_cast<std::int64_t>(currentClip->startFrame) + keyframe.frame,
                             "transform-frame-" + std::to_string(keyframe.frame));
+                        markInspectorDeleteTargetForLastItem(
+                            shellState,
+                            InspectorDeleteTargetKind::ClipKeyframe,
+                            currentClip->id,
+                            jcut::EditorKeyframeChannel::Transform,
+                            keyframe.frame);
                         ImGui::TableNextColumn();
                         ImGui::TextUnformatted(
                             keyframe.title.empty() ? "-" : keyframe.title.c_str());
@@ -7943,8 +12874,25 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Transcript")) {
+        if (ImGui::BeginTabItem(
+                "Transcript", nullptr, inspectorTabFlags("Transcript"))) {
             drawInspectorHeading("Transcript", snapshot, currentClip);
+            const jcut::jobs::TranscriptionJobSnapshotCore
+                transcriptionJob =
+                    shellState->transcriptionJob.snapshot();
+            ImGui::BeginDisabled(
+                !currentClip || !currentClip->hasAudio ||
+                transcriptionJob.active());
+            if (ImGui::Button("Transcribe with WhisperX") &&
+                currentClip) {
+                startTranscriptionJob(shellState, *currentClip);
+            }
+            ImGui::EndDisabled();
+            if (!transcriptionJob.status.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled(
+                    "%s", transcriptionJob.status.c_str());
+            }
             jcut::EditorTranscriptOverlayState overlay = currentClip
                 ? currentClip->transcriptOverlay
                 : jcut::EditorTranscriptOverlayState{};
@@ -8337,6 +13285,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                                     transcript.activeCutMutable) {
                                     selectTranscriptWordDraft(&cache, row);
                                 }
+                                markTranscriptDeleteTargetForLastItem(
+                                    shellState,
+                                    currentClip->id,
+                                    transcript,
+                                    row);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%lld-%lld",
                                             static_cast<long long>(row.sourceStartFrame),
@@ -8491,6 +13444,12 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         ImGui::OpenPopup("Confirm Delete Transcript Word");
                     }
                     ImGui::EndDisabled();
+                    if (std::exchange(
+                            shellState->transcriptDeletePopupRequested,
+                            false)) {
+                        ImGui::OpenPopup(
+                            "Confirm Delete Transcript Word");
+                    }
                     if (ImGui::BeginPopupModal("Confirm Delete Transcript Word", nullptr,
                                                ImGuiWindowFlags_AlwaysAutoResize)) {
                         ImGui::TextWrapped("Delete the selected word from this editable cut?");
@@ -8517,8 +13476,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Speakers")) {
+        if (ImGui::BeginTabItem(
+                "Speakers", nullptr, inspectorTabFlags("Speakers"))) {
             drawInspectorHeading("Speakers", snapshot, currentClip);
+            shellState->sectionAvatarDesiredKey.clear();
+            shellState->sectionAvatarTracks.clear();
             if (!currentClip ||
                 (currentClip->mediaKind != "audio" && !currentClip->hasAudio)) {
                 ImGui::TextWrapped(
@@ -8537,6 +13499,866 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         transcript.activeDocument->speakerProfiles();
                     ImGui::Text("%zu speaker%s in active cut",
                                 profiles.size(), profiles.size() == 1 ? "" : "s");
+                    ImGui::Checkbox(
+                        "Show Contiguous Speaker Sections",
+                        &cache.speakerSectionsExpanded);
+                    if (cache.speakerSectionsExpanded) {
+                        int minimumWords =
+                            std::clamp(
+                                currentClip->
+                                    speakerSectionMinimumWords,
+                                0,
+                                1000);
+                        ImGui::SetNextItemWidth(120.0f);
+                        if (ImGui::InputInt(
+                                "Minimum Section Words",
+                                &minimumWords,
+                                1,
+                                10)) {
+                            applyCommand(
+                                shellState,
+                                jcut::
+                                    SetClipSpeakerSectionMinimumWordsCommand{
+                                        currentClip->id,
+                                        minimumWords});
+                        }
+                        const std::vector<jcut::SpeakerSectionCore>
+                            sections =
+                                jcut::projectSpeakerSectionsCore(
+                                    transcript.activeDocument->root(),
+                                    minimumWords,
+                                    30.0);
+                        const std::string sectionClipIdentity =
+                            currentClip->persistentId.empty()
+                            ? std::to_string(currentClip->id)
+                            : currentClip->persistentId;
+                        std::vector<
+                            std::vector<
+                                jcut::SpeakerTrackAssignmentCore>>
+                            sectionAssignmentsByIndex;
+                        sectionAssignmentsByIndex.reserve(
+                            sections.size());
+                        std::vector<int> sectionAvatarTrackIds;
+                        for (const auto& section : sections) {
+                            auto assignments =
+                                jcut::
+                                    transcriptSpeakerTrackAssignmentsAtFrame(
+                                        transcript.activeDocument->
+                                            root(),
+                                        sectionClipIdentity,
+                                        section.speakerId,
+                                        section.startFrame);
+                            for (const auto& assignment :
+                                 assignments) {
+                                if (assignment.trackId >= 0 &&
+                                    std::find(
+                                        sectionAvatarTrackIds.begin(),
+                                        sectionAvatarTrackIds.end(),
+                                        assignment.trackId) ==
+                                        sectionAvatarTrackIds.end()) {
+                                    sectionAvatarTrackIds.push_back(
+                                        assignment.trackId);
+                                }
+                            }
+                            sectionAssignmentsByIndex.push_back(
+                                std::move(assignments));
+                        }
+                        constexpr std::size_t
+                            kMaximumSectionAvatarTracks = 24;
+                        std::vector<jcut::FaceContinuityTrackCore>
+                            sectionAvatarTracks;
+                        for (const int trackId :
+                             sectionAvatarTrackIds) {
+                            const auto found = std::find_if(
+                                cache.faceInspection.tracks.begin(),
+                                cache.faceInspection.tracks.end(),
+                                [&](const auto& track) {
+                                    return track.trackId ==
+                                        trackId;
+                                });
+                            if (found !=
+                                cache.faceInspection.tracks.end()) {
+                                sectionAvatarTracks.push_back(*found);
+                                if (sectionAvatarTracks.size() ==
+                                    kMaximumSectionAvatarTracks) {
+                                    break;
+                                }
+                            }
+                        }
+                        if (!sectionAvatarTracks.empty()) {
+                            const std::string avatarSourcePath =
+                                pathString(
+                                    resolvedClipSourcePath(
+                                        *shellState,
+                                        *currentClip));
+                            std::string avatarKey =
+                                transcript.activePath + "::" +
+                                sectionClipIdentity + "::" +
+                                avatarSourcePath;
+                            for (const auto& track :
+                                 sectionAvatarTracks) {
+                                avatarKey += "::" +
+                                    std::to_string(track.trackId) +
+                                    ":" +
+                                    std::to_string(
+                                        track.firstFrame) +
+                                    ":" +
+                                    std::to_string(track.x) +
+                                    ":" +
+                                    std::to_string(track.y) +
+                                    ":" +
+                                    std::to_string(track.box);
+                            }
+                            shellState->
+                                sectionAvatarDesiredKey =
+                                    std::move(avatarKey);
+                            shellState->
+                                sectionAvatarSourcePath =
+                                    avatarSourcePath;
+                            shellState->sectionAvatarTracks =
+                                sectionAvatarTracks;
+                        } else {
+                            shellState->
+                                sectionAvatarDesiredKey.clear();
+                            shellState->sectionAvatarTracks.clear();
+                        }
+                        ImGui::Text(
+                            "%zu contiguous section%s",
+                            sections.size(),
+                            sections.size() == 1 ? "" : "s");
+                        if (ImGui::BeginTable(
+                                "SpeakerSections",
+                                7,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_Resizable |
+                                    ImGuiTableFlags_ScrollX |
+                                ImGuiTableFlags_ScrollY,
+                                ImVec2(0.0f, 260.0f))) {
+                            ImGui::TableSetupColumn(
+                                "Faces",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                80.0f);
+                            ImGui::TableSetupColumn(
+                                "Speaker",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                110.0f);
+                            ImGui::TableSetupColumn(
+                                "Frames",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                100.0f);
+                            ImGui::TableSetupColumn(
+                                "Tracks",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                80.0f);
+                            ImGui::TableSetupColumn(
+                                "Words",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                52.0f);
+                            ImGui::TableSetupColumn(
+                                "Transcript",
+                                ImGuiTableColumnFlags_WidthStretch,
+                                180.0f);
+                            ImGui::TableSetupColumn(
+                                "Actions",
+                                ImGuiTableColumnFlags_WidthFixed,
+                                370.0f);
+                            ImGui::TableHeadersRow();
+                            for (std::size_t sectionIndex = 0;
+                                 sectionIndex < sections.size();
+                                 ++sectionIndex) {
+                                const auto& section =
+                                    sections[sectionIndex];
+                                ImGui::PushID(
+                                    static_cast<int>(sectionIndex));
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                const auto& sectionAssignments =
+                                    sectionAssignmentsByIndex[
+                                        sectionIndex];
+                                bool drewSectionAvatar = false;
+                                if (shellState->
+                                        sectionAvatarTextureId != 0 &&
+                                    shellState->
+                                        sectionAvatarLoadedKey ==
+                                        shellState->
+                                            sectionAvatarDesiredKey &&
+                                    shellState->
+                                        sectionAvatarSize.width > 0) {
+                                    for (const auto& assignment :
+                                         sectionAssignments) {
+                                        const auto found =
+                                            std::find_if(
+                                                sectionAvatarTracks.
+                                                    begin(),
+                                                sectionAvatarTracks.
+                                                    end(),
+                                                [&](const auto& track) {
+                                                    return track.trackId ==
+                                                        assignment.
+                                                            trackId;
+                                                });
+                                        if (found ==
+                                            sectionAvatarTracks.end()) {
+                                            continue;
+                                        }
+                                        const std::size_t avatarIndex =
+                                            static_cast<std::size_t>(
+                                                std::distance(
+                                                    sectionAvatarTracks.
+                                                        begin(),
+                                                    found));
+                                        const auto avatarUv =
+                                            jcut::
+                                                faceAvatarStripUvCore(
+                                                    avatarIndex,
+                                                    shellState->
+                                                        sectionAvatarSize.
+                                                        width,
+                                                    80,
+                                                    2);
+                                        if (!avatarUv.valid()) {
+                                            continue;
+                                        }
+                                        if (drewSectionAvatar) {
+                                            ImGui::SameLine(
+                                                0.0f, 2.0f);
+                                        }
+                                        ImGui::Image(
+                                            shellState->
+                                                sectionAvatarTextureId,
+                                            ImVec2(32.0f, 32.0f),
+                                            ImVec2(
+                                                static_cast<float>(
+                                                    avatarUv.left),
+                                                0.0f),
+                                            ImVec2(
+                                                static_cast<float>(
+                                                    avatarUv.right),
+                                                1.0f));
+                                        if (ImGui::
+                                                IsItemHovered()) {
+                                            ImGui::SetTooltip(
+                                                "Continuity-track avatar T%d at source frame %lld",
+                                                found->trackId,
+                                                static_cast<
+                                                    long long>(
+                                                    found->
+                                                        firstFrame));
+                                        }
+                                        drewSectionAvatar = true;
+                                    }
+                                }
+                                if (!drewSectionAvatar) {
+                                    ImGui::TextDisabled(
+                                        sectionAssignments.empty()
+                                        ? "-"
+                                        : (shellState->
+                                                sectionAvatarRunning
+                                            ? "..."
+                                            : "T"));
+                                }
+                                ImGui::TableNextColumn();
+                                if (ImGui::Selectable(
+                                        section.displayLabel.c_str(),
+                                        cache.selectedSpeakerId ==
+                                            section.speakerId,
+                                        ImGuiSelectableFlags_AllowOverlap)) {
+                                    cache.selectedSpeakerId =
+                                        section.speakerId;
+                                }
+                                ImGui::TableNextColumn();
+                                ImGui::Text(
+                                    "%lld-%lld",
+                                    static_cast<long long>(
+                                        section.startFrame),
+                                    static_cast<long long>(
+                                        section.endFrame));
+                                ImGui::TableNextColumn();
+                                std::string trackLabels;
+                                for (const auto& assignment :
+                                     sectionAssignments) {
+                                    if (!trackLabels.empty()) {
+                                        trackLabels += ", ";
+                                    }
+                                    trackLabels += assignment.trackId >= 0
+                                        ? "T" +
+                                            std::to_string(
+                                                assignment.trackId)
+                                        : assignment.streamId;
+                                }
+                                ImGui::TextUnformatted(
+                                    trackLabels.empty()
+                                    ? "-"
+                                    : trackLabels.c_str());
+                                if (!sectionAssignments.empty() &&
+                                    std::abs(
+                                        sectionAssignments.front().
+                                            rotationDegrees) > 0.0001) {
+                                    ImGui::SetItemTooltip(
+                                        "Section rotation %.1f degrees",
+                                        sectionAssignments.front().
+                                            rotationDegrees);
+                                }
+                                ImGui::TableNextColumn();
+                                ImGui::Text(
+                                    "%zu", section.wordCount);
+                                ImGui::TableNextColumn();
+                                std::string snippet;
+                                for (const std::string& word :
+                                     section.snippetWords) {
+                                    if (!snippet.empty()) snippet += ' ';
+                                    snippet += word;
+                                }
+                                if (section.wordCount >
+                                    section.snippetWords.size()) {
+                                    snippet += " ...";
+                                }
+                                ImGui::TextUnformatted(
+                                    snippet.c_str());
+                                ImGui::TableNextColumn();
+                                if (ImGui::SmallButton("View")) {
+                                    applyCommand(
+                                        shellState,
+                                        jcut::SeekToFrameCommand{
+                                            static_cast<int>(
+                                                jcut::
+                                                    faceTrackAnchorTimelineFrame(
+                                                        section.startFrame,
+                                                        currentClip->
+                                                            sourceInFrame,
+                                                        currentClip->
+                                                            startFrame,
+                                                        currentClip->
+                                                            durationFrames,
+                                                        currentClip->
+                                                            playbackRate))});
+                                }
+                                ImGui::SameLine();
+                                ImGui::BeginDisabled(
+                                    !transcript.activeCutMutable);
+                                if (ImGui::SmallButton("Skip") &&
+                                    transcript.activeDocument) {
+                                    nlohmann::json root =
+                                        transcript.activeDocument->root();
+                                    std::string error;
+                                    if (jcut::
+                                            setSpeakerSectionSkippedCore(
+                                                &root,
+                                                section.speakerId,
+                                                section.startFrame,
+                                                section.endFrame,
+                                                true,
+                                                30.0,
+                                                &error)) {
+                                        saveTranscriptMutation(
+                                            shellState,
+                                            &cache,
+                                            std::move(root));
+                                    } else if (!error.empty()) {
+                                        cache.mutationError =
+                                            std::move(error);
+                                    }
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Unskip") &&
+                                    transcript.activeDocument) {
+                                    nlohmann::json root =
+                                        transcript.activeDocument->root();
+                                    std::string error;
+                                    if (jcut::
+                                            setSpeakerSectionSkippedCore(
+                                                &root,
+                                                section.speakerId,
+                                                section.startFrame,
+                                                section.endFrame,
+                                                false,
+                                                30.0,
+                                                &error)) {
+                                        saveTranscriptMutation(
+                                            shellState,
+                                            &cache,
+                                            std::move(root));
+                                    } else if (!error.empty()) {
+                                        cache.mutationError =
+                                            std::move(error);
+                                    }
+                                }
+                                ImGui::SameLine();
+                                ImGui::BeginDisabled(
+                                    cache.selectedFaceTrackIds.empty());
+                                if (ImGui::SmallButton("Assign") &&
+                                    transcript.activeDocument) {
+                                    std::vector<
+                                        jcut::
+                                            TranscriptTrackAssignmentAnchor>
+                                        anchors;
+                                    for (const auto& track :
+                                         cache.faceInspection.tracks) {
+                                        if (std::find(
+                                                cache.
+                                                    selectedFaceTrackIds.
+                                                    begin(),
+                                                cache.
+                                                    selectedFaceTrackIds.
+                                                    end(),
+                                                track.trackId) ==
+                                            cache.
+                                                selectedFaceTrackIds.
+                                                end()) {
+                                            continue;
+                                        }
+                                        anchors.push_back({
+                                            track.trackId,
+                                            track.streamId,
+                                            std::max<std::int64_t>(
+                                                0,
+                                                track.firstFrame),
+                                            track.x,
+                                            track.y,
+                                            track.box});
+                                    }
+                                    nlohmann::json root =
+                                        transcript.activeDocument->root();
+                                    std::string error;
+                                    if (jcut::
+                                            setSpeakerSectionTrackAssignmentsCore(
+                                                &root,
+                                                sectionClipIdentity,
+                                                section.speakerId,
+                                                section.startFrame,
+                                                section.endFrame,
+                                                section.wordCount,
+                                                anchors,
+                                                false,
+                                                "contiguous_section_picker",
+                                                {},
+                                                &error)) {
+                                        saveTranscriptMutation(
+                                            shellState,
+                                            &cache,
+                                            std::move(root));
+                                    } else if (!error.empty()) {
+                                        cache.mutationError =
+                                            std::move(error);
+                                    }
+                                }
+                                ImGui::EndDisabled();
+                                if (ImGui::IsItemHovered(
+                                        ImGuiHoveredFlags_AllowWhenDisabled)) {
+                                    ImGui::SetTooltip(
+                                        "Add the continuity tracks selected below to this section.");
+                                }
+                                ImGui::SameLine();
+                                ImGui::BeginDisabled(
+                                    sectionAssignments.empty());
+                                if (ImGui::SmallButton("Clear") &&
+                                    transcript.activeDocument) {
+                                    nlohmann::json root =
+                                        transcript.activeDocument->root();
+                                    std::string error;
+                                    if (jcut::
+                                            setSpeakerSectionTrackAssignmentsCore(
+                                                &root,
+                                                sectionClipIdentity,
+                                                section.speakerId,
+                                                section.startFrame,
+                                                section.endFrame,
+                                                section.wordCount,
+                                                {},
+                                                true,
+                                                "contiguous_section_picker",
+                                                {},
+                                                &error)) {
+                                        saveTranscriptMutation(
+                                            shellState,
+                                            &cache,
+                                            std::move(root));
+                                    } else if (!error.empty()) {
+                                        cache.mutationError =
+                                            std::move(error);
+                                    }
+                                }
+                                ImGui::EndDisabled();
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Export")) {
+                                    const auto ranges =
+                                        jcut::
+                                            editorTimelineRangesForTranscriptSection(
+                                                snapshot,
+                                                *currentClip,
+                                                section.startFrame,
+                                                section.endFrame);
+                                    if (ranges.empty()) {
+                                        cache.mutationError =
+                                            "Section could not be mapped to timeline frames.";
+                                    } else {
+                                        const jcut::CommandResult
+                                            rangeResult =
+                                                applyCommand(
+                                                    shellState,
+                                                    jcut::
+                                                        SetExportRangesCommand{
+                                                            ranges});
+                                        if (rangeResult.applied) {
+                                            shellState->
+                                                focusInspectorOutputRequested =
+                                                    true;
+                                            if (shellState->
+                                                    exportOutputPath[0] ==
+                                                '\0') {
+                                                shellState->
+                                                    statusMessage =
+                                                        "section range loaded; choose an Output path and press Export";
+                                            } else if (
+                                                requestExportRender(
+                                                    shellState)) {
+                                                shellState->
+                                                    statusMessage =
+                                                        "speaker section export started";
+                                            } else {
+                                                shellState->
+                                                    statusMessage =
+                                                        "export already running";
+                                            }
+                                        } else {
+                                            cache.mutationError =
+                                                rangeResult.message;
+                                        }
+                                    }
+                                }
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip(
+                                        "Export this section with the current Output settings.");
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Options") &&
+                                    transcript.activeDocument) {
+                                    cache.
+                                        speakerSectionOptionsSpeakerId =
+                                            section.speakerId;
+                                    cache.
+                                        speakerSectionOptionsStartFrame =
+                                            section.startFrame;
+                                    cache.
+                                        speakerSectionOptionsEndFrame =
+                                            section.endFrame;
+                                    cache.
+                                        speakerSectionOptionsWordCount =
+                                            section.wordCount;
+                                    cache.speakerSectionOptionsDraft =
+                                        jcut::speakerSectionOptionsCore(
+                                            transcript.activeDocument->
+                                                root(),
+                                            sectionClipIdentity,
+                                            section.speakerId,
+                                            section.startFrame,
+                                            section.endFrame);
+                                    cache.
+                                        speakerSectionOptionsPopupRequested =
+                                            true;
+                                }
+                                ImGui::EndDisabled();
+                                ImGui::PopID();
+                            }
+                            ImGui::EndTable();
+                        }
+                        bool exportBusy = false;
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                shellState->exportMutex);
+                            exportBusy =
+                                shellState->exportRunning ||
+                                shellState->exportRequested;
+                        }
+                        ImGui::BeginDisabled(
+                            sections.empty() || exportBusy);
+                        if (ImGui::Button(
+                                "Export All Qualifying Sections")) {
+                            shellState->
+                                focusInspectorOutputRequested =
+                                    true;
+                            if (shellState->
+                                    exportOutputPath[0] == '\0') {
+                                shellState->statusMessage =
+                                    "choose an Output path first; its directory and format are used for section files";
+                            } else {
+                                std::size_t skipped = 0;
+                                const std::size_t queued =
+                                    requestSpeakerSectionExportBatch(
+                                        shellState,
+                                        snapshot,
+                                        *currentClip,
+                                        transcript.activeDocument->
+                                            root(),
+                                        sections,
+                                        &skipped);
+                                if (queued > 0) {
+                                    shellState->statusMessage =
+                                        "queued " +
+                                        std::to_string(queued) +
+                                        " speaker section export" +
+                                        (queued == 1 ? "" : "s") +
+                                        (skipped > 0
+                                            ? "; skipped " +
+                                                std::to_string(
+                                                    skipped) +
+                                                " existing, duplicate, or unmapped"
+                                            : "");
+                                } else {
+                                    shellState->statusMessage =
+                                        "no speaker section exports were queued";
+                                }
+                            }
+                        }
+                        ImGui::EndDisabled();
+                        if (ImGui::IsItemHovered(
+                                ImGuiHoveredFlags_AllowWhenDisabled)) {
+                            ImGui::SetTooltip(
+                                "Coalesce adjacent same-speaker rows and export each remaining section to the configured Output directory.");
+                        }
+                        if (std::exchange(
+                                cache.
+                                    speakerSectionOptionsPopupRequested,
+                                false)) {
+                            ImGui::OpenPopup(
+                                "Speaker Section Options");
+                        }
+                        if (ImGui::BeginPopupModal(
+                                "Speaker Section Options",
+                                nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+                            auto& options =
+                                cache.speakerSectionOptionsDraft;
+                            ImGui::Text(
+                                "%s | frames %lld-%lld",
+                                cache.
+                                    speakerSectionOptionsSpeakerId.
+                                    c_str(),
+                                static_cast<long long>(
+                                    cache.
+                                        speakerSectionOptionsStartFrame),
+                                static_cast<long long>(
+                                    cache.
+                                        speakerSectionOptionsEndFrame));
+                            ImGui::SetNextItemWidth(180.0f);
+                            ImGui::InputDouble(
+                                "Rotation (degrees)",
+                                &options.rotationDegrees,
+                                0.1,
+                                1.0,
+                                "%.1f");
+                            options.rotationDegrees = std::clamp(
+                                options.rotationDegrees,
+                                -180.0,
+                                180.0);
+                            ImGui::SeparatorText("Grading");
+                            ImGui::Checkbox(
+                                "Add Grading Keyframes",
+                                &options.gradingEnabled);
+                            ImGui::InputDouble(
+                                "Brightness",
+                                &options.gradingBrightness,
+                                0.01,
+                                0.1,
+                                "%.3f");
+                            ImGui::InputDouble(
+                                "Contrast",
+                                &options.gradingContrast,
+                                0.05,
+                                0.25,
+                                "%.3f");
+                            ImGui::InputDouble(
+                                "Saturation",
+                                &options.gradingSaturation,
+                                0.05,
+                                0.25,
+                                "%.3f");
+                            ImGui::SeparatorText("Mask Override");
+                            ImGui::Checkbox(
+                                "Enable Mask Override",
+                                &options.maskEnabled);
+                            ImGui::InputDouble(
+                                "Mask Opacity",
+                                &options.maskOpacity,
+                                0.01,
+                                0.1,
+                                "%.3f");
+                            ImGui::InputDouble(
+                                "Mask Feather",
+                                &options.maskFeather,
+                                0.5,
+                                5.0,
+                                "%.2f");
+                            ImGui::InputDouble(
+                                "Mask Blur",
+                                &options.maskBlur,
+                                0.5,
+                                5.0,
+                                "%.2f");
+                            ImGui::InputDouble(
+                                "Mask Dilate",
+                                &options.maskDilate,
+                                0.5,
+                                5.0,
+                                "%.2f");
+                            ImGui::Checkbox(
+                                "Invert Section Mask",
+                                &options.maskInvert);
+                            ImGui::BeginDisabled(
+                                !transcript.activeCutMutable);
+                            if (ImGui::Button("Apply") &&
+                                transcript.activeDocument) {
+                                nlohmann::json root =
+                                    transcript.activeDocument->root();
+                                std::string error;
+                                if (jcut::setSpeakerSectionOptionsCore(
+                                        &root,
+                                        sectionClipIdentity,
+                                        cache.
+                                            speakerSectionOptionsSpeakerId,
+                                        cache.
+                                            speakerSectionOptionsStartFrame,
+                                        cache.
+                                            speakerSectionOptionsEndFrame,
+                                        cache.
+                                            speakerSectionOptionsWordCount,
+                                        options,
+                                        {},
+                                        &error)) {
+                                    {
+                                        std::lock_guard<std::mutex>
+                                            lock(
+                                                shellState->
+                                                    runtimeMutex);
+                                        shellState->runtime.
+                                            beginHistoryTransaction();
+                                    }
+                                    const bool transcriptSaved =
+                                        saveTranscriptMutation(
+                                            shellState,
+                                            &cache,
+                                            std::move(root));
+                                    bool gradingApplied = true;
+                                    if (transcriptSaved &&
+                                        options.gradingEnabled) {
+                                        const std::int64_t
+                                            maximumLocalFrame =
+                                                std::max(
+                                                    0,
+                                                    currentClip->
+                                                        durationFrames -
+                                                        1);
+                                        const std::int64_t
+                                            startLocalFrame =
+                                                std::clamp<
+                                                    std::int64_t>(
+                                                    cache.
+                                                        speakerSectionOptionsStartFrame -
+                                                        std::max<
+                                                            std::int64_t>(
+                                                            0,
+                                                            currentClip->
+                                                                sourceInFrame),
+                                                    0,
+                                                    maximumLocalFrame);
+                                        const std::int64_t
+                                            endLocalFrame =
+                                                std::clamp<
+                                                    std::int64_t>(
+                                                    cache.
+                                                        speakerSectionOptionsEndFrame -
+                                                        std::max<
+                                                            std::int64_t>(
+                                                            0,
+                                                            currentClip->
+                                                                sourceInFrame),
+                                                    0,
+                                                    maximumLocalFrame);
+                                        std::vector<std::int64_t>
+                                            frames{startLocalFrame};
+                                        if (endLocalFrame !=
+                                            startLocalFrame) {
+                                            frames.push_back(
+                                                endLocalFrame);
+                                        }
+                                        for (const std::int64_t frame :
+                                             frames) {
+                                            jcut::
+                                                EditorGradingKeyframe
+                                                    keyframe =
+                                                        jcut::
+                                                            evaluateEditorClipGradingAtLocalFrame(
+                                                                *currentClip,
+                                                                frame);
+                                            keyframe.frame = frame;
+                                            keyframe.brightness =
+                                                std::clamp(
+                                                    options.
+                                                        gradingBrightness,
+                                                    -10.0,
+                                                    10.0);
+                                            keyframe.contrast =
+                                                std::clamp(
+                                                    options.
+                                                        gradingContrast,
+                                                    0.05,
+                                                    10.0);
+                                            keyframe.saturation =
+                                                std::clamp(
+                                                    options.
+                                                        gradingSaturation,
+                                                    0.0,
+                                                    10.0);
+                                            keyframe.
+                                                linearInterpolation =
+                                                    true;
+                                            const auto result =
+                                                applyCommand(
+                                                    shellState,
+                                                    jcut::
+                                                        UpsertGradingKeyframeCommand{
+                                                            currentClip->
+                                                                id,
+                                                            keyframe});
+                                            gradingApplied &=
+                                                result.applied;
+                                        }
+                                    }
+                                    {
+                                        std::lock_guard<std::mutex>
+                                            lock(
+                                                shellState->
+                                                    runtimeMutex);
+                                        shellState->runtime.
+                                            endHistoryTransaction();
+                                    }
+                                    if (transcriptSaved &&
+                                        gradingApplied) {
+                                        ImGui::CloseCurrentPopup();
+                                    } else if (
+                                        transcriptSaved &&
+                                        !gradingApplied) {
+                                        cache.mutationError =
+                                            "Section options were saved, "
+                                            "but grading keyframes could "
+                                            "not be applied.";
+                                    }
+                                } else if (!error.empty()) {
+                                    cache.mutationError =
+                                        std::move(error);
+                                } else {
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            if (ImGui::Button("Cancel")) {
+                                ImGui::CloseCurrentPopup();
+                            }
+                            ImGui::EndPopup();
+                        }
+                    }
                     if (ImGui::BeginTable(
                             "SpeakersRoster",
                             6,
@@ -8721,6 +14543,26 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             jcut::mineSpuriousSpeakerAssignments(
                                 transcript.activeDocument->root()));
                     }
+                    ImGui::BeginDisabled(
+                        !transcript.activeDocument ||
+                        shellState->aiTaskRunning ||
+                        !shellState->featureAiSpeakerCleanup ||
+                        !shellState->aiAccount.aiEnabled);
+                    if (ImGui::Button("Mine Profiles with Cloud AI") &&
+                        transcript.activeDocument) {
+                        startCloudSpeakerMining(
+                            shellState,
+                            transcript.activeDocument->root(),
+                            cache.sourceKey,
+                            snapshot);
+                    }
+                    ImGui::EndDisabled();
+                    if (shellState->aiTaskRunning &&
+                        shellState->aiTaskPurpose ==
+                            AiTaskPurpose::CloudSpeakerMining) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("Mining...");
+                    }
                     if (!cache.miningProposalLabel.empty()) {
                         ImGui::Text(
                             "%s: %zu proposal%s",
@@ -8863,6 +14705,20 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             "Runs the shared offscreen SCRFD/Vulkan generator and writes "
                             "the same resumable sidecar artifacts used by Qt.");
                     }
+                    const fs::path faceSourceMediaPath =
+                        resolvedClipSourcePath(*shellState, *currentClip);
+                    const std::string faceClipIdentity =
+                        currentClip->persistentId.empty()
+                            ? std::to_string(currentClip->id)
+                            : currentClip->persistentId;
+                    const std::string faceOutputDirectory =
+                        jcut::faceProcessingSidecarDirectory(
+                            pathString(faceSourceMediaPath),
+                            faceClipIdentity);
+                    const jcut::FaceProcessingLaunchControl
+                        savedFaceLaunchControl =
+                            jcut::loadFaceProcessingLaunchControl(
+                                faceOutputDirectory);
                     ImGui::BeginDisabled(faceJob.active());
                     ImGui::SetNextItemWidth(110.0f);
                     ImGui::InputInt("Stride", &cache.faceJobStride);
@@ -8883,6 +14739,28 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         "Pipeline Slots", &cache.faceJobPipelineSlots);
                     cache.faceJobPipelineSlots =
                         std::clamp(cache.faceJobPipelineSlots, 1, 10);
+                    if (savedFaceLaunchControl.hasRecommendation) {
+                        ImGui::TextDisabled(
+                            "Saved benchmark recommendation: %d worker(s), %d slot(s)",
+                            savedFaceLaunchControl.detectorWorkers,
+                            savedFaceLaunchControl.detectorPipelineSlots);
+                        if (ImGui::SmallButton(
+                                "Apply Saved Topology Recommendation")) {
+                            cache.faceJobWorkers =
+                                savedFaceLaunchControl.detectorWorkers;
+                            cache.faceJobPipelineSlots =
+                                savedFaceLaunchControl.detectorPipelineSlots;
+                        }
+                    } else if (!savedFaceLaunchControl.error.empty()) {
+                        ImGui::TextDisabled(
+                            "%s", savedFaceLaunchControl.error.c_str());
+                    }
+                    ImGui::Checkbox(
+                        "Benchmark topology before launch",
+                        &cache.faceJobBenchmarkTopology);
+                    ImGui::Checkbox(
+                        "Apply selected clip grading during detection",
+                        &cache.faceJobApplyClipGrading);
                     ImGui::Checkbox(
                         "Primary face only", &cache.faceJobPrimaryOnly);
                     ImGui::SameLine();
@@ -8893,26 +14771,46 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     ImGui::Checkbox(
                         "Allow CPU upload compatibility",
                         &cache.faceJobAllowCpuFallback);
+                    ImGui::Checkbox(
+                        "Generator control window",
+                        &cache.faceJobControlWindow);
+                    ImGui::SameLine();
+                    ImGui::Checkbox(
+                        "Live preview window",
+                        &cache.faceJobLivePreview);
+                    ImGui::Checkbox(
+                        "Restart from scratch (clear resume checkpoint)",
+                        &cache.faceJobRestartFromScratch);
+                    const fs::path configuredProxyPath =
+                        resolvedClipProxyPath(*shellState, *currentClip);
+                    const bool faceProxyAvailable =
+                        !currentClip->proxyPath.empty() &&
+                        isImportableMediaPath(configuredProxyPath);
+                    ImGui::BeginDisabled(!faceProxyAvailable);
+                    ImGui::Checkbox(
+                        "Use proxy media as detector input",
+                        &cache.faceJobUseProxySource);
+                    ImGui::EndDisabled();
+                    if (!faceProxyAvailable) {
+                        cache.faceJobUseProxySource = false;
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(no playable proxy configured)");
+                    }
                     if (ImGui::Button("Generate Detection + Continuity")) {
-                        const fs::path mediaPath =
-                            resolvedClipMediaPathForProbe(*shellState, *currentClip);
-                        const std::string clipIdentity =
-                            currentClip->persistentId.empty()
-                                ? std::to_string(currentClip->id)
-                                : currentClip->persistentId;
+                        const fs::path mediaPath = cache.faceJobUseProxySource
+                            ? configuredProxyPath
+                            : faceSourceMediaPath;
                         jcut::FaceProcessingJobRequest request;
                         request.executablePath =
                             pathString(executableDirPath() /
                                        "jcut_vulkan_facedetections_offscreen");
                         request.mediaPath = pathString(mediaPath);
                         request.transcriptPath = transcript.activePath;
-                        request.clipId = clipIdentity;
-                        request.outputDirectory =
-                            jcut::faceProcessingSidecarDirectory(
-                                request.mediaPath, request.clipId);
+                        request.clipId = faceClipIdentity;
+                        request.outputDirectory = faceOutputDirectory;
                         request.detectorSettingsPath =
-                            pathString(mediaPath.parent_path() /
-                                (mediaPath.stem().string() +
+                            pathString(faceSourceMediaPath.parent_path() /
+                                (faceSourceMediaPath.stem().string() +
                                  "_detectorsettings.json"));
                         if (!fs::is_regular_file(request.detectorSettingsPath)) {
                             request.detectorSettingsPath.clear();
@@ -8933,6 +14831,20 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         request.scrfdTiling = cache.faceJobTiling;
                         request.allowCpuUploadFallback =
                             cache.faceJobAllowCpuFallback;
+                        request.controlWindow =
+                            cache.faceJobControlWindow;
+                        request.livePreview =
+                            cache.faceJobLivePreview;
+                        request.restartFromScratch =
+                            cache.faceJobRestartFromScratch;
+                        request.benchmarkTopology =
+                            cache.faceJobBenchmarkTopology;
+                        request.applyClipGrading =
+                            cache.faceJobApplyClipGrading;
+                        if (request.applyClipGrading) {
+                            request.clipJson =
+                                jcut::toLegacyClipJson(*currentClip).dump();
+                        }
                         std::string error;
                         if (!shellState->faceProcessingJob.start(request, &error)) {
                             shellState->statusMessage = error.empty()
@@ -9054,6 +14966,125 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                             ImGui::EndTable();
                         }
                     }
+                    std::vector<jcut::FaceContinuityTrackCore>
+                        referenceTracks;
+                    constexpr std::size_t kMaxReferenceTracks = 8;
+                    referenceTracks.reserve(std::min(
+                        cache.selectedFaceTrackIds.size(),
+                        kMaxReferenceTracks));
+                    for (const int selectedTrackId :
+                         cache.selectedFaceTrackIds) {
+                        const auto found = std::find_if(
+                            cache.faceInspection.tracks.begin(),
+                            cache.faceInspection.tracks.end(),
+                            [&](const auto& track) {
+                                return track.trackId ==
+                                    selectedTrackId;
+                            });
+                        if (found !=
+                            cache.faceInspection.tracks.end()) {
+                            referenceTracks.push_back(*found);
+                            if (referenceTracks.size() ==
+                                kMaxReferenceTracks) {
+                                break;
+                            }
+                        }
+                    }
+                    if (!referenceTracks.empty()) {
+                        std::string referenceKey = artifactContext;
+                        for (const auto& track : referenceTracks) {
+                            referenceKey += "::" +
+                                std::to_string(track.trackId) + ":" +
+                                std::to_string(track.firstFrame) + ":" +
+                                std::to_string(track.x) + ":" +
+                                std::to_string(track.y) + ":" +
+                                std::to_string(track.box);
+                        }
+                        shellState->faceReferenceDesiredKey =
+                            std::move(referenceKey);
+                        shellState->faceReferenceSourcePath =
+                            pathString(faceSourceMediaPath);
+                        shellState->faceReferenceTracks =
+                            referenceTracks;
+                    } else {
+                        shellState->faceReferenceDesiredKey.clear();
+                        shellState->faceReferenceTracks.clear();
+                    }
+                    if (!referenceTracks.empty() &&
+                        shellState->faceReferenceTextureId != 0 &&
+                        shellState->faceReferenceLoadedKey ==
+                            shellState->faceReferenceDesiredKey) {
+                        ImGui::SeparatorText("Selected References");
+                        const float naturalWidth =
+                            static_cast<float>(
+                                shellState->faceReferenceSize.width) *
+                            0.75f;
+                        const float displayWidth = std::min(
+                            ImGui::GetContentRegionAvail().x,
+                            naturalWidth);
+                        const float displayHeight =
+                            shellState->faceReferenceSize.width > 0
+                            ? displayWidth *
+                                static_cast<float>(
+                                    shellState->
+                                        faceReferenceSize.height) /
+                                static_cast<float>(
+                                    shellState->
+                                        faceReferenceSize.width)
+                            : 120.0f;
+                        ImGui::Image(
+                            shellState->faceReferenceTextureId,
+                            ImVec2(displayWidth, displayHeight));
+                        if (ImGui::BeginTable(
+                                "##reference_diagnostics",
+                                4,
+                                ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_RowBg)) {
+                            ImGui::TableSetupColumn("Track");
+                            ImGui::TableSetupColumn("Frame");
+                            ImGui::TableSetupColumn("Center / box");
+                            ImGui::TableSetupColumn("Score");
+                            ImGui::TableHeadersRow();
+                            for (const auto& track : referenceTracks) {
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGui::Text("T%d", track.trackId);
+                                ImGui::TableNextColumn();
+                                ImGui::Text(
+                                    "%lld",
+                                    static_cast<long long>(
+                                        track.firstFrame));
+                                ImGui::TableNextColumn();
+                                ImGui::Text(
+                                    "%.3f, %.3f / %.3f",
+                                    track.x,
+                                    track.y,
+                                    track.box);
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.3f", track.score);
+                            }
+                            ImGui::EndTable();
+                        }
+                        if (cache.selectedFaceTrackIds.size() >
+                            kMaxReferenceTracks) {
+                            ImGui::TextDisabled(
+                                "Showing the first %zu of %zu selected tracks.",
+                                kMaxReferenceTracks,
+                                cache.selectedFaceTrackIds.size());
+                        }
+                    } else if (!referenceTracks.empty() &&
+                               shellState->
+                                   faceReferenceRunning) {
+                        ImGui::TextDisabled(
+                            "Decoding selected face references...");
+                    } else if (!referenceTracks.empty() &&
+                               !shellState->
+                                   faceReferenceError.empty()) {
+                        ImGui::TextDisabled(
+                            "%s",
+                            shellState->
+                                faceReferenceError.c_str());
+                    }
                     ImGui::BeginDisabled(
                         !transcript.activeCutMutable ||
                         cache.selectedSpeakerId.empty() ||
@@ -9146,13 +15177,14 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     }
                     ImGui::EndDisabled();
                     ImGui::TextDisabled(
-                        "The selected reference track is outlined in the Program monitor. "
-                        "Cloud enrichment and cropped reference galleries remain pending.");
+                        "The selected reference track is outlined in Program and shown as a "
+                        "shared-policy face crop above.");
                 }
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Properties")) {
+        if (ImGui::BeginTabItem(
+                "Properties", nullptr, inspectorTabFlags("Properties"))) {
             drawInspectorHeading("Properties", snapshot, currentClip);
             drawClipSummaryTable(snapshot, currentClip);
             if (currentTrack) {
@@ -9360,6 +15392,156 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     currentClip->id, clipAudioEnabled, clipGain, clipPan, clipSolo});
             }
             ImGui::EndDisabled();
+            {
+                static constexpr const char* treatmentLabels[] = {
+                    "Preserve Pitch",
+                    "Rubber Band at Any Speed",
+                    "Harmonic Speech Isolation"};
+                const jcut::EditorAudioTreatment treatmentValues[] = {
+                    jcut::EditorAudioTreatment::PreservePitch,
+                    jcut::EditorAudioTreatment::RubberBand,
+                    jcut::EditorAudioTreatment::HarmonicSpeechIsolation};
+                int treatmentIndex = 0;
+                for (int index = 0; index < 3; ++index) {
+                    if (snapshot.audioTreatment == treatmentValues[index]) {
+                        treatmentIndex = index;
+                    }
+                }
+                if (ImGui::Combo(
+                        "Preview Audio Treatment",
+                        &treatmentIndex,
+                        treatmentLabels,
+                        3)) {
+                    applyCommand(
+                        shellState,
+                        jcut::SetAudioTreatmentCommand{
+                            treatmentValues[treatmentIndex]});
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Harmonic Speech Isolation uses two Rubber Band "
+                        "stages and may buffer while the processed source "
+                        "is prepared.");
+                }
+            }
+            if (ImGui::CollapsingHeader(
+                    "Master Dynamics",
+                    ImGuiTreeNodeFlags_DefaultOpen)) {
+                jcut::audio::DynamicsSettingsCore dynamics =
+                    snapshot.audioDynamics;
+                bool dynamicsChanged = false;
+                const auto sliderDouble =
+                    [&](const char* label,
+                        double* value,
+                        float minimum,
+                        float maximum,
+                        const char* format) {
+                        float edited = static_cast<float>(*value);
+                        const bool changed = ImGui::SliderFloat(
+                            label, &edited, minimum, maximum, format);
+                        beginRuntimeHistoryTransactionForLastItem(
+                            shellState);
+                        if (changed) *value = edited;
+                        return changed;
+                    };
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Amplify", &dynamics.amplifyEnabled);
+                if (dynamics.amplifyEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Amplify dB",
+                        &dynamics.amplifyDb,
+                        -24.0f,
+                        24.0f,
+                        "%.1f dB");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Normalize", &dynamics.normalizeEnabled);
+                if (dynamics.normalizeEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Normalize Target",
+                        &dynamics.normalizeTargetDb,
+                        -24.0f,
+                        0.0f,
+                        "%.1f dBFS");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Transcript Normalize",
+                    &dynamics.transcriptNormalizeEnabled);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Normalize each active transcript word toward "
+                        "-0.45 dBFS, capped at 2.5x gain.");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Selective Normalize",
+                    &dynamics.selectiveNormalizeEnabled);
+                if (dynamics.selectiveNormalizeEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Minimum Segment",
+                        &dynamics.selectiveNormalizeMinSegmentSeconds,
+                        0.1f,
+                        30.0f,
+                        "%.1f s");
+                    dynamicsChanged |= sliderDouble(
+                        "Selective Peak",
+                        &dynamics.selectiveNormalizePeakDb,
+                        -36.0f,
+                        0.0f,
+                        "%.1f dBFS");
+                    dynamicsChanged |= ImGui::SliderInt(
+                        "Selective Passes",
+                        &dynamics.selectiveNormalizePasses,
+                        1,
+                        8);
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Peak Reduction",
+                    &dynamics.peakReductionEnabled);
+                if (dynamics.peakReductionEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Peak Threshold",
+                        &dynamics.peakThresholdDb,
+                        -24.0f,
+                        0.0f,
+                        "%.1f dBFS");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Compressor", &dynamics.compressorEnabled);
+                if (dynamics.compressorEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Compressor Threshold",
+                        &dynamics.compressorThresholdDb,
+                        -30.0f,
+                        -1.0f,
+                        "%.1f dBFS");
+                    dynamicsChanged |= sliderDouble(
+                        "Compressor Ratio",
+                        &dynamics.compressorRatio,
+                        1.0f,
+                        20.0f,
+                        "%.1f:1");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Soft Clip", &dynamics.softClipEnabled);
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Limiter", &dynamics.limiterEnabled);
+                if (dynamics.limiterEnabled) {
+                    dynamicsChanged |= sliderDouble(
+                        "Limiter Threshold",
+                        &dynamics.limiterThresholdDb,
+                        -12.0f,
+                        0.0f,
+                        "%.1f dBFS");
+                }
+                dynamicsChanged |= ImGui::Checkbox(
+                    "Stereo to Mono",
+                    &dynamics.stereoToMonoEnabled);
+                if (dynamicsChanged) {
+                    applyCommand(
+                        shellState,
+                        jcut::SetAudioDynamicsCommand{dynamics});
+                }
+            }
             if (ImGui::BeginTable("AudioStatus", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 drawReadOnlyTableRow("Initialized", audioStatus.initialized ? "yes" : "no");
                 drawReadOnlyTableRow("Timeline", audioStatus.timelineConfigured ? "configured" : "pending");
@@ -9374,7 +15556,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Jobs")) {
+        if (ImGui::BeginTabItem(
+                "Jobs", nullptr, inspectorTabFlags("Jobs"))) {
             drawInspectorHeading("Processing Jobs", snapshot, currentClip);
             bool exportActive = false;
             bool exportQueued = false;
@@ -9391,6 +15574,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 shellState->faceProcessingJob.snapshot();
             const jcut::ProxyGenerationJobSnapshot proxyJob =
                 shellState->proxyGenerationJob.snapshot();
+            const jcut::masks::PromptMaskJobSnapshot promptMaskJob =
+                shellState->promptMaskJob.snapshot();
+            const jcut::jobs::TranscriptionJobSnapshotCore
+                transcriptionJob =
+                    shellState->transcriptionJob.snapshot();
+            const jcut::jobs::BiRefNetJobSnapshotCore birefnetJob =
+                shellState->birefnetJob.snapshot();
             const auto faceStateLabel = [](jcut::FaceProcessingJobSnapshot::State state) {
                 using State = jcut::FaceProcessingJobSnapshot::State;
                 switch (state) {
@@ -9417,6 +15607,36 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 }
                 return "unknown";
             };
+            const auto promptMaskStateLabel =
+                [](jcut::masks::PromptMaskJobSnapshot::State state) {
+                    using State =
+                        jcut::masks::PromptMaskJobSnapshot::State;
+                    switch (state) {
+                    case State::Idle: return "idle";
+                    case State::Starting: return "starting";
+                    case State::Running: return "running";
+                    case State::Canceling: return "canceling";
+                    case State::Paused: return "paused";
+                    case State::Completed: return "complete";
+                    case State::Failed: return "failed";
+                    }
+                    return "unknown";
+                };
+            const auto processStateLabel =
+                [](jcut::jobs::ProcessJobSnapshotCore::State state) {
+                    using State =
+                        jcut::jobs::ProcessJobSnapshotCore::State;
+                    switch (state) {
+                    case State::Idle: return "idle";
+                    case State::Starting: return "starting";
+                    case State::Running: return "running";
+                    case State::Canceling: return "canceling";
+                    case State::Completed: return "complete";
+                    case State::Canceled: return "canceled";
+                    case State::Failed: return "failed";
+                    }
+                    return "unknown";
+                };
             if (ImGui::BeginTable("JobsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 ImGui::TableSetupColumn("Job");
                 ImGui::TableSetupColumn("Status");
@@ -9455,6 +15675,63 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     "%lld / %lld",
                     static_cast<long long>(proxyJob.framesCompleted),
                     static_cast<long long>(proxyJob.totalFrames));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("SAM3 prompt mask");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(
+                    promptMaskStateLabel(promptMaskJob.state));
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(
+                    promptMaskJob.active()
+                        ? "external worker"
+                        : (promptMaskJob.exitCode >= 0
+                               ? ("exit " +
+                                  std::to_string(
+                                      promptMaskJob.exitCode))
+                                     .c_str()
+                               : "-"));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("WhisperX transcription");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(
+                    processStateLabel(transcriptionJob.state));
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(
+                    transcriptionJob.outputReady
+                        ? "transcript ready"
+                        : (transcriptionJob.active()
+                               ? "external worker"
+                               : (transcriptionJob.exitCode >= 0
+                                      ? ("exit " +
+                                         std::to_string(
+                                             transcriptionJob.exitCode))
+                                            .c_str()
+                                      : "-")));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("BiRefNet alpha");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(
+                    processStateLabel(birefnetJob.state));
+                ImGui::TableNextColumn();
+                if (birefnetJob.totalFrames > 0) {
+                    ImGui::Text(
+                        "%lld / %lld (%.1f%%)",
+                        static_cast<long long>(
+                            birefnetJob.currentFrame),
+                        static_cast<long long>(
+                            birefnetJob.totalFrames),
+                        birefnetJob.percent);
+                } else {
+                    ImGui::TextUnformatted(
+                        birefnetJob.outputReady
+                            ? "alpha ready"
+                            : (birefnetJob.active()
+                                   ? "external worker"
+                                   : "-"));
+                }
                 ImGui::EndTable();
             }
             ImGui::BeginDisabled(!exportActive && !exportQueued);
@@ -9477,6 +15754,30 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 shellState->faceProcessingJob.cancel();
                 shellState->statusMessage =
                     "face-detection cancellation requested";
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!promptMaskJob.active());
+            if (ImGui::Button("Cancel Prompt Mask")) {
+                shellState->promptMaskJob.cancel();
+                shellState->statusMessage =
+                    "prompt-mask cancellation requested";
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!transcriptionJob.active());
+            if (ImGui::Button("Cancel Transcription")) {
+                shellState->transcriptionJob.cancel();
+                shellState->statusMessage =
+                    "transcription cancellation requested";
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!birefnetJob.active());
+            if (ImGui::Button("Cancel BiRefNet")) {
+                shellState->birefnetJob.cancel();
+                shellState->statusMessage =
+                    "BiRefNet cancellation requested";
             }
             ImGui::EndDisabled();
             if (!result.message.empty()) {
@@ -9510,18 +15811,393 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     "Proxy manifest: %s",
                     proxyJob.manifestPath.c_str());
             }
+            if (!promptMaskJob.status.empty()) {
+                ImGui::TextWrapped(
+                    "Prompt mask: %s",
+                    promptMaskJob.status.c_str());
+            }
+            if (!promptMaskJob.selectedMaskPath.empty()) {
+                ImGui::TextWrapped(
+                    "Prompt-mask output: %s",
+                    promptMaskJob.selectedMaskPath.c_str());
+            }
+            if (!promptMaskJob.manifestPath.empty()) {
+                ImGui::TextWrapped(
+                    "Prompt-mask manifest: %s",
+                    promptMaskJob.manifestPath.c_str());
+            }
+            if (!promptMaskJob.logPath.empty()) {
+                ImGui::TextWrapped(
+                    "Prompt-mask log: %s",
+                    promptMaskJob.logPath.c_str());
+            }
+            if (!transcriptionJob.status.empty()) {
+                ImGui::TextWrapped(
+                    "Transcription: %s",
+                    transcriptionJob.status.c_str());
+            }
+            if (!transcriptionJob.outputTranscriptPath.empty()) {
+                ImGui::TextWrapped(
+                    "Transcript output: %s",
+                    transcriptionJob.outputTranscriptPath.c_str());
+            }
+            if (transcriptionJob.active()) {
+                ImGui::InputText(
+                    "Transcription stdin",
+                    &shellState->transcriptionStdinDraft);
+                ImGui::SameLine();
+                if (ImGui::Button("Send stdin")) {
+                    std::string stdinError;
+                    if (shellState->transcriptionJob.writeStdin(
+                            shellState->transcriptionStdinDraft,
+                            &stdinError)) {
+                        shellState->transcriptionStdinDraft.clear();
+                    } else {
+                        shellState->statusMessage =
+                            std::move(stdinError);
+                    }
+                }
+            }
+            if (!birefnetJob.status.empty()) {
+                ImGui::TextWrapped(
+                    "BiRefNet: %s", birefnetJob.status.c_str());
+            }
+            if (!birefnetJob.outputDirectory.empty()) {
+                ImGui::TextWrapped(
+                    "BiRefNet output: %s",
+                    birefnetJob.outputDirectory.c_str());
+            }
+            if (!birefnetJob.livePreviewPath.empty()) {
+                ImGui::TextWrapped(
+                    "BiRefNet live preview: %s",
+                    birefnetJob.livePreviewPath.c_str());
+            }
+            ImGui::SeparatorText("Artifact Inspection");
+            const auto loadJobsTextPreview =
+                [&](std::string label, std::string path) {
+                    shellState->jobsTextPreviewLabel = std::move(label);
+                    shellState->jobsTextPreviewPath = std::move(path);
+                    shellState->jobsTextPreview = readTextFileTail(
+                        fs::path(shellState->jobsTextPreviewPath),
+                        64U * 1024U,
+                        &shellState->jobsTextPreviewError);
+                };
+            const auto drawJobsArtifactButton =
+                [&](const char* buttonLabel,
+                    const char* previewLabel,
+                    const std::string& path) {
+                    ImGui::BeginDisabled(path.empty());
+                    if (ImGui::Button(buttonLabel)) {
+                        loadJobsTextPreview(previewLabel, path);
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                };
+            drawJobsArtifactButton(
+                "Face Manifest", "Face-detection manifest",
+                faceJob.manifestPath);
+            drawJobsArtifactButton(
+                "Face Log", "Face-detection log", faceJob.logPath);
+            drawJobsArtifactButton(
+                "Proxy Manifest", "Proxy manifest",
+                proxyJob.manifestPath);
+            drawJobsArtifactButton(
+                "Mask Manifest", "Prompt-mask manifest",
+                promptMaskJob.manifestPath);
+            drawJobsArtifactButton(
+                "Transcript Manifest", "Transcription manifest",
+                transcriptionJob.manifestPath);
+            drawJobsArtifactButton(
+                "Transcript Log", "Transcription log",
+                transcriptionJob.logPath);
+            drawJobsArtifactButton(
+                "BiRefNet Manifest", "BiRefNet manifest",
+                birefnetJob.manifestPath);
+            drawJobsArtifactButton(
+                "BiRefNet Log", "BiRefNet log",
+                birefnetJob.logPath);
+            drawJobsArtifactButton(
+                "BiRefNet Progress", "BiRefNet progress",
+                birefnetJob.progressPath);
+            ImGui::BeginDisabled(promptMaskJob.logPath.empty());
+            if (ImGui::Button("Mask Log")) {
+                loadJobsTextPreview(
+                    "Prompt-mask log", promptMaskJob.logPath);
+            }
+            ImGui::EndDisabled();
+            if (!shellState->jobsTextPreviewPath.empty()) {
+                ImGui::Separator();
+                ImGui::Text(
+                    "%s (%zu bytes shown)",
+                    shellState->jobsTextPreviewLabel.c_str(),
+                    shellState->jobsTextPreview.size());
+                ImGui::TextWrapped(
+                    "%s", shellState->jobsTextPreviewPath.c_str());
+                if (!shellState->jobsTextPreviewError.empty()) {
+                    ImGui::TextColored(
+                        ImVec4(1.0f, 0.45f, 0.35f, 1.0f),
+                        "%s",
+                        shellState->jobsTextPreviewError.c_str());
+                }
+                if (ImGui::Button("Refresh Artifact")) {
+                    loadJobsTextPreview(
+                        shellState->jobsTextPreviewLabel.c_str(),
+                        shellState->jobsTextPreviewPath);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Close Artifact")) {
+                    shellState->jobsTextPreviewLabel.clear();
+                    shellState->jobsTextPreviewPath.clear();
+                    shellState->jobsTextPreview.clear();
+                    shellState->jobsTextPreviewError.clear();
+                }
+                if (!shellState->jobsTextPreviewPath.empty()) {
+                    ImGui::InputTextMultiline(
+                        "##JobsArtifactText",
+                        &shellState->jobsTextPreview,
+                        ImVec2(-1.0f, 220.0f),
+                        ImGuiInputTextFlags_ReadOnly);
+                }
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("AI Assist")) {
             drawInspectorHeading("AI Assist", snapshot, currentClip);
             ImGui::TextWrapped(
-                "Reviewed deterministic speaker-name, organization, and "
-                "spurious-label mining is available in Speakers. Cloud/model "
-                "enrichment and chat remain pending extraction from the Qt adapter.");
+                "%s",
+                shellState->aiAccount.status.empty()
+                    ? "Configure credentials and refresh account access."
+                    : shellState->aiAccount.status.c_str());
+            ImGui::Text(
+                "Project usage %d/%d (failures %d)",
+                shellState->aiUsageRequests,
+                shellState->aiUsageBudgetCap,
+                shellState->aiUsageFailures);
+            std::vector<std::string> modelOptions =
+                shellState->aiAccount.entitlements.models;
+            if (modelOptions.empty()) {
+                modelOptions = {
+                    "deepseek-chat",
+                    "gpt-4o-mini",
+                    "mistral-small",
+                    "qwen2.5-7b-instruct"};
+            }
+            if (ImGui::BeginCombo(
+                    "Model", shellState->aiSelectedModel.c_str())) {
+                for (const std::string& model : modelOptions) {
+                    const bool selected =
+                        model == shellState->aiSelectedModel;
+                    if (ImGui::Selectable(model.c_str(), selected)) {
+                        shellState->aiSelectedModel = model;
+                        setLegacyStateOverride(
+                            shellState,
+                            "aiSelectedModel",
+                            shellState->aiSelectedModel);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::BeginChild(
+                    "AiChatHistory", ImVec2(-1.0f, 210.0f), true)) {
+                for (const AiChatMessage& message :
+                     shellState->aiChatMessages) {
+                    ImGui::TextColored(
+                        message.role == "Error"
+                            ? ImVec4(1.0f, 0.45f, 0.35f, 1.0f)
+                            : ImVec4(0.45f, 0.75f, 1.0f, 1.0f),
+                        "%s",
+                        message.role.c_str());
+                    ImGui::TextWrapped("%s", message.content.c_str());
+                    ImGui::Spacing();
+                }
+                if (shellState->aiTaskRunning) {
+                    ImGui::TextDisabled("Waiting for AI response...");
+                }
+                if (ImGui::GetScrollY() >=
+                    ImGui::GetScrollMaxY() - 4.0f) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+            }
+            ImGui::EndChild();
+            const bool submitOnEnter = ImGui::InputTextMultiline(
+                "##AiChatPrompt",
+                &shellState->aiChatPrompt,
+                ImVec2(-1.0f, 72.0f),
+                ImGuiInputTextFlags_CtrlEnterForNewLine |
+                    ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::BeginDisabled(
+                shellState->aiTaskRunning ||
+                shellState->aiChatPrompt.empty() ||
+                !shellState->aiAccount.aiEnabled);
+            if (ImGui::Button("Send") || submitOnEnter) {
+                startAiChatRequest(shellState, snapshot);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(shellState->aiChatMessages.empty());
+            if (ImGui::Button("Clear Chat")) {
+                shellState->aiChatMessages.clear();
+            }
+            ImGui::EndDisabled();
+            ImGui::Separator();
+            ImGui::TextWrapped(
+                "Deterministic speaker-name, organization, and spurious-label "
+                "mining remains available in Speakers without cloud access.");
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Access")) {
             drawInspectorHeading("Subscriptions & Purchases", snapshot, currentClip);
+            const jcut::ai::AccessTokenProfileCore tokenProfile =
+                jcut::ai::parseAccessTokenProfileCore(
+                    shellState->aiSessionToken);
+            const std::string accountIdentity =
+                !shellState->aiUserId.empty()
+                    ? shellState->aiUserId
+                    : !shellState->aiAccount.entitlements.userId.empty()
+                        ? shellState->aiAccount.entitlements.userId
+                        : tokenProfile.displayIdentity();
+            if (!accountIdentity.empty()) {
+                drawAiProfileAvatar(
+                    *shellState, accountIdentity);
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextUnformatted(accountIdentity.c_str());
+                const bool subscribed =
+                    shellState->aiAccount.usage.hasSubscription;
+                const bool entitled =
+                    shellState->aiAccount.entitlements.entitled;
+                ImGui::TextColored(
+                    subscribed
+                        ? ImVec4(0.95f, 0.76f, 0.24f, 1.0f)
+                        : entitled
+                            ? ImVec4(0.45f, 0.85f, 0.55f, 1.0f)
+                            : ImVec4(0.65f, 0.69f, 0.74f, 1.0f),
+                    "%s",
+                    subscribed
+                        ? "SUBSCRIBED"
+                        : entitled ? "AI ENABLED" : "BASIC");
+                if (shellState->aiAvatarRunning) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Loading profile image...");
+                }
+                ImGui::EndGroup();
+            } else {
+                ImGui::TextDisabled("Not signed in");
+            }
+            if (ImGui::InputText(
+                    "Gateway",
+                    &shellState->aiGatewayBaseUrl,
+                    ImGuiInputTextFlags_EnterReturnsTrue)) {
+                shellState->aiGatewayBaseUrl =
+                    jcut::ai::normalizeGatewayBaseUrl(
+                        shellState->aiGatewayBaseUrl);
+                setLegacyStateOverride(
+                    shellState,
+                    "aiProxyBaseUrl",
+                    shellState->aiGatewayBaseUrl);
+            }
+            ImGui::InputText(
+                "Session Token",
+                &shellState->aiSessionToken,
+                ImGuiInputTextFlags_Password);
+            ImGui::TextDisabled(
+                "Token is never stored in the project. "
+                "JCUT_AI_AUTH_TOKEN is loaded at startup.");
+            ImGui::BeginDisabled(
+                shellState->aiBrowserLoginRunning ||
+                !jcut::ai::isSupabaseGatewayBase(
+                    shellState->aiGatewayBaseUrl));
+            if (ImGui::Button("Log In with Browser")) {
+                startAiBrowserLogin(shellState);
+            }
+            ImGui::EndDisabled();
+            if (shellState->aiBrowserLoginRunning) {
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel Login")) {
+                    shellState->aiBrowserLoginCancelRequested.store(true);
+                }
+            }
+            ImGui::BeginDisabled(shellState->aiSessionToken.empty());
+            if (ImGui::Button("Save Login Securely")) {
+                const jcut::ai::CredentialStoreResultCore stored =
+                    jcut::ai::storeCredentialsCore(
+                        jcut::ai::StoredCredentialsCore{
+                            shellState->aiSessionToken,
+                            shellState->aiRefreshToken,
+                            shellState->aiUserId});
+                shellState->aiCredentialStatus = stored.ok
+                    ? (stored.usedSystemStore
+                           ? "Login saved in the system secret store."
+                           : "Login saved in the private config fallback.")
+                    : stored.error;
+                appendAiActivity(
+                    shellState,
+                    stored.ok ? "Credentials" : "Credential error",
+                    shellState->aiCredentialStatus);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(
+                shellState->aiRefreshToken.empty() ||
+                shellState->aiTokenRefreshRunning);
+            if (ImGui::Button("Refresh Login Token")) {
+                startAiTokenRefresh(shellState);
+            }
+            ImGui::EndDisabled();
+            if (!shellState->aiCredentialStatus.empty()) {
+                ImGui::TextDisabled(
+                    "%s", shellState->aiCredentialStatus.c_str());
+            }
+            ImGui::BeginDisabled(
+                shellState->aiAccountRefreshRunning ||
+                shellState->aiGatewayBaseUrl.empty() ||
+                shellState->aiSessionToken.empty() ||
+                !shellState->featureAiPanel);
+            if (ImGui::Button("Refresh Access")) {
+                startAiAccountRefresh(shellState);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(shellState->aiSessionToken.empty());
+            if (ImGui::Button("Log Out")) {
+                const jcut::ai::CredentialStoreResultCore cleared =
+                    jcut::ai::clearStoredCredentialsCore();
+                shellState->aiSessionToken.clear();
+                shellState->aiRefreshToken.clear();
+                shellState->aiUserId.clear();
+                shellState->aiAccount = {};
+                shellState->aiAccount.status =
+                    "Session credentials cleared.";
+                shellState->aiCredentialStatus = cleared.ok
+                    ? "Stored login cleared."
+                    : cleared.error;
+                appendAiActivity(
+                    shellState,
+                    cleared.ok ? "Logout" : "Logout error",
+                    shellState->aiCredentialStatus);
+            }
+            ImGui::EndDisabled();
+            if (shellState->aiAccountRefreshRunning) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("Refreshing...");
+            }
+            ImGui::BeginDisabled(
+                shellState->aiCheckoutRunning ||
+                shellState->aiSessionToken.empty() ||
+                !shellState->featureAiPanel);
+            if (ImGui::Button("Subscribe / Open Checkout")) {
+                startAiCheckout(shellState);
+            }
+            ImGui::EndDisabled();
+            if (shellState->aiCheckoutRunning) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("Opening checkout...");
+            }
+            ImGui::TextWrapped(
+                "%s",
+                shellState->aiAccount.status.empty()
+                    ? "No account data loaded."
+                    : shellState->aiAccount.status.c_str());
             if (ImGui::BeginTable("AccessTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 ImGui::TableSetupColumn("Type");
                 ImGui::TableSetupColumn("Item");
@@ -9529,9 +16205,63 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 ImGui::TableSetupColumn("Period");
                 ImGui::TableSetupColumn("Source");
                 ImGui::TableHeadersRow();
+                for (const jcut::ai::AccessRowCore& row :
+                     shellState->aiAccount.rows) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted(row.type.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(row.item.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted(row.status.c_str());
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(row.period.c_str());
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::TextUnformatted(row.source.c_str());
+                }
                 ImGui::EndTable();
             }
-            ImGui::TextDisabled("Entitlement refresh requires the shared access-service adapter.");
+            ImGui::SeparatorText("AI Activity");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(
+                shellState->aiActivityEntries.empty());
+            if (ImGui::SmallButton("Clear Activity")) {
+                shellState->aiActivityEntries.clear();
+            }
+            ImGui::EndDisabled();
+            if (ImGui::BeginTable(
+                    "AiActivityTable",
+                    3,
+                    ImGuiTableFlags_Borders |
+                        ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_ScrollY,
+                    ImVec2(-1.0f, 180.0f))) {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn(
+                    "Time",
+                    ImGuiTableColumnFlags_WidthFixed,
+                    72.0f);
+                ImGui::TableSetupColumn(
+                    "Phase",
+                    ImGuiTableColumnFlags_WidthFixed,
+                    110.0f);
+                ImGui::TableSetupColumn(
+                    "Summary",
+                    ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableHeadersRow();
+                for (const AiActivityEntry& entry :
+                     shellState->aiActivityEntries) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted(entry.time.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(entry.phase.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextWrapped(
+                        "%s", entry.summary.c_str());
+                }
+                ImGui::EndTable();
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Project")) {
@@ -9570,7 +16300,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             ImGui::Text("Media %zu", snapshot.mediaItems.size());
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Clip")) {
+        if (ImGui::BeginTabItem(
+                "Clip", nullptr, inspectorTabFlags("Clip"))) {
             const jcut::EditorClip* selectedClip = nullptr;
             for (const jcut::EditorClip& clip : snapshot.clips) {
                 if (clip.selected) {
@@ -9882,12 +16613,27 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             jcut::render::RenderResultCore exportResult;
             bool exportRunning = false;
             bool exportHasProgress = false;
+            std::size_t exportQueueCurrent = 0;
+            std::size_t exportQueueTotal = 0;
+            std::size_t exportQueueCompleted = 0;
+            std::size_t exportQueueFailed = 0;
+            std::string exportQueueLabel;
             {
                 std::lock_guard<std::mutex> lock(shellState->exportMutex);
                 exportProgress = shellState->exportProgress;
                 exportResult = shellState->exportResult;
                 exportRunning = shellState->exportRunning;
                 exportHasProgress = shellState->exportHasProgress;
+                exportQueueCurrent =
+                    shellState->exportQueueCurrent;
+                exportQueueTotal =
+                    shellState->exportQueueTotal;
+                exportQueueCompleted =
+                    shellState->exportQueueCompleted;
+                exportQueueFailed =
+                    shellState->exportQueueFailed;
+                exportQueueLabel =
+                    shellState->exportQueueLabel;
             }
             int width = snapshot.exportRequest.outputSize.width;
             int height = snapshot.exportRequest.outputSize.height;
@@ -9962,6 +16708,19 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             ImGui::Separator();
             if (exportRunning) {
+                if (exportQueueTotal > 1) {
+                    ImGui::Text(
+                        "Batch %zu / %zu | completed %zu | failed %zu",
+                        exportQueueCurrent,
+                        exportQueueTotal,
+                        exportQueueCompleted,
+                        exportQueueFailed);
+                    if (!exportQueueLabel.empty()) {
+                        ImGui::TextWrapped(
+                            "%s",
+                            exportQueueLabel.c_str());
+                    }
+                }
                 const float completion = exportProgress.totalFrames > 0
                     ? static_cast<float>(exportProgress.framesCompleted) /
                         static_cast<float>(exportProgress.totalFrames)
@@ -10038,23 +16797,118 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 zeroCopyAvailable = shellState->previewZeroCopyAvailable;
                 zeroCopyFailure = shellState->previewZeroCopyFailureReason;
             }
-            if (ImGui::BeginTable("PipelineStages", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                drawReadOnlyTableRow("Preview", previewResult.success ? "ready" : "not ready");
-                drawReadOnlyTableRow("Render", previewResult.message);
-                drawReadOnlyTableRow("Source", previewResult.sourcePath);
-                drawReadOnlyTableRow("GPU Frame", previewResult.vulkanFrame.valid ? "valid" : "none");
-                drawReadOnlyTableRow("CPU Frame", previewResult.image.empty() ? "none" : "valid");
-                drawReadOnlyTableRow("Zero Copy", lastUsedZeroCopy ? "active" : "inactive");
-                drawReadOnlyTableRow("Zero Copy Available", zeroCopyAvailable ? "yes" : "no");
-                drawReadOnlyTableRow("Fallback", zeroCopyFailure);
-                drawReadOnlyTableRow("Present", "raw X11 Vulkan swapchain");
-                ImGui::EndTable();
+            const std::vector<PipelineStageCore> stages =
+                previewPipelineStages(
+                    previewResult,
+                    lastUsedZeroCopy,
+                    zeroCopyAvailable,
+                    zeroCopyFailure);
+            shellState->selectedPipelineStage = std::clamp(
+                shellState->selectedPipelineStage,
+                0,
+                std::max(0, static_cast<int>(stages.size()) - 1));
+            if (ImGui::Button("Refresh Pipeline")) {
+                requestPreviewRender(shellState);
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(lastUsedZeroCopy);
+            if (ImGui::Button("Retry Zero Copy")) {
+                {
+                    std::lock_guard<std::mutex> lock(
+                        shellState->previewMutex);
+                    shellState->previewCpuFallbackPreferred = false;
+                    shellState->previewZeroCopyFailureReason.clear();
+                }
+                requestPreviewRender(shellState);
+            }
+            ImGui::EndDisabled();
+            if (ImGui::BeginChild(
+                    "PipelineGraph",
+                    ImVec2(0.0f, 104.0f),
+                    true,
+                    ImGuiWindowFlags_HorizontalScrollbar)) {
+                for (std::size_t index = 0;
+                     index < stages.size();
+                     ++index) {
+                    const PipelineStageCore& stage = stages[index];
+                    ImGui::PushID(static_cast<int>(index));
+                    const ImVec4 color =
+                        stage.state == "blocked"
+                        ? ImVec4(0.42f, 0.16f, 0.16f, 1.0f)
+                        : (stage.state == "fallback"
+                               ? ImVec4(0.46f, 0.34f, 0.13f, 1.0f)
+                               : (stage.active
+                                      ? ImVec4(0.15f, 0.42f, 0.31f, 1.0f)
+                                      : ImVec4(0.19f, 0.23f, 0.28f, 1.0f)));
+                    ImGui::PushStyleColor(
+                        ImGuiCol_Button, color);
+                    ImGui::PushStyleColor(
+                        ImGuiCol_ButtonHovered,
+                        ImVec4(
+                            std::min(1.0f, color.x + 0.12f),
+                            std::min(1.0f, color.y + 0.12f),
+                            std::min(1.0f, color.z + 0.12f),
+                            1.0f));
+                    const std::string cardLabel =
+                        stage.label + "\n" + stage.state;
+                    if (ImGui::Button(
+                            cardLabel.c_str(),
+                            ImVec2(112.0f, 68.0f))) {
+                        shellState->selectedPipelineStage =
+                            static_cast<int>(index);
+                    }
+                    ImGui::PopStyleColor(2);
+                    if (index + 1 < stages.size()) {
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(">");
+                        ImGui::SameLine();
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+            if (!stages.empty()) {
+                const PipelineStageCore& selectedStage =
+                    stages[static_cast<std::size_t>(
+                        shellState->selectedPipelineStage)];
+                ImGui::SeparatorText(selectedStage.label.c_str());
+                ImGui::Text(
+                    "%s • %s • %s",
+                    selectedStage.kind.c_str(),
+                    selectedStage.state.c_str(),
+                    selectedStage.exact ? "exact" : "approximate");
+                ImGui::TextWrapped(
+                    "%s", selectedStage.detail.c_str());
+                if (ImGui::BeginTable(
+                        "PipelineStageFacts",
+                        2,
+                        ImGuiTableFlags_Borders |
+                            ImGuiTableFlags_RowBg)) {
+                    for (const auto& [label, value] :
+                         selectedStage.facts) {
+                        drawReadOnlyTableRow(label.c_str(), value);
+                    }
+                    ImGui::EndTable();
+                }
             }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("System")) {
             drawInspectorHeading("System", snapshot, currentClip);
             const jcut::ImGuiAudioStatus audioStatus = shellState->audioRuntime.status();
+            jcut::standalone_render::PreviewRenderResult decoderPreview;
+            {
+                std::lock_guard<std::mutex> lock(
+                    shellState->previewMutex);
+                decoderPreview = shellState->previewResult;
+            }
+            const jcut::EffectiveDecoderPolicyCore effectiveDecoder =
+                jcut::effectiveDecoderPolicyCore(
+                    shellState->decoderPolicy,
+                    decoderPreview.hardwareAccelerated,
+                    false,
+                    static_cast<int>(std::max(
+                        1U, std::thread::hardware_concurrency())));
             if (ImGui::BeginTable("SystemProfile", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 drawReadOnlyTableRow("Backend", "imgui");
                 drawReadOnlyTableRow("Window", "x11/vulkan");
@@ -10070,9 +16924,195 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     audioStatus.actualBufferFrames > 0
                     ? std::to_string(audioStatus.actualBufferFrames)
                     : std::string("stream closed"));
+                drawReadOnlyTableRow(
+                    "Audio Device Requested",
+                    audioStatus.requestedOutputDeviceName.empty()
+                    ? std::string("system default")
+                    : audioStatus.requestedOutputDeviceName);
+                drawReadOnlyTableRow(
+                    "Audio Device Active",
+                    audioStatus.activeOutputDeviceName.empty()
+                    ? std::string("stream closed")
+                    : audioStatus.activeOutputDeviceName);
+                drawReadOnlyTableRow(
+                    "Decode Requested",
+                    jcut::decodePreferenceCoreName(
+                        shellState->decoderPolicy.decodePreference));
+                drawReadOnlyTableRow(
+                    "Decode Effective",
+                    jcut::decodePreferenceCoreName(
+                        decoderPreview.sourcePath.empty()
+                        ? effectiveDecoder.effectivePreference
+                        : decoderPreview.effectiveDecodePreference));
+                drawReadOnlyTableRow(
+                    "Decode Device",
+                    decoderPreview.hardwareDeviceLabel.empty()
+                    ? std::string("software")
+                    : decoderPreview.hardwareDeviceLabel);
+                drawReadOnlyTableRow(
+                    "H.26x Threads",
+                    std::to_string(
+                        effectiveDecoder.softwareThreadCount));
+                drawReadOnlyTableRow(
+                    "Deterministic",
+                    shellState->decoderPolicy.deterministic
+                    ? "yes" : "no");
                 ImGui::EndTable();
             }
-            ImGui::TextDisabled("Decoder mutation and benchmark controls require the neutral decoder-control service.");
+            ImGui::SeparatorText("Decoder Policy");
+            const std::array<const char*, 4> decodeLabels{
+                "Auto", "Hardware Zero-Copy", "Hardware", "Software"};
+            int decodeIndex = static_cast<int>(
+                shellState->decoderPolicy.decodePreference);
+            if (ImGui::Combo(
+                    "Decode Preference",
+                    &decodeIndex,
+                    decodeLabels.data(),
+                    static_cast<int>(decodeLabels.size()))) {
+                shellState->decoderPolicy.decodePreference =
+                    static_cast<jcut::DecodePreferenceCore>(
+                        std::clamp(decodeIndex, 0, 3));
+                saveUiPreferences(*shellState);
+                requestPreviewRender(shellState);
+            }
+            const std::array<const char*, 6> hardwareDeviceLabels{
+                "Auto",
+                "CUDA (NVIDIA)",
+                "VA-API",
+                "VideoToolbox",
+                "D3D11VA",
+                "DXVA2"};
+            int hardwareDeviceIndex = static_cast<int>(
+                shellState->decoderPolicy.hardwareDevice);
+            if (ImGui::Combo(
+                    "Hardware Decode Device",
+                    &hardwareDeviceIndex,
+                    hardwareDeviceLabels.data(),
+                    static_cast<int>(
+                        hardwareDeviceLabels.size()))) {
+                shellState->decoderPolicy.hardwareDevice =
+                    static_cast<jcut::DecodeHardwareDeviceCore>(
+                        std::clamp(hardwareDeviceIndex, 0, 5));
+                saveUiPreferences(*shellState);
+                requestPreviewRender(shellState);
+            }
+            const std::array<const char*, 4> threadingLabels{
+                "Auto (Stability)",
+                "Single Thread",
+                "Slice Threads",
+                "Frame + Slice Threads"};
+            int threadingIndex = static_cast<int>(
+                shellState->decoderPolicy.h26xThreadingMode);
+            if (ImGui::Combo(
+                    "H.264/H.265 CPU Threading",
+                    &threadingIndex,
+                    threadingLabels.data(),
+                    static_cast<int>(threadingLabels.size()))) {
+                shellState->decoderPolicy.h26xThreadingMode =
+                    static_cast<jcut::H26xThreadingModeCore>(
+                        std::clamp(threadingIndex, 0, 3));
+                setLegacyStateOverride(
+                    shellState,
+                    "debugH26xSoftwareThreadingMode",
+                    jcut::h26xThreadingModeCoreName(
+                        shellState->decoderPolicy.h26xThreadingMode));
+                requestPreviewRender(shellState);
+            }
+            bool deterministic =
+                shellState->decoderPolicy.deterministic;
+            if (ImGui::Checkbox(
+                    "Deterministic Pipeline", &deterministic)) {
+                shellState->decoderPolicy.deterministic = deterministic;
+                setLegacyStateOverride(
+                    shellState,
+                    "debugDeterministicPipeline",
+                    deterministic);
+                setLegacyStateOverride(
+                    shellState,
+                    "debugDeterministicPipelineExplicit",
+                    true);
+                requestPreviewRender(shellState);
+            }
+            int decoderLanes =
+                shellState->decoderPolicy.decoderLaneCount;
+            if (ImGui::InputInt("Decoder Lane Count", &decoderLanes)) {
+                shellState->decoderPolicy.decoderLaneCount =
+                    std::clamp(decoderLanes, 0, 16);
+                setLegacyStateOverride(
+                    shellState,
+                    "debugDecoderLaneCount",
+                    shellState->decoderPolicy.decoderLaneCount);
+            }
+            if (!decoderPreview.hardwareFallbackReason.empty()) {
+                ImGui::TextDisabled(
+                    "Hardware fallback: %s",
+                    decoderPreview.hardwareFallbackReason.c_str());
+            }
+            if (ImGui::Button("Restart Preview Decoder")) {
+                requestPreviewRender(shellState);
+                shellState->statusMessage =
+                    "standalone preview decoder restarted";
+            }
+            if (shellState->decodeBenchmarkRunning &&
+                shellState->decodeBenchmarkFuture.valid() &&
+                shellState->decodeBenchmarkFuture.wait_for(
+                    std::chrono::seconds(0)) ==
+                    std::future_status::ready) {
+                shellState->decodeBenchmarkResult =
+                    shellState->decodeBenchmarkFuture.get();
+                shellState->decodeBenchmarkRunning = false;
+                shellState->statusMessage =
+                    shellState->decodeBenchmarkResult.message;
+            }
+            const bool benchmarkSourceAvailable =
+                currentClip && currentClip->mediaKind != "title" &&
+                !currentClip->sourcePath.empty();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(
+                shellState->decodeBenchmarkRunning ||
+                !benchmarkSourceAvailable);
+            if (ImGui::Button("Run Decode Benchmark") && currentClip) {
+                const std::string benchmarkPath = pathString(
+                    resolvedClipMediaPathForProbe(
+                        *shellState, *currentClip));
+                const jcut::DecoderPolicySettingsCore benchmarkPolicy =
+                    shellState->decoderPolicy;
+                shellState->decodeBenchmarkRunning = true;
+                shellState->decodeBenchmarkFuture = std::async(
+                    std::launch::async,
+                    [benchmarkPath, benchmarkPolicy]() {
+                        return jcut::standalone_render::
+                            benchmarkStandaloneMediaDecode(
+                                benchmarkPath, benchmarkPolicy);
+                    });
+            }
+            ImGui::EndDisabled();
+            if (shellState->decodeBenchmarkRunning) {
+                ImGui::TextUnformatted("Decode benchmark running...");
+            } else if (!shellState->decodeBenchmarkResult.message.empty()) {
+                const auto& benchmark =
+                    shellState->decodeBenchmarkResult;
+                ImGui::Text(
+                    "%s | %d frames | %d failed | %.1f fps | %lld ms",
+                    benchmark.codecName.empty()
+                    ? "unknown codec"
+                    : benchmark.codecName.c_str(),
+                    benchmark.framesDecoded,
+                    benchmark.failedFrames,
+                    benchmark.framesPerSecond,
+                    static_cast<long long>(benchmark.elapsedMs));
+                if (benchmark.hardwareAccelerated) {
+                    ImGui::Text(
+                        "Hardware decode active: %s",
+                        benchmark.hardwareDeviceLabel.empty()
+                        ? "device"
+                        : benchmark.hardwareDeviceLabel.c_str());
+                } else if (!benchmark.hardwareFallbackReason.empty()) {
+                    ImGui::TextDisabled(
+                        "Hardware fallback: %s",
+                        benchmark.hardwareFallbackReason.c_str());
+                }
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Projects",
@@ -10206,6 +17246,48 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 shellState->statusMessage =
                     "audio buffer updated; playback output will restart";
             }
+            const jcut::ImGuiAudioStatus audioStatus =
+                shellState->audioRuntime.status();
+            const std::string selectedDeviceLabel =
+                shellState->audioOutputDeviceName.empty()
+                ? "System Default"
+                : shellState->audioOutputDeviceName;
+            if (ImGui::BeginCombo(
+                    "Audio Output Device",
+                    selectedDeviceLabel.c_str())) {
+                const bool defaultSelected =
+                    shellState->audioOutputDeviceName.empty();
+                if (ImGui::Selectable(
+                        "System Default", defaultSelected)) {
+                    shellState->audioOutputDeviceName.clear();
+                    shellState->audioRuntime.setOutputDeviceName({});
+                    saveUiPreferences(*shellState);
+                    shellState->statusMessage =
+                        "default audio output selected";
+                }
+                for (const jcut::ImGuiAudioOutputDevice& device :
+                     audioStatus.outputDevices) {
+                    const bool selected =
+                        device.name == shellState->audioOutputDeviceName;
+                    const std::string label = device.name +
+                        (device.isDefault ? " (default)" : "");
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        shellState->audioOutputDeviceName = device.name;
+                        shellState->audioRuntime.setOutputDeviceName(
+                            device.name);
+                        saveUiPreferences(*shellState);
+                        shellState->statusMessage =
+                            "audio output updated; playback will restart";
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh Audio Devices")) {
+                shellState->audioRuntime.refreshOutputDevices();
+                shellState->statusMessage =
+                    "audio output devices refreshed";
+            }
             ImGui::SeparatorText("Project Safety");
             int autosaveInterval = shellState->autosaveIntervalMinutes;
             if (ImGui::InputInt(
@@ -10261,6 +17343,36 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             ImGui::TextDisabled(
                 "Autosave backups use Qt-compatible state_backup_*.json files. "
                 "History limits apply on the next project save.");
+            ImGui::SeparatorText("AI Access");
+            if (ImGui::Checkbox(
+                    "Enable AI Panel",
+                    &shellState->featureAiPanel)) {
+                setLegacyStateOverride(
+                    shellState,
+                    "feature_ai_panel",
+                    shellState->featureAiPanel);
+            }
+            if (ImGui::Checkbox(
+                    "Enable AI Speaker Cleanup",
+                    &shellState->featureAiSpeakerCleanup)) {
+                setLegacyStateOverride(
+                    shellState,
+                    "feature_ai_speaker_cleanup",
+                    shellState->featureAiSpeakerCleanup);
+            }
+            int aiBudget = shellState->aiUsageBudgetCap;
+            if (ImGui::InputInt(
+                    "AI Project Budget", &aiBudget)) {
+                shellState->aiUsageBudgetCap =
+                    std::clamp(aiBudget, 1, 1000000);
+                setLegacyStateOverride(
+                    shellState,
+                    "aiUsageBudgetCap",
+                    shellState->aiUsageBudgetCap);
+            }
+            ImGui::TextDisabled(
+                "Gateway, model, feature flags, and counters are project "
+                "settings. Bearer tokens are never written to the project.");
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -10421,6 +17533,9 @@ int main(int argc, char** argv)
     loadUiPreferences(&shellState);
     shellState.audioRuntime.setBufferFrames(
         static_cast<unsigned int>(shellState.audioBufferFrames));
+    shellState.audioRuntime.setOutputDeviceName(
+        shellState.audioOutputDeviceName);
+    shellState.audioRuntime.refreshOutputDevices();
     shellState.layoutIniPath = pathString(
         fs::path(shellState.preferencesPath).parent_path() / "imgui_layout.ini");
 
@@ -10513,6 +17628,16 @@ int main(int argc, char** argv)
             requestPreviewRender(&shellState);
         }
         uploadPreviewTexture(&shellState, &vulkanShell);
+        refreshBiRefNetLivePreviewTexture(
+            &shellState, &vulkanShell);
+        refreshMediaThumbnailTexture(
+            &shellState, &vulkanShell);
+        refreshAiProfileAvatarTexture(
+            &shellState, &vulkanShell);
+        refreshFaceReferenceTexture(
+            &shellState, &vulkanShell);
+        refreshSectionAvatarTexture(
+            &shellState, &vulkanShell);
 
         {
             std::lock_guard<std::mutex> lock(shellState.exportMutex);
@@ -10528,6 +17653,10 @@ int main(int argc, char** argv)
         ImGui_ImplVulkan_NewFrame();
         platform.newFrame();
         ImGui::NewFrame();
+        ++shellState.uiFrameCounter;
+        pollAutoOpposeJob(&shellState);
+        pollTranscriptionJob(&shellState);
+        pollBiRefNetJob(&shellState);
 
         jcut::EditorDocumentCore snapshot;
         {
@@ -10561,6 +17690,26 @@ int main(int argc, char** argv)
         vulkanShell.present();
     }
 
+    shellState.aiBrowserLoginCancelRequested.store(true);
+    if (shellState.aiBrowserLoginFuture.valid()) {
+        shellState.aiBrowserLoginFuture.wait();
+    }
+    if (shellState.mediaThumbnailFuture.valid()) {
+        shellState.mediaThumbnailFuture.wait();
+    }
+    if (shellState.aiAvatarFuture.valid()) {
+        shellState.aiAvatarFuture.wait();
+    }
+    if (shellState.faceReferenceFuture.valid()) {
+        shellState.faceReferenceFuture.wait();
+    }
+    if (shellState.sectionAvatarFuture.valid()) {
+        shellState.sectionAvatarFuture.wait();
+    }
+    if (!shellState.aiAvatarCachePath.empty()) {
+        std::error_code ignored;
+        fs::remove(shellState.aiAvatarCachePath, ignored);
+    }
     vulkanShell.shutdown();
     shellState.audioRuntime.shutdown();
     ImGui::SaveIniSettingsToDisk(shellState.layoutIniPath.c_str());

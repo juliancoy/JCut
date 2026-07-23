@@ -33,6 +33,7 @@
 
 #include <functional>
 #include <memory>
+#include "export_range_core.h"
 #include "timeline_layout.h"
 #include "timeline_renderer.h"
 
@@ -128,6 +129,7 @@ public:
     const QVector<ExportRangeSegment>& exportRanges() const { return m_exportRanges; }
     void setExportRange(int64_t startFrame, int64_t endFrame);
     void setExportRanges(const QVector<ExportRangeSegment>& ranges);
+    bool editExportRanges(jcut::export_range::Edit edit, int64_t frame);
 
     std::function<void(int64_t)> seekRequested;
     std::function<void()> clipsChanged;

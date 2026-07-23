@@ -40,6 +40,10 @@ bool patchTranscriptWord(nlohmann::json* root,
 bool deleteTranscriptWord(nlohmann::json* root,
                           const TranscriptWordRef& reference,
                           std::string* errorOut = nullptr);
+bool deleteTranscriptWords(
+    nlohmann::json* root,
+    const std::vector<TranscriptWordRef>& references,
+    std::string* errorOut = nullptr);
 std::optional<TranscriptWordRef> insertTranscriptWord(
     nlohmann::json* root,
     const TranscriptWordRef& anchor,
@@ -56,6 +60,10 @@ bool moveTranscriptWordRenderOrder(nlohmann::json* root,
                                    const TranscriptWordRef& reference,
                                    int direction,
                                    std::string* errorOut = nullptr);
+bool reorderTranscriptWords(
+    nlohmann::json* root,
+    const std::vector<TranscriptWordRef>& orderedReferences,
+    std::string* errorOut = nullptr);
 bool patchTranscriptSpeakerProfile(
     nlohmann::json* root,
     const std::string& speakerId,

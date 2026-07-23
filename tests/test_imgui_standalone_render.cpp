@@ -1,8 +1,11 @@
 #include <QtTest/QtTest>
 
+#include "../editor_grading_core.h"
 #include "../editor_runtime.h"
+#include "../face_avatar_crop_core.h"
 #include "../image_sequence_directory.h"
 #include "../imgui_audio_runtime.h"
+#include "../prompt_mask_job_core.h"
 #include "../standalone_preview_renderer.h"
 #include "../standalone_timeline_renderer.h"
 
@@ -29,13 +32,18 @@ private slots:
     void testStandalonePreviewRendersAnimatedTitleClip();
     void testStandalonePreviewRendersAdvancedTitleTreatments();
     void testStandalonePreviewRendersTranscriptOverlayFromActiveCut();
+    void testStandalonePreviewAppliesDynamicSpeakerFraming();
     void testPreviewKeepsZeroCopyWithCpuFallbackContract();
+    void testHardwareDirectEligibilitySupportsPresentationTransforms();
+    void testFaceAvatarCropMatchesQtPolicy();
     void testStandaloneImportProbeReportsAudioPresence();
+    void testStandaloneDecodePolicyBenchmark();
     void testImageSequenceDirectoryProbeAndRender();
     void testLegacyUnknownAudioPresenceIsProbedOnLoad();
     void testAudioFacadeRefreshesIdleTimelineStatus();
     void testAudioFacadeTracksDerivedSidecarAvailability();
     void testAudioFacadeRefreshesReplacedSourceTopology();
+    void testPromptMaskJobPlanAndController();
 };
 
 namespace {
@@ -118,6 +126,21 @@ bool writeSolidBmp(const QString& path,
 
     QFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+
+bool writeJcutBoxV1(const QString& path, const QByteArray& jsonPayload)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    QDataStream stream(&file);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    if (stream.writeRawData("JCUTBOX1", 8) != 8) return false;
+    stream << quint32{1}
+           << static_cast<quint32>(jsonPayload.size());
+    return stream.writeRawData(
+               jsonPayload.constData(), jsonPayload.size()) ==
+            jsonPayload.size() &&
+        stream.status() == QDataStream::Ok;
 }
 
 bool writeSplitMaskPgm(const QString& path, int width = 4, int height = 4)
@@ -508,6 +531,29 @@ void TestImGuiStandaloneRender::testStandalonePreviewCompositesOpacityAndTrackVi
     result = render();
     QCOMPARE(center(result.image, 0), static_cast<std::uint8_t>(0));
     QCOMPARE(center(result.image, 2), static_cast<std::uint8_t>(255));
+
+    jcut::EditorDocumentCore upperDocument = document;
+    upperDocument.clips = {top};
+    upperDocument.tracks[1].visualMode = 0;
+    jcut::standalone_render::TimelineRenderRequest
+        transparentRequest;
+    transparentRequest.document =
+        std::move(upperDocument);
+    transparentRequest.outputSize = {4, 4};
+    transparentRequest.transparentBackground = true;
+    result =
+        jcut::standalone_render::renderTimelineFrame(
+            transparentRequest);
+    QVERIFY2(result.success, result.message.c_str());
+    QCOMPARE(
+        center(result.image, 0),
+        static_cast<std::uint8_t>(0));
+    QVERIFY(
+        center(result.image, 2) >= 254 &&
+        center(result.image, 2) <= 255);
+    QVERIFY(
+        center(result.image, 3) >= 127 &&
+        center(result.image, 3) <= 129);
 }
 
 void TestImGuiStandaloneRender::testStandalonePreviewAppliesMaskMatteAndFailsClosed()
@@ -516,6 +562,21 @@ void TestImGuiStandaloneRender::testStandalonePreviewAppliesMaskMatteAndFailsClo
     QVERIFY(tempDir.isValid());
     const QString sourcePath = tempDir.filePath(QStringLiteral("red.bmp"));
     QVERIFY(writeSolidBmp(sourcePath, 255, 0, 0, 4, 4));
+    QFile transcript(tempDir.filePath(QStringLiteral("red.json")));
+    QVERIFY(transcript.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray transcriptJson = R"json({
+  "speaker_profiles": {"S1": {
+    "primary_color": "#0000ff",
+    "secondary_color": "#0000ff",
+    "accent_color": "#0000ff"
+  }},
+  "segments": [{"words": [
+    {"word": "speaker", "start": 0.0, "end": 1.0, "speaker": "S1"}
+  ]}]
+})json";
+    QCOMPARE(transcript.write(transcriptJson),
+             qint64{transcriptJson.size()});
+    transcript.close();
     const QString maskDir = tempDir.filePath(QStringLiteral("manual_mask"));
     QVERIFY(QDir().mkpath(maskDir));
     QVERIFY(writeSolidBmp(
@@ -598,7 +659,8 @@ void TestImGuiStandaloneRender::testStandalonePreviewAppliesMaskMatteAndFailsClo
         document.clips[0].effectPreset = preset;
         result = render();
         QVERIFY2(result.success, result.message.c_str());
-        QVERIFY2(pixel(result.image, 2, 1) > 0, preset);
+        QCOMPARE(pixel(result.image, 2, 1), static_cast<std::uint8_t>(0));
+        QVERIFY2(pixel(result.image, 2, 2) > 0, preset);
     }
 
     document.clips[0].effectPreset = "none";
@@ -609,6 +671,107 @@ void TestImGuiStandaloneRender::testStandalonePreviewAppliesMaskMatteAndFailsClo
     QVERIFY2(result.success, result.message.c_str());
     QCOMPARE(pixel(result.image, 0, 0), static_cast<std::uint8_t>(12));
     QCOMPARE(pixel(result.image, 3, 0), static_cast<std::uint8_t>(12));
+}
+
+void TestImGuiStandaloneRender::testPromptMaskJobPlanAndController()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString sourcePath =
+        tempDir.filePath(QStringLiteral("My Video!.mp4"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    QCOMPARE(source.write("video"), qint64{5});
+    source.close();
+
+    const QString scriptPath =
+        tempDir.filePath(QStringLiteral("fake_sam3.sh"));
+    QFile script(scriptPath);
+    QVERIFY(script.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray scriptBytes = R"sh(#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--binary-mask-dir" ]; then
+        output="$2"
+        shift 2
+    else
+        shift
+    fi
+done
+mkdir -p "$output"
+printf 'P5\n1 1\n255\n\377' > "$output/frame_000001.png"
+printf '%s\n%s\n%s\n' "$SAM3_MODEL_CACHE" "$SAM3_RUNTIME_CACHE" "$SAM3_JOB_DIR" > "$SAM3_JOB_DIR/environment.txt"
+)sh";
+    QCOMPARE(script.write(scriptBytes), qint64{scriptBytes.size()});
+    script.close();
+    QVERIFY(QFile::setPermissions(
+        scriptPath,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+            QFileDevice::ExeGroup));
+
+    jcut::masks::PromptMaskJobRequest request;
+    request.scriptPath = scriptPath.toStdString();
+    request.mediaPath = sourcePath.toStdString();
+    request.prompt = "a person";
+    request.modelCachePath =
+        tempDir.filePath(QStringLiteral("model-cache")).toStdString();
+    request.runtimeCachePath =
+        tempDir.filePath(QStringLiteral("runtime-cache")).toStdString();
+    request.scaleWidth = 960;
+    request.prescaleWidth = 1280;
+    request.compileModel = true;
+    request.exportCentersJson = false;
+
+    const auto plan = jcut::masks::buildPromptMaskJobPlan(request);
+    QVERIFY(QString::fromStdString(plan.jobRoot).endsWith(
+        QStringLiteral(".jcut_jobs/sam3_a_person_My_Video_")));
+    QVERIFY(QString::fromStdString(plan.binaryMasksPath).endsWith(
+        QStringLiteral("My Video!_sam3_a_person_binary_masks")));
+    QCOMPARE(
+        plan.manifest.value("operation", std::string{}),
+        std::string("sam3"));
+    QCOMPARE(
+        plan.manifest["parameters"].value("prompt", std::string{}),
+        std::string("a person"));
+    QVERIFY(std::find(
+                plan.command.begin(),
+                plan.command.end(),
+                "--binary-mask-dir") != plan.command.end());
+    QVERIFY(std::find(
+                plan.command.begin(),
+                plan.command.end(),
+                "--compile-model") != plan.command.end());
+
+    jcut::masks::PromptMaskJobController controller;
+    std::string error;
+    QVERIFY2(controller.start(request, &error), error.c_str());
+    controller.wait();
+    const auto completed = controller.snapshot();
+    QCOMPARE(
+        completed.state,
+        jcut::masks::PromptMaskJobSnapshot::State::Completed);
+    QCOMPARE(completed.exitCode, 0);
+    QVERIFY(!completed.selectedMaskId.empty());
+    QVERIFY(QFileInfo::exists(
+        QString::fromStdString(completed.selectedMaskPath) +
+        QStringLiteral("/frame_000001.png")));
+    QVERIFY(QFileInfo::exists(
+        QString::fromStdString(completed.manifestPath)));
+    const QString environmentPath =
+        QString::fromStdString(completed.jobRoot) +
+        QStringLiteral("/environment.txt");
+    QFile environment(environmentPath);
+    QVERIFY(environment.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString environmentText =
+        QString::fromUtf8(environment.readAll());
+    QVERIFY(environmentText.contains(
+        QString::fromStdString(request.modelCachePath)));
+    QVERIFY(environmentText.contains(
+        QString::fromStdString(request.runtimeCachePath)));
+    QVERIFY(environmentText.contains(
+        QString::fromStdString(completed.jobRoot)));
 }
 
 void TestImGuiStandaloneRender::testStandalonePreviewRendersAnimatedTitleClip()
@@ -725,7 +888,7 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersAdvancedTitleTreatme
     title.textExtrudeMode = "stacked_copies";
     title.vulkan3DExtrudeDepth = 0.12;
     title.vulkan3DBevelScale = 0.8;
-    title.vulkan3DYawDegrees = 18.0;
+    title.vulkan3DYawDegrees = 55.0;
     title.vulkan3DPitchDegrees = -10.0;
     title.vulkan3DRollDegrees = 7.0;
     title.vulkan3DDepth = 0.5;
@@ -760,11 +923,30 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersAdvancedTitleTreatme
     QVERIFY2(yellowPixels > 100, "title logo asset was not rendered");
 
     auto& basic = document.clips.front().titleKeyframes.front();
+    basic.vulkan3DEnabled = false;
+    const auto axisAligned = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 0.0, tempDir.path().toStdString()});
+    QVERIFY2(axisAligned.success, axisAligned.message.c_str());
+    int axisAlignedRedPixels = 0;
+    for (int y = 0; y < axisAligned.image.size.height; ++y) {
+        for (int x = 0; x < axisAligned.image.size.width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>(
+                y * axisAligned.image.strideBytes + x * 4);
+            if (axisAligned.image.bytes[offset] > 180 &&
+                axisAligned.image.bytes[offset + 1] < 60 &&
+                axisAligned.image.bytes[offset + 2] < 60) {
+                ++axisAlignedRedPixels;
+            }
+        }
+    }
+    QVERIFY2(
+        axisAlignedRedPixels > redPixels + 500,
+        "the title window/frame must participate in the 3D yaw transform");
+
     basic.textMaterialStyle = "solid";
     basic.dropShadowEnabled = false;
     basic.windowEnabled = false;
     basic.windowFrameEnabled = false;
-    basic.vulkan3DEnabled = false;
     basic.vulkan3DExtrudeEnabled = false;
     basic.textExtrudeMode = "none";
     const auto plain = jcut::standalone_render::renderTimelineFrame({
@@ -917,6 +1099,82 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFro
     QCOMPARE(shifted.image.bytes[formerlyCovered + 2], std::uint8_t{18});
 }
 
+void TestImGuiStandaloneRender::testStandalonePreviewAppliesDynamicSpeakerFraming()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath =
+        tempDir.filePath(QStringLiteral("speaker.ppm"));
+    const QString transcriptPath =
+        tempDir.filePath(QStringLiteral("speaker.json"));
+    QVERIFY(writePatternPpm(imagePath));
+
+    QFile transcript(transcriptPath);
+    QVERIFY(transcript.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray transcriptJson = R"json({
+  "speaker_profiles": {"S1": {}},
+  "speaker_flow": {"clips": {"speaker-video": {
+    "resolved_current": {"section_track_map": [
+      {"speaker_id": "S1", "start_frame": 0, "end_frame": 30,
+       "rotation": 12.0, "tracks": [{"track_id": 7}]}
+    ]}
+  }}},
+  "segments": [{"words": [
+    {"word": "hello", "start": 0.0, "end": 1.0, "speaker": "S1"}
+  ]}]
+})json";
+    QCOMPARE(transcript.write(transcriptJson),
+             qint64{transcriptJson.size()});
+    transcript.close();
+    const QByteArray artifactJson = R"json({
+  "continuity_facedetections_by_clip": {
+    "speaker-video": {
+      "raw_tracks_frame_domain": "source_absolute",
+      "raw_tracks": [{
+        "track_id": 7,
+        "detections": [
+          {"frame": 5, "x": 0.8, "y": 0.5, "box": 0.2, "score": 1.0}
+        ]
+      }]
+    }
+  }
+})json";
+    QVERIFY(writeJcutBoxV1(
+        tempDir.filePath(QStringLiteral(
+            "speaker_facedetections.bin")),
+        artifactJson));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "speaker-video";
+    clip.trackId = 1;
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourcePath = imagePath.toStdString();
+    clip.mediaKind = "image";
+    clip.sourceFps = 30.0;
+    clip.transcriptActiveCutPath = transcriptPath.toStdString();
+    clip.speakerFramingTargetKeyframes.push_back(
+        {0, "Target", 0.5, 0.35, 0.0, 0.2, 0.2, true});
+    document.clips.push_back(clip);
+
+    constexpr jcut::core::SizeI outputSize{64, 64};
+    const auto plain = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(plain.success, plain.message.c_str());
+
+    document.clips.front().speakerFramingEnabled = true;
+    const auto framed = jcut::standalone_render::renderTimelineFrame({
+        document, outputSize, 5.0, tempDir.path().toStdString()});
+    QVERIFY2(framed.success, framed.message.c_str());
+    QVERIFY2(
+        plain.image.bytes != framed.image.bytes,
+        "standalone preview/export must apply assigned continuity-track "
+        "face-box framing when no baked framing keyframes exist");
+}
+
 void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
 {
     QTemporaryDir tempDir;
@@ -994,8 +1252,57 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
              "ImGui preview must try importing offscreen Vulkan frames before CPU upload");
     QVERIFY2(shell.contains(QStringLiteral("uploadPreviewImage(previewResult.image")),
              "ImGui preview must retain CPU upload fallback for devices without external-frame import");
+    QVERIFY2(
+        timelineRenderer.contains(
+            QStringLiteral("renderTranscriptOverlayLayer")) &&
+            timelineRenderer.contains(
+                QStringLiteral("renderTitleClipLayer")) &&
+            timelineRenderer.contains(
+                QStringLiteral("renderHardwareOverlayLayer")) &&
+            previewHeader.contains(
+                QStringLiteral("hardwareOverlayImage")) &&
+            shell.contains(
+                QStringLiteral("previewOverlayTexture")) &&
+            shell.contains(
+                QStringLiteral(
+                    "previewResult.hardwareOverlayImage")),
+        "hardware-direct preview must keep transcript rasterization "
+        "separate and composite its overlay as a Vulkan texture");
     QVERIFY2(shell.contains(QStringLiteral("previewCpuFallbackPreferred")),
              "ImGui preview must adaptively switch to CPU fallback after zero-copy import fails");
+    QVERIFY2(shell.contains(QStringLiteral("editorTrackMediaPresenceCore")),
+             "ImGui track controls must consume the shared media-presence policy");
+    QVERIFY2(shell.contains(QStringLiteral("!trackPresence.hasVisual")) &&
+                 shell.contains(QStringLiteral("!trackPresence.hasAudio")),
+             "ImGui visual and audio track controls must disable when their media is absent");
+    QVERIFY2(shell.contains(QStringLiteral("hoveredTrackVisualToggleId")) &&
+                 shell.contains(QStringLiteral("hoveredTrackAudioToggleId")) &&
+                 shell.contains(QStringLiteral(
+                     "(std::clamp(trackIt->visualMode, 0, 2) + 1) % 3")) &&
+                 shell.contains(QStringLiteral("!trackIt->audioEnabled")),
+             "timeline track headers must expose Qt-compatible visual-mode cycling and audio toggling");
+    QVERIFY2(shell.contains(QStringLiteral("readTextFileTail")) &&
+                 shell.contains(QStringLiteral("64U * 1024U")) &&
+                 shell.contains(QStringLiteral("Refresh Artifact")) &&
+                 shell.contains(QStringLiteral("##JobsArtifactText")),
+             "Jobs must provide bounded, refreshable in-app manifest and log inspection");
+    QVERIFY2(shell.contains(QStringLiteral("previewPipelineStages")) &&
+                 shell.contains(QStringLiteral("PipelineGraph")) &&
+                 shell.contains(QStringLiteral("PipelineStageFacts")) &&
+                 shell.contains(QStringLiteral("Retry Zero Copy")),
+             "Pipeline must expose a selectable live stage graph, stage facts, refresh, and zero-copy retry");
+    QVERIFY2(shell.contains(QStringLiteral("transportSpeeds")) &&
+                 shell.contains(QStringLiteral("0.1f, 0.25f")) &&
+                 shell.contains(QStringLiteral("2.0f, 3.0f")) &&
+                 shell.contains(QStringLiteral(
+                     "SetPlaybackLoopEnabledCommand")) &&
+                 shell.contains(QStringLiteral(
+                     "SetPreviewViewModeCommand")) &&
+                 shell.contains(QStringLiteral(
+                     "SetTransportAudioCommand")) &&
+                 shell.contains(QStringLiteral(
+                     "SeekToFrameCommand{transportEndFrame}")),
+             "transport must expose Qt's exact speed presets, durable loop/view/audio controls, and start/end navigation");
     QVERIFY2(!shell.contains(QStringLiteral("audio disabled in Qt-free ImGui shell")),
              "ImGui audio must not be hard-disabled as a shell policy");
     QVERIFY2(shell.contains(QStringLiteral("#include \"imgui_audio_runtime.h\"")) &&
@@ -1005,6 +1312,14 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     QVERIFY2(audioRuntime.contains(QStringLiteral("#include \"RtAudio.h\"")) &&
                  audioRuntime.contains(QStringLiteral("standalone_audio_mixer.h")) &&
                  audioRuntime.contains(QStringLiteral("mixAudioChunk")) &&
+                 audioRuntime.contains(QStringLiteral(
+                     "data->muted.load")) &&
+                 audioRuntime.contains(QStringLiteral(
+                     "output[index] *= volume")) &&
+                 audioRuntime.contains(QStringLiteral(
+                     "status.recentWaveform")) &&
+                 shell.contains(QStringLiteral(
+                     "audioStatus.recentWaveform")) &&
                  audioRuntime.contains(QStringLiteral("normalizedPlaybackSpeed")) &&
                  audioRuntime.contains(QStringLiteral("{\"fadeSamples\", clip.fadeSamples}")) &&
                  audioRuntime.contains(QStringLiteral("std::launch::async")) &&
@@ -1034,6 +1349,35 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     QVERIFY2(shell.contains(QStringLiteral("#include \"imgui_vulkan_frame_importer.h\"")) &&
                  !shell.contains(QStringLiteral("#include \"vulkan_detector_frame_handoff.h\"")),
              "the ImGui shell must consume Vulkan frames through the neutral importer facade");
+    QVERIFY2(
+        shell.contains(QStringLiteral("#include \"prompt_mask_job_core.h\"")) &&
+            shell.contains(QStringLiteral("Run Prompt Mask Job")) &&
+            shell.contains(QStringLiteral("MaterializeMaskMatteCommand")) &&
+            shell.contains(QStringLiteral("Cancel Prompt Mask")),
+        "the Masks and Jobs tabs must launch, materialize, and cancel the shared prompt-mask workflow");
+    QVERIFY2(
+        shell.contains(QStringLiteral("#include \"transcription_job_core.h\"")) &&
+            shell.contains(QStringLiteral("startTranscriptionJob")) &&
+            shell.contains(QStringLiteral("Transcription stdin")) &&
+            shell.contains(QStringLiteral("Cancel Transcription")) &&
+            shell.contains(QStringLiteral("Transcript Manifest")),
+        "Transcript and Jobs must launch, communicate with, cancel, and inspect the shared WhisperX workflow");
+    QVERIFY2(
+        shell.contains(QStringLiteral("#include \"birefnet_job_core.h\"")) &&
+            shell.contains(QStringLiteral("Run BiRefNet Job")) &&
+            shell.contains(QStringLiteral("BiRefNetJobControllerCore")) &&
+            shell.contains(QStringLiteral("Cancel BiRefNet")) &&
+            shell.contains(QStringLiteral("BiRefNet Progress")) &&
+            shell.contains(QStringLiteral("BiRefNet Alpha")) &&
+            shell.contains(QStringLiteral(
+                "refreshBiRefNetLivePreviewTexture")) &&
+            shell.contains(QStringLiteral(
+                "uploadAuxiliaryImage")) &&
+            shell.contains(QStringLiteral(
+                "birefnetLivePreviewTextureId")) &&
+            shell.contains(QStringLiteral(
+                "ImGui::Image")),
+        "Masks and Jobs must configure, launch, render live progress, materialize, cancel, and inspect the shared BiRefNet workflow");
     QVERIFY2(shell.contains(QStringLiteral("CopySelectedClipsCommand")) &&
                  shell.contains(QStringLiteral("CutSelectedClipsCommand")) &&
                  shell.contains(QStringLiteral("PasteClipsCommand")) &&
@@ -1113,7 +1457,11 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral("kCurveXMaximum = 1.0")) &&
                  shell.contains(QStringLiteral("kCurveYMinimum = -1.0")) &&
                  shell.contains(QStringLiteral("kCurveYMaximum = 2.0")) &&
-                 shell.contains(QStringLiteral("ImGui::BeginDisabled(editsDisabled)")) &&
+                 shell.contains(QStringLiteral("CurveCanvas")) &&
+                 shell.contains(QStringLiteral("canvasToPoint")) &&
+                 shell.contains(QStringLiteral("nearestPoint")) &&
+                 shell.contains(QStringLiteral("ImGuiMouseButton_Right")) &&
+                 shell.contains(QStringLiteral("sampleEditorGradingCurveAt")) &&
                  shell.contains(QStringLiteral("sanitizeEditorGradingCurve")) &&
                  shell.contains(QStringLiteral(
                      "synchronizeEditorThreePointGradingCurves")) &&
@@ -1121,14 +1469,25 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral(
                      "normalizeEditorGradingCurves(*draft)")) &&
                  shell.contains(QStringLiteral(
-                     "&draft->curvePointsR, draft->curveThreePointLock")) &&
+                     "&draft->curvePointsR")) &&
                  shell.contains(QStringLiteral(
-                     "&draft->curvePointsG, draft->curveThreePointLock")) &&
+                     "&draft->curvePointsG")) &&
                  shell.contains(QStringLiteral(
-                     "&draft->curvePointsB, draft->curveThreePointLock")) &&
+                     "&draft->curvePointsB")) &&
                  shell.contains(QStringLiteral(
-                     "\"Luma\", &draft->curvePointsLuma, false")),
-             "the Grade draft must expose bounded, sanitized RGB/Luma point tables, synchronize locked RGB curves from tones, normalize through the shared helper, and keep Luma independently editable");
+                     "&draft->curvePointsLuma")) &&
+                 shell.contains(QStringLiteral("applyLockedTone")),
+             "the Grade draft must expose bounded direct-manipulation canvases and numeric RGB/Luma point tables, feed locked curves back into tones, normalize through the shared helper, and keep Luma independently editable");
+    QVERIFY2(shell.contains(QStringLiteral("startAutoOpposeJob")) &&
+                 shell.contains(QStringLiteral("pollAutoOpposeJob")) &&
+                 shell.contains(QStringLiteral(
+                     "StandaloneMediaFrameDecoder")) &&
+                 shell.contains(QStringLiteral(
+                     "detectEditorOpposeGradeEvents")) &&
+                 shell.contains(QStringLiteral("Auto Oppose Settings")) &&
+                 !shell.contains(QStringLiteral(
+                     "Auto Oppose (Qt workflow)")),
+             "Grade Auto Oppose must run the shared decoded-frame analysis workflow rather than expose a disabled Qt-only placeholder");
     QVERIFY2(!shell.contains(QStringLiteral("Curve lock: %s | smoothing: %s")),
              "editable curve controls must replace the old read-only curve status text");
     QVERIFY2(shell.contains(QStringLiteral("Scale to Fill Preview")) &&
@@ -1160,6 +1519,59 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     QVERIFY2(shell.contains(QStringLiteral("Reset Grading")) &&
                  shell.contains(QStringLiteral("ResetClipGradingCommand")),
              "the timeline context menu must route grading reset through one undoable neutral command");
+    QVERIFY2(shell.contains(QStringLiteral("Copy Clip Name")) &&
+                 shell.contains(QStringLiteral("Copy title")) &&
+                 shell.contains(QStringLiteral("ImGui::SetClipboardText")) &&
+                 shell.contains(QStringLiteral("requestedInspectorTab")) &&
+                 shell.contains(QStringLiteral("Grading...")) &&
+                 shell.contains(QStringLiteral("refreshClipMetadata")) &&
+                 shell.contains(QStringLiteral(
+                     "RefreshClipMetadataCommand")) &&
+                 shell.contains(QStringLiteral(
+                     "mediaInfo.sourceDurationFrames")) &&
+                 shell.contains(QStringLiteral("Generated Clips")) &&
+                 shell.contains(QStringLiteral("Run SAM 3...")) &&
+                 shell.contains(QStringLiteral("Run BiRefNet...")) &&
+                 shell.contains(QStringLiteral("\"Transcribe\"")) &&
+                 shell.contains(QStringLiteral("Open Transcript Tools")) &&
+                 shell.contains(QStringLiteral("Open Proxy Controls")) &&
+                 shell.contains(QStringLiteral("FaceDetections")) &&
+                 shell.contains(QStringLiteral("Properties")),
+             "the timeline context menu must provide clipboard actions, real transcription/BiRefNet routing, and direct access to grading, sync, mask, speaker/face, proxy, job, and properties workflows");
+    QVERIFY2(
+        shell.contains(QStringLiteral("Split Selected At Playhead")) &&
+            shell.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
+            shell.contains(QStringLiteral("selectedClipsCanSplitAtFrame")) &&
+            shell.contains(QStringLiteral("WantTextInput")) &&
+            shell.contains(QStringLiteral("IsAnyItemActive")) &&
+            shell.contains(QStringLiteral("InspectorDeleteTargetKind")) &&
+            shell.contains(QStringLiteral("markInspectorDeleteTargetForLastItem")) &&
+            shell.contains(QStringLiteral("markSyncDeleteTargetForLastItem")) &&
+            shell.contains(QStringLiteral("markTranscriptDeleteTargetForLastItem")) &&
+            shell.contains(QStringLiteral("transcriptDeletePopupRequested")) &&
+            shell.contains(QStringLiteral("focusedUiFrame + 1 ==")) &&
+            shell.contains(QStringLiteral("rowBackspacePressed")) &&
+            shell.contains(QStringLiteral("EditExportRangesCommand")) &&
+            shell.contains(QStringLiteral("ExportRangeEdit::SplitAtPlayhead")) &&
+            shell.contains(QStringLiteral("\"Create Title\"")) &&
+            shell.contains(QStringLiteral("Lock Transform To Source")) &&
+            shell.contains(QStringLiteral("SetClipSourceTransformLockedCommand")) &&
+            shell.contains(QStringLiteral("Lock Selected")) &&
+            shell.contains(QStringLiteral("Unlock Selected")) &&
+            shell.contains(QStringLiteral("SetSelectedClipsLockedCommand")),
+        "keyboard and clip-context actions must preserve multi-selection, "
+        "suppress globals for editable widgets, and route focused keyframe "
+        "or sync-row Delete/Backspace through generation-scoped neutral "
+        "commands, retain explicit transcript confirmation, and expose the "
+        "shared Qt-style export-range/title context actions");
+    QVERIFY2(
+        timelineRenderer.contains(QStringLiteral(
+            "evaluateEditorClipRenderTransformAtTimelineFrame")) &&
+            timelineRenderer.contains(QStringLiteral(
+                "clip.sourceTransformLocked")),
+        "standalone preview/export must use the neutral cycle-safe source "
+        "transform evaluator and keep inherited transforms off the direct "
+        "hardware bypass");
     QVERIFY2(shell.contains(QStringLiteral("jcut::EditorTitleKeyframe titleDraft")) &&
                  shell.contains(QStringLiteral("hydrateTitleDraft")) &&
                  shell.contains(QStringLiteral("&shellState->titleDraft.text")) &&
@@ -1178,6 +1590,36 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral("beginRuntimeHistoryTransaction(shellState)")) &&
                  shell.contains(QStringLiteral("endRuntimeHistoryTransaction(shellState)")),
              "titles must expose every neutral field, row load/seek/removal, and direct output-space preview dragging as one undoable transaction");
+    QVERIFY2(
+        shell.contains(QStringLiteral("PreviewTransformDragMode::Rotate")) &&
+            shell.contains(QStringLiteral("transformRotationHandleCenter")) &&
+            shell.contains(QStringLiteral("rotationForPointerDrag")) &&
+            shell.contains(QStringLiteral("io.KeyShift ? 15.0 : 0.0")) &&
+            shell.contains(QStringLiteral("CommitPreviewTransformCommand")),
+        "Program-monitor rotation must reuse wrap-safe neutral angle math, "
+        "Shift snapping, and the coalesced preview-transform command");
+    QVERIFY2(
+        shell.contains(QStringLiteral(
+            "Automatic Speaker Framing")) &&
+            shell.contains(QStringLiteral(
+                "SetClipSpeakerFramingCommand")) &&
+            shell.contains(QStringLiteral(
+                "UpsertSpeakerFramingEnabledKeyframeCommand")) &&
+            shell.contains(QStringLiteral(
+                "UpsertSpeakerFramingKeyframeCommand")) &&
+            shell.contains(QStringLiteral(
+                "UpsertSpeakerFramingTargetKeyframeCommand")) &&
+            shell.contains(QStringLiteral(
+                "SpeakerFramingEnabled")) &&
+            shell.contains(QStringLiteral(
+                "SpeakerFramingTarget")) &&
+            shell.contains(QStringLiteral(
+                "Center Smoothing Frames")) &&
+            shell.contains(QStringLiteral(
+                "Manual Stream ID")),
+        "the Transform inspector must bind complete neutral speaker-framing "
+        "settings and all three keyframe channels through undoable runtime "
+        "commands");
     QVERIFY2(shell.contains(QStringLiteral("parseHexRgbColor")) &&
                  shell.contains(QStringLiteral("formatHexRgbColor")) &&
                  shell.contains(QStringLiteral("editHexRgbColor")) &&
@@ -1262,7 +1704,9 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral(
                      "adjacentOrdinaryTrackIndex")) &&
                  shell.contains(QStringLiteral(
-                     "ImGui::BeginDisabled(generatedChildTrack);")),
+                     "generatedChildTrack || !trackPresence.hasAudio")) &&
+                 shell.contains(QStringLiteral(
+                     "ImGui::BeginDisabled(audioControlsDisabled);")),
              "the Tracks inspector must expose read-only child identity, disable derived-row ordering/audio controls, and keep selection, height, and visual state outside those disabled scopes");
     const auto tracksTableOffset =
         shell.indexOf(QStringLiteral("void drawTracksTable"));
@@ -1282,7 +1726,7 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
         QStringLiteral("ImGui::Combo(\"##visualMode\""),
         reorderDisabledOffset);
     const auto audioDisabledOffset = shell.indexOf(
-        QStringLiteral("ImGui::BeginDisabled(generatedChildTrack);"),
+        QStringLiteral("ImGui::BeginDisabled(audioControlsDisabled);"),
         visualModeOffset);
     QVERIFY2(tracksTableOffset >= 0 &&
                  trackSelectionOffset > tracksTableOffset &&
@@ -1346,10 +1790,262 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     QVERIFY2(preview.contains(QStringLiteral("renderTimelineFrame(")) &&
                  preview.contains(QStringLiteral("request.allowCpuFallback")) &&
                  preview.contains(QStringLiteral(
-                     "standalone Vulkan preview backend unavailable")) &&
+                     "timelineResult.hardwareFrame")) &&
+                 previewHeader.contains(QStringLiteral(
+                     "std::shared_ptr<const core::FramePayloadCore> hardwareFrame")) &&
                  !preview.contains(QStringLiteral("renderPreviewFrameCore(")) &&
                  !preview.contains(QStringLiteral("render_runtime.h")),
-             "the Qt-free preview facade must use the standalone renderer and report unavailable Vulkan output without pulling the Qt render runtime back into the binary");
+             "the Qt-free preview facade must publish retained hardware frames through the neutral payload while keeping CPU fallback and the Qt render runtime out of the binary");
+}
+
+void TestImGuiStandaloneRender::testHardwareDirectEligibilitySupportsPresentationTransforms()
+{
+    jcut::EditorGradingKeyframe packedGrade;
+    packedGrade.curveSmoothingEnabled = false;
+    packedGrade.curvePointsR = {{0.0, 0.1}, {1.0, 0.1}};
+    packedGrade.curvePointsG = {{0.0, 0.2}, {1.0, 0.2}};
+    packedGrade.curvePointsB = {{0.0, 0.3}, {1.0, 0.3}};
+    packedGrade.curvePointsLuma = {{0.0, 0.4}, {1.0, 0.4}};
+    const auto packedLut =
+        jcut::editorPackedGradingCurveLut(packedGrade);
+    QCOMPARE(packedLut[128] & 0xffu, 26u);
+    QCOMPARE((packedLut[128] >> 8u) & 0xffu, 51u);
+    QCOMPARE((packedLut[128] >> 16u) & 0xffu, 77u);
+    QCOMPARE((packedLut[128] >> 24u) & 0xffu, 102u);
+
+    jcut::EditorDocumentCore document;
+    document.exportRequest.outputSize = {64, 64};
+    document.tracks.push_back(jcut::EditorTrack{1, "Video"});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.trackId = 1;
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourcePath = "/definitely/missing/video.mp4";
+    clip.mediaKind = "video";
+    document.clips.push_back(clip);
+
+    const auto renderWithoutFallback =
+        [&](const jcut::EditorDocumentCore& candidate) {
+            jcut::standalone_render::TimelineRenderRequest request;
+            request.document = candidate;
+            request.outputSize = {64, 64};
+            request.preferHardwareFrame = true;
+            request.allowCpuFallback = false;
+            return jcut::standalone_render::renderTimelineFrame(request);
+        };
+
+    const auto identity = renderWithoutFallback(document);
+    QVERIFY(identity.hardwareDirectEligible);
+    QVERIFY(!identity.success);
+    QVERIFY(!identity.hardwareDirectFallbackReason.empty());
+
+    document.clips.front().baseScaleX = 1.1;
+    document.clips.front().baseTranslationX = 4.0;
+    document.clips.front().baseRotation = 12.0;
+    document.clips.front().opacity = 0.75;
+    document.clips.front().brightness = 0.15;
+    document.clips.front().contrast = 1.2;
+    document.clips.front().saturation = 0.8;
+    const auto transformed = renderWithoutFallback(document);
+    QVERIFY(transformed.hardwareDirectEligible);
+    QVERIFY(!transformed.success);
+    QVERIFY(transformed.hardwareDirectFallbackReason.find("transform") ==
+            std::string::npos);
+
+    jcut::EditorGradingKeyframe animatedGrade;
+    animatedGrade.frame = 0;
+    animatedGrade.brightness = 0.1;
+    animatedGrade.contrast = 1.15;
+    animatedGrade.saturation = 0.9;
+    animatedGrade.shadowsR = 0.12;
+    animatedGrade.midtonesG = -0.08;
+    animatedGrade.highlightsB = 0.2;
+    document.clips.front().gradingKeyframes = {animatedGrade};
+    const auto keyedTonal = renderWithoutFallback(document);
+    QVERIFY(keyedTonal.hardwareDirectEligible);
+    QVERIFY(keyedTonal.hardwareDirectFallbackReason.find("grading") ==
+            std::string::npos);
+
+    document.clips.front().gradingKeyframes.front().curvePointsR =
+        {{0.0, 0.0}, {0.5, 0.7}, {1.0, 1.0}};
+    const auto curved = renderWithoutFallback(document);
+    QVERIFY(curved.hardwareDirectEligible);
+    QVERIFY(curved.hardwareDirectFallbackReason.find("curves") ==
+            std::string::npos);
+
+    document.clips.front().gradingKeyframes.clear();
+    document.clips.front().baseScaleX = 1.0;
+    document.clips.front().baseTranslationX = 0.0;
+    document.clips.front().baseRotation = 0.0;
+    document.clips.front().opacity = 1.0;
+    document.clips.front().brightness = 0.0;
+    document.clips.front().contrast = 1.0;
+    document.clips.front().saturation = 1.0;
+    document.tracks.front().visualMode = 1;
+    const auto forceOpaque =
+        renderWithoutFallback(document);
+    QVERIFY(forceOpaque.hardwareDirectEligible);
+    QVERIFY(forceOpaque.hardwareDirectFallbackReason.find(
+                "visual mode") == std::string::npos);
+    document.tracks.front().visualMode = 0;
+    document.clips.front().effectPreset = "temporal_echo";
+    const auto effected = renderWithoutFallback(document);
+    QVERIFY(!effected.hardwareDirectEligible);
+    QVERIFY(effected.hardwareDirectFallbackReason.find("effects") !=
+            std::string::npos);
+
+    document.clips.front().effectPreset = "none";
+    document.clips.front().transcriptOverlay.enabled = true;
+    const auto overlay = renderWithoutFallback(document);
+    QVERIFY(overlay.hardwareDirectEligible);
+    QVERIFY(overlay.hardwareDirectFallbackReason.find("overlay") ==
+            std::string::npos);
+
+    document.clips.front().transcriptOverlay.enabled = false;
+    document.clips.front().speakerFramingEnabled = true;
+    document.clips.front().speakerFramingKeyframes.push_back(
+        {0, "Framing", 0.0, 0.0, 0.0, 1.0, 1.0, true});
+    const auto speakerFramed = renderWithoutFallback(document);
+    QVERIFY(speakerFramed.hardwareDirectEligible);
+    QVERIFY(speakerFramed.hardwareDirectFallbackReason.find("speaker") ==
+            std::string::npos);
+
+    document.clips.front().speakerFramingEnabled = false;
+    document.clips.front().speakerFramingKeyframes.clear();
+    document.tracks.push_back(
+        jcut::EditorTrack{2, "Titles"});
+    jcut::EditorClip title;
+    title.id = 2;
+    title.trackId = 2;
+    title.startFrame = 0;
+    title.durationFrames = 30;
+    title.mediaKind = "title";
+    title.titleKeyframes.push_back(
+        jcut::EditorTitleKeyframe{
+            0, "Hardware title"});
+    document.clips.push_back(title);
+    const auto titled =
+        renderWithoutFallback(document);
+    QVERIFY(titled.hardwareDirectEligible);
+    QVERIFY(titled.hardwareDirectFallbackReason.find("title") ==
+            std::string::npos);
+    std::swap(
+        document.tracks[0],
+        document.tracks[1]);
+    const auto titleBelowVideo =
+        renderWithoutFallback(document);
+    QVERIFY(!titleBelowVideo.hardwareDirectEligible);
+    QVERIFY(titleBelowVideo.hardwareDirectFallbackReason.find(
+                "ordered") != std::string::npos);
+    std::swap(
+        document.tracks[0],
+        document.tracks[1]);
+    document.clips.pop_back();
+    document.tracks.pop_back();
+
+    jcut::EditorClip second = document.clips.front();
+    second.id = 3;
+    second.trackId = 2;
+    second.effectPreset = "temporal_echo";
+    document.tracks.push_back(
+        jcut::EditorTrack{2, "Upper video"});
+    document.clips.push_back(second);
+    const auto upperDecodedLayer =
+        renderWithoutFallback(document);
+    QVERIFY(upperDecodedLayer.hardwareDirectEligible);
+    QVERIFY(upperDecodedLayer.hardwareDirectFallbackReason.find(
+                "multiple") == std::string::npos);
+    document.clips.pop_back();
+    document.tracks.pop_back();
+
+    second.trackId = 1;
+    document.clips.push_back(second);
+    const auto layered = renderWithoutFallback(document);
+    QVERIFY(!layered.hardwareDirectEligible);
+    QVERIFY(layered.hardwareDirectFallbackReason.find("multiple") !=
+            std::string::npos);
+}
+
+void TestImGuiStandaloneRender::testFaceAvatarCropMatchesQtPolicy()
+{
+    const auto centered = jcut::faceAvatarCropRectCore(
+        100, 80, 0.5, 0.5, 0.5);
+    QCOMPARE(centered.left, 30);
+    QCOMPARE(centered.top, 20);
+    QCOMPARE(centered.width, 40);
+    QCOMPARE(centered.height, 40);
+    const auto edge = jcut::faceAvatarCropRectCore(
+        100, 80, 0.0, 0.0, 0.5);
+    QCOMPARE(edge.left, 0);
+    QCOMPARE(edge.top, 0);
+    const auto explicitBox = jcut::faceAvatarCropRectCore(
+        100, 80, 0.5, 0.5, -1.0,
+        0.1, 0.2, 0.6, 0.7);
+    QCOMPARE(explicitBox.left, 10);
+    QCOMPARE(explicitBox.top, 16);
+    QCOMPARE(explicitBox.width, 50);
+    QCOMPARE(explicitBox.height, 40);
+
+    jcut::core::ImageBuffer source;
+    source.format = jcut::core::PixelFormat::Rgba8;
+    source.size = {100, 80};
+    source.strideBytes = 400;
+    source.bytes.resize(
+        static_cast<std::size_t>(
+            source.strideBytes * source.size.height));
+    for (int y = 0; y < source.size.height; ++y) {
+        for (int x = 0; x < source.size.width; ++x) {
+            const std::size_t offset =
+                static_cast<std::size_t>(
+                    y * source.strideBytes + x * 4);
+            source.bytes[offset] =
+                static_cast<std::uint8_t>(x);
+            source.bytes[offset + 1] =
+                static_cast<std::uint8_t>(y);
+            source.bytes[offset + 2] = 0;
+            source.bytes[offset + 3] = 255;
+        }
+    }
+    const jcut::core::ImageBuffer avatar =
+        jcut::cropFaceAvatarImageCore(
+            source, 0.5, 0.5, 0.5, 20);
+    QVERIFY(!avatar.empty());
+    QCOMPARE(avatar.size.width, 20);
+    QCOMPARE(avatar.size.height, 20);
+    QCOMPARE(avatar.bytes[0], std::uint8_t(30));
+    QCOMPARE(avatar.bytes[1], std::uint8_t(20));
+    const std::size_t last =
+        static_cast<std::size_t>(
+            19 * avatar.strideBytes + 19 * 4);
+    QCOMPARE(avatar.bytes[last], std::uint8_t(68));
+    QCOMPARE(avatar.bytes[last + 1], std::uint8_t(58));
+
+    const jcut::core::ImageBuffer strip =
+        jcut::faceAvatarStripImageCore({avatar, avatar}, 2);
+    QVERIFY(!strip.empty());
+    QCOMPARE(strip.size.width, 42);
+    QCOMPARE(strip.size.height, 20);
+    QCOMPARE(strip.bytes[0], std::uint8_t(30));
+    const std::size_t gapOffset =
+        static_cast<std::size_t>(20 * 4);
+    QCOMPARE(strip.bytes[gapOffset + 3], std::uint8_t(0));
+    const std::size_t secondTileOffset =
+        static_cast<std::size_t>(22 * 4);
+    QCOMPARE(strip.bytes[secondTileOffset], std::uint8_t(30));
+    QCOMPARE(strip.bytes[secondTileOffset + 1], std::uint8_t(20));
+    const auto firstUv =
+        jcut::faceAvatarStripUvCore(0, strip.size.width, 20, 2);
+    const auto secondUv =
+        jcut::faceAvatarStripUvCore(1, strip.size.width, 20, 2);
+    QVERIFY(firstUv.valid());
+    QVERIFY(secondUv.valid());
+    QCOMPARE(firstUv.left, 0.0);
+    QCOMPARE(firstUv.right, 20.0 / 42.0);
+    QCOMPARE(secondUv.left, 22.0 / 42.0);
+    QCOMPARE(secondUv.right, 1.0);
+    QVERIFY(!jcut::faceAvatarStripUvCore(
+        2, strip.size.width, 20, 2).valid());
 }
 
 void TestImGuiStandaloneRender::testStandaloneImportProbeReportsAudioPresence()
@@ -1381,6 +2077,44 @@ void TestImGuiStandaloneRender::testStandaloneImportProbeReportsAudioPresence()
             tempDir.filePath(QStringLiteral("missing.mov")).toStdString());
     QVERIFY(!missingInfo.probed);
     QVERIFY(!missingInfo.hasAudio);
+}
+
+void TestImGuiStandaloneRender::testStandaloneDecodePolicyBenchmark()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString stillPath =
+        tempDir.filePath(QStringLiteral("benchmark.bmp"));
+    QVERIFY(writeSolidBmp(stillPath, 80, 120, 160, 16, 8));
+
+    jcut::DecoderPolicySettingsCore policy;
+    policy.decodePreference =
+        jcut::DecodePreferenceCore::HardwareZeroCopy;
+    policy.h26xThreadingMode =
+        jcut::H26xThreadingModeCore::FrameAndSliceThreads;
+    const auto benchmark =
+        jcut::standalone_render::benchmarkStandaloneMediaDecode(
+            stillPath.toStdString(), policy, 5);
+    QVERIFY2(benchmark.success, benchmark.message.c_str());
+    QVERIFY(benchmark.framesDecoded > 0);
+    QCOMPARE(
+        benchmark.requestedPreference,
+        jcut::DecodePreferenceCore::HardwareZeroCopy);
+    QCOMPARE(
+        benchmark.effectivePreference,
+        jcut::DecodePreferenceCore::Software);
+    QVERIFY(!benchmark.hardwareAccelerated);
+    QVERIFY(benchmark.hardwareDeviceLabel.empty());
+    QVERIFY(!benchmark.hardwareFallbackReason.empty());
+    QCOMPARE(benchmark.softwareThreadCount, 1);
+    QVERIFY(benchmark.framesPerSecond > 0.0);
+
+    policy.deterministic = true;
+    const auto deterministic =
+        jcut::standalone_render::benchmarkStandaloneMediaDecode(
+            stillPath.toStdString(), policy, 1);
+    QVERIFY(deterministic.success);
+    QCOMPARE(deterministic.softwareThreadCount, 1);
 }
 
 void TestImGuiStandaloneRender::testImageSequenceDirectoryProbeAndRender()
@@ -1425,6 +2159,7 @@ void TestImGuiStandaloneRender::testImageSequenceDirectoryProbeAndRender()
     QVERIFY(mediaInfo.hasVideo);
     QVERIFY(!mediaInfo.hasAudio);
     QCOMPARE(mediaInfo.videoFps, jcut::kImageSequenceFramesPerSecond);
+    QCOMPARE(mediaInfo.sourceDurationFrames, std::int64_t{4});
     QCOMPARE(mediaInfo.durationFrames, std::int64_t{4});
     QCOMPARE(mediaInfo.frameSize.width, 6);
     QCOMPARE(mediaInfo.frameSize.height, 4);
@@ -1558,6 +2293,11 @@ void TestImGuiStandaloneRender::testAudioFacadeRefreshesIdleTimelineStatus()
     runtime.setBufferFrames(256);
     QCOMPARE(runtime.status().requestedBufferFrames, 256U);
     QCOMPARE(runtime.status().actualBufferFrames, 0U);
+    runtime.setOutputDeviceName("JCut unavailable test device");
+    QCOMPARE(
+        QString::fromStdString(
+            runtime.status().requestedOutputDeviceName),
+        QStringLiteral("JCut unavailable test device"));
     runtime.synchronize(document, tempDir.path().toStdString());
 
     const jcut::ImGuiAudioStatus missing = runtime.status();

@@ -459,6 +459,111 @@ TranscriptSpeakerLocationCore TranscriptDocumentCore::speakerLocation(
     return result;
 }
 
+TranscriptSpeakerTrackingSampleCore
+TranscriptDocumentCore::speakerTrackingSample(
+    const std::string& speakerId,
+    std::int64_t transcriptFrame,
+    double minConfidence) const
+{
+    TranscriptSpeakerTrackingSampleCore result;
+    const auto profiles = m_root.find("speaker_profiles");
+    if (profiles == m_root.end() || !profiles->is_object()) return result;
+    const auto profile = profiles->find(trimAscii(speakerId));
+    if (profile == profiles->end() || !profile->is_object()) return result;
+    json framing = profile->value("framing", json::object());
+    if (!framing.is_object() || framing.empty()) {
+        framing = profile->value("tracking", json::object());
+    }
+    if (!framing.is_object()) return result;
+    std::string mode = trimAscii(stringValue(framing, "mode"));
+    std::transform(mode.begin(), mode.end(), mode.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool enabled = framing.contains("enabled")
+        ? framing.value("enabled", false) : true;
+    if (!enabled || mode == "manual" || mode == "referencepoints") {
+        return result;
+    }
+    const auto finiteNumber =
+        [](const json& object, const char* key, double fallback) {
+            const auto value = object.find(key);
+            if (value == object.end() || !value->is_number()) return fallback;
+            const double number = value->get<double>();
+            return std::isfinite(number) ? number : fallback;
+        };
+    struct Keyframe {
+        std::int64_t frame = 0;
+        double x = 0.5;
+        double y = 0.5;
+        double box = -1.0;
+        double confidence = 1.0;
+    };
+    std::vector<Keyframe> keyframes;
+    const json& values = framing.value("keyframes", json::array());
+    if (!values.is_array()) return result;
+    for (const json& value : values) {
+        if (!value.is_object() || !value.contains("frame") ||
+            !value["frame"].is_number()) {
+            continue;
+        }
+        const double frame = value["frame"].get<double>();
+        if (!std::isfinite(frame)) continue;
+        keyframes.push_back({
+            static_cast<std::int64_t>(std::llround(frame)),
+            std::clamp(finiteNumber(value, "x", 0.5), 0.0, 1.0),
+            std::clamp(finiteNumber(value, "y", 0.5), 0.0, 1.0),
+            std::clamp(finiteNumber(value, "box_size", -1.0), -1.0, 1.0),
+            std::clamp(finiteNumber(value, "confidence", 1.0), 0.0, 1.0)});
+    }
+    std::stable_sort(keyframes.begin(), keyframes.end(),
+        [](const Keyframe& left, const Keyframe& right) {
+            return left.frame < right.frame;
+        });
+    if (keyframes.empty()) return result;
+    const double confidenceFloor =
+        std::clamp(minConfidence, 0.0, 1.0);
+    const auto assign = [&](const Keyframe& keyframe) {
+        if (keyframe.confidence < confidenceFloor) return false;
+        result.x = keyframe.x;
+        result.y = keyframe.y;
+        result.boxSize = keyframe.box;
+        result.valid = true;
+        return true;
+    };
+    if (keyframes.size() == 1 ||
+        transcriptFrame <= keyframes.front().frame) {
+        assign(keyframes.front());
+        return result;
+    }
+    if (transcriptFrame >= keyframes.back().frame) {
+        assign(keyframes.back());
+        return result;
+    }
+    for (std::size_t index = 1; index < keyframes.size(); ++index) {
+        const Keyframe& previous = keyframes[index - 1];
+        const Keyframe& next = keyframes[index];
+        if (transcriptFrame > next.frame) continue;
+        if (previous.confidence < confidenceFloor ||
+            next.confidence < confidenceFloor) {
+            return result;
+        }
+        const double amount = std::clamp(
+            static_cast<double>(transcriptFrame - previous.frame) /
+                static_cast<double>(std::max<std::int64_t>(
+                    1, next.frame - previous.frame)),
+            0.0,
+            1.0);
+        result.x = previous.x + (next.x - previous.x) * amount;
+        result.y = previous.y + (next.y - previous.y) * amount;
+        result.boxSize =
+            previous.box > 0.0 && next.box > 0.0
+            ? previous.box + (next.box - previous.box) * amount
+            : (next.box > 0.0 ? next.box : previous.box);
+        result.valid = true;
+        return result;
+    }
+    return result;
+}
+
 std::vector<TranscriptSpeakerProfileCore> TranscriptDocumentCore::speakerProfiles() const
 {
     std::vector<TranscriptSpeakerProfileCore> profiles;
@@ -480,6 +585,9 @@ std::vector<TranscriptSpeakerProfileCore> TranscriptDocumentCore::speakerProfile
             TranscriptSpeakerProfileCore& profile = ensureProfile(it.key());
             profile.name = trimAscii(stringValue(it.value(), "name"));
             profile.organization = trimAscii(stringValue(it.value(), "organization"));
+            profile.primaryColor = trimAscii(stringValue(it.value(), "primary_color"));
+            profile.secondaryColor = trimAscii(stringValue(it.value(), "secondary_color"));
+            profile.accentColor = trimAscii(stringValue(it.value(), "accent_color"));
             const json location = it.value().value("location", json::object());
             if (location.is_object()) {
                 const auto x = location.find("x");

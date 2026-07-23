@@ -3,6 +3,7 @@
 #include "RtAudio.h"
 #include "standalone_audio_mixer.h"
 #include "standalone_timeline_renderer.h"
+#include "waveform_envelope_core.h"
 
 #include <nlohmann/json.hpp>
 
@@ -85,6 +86,41 @@ std::string audioTimelineSignature(const jcut::EditorDocumentCore& document,
 {
     nlohmann::json signature{
         {"mediaRoot", mediaRoot},
+        {"audioTreatment",
+         std::string(editorAudioTreatmentId(document.audioTreatment))},
+        {"audioDynamics", {
+            {"amplifyEnabled", document.audioDynamics.amplifyEnabled},
+            {"amplifyDb", document.audioDynamics.amplifyDb},
+            {"normalizeEnabled", document.audioDynamics.normalizeEnabled},
+            {"normalizeTargetDb", document.audioDynamics.normalizeTargetDb},
+            {"selectiveNormalizeEnabled",
+             document.audioDynamics.selectiveNormalizeEnabled},
+            {"selectiveNormalizeMinSegmentSeconds",
+             document.audioDynamics.selectiveNormalizeMinSegmentSeconds},
+            {"selectiveNormalizePeakDb",
+             document.audioDynamics.selectiveNormalizePeakDb},
+            {"selectiveNormalizePasses",
+             document.audioDynamics.selectiveNormalizePasses},
+            {"transcriptNormalizeEnabled",
+             document.audioDynamics.transcriptNormalizeEnabled},
+            {"peakReductionEnabled",
+             document.audioDynamics.peakReductionEnabled},
+            {"peakThresholdDb",
+             document.audioDynamics.peakThresholdDb},
+            {"limiterEnabled", document.audioDynamics.limiterEnabled},
+            {"limiterThresholdDb",
+             document.audioDynamics.limiterThresholdDb},
+            {"compressorEnabled",
+             document.audioDynamics.compressorEnabled},
+            {"compressorThresholdDb",
+             document.audioDynamics.compressorThresholdDb},
+            {"compressorRatio",
+             document.audioDynamics.compressorRatio},
+            {"softClipEnabled",
+             document.audioDynamics.softClipEnabled},
+            {"stereoToMonoEnabled",
+             document.audioDynamics.stereoToMonoEnabled}
+        }},
         {"tracks", nlohmann::json::array()},
         {"clips", nlohmann::json::array()},
         {"renderSyncMarkers", nlohmann::json::array()}};
@@ -264,6 +300,72 @@ public:
         return m_status;
     }
 
+    bool queryClipWaveform(
+        int clipId,
+        int columns,
+        std::vector<float>* minimumOut,
+        std::vector<float>* maximumOut) const
+    {
+        std::lock_guard<std::mutex> operationLock(
+            m_operationMutex);
+        if (!minimumOut || !maximumOut ||
+            !m_cacheReady) {
+            return false;
+        }
+        const auto clip = std::find_if(
+            m_resolvedDocument.clips.begin(),
+            m_resolvedDocument.clips.end(),
+            [clipId](const EditorClip& candidate) {
+                return candidate.id == clipId;
+            });
+        const auto decoded = m_decodedCache.find(clipId);
+        if (clip == m_resolvedDocument.clips.end() ||
+            decoded == m_decodedCache.end() ||
+            !decoded->second.valid ||
+            decoded->second.samples.empty()) {
+            return false;
+        }
+        const std::int64_t timelineStart =
+            standalone_render::audio::
+                clipTimelineStartSamples(*clip);
+        const std::int64_t timelineEnd =
+            timelineStart +
+            standalone_render::audio::
+                clipTimelineDurationSamples(*clip);
+        const std::int64_t firstSource =
+            standalone_render::audio::
+                sourceSampleForClipAtTimelineSample(
+                    m_resolvedDocument,
+                    *clip,
+                    timelineStart);
+        const std::int64_t lastSource =
+            standalone_render::audio::
+                sourceSampleForClipAtTimelineSample(
+                    m_resolvedDocument,
+                    *clip,
+                    timelineEnd - 1);
+        const std::int64_t sourceStart =
+            std::min(firstSource, lastSource);
+        const std::int64_t sourceEnd =
+            std::max(firstSource, lastSource) + 1;
+        const auto& audio = decoded->second;
+        return audio::queryWaveformEnvelope(
+            audio::WaveformSampleView{
+                audio.samples.data(),
+                static_cast<std::int64_t>(
+                    audio.samples.size() /
+                    standalone_render::audio::
+                        kChannelCount),
+                standalone_render::audio::kChannelCount,
+                audio.sourceStartSample,
+                audio.sourceSampleScale},
+            sourceStart,
+            sourceEnd,
+            columns,
+            minimumOut,
+            maximumOut);
+    }
+
     void setBufferFrames(unsigned int frames)
     {
         std::lock_guard<std::mutex> operationLock(m_operationMutex);
@@ -278,6 +380,33 @@ public:
         m_initialized = false;
         m_statusMessage =
             "audio buffer changed; output will restart on playback";
+        publishStatusLocked();
+    }
+
+    void refreshOutputDevices()
+    {
+        std::lock_guard<std::mutex> operationLock(m_operationMutex);
+        refreshOutputDevicesLocked();
+        publishStatusLocked();
+    }
+
+    void setOutputDeviceName(const std::string& name)
+    {
+        std::lock_guard<std::mutex> operationLock(m_operationMutex);
+        if (m_requestedOutputDeviceName == name) return;
+        stopOutputLocked();
+        if (m_audio && m_audio->isStreamOpen()) {
+            m_audio->closeStream();
+        }
+        m_requestedOutputDeviceName = name;
+        m_activeOutputDeviceName.clear();
+        m_actualBufferFrames = 0;
+        m_initialized = false;
+        m_outputUnavailable = false;
+        refreshOutputDevicesLocked();
+        m_statusMessage = name.empty()
+            ? "default audio output selected; stream will restart on playback"
+            : "audio output selected; stream will restart on playback";
         publishStatusLocked();
     }
 
@@ -323,6 +452,11 @@ private:
         standalone_render::audio::DecodedAudioCache cache;
         std::atomic<std::int64_t> timelineSample{0};
         std::atomic<double> timelineSampleStep{1.0};
+        std::atomic<float> volume{0.8f};
+        std::atomic<bool> muted{false};
+        std::array<
+            std::atomic<float>,
+            ImGuiAudioStatus::kWaveformPointCount> waveform{};
     };
 
     struct DecodeResult {
@@ -369,6 +503,54 @@ private:
             static_cast<int>(frameCount),
             start,
             step);
+        const bool muted = data->muted.load(
+            std::memory_order_relaxed);
+        const float volume = data->volume.load(
+            std::memory_order_relaxed);
+        const std::ptrdiff_t sampleCount =
+            static_cast<std::ptrdiff_t>(
+                frameCount *
+                standalone_render::audio::kChannelCount);
+        if (muted || volume <= 0.0f) {
+            std::fill(output, output + sampleCount, 0.0f);
+        } else if (volume < 0.9999f) {
+            for (std::ptrdiff_t index = 0;
+                 index < sampleCount;
+                 ++index) {
+                output[index] *= volume;
+            }
+        }
+        for (std::size_t point = 0;
+             point < ImGuiAudioStatus::kWaveformPointCount;
+             ++point) {
+            const unsigned int beginFrame =
+                static_cast<unsigned int>(
+                    (static_cast<std::uint64_t>(point) * frameCount) /
+                    ImGuiAudioStatus::kWaveformPointCount);
+            const unsigned int endFrame = std::max(
+                beginFrame + 1,
+                static_cast<unsigned int>(
+                    (static_cast<std::uint64_t>(point + 1) *
+                     frameCount) /
+                    ImGuiAudioStatus::kWaveformPointCount));
+            float peak = 0.0f;
+            for (unsigned int frame = beginFrame;
+                 frame < std::min(frameCount, endFrame);
+                 ++frame) {
+                const std::ptrdiff_t offset =
+                    static_cast<std::ptrdiff_t>(
+                        frame *
+                        standalone_render::audio::kChannelCount);
+                peak = std::max(
+                    peak,
+                    std::max(
+                        std::abs(output[offset]),
+                        std::abs(output[offset + 1])));
+            }
+            data->waveform[point].store(
+                std::clamp(peak, 0.0f, 1.0f),
+                std::memory_order_relaxed);
+        }
         const std::int64_t consumed = std::max<std::int64_t>(
             1,
             static_cast<std::int64_t>(std::llround(frameCount * step)));
@@ -386,8 +568,22 @@ private:
         status.hasPlayableAudio = !m_scheduledPaths.empty();
         status.clockAvailable = status.playbackStarted;
         status.outputUnavailable = status.hasPlayableAudio && m_outputUnavailable;
+        status.muted = m_transportMuted;
+        status.volume = m_transportVolume;
+        if (m_playbackData) {
+            for (std::size_t point = 0;
+                 point < status.recentWaveform.size();
+                 ++point) {
+                status.recentWaveform[point] =
+                    m_playbackData->waveform[point].load(
+                        std::memory_order_relaxed);
+            }
+        }
         status.requestedBufferFrames = m_requestedBufferFrames;
         status.actualBufferFrames = m_actualBufferFrames;
+        status.requestedOutputDeviceName = m_requestedOutputDeviceName;
+        status.activeOutputDeviceName = m_activeOutputDeviceName;
+        status.outputDevices = m_outputDevices;
         status.scheduledSourcePaths = m_scheduledPaths;
         status.message = m_statusMessage;
         std::lock_guard<std::mutex> statusLock(m_statusMutex);
@@ -402,24 +598,65 @@ private:
         m_playbackActive = false;
     }
 
-    bool openOutputLocked()
+    void refreshOutputDevicesLocked()
     {
         if (!m_audio) {
             m_audio = std::make_unique<RtAudio>();
             m_audio->showWarnings(false);
         }
+        m_outputDevices.clear();
+        for (const unsigned int id : m_audio->getDeviceIds()) {
+            const RtAudio::DeviceInfo info = m_audio->getDeviceInfo(id);
+            if (info.outputChannels <
+                standalone_render::audio::kChannelCount) {
+                continue;
+            }
+            m_outputDevices.push_back(ImGuiAudioOutputDevice{
+                id,
+                info.name,
+                info.outputChannels,
+                info.isDefaultOutput});
+        }
+    }
+
+    bool openOutputLocked()
+    {
+        refreshOutputDevicesLocked();
         if (m_audio->isStreamOpen()) {
             m_initialized = true;
             return true;
         }
-        const std::vector<unsigned int> devices = m_audio->getDeviceIds();
-        if (devices.empty()) {
+        if (m_outputDevices.empty()) {
             m_outputUnavailable = true;
-            m_statusMessage = "audio output unavailable: no output device";
+            m_statusMessage =
+                "audio output unavailable: no stereo output device";
             return false;
         }
+        const ImGuiAudioOutputDevice* selected = nullptr;
+        if (!m_requestedOutputDeviceName.empty()) {
+            const auto found = std::find_if(
+                m_outputDevices.begin(),
+                m_outputDevices.end(),
+                [this](const ImGuiAudioOutputDevice& device) {
+                    return device.name == m_requestedOutputDeviceName;
+                });
+            if (found != m_outputDevices.end()) {
+                selected = &*found;
+            }
+        }
+        if (!selected) {
+            const auto defaultDevice = std::find_if(
+                m_outputDevices.begin(),
+                m_outputDevices.end(),
+                [](const ImGuiAudioOutputDevice& device) {
+                    return device.isDefault;
+                });
+            selected = defaultDevice != m_outputDevices.end()
+                ? &*defaultDevice
+                : &m_outputDevices.front();
+        }
         RtAudio::StreamParameters output;
-        output.deviceId = m_audio->getDefaultOutputDevice();
+        output.deviceId = selected->id;
         output.nChannels = standalone_render::audio::kChannelCount;
         output.firstChannel = 0;
         unsigned int bufferFrames = m_requestedBufferFrames;
@@ -444,11 +681,15 @@ private:
         }
         m_initialized = true;
         m_actualBufferFrames = bufferFrames;
+        m_activeOutputDeviceName = selected->name;
         m_outputUnavailable = false;
         return true;
     }
 
-    bool startOutputLocked(int currentFrame, double speed)
+    bool startOutputLocked(int currentFrame,
+                           double speed,
+                           bool muted,
+                           float volume)
     {
         if (!m_cacheReady || !openOutputLocked()) {
             return false;
@@ -464,6 +705,15 @@ private:
             std::memory_order_relaxed);
         m_playbackData->timelineSampleStep.store(
             normalizedPlaybackSpeed(speed), std::memory_order_relaxed);
+        m_playbackData->muted.store(
+            muted,
+            std::memory_order_relaxed);
+        m_playbackData->volume.store(
+            std::clamp(
+                volume,
+                0.0f,
+                1.0f),
+            std::memory_order_relaxed);
         if (m_audio->startStream() != RTAUDIO_NO_ERROR) {
             m_outputUnavailable = true;
             m_statusMessage = m_audio->getErrorText();
@@ -565,6 +815,9 @@ private:
     void synchronizeLocked(const EditorDocumentCore& document,
                            const std::string& mediaRoot)
     {
+        m_transportMuted = document.transport.audioMuted;
+        m_transportVolume = std::clamp(
+            document.transport.audioVolume, 0.0f, 1.0f);
         refreshTimelineLocked(document, mediaRoot);
         collectDecodeResultLocked();
         const int currentFrame = document.transport.currentFrame;
@@ -573,7 +826,14 @@ private:
 
         if (!document.transport.playbackActive) {
             stopOutputLocked();
-            m_buffering = false;
+            if (document.panels.showWaveform &&
+                !m_cacheReady &&
+                !m_scheduledPaths.empty()) {
+                launchDecodeLocked();
+            }
+            m_buffering =
+                m_decodeFuture.valid() &&
+                !m_cacheReady;
             m_outputUnavailable = false;
             m_lastFrame = currentFrame;
             m_lastSpeed = speed;
@@ -608,13 +868,26 @@ private:
         }
 
         if (!m_playbackActive) {
-            if (!startOutputLocked(currentFrame, speed)) {
+            if (!startOutputLocked(
+                    currentFrame,
+                    speed,
+                    document.transport.audioMuted,
+                    document.transport.audioVolume)) {
                 m_buffering = false;
                 m_lastFrame = currentFrame;
                 m_lastSpeed = speed;
                 return;
             }
         } else if (m_playbackData) {
+            m_playbackData->muted.store(
+                document.transport.audioMuted,
+                std::memory_order_relaxed);
+            m_playbackData->volume.store(
+                std::clamp(
+                    document.transport.audioVolume,
+                    0.0f,
+                    1.0f),
+                std::memory_order_relaxed);
             const bool speedChanged = std::abs(speed - m_lastSpeed) >= 0.0001;
             const bool frameJumped = m_lastFrame >= 0 &&
                 std::abs(currentFrame - m_lastFrame) > 8;
@@ -646,6 +919,7 @@ private:
     standalone_render::audio::DecodedAudioCache m_decodedCache;
     std::unordered_map<std::string, ProbeCacheEntry> m_probeCache;
     std::vector<std::string> m_scheduledPaths;
+    std::vector<ImGuiAudioOutputDevice> m_outputDevices;
     bool m_initialized = false;
     bool m_timelineConfigured = false;
     bool m_playbackActive = false;
@@ -653,8 +927,12 @@ private:
     bool m_buffering = false;
     bool m_cacheReady = false;
     bool m_decodeFailed = false;
+    bool m_transportMuted = false;
+    float m_transportVolume = 0.8f;
     unsigned int m_requestedBufferFrames = kDefaultAudioBufferFrames;
     unsigned int m_actualBufferFrames = 0;
+    std::string m_requestedOutputDeviceName;
+    std::string m_activeOutputDeviceName;
     int m_lastFrame = -1;
     double m_lastSpeed = 1.0;
     std::uint64_t m_timelineGeneration = 0;
@@ -682,9 +960,29 @@ ImGuiAudioStatus ImGuiAudioRuntime::status() const
     return m_impl->status();
 }
 
+bool ImGuiAudioRuntime::queryClipWaveform(
+    int clipId,
+    int columns,
+    std::vector<float>* minimumOut,
+    std::vector<float>* maximumOut) const
+{
+    return m_impl->queryClipWaveform(
+        clipId, columns, minimumOut, maximumOut);
+}
+
 void ImGuiAudioRuntime::setBufferFrames(unsigned int frames)
 {
     m_impl->setBufferFrames(frames);
+}
+
+void ImGuiAudioRuntime::refreshOutputDevices()
+{
+    m_impl->refreshOutputDevices();
+}
+
+void ImGuiAudioRuntime::setOutputDeviceName(const std::string& name)
+{
+    m_impl->setOutputDeviceName(name);
 }
 
 void ImGuiAudioRuntime::shutdown()

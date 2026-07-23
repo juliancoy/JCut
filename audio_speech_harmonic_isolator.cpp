@@ -13,24 +13,13 @@ QVector<float> SpeechHarmonicIsolator::process(
         request.transportSpeed <= 0.0) {
         return {};
     }
-    auto report = [&progressCallback](double progress) {
-        if (progressCallback) {
-            progressCallback(std::clamp(progress, 0.0, 1.0));
-        }
-    };
-    const QVector<float> isolated = timeStretchPreservePitch(
-        *request.samples, request.channelCount, request.sampleRate,
-        request.transportSpeed * 2.0, AudioTimeStretchBackend::RubberBand,
-        [&report](double progress) { report(progress * 0.5); },
-        request.rubberBand);
-    if (isolated.isEmpty()) {
-        return {};
-    }
-    return timeStretchPreservePitch(
-        isolated, request.channelCount, request.sampleRate, 0.5,
-        AudioTimeStretchBackend::RubberBand,
-        [&report](double progress) { report(0.5 + progress * 0.5); },
-        request.rubberBand);
+    const std::vector<float> input(
+        request.samples->cbegin(), request.samples->cend());
+    const std::vector<float> output = jcut::audio::isolateSpeechHarmonics(
+        input, request.channelCount, request.sampleRate,
+        request.transportSpeed, progressCallback,
+        toCoreStretchSettings(request.rubberBand));
+    return QVector<float>(output.cbegin(), output.cend());
 }
 
 } // namespace editor::audio

@@ -3,6 +3,7 @@
 #include "background_fill_effect.h"
 #include "export_vulkan_preview_widget.h"
 #include "speaker_export_harness.h"
+#include "speaker_section_export_core.h"
 
 #include <QAbstractItemView>
 #include <QDialog>
@@ -164,79 +165,84 @@ QString speakerSectionFallbackTitle(const QString& speakerDisplayName,
 
 QStringList normalizedSectionTrackIds(const QStringList& trackIds)
 {
-    QStringList normalized;
-    QSet<QString> seen;
+    std::vector<int> parsed;
     for (const QString& trackIdText : trackIds) {
         bool ok = false;
         const int trackId = trackIdText.trimmed().toInt(&ok);
-        if (!ok || trackId < 0) {
-            continue;
-        }
-        const QString normalizedTrackId = QString::number(trackId);
-        if (seen.contains(normalizedTrackId)) {
-            continue;
-        }
-        seen.insert(normalizedTrackId);
-        normalized.push_back(normalizedTrackId);
+        if (ok) parsed.push_back(trackId);
+    }
+    QStringList normalized;
+    for (const int trackId :
+         jcut::normalizedSpeakerSectionTrackIds(parsed)) {
+        normalized.push_back(QString::number(trackId));
     }
     return normalized;
 }
 
 QString speakerTrackSectionTitle(const SpeakerSectionExportItem& section)
 {
-    QString speakerName = section.speakerDisplayName.simplified();
-    if (speakerName.isEmpty()) {
-        speakerName = section.speakerId.simplified();
+    std::vector<int> tracks;
+    for (const QString& value : section.trackIds) {
+        bool ok = false;
+        const int trackId = value.toInt(&ok);
+        if (ok) tracks.push_back(trackId);
     }
-    if (speakerName.isEmpty()) {
-        speakerName = QStringLiteral("Speaker");
-    }
-
-    const QStringList tracks = normalizedSectionTrackIds(section.trackIds);
-    if (tracks.isEmpty()) {
-        return QStringLiteral("%1 no track").arg(speakerName);
-    }
-    if (tracks.size() == 1) {
-        return QStringLiteral("%1 track %2").arg(speakerName, tracks.constFirst());
-    }
-    return QStringLiteral("%1 tracks %2").arg(speakerName, tracks.join(QLatin1Char('-')));
+    return QString::fromStdString(
+        jcut::speakerSectionExportTitle({
+            section.speakerId.trimmed().toStdString(),
+            section.speakerDisplayName.simplified().toStdString(),
+            section.sourceStartFrame,
+            section.sourceEndFrame,
+            static_cast<std::size_t>(
+                std::max(0, section.wordCount)),
+            section.sectionOrdinal,
+            tracks,
+            section.snippet.simplified().toStdString(),
+        }));
 }
 
 QVector<SpeakerSectionExportItem> coalescedAdjacentSpeakerSections(
     const QVector<SpeakerSectionExportItem>& sections)
 {
-    QVector<SpeakerSectionExportItem> coalesced;
-    coalesced.reserve(sections.size());
+    std::vector<jcut::SpeakerSectionExportCore> neutral;
+    neutral.reserve(sections.size());
     for (const SpeakerSectionExportItem& section : sections) {
-        if (!coalesced.isEmpty() &&
-            coalesced.last().speakerId.trimmed() == section.speakerId.trimmed()) {
-            SpeakerSectionExportItem& merged = coalesced.last();
-            merged.sourceEndFrame = qMax<qint64>(merged.sourceEndFrame, section.sourceEndFrame);
-            if (!section.snippet.trimmed().isEmpty()) {
-                if (!merged.snippet.trimmed().isEmpty()) {
-                    merged.snippet += QStringLiteral(" ");
-                }
-                merged.snippet += section.snippet.trimmed();
-            }
-            merged.wordCount += qMax(0, section.wordCount);
-            QStringList mergedTracks = normalizedSectionTrackIds(merged.trackIds);
-            QSet<QString> seenTracks;
-            for (const QString& trackId : std::as_const(mergedTracks)) {
-                seenTracks.insert(trackId);
-            }
-            for (const QString& trackId : normalizedSectionTrackIds(section.trackIds)) {
-                if (seenTracks.contains(trackId)) {
-                    continue;
-                }
-                seenTracks.insert(trackId);
-                mergedTracks.push_back(trackId);
-            }
-            merged.trackIds = mergedTracks;
-            continue;
+        std::vector<int> tracks;
+        for (const QString& value : section.trackIds) {
+            bool ok = false;
+            const int trackId = value.toInt(&ok);
+            if (ok) tracks.push_back(trackId);
         }
-        SpeakerSectionExportItem copy = section;
-        copy.trackIds = normalizedSectionTrackIds(copy.trackIds);
-        coalesced.push_back(copy);
+        neutral.push_back({
+            section.speakerId.trimmed().toStdString(),
+            section.speakerDisplayName.simplified().toStdString(),
+            section.sourceStartFrame,
+            section.sourceEndFrame,
+            static_cast<std::size_t>(
+                std::max(0, section.wordCount)),
+            section.sectionOrdinal,
+            std::move(tracks),
+            section.snippet.simplified().toStdString(),
+        });
+    }
+    QVector<SpeakerSectionExportItem> coalesced;
+    for (const auto& section :
+         jcut::coalescedSpeakerSectionExports(neutral)) {
+        QStringList tracks;
+        for (const int trackId : section.trackIds) {
+            tracks.push_back(QString::number(trackId));
+        }
+        coalesced.push_back({
+            QString::fromStdString(section.speakerId),
+            section.sourceStartFrame,
+            section.sourceEndFrame,
+            QString::fromStdString(section.snippet),
+            QString::fromStdString(
+                section.speakerDisplayName),
+            tracks,
+            section.sectionOrdinal,
+            static_cast<int>(section.wordCount),
+        });
     }
     return coalesced;
 }

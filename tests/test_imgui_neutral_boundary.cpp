@@ -1,10 +1,13 @@
 #include "core/offscreen_vulkan_frame.h"
+#include "decoder_policy_core.h"
 #include "editor_grading_core.h"
 #include "editor_runtime.h"
+#include "ffmpeg_hardware_device_core.h"
 #include "image_sequence_directory.h"
 #include "imgui_audio_runtime.h"
 #include "imgui_vulkan_frame_importer.h"
 #include "standalone_preview_renderer.h"
+#include "vulkan_hardware_frame_import_core.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +26,10 @@ using AudioStatusMember =
     jcut::ImGuiAudioStatus (jcut::ImGuiAudioRuntime::*)() const;
 using AudioBufferMember =
     void (jcut::ImGuiAudioRuntime::*)(unsigned int);
+using AudioDeviceRefreshMember =
+    void (jcut::ImGuiAudioRuntime::*)();
+using AudioDeviceSelectMember =
+    void (jcut::ImGuiAudioRuntime::*)(const std::string&);
 using FrameImportMember =
     bool (jcut::imgui::VulkanFrameImporter::*)(
         const render_detail::OffscreenVulkanFrame&,
@@ -30,6 +37,10 @@ using FrameImportMember =
 using PreviewRenderFunction =
     jcut::standalone_render::PreviewRenderResult (*)(
         const jcut::standalone_render::PreviewRenderRequest&);
+using HardwareFrameImportMember =
+    bool (jcut::vulkan_import::VulkanHardwareFrameImportCore::*)(
+        const jcut::core::FramePayloadCore&,
+        std::string*);
 
 static_assert(std::is_same_v<
               decltype(&jcut::ImGuiAudioRuntime::synchronize),
@@ -41,11 +52,22 @@ static_assert(std::is_same_v<
               decltype(&jcut::ImGuiAudioRuntime::setBufferFrames),
               AudioBufferMember>);
 static_assert(std::is_same_v<
+              decltype(&jcut::ImGuiAudioRuntime::refreshOutputDevices),
+              AudioDeviceRefreshMember>);
+static_assert(std::is_same_v<
+              decltype(&jcut::ImGuiAudioRuntime::setOutputDeviceName),
+              AudioDeviceSelectMember>);
+static_assert(std::is_same_v<
               decltype(&jcut::imgui::VulkanFrameImporter::importFrame),
               FrameImportMember>);
 static_assert(std::is_same_v<
               decltype(&jcut::standalone_render::renderPreviewFrame),
               PreviewRenderFunction>);
+static_assert(std::is_same_v<
+              decltype(static_cast<HardwareFrameImportMember>(
+                  &jcut::vulkan_import::VulkanHardwareFrameImportCore::
+                      importFrame)),
+              HardwareFrameImportMember>);
 static_assert(std::is_same_v<
               decltype(render_detail::OffscreenVulkanFrame::queueFamilyIndex),
               std::uint32_t>);
@@ -68,6 +90,31 @@ int main()
         std::cerr << "empty media path was detected as an image sequence\n";
         return 2;
     }
+    AVCodecContext hardwareFormatContext{};
+    hardwareFormatContext.opaque = reinterpret_cast<void*>(
+        static_cast<std::intptr_t>(AV_PIX_FMT_CUDA));
+    const AVPixelFormat offeredHardwareFormats[]{
+        AV_PIX_FMT_YUV420P,
+        AV_PIX_FMT_CUDA,
+        AV_PIX_FMT_NONE};
+    if (jcut::selectFfmpegHardwarePixelFormat(
+            &hardwareFormatContext,
+            offeredHardwareFormats) != AV_PIX_FMT_CUDA ||
+        jcut::createFfmpegHardwareDeviceForDecoder(nullptr)
+            .deviceContext != nullptr) {
+        std::cerr << "neutral FFmpeg hardware selection contract failed\n";
+        return 3;
+    }
+    jcut::DecodeHardwareDeviceCore hardwareDevice =
+        jcut::DecodeHardwareDeviceCore::Auto;
+    if (!jcut::parseDecodeHardwareDeviceCore(
+            "nvidia", &hardwareDevice) ||
+        hardwareDevice != jcut::DecodeHardwareDeviceCore::Cuda ||
+        jcut::ffmpegHardwareDeviceOrder(hardwareDevice) !=
+            std::vector<AVHWDeviceType>{AV_HWDEVICE_TYPE_CUDA}) {
+        std::cerr << "neutral hardware-device preference failed\n";
+        return 4;
+    }
 
     const jcut::ImGuiAudioStatus audioStatus;
     const render_detail::OffscreenVulkanFrame frame;
@@ -79,7 +126,7 @@ int main()
         externalImage.size.valid() || previewRequest.outputSize.valid() ||
         previewResult.success) {
         std::cerr << "neutral boundary defaults are not inert\n";
-        return 3;
+        return 5;
     }
 
     const auto nearlyEqual = [](double left, double right) {
@@ -371,6 +418,42 @@ int main()
             normalizationInput.curvePointsB)) {
         std::cerr << "curve normalization knot selection is not deterministic\n";
         return 17;
+    }
+
+    jcut::DecodePreferenceCore parsedPreference{};
+    jcut::H26xThreadingModeCore parsedThreading{};
+    if (!jcut::parseDecodePreferenceCore(
+            "zero_copy", &parsedPreference) ||
+        parsedPreference !=
+            jcut::DecodePreferenceCore::HardwareZeroCopy ||
+        !jcut::parseH26xThreadingModeCore(
+            "balanced", &parsedThreading) ||
+        parsedThreading !=
+            jcut::H26xThreadingModeCore::SliceThreads) {
+        std::cerr << "neutral decoder policy aliases failed\n";
+        return 18;
+    }
+    jcut::DecoderPolicySettingsCore decoderPolicy;
+    decoderPolicy.decodePreference =
+        jcut::DecodePreferenceCore::HardwareZeroCopy;
+    decoderPolicy.h26xThreadingMode =
+        jcut::H26xThreadingModeCore::FrameAndSliceThreads;
+    const jcut::EffectiveDecoderPolicyCore fallback =
+        jcut::effectiveDecoderPolicyCore(
+            decoderPolicy, false, false, 12);
+    decoderPolicy.deterministic = true;
+    const jcut::EffectiveDecoderPolicyCore deterministic =
+        jcut::effectiveDecoderPolicyCore(
+            decoderPolicy, false, false, 12);
+    if (fallback.effectivePreference !=
+            jcut::DecodePreferenceCore::Software ||
+        !fallback.hardwareFallback ||
+        fallback.softwareThreadCount != 8 ||
+        fallback.softwareThreadType != 3 ||
+        deterministic.softwareThreadCount != 1 ||
+        deterministic.softwareThreadType != 0) {
+        std::cerr << "neutral decoder policy normalization failed\n";
+        return 19;
     }
 
     return 0;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "decoder_policy_core.h"
+
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
@@ -15,19 +17,8 @@ enum class DebugLogLevel : int {
     Verbose = 4,
 };
 
-enum class DecodePreference : int {
-    Auto = 0,
-    HardwareZeroCopy = 1,
-    Hardware = 2,
-    Software = 3,
-};
-
-enum class H26xSoftwareThreadingMode : int {
-    Auto = 0,
-    SingleThread = 1,
-    SliceThreads = 2,
-    FrameAndSliceThreads = 3,
-};
+using DecodePreference = jcut::DecodePreferenceCore;
+using H26xSoftwareThreadingMode = jcut::H26xThreadingModeCore;
 
 enum class RubberBandEnginePreference : int {
     Faster = 0,

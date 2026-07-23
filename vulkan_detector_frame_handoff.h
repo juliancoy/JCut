@@ -3,6 +3,7 @@
 #include "core/geometry.h"
 #include "frame_handle.h"
 #include "vulkan_external_frame_import_core.h"
+#include "vulkan_hardware_frame_import_core.h"
 #include "vulkan_zero_copy_face_detector.h"
 
 #include <QElapsedTimer>
@@ -164,6 +165,8 @@ private:
     VkFormat m_imageFormat = VK_FORMAT_UNDEFINED;
     jcut::core::SizeI m_imageSize;
     jcut::vulkan_import::VulkanExternalFrameImportCore m_externalFrameImporter;
+    jcut::vulkan_import::VulkanHardwareFrameImportCore
+        m_hardwareFrameImporter;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;

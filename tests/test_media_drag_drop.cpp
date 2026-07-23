@@ -15,8 +15,10 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -91,6 +93,7 @@ private slots:
     void clipTitlesRejectInvalidParentsAndUseCanonicalSourceFrames();
     void clipTooltipRefreshesAfterTrackMutations();
     void maskClipTitlePaintsAfterStatusDecorations();
+    void sharedExportRangeCoreMatchesTimelineWidget();
 };
 
 void TestMediaDragDrop::unavailablePathProducesNoPayload()
@@ -1010,6 +1013,62 @@ void TestMediaDragDrop::maskClipTitlePaintsAfterStatusDecorations()
         QStringLiteral("Source · PERSON Mask"));
     QVERIFY2(alphaTitle != personTitle,
              "Mask title text must remain paint-visible after the Z/status bar sets NoPen");
+}
+
+void TestMediaDragDrop::sharedExportRangeCoreMatchesTimelineWidget()
+{
+    TimelineWidget timeline;
+    timeline.setExportRanges({
+        ExportRangeSegment{10, 100},
+        ExportRangeSegment{150, 200}});
+    std::vector<jcut::export_range::Range> shared = {
+        {10, 100},
+        {150, 200}};
+
+    const auto compareRanges = [&]() {
+        const QVector<ExportRangeSegment>& qt = timeline.exportRanges();
+        QCOMPARE(qt.size(), static_cast<qsizetype>(shared.size()));
+        for (qsizetype index = 0; index < qt.size(); ++index) {
+            QCOMPARE(
+                qt[index].startFrame,
+                shared[static_cast<std::size_t>(index)].startFrame);
+            QCOMPARE(
+                qt[index].endFrame,
+                shared[static_cast<std::size_t>(index)].endFrame);
+        }
+    };
+    compareRanges();
+
+    const std::array edits = {
+        std::pair{jcut::export_range::Edit::SplitAtPlayhead, std::int64_t{50}},
+        std::pair{jcut::export_range::Edit::SetStartAtPlayhead, std::int64_t{20}},
+        std::pair{jcut::export_range::Edit::SetEndAtPlayhead, std::int64_t{180}},
+        std::pair{jcut::export_range::Edit::Reset, std::int64_t{0}}};
+    for (const auto& [edit, frame] : edits) {
+        QVERIFY(jcut::export_range::apply(
+            &shared, timeline.totalFrames(), edit, frame));
+        QVERIFY(timeline.editExportRanges(edit, frame));
+        compareRanges();
+    }
+
+    QVERIFY(!jcut::export_range::apply(
+        &shared,
+        timeline.totalFrames(),
+        jcut::export_range::Edit::SplitAtPlayhead,
+        0));
+    QVERIFY(!timeline.editExportRanges(
+        jcut::export_range::Edit::SplitAtPlayhead,
+        0));
+    compareRanges();
+
+    timeline.setExportRanges({
+        ExportRangeSegment{100, 20},
+        ExportRangeSegment{20, 100},
+        ExportRangeSegment{500, 600}});
+    shared = {{100, 20}, {20, 100}, {500, 600}};
+    jcut::export_range::normalize(
+        &shared, timeline.totalFrames());
+    compareRanges();
 }
 
 QTEST_MAIN(TestMediaDragDrop)

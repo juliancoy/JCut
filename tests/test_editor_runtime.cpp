@@ -13,6 +13,9 @@
 #include "../render.h"
 #include "../render_qt_compat.h"
 #include "../preview_resize_core.h"
+#include "../timeline_snap_core.h"
+#include "../editor_media_presence_core.h"
+#include "../editor_auto_oppose_core.h"
 
 #include <nlohmann/json.hpp>
 
@@ -34,6 +37,7 @@ private slots:
     void testPlaybackCommandsUpdateTransport();
     void testSeekAndStepCommandsClampToTimeline();
     void testTickAdvancesPlaybackAndStopsAtEnd();
+    void testPlaybackRangesAndLoopMatchQtTransport();
     void testTrackAndClipLifecycleCommandsUpdateDocument();
     void testCreateTitleClipCommandMatchesQtDefaultsAndIsAtomic();
     void testReorderTrackCommandPreservesAssignmentsAndIsUndoable();
@@ -52,6 +56,7 @@ private slots:
     void testDeleteSelectedClipsIsAtomicAndUndoable();
     void testMoveSelectedClipsPreservesLayoutAndRejectsInvalidGroups();
     void testUndoRedoRestoresDeterministicSnapshots();
+    void testCrossShellCommandScriptProducesEquivalentSnapshots();
     void testHistoryTransactionCoalescesContinuousEdits();
     void testNavigationAndPanelCommandsStayOutsideUndoHistory();
     void testMutationAfterUndoInvalidatesRedo();
@@ -61,12 +66,15 @@ private slots:
     void testInspectorCommandsUpdateSharedClipState();
     void testCorrectionPolygonCommandNormalizesAndIsUndoable();
     void testPreviewTransformCommandMatchesQtKeyframeSemantics();
+    void testSourceTransformLockMatchesQtChainSemantics();
     void testMaterializeMaskMatteMatchesQtOwnershipDefaults();
     void testResetClipGradingMatchesQtContextSemantics();
     void testResetClipGradingClearsQtKnownLegacyFields();
     void testScaleToFillHelperReusesUndoableTransformCommand();
     void testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds();
     void testTrackPropertiesCommandNormalizesLabelAndHeight();
+    void testTrackMediaPresenceMatchesQtEnablement();
+    void testAutoOpposeAnalysisCoreMatchesQtThresholds();
     void testTitleKeyframeFieldsRoundTripThroughRenderBridge();
     void testTranscriptOverlayInspectorStateRoundTripsAndRenders();
     void testClipKeyframeRemovalIsChannelScopedAndUndoable();
@@ -82,6 +90,7 @@ private slots:
     void testMaskMatteCloneAndSplitRelationshipsStayValid();
     void testExtendedClipStateRoundTripsIntoRenderTimeline();
     void testExportCommandsUpdateCoreRequest();
+    void testExportRangeContextActionsMatchQtSemantics();
     void testQtRenderRequestPreservesPlaybackSpeed();
     void testQtBridgeBuildsDocumentCore();
     void testDocumentBuildsTimelineRenderData();
@@ -154,7 +163,24 @@ void TestEditorRuntime::testPlaybackCommandsUpdateTransport()
     QCOMPARE(runtime.snapshot().transport.playbackActive, true);
 
     applyCommand(runtime, jcut::SetPlaybackSpeedCommand{4.0f});
-    QCOMPARE(runtime.snapshot().transport.playbackSpeed, 2.0f);
+    QCOMPARE(runtime.snapshot().transport.playbackSpeed, 3.0f);
+    applyCommand(
+        runtime, jcut::SetPlaybackSpeedCommand{0.01f});
+    QCOMPARE(runtime.snapshot().transport.playbackSpeed, 0.1f);
+    applyCommand(
+        runtime, jcut::SetPlaybackLoopEnabledCommand{true});
+    QCOMPARE(
+        runtime.snapshot().transport.playbackLoopEnabled, true);
+    applyCommand(
+        runtime, jcut::SetPreviewViewModeCommand{"audio"});
+    QCOMPARE(
+        QString::fromStdString(
+            runtime.snapshot().transport.previewViewMode),
+        QStringLiteral("audio"));
+    applyCommand(
+        runtime, jcut::SetTransportAudioCommand{true, 2.0f});
+    QCOMPARE(runtime.snapshot().transport.audioMuted, true);
+    QCOMPARE(runtime.snapshot().transport.audioVolume, 1.0f);
 
     applyCommand(runtime, jcut::SetPreviewZoomCommand{0.1f});
     QCOMPARE(runtime.snapshot().transport.previewZoom, 0.5f);
@@ -192,6 +218,52 @@ void TestEditorRuntime::testTickAdvancesPlaybackAndStopsAtEnd()
     runtime.tick({1.0});
     QCOMPARE(runtime.snapshot().transport.currentFrame, 432);
     QCOMPARE(runtime.snapshot().transport.playbackActive, false);
+}
+
+void TestEditorRuntime::testPlaybackRangesAndLoopMatchQtTransport()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.trackId = 1;
+    clip.durationFrames = 30;
+    document.clips.push_back(clip);
+    document.exportRequest.outputFps = 10.0;
+    document.exportRanges = {{5, 9}, {20, 24}};
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(document);
+
+    applyCommand(runtime, jcut::SeekToFrameCommand{9});
+    applyCommand(runtime, jcut::StepFrameCommand{1});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 20);
+    applyCommand(runtime, jcut::StepFrameCommand{-1});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 9);
+
+    applyCommand(runtime, jcut::SeekToFrameCommand{8});
+    applyCommand(runtime, jcut::SetPlaybackActiveCommand{true});
+    runtime.tick({0.2});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 20);
+    QCOMPARE(runtime.snapshot().transport.playbackActive, true);
+
+    applyCommand(
+        runtime, jcut::SetPlaybackLoopEnabledCommand{true});
+    applyCommand(runtime, jcut::SeekToFrameCommand{23});
+    runtime.tick({0.2});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 5);
+    QCOMPARE(runtime.snapshot().transport.playbackActive, true);
+
+    applyCommand(
+        runtime, jcut::SetPlaybackLoopEnabledCommand{false});
+    applyCommand(runtime, jcut::SeekToFrameCommand{23});
+    runtime.tick({0.2});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 24);
+    QCOMPARE(runtime.snapshot().transport.playbackActive, false);
+
+    applyCommand(runtime, jcut::SeekToFrameCommand{30});
+    applyCommand(runtime, jcut::SetPlaybackActiveCommand{true});
+    QCOMPARE(runtime.snapshot().transport.currentFrame, 5);
+    QCOMPARE(runtime.snapshot().transport.playbackActive, true);
 }
 
 void TestEditorRuntime::testTrackAndClipLifecycleCommandsUpdateDocument()
@@ -1403,6 +1475,25 @@ void TestEditorRuntime::testDeleteSelectedClipsIsAtomicAndUndoable()
 void TestEditorRuntime::
     testMoveSelectedClipsPreservesLayoutAndRejectsInvalidGroups()
 {
+    const std::vector<jcut::timeline::SnapClip> snapClips = {
+        {1, 10, 10, true},
+        {2, 30, 10, true},
+        {3, 51, 10, false}};
+    const jcut::timeline::GroupMoveSnap companionEdgeSnap =
+        jcut::timeline::snapSelectedGroupMove(
+            snapClips, 1, 20, 2);
+    QCOMPARE(companionEdgeSnap.anchorStartFrame, std::int64_t(21));
+    QCOMPARE(companionEdgeSnap.boundaryFrame, std::int64_t(51));
+
+    const std::vector<jcut::timeline::SnapClip> zeroBoundClips = {
+        {1, 20, 10, true},
+        {2, 5, 10, true}};
+    const jcut::timeline::GroupMoveSnap zeroBoundSnap =
+        jcut::timeline::snapSelectedGroupMove(
+            zeroBoundClips, 1, 10, 2);
+    QCOMPARE(zeroBoundSnap.anchorStartFrame, std::int64_t(15));
+    QCOMPARE(zeroBoundSnap.boundaryFrame, std::int64_t(0));
+
     jcut::EditorDocumentCore document;
     document.tracks = {
         {10, "Track A", true},
@@ -1436,6 +1527,20 @@ void TestEditorRuntime::
         {"companion", 3, true, 2},
         {"untouched", 51, false, 1},
     };
+
+    jcut::EditorRuntime groupLockRuntime =
+        jcut::EditorRuntime::fromDocument(document);
+    QVERIFY(groupLockRuntime.execute(jcut::EditorCommand{
+        jcut::SetSelectedClipsLockedCommand{true}}).applied);
+    const jcut::EditorDocumentCore lockedSelection =
+        groupLockRuntime.snapshot();
+    QVERIFY(lockedSelection.clips.at(0).locked);
+    QVERIFY(lockedSelection.clips.at(1).locked);
+    QVERIFY(!lockedSelection.clips.at(2).locked);
+    QVERIFY(groupLockRuntime.execute(
+        jcut::EditorCommand{jcut::UndoCommand{}}).applied);
+    QVERIFY(!groupLockRuntime.snapshot().clips.at(0).locked);
+    QVERIFY(!groupLockRuntime.snapshot().clips.at(1).locked);
 
     jcut::EditorRuntime runtime = jcut::EditorRuntime::fromDocument(document);
     const nlohmann::json original = jcut::toJson(runtime.snapshot());
@@ -1543,6 +1648,79 @@ void TestEditorRuntime::testUndoRedoRestoresDeterministicSnapshots()
     QVERIFY(jcut::toJson(runtime.snapshot()) == editedSnapshot);
     QCOMPARE(runtime.canRedo(), false);
     QCOMPARE(runtime.execute(jcut::EditorCommand{jcut::RedoCommand{}}).applied, false);
+}
+
+void TestEditorRuntime::testCrossShellCommandScriptProducesEquivalentSnapshots()
+{
+    const jcut::EditorDocumentCore seed =
+        jcut::EditorRuntime::createDemo().snapshot();
+    std::string error;
+    const std::optional<jcut::EditorDocumentCore> imguiLoaded =
+        jcut::editorDocumentCoreFromJson(jcut::toJson(seed), &error);
+    QVERIFY2(imguiLoaded.has_value(), error.c_str());
+    error.clear();
+    const nlohmann::json qtState = jcut::toLegacyStateJson(seed);
+    const std::optional<jcut::EditorDocumentCore> qtLoaded =
+        jcut::editorDocumentCoreFromJson(qtState, &error);
+    QVERIFY2(qtLoaded.has_value(), error.c_str());
+
+    jcut::EditorRuntime imguiRuntime =
+        jcut::EditorRuntime::fromDocument(*imguiLoaded);
+    jcut::EditorRuntime qtRuntime =
+        jcut::EditorRuntime::fromDocument(*qtLoaded);
+    const nlohmann::json imguiBaseline =
+        jcut::toJson(imguiRuntime.snapshot());
+    const nlohmann::json qtBaseline =
+        jcut::toJson(qtRuntime.snapshot());
+    const std::string baselineDifference =
+        nlohmann::json::diff(imguiBaseline, qtBaseline).dump();
+    QVERIFY2(
+        imguiBaseline == qtBaseline,
+        baselineDifference.c_str());
+
+    const std::vector<jcut::EditorCommand> script = {
+        jcut::SetProjectNameCommand{"Cross-shell edit"},
+        jcut::SelectClipCommand{2},
+        jcut::SetClipLabelCommand{2, "Interview B revised"},
+        jcut::SetClipGradingCommand{2, 0.35, 1.2, 0.85, true},
+        jcut::UpsertGradingKeyframeCommand{
+            2, {72, 0.1, 1.1, 0.9, 0.75, false}},
+        jcut::SetClipOpacityCommand{2, 0.8},
+        jcut::SetClipTransformCommand{
+            2, 24.0, -12.0, 7.5, 1.1, 0.95},
+        jcut::SetTrackPropertiesCommand{
+            2, "Interview alternate", 84},
+        jcut::AddRenderSyncMarkerCommand{2, 96, true, 2},
+        jcut::SetExportRangeCommand{24, 360},
+        jcut::SetExportSizeCommand{1920, 1080},
+        jcut::SetExportFpsCommand{24.0},
+        jcut::MoveClipCommand{2, 2, 48},
+        jcut::SplitClipCommand{2, 192},
+        jcut::UndoCommand{},
+        jcut::RedoCommand{},
+        jcut::CreateTitleClipCommand{500, 75},
+    };
+
+    for (std::size_t index = 0; index < script.size(); ++index) {
+        const jcut::CommandResult imguiResult =
+            imguiRuntime.execute(script[index]);
+        const jcut::CommandResult qtResult =
+            qtRuntime.execute(script[index]);
+        QCOMPARE(imguiResult.applied, qtResult.applied);
+        QCOMPARE(
+            QByteArray::fromStdString(
+                jcut::toJson(imguiRuntime.snapshot()).dump()),
+            QByteArray::fromStdString(
+                jcut::toJson(qtRuntime.snapshot()).dump()));
+    }
+
+    const nlohmann::json savedFromImGui =
+        jcut::toLegacyStateJson(imguiRuntime.snapshot(), &qtState);
+    const nlohmann::json savedFromQt =
+        jcut::toLegacyStateJson(qtRuntime.snapshot(), &qtState);
+    QCOMPARE(
+        QByteArray::fromStdString(savedFromImGui.dump()),
+        QByteArray::fromStdString(savedFromQt.dump()));
 }
 
 void TestEditorRuntime::testHistoryTransactionCoalescesContinuousEdits()
@@ -1893,8 +2071,10 @@ void TestEditorRuntime::testAiLoginPersistsRefreshTokenContract()
     const QString code = QString::fromUtf8(source.readAll());
 
     QVERIFY(code.contains(QStringLiteral("loginResult.value().refreshToken.trimmed()")));
-    QVERIFY(code.contains(QStringLiteral("cppmonetize::loadStoredAuthSession(*store)")));
-    QVERIFY(code.contains(QStringLiteral("cppmonetize::storeStoredAuthSession")));
+    QVERIFY(code.contains(QStringLiteral("jcut::ai::loadStoredCredentialsCore(config)")));
+    QVERIFY(code.contains(QStringLiteral("jcut::ai::storeCredentialsCore(")));
+    QVERIFY(!code.contains(QStringLiteral("cppmonetize::loadStoredAuthSession(*store)")));
+    QVERIFY(!code.contains(QStringLiteral("cppmonetize::storeStoredAuthSession")));
     QVERIFY(code.contains(QStringLiteral("OAuthDesktopFlow oauthFlow")));
     QVERIFY(code.contains(QStringLiteral("oauthFlow.refreshWithToken")));
     QVERIFY(code.contains(QStringLiteral("refreshAiAuthTokenFromSecureStore()")));
@@ -1914,6 +2094,39 @@ void TestEditorRuntime::testInspectorCommandsUpdateSharedClipState()
     applyCommand(runtime, jcut::SetClipTransformCommand{1, 42.0, -18.0, 12.0, -1.25, 1.1});
     applyCommand(runtime, jcut::UpsertTransformKeyframeCommand{
         1, {30, "Push", 42.0, -18.0, 12.0, -1.25, 1.1, true}});
+    applyCommand(runtime, jcut::SetClipSpeakerFramingCommand{
+        1,
+        true,
+        0.45,
+        0.40,
+        0.22,
+        0.31,
+        7,
+        " T7 ",
+        9,
+        13,
+        2,
+        0.75,
+        1.25,
+        17});
+    applyCommand(
+        runtime,
+        jcut::SetClipSpeakerSectionMinimumWordsCommand{
+            1, 24});
+    applyCommand(
+        runtime,
+        jcut::UpsertSpeakerFramingEnabledKeyframeCommand{
+            1, {30, true}});
+    applyCommand(
+        runtime,
+        jcut::UpsertSpeakerFramingKeyframeCommand{
+            1,
+            {30, "Baked", -20.0, 15.0, 3.0, 1.2, 1.1, true}});
+    applyCommand(
+        runtime,
+        jcut::UpsertSpeakerFramingTargetKeyframeCommand{
+            1,
+            {30, "Target", 0.55, 0.42, 12.0, 0.28, 0.9, true}});
     applyCommand(runtime, jcut::SetClipMaskEffectCommand{
         1, true, 18.0, 1.4, 3, true, true, 120.0, 24.0,
         "kaleidoscope", 48, 1.5, 0.8, false});
@@ -1947,6 +2160,27 @@ void TestEditorRuntime::testInspectorCommandsUpdateSharedClipState()
     QCOMPARE(clip.gradingPreviewEnabled, false);
     QCOMPARE(clip.gradingKeyframes.size(), std::size_t(1));
     QCOMPARE(clip.opacity, 0.72);
+    QCOMPARE(clip.speakerFramingEnabled, true);
+    QCOMPARE(clip.speakerFramingBakedTargetXNorm, 0.45);
+    QCOMPARE(clip.speakerFramingBakedTargetYNorm, 0.40);
+    QCOMPARE(clip.speakerFramingBakedTargetBoxNorm, 0.22);
+    QCOMPARE(clip.speakerFramingMinConfidence, 0.31);
+    QCOMPARE(clip.speakerFramingManualTrackId, 7);
+    QCOMPARE(QString::fromStdString(clip.speakerFramingManualStreamId),
+             QStringLiteral("T7"));
+    QCOMPARE(clip.speakerFramingCenterSmoothingFrames, 9);
+    QCOMPARE(clip.speakerFramingZoomSmoothingFrames, 13);
+    QCOMPARE(clip.speakerFramingSmoothingMode, 2);
+    QCOMPARE(clip.speakerFramingCenterSmoothingStrength, 0.75);
+    QCOMPARE(clip.speakerFramingZoomSmoothingStrength, 1.25);
+    QCOMPARE(clip.speakerFramingGapHoldFrames, 17);
+    QCOMPARE(clip.speakerSectionMinimumWords, 24);
+    QCOMPARE(clip.speakerFramingEnabledKeyframes.size(), std::size_t(1));
+    QCOMPARE(clip.speakerFramingKeyframes.size(), std::size_t(1));
+    QCOMPARE(clip.speakerFramingTargetKeyframes.size(), std::size_t(1));
+    QCOMPARE(clip.speakerFramingTargetKeyframes.front().rotation, 0.0);
+    QCOMPARE(clip.speakerFramingTargetKeyframes.front().scaleX, 0.28);
+    QCOMPARE(clip.speakerFramingTargetKeyframes.front().scaleY, 0.28);
     QCOMPARE(clip.opacityKeyframes.size(), std::size_t(1));
     QCOMPARE(clip.baseTranslationX, 42.0);
     QCOMPARE(clip.baseScaleX, -1.25);
@@ -1995,6 +2229,39 @@ void TestEditorRuntime::testInspectorCommandsUpdateSharedClipState()
     QCOMPARE(enabledTrack.audioMuted, forceOpaqueTrack.audioMuted);
     QCOMPARE(enabledTrack.audioSolo, forceOpaqueTrack.audioSolo);
     QCOMPARE(enabledTrack.gradingPreviewEnabled, false);
+
+    applyCommand(runtime, jcut::RefreshClipMetadataCommand{{
+        {1, "video", false, 60.0, 600, 200}}});
+    const jcut::EditorClip refreshedClip =
+        runtime.snapshot().clips.front();
+    QCOMPARE(QString::fromStdString(refreshedClip.mediaKind),
+             QStringLiteral("video"));
+    QCOMPARE(refreshedClip.hasAudio, false);
+    QCOMPARE(refreshedClip.sourceFps, 60.0);
+    QCOMPARE(refreshedClip.sourceDurationFrames, std::int64_t(600));
+    QCOMPARE(refreshedClip.durationFrames, 200);
+
+    applyCommand(runtime, jcut::SetClipGradingCommand{
+        1, 8.0, -7.5, 9.0, true});
+    applyCommand(runtime, jcut::UpsertGradingKeyframeCommand{
+        1, {31, -8.0, 7.5, -9.0, 1.0, true}});
+    const jcut::EditorDocumentCore wideGradeSnapshot =
+        runtime.snapshot();
+    const jcut::EditorClip& wideGradeClip =
+        wideGradeSnapshot.clips.front();
+    QCOMPARE(wideGradeClip.brightness, 8.0);
+    QCOMPARE(wideGradeClip.contrast, -7.5);
+    QCOMPARE(wideGradeClip.saturation, 9.0);
+    const auto wideGradeKey = std::find_if(
+        wideGradeClip.gradingKeyframes.begin(),
+        wideGradeClip.gradingKeyframes.end(),
+        [](const jcut::EditorGradingKeyframe& keyframe) {
+            return keyframe.frame == 31;
+        });
+    QVERIFY(wideGradeKey != wideGradeClip.gradingKeyframes.end());
+    QCOMPARE(wideGradeKey->brightness, -8.0);
+    QCOMPARE(wideGradeKey->contrast, 7.5);
+    QCOMPARE(wideGradeKey->saturation, -9.0);
     QCOMPARE(runtime.canUndo(), true);
 }
 
@@ -2027,6 +2294,23 @@ void TestEditorRuntime::testCorrectionPolygonCommandNormalizesAndIsUndoable()
 
 void TestEditorRuntime::testPreviewTransformCommandMatchesQtKeyframeSemantics()
 {
+    QCOMPARE(
+        jcut::preview::rotationDeltaDegrees(
+            {0.0, 0.0}, {0.0, -10.0}, {10.0, 0.0}),
+        90.0);
+    QVERIFY(std::abs(
+        jcut::preview::rotationDeltaDegrees(
+            {0.0, 0.0}, {-10.0, -0.1}, {-10.0, 0.1}) +
+        1.1459) < 0.001);
+    QCOMPARE(
+        jcut::preview::rotationForPointerDrag(
+            7.0,
+            {0.0, 0.0},
+            {0.0, -10.0},
+            {10.0, 0.0},
+            15.0),
+        90.0);
+
     const jcut::preview::PointD anchored =
         jcut::preview::translationForAnchoredResize(
             {10.0, 20.0}, {1.0, 1.0}, {2.0, 1.0},
@@ -2035,6 +2319,48 @@ void TestEditorRuntime::testPreviewTransformCommandMatchesQtKeyframeSemantics()
             {0.5, 0.5});
     QCOMPARE(anchored.x, 110.0);
     QCOMPARE(anchored.y, 20.0);
+
+    const auto translatedQuad =
+        jcut::preview::transformedPresentationQuad(
+            {0.0, 0.0, 100.0, 50.0},
+            {100.0, 50.0},
+            {10.0, 5.0},
+            {1.0, 1.0},
+            0.0);
+    QCOMPARE(translatedQuad[0].x, 10.0);
+    QCOMPARE(translatedQuad[0].y, 5.0);
+    QCOMPARE(translatedQuad[2].x, 110.0);
+    QCOMPARE(translatedQuad[2].y, 55.0);
+    const auto rotatedQuad =
+        jcut::preview::transformedPresentationQuad(
+            {0.0, 0.0, 100.0, 50.0},
+            {100.0, 50.0},
+            {},
+            {1.0, 1.0},
+            90.0);
+    QVERIFY(std::abs(rotatedQuad[0].x - 75.0) < 1.0e-9);
+    QVERIFY(std::abs(rotatedQuad[0].y + 25.0) < 1.0e-9);
+    QVERIFY(std::abs(rotatedQuad[2].x - 25.0) < 1.0e-9);
+    QVERIFY(std::abs(rotatedQuad[2].y - 75.0) < 1.0e-9);
+    const auto fittedRect =
+        jcut::preview::fittedPresentationRect(
+            {0.0, 0.0, 200.0, 100.0},
+            {100.0, 50.0},
+            {100.0, 100.0});
+    QCOMPARE(fittedRect.left, 50.0);
+    QCOMPARE(fittedRect.top, 0.0);
+    QCOMPARE(fittedRect.width, 100.0);
+    QCOMPARE(fittedRect.height, 100.0);
+    const auto fittedTranslatedQuad =
+        jcut::preview::transformedPresentationQuad(
+            fittedRect,
+            {0.0, 0.0, 200.0, 100.0},
+            {100.0, 50.0},
+            {10.0, 0.0},
+            {1.0, 1.0},
+            0.0);
+    QCOMPARE(fittedTranslatedQuad[0].x, 70.0);
+    QCOMPARE(fittedTranslatedQuad[2].x, 170.0);
 
     jcut::EditorDocumentCore document =
         jcut::EditorRuntime::createDemo().snapshot();
@@ -2109,6 +2435,81 @@ void TestEditorRuntime::testPreviewTransformCommandMatchesQtKeyframeSemantics()
     QCOMPARE(childTransform.translationY, ownerTransform.translationY);
     QCOMPARE(childTransform.scaleX, ownerTransform.scaleX);
     QCOMPARE(childTransform.scaleY, ownerTransform.scaleY);
+}
+
+void TestEditorRuntime::testSourceTransformLockMatchesQtChainSemantics()
+{
+    jcut::EditorDocumentCore document =
+        jcut::EditorRuntime::createDemo().snapshot();
+    document.clips.resize(1);
+    jcut::EditorClip& source = document.clips.front();
+    source.id = 101;
+    source.persistentId = "transform-source";
+    source.clipRole = "media";
+    source.mediaKind = "video";
+    source.startFrame = 10;
+    source.durationFrames = 120;
+    source.baseTranslationX = 35.0;
+    source.baseTranslationY = -12.0;
+    source.baseScaleX = 1.5;
+    source.baseScaleY = 0.75;
+    source.transformKeyframes.clear();
+
+    jcut::EditorClip middle = source;
+    middle.id = 102;
+    middle.persistentId = "transform-middle";
+    middle.linkedSourceClipId = source.persistentId;
+    middle.sourceTransformLocked = true;
+    middle.baseTranslationX = 90.0;
+
+    jcut::EditorClip follower = source;
+    follower.id = 103;
+    follower.persistentId = "transform-follower";
+    follower.linkedSourceClipId = middle.persistentId;
+    follower.sourceTransformLocked = true;
+    follower.startFrame = 20;
+    follower.baseTranslationX = -50.0;
+    follower.baseScaleX = 0.5;
+    document.clips.push_back(middle);
+    document.clips.push_back(follower);
+
+    const jcut::EditorTransformKeyframe inherited =
+        jcut::evaluateEditorClipRenderTransformAtTimelineFrame(
+            document, document.clips.back(), 40);
+    QCOMPARE(inherited.translationX, 35.0);
+    QCOMPARE(inherited.translationY, -12.0);
+    QCOMPARE(inherited.scaleX, 1.5);
+    QCOMPARE(inherited.scaleY, 0.75);
+    QCOMPARE(inherited.frame, std::int64_t(20));
+
+    document.clips[1].linkedSourceClipId =
+        document.clips[2].persistentId;
+    const jcut::EditorTransformKeyframe cycleFallback =
+        jcut::evaluateEditorClipRenderTransformAtTimelineFrame(
+            document, document.clips[2], 40);
+    QCOMPARE(cycleFallback.translationX, -50.0);
+    QCOMPARE(cycleFallback.scaleX, 0.5);
+
+    document.clips[1].linkedSourceClipId =
+        document.clips[0].persistentId;
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(document);
+    QVERIFY(runtime.execute(
+        jcut::SetClipSourceTransformLockedCommand{
+            follower.id, false}).applied);
+    QCOMPARE(
+        runtime.snapshot().clips[2].sourceTransformLocked,
+        false);
+    QVERIFY(runtime.execute(
+        jcut::SetClipSourceTransformLockedCommand{
+            follower.id, true}).applied);
+    QCOMPARE(
+        runtime.snapshot().clips[2].sourceTransformLocked,
+        true);
+    QVERIFY(runtime.execute(jcut::UndoCommand{}).applied);
+    QCOMPARE(
+        runtime.snapshot().clips[2].sourceTransformLocked,
+        false);
 }
 
 void TestEditorRuntime::testMaterializeMaskMatteMatchesQtOwnershipDefaults()
@@ -2621,6 +3022,101 @@ void TestEditorRuntime::testTrackPropertiesCommandNormalizesLabelAndHeight()
     QCOMPARE(QString::fromStdString(runtime.snapshot().tracks.at(1).label),
              QString::fromStdString(original.label));
     QCOMPARE(runtime.snapshot().tracks.at(1).height, original.height);
+}
+
+void TestEditorRuntime::testTrackMediaPresenceMatchesQtEnablement()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks = {
+        {1, "Empty", false},
+        {2, "Audio", false},
+        {3, "Image", false},
+        {4, "Video", false},
+        {5, "Legacy", false},
+    };
+
+    jcut::EditorClip audio;
+    audio.id = 1;
+    audio.trackId = 2;
+    audio.mediaKind = "audio";
+    audio.videoEnabled = true;
+    audio.hasAudio = true;
+    document.clips.push_back(audio);
+
+    jcut::EditorClip image;
+    image.id = 2;
+    image.trackId = 3;
+    image.mediaKind = "image";
+    image.videoEnabled = false;
+    document.clips.push_back(image);
+
+    jcut::EditorClip video;
+    video.id = 3;
+    video.trackId = 4;
+    video.mediaKind = "video";
+    video.hasAudio = true;
+    document.clips.push_back(video);
+
+    jcut::EditorClip legacy;
+    legacy.id = 4;
+    legacy.trackId = 5;
+    legacy.mediaKind.clear();
+    legacy.videoEnabled = true;
+    document.clips.push_back(legacy);
+
+    const auto emptyPresence =
+        jcut::editorTrackMediaPresenceCore(document, 1);
+    QCOMPARE(emptyPresence.hasVisual, false);
+    QCOMPARE(emptyPresence.hasAudio, false);
+
+    const auto audioPresence =
+        jcut::editorTrackMediaPresenceCore(document, 2);
+    QCOMPARE(audioPresence.hasVisual, false);
+    QCOMPARE(audioPresence.hasAudio, true);
+
+    const auto imagePresence =
+        jcut::editorTrackMediaPresenceCore(document, 3);
+    QCOMPARE(imagePresence.hasVisual, true);
+    QCOMPARE(imagePresence.hasAudio, false);
+
+    const auto videoPresence =
+        jcut::editorTrackMediaPresenceCore(document, 4);
+    QCOMPARE(videoPresence.hasVisual, true);
+    QCOMPARE(videoPresence.hasAudio, true);
+
+    const auto legacyPresence =
+        jcut::editorTrackMediaPresenceCore(document, 5);
+    QCOMPARE(legacyPresence.hasVisual, true);
+    QCOMPARE(legacyPresence.hasAudio, false);
+}
+
+void TestEditorRuntime::testAutoOpposeAnalysisCoreMatchesQtThresholds()
+{
+    const std::array<std::uint8_t, 8> rgba{
+        255, 0, 0, 255,
+        0, 255, 0, 255};
+    jcut::EditorGradeProbeSampleCore probed;
+    QVERIFY(jcut::probeEditorGradeStatsRgba(
+        rgba.data(), 2, 1, 8, &probed));
+    QVERIFY(std::abs(probed.lumaMean - 0.4639) < 0.0001);
+    QCOMPARE(probed.saturationMean, 1.0);
+
+    std::vector<jcut::EditorGradeProbeSampleCore> samples{
+        {0, 0.40, 0.20, 0.10},
+        {12, 0.60, 0.20, 0.10},
+        {24, 0.60, 0.10, 0.05},
+    };
+    const std::vector<jcut::EditorOpposeGradeEventCore> events =
+        jcut::detectEditorOpposeGradeEvents(
+            samples, jcut::EditorAutoOpposeSettingsCore{});
+    QCOMPARE(events.size(), std::size_t(2));
+    QCOMPARE(events.front().localFrame, std::int64_t(12));
+    QVERIFY(std::abs(events.front().brightnessDelta + 0.48) < 0.000001);
+    QCOMPARE(events.front().contrastMul, 1.0);
+    QCOMPARE(events.front().saturationMul, 1.0);
+    QCOMPARE(events.back().localFrame, std::int64_t(24));
+    QCOMPARE(events.back().contrastMul, 2.0);
+    QCOMPARE(events.back().saturationMul, 2.0);
 }
 
 void TestEditorRuntime::testTitleKeyframeFieldsRoundTripThroughRenderBridge()
@@ -4324,6 +4820,24 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.titleKeyframes.push_back({12, "Title", 20.0, 40.0, 48.0, 1.0,
                                    "DejaVu Sans", true, false, "#ffffffff", true});
     clip.transcriptOverlay.enabled = true;
+    clip.speakerFramingEnabled = true;
+    clip.speakerFramingBakedTargetXNorm = 0.42;
+    clip.speakerFramingBakedTargetYNorm = 0.38;
+    clip.speakerFramingBakedTargetBoxNorm = 0.24;
+    clip.speakerFramingMinConfidence = 0.31;
+    clip.speakerFramingManualTrackId = 7;
+    clip.speakerFramingManualStreamId = "stream-a";
+    clip.speakerFramingCenterSmoothingFrames = 9;
+    clip.speakerFramingZoomSmoothingFrames = 13;
+    clip.speakerFramingSmoothingMode = 2;
+    clip.speakerFramingCenterSmoothingStrength = 0.75;
+    clip.speakerFramingZoomSmoothingStrength = 1.25;
+    clip.speakerFramingGapHoldFrames = 17;
+    clip.speakerFramingEnabledKeyframes.push_back({0, true});
+    clip.speakerFramingKeyframes.push_back(
+        {0, "Framing", -24.0, 15.0, 3.0, 1.25, 1.15, true});
+    clip.speakerFramingTargetKeyframes.push_back(
+        {0, "Target", 0.55, 0.45, 0.0, 0.30, 0.30, true});
     clip.correctionPolygons.push_back({
         {{0.1, 0.1}, {0.8, 0.1}, {0.5, 0.8}}, true, 0, 90});
     document.renderSyncMarkers.push_back({"clip-persistent-a", 24, true, 2});
@@ -4349,6 +4863,25 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.opacityKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.transformKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.titleKeyframes.size(), std::size_t(1));
+    QCOMPARE(reparsedClip.speakerFramingEnabled, true);
+    QCOMPARE(reparsedClip.speakerFramingBakedTargetXNorm, 0.42);
+    QCOMPARE(reparsedClip.speakerFramingBakedTargetBoxNorm, 0.24);
+    QCOMPARE(reparsedClip.speakerFramingMinConfidence, 0.31);
+    QCOMPARE(reparsedClip.speakerFramingManualTrackId, 7);
+    QCOMPARE(QString::fromStdString(
+                 reparsedClip.speakerFramingManualStreamId),
+             QStringLiteral("stream-a"));
+    QCOMPARE(reparsedClip.speakerFramingCenterSmoothingFrames, 9);
+    QCOMPARE(reparsedClip.speakerFramingZoomSmoothingFrames, 13);
+    QCOMPARE(reparsedClip.speakerFramingSmoothingMode, 2);
+    QCOMPARE(reparsedClip.speakerFramingCenterSmoothingStrength, 0.75);
+    QCOMPARE(reparsedClip.speakerFramingZoomSmoothingStrength, 1.25);
+    QCOMPARE(reparsedClip.speakerFramingGapHoldFrames, 17);
+    QCOMPARE(reparsedClip.speakerFramingEnabledKeyframes.size(),
+             std::size_t(1));
+    QCOMPARE(reparsedClip.speakerFramingKeyframes.size(), std::size_t(1));
+    QCOMPARE(reparsedClip.speakerFramingTargetKeyframes.size(),
+             std::size_t(1));
     QCOMPARE(reparsedClip.maskGradeEnabled, true);
     QCOMPARE(reparsedClip.maskGradeBrightness, 0.25);
     QCOMPARE(reparsedClip.maskGradeCurvePointsR.front().y, 0.1);
@@ -4419,6 +4952,20 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(renderClip.transformKeyframes.size(), 1);
     QCOMPARE(renderClip.titleKeyframes.size(), 1);
     QCOMPARE(renderClip.transcriptOverlay.enabled, true);
+    QCOMPARE(renderClip.speakerFramingEnabled, true);
+    QCOMPARE(renderClip.speakerFramingBakedTargetYNorm, 0.38);
+    QCOMPARE(renderClip.speakerFramingManualTrackId, 7);
+    QCOMPARE(renderClip.speakerFramingManualStreamId,
+             QStringLiteral("stream-a"));
+    QCOMPARE(renderClip.speakerFramingZoomSmoothingFrames, 13);
+    QCOMPARE(renderClip.speakerFramingZoomSmoothingStrength, 1.25);
+    QCOMPARE(renderClip.speakerFramingEnabledKeyframes.size(), 1);
+    QCOMPARE(renderClip.speakerFramingKeyframes.size(), 1);
+    QCOMPARE(renderClip.speakerFramingTargetKeyframes.size(), 1);
+    QCOMPARE(renderClip.speakerFramingKeyframes.front().translationX,
+             -24.0);
+    QCOMPARE(renderClip.speakerFramingTargetKeyframes.front().scaleX,
+             0.30);
     QCOMPARE(renderClip.correctionPolygons.size(), 1);
     QCOMPARE(renderData.renderSyncMarkers.size(), std::size_t(1));
     QCOMPARE(renderData.renderSyncMarkers.front().action, RenderSyncAction::SkipFrame);
@@ -4451,6 +4998,78 @@ void TestEditorRuntime::testExportCommandsUpdateCoreRequest()
     applyCommand(runtime, jcut::SetExportImageSequenceFormatCommand{"png"});
     QCOMPARE(QString::fromStdString(runtime.snapshot().exportRequest.imageSequenceFormat),
              QStringLiteral("png"));
+}
+
+void TestEditorRuntime::testExportRangeContextActionsMatchQtSemantics()
+{
+    jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
+    applyCommand(runtime, jcut::SetExportRangeCommand{10, 100});
+
+    applyCommand(
+        runtime,
+        jcut::EditExportRangesCommand{
+            jcut::ExportRangeEdit::SplitAtPlayhead, 50});
+    QCOMPARE(runtime.snapshot().exportRanges.size(), std::size_t(2));
+    QCOMPARE(runtime.snapshot().exportRanges[0].startFrame, std::int64_t(10));
+    QCOMPARE(runtime.snapshot().exportRanges[0].endFrame, std::int64_t(49));
+    QCOMPARE(runtime.snapshot().exportRanges[1].startFrame, std::int64_t(50));
+    QCOMPARE(runtime.snapshot().exportRanges[1].endFrame, std::int64_t(100));
+
+    applyCommand(
+        runtime,
+        jcut::EditExportRangesCommand{
+            jcut::ExportRangeEdit::SetStartAtPlayhead, 20});
+    applyCommand(
+        runtime,
+        jcut::EditExportRangesCommand{
+            jcut::ExportRangeEdit::SetEndAtPlayhead, 80});
+    QCOMPARE(runtime.snapshot().exportRanges[0].startFrame, std::int64_t(20));
+    QCOMPARE(runtime.snapshot().exportRanges[1].endFrame, std::int64_t(80));
+    QCOMPARE(runtime.snapshot().exportRequest.exportStartFrame, std::int64_t(20));
+    QCOMPARE(runtime.snapshot().exportRequest.exportEndFrame, std::int64_t(80));
+    QCOMPARE(runtime.snapshot().exportRequest.exportRangeCount, std::size_t(2));
+
+    const jcut::CommandResult invalidSplit = runtime.execute(
+        jcut::EditExportRangesCommand{
+            jcut::ExportRangeEdit::SplitAtPlayhead, 20});
+    QVERIFY(!invalidSplit.applied);
+    QCOMPARE(runtime.snapshot().exportRanges.size(), std::size_t(2));
+
+    applyCommand(
+        runtime,
+        jcut::SetExportRangesCommand{
+            {{70, 75}, {10, 15}}});
+    QCOMPARE(runtime.snapshot().exportRanges.size(), std::size_t(2));
+    QCOMPARE(runtime.snapshot().exportRanges[0].startFrame,
+             std::int64_t(10));
+    QCOMPARE(runtime.snapshot().exportRanges[1].endFrame,
+             std::int64_t(75));
+    QCOMPARE(runtime.snapshot().exportRequest.exportStartFrame,
+             std::int64_t(10));
+    QCOMPARE(runtime.snapshot().exportRequest.exportEndFrame,
+             std::int64_t(75));
+
+    applyCommand(
+        runtime,
+        jcut::EditExportRangesCommand{
+            jcut::ExportRangeEdit::Reset, 0});
+    const jcut::EditorDocumentCore reset = runtime.snapshot();
+    std::int64_t expectedExtent = 300;
+    for (const jcut::EditorClip& clip : reset.clips) {
+        expectedExtent = std::max(
+            expectedExtent,
+            static_cast<std::int64_t>(clip.startFrame) +
+                clip.durationFrames + 30);
+    }
+    QCOMPARE(reset.exportRanges.size(), std::size_t(1));
+    QCOMPARE(reset.exportRanges.front().startFrame, std::int64_t(0));
+    QCOMPARE(reset.exportRanges.front().endFrame, expectedExtent);
+    QCOMPARE(reset.exportRequest.exportRangeCount, std::size_t(1));
+
+    applyCommand(runtime, jcut::UndoCommand{});
+    QCOMPARE(runtime.snapshot().exportRanges.size(), std::size_t(2));
+    QCOMPARE(runtime.snapshot().exportRanges[0].startFrame, std::int64_t(10));
+    QCOMPARE(runtime.snapshot().exportRanges[1].endFrame, std::int64_t(75));
 }
 
 void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
@@ -4497,6 +5116,7 @@ void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
     clipA.trackIndex = 0;
     clipA.startFrame = 12;
     clipA.durationFrames = 240;
+    clipA.speakerSectionMinimumWords = 31;
     TimelineClip::GradingKeyframe qtGrade;
     qtGrade.frame = 8;
     qtGrade.shadowsR = -0.1;
@@ -4540,6 +5160,9 @@ void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
     QCOMPARE(document.clips.back().trackId, 2);
     QCOMPARE(document.clips.front().audioPresenceKnown, true);
     QCOMPARE(document.clips.front().hasAudio, false);
+    QCOMPARE(
+        document.clips.front().speakerSectionMinimumWords,
+        31);
     QCOMPARE(document.clips.back().audioPresenceKnown, true);
     QCOMPARE(document.clips.back().hasAudio, true);
     QCOMPARE(document.mediaItems.back().audioPresenceKnown, true);
@@ -4708,10 +5331,15 @@ void TestEditorRuntime::testExplicitAudioSourceWorksWithoutPrimaryMedia()
 void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
 {
     jcut::EditorDocumentCore original = jcut::EditorRuntime::createDemo().snapshot();
+    original.transport.playbackLoopEnabled = true;
+    original.transport.previewViewMode = "audio";
+    original.transport.audioMuted = true;
+    original.transport.audioVolume = 0.35f;
     original.mediaItems.front().audioPresenceKnown = true;
     original.mediaItems.front().hasAudio = false;
     original.clips.front().audioPresenceKnown = true;
     original.clips.front().hasAudio = false;
+    original.clips.front().speakerSectionMinimumWords = 37;
     original.exportRequest.backgroundFillEffect = "blur";
     original.exportRequest.backgroundFillOpacity = 0.42;
     original.exportRequest.backgroundFillBrightness = -0.2;
@@ -4738,6 +5366,9 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->mediaItems.front().hasAudio, false);
     QCOMPARE(reparsed->clips.front().audioPresenceKnown, true);
     QCOMPARE(reparsed->clips.front().hasAudio, false);
+    QCOMPARE(
+        reparsed->clips.front().speakerSectionMinimumWords,
+        37);
     QCOMPARE(reparsed->exportRequest.outputSize.width, original.exportRequest.outputSize.width);
     QCOMPARE(reparsed->exportRequest.outputSize.height, original.exportRequest.outputSize.height);
     QCOMPARE(reparsed->exportRequest.playbackSpeed, original.exportRequest.playbackSpeed);
@@ -4756,6 +5387,18 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.transcriptPostpendMs, 95);
     QCOMPARE(reparsed->exportRequest.transcriptOffsetMs, -30);
     QCOMPARE(reparsed->transport.currentFrame, original.transport.currentFrame);
+    QCOMPARE(
+        reparsed->transport.playbackLoopEnabled,
+        original.transport.playbackLoopEnabled);
+    QCOMPARE(
+        QString::fromStdString(reparsed->transport.previewViewMode),
+        QString::fromStdString(original.transport.previewViewMode));
+    QCOMPARE(
+        reparsed->transport.audioMuted,
+        original.transport.audioMuted);
+    QCOMPARE(
+        reparsed->transport.audioVolume,
+        original.transport.audioVolume);
 
     const nlohmann::json wrongScalarTypes = {
         {"projectName", 42},

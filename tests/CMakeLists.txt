@@ -54,6 +54,7 @@ set(EDITOR_TEST_TARGETS
     test_no_proxy_hardware_playback_contract
     test_vulkan_text_generation
     test_editor_runtime_vulkan_export_backend
+    test_imgui_qt_render_parity
 )
 
 # Tier classification helper: sets _test_labels for each target.
@@ -63,10 +64,10 @@ set(EDITOR_TEST_TARGETS
 # gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
 function(_jcut_assign_tier_labels target_name)
     set(_labels "logic")
-    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_vfr_preview_mapping|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_vfr_preview_mapping|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_imgui_qt_render_parity|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
         list(APPEND _labels "decode")
     endif()
-    if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
+    if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_imgui_qt_render_parity|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
         list(APPEND _labels "gpu-soft")
     endif()
     if(target_name MATCHES "^(test_no_proxy_hardware_playback_contract)$")
@@ -97,6 +98,11 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+target_link_libraries(test_imgui_qt_render_parity
+    PRIVATE
+        jcut_imgui_standalone_runtime
+)
 
 target_sources(test_preview_edit_helpers PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../editor_preview_edit_helpers.cpp
@@ -339,6 +345,7 @@ target_sources(test_facedetections_flow
 find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
 
 set(JCUT_IMGUI_RUNTIME_BOUNDARY_TARGETS
+    jcut_ai_gateway_core
     jcut_frame_payload_core
     jcut_transcript_document_core
     jcut_media_path_core
@@ -439,6 +446,33 @@ set_tests_properties(test_transcript_document_core_no_qt PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+add_executable(test_ai_gateway_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_ai_gateway_core.cpp
+)
+set_target_properties(test_ai_gateway_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_ai_gateway_core
+    PRIVATE
+        jcut_ai_gateway_core
+)
+add_test(NAME test_ai_gateway_core COMMAND test_ai_gateway_core)
+set_tests_properties(test_ai_gateway_core PROPERTIES
+    LABELS "imgui;ai;logic"
+)
+add_test(
+    NAME test_ai_gateway_core_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_ai_gateway_core>
+)
+set_tests_properties(test_ai_gateway_core_no_qt PROPERTIES
+    LABELS "imgui;ai;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
 add_executable(test_transcript_cut_session_core
     ${CMAKE_CURRENT_SOURCE_DIR}/test_transcript_cut_session_core.cpp
 )
@@ -484,7 +518,9 @@ set_target_properties(test_imgui_neutral_boundary PROPERTIES
 target_link_libraries(test_imgui_neutral_boundary
     PRIVATE
         jcut_editor_core
+        jcut_ffmpeg_hardware_device_core
         jcut_media_path_core
+        jcut_vulkan_hardware_frame_import_core
         Vulkan::Vulkan
 )
 add_test(
@@ -654,6 +690,8 @@ add_executable(test_imgui_standalone_export
 target_link_libraries(test_imgui_standalone_export
     PRIVATE
         jcut_imgui_standalone_runtime
+        jcut_vulkan_hardware_frame_import_core
+        Vulkan::Vulkan
         Qt6::Test
 )
 target_compile_definitions(test_imgui_standalone_export
@@ -661,6 +699,7 @@ target_compile_definitions(test_imgui_standalone_export
         JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
         JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
         EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
+        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
 )
 jcut_force_bundled_ffmpeg_runtime(test_imgui_standalone_export)
 add_test(NAME test_imgui_standalone_export COMMAND test_imgui_standalone_export)

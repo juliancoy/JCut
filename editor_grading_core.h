@@ -3,6 +3,7 @@
 #include "editor_document_core.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -82,6 +83,18 @@ inline std::vector<EditorPoint> sanitizeEditorGradingCurve(
         std::sort(deduplicated.begin(), deduplicated.end(), pointLess);
     }
     return deduplicated;
+}
+
+inline bool editorGradingCurveIsIdentity(
+    const std::vector<EditorPoint>& points)
+{
+    const std::vector<EditorPoint> curve =
+        sanitizeEditorGradingCurve(points);
+    return curve.size() == 2 &&
+        std::abs(curve[0].x) < 0.000001 &&
+        std::abs(curve[0].y) < 0.000001 &&
+        std::abs(curve[1].x - 1.0) < 0.000001 &&
+        std::abs(curve[1].y - 1.0) < 0.000001;
 }
 
 namespace grading_detail {
@@ -169,6 +182,41 @@ inline std::vector<std::uint8_t> editorGradingCurveLut8(
             static_cast<std::uint8_t>(quantized);
     }
     return lut;
+}
+
+inline std::array<std::uint32_t, kEditorGradingCurveLutSize>
+editorPackedGradingCurveLut(
+    const EditorGradingKeyframe& grade)
+{
+    const std::vector<std::uint8_t> red =
+        editorGradingCurveLut8(
+            grade.curvePointsR,
+            kEditorGradingCurveLutSize,
+            grade.curveSmoothingEnabled);
+    const std::vector<std::uint8_t> green =
+        editorGradingCurveLut8(
+            grade.curvePointsG,
+            kEditorGradingCurveLutSize,
+            grade.curveSmoothingEnabled);
+    const std::vector<std::uint8_t> blue =
+        editorGradingCurveLut8(
+            grade.curvePointsB,
+            kEditorGradingCurveLutSize,
+            grade.curveSmoothingEnabled);
+    const std::vector<std::uint8_t> luma =
+        editorGradingCurveLut8(
+            grade.curvePointsLuma,
+            kEditorGradingCurveLutSize,
+            grade.curveSmoothingEnabled);
+    std::array<std::uint32_t, kEditorGradingCurveLutSize> packed{};
+    for (std::size_t index = 0; index < packed.size(); ++index) {
+        packed[index] =
+            static_cast<std::uint32_t>(red[index]) |
+            (static_cast<std::uint32_t>(green[index]) << 8u) |
+            (static_cast<std::uint32_t>(blue[index]) << 16u) |
+            (static_cast<std::uint32_t>(luma[index]) << 24u);
+    }
+    return packed;
 }
 
 inline std::vector<EditorPoint> composeEditorGradingCurves(

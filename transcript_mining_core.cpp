@@ -311,4 +311,154 @@ bool applyTranscriptMiningProposals(
     return changed;
 }
 
+nlohmann::json buildCloudSpeakerMiningPayload(const json& root)
+{
+    const auto speakerWords = wordsBySpeaker(root);
+    json legend = json::array();
+    std::string transcript;
+    int number = 1;
+    for (const auto& [speaker, words] : speakerWords) {
+        const std::string token = "S" + std::to_string(number++);
+        legend.push_back(json{
+            {"speaker_number", token},
+            {"source_speaker_id", speaker},
+        });
+        transcript += "[" + token + "]\n" + joined(words) + "\n";
+    }
+    return json{
+        {"task", "mine_speaker_profiles"},
+        {"format", "json_array"},
+        {"instructions",
+         "Return JSON array only. Each item must have Speaker, Name, "
+         "Organization, and Summary. Speaker must be an S# marker from "
+         "the transcript. Leave uncertain fields empty instead of guessing."},
+        {"transcript_text", std::move(transcript)},
+        {"speaker_legend", std::move(legend)},
+    };
+}
+
+std::vector<TranscriptMiningProposal> parseCloudSpeakerMiningResponse(
+    const json& transcriptRoot,
+    const json& responseRoot,
+    std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    json rows;
+    for (const char* key : {"speakers", "items"}) {
+        if (responseRoot.contains(key) && responseRoot[key].is_array()) {
+            rows = responseRoot[key];
+            break;
+        }
+    }
+    for (const char* objectKey : {"result", "payload"}) {
+        if (rows.is_array() || !responseRoot.contains(objectKey) ||
+            !responseRoot[objectKey].is_object()) {
+            continue;
+        }
+        for (const char* key : {"speakers", "items"}) {
+            const json& candidate = responseRoot[objectKey].value(
+                key, json::array());
+            if (candidate.is_array() && !candidate.empty()) {
+                rows = candidate;
+                break;
+            }
+        }
+    }
+    if (!rows.is_array()) {
+        std::string text;
+        for (const char* key : {"text", "output", "content", "message"}) {
+            text = stringValue(responseRoot, key);
+            if (!text.empty()) break;
+        }
+        if (text.empty() && responseRoot.contains("result") &&
+            responseRoot["result"].is_object()) {
+            for (const char* key : {"text", "output", "content", "message"}) {
+                text = stringValue(responseRoot["result"], key);
+                if (!text.empty()) break;
+            }
+        }
+        const std::size_t begin = text.find('[');
+        const std::size_t end = text.rfind(']');
+        if (begin != std::string::npos && end > begin) {
+            try {
+                rows = json::parse(text.substr(begin, end - begin + 1));
+            } catch (const json::exception&) {
+            }
+        }
+    }
+    if (!rows.is_array() || rows.empty()) {
+        if (errorOut) {
+            *errorOut =
+                "AI response did not contain a speaker profile array.";
+        }
+        return {};
+    }
+    std::map<std::string, std::string> tokenToSpeaker;
+    int number = 1;
+    for (const auto& [speaker, words] : wordsBySpeaker(transcriptRoot)) {
+        (void)words;
+        tokenToSpeaker["S" + std::to_string(number++)] = speaker;
+    }
+    const json& profiles = transcriptRoot.value(
+        "speaker_profiles", json::object());
+    std::vector<TranscriptMiningProposal> proposals;
+    for (const json& row : rows) {
+        if (!row.is_object()) continue;
+        std::string token = stringValue(row, "Speaker");
+        if (token.empty()) token = stringValue(row, "speaker");
+        std::transform(token.begin(), token.end(), token.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       });
+        const auto speaker = tokenToSpeaker.find(token);
+        if (speaker == tokenToSpeaker.end()) continue;
+        std::string name = stringValue(row, "Name");
+        if (name.empty()) name = stringValue(row, "name");
+        if (name.empty()) name = stringValue(row, "DisplayName");
+        if (name.empty()) name = stringValue(row, "display_name");
+        std::string organization = stringValue(row, "Organization");
+        if (organization.empty()) {
+            organization = stringValue(row, "organization");
+        }
+        if (!name.empty() && looksLikeOrganization(name)) {
+            if (organization.empty()) organization = name;
+            name.clear();
+        }
+        const json profile = profiles.is_object()
+            ? profiles.value(speaker->second, json::object())
+            : json::object();
+        const std::string currentName = stringValue(profile, "name");
+        if (looksLikePerson(name) && name != currentName) {
+            proposals.push_back({
+                TranscriptMiningField::SpeakerName,
+                speaker->second,
+                -1,
+                -1,
+                currentName,
+                name,
+                0.75,
+                "Cloud transcript speaker-profile inference."});
+        }
+        const std::string currentOrganization =
+            stringValue(profile, "organization");
+        if (!organization.empty() &&
+            organization != currentOrganization) {
+            proposals.push_back({
+                TranscriptMiningField::SpeakerOrganization,
+                speaker->second,
+                -1,
+                -1,
+                currentOrganization,
+                organization,
+                0.70,
+                "Cloud transcript organization inference."});
+        }
+    }
+    if (proposals.empty() && errorOut) {
+        *errorOut =
+            "AI speaker rows did not contain applicable profile changes.";
+    }
+    return proposals;
+}
+
 } // namespace jcut

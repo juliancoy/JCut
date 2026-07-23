@@ -117,6 +117,34 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
             clip.generatedFromMaskId.trimmed().toStdString();
         coreClip.syncLockedToSource = clip.syncLockedToSource;
         coreClip.sourceTransformLocked = clip.sourceTransformLocked;
+        coreClip.speakerFramingEnabled =
+            clip.speakerFramingEnabled;
+        coreClip.speakerFramingBakedTargetXNorm =
+            clip.speakerFramingBakedTargetXNorm;
+        coreClip.speakerFramingBakedTargetYNorm =
+            clip.speakerFramingBakedTargetYNorm;
+        coreClip.speakerFramingBakedTargetBoxNorm =
+            clip.speakerFramingBakedTargetBoxNorm;
+        coreClip.speakerFramingMinConfidence =
+            clip.speakerFramingMinConfidence;
+        coreClip.speakerFramingManualTrackId =
+            clip.speakerFramingManualTrackId;
+        coreClip.speakerFramingManualStreamId =
+            clip.speakerFramingManualStreamId.toStdString();
+        coreClip.speakerFramingCenterSmoothingFrames =
+            clip.speakerFramingCenterSmoothingFrames;
+        coreClip.speakerFramingZoomSmoothingFrames =
+            clip.speakerFramingZoomSmoothingFrames;
+        coreClip.speakerFramingSmoothingMode =
+            clip.speakerFramingSmoothingMode;
+        coreClip.speakerFramingCenterSmoothingStrength =
+            clip.speakerFramingCenterSmoothingStrength;
+        coreClip.speakerFramingZoomSmoothingStrength =
+            clip.speakerFramingZoomSmoothingStrength;
+        coreClip.speakerFramingGapHoldFrames =
+            clip.speakerFramingGapHoldFrames;
+        coreClip.speakerSectionMinimumWords =
+            clip.speakerSectionMinimumWords;
         coreClip.zLevel = clip.zLevel;
         coreClip.zLevelUserSet = clip.zLevelUserSet;
         coreClip.proxyPath = clip.proxyPath.toStdString();
@@ -265,6 +293,36 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.transcriptOverlay.backgroundColor = clip.transcriptOverlay.backgroundColor.name(QColor::HexArgb).toStdString();
         coreClip.transcriptOverlay.highlightColor = clip.transcriptOverlay.highlightColor.name(QColor::HexArgb).toStdString();
         coreClip.transcriptOverlay.highlightTextColor = clip.transcriptOverlay.highlightTextColor.name(QColor::HexArgb).toStdString();
+        for (const TimelineClip::BoolKeyframe& keyframe :
+             clip.speakerFramingEnabledKeyframes) {
+            coreClip.speakerFramingEnabledKeyframes.push_back(
+                {keyframe.frame, keyframe.enabled});
+        }
+        const auto copySpeakerFramingKeyframes =
+            [](const QVector<TimelineClip::TransformKeyframe>& source) {
+                std::vector<EditorTransformKeyframe> result;
+                result.reserve(
+                    static_cast<std::size_t>(source.size()));
+                for (const TimelineClip::TransformKeyframe& keyframe :
+                     source) {
+                    result.push_back({
+                        keyframe.frame,
+                        keyframe.title.toStdString(),
+                        keyframe.translationX,
+                        keyframe.translationY,
+                        keyframe.rotation,
+                        keyframe.scaleX,
+                        keyframe.scaleY,
+                        keyframe.linearInterpolation});
+                }
+                return result;
+            };
+        coreClip.speakerFramingKeyframes =
+            copySpeakerFramingKeyframes(
+                clip.speakerFramingKeyframes);
+        coreClip.speakerFramingTargetKeyframes =
+            copySpeakerFramingKeyframes(
+                clip.speakerFramingTargetKeyframes);
         for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
             coreClip.transformKeyframes.push_back({
                 keyframe.frame,

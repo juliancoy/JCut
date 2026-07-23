@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio_dynamics_core.h"
 #include "render_contract_types.h"
 
 #include <array>
@@ -11,6 +12,54 @@
 #include <vector>
 
 namespace jcut {
+
+enum class EditorAudioTreatment {
+    Disabled,
+    Varispeed,
+    PreservePitch,
+    RubberBand,
+    HarmonicSpeechIsolation,
+};
+
+inline constexpr std::string_view editorAudioTreatmentId(
+    EditorAudioTreatment treatment)
+{
+    switch (treatment) {
+    case EditorAudioTreatment::Varispeed:
+        return "varispeed";
+    case EditorAudioTreatment::PreservePitch:
+        return "time_stretch";
+    case EditorAudioTreatment::RubberBand:
+        return "rubber_band";
+    case EditorAudioTreatment::HarmonicSpeechIsolation:
+        return "rubber_band_pass_through_frequency";
+    case EditorAudioTreatment::Disabled:
+    default:
+        return "disabled";
+    }
+}
+
+inline EditorAudioTreatment editorAudioTreatmentFromId(
+    std::string_view value)
+{
+    if (value == "varispeed") return EditorAudioTreatment::Varispeed;
+    if (value == "time_stretch" || value == "time-stretch") {
+        return EditorAudioTreatment::PreservePitch;
+    }
+    if (value == "rubber_band" || value == "rubber-band" ||
+        value == "rubberband" || value == "rubber_band_100" ||
+        value == "rubberband_100" || value == "rubber-band-100") {
+        return EditorAudioTreatment::RubberBand;
+    }
+    if (value == "rubber_band_pass_through_frequency" ||
+        value == "rubber-band-pass-through-frequency" ||
+        value == "rubberband_pass_through_frequency" ||
+        value == "rubber_band_50" || value == "rubber-band-50" ||
+        value == "rubberband_50") {
+        return EditorAudioTreatment::HarmonicSpeechIsolation;
+    }
+    return EditorAudioTreatment::Disabled;
+}
 
 // Canonical persisted IDs shared with the Qt preset serializer. Commands still
 // preserve unknown IDs so newer projects remain forward-compatible.
@@ -130,6 +179,11 @@ struct EditorTransformKeyframe {
     double scaleX = 1.0;
     double scaleY = 1.0;
     bool linearInterpolation = true;
+};
+
+struct EditorBoolKeyframe {
+    std::int64_t frame = 0;
+    bool enabled = false;
 };
 
 struct EditorPoint {
@@ -416,11 +470,39 @@ struct EditorClip {
     // 250 samples as its click-suppression default when no crossfade has been
     // applied.
     int fadeSamples = 250;
+    // Automatic speaker/face framing. These mirror the durable Qt clip
+    // contract so baked framing can render identically in the Qt-free path;
+    // manual/runtime tracking selectors remain available for artifact-backed
+    // evaluation.
+    bool speakerFramingEnabled = false;
+    double speakerFramingBakedTargetXNorm = 0.5;
+    double speakerFramingBakedTargetYNorm = 0.35;
+    double speakerFramingBakedTargetBoxNorm = -1.0;
+    double speakerFramingMinConfidence = 0.08;
+    int speakerFramingManualTrackId = -1;
+    std::string speakerFramingManualStreamId;
+    int speakerFramingCenterSmoothingFrames = 0;
+    int speakerFramingZoomSmoothingFrames = 0;
+    int speakerFramingSmoothingMode = 0;
+    double speakerFramingCenterSmoothingStrength = 1.0;
+    double speakerFramingZoomSmoothingStrength = 1.0;
+    int speakerFramingGapHoldFrames = 0;
+    int speakerSectionMinimumWords = 10;
+    std::vector<EditorBoolKeyframe>
+        speakerFramingEnabledKeyframes;
+    std::vector<EditorTransformKeyframe>
+        speakerFramingKeyframes;
+    std::vector<EditorTransformKeyframe>
+        speakerFramingTargetKeyframes;
 };
 
 struct EditorTransportState {
     bool playbackActive = false;
     float playbackSpeed = 1.0f;
+    bool playbackLoopEnabled = false;
+    std::string previewViewMode = "video";
+    bool audioMuted = false;
+    float audioVolume = 0.8f;
     float previewZoom = 1.0f;
     int currentFrame = 0;
 };
@@ -441,6 +523,10 @@ struct EditorRenderSyncMarker {
 struct EditorExportRange {
     std::int64_t startFrame = 0;
     std::int64_t endFrame = 0;
+
+    friend bool operator==(
+        const EditorExportRange&,
+        const EditorExportRange&) = default;
 };
 
 struct EditorDocumentCore {
@@ -452,6 +538,9 @@ struct EditorDocumentCore {
     std::vector<EditorExportRange> exportRanges;
     EditorTransportState transport;
     EditorPanelState panels;
+    EditorAudioTreatment audioTreatment =
+        EditorAudioTreatment::PreservePitch;
+    audio::DynamicsSettingsCore audioDynamics;
     render::RenderRequestCore exportRequest;
     // Runtime-only transcript payloads participate in globally ordered undo/
     // redo. They are intentionally omitted by every project serializer.

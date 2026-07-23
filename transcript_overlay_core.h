@@ -18,9 +18,18 @@ struct TranscriptOverlayLayoutCore {
     std::string speakerId;
     std::string speakerLabel;
     std::string speakerTitle;
+    std::string speakerPrimaryColor;
+    std::string speakerSecondaryColor;
+    std::string speakerAccentColor;
     double speakerLocationX = 0.5;
     double speakerLocationY = 0.85;
     bool speakerLocationValid = false;
+    double speakerTrackingX = 0.5;
+    double speakerTrackingY = 0.5;
+    double speakerTrackingBoxSize = -1.0;
+    double speakerTrackingRotationDegrees = 0.0;
+    bool speakerTrackingValid = false;
+    bool speakerTrackingCenterRotationFallback = false;
     bool truncatedTop = false;
     bool truncatedBottom = false;
 };

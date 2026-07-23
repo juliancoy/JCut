@@ -27,6 +27,7 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -333,6 +334,10 @@ set(EDITOR_EXCLUDED_REGEX
     # Built once in the Qt-free transcript projection core and reused by both frontends.
     ".*/transcript_document_core\\.cpp$"
     ".*/transcript_overlay_core\\.cpp$"
+    ".*/transcript_mining_core\\.cpp$"
+    # Built once in the Qt-free AI gateway core and reused by both frontends.
+    ".*/ai_gateway_core\\.cpp$"
+    ".*/ai_credential_store_core\\.cpp$"
     # Built once in the Qt-free decoded-frame payload core and reused by Qt adapters.
     ".*/frame_payload_core\\.cpp$"
     # Explicitly attached only to editor_core below; ImGui must not compile private QRhi APIs.
@@ -340,12 +345,17 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/transcript_cut_session_core\\.cpp$"
     # Built once in Qt-free shared services and reused by the Qt and ImGui paths.
     ".*/audio_time_stretch_core\\.cpp$"
+    ".*/audio_dynamics_core\\.cpp$"
+    ".*/waveform_envelope_core\\.cpp$"
     ".*/mask_frame_map_core\\.cpp$"
     ".*/standalone_audio_mixer\\.cpp$"
     ".*/standalone_export_renderer\\.cpp$"
     ".*/standalone_timeline_renderer\\.cpp$"
     ".*/standalone_preview_renderer\\.cpp$"
     ".*/proxy_generation_job_core\\.cpp$"
+    ".*/prompt_mask_job_core\\.cpp$"
+    ".*/decoder_policy_core\\.cpp$"
+    ".*/ffmpeg_hardware_device_core\\.cpp$"
     # 3D model import/runtime sources depend on motive3d engine files that are not
     # part of this repository build graph (eg. primitive/texture engine runtime).
     # Exclude them from the editor target so standard builds remain reproducible.
@@ -447,6 +457,18 @@ target_include_directories(jcut_frame_payload_core
 )
 target_link_libraries(jcut_frame_payload_core PRIVATE PkgConfig::FFMPEG)
 
+add_library(jcut_audio_dynamics_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_dynamics_core.cpp
+)
+set_target_properties(jcut_audio_dynamics_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_audio_dynamics_core
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 add_library(jcut_frame_handle_qrhi_adapter OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_handle_qrhi_adapter.cpp
 )
@@ -483,9 +505,48 @@ target_include_directories(jcut_vulkan_frame_import_core
 )
 target_link_libraries(jcut_vulkan_frame_import_core PUBLIC Vulkan::Vulkan)
 
+add_library(jcut_vulkan_hardware_frame_import_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_hardware_frame_import_core.cpp
+)
+set_target_properties(jcut_vulkan_hardware_frame_import_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_vulkan_hardware_frame_import_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(jcut_vulkan_hardware_frame_import_core
+    PUBLIC
+        jcut_frame_payload_core
+        Vulkan::Vulkan
+    PRIVATE
+        PkgConfig::FFMPEG
+)
+if(JCUT_HAS_CUDA_DRIVER)
+    target_link_libraries(jcut_vulkan_hardware_frame_import_core
+        PRIVATE ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(jcut_vulkan_hardware_frame_import_core
+        PRIVATE ${CUDA_DRIVER_INCLUDE_DIR})
+endif()
+target_compile_definitions(jcut_vulkan_hardware_frame_import_core
+    PRIVATE
+        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${JCUT_HAS_CUDA_DRIVER}>,1,0>
+        JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY=1
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(
+        jcut_vulkan_hardware_frame_import_core
+        jcut_vulkan_shaders)
+endif()
+target_link_libraries(jcut_vulkan_frame_import_core
+    PUBLIC jcut_vulkan_hardware_frame_import_core)
+
 add_library(jcut_transcript_document_core STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/face_artifact_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/face_processing_job_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/speaker_section_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/speaker_title_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_mining_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_core.cpp
@@ -504,6 +565,25 @@ target_include_directories(jcut_transcript_document_core
         ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
 )
 target_link_libraries(jcut_transcript_document_core PUBLIC ZLIB::ZLIB)
+
+add_library(jcut_ai_gateway_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai_gateway_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai_credential_store_core.cpp
+)
+set_target_properties(jcut_ai_gateway_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_ai_gateway_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_ai_gateway_core PUBLIC CURL::libcurl OpenSSL::Crypto)
+target_compile_definitions(jcut_ai_gateway_core PRIVATE
+    JCUT_DEFAULT_SUPABASE_ANON_KEY="${JCUT_SUPABASE_ANON_KEY}"
+)
 
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
@@ -528,6 +608,8 @@ target_include_directories(editor_core
 
 target_link_libraries(editor_core
     PUBLIC
+        jcut_ai_gateway_core
+        jcut_audio_dynamics_core
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
@@ -593,6 +675,37 @@ target_include_directories(jcut_media_path_core PUBLIC
 )
 target_link_libraries(editor_core PUBLIC jcut_media_path_core)
 
+add_library(jcut_decoder_policy_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/decoder_policy_core.cpp
+)
+set_target_properties(jcut_decoder_policy_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_decoder_policy_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(editor_core PUBLIC jcut_decoder_policy_core)
+
+add_library(jcut_ffmpeg_hardware_device_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg_hardware_device_core.cpp
+)
+set_target_properties(jcut_ffmpeg_hardware_device_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_ffmpeg_hardware_device_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(jcut_ffmpeg_hardware_device_core
+    PUBLIC
+        jcut_decoder_policy_core
+        PkgConfig::FFMPEG
+)
+target_link_libraries(editor_core PUBLIC jcut_ffmpeg_hardware_device_core)
+
 add_library(jcut_audio_time_stretch_core STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch_core.cpp
 )
@@ -612,9 +725,26 @@ if(TARGET PkgConfig::RUBBERBAND)
 endif()
 target_link_libraries(editor_core PUBLIC jcut_audio_time_stretch_core)
 
+add_library(jcut_waveform_envelope_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/waveform_envelope_core.cpp
+)
+set_target_properties(jcut_waveform_envelope_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_waveform_envelope_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(editor_core PUBLIC jcut_waveform_envelope_core)
+
 add_library(jcut_mask_frame_map_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/birefnet_job_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mask_frame_map_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mask_sidecar_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/process_job_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/prompt_mask_job_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcription_job_core.cpp
 )
 set_target_properties(jcut_mask_frame_map_core PROPERTIES
     AUTOMOC OFF
@@ -749,6 +879,8 @@ target_link_libraries(jcut_runtime_support
     PRIVATE
         jcut_preview_decode_runtime
     PUBLIC
+        jcut_decoder_policy_core
+        jcut_ffmpeg_hardware_device_core
         jcut_frame_payload_core
         jcut_media_path_core
         jcut_audio_time_stretch_core
@@ -842,6 +974,9 @@ target_include_directories(jcut_editor_core
 )
 target_link_libraries(jcut_editor_core
     PUBLIC
+        jcut_ai_gateway_core
+        jcut_audio_dynamics_core
+        jcut_decoder_policy_core
         jcut_transcript_document_core
         jcut_media_path_core
         Threads::Threads
@@ -884,9 +1019,11 @@ target_link_libraries(jcut_editor_runtime
     PUBLIC
         jcut_editor_core
         jcut_runtime_support
+        jcut_waveform_envelope_core
         Vulkan::Vulkan
     PRIVATE
         jcut_vulkan_frame_import_core
+        jcut_vulkan_hardware_frame_import_core
 )
 if(JCUT_HAS_CUDA_DRIVER)
     target_link_libraries(jcut_editor_runtime PUBLIC ${CUDA_DRIVER_LIBRARY})
@@ -936,6 +1073,9 @@ target_include_directories(jcut_imgui_standalone_runtime
 )
 target_link_libraries(jcut_imgui_standalone_runtime
     PUBLIC
+        jcut_decoder_policy_core
+        jcut_ffmpeg_hardware_device_core
+        jcut_frame_payload_core
         jcut_editor_core
         jcut_media_path_core
         jcut_audio_time_stretch_core
@@ -961,6 +1101,7 @@ target_include_directories(jcut_imgui_audio_runtime
 target_link_libraries(jcut_imgui_audio_runtime
     PUBLIC
         jcut_imgui_standalone_runtime
+        jcut_waveform_envelope_core
         rtaudio
         Threads::Threads
 )
@@ -983,6 +1124,7 @@ target_link_libraries(jcut_imgui_runtime
         jcut_imgui_standalone_runtime
         jcut_imgui_audio_runtime
         jcut_imgui_vulkan_import
+        jcut_vulkan_hardware_frame_import_core
         Vulkan::Vulkan
 )
 
@@ -1043,6 +1185,9 @@ target_link_libraries(jcut_imgui PRIVATE
     jcut_imgui_runtime
     Vulkan::Vulkan
     ${X11_LIBRARIES}
+)
+target_compile_definitions(jcut_imgui PRIVATE
+    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
 )
 set_target_properties(jcut_imgui PROPERTIES
     AUTOMOC OFF

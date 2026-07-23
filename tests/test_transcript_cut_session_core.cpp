@@ -393,6 +393,22 @@ void testImGuiAndRichRenderWiringContracts()
         return std::string(std::istreambuf_iterator<char>(stream),
                            std::istreambuf_iterator<char>());
     }();
+    const std::string qtTranscriptTab = [&]() {
+        std::ifstream stream(
+            sourceDir / "transcript_tab.cpp",
+            std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>());
+    }();
+    const std::string qtTranscriptDocument = [&]() {
+        std::ifstream stream(
+            sourceDir / "transcript_tab_document.cpp",
+            std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>());
+    }();
     expect(imgui.find("jcut::loadTranscriptCutSession(source, options)") != std::string::npos,
            "ImGui loads the shared transcript session");
     expect(imgui.find("ImGuiListClipper clipper") != std::string::npos,
@@ -413,6 +429,37 @@ void testImGuiAndRichRenderWiringContracts()
     expect(transcriptEngine.find("clip.transcriptActiveCutPath.trimmed()") !=
                std::string::npos,
            "rich TranscriptEngine consumes the neutral active-cut field");
+    expect(
+        qtTranscriptTab.find(
+            "applyTranscriptDocumentMutation") !=
+                std::string::npos &&
+            qtTranscriptTab.find(
+                "jcut::deleteTranscriptWords") !=
+                std::string::npos &&
+            qtTranscriptTab.find(
+                "jcut::insertTranscriptWord") !=
+                std::string::npos &&
+            qtTranscriptTab.find(
+                "jcut::expandTranscriptWordTiming") !=
+                std::string::npos &&
+            qtTranscriptTab.find(
+                "jcut::restoreTranscriptWord") !=
+                std::string::npos,
+        "Qt row mutations delegate to the same neutral core as ImGui");
+    expect(
+        qtTranscriptDocument.find(
+            "jcut::reorderTranscriptWords") !=
+                std::string::npos &&
+            qtTranscriptDocument.find(
+                "jcut::createTranscriptCutVersion") !=
+                std::string::npos &&
+            qtTranscriptDocument.find(
+                "jcut::renameTranscriptCut") !=
+                std::string::npos &&
+            qtTranscriptDocument.find(
+                "jcut::deleteTranscriptCut") !=
+                std::string::npos,
+        "Qt reorder and cut lifecycle delegate to shared neutral services");
 }
 
 void testNeutralWordMutationPreservesUnknownFieldsAndSavesAtomically()
@@ -457,6 +504,29 @@ void testNeutralWordMutationPreservesUnknownFieldsAndSavesAtomically()
     expect(root["segments"][0]["words"].size() == 1 &&
                root.value("transcript_deleted_edits", 0) == 1,
            "deletion matches Qt word-count bookkeeping");
+
+    json batch = transcriptRoot("one", true);
+    const auto batchDocument =
+        jcut::TranscriptDocumentCore::fromJson(batch);
+    expect(batchDocument.has_value(),
+           "batch mutation fixture parses");
+    if (batchDocument) {
+        const auto batchRows = batchDocument->rows();
+        std::vector<jcut::TranscriptWordRef> references;
+        for (const auto& batchRow : batchRows) {
+            if (!batchRow.gap) {
+                references.push_back(batchRow.word);
+            }
+        }
+        expect(references.size() == 2 &&
+                   jcut::deleteTranscriptWords(
+                       &batch, references, &error),
+               "batch delete accepts stable projected references");
+        expect(batch["segments"][0]["words"].empty() &&
+                   batch.value(
+                       "transcript_deleted_edits", 0) == 2,
+               "batch delete is address-shift safe and counts every word");
+    }
 }
 
 void testNeutralInsertExpandRestoreAndReorderMatchQtSemantics()
@@ -503,6 +573,30 @@ void testNeutralInsertExpandRestoreAndReorderMatchQtSemantics()
     expect(expanded.value("render_order", -1) == 2 &&
                edited["segments"][0]["words"][2].value("render_order", -1) == 1,
            "reorder swaps normalized render positions without moving source words");
+
+    const auto reorderedDocument =
+        jcut::TranscriptDocumentCore::fromJson(edited);
+    expect(reorderedDocument.has_value(),
+           "batch reorder fixture parses");
+    if (reorderedDocument) {
+        auto reorderedRows = reorderedDocument->rows();
+        std::vector<jcut::TranscriptWordRef> desired;
+        for (auto it = reorderedRows.rbegin();
+             it != reorderedRows.rend(); ++it) {
+            if (!it->gap) desired.push_back(it->word);
+        }
+        expect(jcut::reorderTranscriptWords(
+                   &edited, desired, &error),
+               "arbitrary table order delegates to neutral reorder");
+        const auto afterReorder =
+            jcut::TranscriptDocumentCore::fromJson(edited);
+        expect(afterReorder.has_value() &&
+                   afterReorder->rows().front().word.segmentIndex ==
+                       desired.front().segmentIndex &&
+                   afterReorder->rows().front().word.wordIndex ==
+                       desired.front().wordIndex,
+               "neutral reorder persists the requested projected order");
+    }
 
     jcut::TranscriptWordPatch patch;
     patch.text = "changed";
@@ -574,6 +668,9 @@ void testNeutralSpeakerRosterAndProfileMutation()
 {
     json root = transcriptRoot("hello", true);
     root["speaker_profiles"]["S1"]["organization"] = "Example Org";
+    root["speaker_profiles"]["S1"]["primary_color"] = "#102030";
+    root["speaker_profiles"]["S1"]["secondary_color"] = "#405060";
+    root["speaker_profiles"]["S1"]["accent_color"] = "#708090";
     root["speaker_profiles"]["S1"]["location"] = {{"x", 0.2}, {"y", 0.7}};
     root["speaker_profiles"]["S1"]["future_profile_field"] = "keep";
     auto document = jcut::TranscriptDocumentCore::fromJson(root);
@@ -583,6 +680,9 @@ void testNeutralSpeakerRosterAndProfileMutation()
     expect(profiles.size() == 1 && profiles.front().id == "S1" &&
                profiles.front().name == "Alice" &&
                profiles.front().organization == "Example Org" &&
+               profiles.front().primaryColor == "#102030" &&
+               profiles.front().secondaryColor == "#405060" &&
+               profiles.front().accentColor == "#708090" &&
                profiles.front().wordCount == 2 &&
                profiles.front().x == 0.2 && profiles.front().y == 0.7,
            "speaker roster combines profiles, locations, and word counts");
@@ -617,7 +717,7 @@ void testNeutralFaceArtifactInspectionAndTrackAssignment()
                 {"run_id", "run-7"},
                 {"detector_mode", "scrfd"},
                 {"raw_frames_count", 12},
-                {"raw_tracks_frame_domain", "source_absolute"},
+                {"raw_tracks_frame_domain", "source_relative"},
                 {"raw_tracks", json::array({
                     {
                         {"track_id", 4},
@@ -626,6 +726,10 @@ void testNeutralFaceArtifactInspectionAndTrackAssignment()
                         {"state", "confirmed"},
                         {"detections", json::array({
                             {{"frame", 10}, {"x", 0.25}, {"y", 0.4},
+                             {"box", 0.3}, {"score", 0.92}},
+                            {{"frame", 11}, {"x", 0.90}, {"y", 0.4},
+                             {"box", 0.3}, {"score", 0.92}},
+                            {{"frame", 12}, {"x", 0.27}, {"y", 0.4},
                              {"box", 0.3}, {"score", 0.92}}
                         })}
                     },
@@ -672,7 +776,7 @@ void testNeutralFaceArtifactInspectionAndTrackAssignment()
            "neutral artifact reader exposes continuity and identity diagnostics");
     if (inspection.tracks.size() == 2) {
         expect(inspection.tracks[0].trackId == 4 &&
-                   inspection.tracks[0].sampleCount == 1 &&
+                   inspection.tracks[0].sampleCount == 3 &&
                    inspection.tracks[0].x == 0.25 &&
                    inspection.tracks[1].trackId == 9,
                "neutral track summaries retain IDs, coverage, and anchor geometry");
@@ -697,6 +801,83 @@ void testNeutralFaceArtifactInspectionAndTrackAssignment()
                assignments[0].identityId == "S1" &&
                transcript["future_root_field"].value("assignment_keep", false),
            "assignment projection and mutation preserve compatible schema and unknown fields");
+    const auto activeAssignments =
+        jcut::transcriptSpeakerTrackAssignmentsAtFrame(
+            transcript, clipId, "S1", 10);
+    expect(activeAssignments.size() == 2 &&
+               activeAssignments.front().trackId == 4,
+           "frame-aware neutral assignment resolution falls back to "
+           "identity mappings");
+    json sectionTranscript = transcript;
+    sectionTranscript["speaker_flow"]["clips"][clipId]
+                     ["resolved_current"]["section_track_map"] =
+        json::array({{
+            {"speaker_id", "S1"},
+            {"start_frame", 100},
+            {"end_frame", 120},
+            {"rotation", 12.0},
+            {"tracks", json::array({{{"track_id", 4}}})},
+        }});
+    const auto sectionAssignments =
+        jcut::transcriptSpeakerTrackAssignmentsAtFrame(
+            sectionTranscript, clipId, "S1", 110);
+    expect(sectionAssignments.size() == 1 &&
+               sectionAssignments.front().trackId == 4 &&
+               std::abs(
+                   sectionAssignments.front().rotationDegrees -
+                   12.0) < 1.0e-12,
+           "active section assignment carries its center/face rotation");
+    const jcut::FaceTrackingSampleCore sample =
+        jcut::sampleFaceContinuityTrack(
+            transcriptPath.string(),
+            clipId,
+            4,
+            {},
+            110,
+            0.5,
+            100,
+            10.0,
+            0);
+    expect(sample.valid &&
+               std::abs(sample.x - 0.25) < 1.0e-12 &&
+               std::abs(sample.y - 0.4) < 1.0e-12 &&
+               std::abs(sample.box - 0.3) < 1.0e-12 &&
+               std::abs(sample.score - 0.92) < 1.0e-12,
+           "neutral continuity sampling resolves assigned face geometry "
+           "with confidence filtering and source-relative mapping");
+    const jcut::FaceTrackingSampleCore unsmoothed =
+        jcut::sampleFaceContinuityTrack(
+            transcriptPath.string(),
+            clipId,
+            4,
+            {},
+            111,
+            0.5,
+            100,
+            11.0,
+            0);
+    const jcut::FaceTrackingSampleCore smoothed =
+        jcut::sampleFaceContinuityTrack(
+            transcriptPath.string(),
+            clipId,
+            4,
+            {},
+            111,
+            0.5,
+            100,
+            11.0,
+            0,
+            3,
+            0,
+            0,
+            1.0,
+            0.0);
+    expect(unsmoothed.valid && smoothed.valid &&
+               std::abs(unsmoothed.x - 0.90) < 1.0e-12 &&
+               smoothed.x < unsmoothed.x &&
+               smoothed.x > 0.25,
+           "neutral continuity smoothing matches Qt robust outlier "
+           "rejection and strength blending");
     expect(jcut::setTranscriptSpeakerTrackAssignments(
                &transcript, clipId, "S1", {}, true,
                "2026-07-22T00:01:00Z", &error),
@@ -749,8 +930,70 @@ void testNeutralFaceProcessingJobContract()
                has("--no-small-face-fallback") && has("--scrfd-tiling") &&
                has("--no-control-window") && has("--no-preview-window"),
            "neutral face job retains Qt generator options and headless UI policy");
+    request.controlWindow = true;
+    request.livePreview = true;
+    request.restartFromScratch = true;
+    request.applyClipGrading = true;
+    request.clipJsonPath = "/project/clip_input.json";
+    const std::vector<std::string> interactiveCommand =
+        jcut::faceProcessingCommand(request);
+    expect(
+        std::find(
+            interactiveCommand.begin(), interactiveCommand.end(),
+            "--control-window") != interactiveCommand.end() &&
+            std::find(
+                interactiveCommand.begin(), interactiveCommand.end(),
+                "--preview-window") != interactiveCommand.end() &&
+            std::find(
+                interactiveCommand.begin(), interactiveCommand.end(),
+                "--apply-clip-grading") != interactiveCommand.end() &&
+            std::find(
+                interactiveCommand.begin(), interactiveCommand.end(),
+                "/project/clip_input.json") != interactiveCommand.end(),
+        "neutral face preflight can opt into Qt generator windows and clip grading");
+
+    jcut::EditorClip gradingClip;
+    gradingClip.id = 42;
+    gradingClip.persistentId = "graded-clip";
+    gradingClip.sourcePath = media.string();
+    gradingClip.brightness = 0.2;
+    gradingClip.contrast = 1.1;
+    gradingClip.saturation = 0.8;
+    gradingClip.opacity = 0.9;
+    const json gradingJson = jcut::toLegacyClipJson(gradingClip);
+    expect(
+        gradingJson.value("id", std::string{}) == "graded-clip" &&
+            std::abs(gradingJson.value("brightness", 0.0) - 0.2) <
+                1.0e-12 &&
+            gradingJson.contains("gradingKeyframes"),
+        "shared legacy clip projection supplies the Qt-compatible detector grading input");
 
     TemporaryDirectory temporary;
+    const fs::path launchDirectory = temporary.path / "launch";
+    fs::create_directories(launchDirectory);
+    expect(
+        writeJson(
+            launchDirectory / "launch_control.json",
+            json{
+                {"schema", "jcut_facedetections_launch_control_v1"},
+                {"detector_workers", 2},
+                {"detector_pipeline_slots", 2},
+                {"last_benchmark",
+                 {
+                     {"best_detector_workers", 6},
+                     {"best_detector_pipeline_slots", 4},
+                 }},
+            }),
+        "face benchmark launch-control fixture written");
+    const jcut::FaceProcessingLaunchControl launchControl =
+        jcut::loadFaceProcessingLaunchControl(launchDirectory.string());
+    expect(
+        launchControl.hasRecommendation &&
+            launchControl.detectorWorkers == 6 &&
+            launchControl.detectorPipelineSlots == 4 &&
+            !launchControl.benchmarkJson.empty(),
+        "neutral face preflight reloads the Qt-compatible saved benchmark recommendation");
+
     const fs::path transcriptPath = temporary.path / "session.json";
     const fs::path artifactDirectory = temporary.path / "generated";
     fs::create_directories(artifactDirectory);
@@ -946,6 +1189,33 @@ void testNeutralTranscriptMiningProposals()
                    "S1" &&
                root["future_root_field"].value("mining_keep", false),
            "mining application preserves unknown fields and scopes edits");
+
+    const json cloudPayload =
+        jcut::buildCloudSpeakerMiningPayload(root);
+    expect(
+            cloudPayload.value("task", "") == "mine_speaker_profiles" &&
+            cloudPayload["speaker_legend"].is_array() &&
+            cloudPayload["speaker_legend"].size() == 1,
+        "cloud mining payload uses stable speaker tokens");
+    const auto cloudProposals =
+        jcut::parseCloudSpeakerMiningResponse(
+            root,
+            json{{"result",
+                  {{"speakers",
+                    json::array({
+                        json{
+                            {"Speaker", "S1"},
+                            {"Name", "Alicia Smith"},
+                            {"Organization", "Regional Council"},
+                        },
+                    })}}}},
+            &error);
+    expect(
+        cloudProposals.size() == 2 &&
+            cloudProposals[0].targetId == "S1" &&
+            cloudProposals[0].proposedValue == "Alicia Smith" &&
+            cloudProposals[1].proposedValue == "Regional Council",
+        "cloud mining response becomes reviewable neutral proposals");
 }
 
 void testNeutralProxyDiscoveryAndRuntimeCommand()

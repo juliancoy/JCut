@@ -1,13 +1,18 @@
 #include "standalone_timeline_renderer.h"
 #include "editor_grading_core.h"
 #include "editor_runtime.h"
+#include "editor_timeline_mapping_core.h"
+#include "face_artifact_core.h"
+#include "ffmpeg_hardware_device_core.h"
 #include "image_sequence_directory.h"
 #include "mask_frame_map_core.h"
+#include "title_3d_projection_core.h"
 #include "transcript_cut_session_core.h"
 #include "transcript_overlay_core.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -16,8 +21,10 @@
 #include <numbers>
 #include <optional>
 #include <string>
+#include <thread>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -28,6 +35,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/rational.h>
 #include <libswscale/swscale.h>
@@ -37,10 +45,17 @@ namespace {
 
 using jcut::EditorClip;
 using jcut::EditorDocumentCore;
+using jcut::DecoderPolicySettingsCore;
+using jcut::EffectiveDecoderPolicyCore;
+using jcut::FfmpegHardwareDeviceSetup;
 using jcut::ImageSequenceDirectoryInfo;
 using jcut::core::ImageBuffer;
 using jcut::core::PixelFormat;
 using jcut::core::SizeI;
+using jcut::effectiveDecoderPolicyCore;
+using jcut::createFfmpegHardwareDeviceForDecoder;
+using jcut::ffmpegHardwareDeviceOrder;
+using jcut::selectFfmpegHardwarePixelFormat;
 using jcut::probeImageSequenceDirectory;
 
 struct AvFormatContextDeleter {
@@ -80,7 +95,12 @@ struct SwsContextDeleter {
     }
 };
 
-ImageBuffer makeSolidImage(SizeI size, std::uint8_t red, std::uint8_t green, std::uint8_t blue)
+ImageBuffer makeSolidImage(
+    SizeI size,
+    std::uint8_t red,
+    std::uint8_t green,
+    std::uint8_t blue,
+    std::uint8_t alpha = 255)
 {
     ImageBuffer image;
     image.format = PixelFormat::Rgba8;
@@ -93,10 +113,75 @@ ImageBuffer makeSolidImage(SizeI size, std::uint8_t red, std::uint8_t green, std
             image.bytes[offset + 0] = red;
             image.bytes[offset + 1] = green;
             image.bytes[offset + 2] = blue;
-            image.bytes[offset + 3] = 255;
+            image.bytes[offset + 3] = alpha;
         }
     }
     return image;
+}
+
+void cropImageToAlphaBounds(
+    ImageBuffer* image,
+    int* offsetX,
+    int* offsetY)
+{
+    if (offsetX) *offsetX = 0;
+    if (offsetY) *offsetY = 0;
+    if (!image || image->empty() ||
+        image->format != PixelFormat::Rgba8) {
+        return;
+    }
+    int left = image->size.width;
+    int top = image->size.height;
+    int right = -1;
+    int bottom = -1;
+    for (int y = 0; y < image->size.height; ++y) {
+        for (int x = 0; x < image->size.width; ++x) {
+            const std::size_t alphaOffset =
+                static_cast<std::size_t>(
+                    y * image->strideBytes + x * 4 + 3);
+            if (image->bytes[alphaOffset] == 0) {
+                continue;
+            }
+            left = std::min(left, x);
+            top = std::min(top, y);
+            right = std::max(right, x);
+            bottom = std::max(bottom, y);
+        }
+    }
+    if (right < left || bottom < top) {
+        *image = {};
+        return;
+    }
+    if (left == 0 && top == 0 &&
+        right == image->size.width - 1 &&
+        bottom == image->size.height - 1) {
+        return;
+    }
+    ImageBuffer cropped;
+    cropped.format = PixelFormat::Rgba8;
+    cropped.size = {
+        right - left + 1,
+        bottom - top + 1};
+    cropped.strideBytes =
+        cropped.size.width * 4;
+    cropped.bytes.resize(
+        static_cast<std::size_t>(
+            cropped.strideBytes *
+            cropped.size.height));
+    for (int y = 0; y < cropped.size.height; ++y) {
+        std::copy_n(
+            image->bytes.begin() +
+                static_cast<std::ptrdiff_t>(
+                    (top + y) * image->strideBytes +
+                    left * 4),
+            cropped.strideBytes,
+            cropped.bytes.begin() +
+                static_cast<std::ptrdiff_t>(
+                    y * cropped.strideBytes));
+    }
+    *image = std::move(cropped);
+    if (offsetX) *offsetX = left;
+    if (offsetY) *offsetY = top;
 }
 
 struct FreeTypeLibrary {
@@ -288,24 +373,37 @@ ImageBuffer renderTitleImage(const jcut::EditorTitleKeyframe& title, SizeI size,
     const double titleOpacity = std::clamp(title.opacity, 0.0, 1.0);
     const double centerX = (size.width - 1) * 0.5 + title.translationX;
     const double centerY = (size.height - 1) * 0.5 + title.translationY;
-    const double radians = std::numbers::pi / 180.0;
-    const double yawScale = title.vulkan3DEnabled
-        ? std::max(0.08, std::abs(std::cos(title.vulkan3DYawDegrees * radians))) : 1.0;
-    const double pitchScale = title.vulkan3DEnabled
-        ? std::max(0.08, std::abs(std::cos(title.vulkan3DPitchDegrees * radians))) : 1.0;
-    const double depthScale = title.vulkan3DEnabled
-        ? 1.0 / std::max(0.1, 1.0 + title.vulkan3DDepth * 0.08) : 1.0;
-    const double modelScale = (title.vulkan3DEnabled
-        ? std::clamp(title.vulkan3DScale, 0.01, 10.0) : 1.0) * depthScale;
-    const double roll = title.vulkan3DEnabled ? title.vulkan3DRollDegrees * radians : 0.0;
-    const double rollCos = std::cos(roll);
-    const double rollSin = std::sin(roll);
-    const auto transformPoint = [&](double x, double y) {
-        const double dx = (x - centerX) * yawScale * modelScale;
-        const double dy = (y - centerY) * pitchScale * modelScale;
+    const jcut::Title3DProjectionCore titleProjection{
+        title.vulkan3DEnabled,
+        title.vulkan3DYawDegrees,
+        title.vulkan3DPitchDegrees,
+        title.vulkan3DRollDegrees,
+        title.vulkan3DDepth,
+        title.vulkan3DScale,
+    };
+    const auto transformPoint = [&](double x,
+                                    double y,
+                                    double elementCenterX,
+                                    double elementCenterY) {
+        const jcut::TitleProjectedPointCore point =
+            jcut::projectTitle3DPointCore(
+                x,
+                y,
+                elementCenterX,
+                elementCenterY,
+                centerX,
+                centerY,
+                size.width,
+                size.height,
+                titleProjection);
+        if (!point.valid) {
+            return std::pair<int, int>{
+                std::numeric_limits<int>::min(),
+                std::numeric_limits<int>::min()};
+        }
         return std::pair<int, int>{
-            static_cast<int>(std::lround(centerX + dx * rollCos - dy * rollSin)),
-            static_cast<int>(std::lround(centerY + dx * rollSin + dy * rollCos))};
+            static_cast<int>(std::lround(point.x)),
+            static_cast<int>(std::lround(point.y))};
     };
     const auto materialColor = [&](TitleColor base, const std::string& style,
                                    double patternScale, int x, int y,
@@ -373,10 +471,24 @@ ImageBuffer renderTitleImage(const jcut::EditorTitleKeyframe& title, SizeI size,
                                       TitleColor color, const std::string& material,
                                       double patternScale, double opacity,
                                       const ImageBuffer* pattern = nullptr) {
+        const double elementCenterX =
+            left + static_cast<double>(width) * 0.5;
+        const double elementCenterY =
+            top + static_cast<double>(height) * 0.5;
         for (int y = top; y < top + height; ++y) {
             for (int x = left; x < left + width; ++x) {
-                blendMaterialPixel(x, y, color, material, patternScale, 255,
-                                   opacity, pattern);
+                const auto [targetX, targetY] =
+                    transformPoint(
+                        x, y, elementCenterX, elementCenterY);
+                blendMaterialPixel(
+                    targetX,
+                    targetY,
+                    color,
+                    material,
+                    patternScale,
+                    255,
+                    opacity,
+                    pattern);
             }
         }
     };
@@ -426,12 +538,22 @@ ImageBuffer renderTitleImage(const jcut::EditorTitleKeyframe& title, SizeI size,
         const int logoLeft = windowLeft - logo->size.width -
             std::max(8, static_cast<int>(std::lround(padding * 0.45)));
         const int logoTop = static_cast<int>(std::lround(centerY - logo->size.height * 0.5));
+        const double logoCenterX =
+            logoLeft + static_cast<double>(logo->size.width) * 0.5;
+        const double logoCenterY =
+            logoTop + static_cast<double>(logo->size.height) * 0.5;
         for (int y = 0; y < logo->size.height; ++y) {
             for (int x = 0; x < logo->size.width; ++x) {
                 const std::size_t sourceOffset = static_cast<std::size_t>(
                     y * logo->strideBytes + x * 4);
+                const auto [targetX, targetY] =
+                    transformPoint(
+                        logoLeft + x,
+                        logoTop + y,
+                        logoCenterX,
+                        logoCenterY);
                 blendTitlePixel(
-                    &image, logoLeft + x, logoTop + y,
+                    &image, targetX, targetY,
                     logo->bytes[sourceOffset], logo->bytes[sourceOffset + 1],
                     logo->bytes[sourceOffset + 2],
                     logo->bytes[sourceOffset + 3] / 255.0f *
@@ -463,13 +585,20 @@ ImageBuffer renderTitleImage(const jcut::EditorTitleKeyframe& title, SizeI size,
             const FT_Bitmap& bitmap = face->glyph->bitmap;
                 const double originX = cursorX + face->glyph->bitmap_left;
                 const double originY = baseline - face->glyph->bitmap_top;
+                const double glyphCenterX =
+                    originX + static_cast<double>(bitmap.width) * 0.5;
+                const double glyphCenterY =
+                    originY + static_cast<double>(bitmap.rows) * 0.5;
             for (unsigned int y = 0; y < bitmap.rows; ++y) {
                 for (unsigned int x = 0; x < bitmap.width; ++x) {
                     const std::uint8_t coverage = bitmap.buffer[
                         y * static_cast<unsigned int>(std::abs(bitmap.pitch)) + x];
                         if (coverage == 0) continue;
                         const auto [targetX, targetY] = transformPoint(
-                            originX + x, originY + y);
+                            originX + x,
+                            originY + y,
+                            glyphCenterX,
+                            glyphCenterY);
                         blendMaterialPixel(targetX, targetY, color, material,
                                            patternScale, coverage, opacity,
                                            material == "image_pattern" ? textPattern : nullptr);
@@ -1647,7 +1776,8 @@ std::vector<double> maskDistanceField(const std::vector<std::uint8_t>& mask, Siz
 void applySpeakerMaskEffect(ImageBuffer* image,
                             const std::vector<std::uint8_t>& mask,
                             const EditorClip& clip,
-                            int localFrame)
+                            int localFrame,
+                            const std::array<RgbaColor, 3>& palette)
 {
     if (!image || image->empty() || mask.size() !=
         static_cast<std::size_t>(image->size.width * image->size.height)) return;
@@ -1656,8 +1786,6 @@ void applySpeakerMaskEffect(ImageBuffer* image,
     const double opacity = std::clamp(clip.effectScale, 0.0, 1.0);
     const double cycle = localFrame * std::clamp(clip.effectSpeed, -8.0, 8.0) * 0.04;
     const double spacing = std::max(1.0, clip.tilingSpacing * 8.0);
-    constexpr std::array<std::array<double, 3>, 3> palette = {{
-        {{1.0, 0.0, 0.0}}, {{0.0, 1.0, 0.0}}, {{1.0, 1.0, 0.0}}}};
     for (int y = 0; y < image->size.height; ++y) {
         for (int x = 0; x < image->size.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(y * image->size.width + x);
@@ -1682,7 +1810,12 @@ void applySpeakerMaskEffect(ImageBuffer* image,
                 const double original = image->bytes[offset + channel] / 255.0;
                 image->bytes[offset + channel] = static_cast<std::uint8_t>(std::clamp(
                     std::lround((original * (1.0 - amount) +
-                                 palette[colorIndex][channel] * amount) * 255.0),
+                                 (channel == 0
+                                      ? palette[colorIndex].red
+                                      : (channel == 1
+                                           ? palette[colorIndex].green
+                                           : palette[colorIndex].blue)) /
+                                     255.0 * amount) * 255.0),
                     0L, 255L));
             }
             image->bytes[offset + 3] = std::max(
@@ -2082,13 +2215,7 @@ void hslToRgb(const HslColor& hsl, double* red, double* green, double* blue)
 
 bool identityCurve(const std::vector<jcut::EditorPoint>& points)
 {
-    const std::vector<jcut::EditorPoint> curve =
-        jcut::sanitizeEditorGradingCurve(points);
-    return curve.size() == 2 &&
-        std::abs(curve[0].x) < 0.000001 &&
-        std::abs(curve[0].y) < 0.000001 &&
-        std::abs(curve[1].x - 1.0) < 0.000001 &&
-        std::abs(curve[1].y - 1.0) < 0.000001;
+    return jcut::editorGradingCurveIsIdentity(points);
 }
 
 void applyClipGrade(ImageBuffer* image,
@@ -2251,35 +2378,84 @@ std::vector<ActiveVisualClip> activeVisualClips(
     return result;
 }
 
+bool nearlyEqual(double left, double right)
+{
+    return std::abs(left - right) <= 1.0e-9;
+}
+
+std::string hardwareDirectIneligibilityReason(
+    const EditorDocumentCore& document,
+    const std::vector<ActiveVisualClip>& activeClips,
+    double timelineFrame)
+{
+    const ActiveVisualClip* base = nullptr;
+    for (const ActiveVisualClip& active :
+         activeClips) {
+        if (active.clip->mediaKind == "title") {
+            continue;
+        }
+        if (!base) base = &active;
+    }
+    if (!base) {
+        return "hardware-direct preview requires one active decoded visual clip";
+    }
+    const ActiveVisualClip& active = *base;
+    const EditorClip& clip = *active.clip;
+    if (clip.mediaKind == "image" ||
+        clip.clipRole != "media" ||
+        (active.track && active.track->generatedChildTrack)) {
+        return "active clip is not an ordinary decoded video layer";
+    }
+    for (const ActiveVisualClip& candidate :
+         activeClips) {
+        if (&candidate == base ||
+            candidate.trackOrder >
+                base->trackOrder) {
+            continue;
+        }
+        if (candidate.clip->mediaKind == "title") {
+            return "title layer at or below the decoded video requires ordered composition";
+        }
+        return "multiple decoded visual layers at or below the hardware base require ordered composition";
+    }
+    if (clip.effectPreset != "none" ||
+        clip.maskEnabled ||
+        !clip.correctionPolygons.empty() ||
+        clip.maskDropShadowEnabled ||
+        clip.maskForegroundLayerEnabled ||
+        clip.maskRepeatEnabled) {
+        return "clip effects, masks, or corrections require composition";
+    }
+    (void)document;
+    (void)timelineFrame;
+    return {};
+}
+
+const ActiveVisualClip* hardwareDirectBaseClip(
+    const std::vector<ActiveVisualClip>& activeClips)
+{
+    const auto found = std::find_if(
+        activeClips.begin(),
+        activeClips.end(),
+        [](const ActiveVisualClip& active) {
+            return active.clip &&
+                active.clip->mediaKind != "title";
+        });
+    return found == activeClips.end()
+        ? nullptr
+        : &*found;
+}
+
 int sourceFrameForClip(const EditorDocumentCore& document,
                        const EditorClip& clip,
                        int localTimelineFrame)
 {
-    std::int64_t adjustedLocalFrame = std::max(0, localTimelineFrame);
     const std::int64_t timelineFrame =
-        static_cast<std::int64_t>(clip.startFrame) + adjustedLocalFrame;
-    for (const jcut::EditorRenderSyncMarker& marker :
-         document.renderSyncMarkers) {
-        if (marker.clipId != clip.persistentId ||
-            marker.frame >= timelineFrame) {
-            continue;
-        }
-        const int magnitude = std::max(1, marker.count);
-        adjustedLocalFrame += marker.skipFrame ? magnitude : -magnitude;
-    }
-    adjustedLocalFrame = std::max<std::int64_t>(0, adjustedLocalFrame);
-    const double playbackRate = std::isfinite(clip.playbackRate) &&
-            clip.playbackRate > 0.001
-        ? std::min(clip.playbackRate, 64.0)
-        : 1.0;
-    std::int64_t sourceFrame = std::max<std::int64_t>(0, clip.sourceInFrame) +
-        static_cast<std::int64_t>(std::llround(
-            adjustedLocalFrame * playbackRate));
-    if (clip.sourceDurationFrames > 0) {
-        sourceFrame = std::min<std::int64_t>(
-            sourceFrame,
-            std::max<std::int64_t>(0, clip.sourceDurationFrames - 1));
-    }
+        static_cast<std::int64_t>(clip.startFrame) +
+        std::max(0, localTimelineFrame);
+    const std::int64_t sourceFrame =
+        jcut::editorClipSourceFrame(
+            document, clip, timelineFrame);
     return static_cast<int>(std::min<std::int64_t>(
         sourceFrame, std::numeric_limits<int>::max()));
 }
@@ -2344,8 +2520,17 @@ std::string resolveClipPath(const EditorClip& clip, const std::string& rootDirec
 
 class MediaSource {
 public:
-    explicit MediaSource(std::string path)
+    explicit MediaSource(
+        std::string path,
+        DecoderPolicySettingsCore decoderPolicy = {})
         : m_path(std::move(path))
+        , m_decoderPolicy(decoderPolicy)
+        , m_effectivePolicy(effectiveDecoderPolicyCore(
+              decoderPolicy,
+              false,
+              false,
+              static_cast<int>(std::max(
+                  1U, std::thread::hardware_concurrency()))))
     {
         ImageSequenceDirectoryInfo sequence =
             probeImageSequenceDirectory(std::filesystem::path(m_path));
@@ -2391,15 +2576,94 @@ public:
             return false;
         }
 
-        m_codecContext.reset(avcodec_alloc_context3(codec));
-        if (!m_codecContext) {
+        const auto allocateCodecContext = [&]() {
+            m_codecContext.reset(avcodec_alloc_context3(codec));
+            return m_codecContext &&
+                avcodec_parameters_to_context(
+                    m_codecContext.get(), m_stream->codecpar) >= 0;
+        };
+        if (!allocateCodecContext()) {
             if (errorOut) {
-                *errorOut = "failed to allocate decoder context";
+                *errorOut = "failed to initialize decoder context";
             }
             return false;
         }
-        if (avcodec_parameters_to_context(m_codecContext.get(), m_stream->codecpar) < 0 ||
-            avcodec_open2(m_codecContext.get(), codec, nullptr) < 0) {
+        const bool h26x =
+            m_stream->codecpar->codec_id == AV_CODEC_ID_H264 ||
+            m_stream->codecpar->codec_id == AV_CODEC_ID_HEVC;
+        const int logicalCpuCount = static_cast<int>(std::max(
+            1U, std::thread::hardware_concurrency()));
+        bool hardwareEnabled = false;
+        if (!m_hardwareDisabled &&
+            m_decoderPolicy.decodePreference !=
+            jcut::DecodePreferenceCore::Software) {
+            FfmpegHardwareDeviceSetup hardware =
+                createFfmpegHardwareDeviceForDecoder(
+                    codec,
+                    ffmpegHardwareDeviceOrder(
+                        m_decoderPolicy.hardwareDevice));
+            if (hardware.deviceContext) {
+                m_codecContext->hw_device_ctx = hardware.deviceContext;
+                hardware.deviceContext = nullptr;
+                m_hwPixFmt = hardware.hardwarePixelFormat;
+                m_hardwareDeviceLabel = std::move(hardware.deviceLabel);
+                m_codecContext->get_format =
+                    selectFfmpegHardwarePixelFormat;
+                m_codecContext->opaque = reinterpret_cast<void*>(
+                    static_cast<std::intptr_t>(m_hwPixFmt));
+                hardwareEnabled = true;
+            } else {
+                m_hardwareFallbackReason = std::move(hardware.error);
+            }
+        }
+        const auto configureDecodePolicy = [&](bool usingHardware) {
+            m_effectivePolicy = effectiveDecoderPolicyCore(
+                m_decoderPolicy,
+                usingHardware,
+                false,
+                logicalCpuCount);
+            if (!h26x || usingHardware) {
+                m_effectivePolicy.softwareThreadCount = 1;
+                m_effectivePolicy.softwareThreadType = 0;
+            }
+            m_codecContext->thread_count =
+                h26x && !usingHardware
+                ? m_effectivePolicy.softwareThreadCount
+                : 1;
+            m_codecContext->thread_type =
+                m_effectivePolicy.softwareThreadType == 1
+                ? FF_THREAD_SLICE
+                : (m_effectivePolicy.softwareThreadType == 3
+                    ? FF_THREAD_FRAME | FF_THREAD_SLICE
+                    : 0);
+            if (m_decoderPolicy.deterministic ||
+                usingHardware) {
+                m_codecContext->flags2 &= ~AV_CODEC_FLAG2_FAST;
+            } else if (m_codecContext->thread_type != 0) {
+                m_codecContext->flags2 |= AV_CODEC_FLAG2_FAST;
+            }
+        };
+        configureDecodePolicy(hardwareEnabled);
+        int openResult =
+            avcodec_open2(m_codecContext.get(), codec, nullptr);
+        if (openResult < 0 && hardwareEnabled) {
+            m_hardwareFallbackReason =
+                "hardware decoder initialization failed; using software";
+            m_hardwareDeviceLabel.clear();
+            m_hwPixFmt = AV_PIX_FMT_NONE;
+            hardwareEnabled = false;
+            if (!allocateCodecContext()) {
+                if (errorOut) {
+                    *errorOut = "failed to reinitialize software decoder";
+                }
+                return false;
+            }
+            configureDecodePolicy(false);
+            openResult =
+                avcodec_open2(m_codecContext.get(), codec, nullptr);
+        }
+        m_hardwareAccelerated = hardwareEnabled && openResult >= 0;
+        if (openResult < 0) {
             if (errorOut) {
                 *errorOut = "failed to initialize decoder context";
             }
@@ -2437,42 +2701,172 @@ public:
                 sequenceFrameIndex != m_sequenceFrameSourceIndex) {
                 m_sequenceFrameSource = std::make_unique<MediaSource>(
                     m_sequenceFramePaths[static_cast<std::size_t>(
-                        sequenceFrameIndex)].string());
+                        sequenceFrameIndex)].string(),
+                    m_decoderPolicy);
                 m_sequenceFrameSourceIndex = sequenceFrameIndex;
             }
             return m_sequenceFrameSource->decodeScaledFrame(
                 0, outputSize, imageOut, errorOut);
         }
-        if (!open(errorOut)) {
+        if (!ensureDecodedFrame(frameIndex, errorOut)) {
             return false;
         }
 
+        if (scaleFrame(
+                m_bestFrame.get(), outputSize, imageOut, errorOut)) {
+            return true;
+        }
+        if (m_hardwareAccelerated) {
+            m_hardwareDecodeFailed = true;
+            if (reopenWithSoftwareDecoder(errorOut)) {
+                return decodeScaledFrame(
+                    frameIndex, outputSize, imageOut, errorOut);
+            }
+        }
+        return false;
+    }
+
+    std::shared_ptr<const jcut::core::FramePayloadCore> decodeHardwareFrame(
+        int frameIndex,
+        std::string* errorOut)
+    {
+        if (!m_sequenceFramePaths.empty()) {
+            if (errorOut) {
+                *errorOut = "image sequences do not expose hardware decoder surfaces";
+            }
+            return {};
+        }
+        if (!ensureDecodedFrame(frameIndex, errorOut)) {
+            return {};
+        }
+        if (!m_hardwareAccelerated ||
+            m_hwPixFmt == AV_PIX_FMT_NONE ||
+            !m_bestFrame ||
+            m_bestFrame->format != m_hwPixFmt) {
+            if (errorOut) {
+                *errorOut = m_hardwareFallbackReason.empty()
+                    ? "decoder did not produce a retained hardware frame"
+                    : m_hardwareFallbackReason;
+            }
+            return {};
+        }
+
+        int softwarePixelFormat = AV_PIX_FMT_NONE;
+        if (m_bestFrame->hw_frames_ctx && m_bestFrame->hw_frames_ctx->data) {
+            const auto* framesContext =
+                reinterpret_cast<const AVHWFramesContext*>(
+                    m_bestFrame->hw_frames_ctx->data);
+            softwarePixelFormat = framesContext
+                ? framesContext->sw_format
+                : AV_PIX_FMT_NONE;
+        }
+        if (softwarePixelFormat == AV_PIX_FMT_NONE && m_codecContext) {
+            softwarePixelFormat = m_codecContext->sw_pix_fmt;
+        }
+
+        auto payload = std::make_shared<jcut::core::FramePayloadCore>();
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        payload->setIdentity(
+            frameIndex,
+            m_path,
+            std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+        if (!payload->cloneHardwareFrame(
+                m_bestFrame.get(), softwarePixelFormat)) {
+            if (errorOut) {
+                *errorOut = "failed to retain decoded hardware frame";
+            }
+            return {};
+        }
+        return payload;
+    }
+
+    const EffectiveDecoderPolicyCore& effectivePolicy() const noexcept
+    {
+        return m_effectivePolicy;
+    }
+
+    bool hardwareAccelerated() const noexcept
+    {
+        return m_hardwareAccelerated;
+    }
+
+    const std::string& hardwareDeviceLabel() const noexcept
+    {
+        return m_hardwareDeviceLabel;
+    }
+
+    const std::string& hardwareFallbackReason() const noexcept
+    {
+        return m_hardwareFallbackReason;
+    }
+
+    std::string codecName() const
+    {
+        return m_codecContext && m_codecContext->codec
+            ? m_codecContext->codec->name
+            : std::string{};
+    }
+
+private:
+    bool ensureDecodedFrame(int frameIndex, std::string* errorOut)
+    {
+        if (!open(errorOut)) {
+            return false;
+        }
         if (m_lastDecodedFrameIndex < 0 || frameIndex < m_lastDecodedFrameIndex) {
-            const std::int64_t targetPts = ptsForFrameIndex(frameIndex, m_stream);
-            av_seek_frame(m_formatContext.get(), m_videoStreamIndex, targetPts, AVSEEK_FLAG_BACKWARD);
+            const std::int64_t targetPts =
+                ptsForFrameIndex(frameIndex, m_stream);
+            av_seek_frame(
+                m_formatContext.get(),
+                m_videoStreamIndex,
+                targetPts,
+                AVSEEK_FLAG_BACKWARD);
             avcodec_flush_buffers(m_codecContext.get());
             m_lastDecodedFrameIndex = -1;
             av_frame_unref(m_bestFrame.get());
             m_haveBestFrame = false;
         }
-
         while (!m_haveBestFrame || m_lastDecodedFrameIndex < frameIndex) {
             if (!readNextFrame(errorOut)) {
+                if (m_hardwareDecodeFailed &&
+                    reopenWithSoftwareDecoder(errorOut)) {
+                    return ensureDecodedFrame(frameIndex, errorOut);
+                }
                 break;
             }
         }
-
         if (!m_haveBestFrame) {
             if (errorOut) {
                 *errorOut = "failed to decode timeline frame";
             }
             return false;
         }
-
-        return scaleFrame(m_bestFrame.get(), outputSize, imageOut, errorOut);
+        return true;
     }
 
-private:
+    bool reopenWithSoftwareDecoder(std::string* errorOut)
+    {
+        if (m_hardwareDisabled) return false;
+        m_hardwareDisabled = true;
+        m_hardwareDecodeFailed = false;
+        m_hardwareAccelerated = false;
+        m_hardwareDeviceLabel.clear();
+        m_hardwareFallbackReason =
+            "hardware frame decode failed; reopened with software";
+        m_hwPixFmt = AV_PIX_FMT_NONE;
+        m_packet.reset();
+        m_frame.reset();
+        m_bestFrame.reset();
+        m_codecContext.reset();
+        m_formatContext.reset();
+        m_stream = nullptr;
+        m_videoStreamIndex = -1;
+        m_lastDecodedFrameIndex = -1;
+        m_haveBestFrame = false;
+        m_opened = false;
+        return open(errorOut);
+    }
+
     bool readNextFrame(std::string* errorOut)
     {
         while (av_read_frame(m_formatContext.get(), m_packet.get()) >= 0) {
@@ -2483,9 +2877,34 @@ private:
             const int sendResult = avcodec_send_packet(m_codecContext.get(), m_packet.get());
             av_packet_unref(m_packet.get());
             if (sendResult < 0) {
+                if (m_hardwareAccelerated) {
+                    m_hardwareDecodeFailed = true;
+                    if (errorOut) {
+                        *errorOut = "hardware packet decode failed";
+                    }
+                    return false;
+                }
                 continue;
             }
-            while (avcodec_receive_frame(m_codecContext.get(), m_frame.get()) >= 0) {
+            while (true) {
+                const int receiveResult =
+                    avcodec_receive_frame(
+                        m_codecContext.get(), m_frame.get());
+                if (receiveResult == AVERROR(EAGAIN) ||
+                    receiveResult == AVERROR_EOF) {
+                    break;
+                }
+                if (receiveResult < 0) {
+                    if (m_hardwareAccelerated) {
+                        m_hardwareDecodeFailed = true;
+                        if (errorOut) {
+                            *errorOut =
+                                "hardware frame decode failed";
+                        }
+                        return false;
+                    }
+                    break;
+                }
                 av_frame_unref(m_bestFrame.get());
                 av_frame_ref(m_bestFrame.get(), m_frame.get());
                 m_haveBestFrame = true;
@@ -2505,6 +2924,22 @@ private:
                     ImageBuffer* imageOut,
                     std::string* errorOut) const
     {
+        std::unique_ptr<AVFrame, AvFrameDeleter> transferredFrame;
+        if (m_hwPixFmt != AV_PIX_FMT_NONE &&
+            sourceFrame->format == m_hwPixFmt) {
+            transferredFrame.reset(av_frame_alloc());
+            if (!transferredFrame ||
+                av_hwframe_transfer_data(
+                    transferredFrame.get(), sourceFrame, 0) < 0) {
+                if (errorOut) {
+                    *errorOut =
+                        "failed to transfer hardware frame to system memory";
+                }
+                return false;
+            }
+            av_frame_copy_props(transferredFrame.get(), sourceFrame);
+            sourceFrame = transferredFrame.get();
+        }
         const double scale = std::min(
             static_cast<double>(outputSize.width) / std::max(1, sourceFrame->width),
             static_cast<double>(outputSize.height) / std::max(1, sourceFrame->height));
@@ -2555,6 +2990,14 @@ private:
     }
 
     std::string m_path;
+    DecoderPolicySettingsCore m_decoderPolicy;
+    EffectiveDecoderPolicyCore m_effectivePolicy;
+    AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
+    bool m_hardwareAccelerated = false;
+    bool m_hardwareDisabled = false;
+    bool m_hardwareDecodeFailed = false;
+    std::string m_hardwareDeviceLabel;
+    std::string m_hardwareFallbackReason;
     std::vector<std::filesystem::path> m_sequenceFramePaths;
     int m_sequenceFrameSourceIndex = -1;
     std::unique_ptr<MediaSource> m_sequenceFrameSource;
@@ -2574,6 +3017,51 @@ private:
 
 namespace jcut::standalone_render {
 
+class StandaloneMediaFrameDecoder::Impl {
+public:
+    Impl(std::string path, DecoderPolicySettingsCore policy)
+        : source(std::move(path), policy)
+    {
+    }
+
+    MediaSource source;
+};
+
+StandaloneMediaFrameDecoder::StandaloneMediaFrameDecoder(
+    std::string path,
+    DecoderPolicySettingsCore policy)
+    : m_impl(std::make_unique<Impl>(std::move(path), policy))
+{
+}
+
+StandaloneMediaFrameDecoder::~StandaloneMediaFrameDecoder() = default;
+
+StandaloneDecodedFrameResult StandaloneMediaFrameDecoder::decodeFrame(
+    int frameIndex,
+    core::SizeI outputSize)
+{
+    StandaloneDecodedFrameResult result;
+    if (!m_impl) {
+        result.message = "media decoder is unavailable";
+        return result;
+    }
+    if (!outputSize.valid()) {
+        outputSize = {640, 360};
+    }
+    result.success = m_impl->source.decodeScaledFrame(
+        std::max(0, frameIndex),
+        outputSize,
+        &result.image,
+        &result.message);
+    if (result.success && result.image.empty()) {
+        result.success = false;
+        result.message = "decoded source frame is empty";
+    } else if (result.success) {
+        result.message = "decoded standalone media frame";
+    }
+    return result;
+}
+
 StandaloneMediaInfo probeStandaloneMedia(const std::string& path)
 {
     StandaloneMediaInfo result;
@@ -2589,6 +3077,7 @@ StandaloneMediaInfo probeStandaloneMedia(const std::string& path)
         result.hasVideo = true;
         result.hasAudio = false;
         result.videoFps = kImageSequenceFramesPerSecond;
+        result.sourceDurationFrames = sequence.frameCount();
         result.durationFrames = sequence.frameCount();
         if (!sequence.framePaths.empty()) {
             const StandaloneMediaInfo firstFrame = probeStandaloneMedia(
@@ -2645,16 +3134,127 @@ StandaloneMediaInfo probeStandaloneMedia(const std::string& path)
                 firstVideoStream->codecpar->height};
         }
     }
-    if (formatContext->duration > 0) {
-        const double seconds = static_cast<double>(formatContext->duration) /
+    double durationSeconds = 0.0;
+    if (firstVideoStream && firstVideoStream->duration > 0) {
+        durationSeconds =
+            static_cast<double>(firstVideoStream->duration) *
+            av_q2d(firstVideoStream->time_base);
+    } else if (formatContext->duration > 0) {
+        durationSeconds =
+            static_cast<double>(formatContext->duration) /
             static_cast<double>(AV_TIME_BASE);
+    }
+    if (durationSeconds > 0.0) {
+        if (result.hasVideo) {
+            const double sourceFps =
+                result.videoFps > 0.001 ? result.videoFps : 30.0;
+            result.sourceDurationFrames = static_cast<std::int64_t>(
+                std::llround(durationSeconds * sourceFps));
+        }
         result.durationFrames = static_cast<std::int64_t>(
-            std::llround(seconds * 30.0));
+            std::llround(durationSeconds * 30.0));
     }
     result.message = result.probed
         ? "media streams probed"
         : "no audio or video streams found";
     return result;
+}
+
+StandaloneDecodeBenchmarkResult benchmarkStandaloneMediaDecode(
+    const std::string& path,
+    const DecoderPolicySettingsCore& policy,
+    int maxFrames)
+{
+    StandaloneDecodeBenchmarkResult result;
+    result.requestedPreference = policy.decodePreference;
+    const StandaloneMediaInfo media = probeStandaloneMedia(path);
+    if (!media.probed || !media.hasVideo) {
+        result.message = media.message.empty()
+            ? "benchmark source has no video"
+            : media.message;
+        return result;
+    }
+    const int frameCount = std::clamp(
+        static_cast<int>(std::min<std::int64_t>(
+            std::max<std::int64_t>(1, media.durationFrames),
+            std::numeric_limits<int>::max())),
+        1,
+        std::clamp(maxFrames, 1, 1000));
+    MediaSource source(path, policy);
+    const auto started = std::chrono::steady_clock::now();
+    for (int frame = 0; frame < frameCount; ++frame) {
+        ImageBuffer image;
+        std::string error;
+        if (source.decodeScaledFrame(
+                frame, {640, 360}, &image, &error) &&
+            !image.empty()) {
+            ++result.framesDecoded;
+        } else {
+            ++result.failedFrames;
+            if (result.message.empty()) result.message = std::move(error);
+        }
+    }
+    result.elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+    result.codecName = source.codecName();
+    result.effectivePreference =
+        source.effectivePolicy().effectivePreference;
+    result.softwareThreadCount =
+        source.effectivePolicy().softwareThreadCount;
+    result.hardwareAccelerated = source.hardwareAccelerated();
+    result.hardwareDeviceLabel = source.hardwareDeviceLabel();
+    result.hardwareFallbackReason = source.hardwareFallbackReason();
+    result.framesPerSecond = result.framesDecoded > 0
+        ? static_cast<double>(result.framesDecoded) * 1000.0 /
+            static_cast<double>(std::max<std::int64_t>(1, result.elapsedMs))
+        : 0.0;
+    result.success = result.framesDecoded > 0;
+    if (result.success) {
+        result.message = "standalone decode benchmark completed";
+    } else if (result.message.empty()) {
+        result.message = "standalone decode benchmark decoded no frames";
+    }
+    return result;
+}
+
+StandaloneHardwareFrameResult retainStandaloneHardwareFrame(
+    const std::string& path,
+    int frameIndex,
+    const DecoderPolicySettingsCore& policy)
+{
+    StandaloneHardwareFrameResult result;
+    MediaSource source(path, policy);
+    std::string error;
+    result.frame = source.decodeHardwareFrame(
+        std::max(0, frameIndex), &error);
+    result.effectivePreference =
+        source.effectivePolicy().effectivePreference;
+    result.hardwareAccelerated = source.hardwareAccelerated();
+    result.hardwareDeviceLabel = source.hardwareDeviceLabel();
+    result.hardwareFallbackReason = source.hardwareFallbackReason();
+    result.success = static_cast<bool>(result.frame);
+    result.message = result.success
+        ? "retained standalone hardware frame"
+        : (error.empty()
+            ? "standalone hardware frame unavailable"
+            : std::move(error));
+    return result;
+}
+
+StandaloneDecodedFrameResult decodeStandaloneMediaFrame(
+    const std::string& path,
+    int frameIndex,
+    core::SizeI outputSize,
+    const DecoderPolicySettingsCore& policy)
+{
+    if (path.empty()) {
+        StandaloneDecodedFrameResult result;
+        result.message = "decode source path is empty";
+        return result;
+    }
+    StandaloneMediaFrameDecoder decoder(path, policy);
+    return decoder.decodeFrame(frameIndex, outputSize);
 }
 
 std::size_t probeUnknownAudioPresence(EditorDocumentCore* document,
@@ -2708,14 +3308,158 @@ public:
     TimelineRenderResult renderFrame(const TimelineRenderRequest& request)
     {
         TimelineRenderResult result;
+        result.requestedDecodePreference =
+            request.decoderPolicy.decodePreference;
+        result.effectiveDecodePreference =
+            effectiveDecoderPolicyCore(
+                request.decoderPolicy,
+                false,
+                false,
+                static_cast<int>(std::max(
+                    1U, std::thread::hardware_concurrency())))
+                .effectivePreference;
         if (!request.outputSize.valid()) {
             result.message = "invalid preview output size";
             return result;
         }
+        if (!(request.decoderPolicy == m_decoderPolicy)) {
+            m_sources.clear();
+            m_decoderPolicy = request.decoderPolicy;
+        }
 
-        ImageBuffer canvas = makeSolidImage(request.outputSize, 12, 14, 18);
         const std::vector<ActiveVisualClip> activeClips =
             activeVisualClips(request.document, request.timelineFrame);
+        if (request.preferHardwareFrame) {
+            result.hardwareDirectFallbackReason =
+                hardwareDirectIneligibilityReason(
+                    request.document,
+                    activeClips,
+                    request.timelineFrame);
+            result.hardwareDirectEligible =
+                result.hardwareDirectFallbackReason.empty();
+            if (result.hardwareDirectEligible) {
+                const ActiveVisualClip* directBase =
+                    hardwareDirectBaseClip(activeClips);
+                if (!directBase) {
+                    result.hardwareDirectEligible = false;
+                    result.hardwareDirectFallbackReason =
+                        "hardware-direct base video is unavailable";
+                } else {
+                const EditorClip& clip = *directBase->clip;
+                const int localFrame = std::max(
+                    0,
+                    static_cast<int>(std::floor(request.timelineFrame)) -
+                        clip.startFrame);
+                const int sourceFrame = sourceFrameForClip(
+                    request.document, clip, localFrame);
+                result.sourcePath =
+                    resolveClipPath(clip, request.rootDirectory);
+                MediaSource& mediaSource =
+                    sourceForPath(result.sourcePath);
+                std::string handoffError;
+                std::shared_ptr<const jcut::core::FramePayloadCore> payload =
+                    mediaSource.decodeHardwareFrame(
+                        sourceFrame, &handoffError);
+                applyDecodeStatus(mediaSource, &result);
+                bool hardwarePayloadWasValid = false;
+                if (payload && payload->size().valid()) {
+                    hardwarePayloadWasValid = true;
+                    const core::SizeI hardwareFrameSize =
+                        payload->size();
+                    result.hardwareFrame = std::move(payload);
+                    result.hardwarePresentationTransformValid = true;
+                    result.hardwarePresentationTransform =
+                        resolvedPresentationTransform(
+                            request,
+                            clip,
+                            result.sourcePath,
+                            sourceFrame,
+                            hardwareFrameSize);
+                    result.hardwarePresentationGrade =
+                        jcut::evaluateEditorClipGradingAtLocalFrame(
+                            clip, localFrame);
+                    const bool gradingEnabled =
+                        clip.gradingPreviewEnabled &&
+                        (!directBase->track ||
+                         directBase->track->
+                             gradingPreviewEnabled);
+                    if (!gradingEnabled) {
+                        const double opacity =
+                            result.hardwarePresentationGrade.opacity;
+                        result.hardwarePresentationGrade = {};
+                        result.hardwarePresentationGrade.opacity =
+                            opacity;
+                    }
+                    const bool forceOpaque =
+                        directBase->track &&
+                        directBase->track->
+                            visualMode == 1;
+                    result.hardwarePresentationOpacity =
+                        forceOpaque
+                        ? 1.0
+                        : std::clamp(
+                            result.
+                                hardwarePresentationGrade.
+                                opacity,
+                            0.0,
+                            1.0);
+                    if (forceOpaque) {
+                        result.hardwarePresentationGrade.
+                            opacity = 1.0;
+                    }
+                    std::string overlayError;
+                    result.hardwareOverlayImage =
+                        renderHardwareOverlayLayer(
+                            request,
+                            directBase->trackOrder,
+                            &overlayError);
+                    if (!overlayError.empty()) {
+                        result.hardwareFrame.reset();
+                        result.
+                            hardwarePresentationTransformValid =
+                                false;
+                        result.hardwareDirectFallbackReason =
+                            std::move(overlayError);
+                    } else {
+                    cropImageToAlphaBounds(
+                        &result.hardwareOverlayImage,
+                        &result.hardwareOverlayX,
+                        &result.hardwareOverlayY);
+                    result.success = true;
+                    result.message =
+                        "retained hardware frame ready for Vulkan handoff";
+                    return result;
+                    }
+                }
+                if (!hardwarePayloadWasValid &&
+                    !payload) {
+                    result.hardwareDirectFallbackReason =
+                        handoffError.empty()
+                        ? "decoder did not return a hardware frame"
+                        : std::move(handoffError);
+                } else if (!hardwarePayloadWasValid) {
+                    result.hardwareDirectFallbackReason =
+                        "decoded hardware frame has invalid dimensions";
+                }
+                }
+            }
+            if (!request.allowCpuFallback) {
+                result.message =
+                    result.hardwareDirectFallbackReason.empty()
+                    ? "hardware-direct preview unavailable"
+                    : result.hardwareDirectFallbackReason;
+                return result;
+            }
+        } else if (!request.allowCpuFallback) {
+            result.message = "CPU preview fallback disabled";
+            return result;
+        }
+
+        ImageBuffer canvas = request.transparentBackground
+            ? makeSolidImage(
+                request.outputSize, 0, 0, 0, 0)
+            : makeSolidImage(
+                request.outputSize, 12, 14, 18);
 
         for (const ActiveVisualClip& active : activeClips) {
             const EditorClip& clip = *active.clip;
@@ -2728,37 +3472,14 @@ public:
             const int effectFrame = effectFrameForClip(
                 request.document, clip, localFrame);
             if (clip.mediaKind == "title") {
-                const jcut::EditorTitleKeyframe title =
-                    jcut::evaluateEditorClipTitleAtLocalFrame(clip, localFrame);
-                ImageBuffer textPattern;
-                ImageBuffer framePattern;
-                ImageBuffer logo;
-                const auto decodeTitleAsset = [&](const std::string& storedPath,
-                                                  SizeI requestedSize,
-                                                  ImageBuffer* imageOut) {
-                    if (storedPath.empty() || !imageOut) return;
-                    std::filesystem::path path(storedPath);
-                    if (path.is_relative() && !request.rootDirectory.empty()) {
-                        path = std::filesystem::path(request.rootDirectory) / path;
-                    }
-                    std::string ignoredError;
-                    sourceForPath(path.lexically_normal().string()).decodeScaledFrame(
-                        0, requestedSize, imageOut, &ignoredError);
-                };
-                if (title.textMaterialStyle == "image_pattern") {
-                    decodeTitleAsset(title.textPatternImagePath, {96, 96}, &textPattern);
+                const ImageBuffer titleLayer =
+                    renderTitleClipLayer(
+                        request, active);
+                if (!titleLayer.empty()) {
+                    blitImage(
+                        titleLayer, &canvas, 0, 0);
                 }
-                if (title.windowFrameMaterialStyle == "image_pattern") {
-                    decodeTitleAsset(title.windowFramePatternImagePath, {96, 96}, &framePattern);
-                }
-                const int logoSize = std::clamp(
-                    static_cast<int>(std::lround(title.fontSize * 1.35)), 34, 140);
-                decodeTitleAsset(title.logoPath, {logoSize, logoSize}, &logo);
-                decoded = renderTitleImage(
-                    title, request.outputSize,
-                    textPattern.empty() ? nullptr : &textPattern,
-                    framePattern.empty() ? nullptr : &framePattern,
-                    logo.empty() ? nullptr : &logo);
+                continue;
             } else {
                 result.sourcePath = resolveClipPath(clip, request.rootDirectory);
                 MediaSource& mediaSource = sourceForPath(result.sourcePath);
@@ -2767,6 +3488,7 @@ public:
                     request.document, clip, localFrame);
                 if (!mediaSource.decodeScaledFrame(
                         sourceFrame, request.outputSize, &decoded, &decodeError)) {
+                    applyDecodeStatus(mediaSource, &result);
                     result.success = false;
                     result.message = decodeError.empty()
                         ? "timeline render failed"
@@ -2774,6 +3496,7 @@ public:
                     result.image = std::move(canvas);
                     return result;
                 }
+                applyDecodeStatus(mediaSource, &result);
             }
 
             jcut::EditorGradingKeyframe grade =
@@ -2842,7 +3565,28 @@ public:
                         clip.maskFeatherGamma,
                         clip.maskFeatherFalloff);
                     if (isSpeakerMaskEffect(clip.effectPreset)) {
-                        applySpeakerMaskEffect(&decoded, mask, clip, effectFrame);
+                        const jcut::TranscriptOverlayLayoutCore speaker =
+                            transcriptLayout(
+                                request.document,
+                                clip,
+                                result.sourcePath,
+                                sourceFrame,
+                                request.timelineFrame -
+                                    static_cast<double>(clip.startFrame),
+                                request.rootDirectory);
+                        const std::array<RgbaColor, 3> palette = {{
+                            parseColor(
+                                speaker.speakerPrimaryColor,
+                                {255, 0, 0, 1.0}),
+                            parseColor(
+                                speaker.speakerSecondaryColor,
+                                {0, 255, 0, 1.0}),
+                            parseColor(
+                                speaker.speakerAccentColor,
+                                {255, 255, 0, 1.0}),
+                        }};
+                        applySpeakerMaskEffect(
+                            &decoded, mask, clip, effectFrame, palette);
                     } else {
                         applyMaskPlaneToImage(&decoded, ungraded, mask, clip);
                     }
@@ -2903,31 +3647,21 @@ public:
             const int offsetY = clip.mediaKind == "title" ? 0 :
                 (request.outputSize.height - decoded.size.height) / 2;
             const jcut::EditorTransformKeyframe transform =
-                jcut::evaluateEditorClipTransformAtLocalFrame(
-                    clip, localFrame);
+                resolvedPresentationTransform(
+                    request,
+                    clip,
+                    result.sourcePath,
+                    sourceFrame,
+                    decoded.size);
             blitTransformedImage(
                 decoded, &canvas, offsetX, offsetY, transform);
         }
 
-        for (const EditorClip& clip : request.document.clips) {
-            const double clipStart = static_cast<double>(clip.startFrame);
-            const double clipEnd = static_cast<double>(
-                clip.startFrame + std::max(1, clip.durationFrames));
-            if (!clip.transcriptOverlay.enabled ||
-                request.timelineFrame < clipStart || request.timelineFrame >= clipEnd ||
-                (clip.mediaKind != "audio" && !clip.hasAudio)) {
-                continue;
-            }
-            const int localFrame = std::max(
-                0, static_cast<int>(std::floor(request.timelineFrame)) - clip.startFrame);
-            const int sourceFrame = sourceFrameForClip(
-                request.document, clip, localFrame);
-            const std::string sourcePath = resolveClipPath(
-                clip, request.rootDirectory);
-            const jcut::TranscriptOverlayLayoutCore layout = transcriptLayout(
-                request.document, clip, sourcePath, sourceFrame,
-                request.rootDirectory);
-            drawTranscriptOverlay(&canvas, clip.transcriptOverlay, layout);
+        const ImageBuffer transcriptOverlay =
+            renderTranscriptOverlayLayer(request);
+        if (!transcriptOverlay.empty()) {
+            blitImage(
+                transcriptOverlay, &canvas, 0, 0);
         }
 
         result.success = true;
@@ -2941,6 +3675,19 @@ public:
     }
 
 private:
+    static void applyDecodeStatus(
+        const MediaSource& source,
+        TimelineRenderResult* result)
+    {
+        if (!result) return;
+        result->effectiveDecodePreference =
+            source.effectivePolicy().effectivePreference;
+        result->hardwareAccelerated = source.hardwareAccelerated();
+        result->hardwareDeviceLabel = source.hardwareDeviceLabel();
+        result->hardwareFallbackReason =
+            source.hardwareFallbackReason();
+    }
+
     struct TranscriptCacheEntry {
         jcut::TranscriptFileStamp stamp;
         std::vector<jcut::TranscriptRow> rows;
@@ -2953,6 +3700,7 @@ private:
         const EditorClip& clip,
         const std::string& resolvedSourcePath,
         int sourceFrame,
+        double localTimelineFrame,
         const std::string& rootDirectory)
     {
         jcut::TranscriptSourceSpec source;
@@ -3038,28 +3786,487 @@ private:
         jcut::TranscriptOverlayLayoutCore layout =
             jcut::transcriptOverlayLayoutForRows(
                 cache.rows, sourceFrame, layoutOptions);
-        if (!clip.transcriptOverlay.useManualPlacement && cache.document &&
-            !layout.speakerId.empty()) {
-            const jcut::TranscriptSpeakerLocationCore location =
-                cache.document->speakerLocation(layout.speakerId, sourceFrame);
-            layout.speakerLocationX = location.x;
-            layout.speakerLocationY = location.y;
-            layout.speakerLocationValid = location.valid;
+        if (cache.document && !layout.speakerId.empty()) {
+            const auto profiles =
+                cache.document->speakerProfiles();
+            const auto profile = std::find_if(
+                profiles.begin(),
+                profiles.end(),
+                [&](const jcut::TranscriptSpeakerProfileCore& candidate) {
+                    return candidate.id == layout.speakerId;
+                });
+            if (profile != profiles.end()) {
+                layout.speakerPrimaryColor =
+                    profile->primaryColor;
+                layout.speakerSecondaryColor =
+                    profile->secondaryColor;
+                layout.speakerAccentColor =
+                    profile->accentColor;
+            }
+            if (!clip.transcriptOverlay.useManualPlacement) {
+                const jcut::TranscriptSpeakerLocationCore location =
+                    cache.document->speakerLocation(
+                        layout.speakerId, sourceFrame);
+                layout.speakerLocationX = location.x;
+                layout.speakerLocationY = location.y;
+                layout.speakerLocationValid = location.valid;
+            }
+            const double sourceFps =
+                std::isfinite(clip.sourceFps) && clip.sourceFps > 0.0
+                ? clip.sourceFps : 30.0;
+            const std::int64_t transcriptFrame =
+                std::max<std::int64_t>(
+                    0,
+                    static_cast<std::int64_t>(std::floor(
+                        (static_cast<double>(sourceFrame) / sourceFps) *
+                        30.0)));
+            const std::string clipId =
+                clip.persistentId.empty()
+                ? std::to_string(clip.id)
+                : clip.persistentId;
+            std::vector<jcut::SpeakerTrackAssignmentCore>
+                assignments;
+            if (clip.speakerFramingManualTrackId >= 0 ||
+                !clip.speakerFramingManualStreamId.empty()) {
+                assignments.push_back({
+                    clip.speakerFramingManualTrackId,
+                    layout.speakerId,
+                    clip.speakerFramingManualStreamId,
+                    sourceFrame});
+            } else {
+                assignments =
+                    jcut::transcriptSpeakerTrackAssignmentsAtFrame(
+                        cache.document->root(),
+                        clipId,
+                        layout.speakerId,
+                        sourceFrame);
+            }
+            double sectionRotationDegrees = 0.0;
+            for (const auto& assignment : assignments) {
+                sectionRotationDegrees = assignment.rotationDegrees;
+                const jcut::FaceTrackingSampleCore sample =
+                    jcut::sampleFaceContinuityTrack(
+                        activePath,
+                        clipId,
+                        assignment.trackId,
+                        assignment.streamId,
+                        sourceFrame,
+                        clip.speakerFramingMinConfidence,
+                        clip.sourceInFrame,
+                        localTimelineFrame,
+                        clip.speakerFramingGapHoldFrames,
+                        clip.speakerFramingCenterSmoothingFrames,
+                        clip.speakerFramingZoomSmoothingFrames,
+                        clip.speakerFramingSmoothingMode,
+                        clip.speakerFramingCenterSmoothingStrength,
+                        clip.speakerFramingZoomSmoothingStrength);
+                if (!sample.valid) continue;
+                layout.speakerTrackingX = sample.x;
+                layout.speakerTrackingY = sample.y;
+                layout.speakerTrackingBoxSize = sample.box;
+                layout.speakerTrackingRotationDegrees =
+                    assignment.rotationDegrees;
+                layout.speakerTrackingValid = true;
+                break;
+            }
+            if (!layout.speakerTrackingValid &&
+                std::abs(sectionRotationDegrees) > 0.000001) {
+                layout.speakerTrackingRotationDegrees =
+                    sectionRotationDegrees;
+                layout.speakerTrackingCenterRotationFallback = true;
+            }
+            if (!layout.speakerTrackingValid) {
+                const jcut::TranscriptSpeakerTrackingSampleCore tracking =
+                    cache.document->speakerTrackingSample(
+                        layout.speakerId,
+                        transcriptFrame,
+                        clip.speakerFramingMinConfidence);
+                layout.speakerTrackingX = tracking.x;
+                layout.speakerTrackingY = tracking.y;
+                layout.speakerTrackingBoxSize = tracking.boxSize;
+                layout.speakerTrackingValid = tracking.valid;
+                if (tracking.valid) {
+                    layout.speakerTrackingCenterRotationFallback =
+                        false;
+                    layout.speakerTrackingRotationDegrees = 0.0;
+                }
+            }
         }
         return layout;
+    }
+
+    ImageBuffer renderTitleClipLayer(
+        const TimelineRenderRequest& request,
+        const ActiveVisualClip& active)
+    {
+        if (!active.clip ||
+            active.clip->mediaKind != "title") {
+            return {};
+        }
+        const EditorClip& clip = *active.clip;
+        const int localFrame = std::max(
+            0,
+            static_cast<int>(
+                std::floor(request.timelineFrame)) -
+                clip.startFrame);
+        const jcut::EditorTitleKeyframe title =
+            jcut::evaluateEditorClipTitleAtLocalFrame(
+                clip, localFrame);
+        ImageBuffer textPattern;
+        ImageBuffer framePattern;
+        ImageBuffer logo;
+        const auto decodeTitleAsset =
+            [&](const std::string& storedPath,
+                SizeI requestedSize,
+                ImageBuffer* imageOut) {
+                if (storedPath.empty() || !imageOut) {
+                    return;
+                }
+                std::filesystem::path path(storedPath);
+                if (path.is_relative() &&
+                    !request.rootDirectory.empty()) {
+                    path =
+                        std::filesystem::path(
+                            request.rootDirectory) /
+                        path;
+                }
+                std::string ignoredError;
+                sourceForPath(
+                    path.lexically_normal().string()).
+                    decodeScaledFrame(
+                        0,
+                        requestedSize,
+                        imageOut,
+                        &ignoredError);
+            };
+        if (title.textMaterialStyle ==
+            "image_pattern") {
+            decodeTitleAsset(
+                title.textPatternImagePath,
+                {96, 96},
+                &textPattern);
+        }
+        if (title.windowFrameMaterialStyle ==
+            "image_pattern") {
+            decodeTitleAsset(
+                title.windowFramePatternImagePath,
+                {96, 96},
+                &framePattern);
+        }
+        const int logoSize = std::clamp(
+            static_cast<int>(
+                std::lround(title.fontSize * 1.35)),
+            34,
+            140);
+        decodeTitleAsset(
+            title.logoPath,
+            {logoSize, logoSize},
+            &logo);
+        ImageBuffer decoded = renderTitleImage(
+            title,
+            request.outputSize,
+            textPattern.empty() ? nullptr : &textPattern,
+            framePattern.empty() ? nullptr : &framePattern,
+            logo.empty() ? nullptr : &logo);
+        jcut::EditorGradingKeyframe grade =
+            jcut::evaluateEditorClipGradingAtLocalFrame(
+                clip, localFrame);
+        const bool gradingEnabled =
+            clip.gradingPreviewEnabled &&
+            (!active.track ||
+             active.track->gradingPreviewEnabled);
+        if (!gradingEnabled) {
+            const double opacity = grade.opacity;
+            grade = {};
+            grade.opacity = opacity;
+        }
+        applyClipGrade(
+            &decoded,
+            grade,
+            active.track &&
+                active.track->visualMode == 1);
+        ImageBuffer layer = makeSolidImage(
+            request.outputSize, 0, 0, 0, 0);
+        const jcut::EditorTransformKeyframe transform =
+            resolvedPresentationTransform(
+                request,
+                clip,
+                {},
+                localFrame,
+                decoded.size);
+        blitTransformedImage(
+            decoded,
+            &layer,
+            0,
+            0,
+            transform);
+        return layer;
+    }
+
+    ImageBuffer renderTranscriptOverlayLayer(
+        const TimelineRenderRequest& request)
+    {
+        ImageBuffer overlay;
+        for (const EditorClip& clip :
+             request.document.clips) {
+            const double clipStart =
+                static_cast<double>(clip.startFrame);
+            const double clipEnd =
+                static_cast<double>(
+                    clip.startFrame +
+                    std::max(1, clip.durationFrames));
+            if (!clip.transcriptOverlay.enabled ||
+                request.timelineFrame < clipStart ||
+                request.timelineFrame >= clipEnd ||
+                (clip.mediaKind != "audio" &&
+                 !clip.hasAudio)) {
+                continue;
+            }
+            const int localFrame = std::max(
+                0,
+                static_cast<int>(
+                    std::floor(request.timelineFrame)) -
+                    clip.startFrame);
+            const int sourceFrame =
+                sourceFrameForClip(
+                    request.document,
+                    clip,
+                    localFrame);
+            const std::string sourcePath =
+                resolveClipPath(
+                    clip,
+                    request.rootDirectory);
+            const jcut::TranscriptOverlayLayoutCore layout =
+                transcriptLayout(
+                    request.document,
+                    clip,
+                    sourcePath,
+                    sourceFrame,
+                    request.timelineFrame -
+                        static_cast<double>(
+                            clip.startFrame),
+                    request.rootDirectory);
+            if (layout.lines.empty()) {
+                continue;
+            }
+            if (overlay.empty()) {
+                overlay = makeSolidImage(
+                    request.outputSize,
+                    0,
+                    0,
+                    0,
+                    0);
+            }
+            drawTranscriptOverlay(
+                &overlay,
+                clip.transcriptOverlay,
+                layout);
+        }
+        return overlay;
+    }
+
+    ImageBuffer renderHardwareOverlayLayer(
+        const TimelineRenderRequest& request,
+        int baseTrackOrder,
+        std::string* error)
+    {
+        ImageBuffer overlay;
+        std::unordered_set<int> upperTrackIds;
+        for (std::size_t index = 0;
+             index < request.document.tracks.size();
+             ++index) {
+            if (static_cast<int>(index) >
+                baseTrackOrder) {
+                upperTrackIds.insert(
+                    request.document.tracks[index].id);
+            }
+        }
+        if (!upperTrackIds.empty()) {
+            TimelineRenderRequest upperRequest =
+                request;
+            upperRequest.preferHardwareFrame = false;
+            upperRequest.allowCpuFallback = true;
+            upperRequest.transparentBackground = true;
+            auto& upperClips =
+                upperRequest.document.clips;
+            upperClips.erase(
+                std::remove_if(
+                    upperClips.begin(),
+                    upperClips.end(),
+                    [&](EditorClip& clip) {
+                        clip.transcriptOverlay.enabled =
+                            false;
+                        return !upperTrackIds.contains(
+                            clip.trackId);
+                    }),
+                upperClips.end());
+            if (!upperClips.empty()) {
+                TimelineRenderResult upperResult =
+                    renderFrame(upperRequest);
+                if (!upperResult.success) {
+                    if (error) {
+                        *error =
+                            upperResult.message.empty()
+                            ? "upper visual layer composition failed"
+                            : "upper visual layer composition failed: " +
+                                upperResult.message;
+                    }
+                    return {};
+                }
+                overlay =
+                    std::move(upperResult.image);
+            }
+        }
+        const ImageBuffer transcriptLayer =
+            renderTranscriptOverlayLayer(request);
+        if (!transcriptLayer.empty()) {
+            if (overlay.empty()) {
+                overlay = makeSolidImage(
+                    request.outputSize,
+                    0,
+                    0,
+                    0,
+                    0);
+            }
+            blitImage(
+                transcriptLayer,
+                &overlay,
+                0,
+                0);
+        }
+        return overlay;
+    }
+
+    jcut::EditorTransformKeyframe resolvedPresentationTransform(
+        const TimelineRenderRequest& request,
+        const EditorClip& clip,
+        const std::string& resolvedSourcePath,
+        int sourceFrame,
+        core::SizeI decodedSize)
+    {
+        jcut::EditorTransformKeyframe transform =
+            jcut::evaluateEditorClipRenderTransformAtTimelineFrame(
+                request.document,
+                clip,
+                static_cast<std::int64_t>(
+                    std::floor(request.timelineFrame)));
+        const double localTimelineFrame =
+            request.timelineFrame -
+            static_cast<double>(clip.startFrame);
+        bool bakedSpeakerFramingApplied = false;
+        jcut::EditorTransformKeyframe resolvedSpeakerFraming =
+            jcut::evaluateEditorClipBakedSpeakerFramingAtLocalFrame(
+                clip,
+                localTimelineFrame,
+                decodedSize.width,
+                decodedSize.height,
+                request.outputSize.width,
+                request.outputSize.height,
+                &bakedSpeakerFramingApplied);
+        bool speakerFramingApplied =
+            bakedSpeakerFramingApplied;
+        if (!speakerFramingApplied &&
+            clip.speakerFramingEnabled &&
+            clip.mediaKind != "title") {
+            const jcut::TranscriptOverlayLayoutCore layout =
+                transcriptLayout(
+                    request.document,
+                    clip,
+                    resolvedSourcePath,
+                    sourceFrame,
+                    localTimelineFrame,
+                    request.rootDirectory);
+            if (layout.speakerTrackingValid) {
+                resolvedSpeakerFraming =
+                    jcut::
+                        evaluateEditorClipSpeakerFramingForFaceBoxAtLocalFrame(
+                            clip,
+                            localTimelineFrame,
+                            layout.speakerTrackingX,
+                            layout.speakerTrackingY,
+                            layout.speakerTrackingBoxSize,
+                            layout.
+                                speakerTrackingRotationDegrees,
+                            decodedSize.width,
+                            decodedSize.height,
+                            request.outputSize.width,
+                            request.outputSize.height,
+                            &speakerFramingApplied);
+            } else if (
+                layout.speakerTrackingCenterRotationFallback &&
+                clip.speakerFramingKeyframes.empty()) {
+                const std::int64_t framingLocalFrame =
+                    std::max<std::int64_t>(
+                        0,
+                        static_cast<std::int64_t>(
+                            std::floor(localTimelineFrame)));
+                bool enabledAtFrame =
+                    clip.speakerFramingEnabled;
+                for (const auto& keyframe :
+                     clip.speakerFramingEnabledKeyframes) {
+                    if (keyframe.frame >
+                        framingLocalFrame) {
+                        break;
+                    }
+                    enabledAtFrame = keyframe.enabled;
+                }
+                double targetBox = -1.0;
+                for (const auto& keyframe :
+                     clip.speakerFramingTargetKeyframes) {
+                    if (keyframe.frame >
+                        framingLocalFrame) {
+                        break;
+                    }
+                    targetBox = keyframe.scaleX;
+                }
+                if (enabledAtFrame && targetBox > 0.0) {
+                    resolvedSpeakerFraming = {};
+                    resolvedSpeakerFraming.frame =
+                        framingLocalFrame;
+                    resolvedSpeakerFraming.rotation =
+                        layout.
+                            speakerTrackingRotationDegrees;
+                    speakerFramingApplied = true;
+                }
+            }
+        }
+        if (speakerFramingApplied &&
+            !clip.sourceTransformLocked) {
+            transform.frame =
+                resolvedSpeakerFraming.frame;
+            transform.translationX =
+                clip.baseTranslationX +
+                resolvedSpeakerFraming.translationX;
+            transform.translationY =
+                clip.baseTranslationY +
+                resolvedSpeakerFraming.translationY;
+            transform.rotation =
+                clip.baseRotation +
+                resolvedSpeakerFraming.rotation;
+            transform.scaleX =
+                clip.baseScaleX *
+                resolvedSpeakerFraming.scaleX;
+            transform.scaleY =
+                clip.baseScaleY *
+                resolvedSpeakerFraming.scaleY;
+        }
+        return transform;
     }
 
     MediaSource& sourceForPath(const std::string& path)
     {
         auto it = m_sources.find(path);
         if (it == m_sources.end()) {
-            it = m_sources.emplace(path, std::make_unique<MediaSource>(path)).first;
+            it = m_sources.emplace(
+                path,
+                std::make_unique<MediaSource>(path, m_decoderPolicy)).first;
         }
         return *it->second;
     }
 
     std::unordered_map<std::string, std::unique_ptr<MediaSource>> m_sources;
     std::unordered_map<std::string, TranscriptCacheEntry> m_transcripts;
+    DecoderPolicySettingsCore m_decoderPolicy;
 };
 
 TimelineRenderer::TimelineRenderer()

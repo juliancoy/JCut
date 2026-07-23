@@ -168,6 +168,48 @@ bool deleteTranscriptWord(json* root,
     return true;
 }
 
+bool deleteTranscriptWords(
+    json* root,
+    const std::vector<TranscriptWordRef>& references,
+    std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (!root || references.empty()) return false;
+    std::vector<TranscriptWordRef> ordered = references;
+    std::sort(
+        ordered.begin(), ordered.end(),
+        [](const TranscriptWordRef& left,
+           const TranscriptWordRef& right) {
+            if (left.segmentIndex != right.segmentIndex) {
+                return left.segmentIndex > right.segmentIndex;
+            }
+            return left.wordIndex > right.wordIndex;
+        });
+    ordered.erase(
+        std::unique(
+            ordered.begin(), ordered.end(),
+            [](const TranscriptWordRef& left,
+               const TranscriptWordRef& right) {
+                return left.segmentIndex == right.segmentIndex &&
+                    left.wordIndex == right.wordIndex;
+            }),
+        ordered.end());
+    for (const TranscriptWordRef& reference : ordered) {
+        if (!wordAt(root, reference, errorOut)) return false;
+    }
+    for (const TranscriptWordRef& reference : ordered) {
+        json& words =
+            (*root)["segments"]
+                   [static_cast<std::size_t>(
+                       reference.segmentIndex)]["words"];
+        words.erase(words.begin() + reference.wordIndex);
+    }
+    (*root)["transcript_deleted_edits"] =
+        root->value("transcript_deleted_edits", 0) +
+        static_cast<int>(ordered.size());
+    return true;
+}
+
 std::optional<TranscriptWordRef> insertTranscriptWord(
     json* root,
     const TranscriptWordRef& anchor,
@@ -337,6 +379,54 @@ bool moveTranscriptWordRenderOrder(json* root,
               ordered[static_cast<std::size_t>(other)]);
     for (std::size_t order = 0; order < ordered.size(); ++order) {
         (*ordered[order].word)["render_order"] = static_cast<int>(order);
+    }
+    return true;
+}
+
+bool reorderTranscriptWords(
+    json* root,
+    const std::vector<TranscriptWordRef>& orderedReferences,
+    std::string* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (!root || orderedReferences.empty()) return false;
+    std::vector<LocatedWord> current = locatedWords(root);
+    if (current.empty()) return false;
+    std::vector<LocatedWord*> desired;
+    desired.reserve(current.size());
+    for (const TranscriptWordRef& reference :
+         orderedReferences) {
+        auto found = findLocated(&current, reference);
+        if (found == current.end()) {
+            if (errorOut) {
+                *errorOut =
+                    "Transcript reorder word no longer exists.";
+            }
+            return false;
+        }
+        LocatedWord* pointer = &*found;
+        if (std::find(desired.begin(), desired.end(), pointer) ==
+            desired.end()) {
+            desired.push_back(pointer);
+        }
+    }
+    for (LocatedWord& word : current) {
+        if (std::find(desired.begin(), desired.end(), &word) ==
+            desired.end()) {
+            desired.push_back(&word);
+        }
+    }
+    bool changed = false;
+    for (std::size_t index = 0; index < desired.size(); ++index) {
+        const int prior = desired[index]->word->value(
+            "render_order",
+            static_cast<int>(index));
+        if (prior != static_cast<int>(index)) changed = true;
+    }
+    if (!changed) return false;
+    for (std::size_t index = 0; index < desired.size(); ++index) {
+        (*desired[index]->word)["render_order"] =
+            static_cast<int>(index);
     }
     return true;
 }

@@ -18,6 +18,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <functional>
+#include <nlohmann/json_fwd.hpp>
 
 #include "editor_shared.h"
 #include "transcript_document_io.h"
@@ -166,6 +167,9 @@ private slots:
 
 private:
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
+    bool applyTranscriptDocumentMutation(
+        const std::function<bool(
+            nlohmann::json*, std::string*)>& mutator);
     bool saveLoadedTranscriptDocument();
     void queueLoadedTranscriptDocumentSave();
     void startTranscriptLoadRequest(const QString& clipFilePath, const QString& transcriptPath);

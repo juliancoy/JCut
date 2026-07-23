@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio_dynamics_core.h"
 #include "background_fill_effect_fwd.h"
 #include "loiacono/spectrum_settings_dialog.h"
 #include "playback_timing_context.h"
@@ -35,28 +36,8 @@ public:
         Spectrum = 1,
     };
 
-    struct AudioDynamicsSettings {
-        bool amplifyEnabled = false;
-        qreal amplifyDb = 0.0;
-        bool normalizeEnabled = false;
-        qreal normalizeTargetDb = -1.0;
-        bool selectiveNormalizeEnabled = false;
-        qreal selectiveNormalizeMinSegmentSeconds = 0.5;
-        qreal selectiveNormalizePeakDb = -12.0;
-        int selectiveNormalizePasses = 1;
-        bool selectiveNormalizeOverlayVisible = true;
-        bool transcriptNormalizeEnabled = false;
-        bool peakReductionEnabled = false;
-        qreal peakThresholdDb = -6.0;
-        bool limiterEnabled = false;
-        qreal limiterThresholdDb = -1.0;
-        bool compressorEnabled = false;
-        qreal compressorThresholdDb = -18.0;
-        qreal compressorRatio = 3.0;
-        bool softClipEnabled = false;
-        bool stereoToMonoEnabled = false;
-        bool waveformPreviewPostProcessing = true;
-    };
+    using AudioDynamicsSettings =
+        jcut::audio::DynamicsSettingsCore;
 
     struct PipelineStageSnapshot {
         QString label;
