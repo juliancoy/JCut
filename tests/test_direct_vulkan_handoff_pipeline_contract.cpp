@@ -1,14 +1,22 @@
 #include <QtTest/QtTest>
 
+#include "../direct_vulkan_media_handoff_plan.h"
+
 #include <QFile>
+#include <QImage>
 #include <QString>
+
+extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>
+}
 
 class TestDirectVulkanHandoffPipelineContract : public QObject {
   Q_OBJECT
 
 private slots:
   void directPreviewUsesExtractedPipelineBeforeRenderPass();
-  void directPreviewRecoversDroppedUpdateRequests();
+  void directPreviewUsesQtUpdateContract();
   void directPreviewRecordsTextureUploadsBeforeRenderPass();
   void directPreviewRecordsGpuHandoffIntoFrameCommandBuffer();
   void hardwareDirectExportBuffersAreRetiredBeforeReplacement();
@@ -17,6 +25,8 @@ private slots:
   void graphicsPipelinesDeclareDisabledDepthStencilState();
   void directPreviewTransitionsAuxiliarySampledImagesBeforeDraw();
   void directPreviewUsesPerClipHandoffDescriptors();
+  void mediaOwnerPlanDeduplicatesHiddenParentChildren();
+  void mediaOwnerPayloadReuseFailsClosed();
   void descriptorUpdatesFollowAcquiredSwapchainOwnership();
   void maskChildrenFailClosedWithoutAMatte();
   void directPreviewRequiresHardwarePayloadsFromCache();
@@ -80,18 +90,19 @@ QString readSourceFiles(const QStringList &relativePaths) {
 
 } // namespace
 
-void TestDirectVulkanHandoffPipelineContract::directPreviewRecoversDroppedUpdateRequests() {
+void TestDirectVulkanHandoffPipelineContract::directPreviewUsesQtUpdateContract() {
   const QString source =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
   QVERIFY2(!source.isEmpty(),
            "direct_vulkan_preview_window.cpp must be readable");
-  QVERIFY2(source.contains(QStringLiteral("kStalePreviewUpdateMs")) &&
-               source.contains(QStringLiteral("pendingAgeMs < kStalePreviewUpdateMs")) &&
-               source.contains(QStringLiteral("QElapsedTimer m_previewUpdateClock")) &&
-               source.contains(QStringLiteral("Qt::QueuedConnection")) &&
-               source.contains(QStringLiteral("m_updateDeliveryQueued")) &&
-               source.contains(QStringLiteral("stalePreviewUpdateRecoveries")),
-           "preview updates must be delivered after the current frame callback and reissued after a bounded monotonic timeout instead of permanently latching video presentation");
+  const qsizetype frameReady = source.lastIndexOf(QStringLiteral("m_window->frameReady();"));
+  const qsizetype schedule = source.indexOf(
+      QStringLiteral("m_owner->schedulePreviewUpdate();"), frameReady);
+  QVERIFY2(source.contains(QStringLiteral("requestUpdate();")) &&
+               !source.contains(QStringLiteral("m_updateDeliveryQueued")) &&
+               !source.contains(QStringLiteral("kStalePreviewUpdateMs")) &&
+               frameReady >= 0 && schedule > frameReady,
+           "preview rendering must use QVulkanWindow's documented continuous-rendering contract: request the next update directly after frameReady without a second retry state machine");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -102,7 +113,7 @@ void TestDirectVulkanHandoffPipelineContract::
            "direct_vulkan_preview_window.cpp must be readable");
 
   const qsizetype recordIndex =
-      source.indexOf(QStringLiteral("handoffResources->pipeline->record("));
+      source.indexOf(QStringLiteral("mediaOwnerResources->pipeline->record("));
   const qsizetype beginRenderPassIndex =
       source.indexOf(QStringLiteral("vkCmdBeginRenderPass"));
   QVERIFY2(recordIndex >= 0,
@@ -134,6 +145,42 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(source.contains(QStringLiteral(
                "setSampledImage(ownerResult.imageView")),
            "mask children must reuse only the parent's decoded image view");
+  const QString previewSurface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(previewSurface.contains(QStringLiteral(
+               "status.drawSuppressed = activeAsMediaProvider && !activeAsVisibleLayer")),
+           "a hidden parent retained only as a Mask Matte media provider must "
+           "not composite as a full-frame preview layer");
+  QVERIFY2(previewSurface.contains(QStringLiteral(
+               "clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||\n"
+               "                    maskMatteSourceIds.contains(clip.id)")),
+           "the hidden parent status must survive draw ordering so the Vulkan "
+           "handoff plan can use it as the canonical media provider");
+  QVERIFY2(previewSurface.contains(QStringLiteral(
+               "sourceParent->clipRole == ClipRole::Media")) &&
+               previewSurface.contains(QStringLiteral(
+                   "sourceParent->mediaType == ClipMediaType::Video")),
+           "preview must reject orphaned mattes and non-video/non-media parents");
+  QVERIFY2(previewSurface.contains(QStringLiteral("clip.maskEnabled")) &&
+               previewSurface.contains(QStringLiteral(
+                   "markerStatus.maskShowOnly = clip.maskShowOnly")),
+           "child enablement and mask-only display must survive the preview handoff");
+  const qsizetype markerLoopBegin = previewSurface.indexOf(
+      QStringLiteral("orderedStatuses.reserve"));
+  const qsizetype markerLoopPredicateEnd = previewSurface.indexOf(
+      QStringLiteral("const QString sourceId"), markerLoopBegin);
+  const QString markerLoopPredicate =
+      markerLoopBegin >= 0 && markerLoopPredicateEnd > markerLoopBegin
+          ? previewSurface.mid(markerLoopBegin,
+                               markerLoopPredicateEnd - markerLoopBegin)
+          : QString();
+  QVERIFY2(markerLoopPredicate.contains(QStringLiteral(
+               "clipVisualPlaybackEnabled(clip, m_interaction.tracks)")),
+           "preview must not clone or composite a Mask Matte status when its "
+           "generated child track or clip visibility is disabled");
+  QVERIFY2(previewSurface.contains(QStringLiteral(
+               "applyCorrectionPolygonsToMaskImage")),
+           "Mask Matte correction polygons must be applied to the preview matte");
   const QString trackPreviewSources = readSourceFiles({
       QStringLiteral("editor_inspector_bindings.cpp"),
       QStringLiteral("vulkan_preview_surface.cpp"),
@@ -446,10 +493,42 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(backend.contains(
                QStringLiteral("ensureClipHandoffResources(handoffResourceId)")),
            "direct preview must resolve handoff resources by clip identity");
+  const QString handoffPlan =
+      readSourceFile(QStringLiteral("direct_vulkan_media_handoff_plan.h"));
+  QVERIFY2(!handoffPlan.isEmpty(),
+           "direct_vulkan_media_handoff_plan.h must be readable");
   QVERIFY2(backend.contains(QStringLiteral("const QString handoffResourceId = status.clipId")) &&
-               backend.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")) &&
+               handoffPlan.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")) &&
                backend.contains(QStringLiteral("handoffResources->resources->setSampledImage(ownerResult.imageView")),
            "virtual mask children must reuse the parent's sampled image through a child-owned descriptor bundle");
+  const qsizetype prepareOwnerBegin = backend.indexOf(
+      QStringLiteral("const auto prepareBaseMediaOwner"));
+  const qsizetype prepareOwnerEnd = backend.indexOf(
+      QStringLiteral("// Upload/import each decoded media payload exactly once"),
+      prepareOwnerBegin);
+  const QString prepareOwnerBody =
+      prepareOwnerBegin >= 0 && prepareOwnerEnd > prepareOwnerBegin
+          ? backend.mid(prepareOwnerBegin, prepareOwnerEnd - prepareOwnerBegin)
+          : QString();
+  QVERIFY2(prepareOwnerBody.contains(QStringLiteral(
+               "mediaOwnerResources->resources->uploadImageTexture")) &&
+               prepareOwnerBody.contains(QStringLiteral(
+                   "mediaOwnerResources->pipeline->record")),
+           "the single media-owner preparation path must cover both CPU uploads "
+           "and hardware/external Vulkan handoff");
+  QVERIFY2(backend.contains(QStringLiteral(
+               "mediaOwnerHandoffResults.insert(entry.mediaOwnerClipId, ownerResult)")) &&
+               backend.contains(QStringLiteral(
+                   "mediaOwnerPayloadMatches(providerStatus, status)")),
+           "children must reuse one canonical owner result and fail closed when "
+           "their cloned payload identity diverges");
+  QVERIFY2(backend.contains(QStringLiteral("const QString ownerSecondaryKey")) &&
+               backend.contains(QStringLiteral(
+                   "mediaOwnerHandoffResults.value(ownerSecondaryKey)")) &&
+               backend.contains(QStringLiteral(
+                   "secondaryHandoffResources->resources->setSampledImage")),
+           "frame-crossfade payloads inherited by mask children must also be "
+           "handed off once per media owner and rebound through child descriptors");
   QVERIFY2(backend.contains(QStringLiteral("if (!status.maskClipSource && !curveLut.isEmpty())")),
            "mask children must not overwrite the parent's normal grading LUT");
   QVERIFY2(backend.contains(QStringLiteral("if (!handoffResources->resources->beginFrameUploads(")),
@@ -518,6 +597,101 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
+    mediaOwnerPlanDeduplicatesHiddenParentChildren() {
+  VulkanPreviewClipFrameStatus hiddenParent;
+  hiddenParent.clipId = QStringLiteral("source");
+  hiddenParent.mediaOwnerClipId = hiddenParent.clipId;
+  hiddenParent.active = true;
+  hiddenParent.drawSuppressed = true;
+
+  VulkanPreviewClipFrameStatus alphaChild;
+  alphaChild.clipId = QStringLiteral("alpha");
+  alphaChild.mediaOwnerClipId = hiddenParent.clipId;
+  alphaChild.active = true;
+
+  VulkanPreviewClipFrameStatus personChild = alphaChild;
+  personChild.clipId = QStringLiteral("person");
+
+  VulkanPreviewClipFrameStatus unavailableChild = alphaChild;
+  unavailableChild.clipId = QStringLiteral("unavailable");
+  unavailableChild.drawSuppressed = true;
+
+  VulkanPreviewClipFrameStatus independentClip;
+  independentClip.clipId = QStringLiteral("other-source");
+  independentClip.mediaOwnerClipId = independentClip.clipId;
+  independentClip.active = true;
+
+  const QVector<VulkanPreviewClipFrameStatus> statuses = {
+      hiddenParent, alphaChild, personChild, unavailableChild, independentClip};
+  const auto plan =
+      jcut::direct_vulkan_preview::mediaOwnerHandoffPlan(statuses);
+
+  QCOMPARE(plan.size(), 2);
+  QCOMPARE(plan.at(0).mediaOwnerClipId, QStringLiteral("source"));
+  QCOMPARE(plan.at(0).providerStatusIndex, 0);
+  QCOMPARE(plan.at(0).consumerStatusIndices.size(), 2);
+  QCOMPARE(plan.at(0).consumerStatusIndices.at(0), 1);
+  QCOMPARE(plan.at(0).consumerStatusIndices.at(1), 2);
+  QCOMPARE(plan.at(1).mediaOwnerClipId, QStringLiteral("other-source"));
+  QCOMPARE(plan.at(1).providerStatusIndex, 4);
+
+  const auto parentOmittedPlan =
+      jcut::direct_vulkan_preview::mediaOwnerHandoffPlan({alphaChild, personChild});
+  QCOMPARE(parentOmittedPlan.size(), 1);
+  QCOMPARE(parentOmittedPlan.at(0).mediaOwnerClipId, QStringLiteral("source"));
+  QCOMPARE(parentOmittedPlan.at(0).providerStatusIndex, 0);
+  QCOMPARE(parentOmittedPlan.at(0).consumerStatusIndices.size(), 2);
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    mediaOwnerPayloadReuseFailsClosed() {
+  const QImage image(8, 8, QImage::Format_RGBA8888);
+  VulkanPreviewClipFrameStatus cpuProvider;
+  cpuProvider.clipId = QStringLiteral("source");
+  cpuProvider.mediaOwnerClipId = cpuProvider.clipId;
+  cpuProvider.presentedSourceFrame = 42;
+  cpuProvider.frameSize = image.size();
+  cpuProvider.frame = editor::FrameHandle::createCpuFrame(
+      image, cpuProvider.presentedSourceFrame, QStringLiteral("/media/source.mp4"));
+
+  VulkanPreviewClipFrameStatus cpuChild = cpuProvider;
+  cpuChild.clipId = QStringLiteral("mask");
+  QVERIFY(jcut::direct_vulkan_preview::mediaOwnerPayloadMatches(
+      cpuProvider, cpuChild));
+
+  cpuChild.presentedSourceFrame = 43;
+  QVERIFY(!jcut::direct_vulkan_preview::mediaOwnerPayloadMatches(
+      cpuProvider, cpuChild));
+  cpuChild = cpuProvider;
+  cpuChild.clipId = QStringLiteral("mask");
+  cpuChild.frame = editor::FrameHandle::createCpuFrame(
+      image, 43, QStringLiteral("/media/source.mp4"));
+  QVERIFY(!jcut::direct_vulkan_preview::mediaOwnerPayloadMatches(
+      cpuProvider, cpuChild));
+
+  AVFrame* rawFrame = av_frame_alloc();
+  QVERIFY(rawFrame != nullptr);
+  rawFrame->format = AV_PIX_FMT_NV12;
+  rawFrame->width = 8;
+  rawFrame->height = 8;
+  QCOMPARE(av_frame_get_buffer(rawFrame, 32), 0);
+  VulkanPreviewClipFrameStatus hardwareProvider = cpuProvider;
+  hardwareProvider.frame = editor::FrameHandle::createHardwareFrame(
+      rawFrame, 42, QStringLiteral("/media/source.mp4"), AV_PIX_FMT_NV12);
+  hardwareProvider.frameSize = hardwareProvider.frame.size();
+  av_frame_free(&rawFrame);
+  QVERIFY(hardwareProvider.frame.hasHardwareFrame());
+
+  VulkanPreviewClipFrameStatus hardwareChild = hardwareProvider;
+  hardwareChild.clipId = QStringLiteral("hardware-mask");
+  QVERIFY(jcut::direct_vulkan_preview::mediaOwnerPayloadMatches(
+      hardwareProvider, hardwareChild));
+  hardwareChild.frame = cpuProvider.frame;
+  QVERIFY(!jcut::direct_vulkan_preview::mediaOwnerPayloadMatches(
+      hardwareProvider, hardwareChild));
+}
+
+void TestDirectVulkanHandoffPipelineContract::
     descriptorUpdatesFollowAcquiredSwapchainOwnership() {
   const QString resources = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
   QVERIFY2(!resources.isEmpty(), "vulkan_resources.cpp must be readable");
@@ -572,8 +746,8 @@ void TestDirectVulkanHandoffPipelineContract::
   const QString backend =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
   QVERIFY2(!backend.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
-  QVERIFY2(backend.contains(QStringLiteral("status.frame.hasCpuImage()")) &&
-               backend.contains(QStringLiteral("uploadImageTexture(cb, status.frame.cpuImage())")) &&
+  QVERIFY2(backend.contains(QStringLiteral("providerStatus.frame.hasCpuImage()")) &&
+               backend.contains(QStringLiteral("cb, providerStatus.frame.cpuImage()")) &&
                backend.contains(QStringLiteral("cpu_image_upload")),
            "direct Vulkan preview must upload still-image CPU frames through "
            "the Vulkan texture path instead of the video handoff path");
@@ -1802,10 +1976,11 @@ void TestDirectVulkanHandoffPipelineContract::
            "clip mapping as video decode");
   QVERIFY2(!source.contains(QStringLiteral("speakerAtTranscriptSourceFrame")),
            "export must not keep a separate unpadded speaker resolver");
-  QVERIFY2(source.contains(QStringLiteral("clip.sourceFrameSize.isValid()")) &&
-               source.contains(QStringLiteral("? clip.sourceFrameSize")),
-           "export video placement must prefer clip.sourceFrameSize before "
-           "decoded payload size, matching direct preview transform geometry");
+  QVERIFY2(source.contains(QStringLiteral("timingSource.sourceFrameSize.isValid()")) &&
+               source.contains(QStringLiteral("? timingSource.sourceFrameSize")),
+           "export video placement must prefer the resolved timing owner's "
+           "sourceFrameSize before decoded payload size so a Mask Matte and "
+           "its parent share transform geometry");
   QVERIFY2(source.contains(QStringLiteral("renderer_texture_origin")) &&
                source.contains(QStringLiteral("renderer_texture_normalized")),
            "export diagnostics must state the renderer texture contract instead "

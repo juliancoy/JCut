@@ -1,67 +1,29 @@
 #include "grading_tab.h"
+#include "editor_grading_core.h"
 #include "grading_histogram_widget.h"
 
 namespace {
 
-QVector<QPointF> simplifyCurvePoints(const QVector<QPointF>& points,
-                                     bool smoothingEnabled,
-                                     int maximumPoints = 12)
+std::vector<jcut::EditorPoint> editorCurveFromQt(
+    const QVector<QPointF>& points)
 {
-    constexpr int kSamples = TimelineClip::kGradingCurveLutSize;
-    const QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
-    const QVector<quint8> target = gradingCurveLut8(sanitized, kSamples, smoothingEnabled);
-    QVector<int> knots{0, kSamples - 1};
-    QVector<QPointF> candidate;
-    while (knots.size() <= maximumPoints) {
-        candidate.clear();
-        candidate.reserve(knots.size());
-        for (const int index : std::as_const(knots)) {
-            candidate.push_back(QPointF(static_cast<qreal>(index) / (kSamples - 1),
-                                        static_cast<qreal>(target.at(index)) / 255.0));
-        }
-        const QVector<quint8> approximation =
-            gradingCurveLut8(candidate, kSamples, smoothingEnabled);
-        int worstIndex = -1;
-        int worstError = 0;
-        for (int i = 1; i < kSamples - 1; ++i) {
-            const int error = std::abs(static_cast<int>(target.at(i)) -
-                                       static_cast<int>(approximation.at(i)));
-            if (error > worstError) {
-                worstError = error;
-                worstIndex = i;
-            }
-        }
-        if (worstError <= 1) {
-            return candidate;
-        }
-        if (knots.size() == maximumPoints || worstIndex < 0) {
-            // Return the best bounded approximation. The selected knots are
-            // the samples that remove the greatest LUT error at every step.
-            return candidate;
-        }
-        knots.push_back(worstIndex);
-        std::sort(knots.begin(), knots.end());
+    std::vector<jcut::EditorPoint> result;
+    result.reserve(static_cast<std::size_t>(points.size()));
+    for (const QPointF& point : points) {
+        result.push_back({point.x(), point.y()});
     }
-    return sanitized;
+    return result;
 }
 
-QVector<QPointF> composedCurvePoints(const QVector<QPointF>& channel,
-                                     const QVector<QPointF>& brightness,
-                                     bool smoothingEnabled)
+QVector<QPointF> qtCurveFromEditor(
+    const std::vector<jcut::EditorPoint>& points)
 {
-    constexpr int kSamples = TimelineClip::kGradingCurveLutSize;
-    const QVector<quint8> channelLut =
-        gradingCurveLut8(channel, kSamples, smoothingEnabled);
-    const QVector<quint8> brightnessLut =
-        gradingCurveLut8(brightness, kSamples, smoothingEnabled);
-    QVector<QPointF> composed;
-    composed.reserve(kSamples);
-    for (int i = 0; i < kSamples; ++i) {
-        const int channelValue = qBound(0, static_cast<int>(channelLut.at(i)), kSamples - 1);
-        composed.push_back(QPointF(static_cast<qreal>(i) / (kSamples - 1),
-                                   static_cast<qreal>(brightnessLut.at(channelValue)) / 255.0));
+    QVector<QPointF> result;
+    result.reserve(static_cast<qsizetype>(points.size()));
+    for (const jcut::EditorPoint& point : points) {
+        result.push_back(QPointF(point.x, point.y));
     }
-    return composed;
+    return result;
 }
 
 bool comboHasAlphaItem(const QComboBox* combo)
@@ -87,11 +49,8 @@ void setToneSpinGroupVisible(QDoubleSpinBox* r, QDoubleSpinBox* g, QDoubleSpinBo
 
 QVector<QPointF> threePointCurveFromToneValues(qreal shadows, qreal midtones, qreal highlights)
 {
-    QVector<QPointF> points;
-    points.push_back(QPointF(0.0, qBound<qreal>(0.0, 0.0 + (shadows * 0.25), 1.0)));
-    points.push_back(QPointF(0.5, qBound<qreal>(0.0, 0.5 + (midtones * 0.20), 1.0)));
-    points.push_back(QPointF(1.0, qBound<qreal>(0.0, 1.0 + (highlights * 0.25), 1.0)));
-    return sanitizeGradingCurvePoints(points);
+    return qtCurveFromEditor(jcut::editorThreePointCurveFromToneValues(
+        shadows, midtones, highlights));
 }
 
 void toneValuesFromThreePointCurve(const QVector<QPointF>& points,
@@ -102,32 +61,31 @@ void toneValuesFromThreePointCurve(const QVector<QPointF>& points,
     if (!shadowsOut || !midtonesOut || !highlightsOut) {
         return;
     }
-    QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
-    if (sanitized.size() < 3) {
-        sanitized = defaultGradingCurvePoints();
-    }
-    const qreal y0 = sanitized.at(0).y();
-    const qreal y1 = sanitized.at(sanitized.size() / 2).y();
-    const qreal y2 = sanitized.constLast().y();
-    *shadowsOut = qBound<qreal>(-2.0, (y0 - 0.0) / 0.25, 2.0);
-    *midtonesOut = qBound<qreal>(-2.0, (y1 - 0.5) / 0.20, 2.0);
-    *highlightsOut = qBound<qreal>(-2.0, (y2 - 1.0) / 0.25, 2.0);
+    const jcut::EditorToneValues tones =
+        jcut::editorToneValuesFromThreePointCurve(editorCurveFromQt(points));
+    *shadowsOut = tones.shadows;
+    *midtonesOut = tones.midtones;
+    *highlightsOut = tones.highlights;
 }
 
 } // namespace
 
 void GradingTab::onNormalizeCurvesClicked()
 {
-    const QVector<QPointF> brightness = sanitizeGradingCurvePoints(m_curvePointsLuma);
-    m_curvePointsR = simplifyCurvePoints(
-        composedCurvePoints(m_curvePointsR, brightness, m_curveSmoothingEnabled), false);
-    m_curvePointsG = simplifyCurvePoints(
-        composedCurvePoints(m_curvePointsG, brightness, m_curveSmoothingEnabled), false);
-    m_curvePointsB = simplifyCurvePoints(
-        composedCurvePoints(m_curvePointsB, brightness, m_curveSmoothingEnabled), false);
-    m_curvePointsLuma = defaultGradingCurvePoints();
-    m_curveSmoothingEnabled = false;
-    m_curveThreePointLock = false;
+    jcut::EditorGradingKeyframe grade;
+    grade.curvePointsR = editorCurveFromQt(m_curvePointsR);
+    grade.curvePointsG = editorCurveFromQt(m_curvePointsG);
+    grade.curvePointsB = editorCurveFromQt(m_curvePointsB);
+    grade.curvePointsLuma = editorCurveFromQt(m_curvePointsLuma);
+    grade.curveSmoothingEnabled = m_curveSmoothingEnabled;
+    grade.curveThreePointLock = m_curveThreePointLock;
+    jcut::normalizeEditorGradingCurves(grade);
+    m_curvePointsR = qtCurveFromEditor(grade.curvePointsR);
+    m_curvePointsG = qtCurveFromEditor(grade.curvePointsG);
+    m_curvePointsB = qtCurveFromEditor(grade.curvePointsB);
+    m_curvePointsLuma = qtCurveFromEditor(grade.curvePointsLuma);
+    m_curveSmoothingEnabled = grade.curveSmoothingEnabled;
+    m_curveThreePointLock = grade.curveThreePointLock;
     if (m_widgets.gradingCurveSmoothingCheckBox) {
         QSignalBlocker blocker(m_widgets.gradingCurveSmoothingCheckBox);
         m_widgets.gradingCurveSmoothingCheckBox->setChecked(false);

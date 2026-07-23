@@ -1,8 +1,39 @@
 from __future__ import annotations
 
 import json
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def image_file_looks_complete(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return False
+        suffix = path.suffix.lower()
+        with path.open("rb") as source:
+            if suffix == ".png":
+                header = source.read(24)
+                if (
+                    len(header) != 24
+                    or header[:8] != b"\x89PNG\r\n\x1a\n"
+                    or header[12:16] != b"IHDR"
+                    or struct.unpack(">I", header[16:20])[0] <= 0
+                    or struct.unpack(">I", header[20:24])[0] <= 0
+                    or size < 36
+                ):
+                    return False
+                source.seek(-12, 2)
+                return source.read(8) == b"\x00\x00\x00\x00IEND"
+            if suffix in {".jpg", ".jpeg"}:
+                if source.read(2) != b"\xff\xd8" or size < 4:
+                    return False
+                source.seek(-2, 2)
+                return source.read(2) == b"\xff\xd9"
+        return True
+    except (OSError, struct.error):
+        return False
 
 
 def frame_indices_from_files(directory: Path | None, pattern: str) -> set[int]:
@@ -11,7 +42,7 @@ def frame_indices_from_files(directory: Path | None, pattern: str) -> set[int]:
     indices: set[int] = set()
     for file_path in directory.glob(pattern):
         try:
-            if file_path.stat().st_size <= 0:
+            if not image_file_looks_complete(file_path):
                 continue
             indices.add(int(file_path.stem.split("_")[-1]) - 1)
         except Exception:

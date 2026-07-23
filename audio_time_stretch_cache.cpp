@@ -213,9 +213,18 @@ bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
 bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,
                                   const AudioTimeStretchCacheEntry& entry,
-                                  const std::function<void(double)>& progressCallback)
+                                  const std::function<void(double)>& progressCallback,
+                                  const std::function<bool()>& continuationPredicate,
+                                  const std::function<bool(
+                                      const std::function<bool()>&)>& commitGuard)
 {
     if (!entry.valid || !entry.fullyDecoded || entry.samples.isEmpty() || speedKey <= 1000) {
+        return false;
+    }
+    const auto shouldContinue = [&continuationPredicate]() {
+        return !continuationPredicate || continuationPredicate();
+    };
+    if (!shouldContinue()) {
         return false;
     }
     const QFileInfo sourceInfo(editor::audio::pathFromSourceKey(sourcePath));
@@ -226,6 +235,9 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
         return false;
     }
     for (const QString& sidecarPath : candidateSidecarPaths(sourcePath, speedKey)) {
+        if (!shouldContinue()) {
+            return false;
+        }
         QDir().mkpath(QFileInfo(sidecarPath).absolutePath());
         QSaveFile file(sidecarPath);
         if (!file.open(QIODevice::WriteOnly)) {
@@ -238,6 +250,10 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                            .arg(sourcePath);
             }
             continue;
+        }
+        if (!shouldContinue()) {
+            file.cancelWriting();
+            return false;
         }
         if (editor::debugCacheEnabled()) {
             qDebug().noquote()
@@ -278,6 +294,10 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
         constexpr qint64 kWriteChunkBytes = 8 * 1024 * 1024;
         qint64 written = 0;
         while (written < sampleByteCount) {
+            if (!shouldContinue()) {
+                file.cancelWriting();
+                return false;
+            }
             const qint64 chunk = std::min(kWriteChunkBytes, sampleByteCount - written);
             const qint64 n = file.write(sampleBytes + written, chunk);
             if (n <= 0) {
@@ -299,7 +319,18 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                  static_cast<double>(sampleByteCount));
             }
         }
-        if (written == sampleByteCount && file.commit()) {
+        if (written == sampleByteCount && !shouldContinue()) {
+            file.cancelWriting();
+            return false;
+        }
+        bool committed = false;
+        if (written == sampleByteCount) {
+            const std::function<bool()> commit = [&file]() {
+                return file.commit();
+            };
+            committed = commitGuard ? commitGuard(commit) : commit();
+        }
+        if (committed) {
             if (editor::debugCacheEnabled()) {
                 const QFileInfo committedInfo(sidecarPath);
                 qDebug().noquote()

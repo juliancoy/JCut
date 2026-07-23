@@ -1,15 +1,14 @@
 #pragma once
 
+#include "frame_payload_core.h"
 #include "qt_compat.h"  // Qt 6.4/GCC 13 compatibility
 #include <QExplicitlySharedDataPointer>
 #include <QImage>
 #include <QRectF>
 #include <QSize>
 #include <QString>
-#include <atomic>
 #include <cstdint>
 
-// Forward declarations for QRhi
 class QRhiTexture;
 class QRhi;
 struct AVFrame;
@@ -28,25 +27,8 @@ public:
     FrameData(const FrameData&) = delete;
     FrameData& operator=(const FrameData&) = delete;
     
-    // CPU-side image data (if software decoded)
-    QImage cpuImage;
-    
-    // GPU-side texture (if available)
-    QRhiTexture* gpuTexture = nullptr;
-    QRhi* rhiContext = nullptr;  // For texture cleanup
-    AVFrame* hardwareFrame = nullptr;
-    int hardwarePixelFormat = -1;
-    int hardwareSwPixelFormat = -1;
-    
-    // Metadata
-    int64_t frameNumber = -1;
-    QString sourcePath;
-    QSize size;
-    QRectF validTextureRectNorm = QRectF(0.0, 0.0, 1.0, 1.0);
-    qint64 decodeTimestamp = 0;  // When this frame was decoded
-    std::atomic<int> gpuTextureOwned{0};  // 1 if we own the texture
-    
-    // Memory tracking
+    jcut::core::FramePayloadCore payload;
+
     size_t memoryUsage() const;
 };
 
@@ -54,7 +36,7 @@ public:
 // FrameHandle - RAII wrapper for decoded frames
 // 
 // Thread-safe, reference-counted handle to a decoded frame.
-// Automatically manages GPU texture lifecycle.
+// Owns CPU/hardware payload lifetime; GPU textures remain render-thread owned.
 // ============================================================================
 class FrameHandle {
 public:
@@ -63,6 +45,8 @@ public:
     
     // Creation helpers
     static FrameHandle createCpuFrame(const QImage& image, int64_t frameNum, const QString& path);
+    // Legacy Qt-editor compatibility. Implemented in the Qt-only QRhi adapter
+    // translation unit and intentionally absent from the ImGui runtime target.
     static FrameHandle createGpuFrame(QRhiTexture* texture, int64_t frameNum, const QString& path);
     static FrameHandle createHardwareFrame(const AVFrame* frame,
                                            int64_t frameNum,
@@ -74,29 +58,52 @@ public:
     explicit operator bool() const { return !isNull(); }
     
     // Accessors
-    int64_t frameNumber() const { return d ? d->frameNumber : -1; }
-    QString sourcePath() const { return d ? d->sourcePath : QString(); }
-    QSize size() const { return d ? d->size : QSize(); }
-    QRectF validTextureRectNormalized() const {
-        return d ? d->validTextureRectNorm : QRectF(0.0, 0.0, 1.0, 1.0);
+    int64_t frameNumber() const { return d ? d->payload.frameNumber() : -1; }
+    QString sourcePath() const {
+        return d ? QString::fromStdString(d->payload.sourcePath()) : QString();
     }
-    bool hasCpuImage() const { return d && !d->cpuImage.isNull(); }
-    bool hasGpuTexture() const { return d && d->gpuTexture != nullptr; }
-    bool hasHardwareFrame() const { return d && d->hardwareFrame != nullptr; }
+    QSize size() const {
+        if (!d) {
+            return QSize();
+        }
+        const jcut::core::SizeI payloadSize = d->payload.size();
+        return QSize(payloadSize.width, payloadSize.height);
+    }
+    QRectF validTextureRectNormalized() const {
+        if (!d) {
+            return QRectF(0.0, 0.0, 1.0, 1.0);
+        }
+        const jcut::core::RectF rect = d->payload.validTextureRectNormalized();
+        return QRectF(rect.x, rect.y, rect.width, rect.height);
+    }
+    bool hasCpuImage() const { return d && d->payload.hasCpuPayload(); }
+    bool hasGpuTexture() const { return d && d->payload.hasOpaqueGpuTexture(); }
+    bool hasHardwareFrame() const { return d && d->payload.hasHardwareFrame(); }
     
-    QImage cpuImage() const { return d ? d->cpuImage : QImage(); }
-    QRhiTexture* gpuTexture() const { return d ? d->gpuTexture : nullptr; }
-    const AVFrame* hardwareFrame() const { return d ? d->hardwareFrame : nullptr; }
-    int hardwarePixelFormat() const { return d ? d->hardwarePixelFormat : -1; }
-    int hardwareSwPixelFormat() const { return d ? d->hardwareSwPixelFormat : -1; }
+    QImage cpuImage() const;
+    QRhiTexture* gpuTexture() const {
+        return d
+            ? static_cast<QRhiTexture*>(d->payload.opaqueGpuTexture())
+            : nullptr;
+    }
+    const AVFrame* hardwareFrame() const {
+        return d ? d->payload.hardwareFrame() : nullptr;
+    }
+    int hardwarePixelFormat() const {
+        return d ? d->payload.hardwarePixelFormat() : -1;
+    }
+    int hardwareSwPixelFormat() const {
+        return d ? d->payload.hardwareSoftwarePixelFormat() : -1;
+    }
     
     size_t memoryUsage() const { return d ? d->memoryUsage() : 0; }
     size_t cpuMemoryUsage() const;
     size_t gpuMemoryUsage() const;
-    
-    // GPU texture upload (async)
+
+    // Legacy Qt-editor compatibility; see createGpuFrame(). No in-repository
+    // ImGui/runtime caller depends on this private-QRhi upload path.
     void uploadToGpu(QRhi* rhi);
-    bool isGpuUploadPending() const { return m_gpuUploadPending; }
+    bool isGpuUploadPending() const { return false; }
     
     // Comparison for caching
     bool operator==(const FrameHandle& other) const;
@@ -104,7 +111,6 @@ public:
     
 private:
     QExplicitlySharedDataPointer<FrameData> d;
-    bool m_gpuUploadPending = false;
 };
 
 // ============================================================================

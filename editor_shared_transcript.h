@@ -42,6 +42,8 @@ QStringList transcriptCutPathsForClip(const TimelineClip& clip);
 QString activeTranscriptPathForClipFile(const QString& filePath);
 QString activeTranscriptPathForSource(const TranscriptSourceKey& source);
 QString activeTranscriptPathForClip(const TimelineClip& clip);
+QString registeredActiveTranscriptPathForSource(const TranscriptSourceKey& source);
+QString registeredActiveTranscriptPathForClip(const TimelineClip& clip);
 bool facedetectionsSidecarExistsForClipFile(const QString& filePath);
 bool facedetectionsSidecarExistsForSource(const TranscriptSourceKey& source);
 bool facedetectionsSidecarExistsForClip(const TimelineClip& clip);

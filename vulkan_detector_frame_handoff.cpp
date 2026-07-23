@@ -225,6 +225,7 @@ VulkanDetectorFrameHandoff::~VulkanDetectorFrameHandoff()
 void VulkanDetectorFrameHandoff::resetResourceStats()
 {
     m_resourceStats = {};
+    m_externalFrameImporter.resetResourceStats();
 }
 
 bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, std::string* errorMessage)
@@ -268,6 +269,17 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
         return false;
     }
 
+    if (!m_externalFrameImporter.initialize(
+            jcut::vulkan_import::DeviceContext{
+                context.physicalDevice,
+                context.device,
+                context.queue,
+                context.queueFamilyIndex},
+            errorMessage)) {
+        release();
+        return false;
+    }
+
     m_initialized = true;
     return true;
 }
@@ -275,6 +287,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
 void VulkanDetectorFrameHandoff::release()
 {
     finishPendingUpload(nullptr, nullptr);
+    m_externalFrameImporter.release();
     if (m_context.device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(m_context.device);
 #if JCUT_HAS_CUDA_DRIVER
@@ -299,12 +312,6 @@ void VulkanDetectorFrameHandoff::release()
         }
         if (m_nv12DescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, m_nv12DescriptorPool, nullptr);
         if (m_nv12DescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(m_context.device, m_nv12DescriptorSetLayout, nullptr);
-        if (m_importedImageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
-        if (m_importedImage != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_importedImage, nullptr);
-        if (m_importedImageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-            ++m_resourceStats.importedMemoryFrees;
-        }
         if (m_imageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_imageView, nullptr);
         if (m_image != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_image, nullptr);
         if (m_imageMemory != VK_NULL_HANDLE) {
@@ -325,15 +332,6 @@ void VulkanDetectorFrameHandoff::release()
     m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_imageFormat = VK_FORMAT_UNDEFINED;
     m_imageSize = {};
-    m_imageImported = false;
-    m_importSourceDevice = VK_NULL_HANDLE;
-    m_importSourceMemory = VK_NULL_HANDLE;
-    m_importedImage = VK_NULL_HANDLE;
-    m_importedImageMemory = VK_NULL_HANDLE;
-    m_importedImageView = VK_NULL_HANDLE;
-    m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    m_importedImageFormat = VK_FORMAT_UNDEFINED;
-    m_importedImageSize = {};
     m_stagingSize = 0;
     m_cudaExportSize = 0;
     m_cudaExportUvSize = 0;
@@ -362,7 +360,9 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const jcut::core::SizeI& s
                                                       VkFormat format,
                                                       QString* errorMessage)
 {
-    if (m_image != VK_NULL_HANDLE && m_imageSize == size && m_imageFormat == format) {
+    if (m_image != VK_NULL_HANDLE && m_imageMemory != VK_NULL_HANDLE &&
+        m_imageView != VK_NULL_HANDLE && m_imageSize == size &&
+        m_imageFormat == format) {
         return true;
     }
     if (m_imageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_imageView, nullptr);
@@ -377,9 +377,6 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const jcut::core::SizeI& s
     m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_imageSize = size;
     m_imageFormat = format;
-    m_imageImported = false;
-    m_importSourceDevice = VK_NULL_HANDLE;
-    m_importSourceMemory = VK_NULL_HANDLE;
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -429,60 +426,6 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const jcut::core::SizeI& s
         if (errorMessage) *errorMessage = QStringLiteral("Failed to create Vulkan handoff image view.");
         return false;
     }
-    return true;
-}
-
-bool VulkanDetectorFrameHandoff::ensureImportedImageResources(const jcut::core::SizeI& size,
-                                                              VkFormat format,
-                                                              QString* errorMessage)
-{
-    if (m_importedImage != VK_NULL_HANDLE &&
-        m_importedImageSize == size &&
-        m_importedImageFormat == format &&
-        m_imageImported) {
-        return true;
-    }
-    if (m_importedImageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
-    if (m_importedImage != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_importedImage, nullptr);
-    if (m_importedImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-        ++m_resourceStats.importedMemoryFrees;
-    }
-    m_importedImage = VK_NULL_HANDLE;
-    m_importedImageMemory = VK_NULL_HANDLE;
-    m_importedImageView = VK_NULL_HANDLE;
-    m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    m_importedImageSize = size;
-    m_importedImageFormat = format;
-    m_imageImported = true;
-    m_importSourceDevice = VK_NULL_HANDLE;
-    m_importSourceMemory = VK_NULL_HANDLE;
-
-    VkExternalMemoryImageCreateInfo externalImageInfo{};
-    externalImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-    externalImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.pNext = &externalImageInfo;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height), 1};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = format;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                      VK_IMAGE_USAGE_STORAGE_BIT |
-                      VK_IMAGE_USAGE_SAMPLED_BIT |
-                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateImage(m_context.device, &imageInfo, nullptr, &m_importedImage) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to create imported Vulkan handoff image.");
-        return false;
-    }
-    m_importedImageMemory = VK_NULL_HANDLE;
     return true;
 }
 
@@ -1107,8 +1050,13 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
 
 bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, std::string* errorMessage)
 {
+    double externalCopyMs = 0.0;
+    if (!m_externalFrameImporter.finishPendingCopy(
+            &externalCopyMs, errorMessage)) {
+        return false;
+    }
     if (uploadMs) {
-        *uploadMs = 0.0;
+        *uploadMs = externalCopyMs;
     }
     if (!m_uploadPending) {
         m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
@@ -1121,7 +1069,7 @@ bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, std::stri
     m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
     m_uploadPending = false;
     if (uploadMs) {
-        *uploadMs = static_cast<double>(m_pendingUploadTimer.nsecsElapsed()) / 1'000'000.0;
+        *uploadMs += static_cast<double>(m_pendingUploadTimer.nsecsElapsed()) / 1'000'000.0;
     }
     return true;
 }
@@ -1912,441 +1860,80 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
 #endif
 }
 
-bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
-                                                      std::string* errorMessage)
+bool VulkanDetectorFrameHandoff::importOffscreenFrame(
+    const render_detail::OffscreenVulkanFrame& frame,
+    std::string* errorMessage)
 {
-    QString qtError;
-    if (!m_initialized) {
-        setStdError(errorMessage, QStringLiteral("Vulkan handoff is not initialized."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (!frame.valid ||
-        frame.device == VK_NULL_HANDLE ||
-        frame.image == VK_NULL_HANDLE ||
-        frame.imageView == VK_NULL_HANDLE ||
-        frame.imageMemory == VK_NULL_HANDLE ||
-        !frame.size.valid() ||
-        frame.imageFormat == VK_FORMAT_UNDEFINED) {
-        setStdError(errorMessage, QStringLiteral("Invalid offscreen Vulkan frame for external-memory import."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (!ensureImageResources(frame.size, frame.imageFormat, &qtError) ||
-        !ensureImportedImageResources(frame.size, frame.imageFormat, &qtError)) {
-        setStdError(errorMessage, qtError);
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (m_importSourceDevice == frame.device &&
-        m_importSourceMemory == frame.imageMemory &&
-        m_importedImage != VK_NULL_HANDLE &&
-        m_importedImageView != VK_NULL_HANDLE &&
-        m_importedImageMemory != VK_NULL_HANDLE) {
-        m_importedImageLayout = frame.imageLayout;
-        if (!copyImportedFrameToLocal(frame.imageLayout, &qtError)) {
-            setStdError(errorMessage, qtError);
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-        m_lastMode = FrameHandoffMode::ExternalMemoryImport;
-        return true;
-    }
-
-    if (m_importedImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-        ++m_resourceStats.importedMemoryFrees;
-        m_importedImageMemory = VK_NULL_HANDLE;
-    }
-
-    PFN_vkGetMemoryFdKHR sourceGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
-        vkGetDeviceProcAddr(frame.device, "vkGetMemoryFdKHR"));
-    if (!sourceGetMemoryFdKHR) {
-        setStdError(errorMessage, QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-
-    VkMemoryGetFdInfoKHR fdInfo{};
-    fdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
-    fdInfo.memory = frame.imageMemory;
-    fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    int fd = -1;
-    if (sourceGetMemoryFdKHR(frame.device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
-        setStdError(errorMessage, QStringLiteral("Failed to export offscreen Vulkan image memory FD."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-
-    VkMemoryRequirements req{};
-    vkGetImageMemoryRequirements(m_context.device, m_importedImage, &req);
-    const uint32_t type = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (type == UINT32_MAX) {
-        close(fd);
-        setStdError(errorMessage, QStringLiteral("No imported Vulkan image memory type."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-
-    VkImportMemoryFdInfoKHR importInfo{};
-    importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    importInfo.fd = fd;
-    VkMemoryAllocateInfo alloc{};
-    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc.pNext = &importInfo;
-    alloc.allocationSize = req.size;
-    alloc.memoryTypeIndex = type;
-    if (vkAllocateMemory(m_context.device, &alloc, nullptr, &m_importedImageMemory) != VK_SUCCESS ||
-        vkBindImageMemory(m_context.device, m_importedImage, m_importedImageMemory, 0) != VK_SUCCESS) {
-        if (m_importedImageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-            ++m_resourceStats.importedMemoryFrees;
-            m_importedImageMemory = VK_NULL_HANDLE;
-        }
-        setStdError(errorMessage, QStringLiteral("Failed to import/bind offscreen Vulkan image memory."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    ++m_resourceStats.importedMemoryAllocations;
-
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = m_importedImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = frame.imageFormat;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = 1;
-    if (m_importedImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
-        m_importedImageView = VK_NULL_HANDLE;
-    }
-    if (vkCreateImageView(m_context.device, &viewInfo, nullptr, &m_importedImageView) != VK_SUCCESS) {
-        setStdError(errorMessage, QStringLiteral("Failed to create imported Vulkan image view."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-
-    m_importSourceDevice = frame.device;
-    m_importSourceMemory = frame.imageMemory;
-    m_importedImageLayout = frame.imageLayout;
-    if (!copyImportedFrameToLocal(frame.imageLayout, &qtError)) {
-        setStdError(errorMessage, qtError);
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    m_lastMode = FrameHandoffMode::ExternalMemoryImport;
-    return true;
+    const bool imported =
+        m_externalFrameImporter.importFrame(frame, errorMessage);
+    m_lastMode = imported
+        ? FrameHandoffMode::ExternalMemoryImport
+        : FrameHandoffMode::Invalid;
+    return imported;
 }
 
-bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer commandBuffer,
-                                                         const render_detail::OffscreenVulkanFrame& frame,
-                                                         std::string* errorMessage)
+bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(
+    VkCommandBuffer commandBuffer,
+    const render_detail::OffscreenVulkanFrame& frame,
+    std::string* errorMessage)
 {
-    QString qtError;
-    if (!m_initialized || commandBuffer == VK_NULL_HANDLE) {
-        setStdError(errorMessage,
-                    QStringLiteral("Vulkan handoff is not initialized for command-buffer import."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (!frame.valid ||
-        frame.device == VK_NULL_HANDLE ||
-        frame.image == VK_NULL_HANDLE ||
-        frame.imageView == VK_NULL_HANDLE ||
-        frame.imageMemory == VK_NULL_HANDLE ||
-        !frame.size.valid() ||
-        frame.imageFormat == VK_FORMAT_UNDEFINED) {
-        setStdError(errorMessage, QStringLiteral("Invalid offscreen Vulkan frame for external-memory import."));
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (!ensureImageResources(frame.size, frame.imageFormat, &qtError) ||
-        !ensureImportedImageResources(frame.size, frame.imageFormat, &qtError)) {
-        setStdError(errorMessage, qtError);
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    if (!(m_importSourceDevice == frame.device &&
-          m_importSourceMemory == frame.imageMemory &&
-          m_importedImage != VK_NULL_HANDLE &&
-          m_importedImageView != VK_NULL_HANDLE &&
-          m_importedImageMemory != VK_NULL_HANDLE)) {
-        if (m_importedImageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-            ++m_resourceStats.importedMemoryFrees;
-            m_importedImageMemory = VK_NULL_HANDLE;
-        }
-
-        PFN_vkGetMemoryFdKHR sourceGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
-            vkGetDeviceProcAddr(frame.device, "vkGetMemoryFdKHR"));
-        if (!sourceGetMemoryFdKHR) {
-            setStdError(errorMessage, QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR."));
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-
-        VkMemoryGetFdInfoKHR fdInfo{};
-        fdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
-        fdInfo.memory = frame.imageMemory;
-        fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-        int fd = -1;
-        if (sourceGetMemoryFdKHR(frame.device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
-            setStdError(errorMessage, QStringLiteral("Failed to export offscreen Vulkan image memory FD."));
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-
-        VkMemoryRequirements req{};
-        vkGetImageMemoryRequirements(m_context.device, m_importedImage, &req);
-        const uint32_t type = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (type == UINT32_MAX) {
-            close(fd);
-            setStdError(errorMessage, QStringLiteral("No imported Vulkan image memory type."));
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-
-        VkImportMemoryFdInfoKHR importInfo{};
-        importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-        importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-        importInfo.fd = fd;
-        VkMemoryAllocateInfo alloc{};
-        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc.pNext = &importInfo;
-        alloc.allocationSize = req.size;
-        alloc.memoryTypeIndex = type;
-        if (vkAllocateMemory(m_context.device, &alloc, nullptr, &m_importedImageMemory) != VK_SUCCESS ||
-            vkBindImageMemory(m_context.device, m_importedImage, m_importedImageMemory, 0) != VK_SUCCESS) {
-            if (m_importedImageMemory != VK_NULL_HANDLE) {
-                vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
-                ++m_resourceStats.importedMemoryFrees;
-                m_importedImageMemory = VK_NULL_HANDLE;
-            }
-            setStdError(errorMessage, QStringLiteral("Failed to import/bind offscreen Vulkan image memory."));
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-        ++m_resourceStats.importedMemoryAllocations;
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = m_importedImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = frame.imageFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.layerCount = 1;
-        if (m_importedImageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
-            m_importedImageView = VK_NULL_HANDLE;
-        }
-        if (vkCreateImageView(m_context.device, &viewInfo, nullptr, &m_importedImageView) != VK_SUCCESS) {
-            setStdError(errorMessage, QStringLiteral("Failed to create imported Vulkan image view."));
-            m_lastMode = FrameHandoffMode::Invalid;
-            return false;
-        }
-        m_importSourceDevice = frame.device;
-        m_importSourceMemory = frame.imageMemory;
-    }
-
-    m_importedImageLayout = frame.imageLayout;
-    if (!recordImportedFrameCopyToLocal(commandBuffer, frame.imageLayout, &qtError)) {
-        setStdError(errorMessage, qtError);
-        m_lastMode = FrameHandoffMode::Invalid;
-        return false;
-    }
-    m_lastMode = FrameHandoffMode::ExternalMemoryImport;
-    return true;
+    const bool imported = m_externalFrameImporter.recordFrameCopy(
+        commandBuffer, frame, errorMessage);
+    m_lastMode = imported
+        ? FrameHandoffMode::ExternalMemoryImport
+        : FrameHandoffMode::Invalid;
+    return imported;
 }
 
-bool VulkanDetectorFrameHandoff::copyImportedFrameToLocal(VkImageLayout sourceLayout,
-                                                          QString* errorMessage)
+VkImage VulkanDetectorFrameHandoff::image() const
 {
-    std::string finishError;
-    if (!finishPendingUpload(nullptr, &finishError)) {
-        if (errorMessage) {
-            *errorMessage = QString::fromStdString(finishError);
-        }
-        return false;
-    }
-    vkResetFences(m_context.device, 1, &m_fence);
-    vkResetCommandBuffer(m_commandBuffer, 0);
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(m_commandBuffer, &beginInfo) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to begin Vulkan preview sync command buffer.");
-        return false;
-    }
-    const auto transitionSpecificImage = [&](VkImage image,
-                                             VkImageLayout oldLayout,
-                                             VkImageLayout newLayout,
-                                             VkAccessFlags srcAccessMask,
-                                             VkAccessFlags dstAccessMask,
-                                             VkPipelineStageFlags srcStageMask,
-                                             VkPipelineStageFlags dstStageMask) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-        barrier.srcAccessMask = srcAccessMask;
-        barrier.dstAccessMask = dstAccessMask;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(m_commandBuffer,
-                             srcStageMask,
-                             dstStageMask,
-                             0,
-                             0,
-                             nullptr,
-                             0,
-                             nullptr,
-                             1,
-                             &barrier);
-    };
-    transitionSpecificImage(m_importedImage,
-                            sourceLayout,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            0,
-                            VK_ACCESS_TRANSFER_READ_BIT,
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT);
-    transitionImage(m_imageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageCopy copyRegion{};
-    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copyRegion.srcSubresource.layerCount = 1;
-    copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width));
-    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height));
-    copyRegion.extent.depth = 1;
-    vkCmdCopyImage(m_commandBuffer,
-                   m_importedImage,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   m_image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   1,
-                   &copyRegion);
-    transitionImage(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    transitionSpecificImage(m_importedImage,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            sourceLayout,
-                            VK_ACCESS_TRANSFER_READ_BIT,
-                            0,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to end Vulkan preview sync command buffer.");
-        return false;
-    }
-    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    Q_UNUSED(waitStage);
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &m_commandBuffer;
-    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to copy imported Vulkan preview image.");
-        return false;
-    }
-    m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    m_uploadPending = true;
-    m_pendingUploadTimer.start();
-    return true;
+    return m_lastMode == FrameHandoffMode::ExternalMemoryImport
+        ? m_externalFrameImporter.externalImage().image
+        : m_image;
 }
 
-bool VulkanDetectorFrameHandoff::recordImportedFrameCopyToLocal(VkCommandBuffer commandBuffer,
-                                                                VkImageLayout sourceLayout,
-                                                                QString* errorMessage)
+VkImageLayout VulkanDetectorFrameHandoff::imageLayout() const
 {
-    if (commandBuffer == VK_NULL_HANDLE || m_importedImage == VK_NULL_HANDLE || m_image == VK_NULL_HANDLE) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid Vulkan image state for command-buffer imported frame copy.");
-        return false;
-    }
-    std::string finishError;
-    if (!finishPendingUpload(nullptr, &finishError)) {
-        if (errorMessage) {
-            *errorMessage = QString::fromStdString(finishError);
-        }
-        return false;
-    }
-    const auto transitionSpecificImage = [&](VkImage image,
-                                             VkImageLayout oldLayout,
-                                             VkImageLayout newLayout,
-                                             VkAccessFlags srcAccessMask,
-                                             VkAccessFlags dstAccessMask,
-                                             VkPipelineStageFlags srcStageMask,
-                                             VkPipelineStageFlags dstStageMask) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-        barrier.srcAccessMask = srcAccessMask;
-        barrier.dstAccessMask = dstAccessMask;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(commandBuffer,
-                             srcStageMask,
-                             dstStageMask,
-                             0,
-                             0,
-                             nullptr,
-                             0,
-                             nullptr,
-                             1,
-                             &barrier);
-    };
-    transitionSpecificImage(m_importedImage,
-                            sourceLayout,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            0,
-                            VK_ACCESS_TRANSFER_READ_BIT,
-                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT);
-    transitionImage(commandBuffer, m_imageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageCopy copyRegion{};
-    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copyRegion.srcSubresource.layerCount = 1;
-    copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width));
-    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height));
-    copyRegion.extent.depth = 1;
-    vkCmdCopyImage(commandBuffer,
-                   m_importedImage,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   m_image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   1,
-                   &copyRegion);
-    transitionImage(commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    transitionSpecificImage(m_importedImage,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            sourceLayout,
-                            VK_ACCESS_TRANSFER_READ_BIT,
-                            0,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return true;
+    return m_lastMode == FrameHandoffMode::ExternalMemoryImport
+        ? m_externalFrameImporter.externalImage().imageLayout
+        : m_imageLayout;
+}
+
+VkFormat VulkanDetectorFrameHandoff::imageFormat() const
+{
+    return m_lastMode == FrameHandoffMode::ExternalMemoryImport
+        ? m_externalFrameImporter.externalImage().imageFormat
+        : m_imageFormat;
+}
+
+FrameHandoffResourceStats VulkanDetectorFrameHandoff::resourceStats() const
+{
+    FrameHandoffResourceStats result = m_resourceStats;
+    const jcut::vulkan_import::ResourceStats importStats =
+        m_externalFrameImporter.resourceStats();
+    result.imageMemoryAllocations += importStats.imageMemoryAllocations;
+    result.imageMemoryFrees += importStats.imageMemoryFrees;
+    result.importedMemoryAllocations += importStats.importedMemoryAllocations;
+    result.importedMemoryFrees += importStats.importedMemoryFrees;
+    return result;
 }
 
 VulkanExternalImage VulkanDetectorFrameHandoff::externalImage() const
 {
+    if (m_lastMode == FrameHandoffMode::ExternalMemoryImport) {
+        const jcut::vulkan_import::ExternalImage imported =
+            m_externalFrameImporter.externalImage();
+        VulkanExternalImage image;
+        image.imageView = imported.imageView;
+        image.imageLayout = imported.imageLayout;
+        image.size = imported.size;
+        image.sourceIsSrgb = imported.sourceIsSrgb;
+        image.sourceX = imported.sourceX;
+        image.sourceY = imported.sourceY;
+        image.sourceWidth = imported.sourceWidth;
+        image.sourceHeight = imported.sourceHeight;
+        return image;
+    }
     VulkanExternalImage image;
     image.imageView = m_imageView;
     image.imageLayout = m_imageLayout;

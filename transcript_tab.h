@@ -267,10 +267,7 @@ private:
 
     void updateOverlayWidgetsFromClip(const TimelineClip& clip);
     void loadTranscriptFile(const TimelineClip& clip);
-    QVector<TranscriptRow> parseTranscriptRows(int prependMs, int postpendMs, int offsetMs) const;
     void populateTable(const QVector<TranscriptRow>& rows);
-    void adjustOverlappingRows(QVector<TranscriptRow>& rows);
-    void insertGapRows(QVector<TranscriptRow>* rows) const;
     void insertWordAtRow(int row, bool above);
     void expandSelectedRow(int row);
     bool restoreWordToOriginalState(int wordId);
@@ -301,7 +298,6 @@ private:
     quint64 transcriptWordKey(int segmentIndex, int wordIndex) const;
     QString speakerDisplayLabel(const QString& speakerId) const;
     void persistRenderOrderFromTable();
-    void computeRenderFrames(QVector<TranscriptRow>* rows) const;
     void startTranscriptRowsBuildRequest(const QString& originalPath);
     void applyTranscriptRowsBuildResult(const TranscriptRowsBuildResult& result);
     void rebuildFollowRanges(const QVector<TranscriptRow>& rows);

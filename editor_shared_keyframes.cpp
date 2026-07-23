@@ -18,7 +18,7 @@
 #include <QSet>
 #include <QStringList>
 #include <QThread>
-#include <QtConcurrent/QtConcurrentRun>
+#include <QThreadPool>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -154,7 +154,7 @@ void enqueueContinuityWarmJob(const QString& cacheKey, std::function<void()> job
         }
         pending.insert(cacheKey);
     }
-    (void)QtConcurrent::run([cacheKey, job = std::move(job)]() {
+    QThreadPool::globalInstance()->start([cacheKey, job = std::move(job)]() {
         job();
         QMutexLocker locker(&continuityWarmPendingMutex());
         continuityWarmPendingKeys().remove(cacheKey);
@@ -2879,7 +2879,9 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformWithSourceLockAtPosit
                 clip, timelineClips, timelineFramePosition, markers, diagnosticsOut));
     };
 
-    if (!clip.sourceTransformLocked || clip.linkedSourceClipId.trimmed().isEmpty()) {
+    const bool maskMatteFollower = clip.clipRole == ClipRole::MaskMatte;
+    if ((!clip.sourceTransformLocked && !maskMatteFollower) ||
+        clip.linkedSourceClipId.trimmed().isEmpty()) {
         return applyTimelineSectionRotation(evaluateClipRenderTransformAtPosition(
             clip, timelineFramePosition, markers, timing, outputSize, diagnosticsOut));
     }

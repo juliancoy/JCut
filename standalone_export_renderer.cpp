@@ -104,8 +104,18 @@ std::int64_t totalFramesToRender(const jcut::EditorDocumentCore& document)
         document.exportRequest.playbackSpeed);
 }
 
-const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat)
+const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat,
+                                const std::string& requestedFormat)
 {
+    if (requestedFormat == "webm") {
+        // Generic codec-ID lookup can select a device-only V4L2/QSV encoder
+        // that is registered but unusable on the current host. Prefer the
+        // portable encoders required for a dependable WebM export.
+        if (const AVCodec* codec = avcodec_find_encoder_by_name("libvpx-vp9")) {
+            return codec;
+        }
+        return avcodec_find_encoder_by_name("libvpx");
+    }
     if (outputFormat && outputFormat->video_codec != AV_CODEC_ID_NONE) {
         if (const AVCodec* codec = avcodec_find_encoder(outputFormat->video_codec)) {
             return codec;
@@ -118,6 +128,23 @@ const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat)
         return codec;
     }
     return avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+}
+
+const char* muxerNameForOutputFormat(const std::string& outputFormat)
+{
+    if (outputFormat == "mp4") {
+        return "mp4";
+    }
+    if (outputFormat == "mov") {
+        return "mov";
+    }
+    if (outputFormat == "mkv") {
+        return "matroska";
+    }
+    if (outputFormat == "webm") {
+        return "webm";
+    }
+    return nullptr;
 }
 
 AVCodecID imageCodecIdForFormat(const std::string& format)
@@ -449,9 +476,11 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
 
     if (writeEncodedVideo) {
         AVFormatContext* rawFormatContext = nullptr;
+        const char* muxerName = muxerNameForOutputFormat(
+            exportRequest.outputFormat);
         if (avformat_alloc_output_context2(&rawFormatContext,
                                            nullptr,
-                                           nullptr,
+                                           muxerName,
                                            exportRequest.outputPath.c_str()) < 0 ||
             !rawFormatContext) {
             result.message = "failed to create output format context";
@@ -459,9 +488,11 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
         }
         formatContext.reset(rawFormatContext);
 
-        codec = pickVideoEncoder(formatContext->oformat);
+        codec = pickVideoEncoder(formatContext->oformat, exportRequest.outputFormat);
         if (!codec) {
-            result.message = "failed to find a video encoder";
+            result.message = exportRequest.outputFormat == "webm"
+                ? "WebM export requires a libvpx VP8/VP9 encoder"
+                : "failed to find a video encoder";
             return result;
         }
 

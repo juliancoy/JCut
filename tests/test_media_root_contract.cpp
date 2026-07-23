@@ -48,6 +48,7 @@ private slots:
     void asynchronousStartupSynchronizesProjectWorkspaceToMediaRoot();
     void serializedStateUsesProjectWorkspaceRoot();
     void stateRestorePreservesSavedMediaRoot();
+    void qtStateRoundTripPreservesImGuiMediaItemsExtension();
 };
 
 void TestMediaRootContract::changingMediaRootSwitchesProjectWorkspaceSafely()
@@ -102,6 +103,25 @@ void TestMediaRootContract::stateRestorePreservesSavedMediaRoot()
     QVERIFY(body.contains(QStringLiteral("m_explorerPane->setInitialRootPath(mediaRoot)")));
     QVERIFY(!body.contains(QRegularExpression(
         QStringLiteral("mediaRoot\\s*=\\s*\\([^;]*projectsRoot"))));
+}
+
+void TestMediaRootContract::qtStateRoundTripPreservesImGuiMediaItemsExtension()
+{
+    const QString applyBody = functionBody(
+        sourceFile(QStringLiteral("editor.cpp")),
+        QStringLiteral("void EditorWindow::applyStateJson(const QJsonObject &root)"));
+    QVERIFY2(!applyBody.isEmpty(), "applyStateJson implementation must remain discoverable");
+    QVERIFY(applyBody.contains(QStringLiteral(
+        "m_projectMediaItemsExtension =")));
+    QVERIFY(applyBody.contains(QStringLiteral(
+        "root.value(QStringLiteral(\"mediaItems\")).toArray()")));
+
+    const QString buildBody = functionBody(
+        sourceFile(QStringLiteral("project_state.cpp")),
+        QStringLiteral("QJsonObject EditorWindow::buildStateJson() const"));
+    QVERIFY2(!buildBody.isEmpty(), "buildStateJson implementation must remain discoverable");
+    QVERIFY(buildBody.contains(QStringLiteral(
+        "root[QStringLiteral(\"mediaItems\")] = m_projectMediaItemsExtension")));
 }
 
 QTEST_APPLESS_MAIN(TestMediaRootContract)

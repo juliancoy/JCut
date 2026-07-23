@@ -1,5 +1,6 @@
 #include "effects_tab.h"
 #include "editor_effect_presets.h"
+#include "editor_shared_effects.h"
 #include "editor_tab_edit_effects.h"
 
 #include <QSignalBlocker>
@@ -7,6 +8,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QtGlobal>
+#include <QStandardItemModel>
 #include <memory>
 
 EffectsTab::EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -44,6 +46,33 @@ int comboIndexForPreset(const QComboBox* combo, ClipEffectPreset preset)
     }
     const int index = combo->findData(static_cast<int>(preset));
     return index >= 0 ? index : combo->findData(static_cast<int>(ClipEffectPreset::None));
+}
+
+void setMaskMattePresetAvailability(QComboBox* combo, bool maskMatteTarget)
+{
+    if (!combo) {
+        return;
+    }
+    QStandardItemModel* model = qobject_cast<QStandardItemModel*>(combo->model());
+    if (!model) {
+        return;
+    }
+    const QString unavailableReason = QStringLiteral(
+        "This source-history effect is unavailable for Mask Matte layers. "
+        "The stored setting is retained but rendered inactive.");
+    for (const ClipEffectPreset preset : {
+             ClipEffectPreset::DifferenceMatte,
+             ClipEffectPreset::TemporalEcho}) {
+        const int index = comboIndexForPreset(combo, preset);
+        if (index < 0) {
+            continue;
+        }
+        if (QStandardItem* item = model->item(index)) {
+            item->setEnabled(!maskMatteTarget);
+            item->setToolTip(maskMatteTarget ? unavailableReason : QString());
+        }
+    }
+    combo->setToolTip(maskMatteTarget ? unavailableReason : QString());
 }
 
 ClipTilingPattern tilingPatternFromCombo(const QComboBox* combo)
@@ -313,6 +342,10 @@ void EffectsTab::refresh()
         clip ? clip->trackIndex : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
     const TimelineTrack* selectedTrack =
         m_deps.getTrackByIndex ? m_deps.getTrackByIndex(selectedTrackIndex) : nullptr;
+    const bool maskMatteTarget =
+        (clip && clip->clipRole == ClipRole::MaskMatte) ||
+        (!clip && selectedTrack && selectedTrack->generatedChildTrack);
+    setMaskMattePresetAvailability(m_widgets.effectPresetCombo, maskMatteTarget);
     m_updating = true;
 
     QSignalBlocker featherBlock(m_widgets.maskFeatherSpin);
@@ -362,14 +395,14 @@ void EffectsTab::refresh()
     const std::unique_ptr<QSignalBlocker> tilingWrapBlock =
         m_widgets.tilingWrapCheck ? std::make_unique<QSignalBlocker>(m_widgets.tilingWrapCheck) : nullptr;
 
-    const bool selectedChildClip =
-        clip && (clip->clipRole == ClipRole::MaskMatte ||
-                 clip->clipRole == ClipRole::EffectSynth);
+    const bool selectedSynthClip = clip && clip->clipRole == ClipRole::EffectSynth;
 
-    if (!clip || selectedChildClip || !m_deps.clipHasVisuals(*clip)) {
+    if (!clip || selectedSynthClip || !m_deps.clipHasVisuals(*clip)) {
         m_widgets.effectsPathLabel->setText(
-            selectedChildClip
-                ? QStringLiteral("Child clip\nEffects are edited on the source clip")
+            selectedSynthClip
+                ? QStringLiteral("Generated effect clip\nEdit its source effect controls")
+                : selectedTrack && selectedTrack->generatedChildTrack
+                ? QStringLiteral("Mask Matte layer\nSelect its clip to edit child-owned effects")
                 : selectedTrack
                 ? QStringLiteral("Track effects\n%1").arg(selectedTrack->name)
                 : QStringLiteral("No visual clip selected"));
@@ -398,7 +431,8 @@ void EffectsTab::refresh()
             m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
                 m_widgets.effectPresetCombo,
                 selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None));
-            m_widgets.effectPresetCombo->setEnabled(selectedTrack != nullptr);
+            m_widgets.effectPresetCombo->setEnabled(
+                selectedTrack != nullptr && !selectedTrack->generatedChildTrack);
         }
         const ClipEffectPreset trackPreset =
             selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None;
@@ -701,8 +735,19 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     const TimelineClip* selectedClip = m_deps.getSelectedClip();
     const int targetTrackIndex =
         selectedClip ? selectedClip->trackIndex : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
+    const TimelineTrack* targetTrack =
+        m_deps.getTrackByIndex ? m_deps.getTrackByIndex(targetTrackIndex) : nullptr;
 
     const ClipEffectPreset preset = presetFromCombo(m_widgets.effectPresetCombo);
+    if ((selectedClip && selectedClip->clipRole == ClipRole::MaskMatte &&
+         !effectPresetSupportedForClipRole(preset, ClipRole::MaskMatte)) ||
+        (!selectedClip && targetTrack && targetTrack->generatedChildTrack)) {
+        // Generated rows are presentation bindings, not effect owners. Also
+        // reject programmatic attempts to assign source-history effects to a
+        // virtual matte even if a disabled combo item is forced current.
+        refresh();
+        return;
+    }
     const int rows = m_widgets.effectRowsSpin ? m_widgets.effectRowsSpin->value() : 32;
     const double speed = m_widgets.effectSpeedSpin ? m_widgets.effectSpeedSpin->value() : 1.0;
     const double scale = m_widgets.effectScaleSpin ? m_widgets.effectScaleSpin->value() : 1.0;
@@ -732,7 +777,6 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
 
     bool updated = false;
     if (selectedClip &&
-        selectedClip->clipRole != ClipRole::MaskMatte &&
         selectedClip->clipRole != ClipRole::EffectSynth &&
         m_deps.clipHasVisuals(*selectedClip)) {
         updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {

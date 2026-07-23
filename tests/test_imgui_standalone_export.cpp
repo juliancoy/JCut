@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "../standalone_export_renderer.h"
+#include "../standalone_audio_mixer.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -18,6 +19,8 @@ private slots:
     void exportsQtFreeVideoFile();
     void exportsQtFreeImageSequence();
     void exportPlaybackSpeedChangesVideoFrameCount();
+    void outputFormatOverridesMismatchedPathExtension();
+    void qtFreeAudioMixerMatchesTimelinePolicies();
 };
 
 namespace {
@@ -173,6 +176,124 @@ void TestImGuiStandaloneExport::exportPlaybackSpeedChangesVideoFrameCount()
     QVERIFY2(result.success, result.message.c_str());
     QCOMPARE(result.framesRendered, static_cast<std::int64_t>(16));
     QCOMPARE(countVideoPackets(outputPath), 16);
+}
+
+void TestImGuiStandaloneExport::outputFormatOverridesMismatchedPathExtension()
+{
+    QTemporaryDir tempDir;
+    QVERIFY2(tempDir.isValid(), "temporary directory must be available");
+
+    const std::string sourcePath =
+        writePpmFixture((tempDir.path() + QStringLiteral("/fixture.ppm")).toStdString());
+    const std::string outputPath =
+        (tempDir.path() + QStringLiteral("/matroska_with_mp4_extension.mp4")).toStdString();
+
+    jcut::EditorDocumentCore document;
+    document.projectName = "Standalone Matroska export";
+    document.tracks.push_back({1, "Video A", true});
+    document.clips.push_back({1, 1, "Still", 0, 2, true, sourcePath});
+    document.exportRequest.outputPath = outputPath;
+    document.exportRequest.outputFormat = "mkv";
+    document.exportRequest.outputSize = {64, 64};
+    document.exportRequest.outputFps = 30.0;
+    document.exportRequest.exportStartFrame = 0;
+    document.exportRequest.exportEndFrame = 1;
+
+    const jcut::render::RenderResultCore result =
+        jcut::standalone_render::exportTimelineToFile({document, {}});
+
+    QVERIFY2(result.success, result.message.c_str());
+    AVFormatContext* formatContext = nullptr;
+    const int openResult = avformat_open_input(
+        &formatContext, outputPath.c_str(), nullptr, nullptr);
+    QVERIFY2(openResult >= 0, "Matroska content must be readable despite the .mp4 suffix");
+    QVERIFY2(avformat_find_stream_info(formatContext, nullptr) >= 0,
+             "Matroska content must expose stream info");
+    QVERIFY(formatContext->iformat != nullptr);
+    const QString detectedFormat = QString::fromUtf8(formatContext->iformat->name);
+    QVERIFY2(detectedFormat.contains(QStringLiteral("matroska")),
+             qPrintable(QStringLiteral("expected Matroska, detected %1")
+                            .arg(detectedFormat)));
+    avformat_close_input(&formatContext);
+
+    document.exportRequest.outputFormat = "webm";
+    document.exportRequest.outputPath =
+        (tempDir.path() + QStringLiteral("/webm_with_mp4_extension.mp4")).toStdString();
+    const bool hasPortableWebmEncoder =
+        avcodec_find_encoder_by_name("libvpx-vp9") != nullptr ||
+        avcodec_find_encoder_by_name("libvpx") != nullptr;
+    const jcut::render::RenderResultCore webmResult =
+        jcut::standalone_render::exportTimelineToFile({document, {}});
+    if (!hasPortableWebmEncoder) {
+        QCOMPARE(webmResult.success, false);
+        QCOMPARE(QString::fromStdString(webmResult.message),
+                 QStringLiteral("WebM export requires a libvpx VP8/VP9 encoder"));
+    } else {
+        QVERIFY2(webmResult.success, webmResult.message.c_str());
+        formatContext = nullptr;
+        QVERIFY(avformat_open_input(
+                    &formatContext,
+                    document.exportRequest.outputPath.c_str(),
+                    nullptr,
+                    nullptr) >= 0);
+        QVERIFY(formatContext->iformat != nullptr);
+        const QString webmFormat = QString::fromUtf8(formatContext->iformat->name);
+        QVERIFY(webmFormat.contains(QStringLiteral("webm")) ||
+                webmFormat.contains(QStringLiteral("matroska")));
+        avformat_close_input(&formatContext);
+    }
+}
+
+void TestImGuiStandaloneExport::qtFreeAudioMixerMatchesTimelinePolicies()
+{
+    using namespace jcut::standalone_render::audio;
+    jcut::EditorDocumentCore document;
+    jcut::EditorTrack track;
+    track.id = 1;
+    track.audioGain = 0.5;
+    document.tracks.push_back(track);
+
+    jcut::EditorClip clip;
+    clip.id = 7;
+    clip.persistentId = "audio-7";
+    clip.trackId = 1;
+    clip.startFrame = 1;
+    clip.durationFrames = 4;
+    clip.sourceDurationFrames = 30;
+    clip.sourceFps = 30.0;
+    clip.mediaKind = "audio";
+    clip.hasAudio = true;
+    clip.audioGain = 0.5;
+    clip.fadeSamples = 100;
+    document.clips.push_back(clip);
+
+    DecodedAudioClip decoded;
+    decoded.samples.assign(10'000 * kChannelCount, 0.8f);
+    decoded.valid = true;
+    DecodedAudioCache cache{{clip.id, std::move(decoded)}};
+
+    std::array<float, 8> output{};
+    mixAudioChunk(document, cache, output.data(), 4,
+                  clipTimelineStartSamples(clip));
+    QCOMPARE(output[0], 0.0f);
+    QVERIFY(std::abs(output[2] - 0.002f) < 0.00001f);
+    QVERIFY(std::abs(output[4] - 0.004f) < 0.00001f);
+
+    document.renderSyncMarkers.push_back(
+        {clip.persistentId, clip.startFrame + 1, true, 2});
+    const std::int64_t afterMarker =
+        clipTimelineStartSamples(clip) + 2 * kSamplesPerTimelineFrame + 8;
+    QCOMPARE(sourceSampleForClipAtTimelineSample(
+                 document, clip, afterMarker),
+             4 * kSamplesPerTimelineFrame + 8);
+
+    document.tracks.front().audioMuted = true;
+    output.fill(1.0f);
+    mixAudioChunk(document, cache, output.data(), 4,
+                  clipTimelineStartSamples(clip) + 100);
+    for (float sample : output) {
+        QCOMPARE(sample, 0.0f);
+    }
 }
 
 QTEST_MAIN(TestImGuiStandaloneExport)

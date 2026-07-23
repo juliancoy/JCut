@@ -9,6 +9,7 @@
 #include "../transform_skip_aware_timing.h"
 #include "../titles.h"
 #include "../vulkan_effect_synth.h"
+#include "mask_sidecar_test_utils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -56,16 +57,21 @@ private slots:
     void clipSerializationPersistsEffectPresetState();
     void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
+    void correctionPolygonsEraseMaskIntensity();
     void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
     void genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels();
     void birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata();
+    void incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized();
     void birefnetUxExposesExplicitContextActionsAndPreview();
     void clipSerializationMigratesLegacyEffectSpeechSync();
     void clipSerializationPersistsArpeggiatorEffectPresets();
     void effectPresetMetadataCoversSerializedSynthPresets();
     void trackEffectSettingsDoNotLeakIntoChildClips();
+    void maskMatteSourceHistoryEffectsRenderInactive();
     void clipSerializationPersistsGeneratedClipRoleState();
     void maskMatteFactoryKeepsSourceTimingLocked();
+    void maskSidecarAssociationUpdatesPathAndStableIdentityTogether();
+    void maskMatteNormalizerRejectsUnsupportedParentsAndDeduplicates();
     void maskMatteNormalizerRepairsLegacyTimelineState();
     void maskMatteNormalizerFollowsSourceTimingEdits();
     void alternatingMotionBackgroundFactoryCreatesVisualOnlySynthClip();
@@ -232,6 +238,27 @@ void TestEffectPresets::maskFeatherFalloffProfilesShapeAlphaDifferently()
     QVERIFY(smootherAlpha < linearAlpha);
 }
 
+void TestEffectPresets::correctionPolygonsEraseMaskIntensity()
+{
+    QImage source(8, 8, QImage::Format_Grayscale8);
+    source.fill(200);
+
+    TimelineClip::CorrectionPolygon active;
+    active.pointsNormalized = {
+        {0.25, 0.25}, {0.75, 0.25}, {0.75, 0.75}, {0.25, 0.75}};
+    TimelineClip::CorrectionPolygon disabled;
+    disabled.enabled = false;
+    disabled.pointsNormalized = {
+        {0.0, 0.0}, {0.25, 0.0}, {0.25, 0.25}, {0.0, 0.25}};
+
+    const QImage corrected = applyCorrectionPolygonsToMaskImage(
+        source, {active, disabled});
+    QCOMPARE(corrected.format(), QImage::Format_Grayscale8);
+    QCOMPARE(corrected.constScanLine(4)[4], uchar{0});
+    QCOMPARE(corrected.constScanLine(0)[0], uchar{200});
+    QCOMPARE(source.constScanLine(4)[4], uchar{200});
+}
+
 void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()
 {
     QTemporaryDir temp;
@@ -258,6 +285,8 @@ void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()
     QCOMPARE(sidecars.constFirst().lastFrame, int64_t(12));
     QCOMPARE(sidecars.constFirst().id,
              editor::masks::stableMaskSidecarId(sidecarDir));
+    QVERIFY(!sidecars.constFirst().isReadyForTimeline());
+    QCOMPARE(sidecars.constFirst().readinessIssue, QStringLiteral("Frame map missing"));
 }
 
 void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels()
@@ -277,6 +306,13 @@ void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependent
         QVERIFY(frame.open(QIODevice::WriteOnly));
         frame.write("png");
     }
+    QFile samMap(QDir(samDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(samMap.open(QIODevice::WriteOnly));
+    samMap.write("# source_frame\tmask_frame\n0\t0\n");
+    samMap.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(samDir, mediaPath));
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        samDir, mediaPath, false));
 
     TimelineClip source;
     source.id = QStringLiteral("shot");
@@ -305,6 +341,8 @@ void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependent
     QCOMPARE(children.at(0).zLevel, 31);
     QCOMPARE(children.at(1).zLevel, 32);
     QVERIFY(children.at(0).id != children.at(1).id);
+    QVERIFY(children.at(0).maskSidecarAvailable);
+    QVERIFY(children.at(1).maskSidecarAvailable);
     QVERIFY(!reconcileMaskMatteChildrenFromDisk(clips));
     QCOMPARE(clips.size(), 3);
 
@@ -328,10 +366,13 @@ void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata
     QVERIFY(frame.open(QIODevice::WriteOnly));
     frame.write("png");
     frame.close();
-    QFile metadata(QDir(sidecarDir).filePath(QStringLiteral("jcut_alpha.json")));
-    QVERIFY(metadata.open(QIODevice::WriteOnly));
-    metadata.write("{\"source_type\":\"birefnet_continuous_alpha\",\"continuous_alpha\":true}");
-    metadata.close();
+    QFile frameMap(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(frameMap.open(QIODevice::WriteOnly));
+    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(sidecarDir, mediaPath));
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        sidecarDir, mediaPath, true));
 
     TimelineClip clip;
     clip.filePath = mediaPath;
@@ -339,6 +380,81 @@ void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata
     QCOMPARE(sidecars.size(), 1);
     QCOMPARE(sidecars.constFirst().displayName, QStringLiteral("alpha"));
     QCOMPARE(sidecars.constFirst().sourceType, QStringLiteral("birefnet_continuous_alpha"));
+    QVERIFY(sidecars.constFirst().decodeOrdinalFrames);
+    QVERIFY(sidecars.constFirst().frameIndexMapAvailable);
+    QVERIFY(sidecars.constFirst().frameIndexMetadataAvailable);
+    QCOMPARE(sidecars.constFirst().mappedFrameCount, int64_t(1));
+    QCOMPARE(sidecars.constFirst().firstMappedSourceFrame, int64_t(0));
+    QCOMPARE(sidecars.constFirst().lastMappedSourceFrame, int64_t(0));
+    QVERIFY(sidecars.constFirst().completionConfirmed);
+    QVERIFY(sidecars.constFirst().isReadyForTimeline());
+    QVERIFY(sidecars.constFirst().readinessIssue.isEmpty());
+}
+
+void TestEffectPresets::incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString mediaPath = temp.filePath(QStringLiteral("portrait.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.close();
+
+    const QString sidecarDir = temp.filePath(QStringLiteral("portrait_birefnet_alpha_masks"));
+    QVERIFY(QDir().mkpath(sidecarDir));
+    QFile frame(QDir(sidecarDir).filePath(QStringLiteral("frame_000001.png")));
+    QVERIFY(frame.open(QIODevice::WriteOnly));
+    frame.write("png");
+    frame.close();
+    QFile frameMap(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(frameMap.open(QIODevice::WriteOnly));
+    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(sidecarDir, mediaPath));
+
+    const editor::masks::MaskSidecar sidecar =
+        editor::masks::inspectMaskSidecar(sidecarDir, QStringLiteral("portrait"));
+    QVERIFY(sidecar.isValid());
+    QVERIFY(sidecar.decodeOrdinalFrames);
+    QVERIFY(sidecar.frameIndexMapAvailable);
+    QVERIFY(sidecar.frameIndexMetadataAvailable);
+    QVERIFY(!sidecar.completionConfirmed);
+    QVERIFY(!sidecar.isReadyForTimeline());
+    QCOMPARE(sidecar.readinessIssue, QStringLiteral("Generation incomplete"));
+
+    TimelineClip source;
+    source.id = QStringLiteral("portrait");
+    source.filePath = mediaPath;
+    source.label = QStringLiteral("Portrait");
+    source.mediaType = ClipMediaType::Video;
+    source.durationFrames = 30;
+    QVector<TimelineClip> clips{source};
+    QVERIFY(!reconcileMaskMatteChildrenFromDisk(clips));
+    QCOMPARE(clips.size(), 1);
+
+    TimelineClip persisted = makeMaskMatteClip(source);
+    persisted.id = QStringLiteral("persisted-incomplete-alpha");
+    persisted.maskFramesDir = sidecarDir;
+    persisted.generatedFromMaskId = sidecar.id;
+    persisted.maskEnabled = true;
+    clips.push_back(persisted);
+    bool availabilityChanged = false;
+    QVERIFY(!reconcileMaskMatteChildrenFromDisk(clips, &availabilityChanged));
+    QVERIFY(availabilityChanged);
+    QCOMPARE(clips.size(), 2);
+    QVERIFY(clips.constLast().maskEnabled);
+    QVERIFY(!clips.constLast().maskSidecarAvailable);
+    QCOMPARE(clips.constLast().maskSidecarAvailabilityIssue,
+             QStringLiteral("Generation incomplete"));
+
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        sidecarDir, mediaPath, true));
+    availabilityChanged = false;
+    QVERIFY(reconcileMaskMatteChildrenFromDisk(clips, &availabilityChanged));
+    QVERIFY(availabilityChanged);
+    QVERIFY(clips.constLast().maskEnabled);
+    QVERIFY(clips.constLast().maskSidecarAvailable);
+    QVERIFY(clips.constLast().maskSidecarAvailabilityIssue.isEmpty());
 }
 
 void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
@@ -351,13 +467,18 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
     const QString timelineMenu = readSource(QStringLiteral("timeline_widget_context_menu.cpp"));
     const QString clipsMenu = readSource(QStringLiteral("clips_tab.cpp"));
     const QString editor = readSource(QStringLiteral("editor_birefnet.cpp"));
+    const QString shell = readSource(QStringLiteral("birefnet.sh"));
     const QString runner = readSource(QStringLiteral("birefnet_run.py"));
+    const QString samRunner = readSource(QStringLiteral("sam3_run.py"));
+    const QString frameMapHelper = readSource(QStringLiteral("jcut_frame_index_map.py"));
     const QString maskTab = readSource(QStringLiteral("mask_tab.cpp"));
     const QString inspector = readSource(QStringLiteral("inspector_pane.cpp"));
 
     QVERIFY2(timelineMenu.contains(QStringLiteral("Rotoscope")) &&
                  timelineMenu.contains(QStringLiteral("Run SAM 3...")) &&
-                 timelineMenu.contains(QStringLiteral("Run BiRefNet...")),
+                 timelineMenu.contains(QStringLiteral("Run BiRefNet...")) &&
+                 timelineMenu.contains(QStringLiteral("rotoscopeSourceClipId")) &&
+                 timelineMenu.contains(QStringLiteral("clipParent(*rotoscopeSource")),
              "Timeline right-click must expose explicit SAM and BiRefNet actions.");
     QVERIFY2(clipsMenu.contains(QStringLiteral("Run BiRefNet...")),
              "Clips-table right-click must expose BiRefNet.");
@@ -372,6 +493,23 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  runner.contains(QStringLiteral("--live-preview")) &&
                  runner.contains(QStringLiteral("live_preview_strip")),
              "BiRefNet runner must support bounded and live source/alpha/composite previews.");
+    QVERIFY2(shell.contains(QStringLiteral("jcut_frame_index_map.py")) &&
+                 shell.contains(QStringLiteral("--source-frame")) &&
+                 shell.contains(QStringLiteral("PREVIEW_ONLY")) &&
+                 runner.contains(QStringLiteral("\"frame_domain\": \"decode_ordinal\"")) &&
+                 runner.contains(QStringLiteral("\"frame_index_map\": \"jcut_frame_map.tsv\"")) &&
+                 runner.contains(QStringLiteral("jcut_alpha.json")) &&
+                 runner.contains(QStringLiteral("verify_contiguous_alpha_frames")) &&
+                 samRunner.contains(QStringLiteral("from jcut_frame_index_map import")) &&
+                 samRunner.contains(QStringLiteral("jcut_mask.json")) &&
+                 samRunner.contains(QStringLiteral("verify_contiguous_mask_frames")) &&
+                 frameMapHelper.contains(QStringLiteral("jcut_frame_index_map_v2")) &&
+                 frameMapHelper.contains(QStringLiteral("source_identity")) &&
+                 frameMapHelper.contains(QStringLiteral("map_sha256")) &&
+                 frameMapHelper.contains(QStringLiteral("-show_frames")) &&
+                 frameMapHelper.contains(QStringLiteral("best_effort_timestamp")) &&
+                 frameMapHelper.contains(QStringLiteral("os.replace")),
+             "Ordinal mask generators must share an atomic decoded-frame timestamp map.");
     QVERIFY2(editor.contains(QStringLiteral("Alpha tolerance")) &&
                  editor.contains(QStringLiteral("alpha_tolerance")) &&
                  runner.contains(QStringLiteral("--alpha-tolerance")) &&
@@ -388,12 +526,23 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  editor.contains(QStringLiteral("error_kind")) &&
                  editor.contains(QStringLiteral("error_frame_index")),
              "BiRefNet UI and manifests must classify OOM and ambiguous SIGKILL failures.");
-    QVERIFY2(editor.contains(QStringLiteral("Create a Mask Z Marker when generation finishes")) &&
-                 editor.contains(QStringLiteral("createOrReplaceMaskZMarker")),
+    QVERIFY2(editor.contains(QStringLiteral("added as a source-linked Mask Matte child")) &&
+                 editor.contains(QStringLiteral("createOrReplaceMaskMatte")),
              "A completed BiRefNet run must offer an immediately usable downstream mask layer.");
     QVERIFY2(maskTab.contains(QStringLiteral("discoverMaskSidecars(clip)")) &&
                  maskTab.contains(QStringLiteral("soft alpha")),
              "The Masks tab must auto-discover and identify continuous-alpha sidecars.");
+    QVERIFY2(maskTab.contains(QStringLiteral("setMaskSidecarAssociation")) &&
+                 maskTab.contains(QStringLiteral("findMaskMatteChildForSidecar")) &&
+                 maskTab.contains(QStringLiteral("materializeMaskMatteForSidecar")) &&
+                 maskTab.contains(QStringLiteral("isMaskInspectorActive")) &&
+                 maskTab.contains(QStringLiteral("setTreatmentControlsEnabled")) &&
+                 maskTab.contains(QStringLiteral("Current sidecar (unavailable)")) &&
+                 maskTab.contains(QStringLiteral("clip->clipRole == ClipRole::Media")) &&
+                 maskTab.contains(QStringLiteral("selectClipById(existingChildId)")),
+             "The Masks tab must update path and stable identity atomically, and select an "
+             "existing or newly materialized sidecar child instead of editing its parent or "
+             "retargeting another child.");
     QVERIFY2(!inspector.contains(QStringLiteral("SAM mask is foreground layer")) &&
                  !inspector.contains(QStringLiteral("SAM binary mask frames directory")),
              "Shared downstream mask controls must not be branded as SAM-only.");
@@ -580,6 +729,41 @@ void TestEffectPresets::trackEffectSettingsDoNotLeakIntoChildClips()
     QCOMPARE(clip.effectRows, 3);
 }
 
+void TestEffectPresets::maskMatteSourceHistoryEffectsRenderInactive()
+{
+    QVERIFY(!effectPresetSupportedForClipRole(
+        ClipEffectPreset::DifferenceMatte, ClipRole::MaskMatte));
+    QVERIFY(!effectPresetSupportedForClipRole(
+        ClipEffectPreset::TemporalEcho, ClipRole::MaskMatte));
+    QVERIFY(effectPresetSupportedForClipRole(
+        ClipEffectPreset::SourceTile, ClipRole::MaskMatte));
+    QVERIFY(effectPresetSupportedForClipRole(
+        ClipEffectPreset::DifferenceMatte, ClipRole::Media));
+
+    TimelineClip matte;
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.effectPreset = ClipEffectPreset::DifferenceMatte;
+
+    TimelineClip renderable = clipWithRenderableEffectSettings(matte, {});
+    QCOMPARE(renderable.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(matte.effectPreset, ClipEffectPreset::DifferenceMatte);
+
+    matte.effectPreset = ClipEffectPreset::TemporalEcho;
+    renderable = clipWithRenderableEffectSettings(matte, {});
+    QCOMPARE(renderable.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(matte.effectPreset, ClipEffectPreset::TemporalEcho);
+
+    matte.effectPreset = ClipEffectPreset::SourceTile;
+    QCOMPARE(clipWithRenderableEffectSettings(matte, {}).effectPreset,
+             ClipEffectPreset::SourceTile);
+
+    TimelineClip media = matte;
+    media.clipRole = ClipRole::Media;
+    media.effectPreset = ClipEffectPreset::DifferenceMatte;
+    QCOMPARE(clipWithRenderableEffectSettings(media, {}).effectPreset,
+             ClipEffectPreset::DifferenceMatte);
+}
+
 void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
 {
     TimelineClip clip;
@@ -593,6 +777,8 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     clip.mediaType = ClipMediaType::Video;
     clip.maskEnabled = true;
     clip.maskFramesDir = clip.generatedFromMaskId;
+    clip.maskSidecarAvailable = false;
+    clip.maskSidecarAvailabilityIssue = QStringLiteral("Generation incomplete");
     clip.maskShowOnly = true;
     clip.effectPreset = ClipEffectPreset::AlternatingMotionBackground;
 
@@ -605,6 +791,8 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     QCOMPARE(json.value(QStringLiteral("sourceTransformLocked")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(),
              QStringLiteral("alternating_motion_background"));
+    QVERIFY(!json.contains(QStringLiteral("maskSidecarAvailable")));
+    QVERIFY(!json.contains(QStringLiteral("maskSidecarAvailabilityIssue")));
 
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.clipRole, ClipRole::MaskMatte);
@@ -612,6 +800,9 @@ void TestEffectPresets::clipSerializationPersistsGeneratedClipRoleState()
     QCOMPARE(loaded.generatedFromMaskId, QStringLiteral("/tmp/source_sam3_person_binary_masks"));
     QCOMPARE(loaded.syncLockedToSource, true);
     QCOMPARE(loaded.sourceTransformLocked, true);
+    QVERIFY(loaded.maskEnabled);
+    QVERIFY(loaded.maskSidecarAvailable);
+    QVERIFY(loaded.maskSidecarAvailabilityIssue.isEmpty());
     QVERIFY(!loaded.maskShowOnly);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::AlternatingMotionBackground);
 
@@ -644,6 +835,24 @@ void TestEffectPresets::maskMatteFactoryKeepsSourceTimingLocked()
     source.maskFramesDir = QStringLiteral("/tmp/shot-01_sam3_person_binary_masks");
     source.maskForegroundLayerEnabled = true;
     source.effectPreset = ClipEffectPreset::NewsLogoTicker;
+    source.effectRows = 91;
+    source.effectSkipAwareTiming = true;
+    source.maskRepeatEnabled = true;
+    source.maskRepeatDeltaX = 77.0;
+    source.maskRepeatDeltaY = -33.0;
+    source.opacity = 0.35;
+    TimelineClip::OpacityKeyframe parentOpacity;
+    parentOpacity.frame = 0;
+    parentOpacity.opacity = 0.2;
+    source.opacityKeyframes = {parentOpacity};
+    TimelineClip::TitleKeyframe parentTitle;
+    parentTitle.frame = 0;
+    parentTitle.text = QStringLiteral("Do not clone");
+    source.titleKeyframes = {parentTitle};
+    source.transcriptOverlay.enabled = true;
+    TimelineClip::CorrectionPolygon correction;
+    correction.pointsNormalized = {{0.0, 0.0}, {1.0, 0.0}, {0.5, 1.0}};
+    source.correctionPolygons = {correction};
     source.brightness = 0.35;
     source.contrast = 1.7;
     source.saturation = 0.4;
@@ -662,7 +871,8 @@ void TestEffectPresets::maskMatteFactoryKeepsSourceTimingLocked()
     QCOMPARE(matte.id, QStringLiteral("shot-01-mask-matte"));
     QCOMPARE(matte.clipRole, ClipRole::MaskMatte);
     QCOMPARE(matte.linkedSourceClipId, source.id);
-    QCOMPARE(matte.generatedFromMaskId, source.maskFramesDir);
+    QCOMPARE(matte.generatedFromMaskId,
+             editor::masks::stableMaskSidecarId(source.maskFramesDir));
     QVERIFY(matte.syncLockedToSource);
     QVERIFY(matte.sourceTransformLocked);
     QVERIFY(matte.locked);
@@ -687,6 +897,16 @@ void TestEffectPresets::maskMatteFactoryKeepsSourceTimingLocked()
     QVERIFY(!matte.maskShowOnly);
     QVERIFY(!matte.maskForegroundLayerEnabled);
     QCOMPARE(matte.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(matte.effectRows, TimelineClip{}.effectRows);
+    QCOMPARE(matte.effectSkipAwareTiming, TimelineClip{}.effectSkipAwareTiming);
+    QCOMPARE(matte.maskRepeatEnabled, TimelineClip{}.maskRepeatEnabled);
+    QCOMPARE(matte.maskRepeatDeltaX, TimelineClip{}.maskRepeatDeltaX);
+    QCOMPARE(matte.maskRepeatDeltaY, TimelineClip{}.maskRepeatDeltaY);
+    QCOMPARE(matte.opacity, 1.0);
+    QVERIFY(matte.opacityKeyframes.isEmpty());
+    QVERIFY(matte.titleKeyframes.isEmpty());
+    QVERIFY(!matte.transcriptOverlay.enabled);
+    QVERIFY(matte.correctionPolygons.isEmpty());
     QCOMPARE(matte.brightness, 0.0);
     QCOMPARE(matte.contrast, 1.0);
     QCOMPARE(matte.saturation, 1.0);
@@ -704,6 +924,96 @@ void TestEffectPresets::maskMatteFactoryKeepsSourceTimingLocked()
     QCOMPARE(childGrade.contrast, 1.0);
     QCOMPARE(childGrade.saturation, 1.0);
     QVERIFY(!gradingUsesCurveLut(childGrade));
+}
+
+void TestEffectPresets::maskSidecarAssociationUpdatesPathAndStableIdentityTogether()
+{
+    TimelineClip matte;
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.maskFramesDir = QStringLiteral("/tmp/old-mask");
+    matte.generatedFromMaskId = QStringLiteral("stale-id");
+
+    const QString newDirectory = QStringLiteral(" /tmp/new-mask ");
+    QVERIFY(setMaskSidecarAssociation(matte, newDirectory));
+    QCOMPARE(matte.maskFramesDir, QStringLiteral("/tmp/new-mask"));
+    QCOMPARE(matte.generatedFromMaskId,
+             editor::masks::stableMaskSidecarId(matte.maskFramesDir));
+    QVERIFY(!setMaskSidecarAssociation(matte, matte.maskFramesDir));
+
+    QVERIFY(setMaskSidecarAssociation(matte, QString()));
+    QVERIFY(matte.maskFramesDir.isEmpty());
+    QVERIFY(matte.generatedFromMaskId.isEmpty());
+}
+
+void TestEffectPresets::maskMatteNormalizerRejectsUnsupportedParentsAndDeduplicates()
+{
+    TimelineClip source;
+    source.id = QStringLiteral("source");
+    source.filePath = QStringLiteral("/media/source.mp4");
+    source.mediaType = ClipMediaType::Video;
+    source.clipRole = ClipRole::Media;
+    source.durationFrames = 120;
+    source.maskFramesDir = QStringLiteral("/tmp/source-person-mask");
+
+    TimelineClip effectParent = source;
+    effectParent.id = QStringLiteral("effect-parent");
+    effectParent.clipRole = ClipRole::EffectSynth;
+    TimelineClip titleParent = source;
+    titleParent.id = QStringLiteral("title-parent");
+    titleParent.clipRole = ClipRole::SpeakerTitle;
+    TimelineClip imageParent = source;
+    imageParent.id = QStringLiteral("image-parent");
+    imageParent.mediaType = ClipMediaType::Image;
+
+    TimelineClip retained = makeMaskMatteClip(source);
+    retained.id = QStringLiteral("retained-child");
+    retained.maskEnabled = false;
+    retained.maskShowOnly = true;
+    retained.brightness = 0.42;
+    TimelineClip::GradingKeyframe retainedGrade;
+    retainedGrade.frame = 0;
+    retainedGrade.brightness = 0.73;
+    retained.gradingKeyframes = {retainedGrade};
+
+    TimelineClip duplicate = retained;
+    duplicate.id = QStringLiteral("duplicate-child");
+    duplicate.maskEnabled = true;
+    duplicate.maskShowOnly = false;
+    duplicate.brightness = -0.5;
+    duplicate.gradingKeyframes[0].brightness = -0.8;
+
+    TimelineClip effectChild = retained;
+    effectChild.id = QStringLiteral("effect-child");
+    effectChild.linkedSourceClipId = effectParent.id;
+    TimelineClip titleChild = retained;
+    titleChild.id = QStringLiteral("title-child");
+    titleChild.linkedSourceClipId = titleParent.id;
+    TimelineClip imageChild = retained;
+    imageChild.id = QStringLiteral("image-child");
+    imageChild.linkedSourceClipId = imageParent.id;
+
+    QVector<TimelineClip> clips{
+        source, effectParent, titleParent, imageParent,
+        retained, duplicate, effectChild, titleChild, imageChild};
+    QVERIFY(normalizeMaskMatteClips(clips));
+
+    QVector<TimelineClip> children;
+    for (const TimelineClip& clip : std::as_const(clips)) {
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            children.push_back(clip);
+        }
+    }
+    QCOMPARE(children.size(), 1);
+    QCOMPARE(children.constFirst().id, retained.id);
+    QVERIFY(!children.constFirst().maskEnabled);
+    QVERIFY(children.constFirst().maskShowOnly);
+    QCOMPARE(children.constFirst().brightness, retained.brightness);
+    QCOMPARE(children.constFirst().gradingKeyframes.size(), 1);
+    QCOMPARE(children.constFirst().gradingKeyframes.constFirst().brightness, 0.73);
+    QCOMPARE(maskMatteChildIdForSidecar(
+                 clips, source.id, retained.generatedFromMaskId),
+             retained.id);
+    QVERIFY(!normalizeMaskMatteClips(clips));
 }
 
 void TestEffectPresets::maskMatteNormalizerRepairsLegacyTimelineState()
@@ -755,6 +1065,9 @@ void TestEffectPresets::maskMatteNormalizerRepairsLegacyTimelineState()
     matte.maskDilate = 99.0;
     matte.maskOpacity = 1.0;
     matte.maskGradeEnabled = false;
+    matte.effectPreset = ClipEffectPreset::NeonGlow;
+    source.effectSkipAwareTiming = false;
+    matte.effectSkipAwareTiming = true;
     matte.transformKeyframes.clear();
 
     QVector<TimelineClip> clips{source, matte};
@@ -767,15 +1080,18 @@ void TestEffectPresets::maskMatteNormalizerRepairsLegacyTimelineState()
     QCOMPARE(clips[1].durationFrames, clips[0].durationFrames);
     QVERIFY(clips[1].locked);
     QVERIFY(clips[1].sourceTransformLocked);
-    QVERIFY(!clips[1].maskShowOnly);
+    QVERIFY(clips[1].maskShowOnly);
     QVERIFY(!clips[1].maskForegroundLayerEnabled);
     QCOMPARE(clips[1].maskFramesDir, clips[0].maskFramesDir);
-    QCOMPARE(clips[1].generatedFromMaskId, clips[0].maskFramesDir);
+    QCOMPARE(clips[1].generatedFromMaskId,
+             editor::masks::stableMaskSidecarId(clips[0].maskFramesDir));
     QCOMPARE(clips[1].maskFeather, 99.0);
     QCOMPARE(clips[1].maskDilate, 99.0);
     QCOMPARE(clips[1].maskErode, clips[0].maskErode);
     QCOMPARE(clips[1].maskBlur, clips[0].maskBlur);
     QCOMPARE(clips[1].maskOpacity, 1.0);
+    QCOMPARE(clips[1].effectPreset, ClipEffectPreset::NeonGlow);
+    QVERIFY(clips[1].effectSkipAwareTiming);
     QVERIFY(!clips[0].maskGradeEnabled);
     QVERIFY(!clips[1].maskGradeEnabled);
     QCOMPARE(clips[1].gradingKeyframes.size(), 1);

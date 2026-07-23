@@ -54,6 +54,10 @@ public:
         std::function<bool(const TimelineClip&)> clipHasVisuals;
         std::function<QString(QWidget*, const QString&)> chooseMaskDirectory;
         std::function<void(const QString&)> generatePromptMask;
+        std::function<QString(const QString&, const QString&)> findMaskMatteChildForSidecar;
+        std::function<QString(const QString&, const QString&)> materializeMaskMatteForSidecar;
+        std::function<void(const QString&)> selectClipById;
+        std::function<bool()> isMaskInspectorActive;
     };
 
     explicit MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -64,6 +68,7 @@ public:
 
 private:
     void setControlsEnabled(bool enabled);
+    void setTreatmentControlsEnabled(bool enabled);
 
     Widgets m_widgets;
     Dependencies m_deps;

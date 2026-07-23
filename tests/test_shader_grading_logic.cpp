@@ -2,8 +2,12 @@
 
 #include "../editor_shared_effects.h"
 #include "../visual_effects_shader.h"
+#include "mask_sidecar_test_utils.h"
 
 #include <QRegularExpression>
+#include <QDir>
+#include <QFile>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 class TestShaderGradingLogic : public QObject {
@@ -27,6 +31,7 @@ private slots:
     void testCpuLumaCurvePreservesChroma();
     void testCpuMaskCurveGradesOnlyMaskedPixels();
     void testCpuMaskMatteCompositesOpacityAndShadow();
+    void testDecodeOrdinalMaskWithoutFrameMapFailsClosed();
 };
 
 void TestShaderGradingLogic::testGlShaderUsesSafePowForMidtones()
@@ -381,6 +386,102 @@ void TestShaderGradingLogic::testCpuMaskMatteCompositesOpacityAndShadow()
     QCOMPARE(qRed(result.pixel(3, 0)), 0);
     QCOMPARE(qGreen(result.pixel(3, 0)), 0);
     QCOMPARE(qBlue(result.pixel(3, 0)), 0);
+}
+
+void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString maskDirectory =
+        root.filePath(QStringLiteral("shot_birefnet_alpha_masks"));
+    QVERIFY(QDir().mkpath(maskDirectory));
+    const QString sourcePath = root.filePath(QStringLiteral("shot.mp4"));
+    QFile sourceFile(sourcePath);
+    QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+    sourceFile.write("source-a");
+    sourceFile.close();
+
+    QImage mask(2, 1, QImage::Format_Grayscale8);
+    mask.fill(255);
+    QVERIFY(mask.save(QDir(maskDirectory).filePath(
+        QStringLiteral("frame_000001.png"))));
+
+    TimelineClip clip;
+    clip.mediaType = ClipMediaType::Video;
+    clip.filePath = sourcePath;
+    clip.maskEnabled = true;
+    clip.maskFramesDir = maskDirectory;
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QFile frameMap(QDir(maskDirectory).filePath(
+        QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(frameMap.open(QIODevice::WriteOnly));
+    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.close();
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
+        maskDirectory, sourcePath));
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        maskDirectory, sourcePath, true, false));
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        maskDirectory, sourcePath, true, true));
+    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, 1).isNull());
+
+    // Durable binding is content-based: a byte-identical copy at a different
+    // path/inode remains the same source after its full digest is verified.
+    const QString copiedSourcePath = root.filePath(QStringLiteral("copied.mp4"));
+    QFile copiedSource(copiedSourcePath);
+    QVERIFY(copiedSource.open(QIODevice::WriteOnly));
+    copiedSource.write("source-a");
+    copiedSource.close();
+    clip.filePath = copiedSourcePath;
+    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
+
+    const QString otherSourcePath = root.filePath(QStringLiteral("other.mp4"));
+    QFile otherSource(otherSourcePath);
+    QVERIFY(otherSource.open(QIODevice::WriteOnly));
+    otherSource.write("source-b"); // Same size, different content.
+    otherSource.close();
+    clip.filePath = otherSourcePath;
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    // A map makes the sidecar ordinal regardless of its directory name. It
+    // must not bypass completion gating, and schema-less legacy completion is
+    // not sufficient to bind the artifact to this exact source/map pair.
+    const QString customDirectory =
+        root.filePath(QStringLiteral("shot_custom_ai_subject_mattes"));
+    QVERIFY(QDir().mkpath(customDirectory));
+    QVERIFY(mask.save(QDir(customDirectory).filePath(
+        QStringLiteral("frame_000001.png"))));
+    QFile customMap(QDir(customDirectory).filePath(
+        QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(customMap.open(QIODevice::WriteOnly));
+    customMap.write("# source_frame\tmask_frame\n0\t0\n");
+    customMap.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
+        customDirectory, sourcePath));
+    clip.filePath = sourcePath;
+    clip.maskFramesDir = customDirectory;
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QVERIFY(mask_sidecar_test::writeJson(
+        QDir(customDirectory).filePath(QStringLiteral("jcut_alpha.json")),
+        QJsonObject{
+            {QStringLiteral("source_type"),
+             QStringLiteral("birefnet_continuous_alpha")},
+            {QStringLiteral("frame_domain"), QStringLiteral("decode_ordinal")},
+        }));
+    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        customDirectory, sourcePath, true, true));
+    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
 }
 
 QTEST_MAIN(TestShaderGradingLogic)

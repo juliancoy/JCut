@@ -45,7 +45,9 @@ Primary files inspected:
 - Mutability is path-based: only non-original cuts are mutable (`activeCutMutable()`).
 
 ### Transcript Table + Editing
-- Rows are parsed from JSON `segments[].words[]` in `parseTranscriptRows(...)`.
+- `TranscriptTab::startTranscriptRowsBuildRequest(...)` projects a serialized snapshot of the
+  current in-memory document through the shared Qt-free `TranscriptDocumentCore`; the Qt adapter
+  restores the tab's stable word IDs and stored render-order values before populating the table.
 - Per-row speaker uses precedence:
   - word-level `speaker`,
   - segment-level `speaker`,

@@ -7,6 +7,7 @@
 #include "debug_controls.h"
 #include "editor_shared_transcript.h"
 #include "startup_project_state.h"
+#include "project_save_lock.h"
 
 #include <QDir>
 #include <QFile>
@@ -24,6 +25,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
+#include <filesystem>
 
 using namespace editor;
 
@@ -232,6 +234,11 @@ bool writeJsonObjectAtomic(const QString& path, const QJsonObject& root)
         return false;
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
+    jcut::projectio::ScopedProjectSaveLock saveLock;
+    if (!saveLock.acquire(
+            std::filesystem::path(QFileInfo(path).absolutePath().toStdString()))) {
+        return false;
+    }
     const QByteArray payload = jcut::jsonio::serializeIndented(root);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -256,6 +263,11 @@ QByteArray writeStateObjectAtomic(const QString& path,
         return serializedState;
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
+    jcut::projectio::ScopedProjectSaveLock saveLock;
+    if (!saveLock.acquire(
+            std::filesystem::path(QFileInfo(path).absolutePath().toStdString()))) {
+        return QByteArray();
+    }
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         return QByteArray();
@@ -830,6 +842,9 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("mediaExpandedFolders")] = expandedFolders;
     // Backward compatibility for older state readers.
     root[QStringLiteral("explorerExpandedFolders")] = expandedFolders;
+    // Dear ImGui owns the first project media-bin UI. Keep its neutral extension
+    // intact when the same project is subsequently saved by the Qt shell.
+    root[QStringLiteral("mediaItems")] = m_projectMediaItemsExtension;
 
     root[QStringLiteral("outputWidth")] =
         m_outputWidthSpin ? m_outputWidthSpin->value() : 1080;

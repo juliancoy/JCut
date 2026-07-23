@@ -26,6 +26,8 @@
 // Single producer (mix thread) writes, single consumer (RtAudio callback)
 // reads.
 struct AudioRingBuffer {
+  friend class TestAudioMixPolicy;
+
   static constexpr size_t kCapacity = 32768; // power of 2
 
   size_t available() const;
@@ -42,6 +44,9 @@ private:
   std::array<int16_t, kCapacity> m_buffer{};
   std::atomic<size_t> m_readPos{0};
   std::atomic<size_t> m_writePos{0};
+  std::atomic<bool> m_resetting{false};
+  std::atomic<bool> m_readerActive{false};
+  std::mutex m_clearMutex;
 };
 
 class AudioEngine {
@@ -73,6 +78,23 @@ public:
   void setExportRanges(const QVector<ExportRangeSegment> &ranges);
 
   void setRenderSyncMarkers(const QVector<RenderSyncMarker> &markers);
+
+  // Installs all timeline inputs as one mixer-visible snapshot. ImGui uses
+  // this boundary so a project switch or edit cannot expose new tracks with
+  // old clips/ranges/markers between separate setter calls.
+  void setTimelineState(const QVector<TimelineTrack> &tracks,
+                        const QVector<TimelineClip> &clips,
+                        const QVector<ExportRangeSegment> &ranges,
+                        const QVector<RenderSyncMarker> &markers);
+
+  // Atomically replaces the timeline and repositions playback. This is the
+  // live-edit/project-switch boundary: an in-flight mixer chunk from the old
+  // generation is discarded and cannot refill the cleared ring buffer.
+  void setTimelineStateAtFrame(const QVector<TimelineTrack> &tracks,
+                               const QVector<TimelineClip> &clips,
+                               const QVector<ExportRangeSegment> &ranges,
+                               const QVector<RenderSyncMarker> &markers,
+                               int64_t frame);
 
   void setSpeechFilterFadeSamples(int samples);
 
@@ -121,7 +143,19 @@ public:
 
   bool hasPlayableAudio() const;
 
+  QVector<QString> scheduledAudioSourcePaths() const;
+
+  // Drops decoded data derived from external sources while keeping the
+  // current timeline installed. Decode work already in flight is versioned
+  // and cannot repopulate the caches after this call returns.
+  void invalidateAudioSourceCaches();
+
   bool warmPlaybackAudio(int64_t startFrame, int timeoutMs);
+
+  // Returns true only when warming the source active at startFrame cannot
+  // make progress without a source-identity change. Timed-out work that is
+  // still decoding/generating remains retryable.
+  bool playbackAudioWarmupPermanentlyFailed(int64_t startFrame) const;
 
   bool playbackAudioReadyForFrame(int64_t startFrame) const;
 
@@ -169,6 +203,7 @@ private:
     bool fullDecode = false;
     bool precomputeTimeStretch = false;
     int64_t sourceStartSample = 0;
+    uint64_t sourceGeneration = 0;
   };
 
   struct AudioClipCacheEntry {
@@ -228,6 +263,7 @@ private:
     int state = TimeStretchJobQueued;
     qreal progress = 0.0;
     qint64 updatedMs = 0;
+    uint64_t sourceGeneration = 0;
   };
 
   static QString timeStretchJobStateString(int state);
@@ -236,8 +272,31 @@ private:
 
   void markTimeStretchJob(const QString &path, int speedKey, int state,
                           qreal progress);
+  bool markTimeStretchJobForSourceGeneration(
+      const QString &path, int speedKey, int state, qreal progress,
+      uint64_t expectedSourceGeneration);
   bool timeStretchJobRecentlyFailed(const QString &path, int speedKey) const;
-  int beginTimeStretchJobAttempt(const QString &path, int speedKey);
+  bool publishRecentTimeStretchFailureForSourceGeneration(
+      const QString &path, int speedKey,
+      uint64_t expectedSourceGeneration);
+  int beginTimeStretchJobAttempt(const QString &path, int speedKey,
+                                 uint64_t expectedSourceGeneration);
+  bool beginTimeStretchGenerationForSourceGeneration(
+      const QString &path, int speedKey, int64_t sourceFrames,
+      uint64_t expectedSourceGeneration);
+  bool updateTimeStretchGenerationForSourceGeneration(
+      const QString &path, int speedKey, int jobState, qreal progress,
+      int generationPhase, uint64_t expectedSourceGeneration);
+  bool finishTimeStretchGenerationForSourceGeneration(
+      const QString &path, int speedKey, bool succeeded,
+      int64_t outputFrames, const QString &endReason, const QString &error,
+      uint64_t expectedSourceGeneration);
+  void abandonTimeStretchGenerationForSourceGeneration(
+      const QString &path, int speedKey,
+      uint64_t expectedSourceGeneration);
+  void markTimeStretchJobLocked(const QString &path, int speedKey, int state,
+                                qreal progress,
+                                uint64_t sourceGeneration);
 
   enum TimeStretchReadinessState {
     TimeStretchReadinessIdle = 0,
@@ -278,6 +337,15 @@ private:
   bool ensureTimeStretchAudioReadyForTimelineSample(int64_t timelineSample);
 
   void requestAudioForTimelineSampleLocked(int64_t timelineSample);
+
+  void installTimelineStateLocked(
+      const QVector<TimelineTrack> &tracks,
+      const QVector<TimelineClip> &clips,
+      const QVector<ExportRangeSegment> &ranges,
+      const QVector<RenderSyncMarker> &markers);
+
+  bool commitMixedChunk(uint64_t generation, const int16_t *samples,
+                        size_t sampleCount, int64_t chunkEndSample);
 
   struct MixContext {
     QVector<TimelineClip> clips;
@@ -396,12 +464,20 @@ private:
   AudioClipCacheEntry
   buildTimeStretchCacheEntry(const QString &path,
                              const AudioClipCacheEntry &decoded, qreal speed,
-                             PlaybackAudioWarpMode mode);
+                             PlaybackAudioWarpMode mode,
+                             uint64_t expectedSourceGeneration);
 
   QHash<int, AudioClipCacheEntry>
   buildPrecomputedTimeStretchEntries(const QString &path,
                                      const AudioClipCacheEntry &decoded,
-                                     bool precomputeRequested);
+                                     bool precomputeRequested,
+                                     uint64_t expectedSourceGeneration);
+
+  bool sourceGenerationCurrent(uint64_t expectedGeneration) const;
+
+  bool recordDecodeResultLocked(const QString &path,
+                                uint64_t expectedSourceGeneration,
+                                bool valid);
 
   QVector<ExportRangeSegment> exportRangesCopy() const;
 
@@ -422,6 +498,10 @@ private:
   // --- Member variables ---
 
   mutable std::mutex m_stateMutex;
+  // Serializes the source-generation transition with the final atomic rename
+  // of a time-stretch sidecar, closing the check/commit race without holding
+  // the mixer state lock during the bulk file write.
+  std::mutex m_sourceGenerationCommitMutex;
   mutable std::mutex m_exportRangesMutex;
   mutable std::mutex m_transcriptNormalizeRangesMutex;
   std::mutex m_mixMutex;
@@ -445,6 +525,7 @@ private:
   QSet<QString> m_fullDecodeRequestedWhileActive;
   QHash<QString, int64_t> m_timeStretchPrecomputeRequestedWhileActive;
   QSet<QString> m_scheduledDecodePaths;
+  QSet<QString> m_failedDecodePaths;
 
   std::thread m_decodeWorker;
   std::thread m_mixWorker;
@@ -460,6 +541,8 @@ private:
   bool m_muted = false;
   qreal m_volume = 0.8;
   int64_t m_timelineSampleCursor = 0;
+  uint64_t m_mixGeneration = 0;
+  uint64_t m_sourceGeneration = 0;
   std::atomic<int64_t> m_audioClockSample{0};
   mutable std::atomic<int64_t> m_lastReportedCurrentSample{0};
   std::atomic<qint64> m_startCount{0};
@@ -521,6 +604,7 @@ private:
   mutable QString m_timeStretchGenerationSidecarPath;
   mutable QString m_timeStretchGenerationLastError;
   mutable QString m_timeStretchGenerationLastEndReason;
+  mutable uint64_t m_timeStretchGenerationSourceGeneration = 0;
   mutable std::atomic<int> m_timeStretchGenerationAttempt{0};
   mutable std::atomic<qint64> m_timeStretchGenerationRetrySuppressedMs{0};
   mutable std::atomic<bool> m_timeStretchGenerationActive{false};

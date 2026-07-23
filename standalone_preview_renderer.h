@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/image_buffer.h"
+#include "core/offscreen_vulkan_frame.h"
 #include "editor_document_core.h"
-#include "render_internal.h"
 
 #include <string>
 

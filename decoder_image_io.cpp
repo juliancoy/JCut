@@ -6,7 +6,9 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QSet>
-#include <QtConcurrent/QtConcurrent>
+#include <QThreadPool>
+
+#include <atomic>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -353,25 +355,36 @@ QImage loadSingleImageFile(const QString& framePath) {
 }
 
 QVector<QImage> loadImageSequenceBatch(const QStringList& framePaths, const QVector<int64_t>& frameNumbers) {
-    QVector<QImage> results;
     if (framePaths.isEmpty() || frameNumbers.isEmpty()) {
-        return results;
+        return {};
     }
-    
-    results.reserve(frameNumbers.size());
-    
-    // Simple parallel loading using QtConcurrent
-    // This is more efficient than sequential loading for many small files
-    QVector<QImage> loadedImages = QtConcurrent::blockingMapped<QVector<QImage>>(
-        frameNumbers,
-        [&framePaths](int64_t frameNumber) -> QImage {
-            const int index = qBound(0, static_cast<int>(frameNumber), framePaths.size() - 1);
-            return loadSingleImageFile(framePaths.at(index));
-        }
-    );
-    
-    // Transfer results
-    results = std::move(loadedImages);
+
+    QVector<QImage> results(frameNumbers.size());
+    QImage* const resultData = results.data();
+    std::atomic<qsizetype> nextIndex{0};
+
+    // Keep the existing parallel batch behavior without pulling the Qt Concurrent
+    // module into consumers. A local Qt Core pool also keeps this blocking helper
+    // independent of unrelated work queued on the global pool.
+    QThreadPool batchPool;
+    const qsizetype workerCount =
+        qMin<qsizetype>(frameNumbers.size(), qMax(1, batchPool.maxThreadCount()));
+    batchPool.setMaxThreadCount(static_cast<int>(workerCount));
+    for (qsizetype worker = 0; worker < workerCount; ++worker) {
+        batchPool.start([&framePaths, &frameNumbers, &nextIndex, resultData]() {
+            for (;;) {
+                const qsizetype resultIndex = nextIndex.fetch_add(1, std::memory_order_relaxed);
+                if (resultIndex >= frameNumbers.size()) {
+                    return;
+                }
+                const int64_t frameNumber = frameNumbers.at(resultIndex);
+                const int index = qBound(0, static_cast<int>(frameNumber), framePaths.size() - 1);
+                resultData[resultIndex] = loadSingleImageFile(framePaths.at(index));
+            }
+        });
+    }
+    batchPool.waitForDone();
+
     return results;
 }
 

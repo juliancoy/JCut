@@ -12,22 +12,24 @@ full clip. **Alpha tolerance** removes low-confidence foreground leakage while
 preserving a continuous soft matte: `0%` is exact model output, while higher values
 make the selection progressively stricter. Select **Generate Alpha** when the
 preview and settings are acceptable.
-By default, completion also creates a locked **Mask Z Marker**. This gives the
-timeline an immediately usable masked foreground layer while retaining the source
-clip below it; move effects or replacement backgrounds between those layers. The
-preflight checkbox can disable marker creation when only a reusable sidecar is
-wanted.
+Completion creates or reuses a locked **Mask Matte** child. This gives the
+timeline an immediately usable masked foreground layer while retaining its source
+parent below it; move effects or replacement backgrounds between those layers.
+The alpha sidecar and all mask treatment belong to that child; the source parent
+continues to own media, timing, and transforms. Z-level controls compositing
+order; it is not a marker or a relationship type.
 
 During full generation, the progress window refreshes a three-panel
 **Source | Alpha Matte | Composite** strip after every rendered frame. The log
 below it reports the current frame and total frame count. Users can stop the run
 without applying an incomplete matte; launching it again resumes from completed
-alpha frames. The clip's active mask changes only after the full job succeeds.
+alpha frames. The Mask Matte child is materialized only after the full job
+succeeds.
 
 BiRefNet is most suitable when the intended subject is the visually dominant
 foreground. Unlike SAM, it does not accept a text or point prompt. It writes one
 8-bit grayscale alpha PNG per decoded source frame and JCut immediately uses that
-directory as the clip's mask sidecar. Intermediate gray values are preserved by
+directory as the child's mask sidecar. Intermediate gray values are preserved by
 the Vulkan mask pipeline. The shared Masks controls support invert, erode, dilate,
 blur/feather, continuous-alpha falloff, opacity, mask-only inspection, and soft
 drop shadow in both Vulkan preview and export.

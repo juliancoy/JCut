@@ -13,6 +13,12 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
                                    int64_t sourceFrame,
                                    const TimelineClip::GradingKeyframe& clipGrade);
 QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame);
+// Applies correction polygons that have already been filtered for the current
+// timeline position. The result is a grayscale mask with corrected regions
+// erased to zero, ready for either preview or export upload.
+QImage applyCorrectionPolygonsToMaskImage(
+    const QImage& source,
+    const QVector<TimelineClip::CorrectionPolygon>& activePolygons);
 QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, const QSize& size);
 QVector<QPointF> defaultGradingCurvePoints();
 QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points);
@@ -52,3 +58,9 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
                                                                 const PlaybackTimingContext& timing);
 bool trackHasEffectPreset(const TimelineTrack& track);
 TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
+bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role);
+// Source-history presets need independent decoded frames. Mask mattes are
+// virtual views of their parent, so those presets are preserved in the model
+// but rendered inactive to keep the matte fail-closed.
+TimelineClip clipWithRenderableEffectSettings(const TimelineClip& clip,
+                                              const QVector<TimelineTrack>& tracks);

@@ -1,15 +1,20 @@
 #include "editor_shared_effects.h"
+#include "editor_grading_core.h"
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
 #include "editor_shared_transcript.h"
+#include "mask_sidecar.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QCache>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPainter>
@@ -20,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 bool trackHasEffectPreset(const TimelineTrack& track)
 {
@@ -34,7 +40,57 @@ TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector
     return clip;
 }
 
+bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role)
+{
+    return role != ClipRole::MaskMatte ||
+           (preset != ClipEffectPreset::DifferenceMatte &&
+            preset != ClipEffectPreset::TemporalEcho);
+}
+
+TimelineClip clipWithRenderableEffectSettings(const TimelineClip& clip,
+                                              const QVector<TimelineTrack>& tracks)
+{
+    TimelineClip renderable = clipWithTrackEffectSettings(clip, tracks);
+    if (!effectPresetSupportedForClipRole(renderable.effectPreset, renderable.clipRole)) {
+        renderable.effectPreset = ClipEffectPreset::None;
+    }
+    return renderable;
+}
+
 namespace {
+std::vector<jcut::EditorPoint> editorCurveFromQt(
+    const QVector<QPointF>& points)
+{
+    std::vector<jcut::EditorPoint> result;
+    result.reserve(static_cast<std::size_t>(points.size()));
+    for (const QPointF& point : points) {
+        result.push_back({point.x(), point.y()});
+    }
+    return result;
+}
+
+QVector<QPointF> qtCurveFromEditor(
+    const std::vector<jcut::EditorPoint>& points)
+{
+    QVector<QPointF> result;
+    result.reserve(static_cast<qsizetype>(points.size()));
+    for (const jcut::EditorPoint& point : points) {
+        result.push_back(QPointF(point.x, point.y));
+    }
+    return result;
+}
+
+QVector<quint8> qtCurveLutFromEditor(
+    const std::vector<std::uint8_t>& values)
+{
+    QVector<quint8> result;
+    result.reserve(static_cast<qsizetype>(values.size()));
+    for (const std::uint8_t value : values) {
+        result.push_back(static_cast<quint8>(value));
+    }
+    return result;
+}
+
 int clampChannel(int value) {
     return qBound(0, value, 255);
 }
@@ -68,9 +124,27 @@ QMutex& preparedMaskCacheMutex()
 struct MaskFrameMap {
     qint64 mtimeMs = -1;
     qint64 size = -1;
-    QHash<int64_t, int64_t> exact;
+    qint64 metadataMtimeMs = -1;
+    qint64 metadataSize = -1;
+    qint64 completionMtimeMs = -1;
+    qint64 completionSize = -1;
+    qint64 alphaCompletionMtimeMs = -1;
+    qint64 alphaCompletionSize = -1;
+    qint64 sourceMtimeMs = -1;
+    qint64 sourceSize = -1;
+    quint64 lastAccess = 0;
+    int64_t mappedFrameCount = 0;
+    int64_t firstSourceFrame = -1;
+    int64_t lastSourceFrame = -1;
+    int64_t lastMaskFrame = -1;
+    QString mapSha256;
+    bool metadataVerified = false;
+    bool renderReady = false;
+    bool ordinalSidecar = false;
     QVector<QPair<int64_t, int64_t>> sorted;
 };
+
+constexpr qsizetype kMaxCachedMaskFrameMaps = 8;
 
 QHash<QString, MaskFrameMap>& maskFrameMapCache()
 {
@@ -84,70 +158,199 @@ QMutex& maskFrameMapCacheMutex()
     return mutex;
 }
 
-MaskFrameMap loadMaskFrameMap(const QString& path)
+quint64& maskFrameMapAccessCounter()
+{
+    static quint64 counter = 0;
+    return counter;
+}
+
+MaskFrameMap loadMaskFrameMap(const QString& path, const QString& sourceMediaPath)
 {
     MaskFrameMap map;
+    map.ordinalSidecar = editor::masks::maskSidecarUsesDecodeOrdinalFrames(
+        QFileInfo(path).dir().absolutePath());
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
+        return map;
+    }
+    map.mapSha256 = QString::fromLatin1(
+        QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+    if (!file.seek(0)) {
         return map;
     }
 
     QTextStream stream(&file);
     const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    int64_t previousSourceFrame = -1;
+    int64_t previousMaskFrame = -1;
+    bool valid = true;
     while (!stream.atEnd()) {
         const QString line = stream.readLine().trimmed();
         if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
             continue;
         }
         const QStringList parts = line.split(whitespace, Qt::SkipEmptyParts);
-        if (parts.size() < 2 || parts.at(0) == QStringLiteral("source_frame")) {
-            continue;
+        if (parts.size() < 2) {
+            valid = false;
+            break;
         }
         bool okSource = false;
         bool okMask = false;
         const int64_t sourceFrame = parts.at(0).toLongLong(&okSource);
         const int64_t maskFrame = parts.at(1).toLongLong(&okMask);
-        if (!okSource || !okMask || sourceFrame < 0 || maskFrame < 0) {
-            continue;
+        if (!okSource || !okMask || sourceFrame < 0 || maskFrame < 0 ||
+            maskFrame != map.mappedFrameCount ||
+            (map.mappedFrameCount > 0 &&
+             (sourceFrame < previousSourceFrame || maskFrame < previousMaskFrame))) {
+            valid = false;
+            break;
         }
-        if (!map.exact.contains(sourceFrame)) {
-            map.exact.insert(sourceFrame, maskFrame);
+        ++map.mappedFrameCount;
+        map.firstSourceFrame = map.firstSourceFrame < 0
+            ? sourceFrame
+            : qMin(map.firstSourceFrame, sourceFrame);
+        map.lastSourceFrame = qMax(map.lastSourceFrame, sourceFrame);
+        map.lastMaskFrame = qMax(map.lastMaskFrame, maskFrame);
+        const bool duplicateSourceFrame =
+            !map.sorted.isEmpty() && map.sorted.constLast().first == sourceFrame;
+        if (!duplicateSourceFrame) {
             map.sorted.push_back(qMakePair(sourceFrame, maskFrame));
         }
+        previousSourceFrame = sourceFrame;
+        previousMaskFrame = maskFrame;
     }
-    std::sort(map.sorted.begin(), map.sorted.end(), [](const auto& a, const auto& b) {
-        return a.first < b.first;
-    });
+    if (!valid) {
+        map.sorted.clear();
+        map.metadataVerified = false;
+        map.renderReady = false;
+        return map;
+    }
+
+    QFile metadataFile(QFileInfo(path).dir().filePath(
+        QStringLiteral("jcut_frame_map.json")));
+    if (metadataFile.open(QIODevice::ReadOnly)) {
+        const QJsonObject metadata =
+            QJsonDocument::fromJson(metadataFile.readAll()).object();
+        map.metadataVerified =
+            metadata.value(QStringLiteral("schema")).toString() ==
+                QStringLiteral("jcut_frame_index_map_v2") &&
+            metadata.value(QStringLiteral("status")).toString() ==
+                QStringLiteral("ready") &&
+            metadata.value(QStringLiteral("frame_domain")).toString() ==
+                QStringLiteral("source_timestamp_to_generated_ordinal") &&
+            metadata.value(QStringLiteral("map_file")).toString() ==
+                QStringLiteral("jcut_frame_map.tsv") &&
+            metadata.contains(QStringLiteral("output_fps")) &&
+            metadata.value(QStringLiteral("output_fps")).isNull() &&
+            metadata.value(QStringLiteral("mapped_frame_count")).toInteger(-1) ==
+                map.mappedFrameCount &&
+            metadata.value(QStringLiteral("min_source_frame")).toInteger(-1) ==
+                map.firstSourceFrame &&
+            metadata.value(QStringLiteral("max_source_frame")).toInteger(-1) ==
+                map.lastSourceFrame &&
+            metadata.value(QStringLiteral("max_mask_frame")).toInteger(-1) ==
+                map.lastMaskFrame &&
+            metadata.value(QStringLiteral("expected_output_frame_count")).toInteger(-1) ==
+                map.lastMaskFrame + 1 &&
+            metadata.value(QStringLiteral("map_sha256")).toString().compare(
+                map.mapSha256, Qt::CaseInsensitive) == 0;
+    }
+    if (map.metadataVerified) {
+        map.renderReady =
+            editor::masks::maskSidecarCompletionConfirmedForRender(
+                QFileInfo(path).dir().absolutePath(),
+                map.lastMaskFrame,
+                sourceMediaPath);
+    }
     return map;
 }
 
-int64_t mappedMaskFrameForSourceFrame(const QString& maskDir, int64_t sourceFrame)
+std::optional<int64_t> mappedMaskFrameForSourceFrame(const TimelineClip& clip,
+                                                     int64_t sourceFrame)
 {
+    const QString maskDir = clip.maskFramesDir;
     const QString mapPath = QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_frame_map.tsv"));
     const QFileInfo info(mapPath);
     if (!info.exists() || !info.isFile()) {
+        if (editor::masks::maskSidecarUsesDecodeOrdinalFrames(maskDir)) {
+            return std::nullopt;
+        }
         return sourceFrame;
     }
 
     MaskFrameMap map;
     {
         QMutexLocker lock(&maskFrameMapCacheMutex());
-        MaskFrameMap& cached = maskFrameMapCache()[info.absoluteFilePath()];
+        const QFileInfo metadataInfo(
+            QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_frame_map.json")));
+        const QFileInfo completionInfo(
+            QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_mask.json")));
+        const QFileInfo alphaCompletionInfo(
+            QDir(maskDir).absoluteFilePath(QStringLiteral("jcut_alpha.json")));
+        const QFileInfo sourceInfo(clip.filePath);
+        const QString cacheKey = info.absoluteFilePath() + QChar(0x1f) +
+            sourceInfo.absoluteFilePath();
+        MaskFrameMap& cached = maskFrameMapCache()[cacheKey];
         if (cached.mtimeMs != info.lastModified().toMSecsSinceEpoch() ||
-            cached.size != info.size()) {
-            cached = loadMaskFrameMap(info.absoluteFilePath());
+            cached.size != info.size() ||
+            cached.metadataMtimeMs != metadataInfo.lastModified().toMSecsSinceEpoch() ||
+            cached.metadataSize != metadataInfo.size() ||
+            cached.completionMtimeMs != completionInfo.lastModified().toMSecsSinceEpoch() ||
+            cached.completionSize != completionInfo.size() ||
+            cached.alphaCompletionMtimeMs !=
+                alphaCompletionInfo.lastModified().toMSecsSinceEpoch() ||
+            cached.alphaCompletionSize != alphaCompletionInfo.size() ||
+            cached.sourceMtimeMs != sourceInfo.lastModified().toMSecsSinceEpoch() ||
+            cached.sourceSize != sourceInfo.size()) {
+            cached = loadMaskFrameMap(info.absoluteFilePath(), clip.filePath);
             cached.mtimeMs = info.lastModified().toMSecsSinceEpoch();
             cached.size = info.size();
+            cached.metadataMtimeMs = metadataInfo.lastModified().toMSecsSinceEpoch();
+            cached.metadataSize = metadataInfo.size();
+            cached.completionMtimeMs =
+                completionInfo.lastModified().toMSecsSinceEpoch();
+            cached.completionSize = completionInfo.size();
+            cached.alphaCompletionMtimeMs =
+                alphaCompletionInfo.lastModified().toMSecsSinceEpoch();
+            cached.alphaCompletionSize = alphaCompletionInfo.size();
+            cached.sourceMtimeMs = sourceInfo.lastModified().toMSecsSinceEpoch();
+            cached.sourceSize = sourceInfo.size();
         }
+        cached.lastAccess = ++maskFrameMapAccessCounter();
         map = cached;
+        while (maskFrameMapCache().size() > kMaxCachedMaskFrameMaps) {
+            auto oldest = maskFrameMapCache().end();
+            for (auto candidate = maskFrameMapCache().begin();
+                 candidate != maskFrameMapCache().end(); ++candidate) {
+                if (candidate.key() == cacheKey) {
+                    continue;
+                }
+                if (oldest == maskFrameMapCache().end() ||
+                    candidate.value().lastAccess < oldest.value().lastAccess) {
+                    oldest = candidate;
+                }
+            }
+            if (oldest == maskFrameMapCache().end()) {
+                break;
+            }
+            maskFrameMapCache().erase(oldest);
+        }
     }
 
-    const auto exactIt = map.exact.constFind(sourceFrame);
-    if (exactIt != map.exact.constEnd()) {
-        return exactIt.value();
-    }
+    const bool ordinalSidecar = map.ordinalSidecar;
     if (map.sorted.isEmpty()) {
+        if (ordinalSidecar) {
+            return std::nullopt;
+        }
         return sourceFrame;
+    }
+    if (ordinalSidecar &&
+        (!map.metadataVerified || !map.renderReady)) {
+        return std::nullopt;
+    }
+    if (ordinalSidecar &&
+        (sourceFrame < map.firstSourceFrame || sourceFrame > map.lastSourceFrame)) {
+        return std::nullopt;
     }
 
     const auto lower = std::lower_bound(
@@ -157,6 +360,12 @@ int64_t mappedMaskFrameForSourceFrame(const QString& maskDir, int64_t sourceFram
         [](const QPair<int64_t, int64_t>& entry, int64_t value) {
             return entry.first < value;
         });
+    if (lower != map.sorted.constEnd() && lower->first == sourceFrame) {
+        return lower->second;
+    }
+    if (ordinalSidecar) {
+        return std::nullopt;
+    }
     if (lower == map.sorted.constBegin()) {
         return lower->second;
     }
@@ -167,15 +376,6 @@ int64_t mappedMaskFrameForSourceFrame(const QString& maskDir, int64_t sourceFram
     return qAbs(previous->first - sourceFrame) <= qAbs(lower->first - sourceFrame)
                ? previous->second
                : lower->second;
-}
-
-qreal catmullRom(qreal p0, qreal p1, qreal p2, qreal p3, qreal t) {
-    const qreal t2 = t * t;
-    const qreal t3 = t2 * t;
-    return 0.5 * ((2.0 * p1) +
-                  (-p0 + p2) * t +
-                  (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
-                  (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
 qreal effectTimelinePositionForClip(const TimelineClip& clip,
@@ -208,90 +408,18 @@ QVector<QPointF> defaultGradingCurvePoints() {
 }
 
 QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points) {
-    QVector<QPointF> normalized;
-    normalized.reserve(points.size() + 2);
-    for (const QPointF& point : points) {
-        normalized.push_back(QPointF(qBound<qreal>(0.0, point.x(), 1.0),
-                                     qBound<qreal>(-1.0, point.y(), 2.0)));
-    }
-    std::sort(normalized.begin(), normalized.end(), [](const QPointF& a, const QPointF& b) {
-        if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
-            return a.y() < b.y();
-        }
-        return a.x() < b.x();
-    });
-
-    QVector<QPointF> deduped;
-    deduped.reserve(normalized.size() + 2);
-    for (const QPointF& point : normalized) {
-        if (!deduped.isEmpty() && std::abs(deduped.constLast().x() - point.x()) <= 0.000001) {
-            deduped.last().setY(point.y());
-        } else {
-            deduped.push_back(point);
-        }
-    }
-
-    if (deduped.isEmpty()) {
-        deduped = defaultGradingCurvePoints();
-    } else if (deduped.size() == 1) {
-        const qreal x = deduped.constFirst().x();
-        const qreal y = deduped.constFirst().y();
-        const qreal extraX = x < 0.5 ? 1.0 : 0.0;
-        deduped.push_back(QPointF(extraX, y));
-        std::sort(deduped.begin(), deduped.end(), [](const QPointF& a, const QPointF& b) {
-            if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
-                return a.y() < b.y();
-            }
-            return a.x() < b.x();
-        });
-    }
-    return deduped;
+    return qtCurveFromEditor(
+        jcut::sanitizeEditorGradingCurve(editorCurveFromQt(points)));
 }
 
 qreal sampleGradingCurveAt(const QVector<QPointF>& points, qreal xNorm, bool smoothingEnabled) {
-    const QVector<QPointF> curve = sanitizeGradingCurvePoints(points);
-    if (curve.size() < 2) {
-        return qBound<qreal>(0.0, xNorm, 1.0);
-    }
-    const qreal x = qBound<qreal>(0.0, xNorm, 1.0);
-    if (x <= curve.constFirst().x()) {
-        return qBound<qreal>(0.0, curve.constFirst().y(), 1.0);
-    }
-    if (x >= curve.constLast().x()) {
-        return qBound<qreal>(0.0, curve.constLast().y(), 1.0);
-    }
-
-    int right = 1;
-    while (right < curve.size() && curve.at(right).x() < x) {
-        ++right;
-    }
-    const int i1 = qBound(0, right - 1, curve.size() - 1);
-    const int i2 = qBound(0, right, curve.size() - 1);
-    const qreal x1 = curve.at(i1).x();
-    const qreal x2 = curve.at(i2).x();
-    const qreal denom = qMax<qreal>(0.000001, x2 - x1);
-    const qreal t = qBound<qreal>(0.0, (x - x1) / denom, 1.0);
-    if (!smoothingEnabled) {
-        const qreal yLinear = curve.at(i1).y() + ((curve.at(i2).y() - curve.at(i1).y()) * t);
-        return qBound<qreal>(0.0, yLinear, 1.0);
-    }
-    const int i0 = qMax(0, i1 - 1);
-    const int i3 = qMin(curve.size() - 1, i2 + 1);
-    const qreal y = catmullRom(curve.at(i0).y(), curve.at(i1).y(), curve.at(i2).y(), curve.at(i3).y(), t);
-    return qBound<qreal>(0.0, y, 1.0);
+    return jcut::sampleEditorGradingCurveAt(
+        editorCurveFromQt(points), xNorm, smoothingEnabled);
 }
 
 QVector<quint8> gradingCurveLut8(const QVector<QPointF>& points, int samples, bool smoothingEnabled) {
-    const int count = qMax(2, samples);
-    QVector<quint8> lut;
-    lut.resize(count);
-    const QVector<QPointF> curve = sanitizeGradingCurvePoints(points);
-    for (int i = 0; i < count; ++i) {
-        const qreal x = static_cast<qreal>(i) / static_cast<qreal>(count - 1);
-        const qreal y = sampleGradingCurveAt(curve, x, smoothingEnabled);
-        lut[i] = static_cast<quint8>(qBound(0, qRound(y * 255.0), 255));
-    }
-    return lut;
+    return qtCurveLutFromEditor(jcut::editorGradingCurveLut8(
+        editorCurveFromQt(points), samples, smoothingEnabled));
 }
 
 bool gradingCurveDiffersFromIdentity(const QVector<QPointF>& points, bool smoothingEnabled)
@@ -561,10 +689,14 @@ QString maskFramePathForSourceFrame(const TimelineClip& clip, int64_t sourceFram
     if (clip.maskFramesDir.trimmed().isEmpty()) {
         return QString();
     }
-    const int64_t maskFrame = mappedMaskFrameForSourceFrame(clip.maskFramesDir, qMax<int64_t>(0, sourceFrame));
+    const std::optional<int64_t> maskFrame = mappedMaskFrameForSourceFrame(
+        clip, qMax<int64_t>(0, sourceFrame));
+    if (!maskFrame.has_value()) {
+        return QString();
+    }
     const QString fileName =
         QStringLiteral("frame_%1.png")
-            .arg(maskFrame + 1, 6, 10, QLatin1Char('0'));
+            .arg(*maskFrame + 1, 6, 10, QLatin1Char('0'));
     return QDir(clip.maskFramesDir).absoluteFilePath(fileName);
 }
 
@@ -738,6 +870,42 @@ QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
     return QImage(path);
 }
 
+QImage applyCorrectionPolygonsToMaskImage(
+    const QImage& source,
+    const QVector<TimelineClip::CorrectionPolygon>& activePolygons)
+{
+    if (source.isNull() || activePolygons.isEmpty()) {
+        return source;
+    }
+
+    QImage corrected = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&corrected);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.setBrush(Qt::black);
+    painter.setPen(Qt::NoPen);
+    const qreal width = qMax<qreal>(1.0, corrected.width());
+    const qreal height = qMax<qreal>(1.0, corrected.height());
+    for (const TimelineClip::CorrectionPolygon& polygon : activePolygons) {
+        if (!polygon.enabled || polygon.pointsNormalized.size() < 3) {
+            continue;
+        }
+        QPainterPath path;
+        const auto imagePoint = [width, height](const QPointF& point) {
+            return QPointF(qBound<qreal>(0.0, point.x(), 1.0) * width,
+                           qBound<qreal>(0.0, point.y(), 1.0) * height);
+        };
+        path.moveTo(imagePoint(polygon.pointsNormalized.constFirst()));
+        for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
+            path.lineTo(imagePoint(polygon.pointsNormalized.at(i)));
+        }
+        path.closeSubpath();
+        painter.drawPath(path);
+    }
+    painter.end();
+    return corrected.convertToFormat(QImage::Format_Grayscale8);
+}
+
 QImage applyClipMaskEffectsToImage(const QImage& source,
                                    const TimelineClip& clip,
                                    int64_t sourceFrame)
@@ -751,12 +919,23 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
                                    int64_t sourceFrame,
                                    const TimelineClip::GradingKeyframe& clipGrade)
 {
-    if (source.isNull() || !clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
+    if (source.isNull()) {
         return source;
+    }
+    auto failClosedMaskMatte = [&source, &clip]() {
+        if (clip.clipRole != ClipRole::MaskMatte) {
+            return source;
+        }
+        QImage transparent(source.size(), QImage::Format_ARGB32_Premultiplied);
+        transparent.fill(Qt::transparent);
+        return transparent;
+    };
+    if (!clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
+        return failClosedMaskMatte();
     }
     const QImage mask = preparedClipMask(clip, sourceFrame, source.size());
     if (mask.isNull()) {
-        return source;
+        return failClosedMaskMatte();
     }
 
     if (clip.maskShowOnly) {

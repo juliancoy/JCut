@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+import struct
 from pathlib import Path
 
 from sam3_resume import (
@@ -70,7 +71,12 @@ class Sam3ResumeTests(unittest.TestCase):
     def test_frame_indices_ignore_empty_and_malformed_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            (directory / "frame_000001.png").write_bytes(b"x")
+            png = (
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+                + struct.pack(">II", 1, 1)
+                + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00"
+            )
+            (directory / "frame_000001.png").write_bytes(png)
             (directory / "frame_000002.png").write_bytes(b"")
             (directory / "not_a_frame.png").write_bytes(b"x")
 

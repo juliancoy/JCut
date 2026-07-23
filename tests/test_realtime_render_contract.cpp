@@ -58,6 +58,8 @@ private slots:
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
     void childTransformLockUsesSourceTransformWhenEnabled();
+    void maskMatteMappingAlwaysUsesParentClockAndMarkers();
+    void maskMatteVisualEffectsUseParentClockAndMarkerIdentity();
     void childMaskMatteOwnsIndependentKeyframedGrade();
     void hiddenParentStillProvidesMediaForVisibleMaskMatte();
     void exportLoopPassesFractionalPositionToRenderer();
@@ -183,6 +185,52 @@ void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnable
     QCOMPARE(locked.scaleY, source.baseScaleY);
 }
 
+void TestRealtimeRenderContract::maskMatteMappingAlwaysUsesParentClockAndMarkers()
+{
+    TimelineClip source = makeMappedClip(24.0);
+    source.id = QStringLiteral("mapping-parent");
+    source.startFrame = 100;
+    source.durationFrames = 60;
+    source.sourceInFrame = 24;
+    source.sourceDurationFrames = 240;
+    source.baseTranslationX = 120.0;
+
+    TimelineClip matte = makeMappedClip(60.0);
+    matte.id = QStringLiteral("mapping-matte");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.linkedSourceClipId = source.id;
+    // Deliberately model stale legacy caches and lock flags. Role + parent ID
+    // still define a strict Mask Matte follower at render time.
+    matte.startFrame = 0;
+    matte.sourceInFrame = 0;
+    matte.sourceTransformLocked = false;
+    matte.syncLockedToSource = false;
+    matte.baseTranslationX = -300.0;
+
+    RenderSyncMarker marker;
+    marker.clipId = source.id;
+    marker.frame = 105;
+    marker.action = RenderSyncAction::SkipFrame;
+    marker.count = 2;
+    const QVector<TimelineClip> clips{source, matte};
+    const QVector<RenderSyncMarker> markers{marker};
+    const RenderFrameClock clock = renderFrameClockForTimelinePosition(106.0);
+
+    const ClipFrameMapping parentMapping =
+        clipFrameMappingForClock(source, clock, markers);
+    const ClipFrameMapping matteMapping =
+        clipFrameMappingForClock(matte, clips, clock, markers);
+    QCOMPARE(matteMapping.sourceSample, parentMapping.sourceSample);
+    QCOMPARE(matteMapping.sourceFrame, parentMapping.sourceFrame);
+    QCOMPARE(matteMapping.transcriptFrame, parentMapping.transcriptFrame);
+    QCOMPARE(&resolvedClipTimingSource(matte, clips), &clips.constFirst());
+
+    const TimelineClip::TransformKeyframe matteTransform =
+        evaluateClipRenderTransformWithSourceLockAtPosition(
+            clips.constLast(), clips, 106.0, markers, QSize(1920, 1080));
+    QCOMPARE(matteTransform.translationX, source.baseTranslationX);
+}
+
 void TestRealtimeRenderContract::childMaskMatteOwnsIndependentKeyframedGrade()
 {
     TimelineClip source = makeMappedClip(30.0);
@@ -218,6 +266,52 @@ void TestRealtimeRenderContract::childMaskMatteOwnsIndependentKeyframedGrade()
              "virtual matte grading must not participate in file-based parent speaker overrides");
 }
 
+void TestRealtimeRenderContract::maskMatteVisualEffectsUseParentClockAndMarkerIdentity()
+{
+    TimelineClip source = makeMappedClip(30.0);
+    source.id = QStringLiteral("effect-parent");
+    source.startFrame = 100;
+    source.durationFrames = 60;
+    source.effectSkipAwareTiming = false;
+
+    TimelineClip matte = makeMappedClip(60.0);
+    matte.id = QStringLiteral("effect-child");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.linkedSourceClipId = source.id;
+    matte.syncLockedToSource = false;
+    matte.startFrame = 0;
+    matte.durationFrames = 10;
+    matte.effectPreset = ClipEffectPreset::SourceTile;
+    matte.effectSkipAwareTiming = true;
+    matte.gradingKeyframes = {
+        TimelineClip::GradingKeyframe{0, 0.0, 1.0, 1.0},
+        TimelineClip::GradingKeyframe{20, 1.0, 1.0, 1.0},
+    };
+
+    RenderSyncMarker marker;
+    marker.clipId = source.id;
+    marker.frame = 105;
+    marker.action = RenderSyncAction::SkipFrame;
+    marker.count = 2;
+    const QVector<TimelineClip> clips{source, matte};
+    const TimelineClip timedMatte =
+        clipWithResolvedTimingOwner(clips.constLast(), clips);
+
+    QCOMPARE(timedMatte.id, source.id);
+    QCOMPARE(timedMatte.startFrame, source.startFrame);
+    QCOMPARE(timedMatte.durationFrames, source.durationFrames);
+    QCOMPARE(timedMatte.effectPreset, matte.effectPreset);
+    QVERIFY(timedMatte.effectSkipAwareTiming);
+    QCOMPARE(timedMatte.gradingKeyframes.size(), matte.gradingKeyframes.size());
+    QCOMPARE(timedMatte.gradingKeyframes.constLast().brightness,
+             matte.gradingKeyframes.constLast().brightness);
+
+    const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+        timedMatte, {}, 106.0, {marker}, {});
+    QVERIFY2(std::abs(effects.grading.brightness - 0.4) < 0.000001,
+             "the child grade must use its own keyframes at the parent marker-adjusted local frame");
+}
+
 void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMatte()
 {
     TimelineClip source = makeMappedClip(30.0);
@@ -229,6 +323,7 @@ void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMat
     matte.clipRole = ClipRole::MaskMatte;
     matte.linkedSourceClipId = source.id;
     matte.videoEnabled = true;
+    matte.maskEnabled = true;
 
     const QVector<TimelineClip> clips{source, matte};
     QVERIFY(!clipVisualPlaybackEnabled(source, {}));
@@ -252,10 +347,26 @@ void TestRealtimeRenderContract::hiddenParentStillProvidesMediaForVisibleMaskMat
     QVERIFY(relationships.hasVisibleChild(source, {source, synth}, {}));
     QVERIFY(clipContributesVisualMedia(source, {source, synth}, {}, &relationships));
 
+    matte.maskEnabled = false;
+    QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(source, {source, matte}, {}),
+             "a disabled child mask must not keep its parent active as a media provider");
+    QVERIFY(!clipContributesVisualMedia(source, {source, matte}, {}));
+
+    matte.maskEnabled = true;
     matte.videoEnabled = false;
     QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(source, {source, matte}, {}),
              "a hidden child mask must not keep its parent active as a media provider");
     QVERIFY(!clipContributesVisualMedia(source, {source, matte}, {}));
+
+    matte.videoEnabled = true;
+    matte.trackIndex = 0;
+    TimelineTrack hiddenChildTrack;
+    hiddenChildTrack.visualMode = TrackVisualMode::Hidden;
+    QVERIFY2(!clipProvidesMediaForVisibleMaskMatte(
+                 source, {source, matte}, {hiddenChildTrack}),
+             "a hidden Mask Matte track must not keep its parent active or composite");
+    QVERIFY(!clipContributesVisualMedia(
+        source, {source, matte}, {hiddenChildTrack}));
 }
 
 void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
@@ -293,6 +404,14 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frameHandle, false")) &&
                  vulkanSource.contains(QStringLiteral("return false;\n        }\n      }\n      QImage rgba")),
              "GPU-output render path must not fall back to CPU image uploads when hardware handoff fails");
+    QVERIFY2(vulkanSource.contains(QStringLiteral(
+                 "timingSource.id.trimmed() != clip.linkedSourceClipId.trimmed()")) &&
+                 vulkanSource.contains(QStringLiteral(
+                     "timingSource.clipRole != ClipRole::Media")),
+             "export must fail closed for orphaned mattes and unsupported parent roles");
+    QVERIFY2(vulkanSource.contains(QStringLiteral(
+                 "applyCorrectionPolygonsToMaskImage")),
+             "export must apply child correction polygons to the matte before upload");
 }
 
 QTEST_MAIN(TestRealtimeRenderContract)

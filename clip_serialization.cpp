@@ -373,6 +373,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("audioSourceOriginalPath")] = clip.audioSourceOriginalPath;
         obj[QStringLiteral("audioSourceStatus")] = clip.audioSourceStatus;
         obj[QStringLiteral("audioStreamIndex")] = clip.audioStreamIndex;
+        obj[QStringLiteral("transcriptActiveCutPath")] = clip.transcriptActiveCutPath;
         obj[QStringLiteral("audioBusId")] = clip.audioBusId;
         obj[QStringLiteral("audioGain")] = clip.audioGain;
         obj[QStringLiteral("audioPan")] = clip.audioPan;
@@ -724,6 +725,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.audioSourceOriginalPath = obj.value(QStringLiteral("audioSourceOriginalPath")).toString();
         clip.audioSourceStatus = obj.value(QStringLiteral("audioSourceStatus")).toString(QStringLiteral("unknown"));
         clip.audioStreamIndex = obj.value(QStringLiteral("audioStreamIndex")).toInt(-1);
+        clip.transcriptActiveCutPath =
+            obj.value(QStringLiteral("transcriptActiveCutPath")).toString();
         clip.audioBusId = obj.value(QStringLiteral("audioBusId")).toString();
         clip.audioGain = qBound<qreal>(0.0, obj.value(QStringLiteral("audioGain")).toDouble(1.0), 4.0);
         clip.audioPan = qBound<qreal>(-1.0, obj.value(QStringLiteral("audioPan")).toDouble(0.0), 1.0);

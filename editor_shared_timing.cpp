@@ -3,6 +3,7 @@
 #include <QtGlobal>
 
 #include <cmath>
+#include <limits>
 
 int64_t frameToSamples(int64_t frame) {
     return qMax<int64_t>(0, frame * kSamplesPerFrame);
@@ -84,6 +85,34 @@ int64_t clipSourceInSamples(const TimelineClip& clip) {
     return sourceFramesToSamples(clip, static_cast<qreal>(clip.sourceInFrame)) + clip.sourceInSubframeSamples;
 }
 
+void setClipSourceInSamples(TimelineClip& clip, int64_t sourceSample) {
+    const int64_t boundedSample = qMax<int64_t>(0, sourceSample);
+    const long double estimatedFrame =
+        static_cast<long double>(boundedSample) *
+        static_cast<long double>(resolvedSourceFps(clip)) /
+        static_cast<long double>(kAudioSampleRate);
+    int64_t frame = qMax<int64_t>(
+        0, static_cast<int64_t>(std::floor(estimatedFrame)));
+
+    // sourceFramesToSamples rounds frame boundaries to integral audio samples.
+    // Correct the floating-point estimate against those exact boundaries so
+    // the frame/remainder pair round-trips through clipSourceInSamples().
+    while (frame > 0 && sourceFramesToSamples(clip, static_cast<qreal>(frame)) > boundedSample) {
+        --frame;
+    }
+    while (frame < std::numeric_limits<int64_t>::max()) {
+        const int64_t nextBoundary =
+            sourceFramesToSamples(clip, static_cast<qreal>(frame + 1));
+        if (nextBoundary > boundedSample) {
+            break;
+        }
+        ++frame;
+    }
+    clip.sourceInFrame = frame;
+    clip.sourceInSubframeSamples =
+        boundedSample - sourceFramesToSamples(clip, static_cast<qreal>(frame));
+}
+
 int64_t playableSampleAtOrAfter(int64_t samplePos,
                                 const QVector<ExportRangeSegment>& ranges,
                                 bool* atOrPastEnd) {
@@ -129,7 +158,11 @@ void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples) {
 
 void normalizeClipTiming(TimelineClip& clip) {
     normalizeSubframeTiming(clip.startFrame, clip.startSubframeSamples);
-    normalizeSubframeTiming(clip.sourceInFrame, clip.sourceInSubframeSamples);
+    // sourceInFrame is in source-FPS space, while its remainder is in audio
+    // samples.  Normalizing it with the 30 fps timeline quantum corrupts trims
+    // whenever source FPS differs from the timeline FPS.
+    const int64_t sourceInSample = qMax<int64_t>(0, clipSourceInSamples(clip));
+    setClipSourceInSamples(clip, sourceInSample);
     if (clip.durationSubframeSamples >= kSamplesPerFrame) {
         clip.durationFrames += clip.durationSubframeSamples / kSamplesPerFrame;
         clip.durationSubframeSamples %= kSamplesPerFrame;

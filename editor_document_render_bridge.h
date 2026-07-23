@@ -5,6 +5,7 @@
 
 namespace jcut::render {
 
-TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document);
+TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
+                                           bool probeMedia = true);
 
 } // namespace jcut::render

@@ -1035,21 +1035,30 @@ QString activeTranscriptPathForClipFile(const QString& filePath) {
 }
 
 QString activeTranscriptPathForSource(const TranscriptSourceKey& source) {
-    const QString sourceKey = source.canonicalKey();
-    {
-        QMutexLocker locker(&activeTranscriptPathMutex());
-        const auto it = activeTranscriptPathByClipFile().constFind(sourceKey);
-        if (it != activeTranscriptPathByClipFile().cend() &&
-            !it.value().isEmpty() &&
-            QFileInfo::exists(it.value())) {
-            return it.value();
-        }
+    const QString registeredPath = registeredActiveTranscriptPathForSource(source);
+    if (!registeredPath.isEmpty()) {
+        return registeredPath;
     }
     return transcriptWorkingPathForSource(source);
 }
 
+QString registeredActiveTranscriptPathForSource(const TranscriptSourceKey& source) {
+    const QString sourceKey = source.canonicalKey();
+    QMutexLocker locker(&activeTranscriptPathMutex());
+    const auto it = activeTranscriptPathByClipFile().constFind(sourceKey);
+    if (it != activeTranscriptPathByClipFile().cend() &&
+        !it.value().isEmpty() && QFileInfo::exists(it.value())) {
+        return it.value();
+    }
+    return QString();
+}
+
 QString activeTranscriptPathForClip(const TimelineClip& clip) {
     return activeTranscriptPathForSource(transcriptSourceKeyFromClip(clip));
+}
+
+QString registeredActiveTranscriptPathForClip(const TimelineClip& clip) {
+    return registeredActiveTranscriptPathForSource(transcriptSourceKeyFromClip(clip));
 }
 
 QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,

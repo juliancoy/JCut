@@ -1764,7 +1764,48 @@ void EditorWindow::createMaskTab()
                     currentPath.trimmed().isEmpty() ? QDir::homePath() : currentPath,
                     QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
             },
-            [this](const QString& clipId) { openSamDetectorWindow(clipId); }});
+            [this](const QString& clipId) { openSamDetectorWindow(clipId); },
+            [this](const QString& sourceClipId, const QString& stableSidecarId) {
+                return m_timeline
+                    ? maskMatteChildIdForSidecar(
+                          m_timeline->clips(), sourceClipId, stableSidecarId)
+                    : QString();
+            },
+            [this](const QString& sourceClipId, const QString& sidecarDirectory) {
+                if (!m_timeline ||
+                    !m_timeline->createOrReplaceMaskMatteForSidecar(
+                        sourceClipId, sidecarDirectory, true)) {
+                    return QString();
+                }
+                QString childId = maskMatteChildIdForSidecar(
+                    m_timeline->clips(),
+                    sourceClipId,
+                    editor::masks::stableMaskSidecarId(sidecarDirectory));
+                if (!childId.isEmpty()) {
+                    return childId;
+                }
+                const TimelineClip* selected = m_timeline->selectedClip();
+                return selected &&
+                               selected->clipRole == ClipRole::MaskMatte &&
+                               selected->linkedSourceClipId.trimmed() ==
+                                   sourceClipId.trimmed()
+                    ? selected->id
+                    : QString();
+            },
+            [this](const QString& clipId) {
+                if (m_timeline) {
+                    m_timeline->setSelectedClipId(clipId);
+                }
+            },
+            [this]() {
+                if (!m_inspectorPane || !m_inspectorPane->tabs()) {
+                    return false;
+                }
+                const int index = m_inspectorPane->tabs()->currentIndex();
+                return index >= 0 &&
+                       m_inspectorPane->tabs()->tabText(index).compare(
+                           QStringLiteral("Masks"), Qt::CaseInsensitive) == 0;
+            }});
     m_maskTab->wire();
 }
 

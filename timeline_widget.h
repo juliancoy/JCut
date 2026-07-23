@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor_document_core.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
 
@@ -67,7 +68,10 @@ public:
     void setSelectedTrackIndex(int trackIndex);
 
     bool updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater);
-    bool createOrReplaceMaskZMarker(const QString& clipId, bool selectMarker = true);
+    bool createOrReplaceMaskMatte(const QString& clipId, bool selectMatte = true);
+    bool createOrReplaceMaskMatteForSidecar(const QString& clipId,
+                                            const QString& sidecarDirectory,
+                                            bool selectMatte = true);
     bool deleteSelectedClip();
     bool deleteClipById(const QString& clipId);
     bool copySelectedClips();
@@ -182,9 +186,9 @@ private:
     };
 
 
-    static constexpr int kDefaultTrackHeight = 72;
-    static constexpr int kMinTrackHeight = 28;
-    static constexpr int kMaxTrackHeight = 480;
+    static constexpr int kDefaultTrackHeight = jcut::kEditorTrackDefaultHeight;
+    static constexpr int kMinTrackHeight = jcut::kEditorTrackMinHeight;
+    static constexpr int kMaxTrackHeight = jcut::kEditorTrackMaxHeight;
     static constexpr int kTrackResizeHandleHalfHeight = 4;
     static constexpr int kTimelineOuterMargin = 16;
     static constexpr int kTimelineTopBarHeight = 52;
@@ -198,6 +202,10 @@ private:
     static constexpr int kTimelineTrackSpacing = 4;
 
     void sortClips();
+    QSet<QString> ownershipClosure(const QSet<QString>& clipIds,
+                                   bool includeAncestors) const;
+    QString renderSyncOwnerClipId(const QString& clipId) const;
+    void normalizeRenderSyncMarkerOwnership();
     void sortRenderSyncMarkers();
     int64_t snapThresholdFrames() const;
     int64_t nearestClipBoundaryFrame(const QString& excludedClipId, int64_t frame, bool* snapped = nullptr) const;
@@ -211,6 +219,7 @@ private:
     int clipIndexAt(const QPoint& pos) const;
     ClipDragMode clipDragModeAt(const TimelineClip& clip, const QPoint& pos) const;
     void updateHoverCursor(const QPoint& pos);
+    void invalidateHoveredClipToolTipCache();
     int trackIndexAt(const QPoint& pos) const;
     int trackIndexAtY(int y, bool allowAppendTrack = false) const;
     int trackDropTargetAtY(int y, bool* insertsTrack) const;
@@ -319,8 +328,12 @@ private:
     int64_t m_snapIndicatorFrame = -1;
     ClipSelectionState m_clipSelection;
     QVector<TimelineClip> m_clipClipboard;
+    QVector<RenderSyncMarker> m_renderSyncMarkerClipboard;
     int m_selectedTrackIndex = -1;
     QString m_hoveredClipId;
+    QString m_hoveredClipToolTipCacheId;
+    int64_t m_hoveredClipToolTipCacheFrame = -1;
+    QString m_hoveredClipToolTipCacheText;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
     QHash<QString, QVector<RenderSyncMarker>> m_renderSyncMarkersByClip;
     ExportRangeDragMode m_exportRangeDragMode = ExportRangeDragMode::None;

@@ -303,6 +303,7 @@ struct TimelineClip {
     QString audioSourceOriginalPath;
     QString audioSourceStatus = QStringLiteral("unknown");
     int audioStreamIndex = -1;
+    QString transcriptActiveCutPath;
     QString audioBusId;
     qreal audioGain = 1.0;
     qreal audioPan = 0.0;
@@ -368,6 +369,11 @@ struct TimelineClip {
     bool locked = false;
     bool maskEnabled = false;
     QString maskFramesDir;
+    // Runtime availability is deliberately not serialized. maskEnabled is the
+    // user's durable intent; discovery/render validation may temporarily make
+    // an ordinal sidecar unavailable without changing that intent.
+    bool maskSidecarAvailable = true;
+    QString maskSidecarAvailabilityIssue;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0; // 0 power, 1 linear, 2 smoothstep, 3 smootherstep, 4 cosine, 5 gaussian
@@ -415,8 +421,9 @@ struct TimelineClip {
 
 struct TimelineTrack {
     QString name;
-    // Generated child tracks remain independently controllable, but are
-    // grouped beneath the source clip's track in the timeline hierarchy.
+    // A generated child track is a derived presentation binding. Visibility
+    // and grading-preview state remain independently controllable, while its
+    // identity, position, lifecycle, and effects belong to the child clip.
     bool generatedChildTrack = false;
     QString parentClipId;
     QString childClipId;

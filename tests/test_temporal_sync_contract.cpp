@@ -54,12 +54,93 @@ class TestTemporalSyncContract : public QObject {
     Q_OBJECT
 
 private slots:
+    void sourceSampleSetterRoundTripsAtNonThirtyFps_data();
+    void sourceSampleSetterRoundTripsAtNonThirtyFps();
+    void sourceTimingNormalizationUsesSourceFrameDomain_data();
+    void sourceTimingNormalizationUsesSourceFrameDomain();
     void derivedDomainsStayLockedAtPlaybackSpeeds();
     void clipFrameMappingCarriesAllClockDomains();
     void renderSyncMarkersFeedVideoAndTranscriptMapping();
     void transcriptSectionStartMapsBackToExactTimelineFrame();
     void systemClockDecisionIgnoresAudioReadiness();
 };
+
+void TestTemporalSyncContract::sourceSampleSetterRoundTripsAtNonThirtyFps_data()
+{
+    QTest::addColumn<qreal>("sourceFps");
+    QTest::addColumn<qint64>("sourceSample");
+    QTest::addColumn<qint64>("expectedFrame");
+    QTest::addColumn<qint64>("expectedRemainder");
+
+    // At 24 fps a source frame is 2,000 samples, so a canonical source
+    // remainder can legitimately exceed the 30 fps timeline quantum (1,600).
+    QTest::newRow("24fps-remainder-exceeds-timeline-frame")
+        << qreal{24.0} << qint64{11'799} << qint64{5} << qint64{1'799};
+    // At 60 fps a source frame is 800 samples, so the setter must carry at
+    // that boundary instead of leaving a timeline-domain remainder behind.
+    QTest::newRow("60fps-carries-at-source-frame")
+        << qreal{60.0} << qint64{5'500} << qint64{6} << qint64{700};
+}
+
+void TestTemporalSyncContract::sourceSampleSetterRoundTripsAtNonThirtyFps()
+{
+    QFETCH(qreal, sourceFps);
+    QFETCH(qint64, sourceSample);
+    QFETCH(qint64, expectedFrame);
+    QFETCH(qint64, expectedRemainder);
+
+    TimelineClip clip;
+    clip.sourceFps = sourceFps;
+
+    setClipSourceInSamples(clip, sourceSample);
+
+    QCOMPARE(clip.sourceInFrame, expectedFrame);
+    QCOMPARE(clip.sourceInSubframeSamples, expectedRemainder);
+    QCOMPARE(clipSourceInSamples(clip), sourceSample);
+}
+
+void TestTemporalSyncContract::sourceTimingNormalizationUsesSourceFrameDomain_data()
+{
+    QTest::addColumn<qreal>("sourceFps");
+    QTest::addColumn<qint64>("initialFrame");
+    QTest::addColumn<qint64>("initialRemainder");
+    QTest::addColumn<qint64>("expectedFrame");
+    QTest::addColumn<qint64>("expectedRemainder");
+
+    QTest::newRow("24fps-preserves-valid-source-remainder")
+        << qreal{24.0} << qint64{5} << qint64{1'700} << qint64{5} << qint64{1'700};
+    QTest::newRow("60fps-normalizes-at-800-samples")
+        << qreal{60.0} << qint64{5} << qint64{1'500} << qint64{6} << qint64{700};
+}
+
+void TestTemporalSyncContract::sourceTimingNormalizationUsesSourceFrameDomain()
+{
+    QFETCH(qreal, sourceFps);
+    QFETCH(qint64, initialFrame);
+    QFETCH(qint64, initialRemainder);
+    QFETCH(qint64, expectedFrame);
+    QFETCH(qint64, expectedRemainder);
+
+    TimelineClip clip;
+    clip.sourceFps = sourceFps;
+    clip.sourceInFrame = initialFrame;
+    clip.sourceInSubframeSamples = initialRemainder;
+    clip.durationFrames = 1;
+    const int64_t sourceSampleBefore = clipSourceInSamples(clip);
+
+    normalizeClipTiming(clip);
+
+    QCOMPARE(clip.sourceInFrame, expectedFrame);
+    QCOMPARE(clip.sourceInSubframeSamples, expectedRemainder);
+    QCOMPARE(clipSourceInSamples(clip), sourceSampleBefore);
+
+    // Canonicalization is stable and does not drift on repeated document
+    // normalization passes.
+    normalizeClipTiming(clip);
+    QCOMPARE(clip.sourceInFrame, expectedFrame);
+    QCOMPARE(clip.sourceInSubframeSamples, expectedRemainder);
+    QCOMPARE(clipSourceInSamples(clip), sourceSampleBefore);
+}
 
 void TestTemporalSyncContract::transcriptSectionStartMapsBackToExactTimelineFrame()
 {

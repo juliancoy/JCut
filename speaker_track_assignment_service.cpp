@@ -2,7 +2,7 @@
 
 #include "facedetections_artifact_utils.h"
 #include "facedetections_time_mapping.h"
-#include "speakers_tab_internal.h"
+#include "speaker_profile_keys.h"
 
 #include <QJsonValue>
 #include <QtGlobal>

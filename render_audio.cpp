@@ -1,5 +1,6 @@
 #include "render_internal.h"
 
+#include "audio_clip_fade.h"
 #include "audio_source_key.h"
 #include "audio_time_stretch.h"
 #include "decoder_ffmpeg_utils.h"
@@ -452,6 +453,8 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
             continue;
         }
         const int64_t clipEndSample = clipTimelineEndSamples(clip);
+        const int fadeSamples = editor::audio::effectiveClipFadeSamples(
+            clip.fadeSamples);
         const int64_t chunkEndSample =
             chunkStartSample + static_cast<int64_t>(std::ceil(static_cast<qreal>(frames) * sampleStep));
         if (chunkEndSample <= clipStartSample || chunkStartSample >= clipEndSample) {
@@ -472,8 +475,18 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
             }
             const int outIndex = outFrame * kRenderAudioChannels;
             const int inIndex = static_cast<int>(localInFrame * kRenderAudioChannels);
-            output[outIndex] = qBound(-1.0f, output[outIndex] + audio.samples[inIndex] * mixerGain, 1.0f);
-            output[outIndex + 1] = qBound(-1.0f, output[outIndex + 1] + audio.samples[inIndex + 1] * mixerGain, 1.0f);
+            const float clipFadeGain = editor::audio::clipFadeGain(
+                samplePos, clipStartSample, clipEndSample, fadeSamples);
+            const float effectiveGain = mixerGain * clipFadeGain;
+            output[outIndex] = qBound(
+                -1.0f,
+                output[outIndex] + audio.samples[inIndex] * effectiveGain,
+                1.0f);
+            output[outIndex + 1] = qBound(
+                -1.0f,
+                output[outIndex + 1] +
+                    audio.samples[inIndex + 1] * effectiveGain,
+                1.0f);
         }
     }
 }

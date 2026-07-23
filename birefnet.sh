@@ -9,6 +9,8 @@ RUN_AS_ROOT="${BIREFNET_DOCKER_RUN_AS_ROOT:-0}"
 CONTAINER_NAME="${BIREFNET_CONTAINER_NAME:-}"
 JOB_ROOT="${BIREFNET_JOB_ROOT:-}"
 LOG_PATH="${BIREFNET_LOG_PATH:-}"
+PREVIEW_ONLY=0
+SOURCE_FRAME=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -20,6 +22,7 @@ Options:
   --cpu                          Run on CPU instead of CUDA
   --fp32                         Disable FP16 inference
   --alpha-tolerance <0..0.99>    Remove low-confidence foreground (default: 0)
+  --source-frame <frame-key>     Preview the exact DecoderContext source-frame key
   --no-resume                    Re-render existing alpha frames
 EOF
 }
@@ -44,8 +47,16 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
-    --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--live-preview-every)
+    --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--source-frame|--live-preview-every)
       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }
+      if [[ "$1" == "--frame-index" ]]; then
+        PREVIEW_ONLY=1
+      elif [[ "$1" == "--source-frame" ]]; then
+        PREVIEW_ONLY=1
+        SOURCE_FRAME="$2"
+        shift 2
+        continue
+      fi
       FORWARD_ARGS+=("$1" "$2")
       shift 2
       ;;
@@ -80,12 +91,43 @@ done
 [[ -n "$OUTPUT_DIR" ]] || { echo "ERROR: --output-dir is required" >&2; exit 2; }
 [[ -f "$INPUT" ]] || { echo "ERROR: input video does not exist: $INPUT" >&2; exit 2; }
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required" >&2; exit 1; }
+command -v ffprobe >/dev/null 2>&1 || { echo "ERROR: ffprobe is required" >&2; exit 1; }
 
 INPUT_ABS="$(realpath "$INPUT")"
 mkdir -p "$OUTPUT_DIR" "$MODEL_CACHE" "$RUNTIME_CACHE"
 OUTPUT_ABS="$(realpath "$OUTPUT_DIR")"
 MODEL_CACHE_ABS="$(realpath "$MODEL_CACHE")"
 RUNTIME_CACHE_ABS="$(realpath "$RUNTIME_CACHE")"
+
+if [[ -n "$LOG_PATH" ]]; then
+  mkdir -p "$(dirname "$LOG_PATH")"
+  LOG_PATH="$(realpath "$(dirname "$LOG_PATH")")/$(basename "$LOG_PATH")"
+  exec > >(tee -a "$LOG_PATH") 2>&1
+  echo
+  echo "[birefnet] launch: $(date --iso-8601=seconds)"
+fi
+
+if [[ -n "$SOURCE_FRAME" ]]; then
+  DECODED_FRAME="$(python3 "$ROOT_DIR/jcut_frame_index_map.py" \
+    --input "$INPUT_ABS" \
+    --lookup-source-frame "$SOURCE_FRAME")"
+  [[ "$DECODED_FRAME" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: unable to resolve source frame $SOURCE_FRAME" >&2
+    exit 1
+  }
+  FORWARD_ARGS+=("--frame-index" "$DECODED_FRAME")
+  echo "[birefnet] source frame $SOURCE_FRAME -> decoded ordinal $DECODED_FRAME" >&2
+fi
+
+# BiRefNet numbers masks by decoded presentation order, while JCut addresses
+# source frames by timestamp.  Generate the durable conversion before any
+# resumable inference so partial and completed runs use the same frame domain.
+if [[ "$PREVIEW_ONLY" != "1" ]]; then
+  python3 "$ROOT_DIR/jcut_frame_index_map.py" \
+    --input "$INPUT_ABS" \
+    --output "$OUTPUT_ABS/jcut_frame_map.tsv"
+fi
 
 JOB_ROOT_ABS=""
 if [[ -n "$JOB_ROOT" ]]; then
@@ -96,14 +138,6 @@ fi
 if [[ -n "$CONTAINER_NAME" && ! "$CONTAINER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]]; then
   echo "[birefnet] invalid Docker container name: $CONTAINER_NAME" >&2
   exit 2
-fi
-
-if [[ -n "$LOG_PATH" ]]; then
-  mkdir -p "$(dirname "$LOG_PATH")"
-  LOG_PATH="$(realpath "$(dirname "$LOG_PATH")")/$(basename "$LOG_PATH")"
-  exec > >(tee -a "$LOG_PATH") 2>&1
-  echo
-  echo "[birefnet] launch: $(date --iso-8601=seconds)"
 fi
 
 BUILD_HASH="$(sha256sum "$ROOT_DIR/birefnet/Dockerfile" "$ROOT_DIR/birefnet/requirements.txt" | sha256sum | cut -d' ' -f1)"
@@ -144,6 +178,8 @@ DOCKER_ARGS+=(
   -v "$MODEL_CACHE_ABS:/models"
   -v "$RUNTIME_CACHE_ABS:/runtime"
   -v "$ROOT_DIR/birefnet_run.py:/workspace/birefnet_run.py:ro"
+  -v "$ROOT_DIR/jcut_frame_index_map.py:/workspace/jcut_frame_index_map.py:ro"
+  -v "$ROOT_DIR/sam3_resume.py:/workspace/sam3_resume.py:ro"
 )
 if [[ -n "$JOB_ROOT_ABS" ]]; then
   DOCKER_ARGS+=(

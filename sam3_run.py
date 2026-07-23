@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +15,13 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+from jcut_frame_index_map import (
+    replicate_validated_frame_index_map,
+    source_identity,
+    source_identities_match,
+    validated_frame_index_map_metadata,
+    write_jcut_frame_index_map,
+)
 from sam3_resume import FrameResumeState, center_frames_from_jsonl, frame_indices_from_files
 from mask_union import save_binary_mask_outputs
 try:
@@ -100,6 +108,123 @@ def update_job_progress(
         current_artifacts.update(artifacts)
         patch["artifacts"] = current_artifacts
     write_job_manifest(job_dir, patch)
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+            mode="w", encoding="utf-8", delete=False,
+        ) as output:
+            temporary_path = Path(output.name)
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def identities_match(left: dict, right: dict) -> bool:
+    return source_identities_match(left, right)
+
+
+def small_file_identity(path: Path) -> dict | None:
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return None
+    return {
+        "name": path.name,
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def sidecar_input_identity(directory: Path | None) -> dict | None:
+    if directory is None:
+        return None
+    return {
+        "path": str(directory.resolve()),
+        "frame_map": small_file_identity(directory / "jcut_frame_map.tsv"),
+        "frame_map_metadata": small_file_identity(directory / "jcut_frame_map.json"),
+        "completion": (
+            small_file_identity(directory / "jcut_mask.json")
+            or small_file_identity(directory / "jcut_alpha.json")
+        ),
+    }
+
+
+def read_json_object(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def ensure_resume_provenance(
+    directory: Path,
+    manifest_name: str,
+    expected: dict,
+    frame_pattern: str,
+) -> None:
+    manifest_path = directory / manifest_name
+    existing = read_json_object(manifest_path)
+    has_frames = next(directory.glob(frame_pattern), None) is not None
+    if has_frames and existing != expected:
+        raise RuntimeError(
+            f"Refusing to resume unverified or mismatched artifacts in {directory}. "
+            "Use a new output directory."
+        )
+    if existing != expected:
+        atomic_write_json(manifest_path, expected)
+
+
+def verify_contiguous_mask_frames(directory: Path, expected_frames: int) -> None:
+    completed = frame_indices_from_files(directory, "frame_*.png")
+    if (
+        expected_frames <= 0
+        or len(completed) != expected_frames
+        or min(completed, default=-1) != 0
+        or max(completed, default=-1) != expected_frames - 1
+    ):
+        raise RuntimeError(
+            f"Incomplete mask sidecar {directory}: found {len(completed)} valid frame(s), "
+            f"expected contiguous ordinals 0..{expected_frames - 1}."
+        )
+
+
+def publish_sam_mask_completion(
+    directory: Path,
+    frame_map_metadata: dict,
+    prompt: str,
+    expected_frames: int,
+    extract_fps: float | None,
+) -> None:
+    verify_contiguous_mask_frames(directory, expected_frames)
+    atomic_write_json(
+        directory / "jcut_mask.json",
+        {
+            "schema": "jcut_mask_sidecar_v1",
+            "complete": True,
+            "source_type": "sam3_binary_frames",
+            "frame_domain": "filtered_decode_ordinal" if extract_fps else "decode_ordinal",
+            "frame_index_map": "jcut_frame_map.tsv",
+            "frame_index_metadata": "jcut_frame_map.json",
+            "frame_map_sha256": frame_map_metadata.get("map_sha256"),
+            "expected_frame_count": expected_frames,
+            "source_identity": frame_map_metadata.get("source_identity"),
+            "output_fps": extract_fps,
+            "prompt": prompt,
+            "completed_at_utc": utc_now(),
+        },
+    )
 
 
 def is_image(path: Path) -> bool:
@@ -194,99 +319,6 @@ def save_frame_image(path: Path, image: np.ndarray, image_mode: str | None = Non
         pil_image.save(path, format="WEBP", lossless=False, quality=85, method=6)
     else:
         pil_image.save(path)
-
-
-def source_frame_rate_for_index_map(input_path: Path) -> float | None:
-    try:
-        probe = subprocess.run(
-            [
-                "ffprobe",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=nb_frames,duration,avg_frame_rate",
-                "-of",
-                "json",
-                str(input_path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        data = json.loads(probe.stdout or "{}")
-        streams = data.get("streams") or []
-        if streams:
-            stream = streams[0]
-            frames = int(stream.get("nb_frames") or 0)
-            duration = float(stream.get("duration") or 0.0)
-            if frames > 0 and duration > 0.0:
-                return frames / duration
-            rate = stream.get("avg_frame_rate") or ""
-            if "/" in rate:
-                num, den = rate.split("/", 1)
-                if float(den) != 0.0:
-                    return float(num) / float(den)
-    except Exception:
-        return None
-    return None
-
-
-def write_jcut_frame_index_map(input_path: Path, map_path: Path):
-    if map_path.exists() and map_path.stat().st_size > 0:
-        return
-    source_fps = source_frame_rate_for_index_map(input_path)
-    if source_fps is None or source_fps <= 0.0:
-        return
-    # The editor historically reported video frame handles from packet/frame
-    # timestamps. SAM masks are decode-order artifacts. This map lets JCut
-    # translate that timestamp-derived source frame back to the decode ordinal
-    # without re-running detection or renaming generated masks.
-    probe = subprocess.Popen(
-        [
-            "ffprobe",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_packets",
-            "-show_entries",
-            "packet=pts_time",
-            "-of",
-            "csv=p=0",
-            str(input_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    map_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = map_path.with_suffix(".tsv.tmp")
-    frame_idx = 0
-    with tmp.open("w", encoding="utf-8") as out:
-        out.write("# source_frame\tmask_frame\n")
-        if probe.stdout is not None:
-            for line in probe.stdout:
-                value = line.strip().split(",", 1)[0]
-                if not value:
-                    continue
-                try:
-                    source_frame = int(float(value) * source_fps + 0.5)
-                except ValueError:
-                    continue
-                out.write(f"{source_frame}\t{frame_idx}\n")
-                frame_idx += 1
-    _, stderr = probe.communicate()
-    if probe.returncode != 0:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise RuntimeError(f"ffprobe frame index map failed: {stderr.strip()}")
-    tmp.replace(map_path)
 
 
 def safe_name_component(value: str, fallback: str = "prompt") -> str:
@@ -647,12 +679,6 @@ def extract_frames(
         vf_arg,
         str(frames_dir / f"frame_%06d.{ext}"),
     ]
-    print(f"[frames] source fps: {fps}")
-    if extract_fps is not None and extract_fps > 0:
-        print(f"[frames] target extract fps: {extract_fps}")
-    print("[frames] extract cmd:", " ".join(cmd))
-    subprocess.check_call(cmd)
-
     fps = None
     try:
         probe = subprocess.run(
@@ -678,6 +704,11 @@ def extract_frames(
             fps = float(num) / float(den)
     except Exception:
         fps = None
+    print(f"[frames] source fps: {fps}")
+    if extract_fps is not None and extract_fps > 0:
+        print(f"[frames] target extract fps: {extract_fps}")
+    print("[frames] extract cmd:", " ".join(cmd))
+    subprocess.check_call(cmd)
     return fps
 
 
@@ -685,9 +716,24 @@ def prescale_video(input_path: Path, prescale_width: int) -> Path:
     if prescale_width <= 0:
         return input_path
     out_path = input_path.with_name(f"{input_path.stem}_prescale{prescale_width}.mp4")
-    if out_path.exists():
+    metadata_path = out_path.with_suffix(out_path.suffix + ".jcut_prescale.json")
+    current_source_identity = source_identity(input_path)
+    expected_metadata = {
+        "schema": "jcut_prescale_v1",
+        "source_identity": current_source_identity,
+        "width": prescale_width,
+        "video_codec": "libx264",
+        "crf": 18,
+    }
+    if out_path.exists() and read_json_object(metadata_path) == expected_metadata:
         print(f"[prescale] skipping; exists: {out_path}")
         return out_path
+    temporary_path: Path | None = None
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{out_path.stem}.", suffix=out_path.suffix,
+        dir=out_path.parent, delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
     scale_cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -710,15 +756,27 @@ def prescale_video(input_path: Path, prescale_width: int) -> Path:
         "aac",
         "-b:a",
         "192k",
-        str(out_path),
+        str(temporary_path),
     ]
     print("[prescale] cmd:", " ".join(scale_cmd))
-    subprocess.check_call(scale_cmd)
+    try:
+        subprocess.check_call(scale_cmd)
+        if not identities_match(current_source_identity, source_identity(input_path)):
+            raise RuntimeError("Source video changed while the prescaled derivative was built.")
+        with temporary_path.open("rb") as completed:
+            os.fsync(completed.fileno())
+        os.replace(temporary_path, out_path)
+        temporary_path = None
+        atomic_write_json(metadata_path, expected_metadata)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return out_path
 
 
 def run_video_as_frames(
     input_path: Path,
+    frame_map_source_path: Path,
     prompt: str,
     out_path: Path,
     scale_width: int | None,
@@ -751,12 +809,87 @@ def run_video_as_frames(
     write_output_frames = produce_output_video or write_mask_preview_frames
     if write_output_frames:
         out_frames_dir.mkdir(parents=True, exist_ok=True)
-    if binary_mask_dir is not None:
-        binary_mask_dir.mkdir(parents=True, exist_ok=True)
-        write_jcut_frame_index_map(input_path, binary_mask_dir / "jcut_frame_map.tsv")
-    if combined_mask_dir is not None:
-        combined_mask_dir.mkdir(parents=True, exist_ok=True)
-        write_jcut_frame_index_map(input_path, combined_mask_dir / "jcut_frame_map.tsv")
+    mask_output_directories = [
+        directory for directory in (binary_mask_dir, combined_mask_dir)
+        if directory is not None
+    ]
+    processing_input_identity = source_identity(input_path)
+    if (union_mask_dir is None) != (combined_mask_dir is None):
+        raise ValueError(
+            "--union-mask-dir and --combined-binary-mask-dir must be provided together."
+        )
+    if combined_mask_dir is not None and binary_mask_dir is None:
+        raise ValueError(
+            "--combined-binary-mask-dir also requires --binary-mask-dir."
+        )
+    if mask_output_directories and extract_fps is not None:
+        raise ValueError(
+            "--extract-fps cannot be used for timeline mask sidecars. "
+            "Exact parent-frame synchronization requires one mask per decoded source frame."
+        )
+    frame_map_metadata = None
+    if mask_output_directories:
+        for directory in mask_output_directories:
+            directory.mkdir(parents=True, exist_ok=True)
+        primary_map_path = mask_output_directories[0] / "jcut_frame_map.tsv"
+        write_jcut_frame_index_map(
+            frame_map_source_path,
+            primary_map_path,
+            extract_fps,
+        )
+        for directory in mask_output_directories[1:]:
+            replicate_validated_frame_index_map(
+                frame_map_source_path,
+                primary_map_path,
+                directory / "jcut_frame_map.tsv",
+                extract_fps,
+            )
+        frame_map_metadata = validated_frame_index_map_metadata(
+            frame_map_source_path,
+            primary_map_path,
+            extract_fps,
+        )
+        if frame_map_metadata is None:
+            raise RuntimeError("Generated mask frame map failed source-identity validation.")
+        expected_mask_frames = int(
+            frame_map_metadata.get("expected_output_frame_count") or 0
+        )
+        for directory in mask_output_directories:
+            role = "combined_binary" if directory == combined_mask_dir else "binary"
+            ensure_resume_provenance(
+                directory,
+                "jcut_mask_run.json",
+                {
+                    "schema": "jcut_sam3_mask_run_v1",
+                    "role": role,
+                    "source_identity": frame_map_metadata.get("source_identity"),
+                    "frame_map_sha256": frame_map_metadata.get("map_sha256"),
+                    "expected_frame_count": expected_mask_frames,
+                    "prompt": prompt,
+                    "processing_input_identity": processing_input_identity,
+                    "scale_width": scale_width,
+                    "intermediate_frames_format": intermediate_frames_format,
+                    "union_input": (
+                        sidecar_input_identity(union_mask_dir)
+                        if role == "combined_binary" else None
+                    ),
+                },
+                "frame_*.png",
+            )
+            (directory / "jcut_mask.json").unlink(missing_ok=True)
+
+    ensure_resume_provenance(
+        frames_dir,
+        "jcut_frames.json",
+        {
+            "schema": "jcut_extracted_frames_v1",
+            "processing_input_identity": processing_input_identity,
+            "scale_width": scale_width,
+            "intermediate_frames_format": intermediate_frames_format,
+            "extract_fps": extract_fps,
+        },
+        f"frame_*.{intermediate_frames_format}",
+    )
 
     source_ext = intermediate_frames_format
     output_ext = frames_format
@@ -814,7 +947,7 @@ def run_video_as_frames(
             "binary_masks_dir": str(binary_mask_dir) if binary_mask_dir is not None else None,
             "output_video": str(out_path),
             "frame_index": {
-                "domain": "source_decode_order",
+                "domain": "source_timestamp_mapped_decode_ordinal",
                 "base": 1,
                 "source_frame_pattern": f"frame_%06d.{source_ext}",
                 "binary_mask_pattern": "frame_%06d.png" if binary_mask_dir is not None else None,
@@ -822,9 +955,14 @@ def run_video_as_frames(
         },
     )
 
+    extracted_frame_count = 0
     if stream_extract:
-        total_frames = None
-        if use_tqdm:
+        total_frames = (
+            int(frame_map_metadata["expected_output_frame_count"])
+            if frame_map_metadata is not None
+            else None
+        )
+        if use_tqdm and total_frames is None:
             try:
                 probe = subprocess.run(
                     [
@@ -1032,7 +1170,7 @@ def run_video_as_frames(
                     update_job_progress(
                         job_dir,
                         "running",
-                        processed_frames=processed_frames + resume_state.resumed_count(total_frames),
+                        processed_frames=resume_state.resumed_count(total_frames),
                         total_frames=total_frames,
                     )
                 continue
@@ -1047,11 +1185,12 @@ def run_video_as_frames(
             return_code = proc.wait()
             if return_code != 0:
                 raise RuntimeError(f"ffmpeg frame extraction failed with exit code {return_code}.")
-            if total_frames is not None and processed_frames + resume_state.resumed_count(total_frames) < total_frames:
+            if total_frames is not None and resume_state.resumed_count(total_frames) < total_frames:
                 raise RuntimeError(
                     "ffmpeg frame extraction ended early: "
                     f"processed {processed_frames} frame(s), expected about {total_frames}."
                 )
+        extracted_frame_count = idx - 1
         if pbar is not None:
             pbar.close()
     else:
@@ -1065,6 +1204,7 @@ def run_video_as_frames(
         frame_files = sorted(frames_dir.glob(f"frame_*.{source_ext}"))
         if not frame_files:
             raise RuntimeError("No frames extracted.")
+        extracted_frame_count = len(frame_files)
 
         pbar = None
         if use_tqdm and tqdm is not None:
@@ -1160,7 +1300,7 @@ def run_video_as_frames(
                             )
                             + "\n"
                         )
-                resume_state.mark_complete(frame_idx)
+            resume_state.mark_complete(frame_idx)
             if pbar is not None:
                 pbar.update(1)
             if job_dir is not None and ((frame_idx + 1) % 25) == 0:
@@ -1175,6 +1315,40 @@ def run_video_as_frames(
 
     try:
         maybe_drain_futures(pending_writes, wait_for_all=True)
+        if frame_map_metadata is not None:
+            revalidated_map_metadata = validated_frame_index_map_metadata(
+                frame_map_source_path,
+                mask_output_directories[0] / "jcut_frame_map.tsv",
+                extract_fps,
+            )
+            if (
+                revalidated_map_metadata is None
+                or revalidated_map_metadata.get("map_sha256")
+                != frame_map_metadata.get("map_sha256")
+                or not identities_match(
+                    processing_input_identity, source_identity(input_path)
+                )
+            ):
+                raise RuntimeError(
+                    "Source media or its frame map changed while SAM masks were generated."
+                )
+            frame_map_metadata = revalidated_map_metadata
+            expected_mask_frames = int(
+                frame_map_metadata.get("expected_output_frame_count") or 0
+            )
+            if extracted_frame_count != expected_mask_frames:
+                raise RuntimeError(
+                    "Extracted frame count does not match the source-bound mask map: "
+                    f"{extracted_frame_count} != {expected_mask_frames}."
+                )
+            for directory in mask_output_directories:
+                publish_sam_mask_completion(
+                    directory,
+                    frame_map_metadata,
+                    prompt,
+                    expected_mask_frames,
+                    extract_fps,
+                )
         if produce_output_video:
             if stream_extract:
                 fps_arg = str(extract_fps) if extract_fps else "30"
@@ -1763,6 +1937,7 @@ def main():
             )
             run_video_as_frames(
                 input_path,
+                orig_input_path,
                 args.prompt,
                 out_path,
                 args.scale_width,

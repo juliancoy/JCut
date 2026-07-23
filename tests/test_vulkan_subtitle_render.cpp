@@ -11,6 +11,7 @@
 
 #include "../editor_shared.h"
 #include "../render_internal.h"
+#include "mask_sidecar_test_utils.h"
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -585,12 +586,22 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
         for (int x = 24; x < 32; ++x) row[x] = 128;
     }
     QVERIFY(mask.save(QDir(maskDir).filePath(QStringLiteral("frame_000001.png"))));
+    QFile frameMap(QDir(maskDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(frameMap.open(QIODevice::WriteOnly));
+    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(maskDir, subjectPath));
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        maskDir, subjectPath, true));
 
     TimelineClip backgroundClip = makeImageClip(backgroundPath);
     backgroundClip.id = QStringLiteral("mask-shadow-background");
     backgroundClip.trackIndex = 0;
     TimelineClip sourceClip = makeImageClip(subjectPath);
     sourceClip.id = QStringLiteral("mask-shadow-source");
+    // MaskMatte children are valid only beneath video-role media parents.
+    // The PNG is a deterministic single-frame decode fixture for that role.
+    sourceClip.mediaType = ClipMediaType::Video;
     sourceClip.trackIndex = 1;
     sourceClip.videoEnabled = false;
     sourceClip.maskEnabled = true;
@@ -611,6 +622,8 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
     markerClip.videoEnabled = true;
     markerClip.maskForegroundLayerEnabled = false;
     markerClip.trackIndex = 2;
+    QVERIFY2(!rawClipMaskImage(markerClip, 0).isNull(),
+             "Mapped continuous-alpha fixture must resolve its first frame.");
 
     render_detail::OffscreenVulkanRenderer renderer;
     QString error;

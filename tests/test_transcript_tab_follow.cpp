@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QHeaderView>
+#include <QHash>
 #include <QComboBox>
 #include <QPushButton>
 #include <QDoubleSpinBox>
@@ -22,13 +23,18 @@ namespace {
 constexpr int kTranscriptTestColumnCount = 5;
 constexpr int kTranscriptTestTextColumn = 3;
 
-bool writeTranscript(const QString& path, const QJsonArray& words) {
+bool writeTranscript(const QString& path,
+                     const QJsonArray& words,
+                     const QJsonObject& speakerProfiles = {}) {
     QJsonObject segment;
     segment[QStringLiteral("words")] = words;
     QJsonArray segments;
     segments.push_back(segment);
     QJsonObject root;
     root[QStringLiteral("segments")] = segments;
+    if (!speakerProfiles.isEmpty()) {
+        root[QStringLiteral("speaker_profiles")] = speakerProfiles;
+    }
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -38,9 +44,11 @@ bool writeTranscript(const QString& path, const QJsonArray& words) {
     return file.write(json) == json.size();
 }
 
-bool writeActiveEditableTranscript(const QString& clipPath, const QJsonArray& words) {
+bool writeActiveEditableTranscript(const QString& clipPath,
+                                   const QJsonArray& words,
+                                   const QJsonObject& speakerProfiles = {}) {
     const QString editablePath = transcriptEditablePathForClipFile(clipPath);
-    if (!writeTranscript(editablePath, words)) {
+    if (!writeTranscript(editablePath, words, speakerProfiles)) {
         return false;
     }
     setActiveTranscriptPathForClipFile(clipPath, editablePath);
@@ -179,6 +187,7 @@ private slots:
     void testPauseRefreshRestoresFollowSelectedRow();
     void testFollowSkipsSkippedRowsAndClearsSelection();
     void testFollowUsesSourceTimesNotRenderTimes();
+    void testProjectionPreservesWordIdentityAfterDeletion();
     void testFollowBridgesSmallGapsDuringFastPlayback();
     void testFollowBridgesSmallGapsDuringFastReversePlayback();
     void testOutsideCutRowsAreNotAutoSelected();
@@ -571,6 +580,96 @@ void TestTranscriptTabFollow::testFollowUsesSourceTimesNotRenderTimes() {
 
     tab.syncTableToPlayhead(0, sourceSecondsA);
     QCOMPARE(selectedRow(table), rowA);
+}
+
+void TestTranscriptTabFollow::testProjectionPreservesWordIdentityAfterDeletion()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    QJsonObject first = word(QStringLiteral("a"), 0.0, 0.10);
+    first[QStringLiteral("speaker")] = QStringLiteral("S1");
+    QJsonObject second = word(QStringLiteral("b"), 0.10, 0.20);
+    second[QStringLiteral("speaker")] = QStringLiteral("S2");
+    second[QStringLiteral("transcript_edits")] =
+        QJsonArray{QStringLiteral("timing"), QStringLiteral("text")};
+    QJsonObject third = word(QStringLiteral("c"), 0.20, 0.30);
+    third[QStringLiteral("speaker")] = QStringLiteral("S3");
+    const QJsonObject speakerProfiles{
+        {QStringLiteral("S2"),
+         QJsonObject{{QStringLiteral("name"), QStringLiteral("Bob")}}}};
+    QVERIFY(writeActiveEditableTranscript(
+        clipPath, QJsonArray{first, second, third}, speakerProfiles));
+
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-stable-row-identity"), clipPath);
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    table.setColumnCount(kTranscriptTestColumnCount);
+    QCheckBox follow;
+    follow.setChecked(false);
+    QSpinBox prependSpin;
+    prependSpin.setValue(0);
+    QSpinBox postpendSpin;
+    postpendSpin.setValue(0);
+    QCheckBox speechEnabled;
+    QSpinBox speechFade;
+
+    TranscriptTab tab(
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow,
+                              &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {}});
+    tab.wire();
+    tab.refresh();
+    QTRY_COMPARE_WITH_TIMEOUT(table.rowCount(), 3, 2000);
+
+    int firstRow = -1;
+    QHash<QString, int> originalWordIds;
+    for (int row = 0; row < table.rowCount(); ++row) {
+        const QTableWidgetItem* sourceItem = table.item(row, 0);
+        const QTableWidgetItem* textItem = table.item(row, kTranscriptTestTextColumn);
+        QVERIFY(sourceItem != nullptr);
+        QVERIFY(textItem != nullptr);
+        const QString text = textItem->text();
+        originalWordIds.insert(text, sourceItem->data(Qt::UserRole + 16).toInt());
+        if (text == QStringLiteral("a")) {
+            firstRow = row;
+        } else if (text == QStringLiteral("b")) {
+            QCOMPARE(sourceItem->data(Qt::UserRole + 8).toInt(), 3);
+            QCOMPARE(sourceItem->data(Qt::UserRole + 9).toString(), QStringLiteral("S2"));
+            QCOMPARE(table.item(row, 2)->text(), QStringLiteral("Bob"));
+        }
+    }
+    QVERIFY(firstRow >= 0);
+    QVERIFY(originalWordIds.value(QStringLiteral("b"), -1) >= 0);
+    QVERIFY(originalWordIds.value(QStringLiteral("c"), -1) >= 0);
+
+    table.selectRow(firstRow);
+    QCoreApplication::processEvents();
+    tab.deleteSelectedRows();
+    QTRY_COMPARE_WITH_TIMEOUT(table.rowCount(), 2, 2000);
+
+    for (int row = 0; row < table.rowCount(); ++row) {
+        const QTableWidgetItem* sourceItem = table.item(row, 0);
+        const QTableWidgetItem* textItem = table.item(row, kTranscriptTestTextColumn);
+        QVERIFY(sourceItem != nullptr);
+        QVERIFY(textItem != nullptr);
+        const QString text = textItem->text();
+        QVERIFY(text == QStringLiteral("b") || text == QStringLiteral("c"));
+        QCOMPARE(sourceItem->data(Qt::UserRole + 16).toInt(), originalWordIds.value(text));
+    }
 }
 
 void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastPlayback() {

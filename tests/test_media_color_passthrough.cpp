@@ -109,6 +109,7 @@ private slots:
     void testGeneratedMediaColorPassthrough_data();
     void testGeneratedMediaColorPassthrough();
     void testTransparentPngPreservesStraightRgb();
+    void testImageSequenceBatchPreservesOrder();
 };
 
 void TestMediaColorPassthrough::initTestCase()
@@ -278,6 +279,45 @@ void TestMediaColorPassthrough::testTransparentPngPreservesStraightRgb()
     QVERIFY(!decoded.isNull());
     QCOMPARE(decoded.pixelColor(0, 0), QColor(240, 80, 32, 0));
     QCOMPARE(decoded.pixelColor(1, 0), QColor(24, 200, 128, 96));
+}
+
+void TestMediaColorPassthrough::testImageSequenceBatchPreservesOrder()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QVector<QColor> colors = {
+        QColor(220, 30, 40),
+        QColor(40, 210, 70),
+        QColor(50, 80, 230),
+        QColor(230, 190, 30),
+    };
+    QStringList paths;
+    for (qsizetype index = 0; index < colors.size(); ++index) {
+        const QString path = dir.filePath(QStringLiteral("frame_%1.png").arg(index));
+        QImage image(4, 4, QImage::Format_RGBA8888);
+        image.fill(colors.at(index));
+        QVERIFY2(image.save(path), qPrintable(QStringLiteral("Failed to write %1").arg(path)));
+        paths.push_back(path);
+    }
+
+    const QVector<int64_t> requestedFrames = {3, 0, 2, 1, 2, -1, 99};
+    const QVector<QColor> expectedColors = {
+        colors.at(3),
+        colors.at(0),
+        colors.at(2),
+        colors.at(1),
+        colors.at(2),
+        colors.at(0),
+        colors.at(3),
+    };
+    const QVector<QImage> batch = loadImageSequenceBatch(paths, requestedFrames);
+
+    QCOMPARE(batch.size(), expectedColors.size());
+    for (qsizetype index = 0; index < batch.size(); ++index) {
+        QVERIFY2(!batch.at(index).isNull(), qPrintable(QStringLiteral("Frame %1 did not load").arg(index)));
+        QCOMPARE(batch.at(index).pixelColor(0, 0), expectedColors.at(index));
+    }
 }
 
 QTEST_MAIN(TestMediaColorPassthrough)

@@ -781,6 +781,9 @@ private:
     int64_t m_pendingSyncClickTimelineFrame = -1;
 
     QByteArray m_lastSavedState;
+    // The Qt shell has no first-class project media-bin model yet. Preserve the
+    // neutral/ImGui extension opaquely so switching shells cannot discard it.
+    QJsonArray m_projectMediaItemsExtension;
     QJsonArray m_historyEntries;
     int m_historyIndex = -1;
     QJsonObject m_lastDecodeBenchmark;

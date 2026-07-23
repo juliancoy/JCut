@@ -7,7 +7,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
-#include <QtConcurrent/QtConcurrent>
+#include <QThreadPool>
 
 #include <algorithm>
 #include <cmath>
@@ -304,7 +304,7 @@ void WaveformService::ensureDecodeScheduledLocked(const QString& path, Entry* en
                kMaxBaseWindowSamples);
     entry->baseWindowSamples = baseWindowSamples;
 
-    (void)QtConcurrent::run([this, path, expectedMtime, expectedSize, baseWindowSamples]() {
+    QThreadPool::globalInstance()->start([this, path, expectedMtime, expectedSize, baseWindowSamples]() {
         int sampleRate = 0;
         int64_t totalSamples = 0;
         QVector<WaveformLevel> levels;

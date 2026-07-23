@@ -1,11 +1,18 @@
 #include "frame_handle.h"
 
-#include <QtGui/private/qrhi_p.h>
-#include <QDateTime>
+#include <chrono>
+#include <memory>
 
-extern "C" {
-#include <libavutil/frame.h>
+namespace {
+
+std::int64_t currentTimestampMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
+
+} // namespace
 
 namespace editor {
 
@@ -13,74 +20,10 @@ namespace editor {
 // FrameData Implementation
 // ============================================================================
 
-FrameData::~FrameData() {
-    // GPU texture cleanup must happen on the render thread
-    // The texture pointer is stored but actual cleanup is handled by QRhi
-    if (gpuTexture && gpuTextureOwned.load() == 1) {
-        // Mark for deferred deletion on render thread
-        // (Actual cleanup happens in render loop)
-    }
-    if (hardwareFrame) {
-        av_frame_free(&hardwareFrame);
-    }
-}
+FrameData::~FrameData() = default;
 
 size_t FrameData::memoryUsage() const {
-    size_t total = 0;
-    
-    // CPU image memory
-    if (!cpuImage.isNull()) {
-        total += cpuImage.sizeInBytes();
-    }
-    
-    // GPU texture memory (estimate)
-    if (gpuTexture) {
-        QRhiTexture::Format fmt = gpuTexture->format();
-        int bpp = 4; // Default to 4 bytes per pixel
-        switch (fmt) {
-            case QRhiTexture::RGBA8: bpp = 4; break;
-            case QRhiTexture::BGRA8: bpp = 4; break;
-            case QRhiTexture::R8: bpp = 1; break;
-            case QRhiTexture::RG8: bpp = 2; break;
-            default: bpp = 4; break;
-        }
-        total += size.width() * size.height() * bpp;
-    }
-    
-    return total;
-}
-
-static size_t hardwareFrameEstimateBytes(const FrameData* data) {
-    if (!data || !data->hardwareFrame || !data->size.isValid()) {
-        return 0;
-    }
-
-    const size_t width = static_cast<size_t>(qMax(0, data->size.width()));
-    const size_t height = static_cast<size_t>(qMax(0, data->size.height()));
-    if (width == 0 || height == 0) {
-        return 0;
-    }
-
-    size_t payloadBytes = 0;
-    switch (data->hardwareSwPixelFormat) {
-        case AV_PIX_FMT_NV12:
-        case AV_PIX_FMT_YUV420P:
-            payloadBytes = (width * height * 3) / 2;
-            break;
-        case AV_PIX_FMT_P010:
-        case AV_PIX_FMT_P016:
-            payloadBytes = width * height * 3;
-            break;
-        default:
-            payloadBytes = width * height * 4;
-            break;
-    }
-
-    // Hardware decode frames retain driver-side resources beyond the visible
-    // image payload, especially with CUDA/NVDEC/Vulkan interop. Account for
-    // that residency conservatively so caches trim before system memory swaps.
-    constexpr size_t kHardwareFrameResidencyMultiplier = 4;
-    return payloadBytes * kHardwareFrameResidencyMultiplier;
+    return payload.memoryUsage();
 }
 
 // ============================================================================
@@ -92,25 +35,13 @@ FrameHandle::FrameHandle() = default;
 FrameHandle FrameHandle::createCpuFrame(const QImage& image, int64_t frameNum, const QString& path) {
     FrameHandle handle;
     handle.d = new FrameData();
-    handle.d->cpuImage = image;
-    handle.d->frameNumber = frameNum;
-    handle.d->sourcePath = path;
-    handle.d->size = image.size();
-    handle.d->decodeTimestamp = QDateTime::currentMSecsSinceEpoch();
-    return handle;
-}
-
-FrameHandle FrameHandle::createGpuFrame(QRhiTexture* texture, int64_t frameNum, const QString& path) {
-    FrameHandle handle;
-    if (!texture) return handle;
-    
-    handle.d = new FrameData();
-    handle.d->gpuTexture = texture;
-    handle.d->gpuTextureOwned.store(1);
-    handle.d->frameNumber = frameNum;
-    handle.d->sourcePath = path;
-    handle.d->size = QSize(texture->pixelSize().width(), texture->pixelSize().height());
-    handle.d->decodeTimestamp = QDateTime::currentMSecsSinceEpoch();
+    handle.d->payload.setIdentity(frameNum, path.toStdString(), currentTimestampMs());
+    handle.d->payload.setSize({image.width(), image.height()});
+    if (!image.isNull()) {
+        handle.d->payload.setCpuPayload(
+            std::make_shared<QImage>(image),
+            static_cast<std::size_t>(image.sizeInBytes()));
+    }
     return handle;
 }
 
@@ -123,79 +54,33 @@ FrameHandle FrameHandle::createHardwareFrame(const AVFrame* frame,
         return handle;
     }
 
-    AVFrame* cloned = av_frame_clone(frame);
-    if (!cloned) {
-        return handle;
-    }
-
     handle.d = new FrameData();
-    handle.d->hardwareFrame = cloned;
-    handle.d->hardwarePixelFormat = frame->format;
-    handle.d->hardwareSwPixelFormat = swPixelFormat;
-    handle.d->frameNumber = frameNum;
-    handle.d->sourcePath = path;
-    handle.d->size = QSize(frame->width, frame->height);
-    const int visibleWidth = qMax(1, frame->width - static_cast<int>(frame->crop_left + frame->crop_right));
-    const int visibleHeight = qMax(1, frame->height - static_cast<int>(frame->crop_top + frame->crop_bottom));
-    handle.d->validTextureRectNorm = QRectF(
-        static_cast<qreal>(frame->crop_left) / qMax(1, frame->width),
-        static_cast<qreal>(frame->crop_top) / qMax(1, frame->height),
-        static_cast<qreal>(visibleWidth) / qMax(1, frame->width),
-        static_cast<qreal>(visibleHeight) / qMax(1, frame->height));
-    handle.d->decodeTimestamp = QDateTime::currentMSecsSinceEpoch();
+    if (!handle.d->payload.cloneHardwareFrame(frame, swPixelFormat)) {
+        return FrameHandle();
+    }
+    handle.d->payload.setIdentity(frameNum, path.toStdString(), currentTimestampMs());
     return handle;
-}
-
-void FrameHandle::uploadToGpu(QRhi* rhi) {
-    if (!d || d->cpuImage.isNull() || !rhi) {
-        return;
-    }
-    
-    if (d->gpuTexture) {
-        // Already uploaded
-        return;
-    }
-    
-    // Convert to RGBA8 if needed
-    QImage uploadImage = d->cpuImage;
-    if (uploadImage.format() != QImage::Format_RGBA8888 && 
-        uploadImage.format() != QImage::Format_ARGB32 &&
-        uploadImage.format() != QImage::Format_RGB32) {
-        uploadImage = uploadImage.convertToFormat(QImage::Format_RGBA8888);
-    }
-    
-    // Create texture
-    QRhiTexture::Format fmt = QRhiTexture::RGBA8;
-    QRhiTexture* texture = rhi->newTexture(fmt, uploadImage.size(), 1);
-    if (!texture->create()) {
-        delete texture;
-        return;
-    }
-    
-    // Upload data - QRhi API varies by version
-    // In Qt 6.4, we use resource update batch submitted via beginFrame/endFrame
-    QRhiResourceUpdateBatch* batch = rhi->nextResourceUpdateBatch();
-    batch->uploadTexture(texture, uploadImage);
-    // Note: The batch must be submitted during a frame - this is handled by the caller
-    
-    d->gpuTexture = texture;
-    d->rhiContext = rhi;
-    d->gpuTextureOwned.store(1);
-    m_gpuUploadPending = false;
 }
 
 bool FrameHandle::operator==(const FrameHandle& other) const {
     if (d.constData() == other.d.constData()) return true;
     if (!d || !other.d) return false;
-    return d->sourcePath == other.d->sourcePath && 
-           d->frameNumber == other.d->frameNumber;
+    return d->payload.sourcePath() == other.d->payload.sourcePath() &&
+           d->payload.frameNumber() == other.d->payload.frameNumber();
+}
+
+QImage FrameHandle::cpuImage() const {
+    if (!d || !d->payload.hasCpuPayload()) {
+        return QImage();
+    }
+    return *static_cast<const QImage*>(d->payload.cpuPayload());
 }
 
 size_t FrameHandle::cpuMemoryUsage() const {
     if (!d) {
         return 0;
     }
-    return d->cpuImage.isNull() ? 0 : d->cpuImage.sizeInBytes();
+    return d->payload.cpuMemoryUsage();
 }
 
 size_t FrameHandle::gpuMemoryUsage() const {
@@ -203,21 +88,7 @@ size_t FrameHandle::gpuMemoryUsage() const {
         return 0;
     }
 
-    size_t total = 0;
-    if (d->gpuTexture) {
-        QRhiTexture::Format fmt = d->gpuTexture->format();
-        int bpp = 4;
-        switch (fmt) {
-            case QRhiTexture::RGBA8: bpp = 4; break;
-            case QRhiTexture::BGRA8: bpp = 4; break;
-            case QRhiTexture::R8: bpp = 1; break;
-            case QRhiTexture::RG8: bpp = 2; break;
-            default: bpp = 4; break;
-        }
-        total += static_cast<size_t>(d->size.width()) * static_cast<size_t>(d->size.height()) * static_cast<size_t>(bpp);
-    }
-    total += hardwareFrameEstimateBytes(d.data());
-    return total;
+    return d->payload.gpuMemoryUsage();
 }
 
 } // namespace editor

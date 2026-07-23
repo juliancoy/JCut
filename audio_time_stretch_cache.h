@@ -34,7 +34,10 @@ bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
 bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,
                                   const AudioTimeStretchCacheEntry& entry,
-                                  const std::function<void(double)>& progressCallback = {});
+                                  const std::function<void(double)>& progressCallback = {},
+                                  const std::function<bool()>& continuationPredicate = {},
+                                  const std::function<bool(
+                                      const std::function<bool()>&)>& commitGuard = {});
 
 int64_t audioTimeStretchCacheSampleForSourceSample(int64_t sourceSample, double playbackRate);
 int64_t audioTimeStretchCacheEndSampleForSourceEndSample(int64_t sourceEndSample, double playbackRate);

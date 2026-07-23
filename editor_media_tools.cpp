@@ -1146,7 +1146,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     extractFpsSpin->setSpecialValueText(QStringLiteral("Source"));
     extractFpsSpin->setValue(settings.value(QStringLiteral("sam3/extractFps"), 0.0).toDouble());
     extractFpsSpin->setToolTip(
-        QStringLiteral("Process only this many frames per second in extracted-frame mode. Leave at Source for every frame."));
+        QStringLiteral("Process only this many frames per second for diagnostic frame output. Timeline mask sidecars always use every source frame for exact synchronization."));
     performanceForm->addRow(QStringLiteral("Extract FPS"), extractFpsSpin);
 
     auto* frameFormatCombo = new QComboBox(&preflight);
@@ -1176,7 +1176,18 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
         QStringLiteral("Write per-frame PNG mattes for video processing. White pixels are detected regions; black pixels are background."));
     preflightLayout->addWidget(binaryMasksCheckBox);
 
-    const QString currentMaskDir = clip->maskFramesDir.trimmed();
+    QString currentMaskDir;
+    const TimelineClip* selectedMaskChild = m_timeline->selectedClip();
+    if (selectedMaskChild &&
+        selectedMaskChild->clipRole == ClipRole::MaskMatte &&
+        selectedMaskChild->linkedSourceClipId.trimmed() == clipId.trimmed()) {
+        currentMaskDir = selectedMaskChild->maskFramesDir.trimmed();
+    }
+    if (currentMaskDir.isEmpty()) {
+        // Legacy projects may still carry the association on the source. New
+        // materialization writes it only to the Mask Matte child.
+        currentMaskDir = clip->maskFramesDir.trimmed();
+    }
     const bool canUnionWithCurrentMask = !currentMaskDir.isEmpty() &&
         !QDir(currentMaskDir).entryList(
             QStringList{QStringLiteral("frame_*.png")}, QDir::Files, QDir::Name).isEmpty();
@@ -1268,6 +1279,21 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
             unionCurrentMaskCheckBox->setChecked(canUnionWithCurrentMask);
         }
     });
+    auto refreshExtractFpsAvailability = [videoModeCheckBox,
+                                          binaryMasksCheckBox,
+                                          extractFpsSpin]() {
+        extractFpsSpin->setEnabled(
+            !videoModeCheckBox->isChecked() && !binaryMasksCheckBox->isChecked());
+    };
+    connect(binaryMasksCheckBox, &QCheckBox::toggled, &preflight,
+            [&refreshExtractFpsAvailability](bool) {
+        refreshExtractFpsAvailability();
+    });
+    connect(videoModeCheckBox, &QCheckBox::toggled, &preflight,
+            [&refreshExtractFpsAvailability](bool) {
+        refreshExtractFpsAvailability();
+    });
+    refreshExtractFpsAvailability();
     connect(runPreflightButton, &QPushButton::clicked, &preflight, [&preflight, promptEdit, cacheEdit, runtimeCacheEdit]() {
         if (promptEdit->text().trimmed().isEmpty()) {
             promptEdit->setFocus();
@@ -1385,7 +1411,7 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     if (prescaleWidth > 0) {
         samOptimizationArgs << QStringLiteral("--prescale-width") << QString::number(prescaleWidth);
     }
-    if (!useVideoMode && extractFps > 0.0) {
+    if (!useVideoMode && !writeBinaryMasks && extractFps > 0.0) {
         samOptimizationArgs << QStringLiteral("--extract-fps")
                             << QString::number(extractFps, 'f', 3);
     }
@@ -1535,6 +1561,9 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
 
     auto* process = new QProcess(dialog);
     auto* keepRunningOnClose = new bool(false);
+    const QString selectedMaskPath = writeBinaryMasks
+        ? (unionWithCurrentMask ? combinedMasksPath : binaryMasksPath)
+        : QString();
     process->setProcessChannelMode(QProcess::MergedChannels);
     process->setWorkingDirectory(QDir::currentPath());
     QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
@@ -1640,18 +1669,18 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
     connect(process,
             qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
             this,
-            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+            [this, clipId, selectedMaskPath](int exitCode,
+                                             QProcess::ExitStatus exitStatus) {
                 if (exitStatus != QProcess::NormalExit || exitCode != 0 || !m_timeline) return;
-                // A successful AI job may have produced more than the selected
-                // sidecar. Reconcile every sibling mask directory into its own
-                // generated child track immediately.
-                m_timeline->setClips(m_timeline->clips());
-                if (m_preview) {
-                    m_preview->setTimelineTracks(m_timeline->tracks());
-                    m_preview->setTimelineClips(m_timeline->clips());
+                // Materialize directly from the completed artifact. The source
+                // parent never serves as temporary storage for child-owned
+                // sidecar state. Reconciliation inside this model operation
+                // also discovers any additional sibling sidecars.
+                if (!selectedMaskPath.isEmpty()) {
+                    m_timeline->createOrReplaceMaskMatteForSidecar(
+                        clipId, selectedMaskPath, false);
                 }
                 if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Masks"));
-                scheduleSaveState();
             });
     connect(backgroundButton, &QPushButton::clicked, dialog, [dialog,
                                                               process,
@@ -1725,24 +1754,6 @@ void EditorWindow::openSamDetectorWindow(const QString& clipId)
                                  .arg(manifestError));
         return;
     }
-    if (writeBinaryMasks && m_timeline) {
-        const QString selectedMaskPath =
-            unionWithCurrentMask ? combinedMasksPath : binaryMasksPath;
-        if (m_timeline->updateClipById(clipId, [selectedMaskPath](TimelineClip& timelineClip) {
-                timelineClip.maskEnabled = true;
-                timelineClip.maskFramesDir = selectedMaskPath;
-            })) {
-            if (m_preview) {
-                m_preview->setTimelineTracks(m_timeline->tracks());
-                m_preview->setTimelineClips(m_timeline->clips());
-            }
-            if (m_inspectorPane) {
-                m_inspectorPane->refreshTab(QStringLiteral("Masks"));
-            }
-            scheduleSaveState();
-        }
-    }
-
     process->start(QStringLiteral("/bin/bash"), launchCommand);
     dialog->show();
 }

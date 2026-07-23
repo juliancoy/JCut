@@ -11,6 +11,7 @@ private slots:
     void testPreviewResizeUpdatesTemporalTransformKeyframe();
     void testPreviewResizeKeyframeStoresRelativeToBaseTransform();
     void testPreviewMovePreservesTemporalScale();
+    void testMaskMattePreviewTransformOwnerRequiresVideoMediaParent();
 };
 
 namespace {
@@ -181,6 +182,32 @@ void TestPreviewEditHelpers::testPreviewMovePreservesTemporalScale() {
     QCOMPARE(moved.translationY, -44.0);
     QCOMPARE(moved.scaleX, 2.835);
     QCOMPARE(moved.scaleY, 2.835);
+}
+
+void TestPreviewEditHelpers::testMaskMattePreviewTransformOwnerRequiresVideoMediaParent() {
+    TimelineClip parent;
+    parent.id = QStringLiteral("source-video");
+    parent.clipRole = ClipRole::Media;
+    parent.mediaType = ClipMediaType::Video;
+
+    TimelineClip matte;
+    matte.id = QStringLiteral("source-video-mask");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.mediaType = ClipMediaType::Video;
+    matte.linkedSourceClipId = parent.id;
+
+    QCOMPARE(previewTransformOwnerClipId({parent, matte}, matte.id), parent.id);
+    QCOMPARE(previewTransformOwnerClipId({parent, matte}, parent.id), parent.id);
+
+    TimelineClip invalidParent = parent;
+    invalidParent.clipRole = ClipRole::EffectSynth;
+    QVERIFY(previewTransformOwnerClipId({invalidParent, matte}, matte.id).isEmpty());
+
+    invalidParent = parent;
+    invalidParent.mediaType = ClipMediaType::Image;
+    QVERIFY(previewTransformOwnerClipId({invalidParent, matte}, matte.id).isEmpty());
+
+    QVERIFY(previewTransformOwnerClipId({matte}, matte.id).isEmpty());
 }
 
 QTEST_MAIN(TestPreviewEditHelpers)

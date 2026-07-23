@@ -4414,7 +4414,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QJsonObject *skippedReasonCounts = context.skippedReasonCounts;
   QJsonObject *exportFaceTransformDiagnostics =
       context.exportFaceTransformDiagnostics;
-  Q_UNUSED(asyncDecoder);
   Q_UNUSED(clipStageStats);
   Q_UNUSED(skippedClips);
   Q_UNUSED(skippedReasonCounts);
@@ -4456,22 +4455,72 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int decodeConvertFailCount = 0;
   const RenderFrameClock frameClock =
       renderFrameClockForTimelinePosition(timelineFrame);
+  QHash<QString, QHash<int64_t, editor::FrameHandle>> decodedFramesByTimingOwner;
+  auto decodeFrameForTimingOwner =
+      [&](const TimelineClip& timingOwner,
+          const QString& decodePath,
+          int64_t sourceFrame) -> editor::FrameHandle {
+    const QString ownerIdentity = timingOwner.id.trimmed().isEmpty()
+        ? QStringLiteral("path:") + decodePath
+        : QStringLiteral("id:") + timingOwner.id.trimmed() +
+              QStringLiteral("\x1fpath:") + decodePath;
+    QHash<int64_t, editor::FrameHandle>& ownerFrames =
+        decodedFramesByTimingOwner[ownerIdentity];
+    const auto cached = ownerFrames.constFind(sourceFrame);
+    if (cached != ownerFrames.cend()) {
+      return cached.value();
+    }
+
+    const qint64 decodeStart = QDateTime::currentMSecsSinceEpoch();
+    const editor::FrameHandle decoded = decodeRenderFrame(
+        decodePath,
+        sourceFrame,
+        decoders,
+        asyncDecoder,
+        asyncFrameCache,
+        context.forceSoftwareDecode,
+        context.preferHardwareFrames);
+    if (decodeMs) {
+      *decodeMs += (QDateTime::currentMSecsSinceEpoch() - decodeStart);
+    }
+    // Cache failures as well as successes for this render pass. A parent and
+    // each virtual child must observe the same decode result for a source
+    // frame instead of independently retrying or selecting different frames.
+    ownerFrames.insert(sourceFrame, decoded);
+    return decoded;
+  };
   QRectF transcriptLayerBounds;
   OffscreenVulkanRendererPrivate::VulkanTextInputs textInputs;
   for (const TimelineClip &clip : orderedClips) {
-    if (timelineFrame < clip.startFrame ||
-        timelineFrame >= clip.startFrame + clip.durationFrames) {
+    const TimelineClip &timingSource =
+        resolvedClipTimingSource(clip, request.clips);
+    // An orphaned or malformed virtual matte must never fall back to its
+    // serialized media-path cache and decode as an independent full layer.
+    // Normalization removes these clips, but export remains fail-closed when
+    // handed an unnormalized request from an older or external caller.
+    if (clip.clipRole == ClipRole::MaskMatte &&
+        (timingSource.id.trimmed() != clip.linkedSourceClipId.trimmed() ||
+         timingSource.clipRole != ClipRole::Media ||
+         timingSource.mediaType != ClipMediaType::Video ||
+         timingSource.filePath.trimmed().isEmpty())) {
+      continue;
+    }
+    if (timelineFrame < timingSource.startFrame ||
+        timelineFrame >= timingSource.startFrame + timingSource.durationFrames) {
       continue;
     }
     const bool clipVisible = clipVisualPlaybackEnabled(clip, request.tracks);
     if (!clipVisible) {
       continue;
     }
+    const TimelineClip visualEffectsClip =
+        clipWithResolvedTimingOwner(clip, request.clips);
     EffectiveVisualEffects effects =
         request.bypassGrading
             ? EffectiveVisualEffects{}
             : evaluateEffectiveVisualEffectsAtPosition(
-                  clip, request.tracks, static_cast<qreal>(timelineFrame),
+                  visualEffectsClip, request.tracks,
+                  static_cast<qreal>(timelineFrame),
                   request.renderSyncMarkers,
                   request.playbackTiming);
     if (!request.correctionsEnabled) {
@@ -4496,27 +4545,18 @@ QImage OffscreenVulkanRenderer::renderFrame(
       textInputs.title3D.push_back(title);
       continue;
     }
-    const QString decodePath = playbackMediaPathForClip(clip);
+    const QString decodePath = playbackMediaPathForClip(timingSource);
     if (decodePath.isEmpty()) {
       ++decodePathMissingCount;
       continue;
     }
     ++visualClipCandidates;
     const ClipFrameMapping frameMapping =
-        clipFrameMappingForClock(clip, frameClock, request.renderSyncMarkers);
+        clipFrameMappingForClock(
+            clip, request.clips, frameClock, request.renderSyncMarkers);
     const int64_t localFrame = frameMapping.sourceFrame;
-    const qint64 decodeStart = QDateTime::currentMSecsSinceEpoch();
-    const editor::FrameHandle frame = decodeRenderFrame(
-        decodePath,
-        localFrame,
-        decoders,
-        asyncDecoder,
-        asyncFrameCache,
-        context.forceSoftwareDecode,
-        context.preferHardwareFrames);
-    if (decodeMs) {
-      *decodeMs += (QDateTime::currentMSecsSinceEpoch() - decodeStart);
-    }
+    const editor::FrameHandle frame =
+        decodeFrameForTimingOwner(timingSource, decodePath, localFrame);
     if (frame.isNull()) {
       ++decodeNullCount;
       continue;
@@ -4548,7 +4588,16 @@ QImage OffscreenVulkanRenderer::renderFrame(
         (generatedMaskMatte || clip.maskShowOnly ||
          clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
     if (gpuMaskEnabled) {
-      const QImage mask = rawClipMaskImage(clip, localFrame);
+      // The matte follows the frame that was actually decoded/presented for
+      // its parent. It must never combine a requested source key with a
+      // different bounded decode result (TIME.md).
+      QImage mask = frame.frameNumber() >= 0
+          ? rawClipMaskImage(clip, frame.frameNumber())
+          : QImage{};
+      if (generatedMaskMatte) {
+        mask = applyCorrectionPolygonsToMaskImage(
+            mask, effects.correctionPolygons);
+      }
       const QImage maskRgba = rgbaMaskImageForUpload(mask);
       if (!maskRgba.isNull()) {
         layer.maskImage = maskRgba;
@@ -4634,8 +4683,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
             request.playbackTiming,
             request.outputSize,
             &transformDiagnostics);
-    const QSize sourceSize = clip.sourceFrameSize.isValid()
-        ? clip.sourceFrameSize
+    const QSize sourceSize = timingSource.sourceFrameSize.isValid()
+        ? timingSource.sourceFrameSize
         : (layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size());
     const QRectF fitted = fitRectF(sourceSize, request.outputSize);
     QPointF exportVideoTranslation(transform.translationX, transform.translationY);
@@ -4646,14 +4695,14 @@ QImage OffscreenVulkanRenderer::renderFrame(
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY));
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
-    const TimelineClip effectClip =
-        clipWithTrackEffectSettings(clip, request.tracks);
+    const TimelineClip effectClip = clipWithResolvedTimingOwner(
+        clipWithRenderableEffectSettings(clip, request.tracks),
+        request.clips);
     if (effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
       const int64_t referenceFrameNumber =
           qMax<int64_t>(0, localFrame - qBound(1, effectClip.differenceReferenceFrames, 300));
-      layer.referenceFrameHandle = decodeRenderFrame(
-          decodePath, referenceFrameNumber, decoders, asyncDecoder, asyncFrameCache,
-          context.forceSoftwareDecode, context.preferHardwareFrames);
+      layer.referenceFrameHandle = decodeFrameForTimingOwner(
+          timingSource, decodePath, referenceFrameNumber);
       if (!layer.referenceFrameHandle.isNull()) {
         layer.differenceMatteEnabled = true;
         layer.shadows[3] = kVulkanEffectModeDifferenceMatte;
@@ -4842,9 +4891,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
         const qreal decay = qBound<qreal>(0.0, effectClip.temporalEchoDecay, 1.0);
         for (int echoIndex = 1; echoIndex <= echoCount; ++echoIndex) {
           const int64_t echoFrameNumber = qMax<int64_t>(0, localFrame - echoIndex * spacing);
-          const editor::FrameHandle echoFrame = decodeRenderFrame(
-              decodePath, echoFrameNumber, decoders, asyncDecoder, asyncFrameCache,
-              context.forceSoftwareDecode, context.preferHardwareFrames);
+          const editor::FrameHandle echoFrame = decodeFrameForTimingOwner(
+              timingSource, decodePath, echoFrameNumber);
           if (echoFrame.isNull()) continue;
           OffscreenVulkanRendererPrivate::LayerInput echoLayer = layer;
           echoLayer.frameHandle = echoFrame;

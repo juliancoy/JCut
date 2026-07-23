@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "editor_preview_edit_helpers.h"
+#include "editor_scale_to_fill.h"
 #include "timeline_fps.h"
 #include "transport_icons.h"
 
@@ -292,18 +293,20 @@ void EditorWindow::connectTimelineSignals()
 
         const QString mediaPath = playbackMediaPathForClip(*clip);
         const MediaProbeResult probe = probeMediaFile(mediaPath, clip->durationFrames / kTimelineFps);
-        if (!probe.hasVideo || probe.frameSize.isEmpty()) return;
+        if (probe.frameSize.isEmpty() ||
+            (!probe.hasVideo && clip->mediaType != ClipMediaType::Image)) return;
 
         const QSize outputSize = m_preview->outputSize();
         if (outputSize.isEmpty()) return;
 
-        const qreal fitScaleX = static_cast<qreal>(outputSize.width()) / probe.frameSize.width();
-        const qreal fitScaleY = static_cast<qreal>(outputSize.height()) / probe.frameSize.height();
-        const qreal fillScale = qMax(fitScaleX, fitScaleY) / qMin(fitScaleX, fitScaleY);
+        const std::optional<double> fillScale = jcut::scaleToFillFactor(
+            {probe.frameSize.width(), probe.frameSize.height()},
+            {outputSize.width(), outputSize.height()});
+        if (!fillScale.has_value()) return;
 
         m_timeline->updateClipById(clipId, [fillScale](TimelineClip &c) {
-            c.baseScaleX = fillScale;
-            c.baseScaleY = fillScale;
+            c.baseScaleX = *fillScale;
+            c.baseScaleY = *fillScale;
             c.baseTranslationX = 0.0;
             c.baseTranslationY = 0.0;
             normalizeClipTransformKeyframes(c);
@@ -454,9 +457,13 @@ void EditorWindow::connectPreviewSignals()
     m_preview->createKeyframeRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
 
+        const QString transformOwnerId =
+            previewTransformOwnerClipId(m_timeline->clips(), clipId);
+        if (transformOwnerId.isEmpty()) return;
+
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool updated =
-            m_timeline->updateClipById(clipId, [currentFrame](TimelineClip& clip) {
+            m_timeline->updateClipById(transformOwnerId, [currentFrame](TimelineClip& clip) {
                 createPreviewKeyframeAtTimelineFrame(clip, currentFrame);
             });
         if (!updated) return;
@@ -469,17 +476,24 @@ void EditorWindow::connectPreviewSignals()
     };
     m_preview->moveRequested = [this](const QString &clipId, qreal translationX, qreal translationY, bool finalize) {
         if (!m_timeline) return;
+        const QString transformOwnerId =
+            previewTransformOwnerClipId(m_timeline->clips(), clipId);
+        if (transformOwnerId.isEmpty()) return;
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool playing = playbackActive();
         const int64_t keyframeTimelineFrame =
             resolvePreviewDragKeyframeTimelineFrame(
-                m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
+                m_previewDragAnchorFrameByClip,
+                transformOwnerId,
+                currentFrame,
+                playing,
+                finalize);
         const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
         if (playing && !finalize && !transcriptOverlaySelected) {
             QVector<TimelineClip> previewClips = m_timeline->clips();
             bool previewUpdated = false;
             for (TimelineClip& clip : previewClips) {
-                if (clip.id != clipId) {
+                if (clip.id != transformOwnerId) {
                     continue;
                 }
                 previewUpdated = stagePreviewMove(
@@ -491,7 +505,7 @@ void EditorWindow::connectPreviewSignals()
             return;
         }
 
-        const bool updated = m_timeline->updateClipById(clipId, [keyframeTimelineFrame, translationX, translationY, transcriptOverlaySelected](TimelineClip &clip) {
+        const bool updated = m_timeline->updateClipById(transformOwnerId, [keyframeTimelineFrame, translationX, translationY, transcriptOverlaySelected](TimelineClip &clip) {
             commitPreviewMove(
                 clip,
                 keyframeTimelineFrame,
@@ -513,16 +527,24 @@ void EditorWindow::connectPreviewSignals()
                qreal scaleY,
                bool finalize) {
             if (!m_timeline) return;
+            const QString transformOwnerId =
+                previewTransformOwnerClipId(m_timeline->clips(), clipId);
+            if (transformOwnerId.isEmpty()) return;
             const int64_t currentFrame = m_timeline->currentFrame();
             const bool playing = playbackActive();
             const int64_t keyframeTimelineFrame =
                 resolvePreviewDragKeyframeTimelineFrame(
-                    m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
+                    m_previewDragAnchorFrameByClip,
+                    transformOwnerId,
+                    currentFrame,
+                    playing,
+                    finalize);
             const bool transcriptOverlaySelected =
                 m_preview && m_preview->selectedOverlayIsTranscript();
             qInfo().noquote()
-                << QStringLiteral("[preview-transform-request] clip=%1 current_frame=%2 keyframe_frame=%3 finalize=%4 playing=%5 tx=%6 ty=%7 sx=%8 sy=%9 transcript=%10")
+                << QStringLiteral("[preview-transform-request] clip=%1 transform_owner=%2 current_frame=%3 keyframe_frame=%4 finalize=%5 playing=%6 tx=%7 ty=%8 sx=%9 sy=%10 transcript=%11")
                        .arg(clipId,
+                            transformOwnerId,
                             QString::number(currentFrame),
                             QString::number(keyframeTimelineFrame),
                             finalize ? QStringLiteral("true") : QStringLiteral("false"),
@@ -536,7 +558,7 @@ void EditorWindow::connectPreviewSignals()
                 QVector<TimelineClip> previewClips = m_timeline->clips();
                 bool previewUpdated = false;
                 for (TimelineClip& clip : previewClips) {
-                    if (clip.id != clipId) {
+                    if (clip.id != transformOwnerId) {
                         continue;
                     }
                     previewUpdated = commitPreviewTransform(
@@ -555,7 +577,7 @@ void EditorWindow::connectPreviewSignals()
             }
 
             const bool updated = m_timeline->updateClipById(
-                clipId,
+                transformOwnerId,
                 [keyframeTimelineFrame,
                  translationX,
                  translationY,

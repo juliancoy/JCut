@@ -64,7 +64,13 @@ void ClipsTab::refresh() {
 
         auto* trackItem = new QTableWidgetItem(trackName);
         trackItem->setBackground(QBrush(trackColor(clip.trackIndex)));
-        trackItem->setFlags(trackItem->flags() | Qt::ItemIsEditable);
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            trackItem->setFlags(trackItem->flags() & ~Qt::ItemIsEditable);
+            trackItem->setToolTip(
+                QStringLiteral("Mask Matte tracks follow their parent clip and cannot be reassigned."));
+        } else {
+            trackItem->setFlags(trackItem->flags() | Qt::ItemIsEditable);
+        }
 
         auto* typeItem = new QTableWidgetItem(typeLabel);
         typeItem->setFlags(typeItem->flags() & ~Qt::ItemIsEditable);
@@ -146,7 +152,21 @@ void ClipsTab::onTableItemChanged(QTableWidgetItem* item)
         return;
     }
 
+    // Generated Mask Matte rows are owned by their source clip. Their track
+    // placement is derived from that relationship, never edited directly.
+    if (clipped->clipRole == ClipRole::MaskMatte) {
+        refresh();
+        return;
+    }
+
     if (clipped->trackIndex == newTrackIndex) {
+        refresh();
+        return;
+    }
+
+    const QVector<TimelineTrack> tracks =
+        m_deps.getTracks ? m_deps.getTracks() : QVector<TimelineTrack>{};
+    if (newTrackIndex < tracks.size() && tracks.at(newTrackIndex).generatedChildTrack) {
         refresh();
         return;
     }

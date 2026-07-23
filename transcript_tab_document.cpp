@@ -2,8 +2,10 @@
 
 #include "clip_serialization.h"
 #include "editor_shared.h"
+#include "transcript_document_core.h"
 
 #include <QAbstractItemView>
+#include <QByteArray>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
@@ -27,6 +29,9 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string_view>
+#include <vector>
 
 namespace {
 const QLatin1String kTranscriptWordSkippedKey("skipped");
@@ -433,7 +438,10 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
         }
         return;
     }
-    if (!rebuildInMemoryTranscriptDocument(m_transcriptSession.document())) {
+    const bool canReuseInMemoryDocument =
+        serializeInMemoryTranscriptDocument() == m_transcriptSession.document();
+    if (!canReuseInMemoryDocument &&
+        !rebuildInMemoryTranscriptDocument(m_transcriptSession.document())) {
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
         }
@@ -559,133 +567,6 @@ void TranscriptTab::rebuildWordEditIndex(const QVector<TranscriptRow>& rows)
         }
         previousWordRow = rowIndex;
     }
-}
-
-QVector<TranscriptTab::TranscriptRow> TranscriptTab::parseTranscriptRows(int prependMs,
-                                                                         int postpendMs,
-                                                                         int offsetMs) const
-{
-    QVector<TranscriptRow> rows;
-    const double prependSeconds = prependMs / 1000.0;
-    const double postpendSeconds = postpendMs / 1000.0;
-    const double offsetSeconds = offsetMs / 1000.0;
-    rows.reserve(m_renderOrderedWordIds.size());
-
-    for (const int wordId : m_renderOrderedWordIds) {
-        const auto addressIt = m_transcriptWordAddressById.constFind(wordId);
-        if (addressIt == m_transcriptWordAddressById.cend()) {
-            continue;
-        }
-        const TranscriptWordAddress& address = addressIt.value();
-        const TranscriptDocumentWord* word = transcriptWordById(wordId);
-        if (!word || address.segmentIndex < 0 || address.segmentIndex >= m_transcriptDocumentSegments.size()) {
-            continue;
-        }
-        const TranscriptDocumentSegment& segment = m_transcriptDocumentSegments.at(address.segmentIndex);
-        const QString text = word->text;
-        const double rawStartTime = word->startSeconds;
-        const double rawEndTime = word->endSeconds;
-        if (text.trimmed().isEmpty() || rawStartTime < 0.0 || rawEndTime < rawStartTime) {
-            continue;
-        }
-
-        const double adjustedStartTime = qMax(0.0, rawStartTime + offsetSeconds - prependSeconds);
-        const double adjustedEndTime = qMax(adjustedStartTime, rawEndTime + offsetSeconds + postpendSeconds);
-
-        TranscriptRow row;
-        row.startFrame = qMax<int64_t>(0, static_cast<int64_t>(std::floor(adjustedStartTime * kTimelineFps)));
-        row.endFrame = qMax<int64_t>(row.startFrame,
-                                     static_cast<int64_t>(std::ceil(adjustedEndTime * kTimelineFps)) - 1);
-        row.speaker = word->speaker.trimmed();
-        if (row.speaker.isEmpty()) {
-            row.speaker = segment.metadata.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-        }
-        if (row.speaker.isEmpty()) {
-            row.speaker = QStringLiteral("Unknown");
-        }
-        row.text = text;
-        row.isSkipped = word->skipped;
-        row.editFlags = kEditFlagNone;
-        for (const QString& editTag : word->editTags) {
-            if (editTag == QString(kTranscriptEditTimingTag)) {
-                row.editFlags |= kEditFlagTiming;
-            } else if (editTag == QString(kTranscriptEditTextTag)) {
-                row.editFlags |= kEditFlagText;
-            } else if (editTag == QString(kTranscriptEditSkipTag)) {
-                row.editFlags |= kEditFlagSkip;
-            } else if (editTag == QString(kTranscriptEditInsertedTag)) {
-                row.editFlags |= kEditFlagInserted;
-            }
-        }
-        row.segmentIndex = address.segmentIndex;
-        row.wordIndex = address.wordIndex;
-        row.wordId = wordId;
-        row.originalSegmentIndex = word->originalSegmentIndex >= 0 ? word->originalSegmentIndex : address.segmentIndex;
-        row.originalWordIndex = word->originalWordIndex >= 0 ? word->originalWordIndex : address.wordIndex;
-        row.renderOrder = word->renderOrder;
-        rows.push_back(row);
-    }
-
-    return rows;
-}
-
-void TranscriptTab::adjustOverlappingRows(QVector<TranscriptRow>& rows)
-{
-    for (int i = 1; i < rows.size(); ++i) {
-        TranscriptRow& previous = rows[i - 1];
-        TranscriptRow& current = rows[i];
-        if (current.startFrame <= previous.endFrame) {
-            const int64_t overlap = previous.endFrame - current.startFrame + 1;
-            const int64_t trimPrevious = overlap / 2;
-            const int64_t trimCurrent = overlap - trimPrevious;
-            previous.endFrame = qMax(previous.startFrame, previous.endFrame - trimPrevious);
-            current.startFrame = qMin(current.endFrame, current.startFrame + trimCurrent);
-            if (current.startFrame <= previous.endFrame) {
-                current.startFrame = qMin(current.endFrame, previous.endFrame + 1);
-            }
-        }
-    }
-}
-
-void TranscriptTab::insertGapRows(QVector<TranscriptRow>* rows) const
-{
-    if (!rows || rows->isEmpty()) {
-        return;
-    }
-
-    QVector<TranscriptRow> expanded;
-    expanded.reserve(rows->size() * 2);
-    expanded.push_back(rows->first());
-    for (int i = 1; i < rows->size(); ++i) {
-        const TranscriptRow& previous = expanded.constLast();
-        const TranscriptRow& current = rows->at(i);
-        if (!previous.isOutsideActiveCut &&
-            !current.isOutsideActiveCut &&
-            current.startFrame > previous.endFrame + 1) {
-            const int64_t gapStart = previous.endFrame + 1;
-            const int64_t gapEnd = current.startFrame - 1;
-            const int64_t gapFrames = qMax<int64_t>(0, gapEnd - gapStart + 1);
-            if (gapFrames >= 2) {
-                TranscriptRow gap;
-                gap.startFrame = gapStart;
-                gap.endFrame = gapEnd;
-                gap.renderStartFrame = -1;
-                gap.renderEndFrame = -1;
-                gap.speaker = QStringLiteral("—");
-                gap.text = QStringLiteral("[Gap %1 ms]")
-                               .arg(static_cast<int>(std::llround(
-                                   (static_cast<double>(gapFrames) / static_cast<double>(kTimelineFps)) * 1000.0)));
-                gap.isGap = true;
-                gap.segmentIndex = -1;
-                gap.wordIndex = -1;
-                gap.originalSegmentIndex = -1;
-                gap.originalWordIndex = -1;
-                expanded.push_back(gap);
-            }
-        }
-        expanded.push_back(current);
-    }
-    *rows = std::move(expanded);
 }
 
 void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
@@ -828,8 +709,8 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
 {
     const qint64 requestId = ++m_transcriptRowsBuildRequestId;
     const QVector<TranscriptDocumentSegment> segments = m_transcriptDocumentSegments;
-    const QHash<int, TranscriptWordAddress> addresses = m_transcriptWordAddressById;
-    const QVector<int> renderOrder = m_renderOrderedWordIds;
+    const QByteArray activeDocumentBytes =
+        serializeInMemoryTranscriptDocument().toJson(QJsonDocument::Compact);
     const QString activeTranscriptPath = m_transcriptSession.transcriptPath();
     const int prependMs = transcriptPrependMs();
     const int postpendMs = transcriptPostpendMs();
@@ -842,287 +723,86 @@ void TranscriptTab::startTranscriptRowsBuildRequest(const QString& originalPath)
     m_transcriptRowsBuildWatcher.setFuture(QtConcurrent::run(
         [requestId,
          segments,
-         addresses,
-         renderOrder,
-         activeTranscriptPath,
+         activeDocumentBytes,
          originalPath,
          prependMs,
          postpendMs,
          offsetMs,
          includeOutsideCut]() {
-            auto wordAt = [](const QVector<TranscriptDocumentSegment>& docSegments,
-                             int segmentIndex,
-                             int wordIndex) -> const TranscriptDocumentWord* {
-                if (segmentIndex < 0 || segmentIndex >= docSegments.size()) {
-                    return nullptr;
-                }
-                const QVector<TranscriptDocumentWord>& words = docSegments.at(segmentIndex).words;
-                if (wordIndex < 0 || wordIndex >= words.size()) {
-                    return nullptr;
-                }
-                return &words.at(wordIndex);
-            };
-            auto wordById = [&wordAt](const QVector<TranscriptDocumentSegment>& docSegments,
-                                      const QHash<int, TranscriptWordAddress>& docAddresses,
-                                      int wordId) -> const TranscriptDocumentWord* {
-                const auto it = docAddresses.constFind(wordId);
-                if (it == docAddresses.cend()) {
-                    return nullptr;
-                }
-                return wordAt(docSegments, it->segmentIndex, it->wordIndex);
-            };
-            auto rebuildDoc = [](const QJsonDocument& document,
-                                 QVector<TranscriptDocumentSegment>* docSegments,
-                                 QHash<int, TranscriptWordAddress>* docAddresses,
-                                 QVector<int>* docRenderOrder) {
-                if (!document.isObject() || !docSegments || !docAddresses || !docRenderOrder) {
-                    return false;
-                }
-                struct RenderLocation {
-                    int wordId = -1;
-                    int renderOrder = -1;
-                    double startSeconds = 0.0;
-                    int fallbackOrder = 0;
-                };
-                docSegments->clear();
-                docAddresses->clear();
-                docRenderOrder->clear();
-                int nextWordId = 1;
-                int fallbackOrder = 0;
-                QVector<RenderLocation> renderLocations;
-                const QJsonArray jsonSegments = document.object().value(QStringLiteral("segments")).toArray();
-                docSegments->reserve(jsonSegments.size());
-                for (const QJsonValue& segmentValue : jsonSegments) {
-                    const QJsonObject segmentObject = segmentValue.toObject();
-                    TranscriptDocumentSegment segment;
-                    segment.metadata = segmentObject;
-                    segment.metadata.remove(QStringLiteral("words"));
-                    const QJsonArray words = segmentObject.value(QStringLiteral("words")).toArray();
-                    segment.words.reserve(words.size());
-                    const int segmentIndex = docSegments->size();
-                    for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
-                        const QJsonObject wordObject = words.at(wordIndex).toObject();
-                        TranscriptDocumentWord word;
-                        word.wordId = nextWordId++;
-                        word.text = wordObject.value(QStringLiteral("word")).toString();
-                        word.startSeconds = wordObject.value(QStringLiteral("start")).toDouble(0.0);
-                        word.endSeconds = wordObject.value(QStringLiteral("end")).toDouble(word.startSeconds);
-                        word.speaker = wordObject.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-                        word.skipped = wordObject.value(QString(kTranscriptWordSkippedKey)).toBool(false);
-                        const QJsonArray editArray = wordObject.value(QString(kTranscriptWordEditsKey)).toArray();
-                        for (const QJsonValue& editValue : editArray) {
-                            const QString editTag = editValue.toString().trimmed();
-                            if (!editTag.isEmpty()) {
-                                word.editTags.push_back(editTag);
-                            }
-                        }
-                        word.renderOrder = wordObject.value(QString(kTranscriptWordRenderOrderKey)).toInt(-1);
-                        word.originalSegmentIndex =
-                            wordObject.value(QString(kTranscriptWordOriginalSegmentKey)).toInt(segmentIndex);
-                        word.originalWordIndex =
-                            wordObject.value(QString(kTranscriptWordOriginalWordKey)).toInt(wordIndex);
-                        segment.words.push_back(word);
-                        docAddresses->insert(word.wordId, TranscriptWordAddress{segmentIndex, wordIndex});
-                        renderLocations.push_back(
-                            RenderLocation{word.wordId, word.renderOrder, word.startSeconds, fallbackOrder++});
-                    }
-                    docSegments->push_back(segment);
-                }
-                std::sort(renderLocations.begin(), renderLocations.end(), [](const RenderLocation& a,
-                                                                              const RenderLocation& b) {
-                    const bool aHasOrder = a.renderOrder >= 0;
-                    const bool bHasOrder = b.renderOrder >= 0;
-                    if (aHasOrder != bHasOrder) {
-                        return aHasOrder;
-                    }
-                    if (aHasOrder && a.renderOrder != b.renderOrder) {
-                        return a.renderOrder < b.renderOrder;
-                    }
-                    if (!qFuzzyCompare(a.startSeconds + 1.0, b.startSeconds + 1.0)) {
-                        return a.startSeconds < b.startSeconds;
-                    }
-                    return a.fallbackOrder < b.fallbackOrder;
-                });
-                docRenderOrder->reserve(renderLocations.size());
-                for (const RenderLocation& location : std::as_const(renderLocations)) {
-                    docRenderOrder->push_back(location.wordId);
-                }
-                return true;
-            };
-            auto buildRows = [&](const QVector<TranscriptDocumentSegment>& docSegments,
-                                 const QHash<int, TranscriptWordAddress>& docAddresses,
-                                 const QVector<int>& docRenderOrder) {
-                QVector<TranscriptRow> rows;
-                const double prependSeconds = prependMs / 1000.0;
-                const double postpendSeconds = postpendMs / 1000.0;
-                const double offsetSeconds = offsetMs / 1000.0;
-                rows.reserve(docRenderOrder.size());
-                for (const int wordId : docRenderOrder) {
-                    const auto addressIt = docAddresses.constFind(wordId);
-                    if (addressIt == docAddresses.cend()) {
-                        continue;
-                    }
-                    const TranscriptWordAddress& address = addressIt.value();
-                    const TranscriptDocumentWord* word = wordById(docSegments, docAddresses, wordId);
-                    if (!word || address.segmentIndex < 0 || address.segmentIndex >= docSegments.size()) {
-                        continue;
-                    }
-                    const TranscriptDocumentSegment& segment = docSegments.at(address.segmentIndex);
-                    if (word->text.trimmed().isEmpty() ||
-                        word->startSeconds < 0.0 ||
-                        word->endSeconds < word->startSeconds) {
-                        continue;
-                    }
-                    const double adjustedStartTime =
-                        qMax(0.0, word->startSeconds + offsetSeconds - prependSeconds);
-                    const double adjustedEndTime =
-                        qMax(adjustedStartTime, word->endSeconds + offsetSeconds + postpendSeconds);
-                    TranscriptRow row;
-                    row.startFrame =
-                        qMax<int64_t>(0, static_cast<int64_t>(std::floor(adjustedStartTime * kTimelineFps)));
-                    row.endFrame =
-                        qMax<int64_t>(row.startFrame,
-                                      static_cast<int64_t>(std::ceil(adjustedEndTime * kTimelineFps)) - 1);
-                    row.speaker = word->speaker.trimmed();
-                    if (row.speaker.isEmpty()) {
-                        row.speaker =
-                            segment.metadata.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-                    }
-                    if (row.speaker.isEmpty()) {
-                        row.speaker = QStringLiteral("Unknown");
-                    }
-                    row.text = word->text;
-                    row.isSkipped = word->skipped;
-                    row.editFlags = kEditFlagNone;
-                    for (const QString& editTag : word->editTags) {
-                        if (editTag == QString(kTranscriptEditTimingTag)) {
-                            row.editFlags |= kEditFlagTiming;
-                        } else if (editTag == QString(kTranscriptEditTextTag)) {
-                            row.editFlags |= kEditFlagText;
-                        } else if (editTag == QString(kTranscriptEditSkipTag)) {
-                            row.editFlags |= kEditFlagSkip;
-                        } else if (editTag == QString(kTranscriptEditInsertedTag)) {
-                            row.editFlags |= kEditFlagInserted;
-                        }
-                    }
-                    row.segmentIndex = address.segmentIndex;
-                    row.wordIndex = address.wordIndex;
-                    row.wordId = wordId;
-                    row.originalSegmentIndex =
-                        word->originalSegmentIndex >= 0 ? word->originalSegmentIndex : address.segmentIndex;
-                    row.originalWordIndex =
-                        word->originalWordIndex >= 0 ? word->originalWordIndex : address.wordIndex;
-                    row.renderOrder = word->renderOrder;
-                    rows.push_back(row);
-                }
-                return rows;
-            };
-            auto adjustRows = [](QVector<TranscriptRow>* rows) {
-                if (!rows) {
-                    return;
-                }
-                for (int i = 1; i < rows->size(); ++i) {
-                    TranscriptRow& previous = (*rows)[i - 1];
-                    TranscriptRow& current = (*rows)[i];
-                    if (current.startFrame <= previous.endFrame) {
-                        const int64_t overlap = previous.endFrame - current.startFrame + 1;
-                        const int64_t trimPrevious = overlap / 2;
-                        const int64_t trimCurrent = overlap - trimPrevious;
-                        previous.endFrame = qMax(previous.startFrame, previous.endFrame - trimPrevious);
-                        current.startFrame = qMin(current.endFrame, current.startFrame + trimCurrent);
-                        if (current.startFrame <= previous.endFrame) {
-                            current.startFrame = qMin(current.endFrame, previous.endFrame + 1);
-                        }
-                    }
-                }
-            };
-            auto insertGaps = [](QVector<TranscriptRow>* rows) {
-                if (!rows || rows->isEmpty()) {
-                    return;
-                }
-                QVector<TranscriptRow> expanded;
-                expanded.reserve(rows->size() * 2);
-                expanded.push_back(rows->first());
-                for (int i = 1; i < rows->size(); ++i) {
-                    const TranscriptRow& previous = expanded.constLast();
-                    const TranscriptRow& current = rows->at(i);
-                    if (!previous.isOutsideActiveCut &&
-                        !current.isOutsideActiveCut &&
-                        current.startFrame > previous.endFrame + 1) {
-                        const int64_t gapStart = previous.endFrame + 1;
-                        const int64_t gapEnd = current.startFrame - 1;
-                        const int64_t gapFrames = qMax<int64_t>(0, gapEnd - gapStart + 1);
-                        if (gapFrames >= 2) {
-                            TranscriptRow gap;
-                            gap.startFrame = gapStart;
-                            gap.endFrame = gapEnd;
-                            gap.renderStartFrame = -1;
-                            gap.renderEndFrame = -1;
-                            gap.speaker = QStringLiteral("—");
-                            gap.text = QStringLiteral("[Gap %1 ms]")
-                                           .arg(static_cast<int>(std::llround(
-                                               (static_cast<double>(gapFrames) /
-                                                static_cast<double>(kTimelineFps)) * 1000.0)));
-                            gap.isGap = true;
-                            expanded.push_back(gap);
-                        }
-                    }
-                    expanded.push_back(current);
-                }
-                *rows = std::move(expanded);
-            };
-            auto computeRender = [](QVector<TranscriptRow>* rows) {
-                int64_t cursor = 0;
-                for (TranscriptRow& row : *rows) {
-                    if (row.isOutsideActiveCut) {
-                        row.renderStartFrame = -1;
-                        row.renderEndFrame = -1;
-                        continue;
-                    }
-                    const int64_t duration = qMax<int64_t>(1, row.endFrame - row.startFrame + 1);
-                    row.renderStartFrame = cursor;
-                    row.renderEndFrame = cursor + duration - 1;
-                    cursor = row.renderEndFrame + 1;
-                }
-            };
+            const auto activeDocument = jcut::TranscriptDocumentCore::fromJsonBytes(
+                std::string_view(activeDocumentBytes.constData(),
+                                 static_cast<std::size_t>(activeDocumentBytes.size())));
+            if (!activeDocument.has_value()) {
+                return TranscriptRowsBuildResult{requestId, {}};
+            }
 
-            QVector<TranscriptRow> allRows = buildRows(segments, addresses, renderOrder);
-            adjustRows(&allRows);
-            insertGaps(&allRows);
-            computeRender(&allRows);
-
+            std::optional<jcut::TranscriptDocumentCore> originalDocument;
             if (includeOutsideCut) {
                 QJsonDocument originalDoc;
                 if (loadTranscriptJsonCached(originalPath, &originalDoc) && originalDoc.isObject()) {
-                    QVector<TranscriptDocumentSegment> originalSegments;
-                    QHash<int, TranscriptWordAddress> originalAddresses;
-                    QVector<int> originalRenderOrder;
-                    if (rebuildDoc(originalDoc, &originalSegments, &originalAddresses, &originalRenderOrder)) {
-                        QVector<TranscriptRow> originalRows =
-                            buildRows(originalSegments, originalAddresses, originalRenderOrder);
-                        QSet<QString> activeKeys;
-                        for (const TranscriptRow& row : std::as_const(allRows)) {
-                            activeKeys.insert(QStringLiteral("%1:%2")
-                                                  .arg(row.originalSegmentIndex)
-                                                  .arg(row.originalWordIndex));
-                        }
-                        for (TranscriptRow row : originalRows) {
-                            const QString key = QStringLiteral("%1:%2")
-                                                    .arg(row.originalSegmentIndex)
-                                                    .arg(row.originalWordIndex);
-                            if (activeKeys.contains(key)) {
-                                continue;
-                            }
-                            row.isOutsideActiveCut = true;
-                            row.renderStartFrame = -1;
-                            row.renderEndFrame = -1;
-                            allRows.push_back(row);
-                        }
-                    }
+                    const QByteArray originalBytes = originalDoc.toJson(QJsonDocument::Compact);
+                    originalDocument = jcut::TranscriptDocumentCore::fromJsonBytes(
+                        std::string_view(originalBytes.constData(),
+                                         static_cast<std::size_t>(originalBytes.size())));
                 }
             }
 
-            Q_UNUSED(activeTranscriptPath)
+            jcut::TranscriptRowBuildOptions options;
+            options.timing.framesPerSecond = static_cast<double>(kTimelineFps);
+            options.timing.prependMilliseconds = prependMs;
+            options.timing.postpendMilliseconds = postpendMs;
+            options.timing.offsetMilliseconds = offsetMs;
+            options.adjustOverlaps = true;
+            options.insertGaps = true;
+            options.includeOutsideActiveCut =
+                includeOutsideCut && originalDocument.has_value();
+            const std::vector<jcut::TranscriptRow> coreRows = activeDocument->rows(
+                options,
+                originalDocument.has_value() ? &*originalDocument : nullptr);
+
+            QVector<TranscriptRow> allRows;
+            allRows.reserve(static_cast<qsizetype>(coreRows.size()));
+            for (const jcut::TranscriptRow& coreRow : coreRows) {
+                TranscriptRow row;
+                row.startFrame = coreRow.sourceStartFrame;
+                row.endFrame = coreRow.sourceEndFrame;
+                row.renderStartFrame = coreRow.renderStartFrame;
+                row.renderEndFrame = coreRow.renderEndFrame;
+                row.speaker = QString::fromStdString(coreRow.speakerId);
+                row.text = QString::fromStdString(coreRow.text);
+                row.isGap = coreRow.gap;
+                row.isOutsideActiveCut = coreRow.outsideActiveCut;
+                row.isSkipped = coreRow.skipped;
+                row.editFlags = static_cast<int>(coreRow.editFlags);
+                row.segmentIndex = coreRow.word.segmentIndex;
+                row.wordIndex = coreRow.word.wordIndex;
+                row.wordId = coreRow.word.documentWordId;
+                row.originalSegmentIndex = coreRow.word.originalSegmentIndex;
+                row.originalWordIndex = coreRow.word.originalWordIndex;
+                row.renderOrder = coreRow.word.renderOrder;
+
+                if (!coreRow.outsideActiveCut &&
+                    coreRow.word.segmentIndex >= 0 &&
+                    coreRow.word.segmentIndex < segments.size()) {
+                    const QVector<TranscriptDocumentWord>& words =
+                        segments.at(coreRow.word.segmentIndex).words;
+                    if (coreRow.word.wordIndex >= 0 &&
+                        coreRow.word.wordIndex < words.size()) {
+                        const TranscriptDocumentWord& activeWord =
+                            words.at(coreRow.word.wordIndex);
+                        row.wordId = activeWord.wordId;
+                        row.renderOrder = activeWord.renderOrder;
+                        row.originalSegmentIndex = activeWord.originalSegmentIndex >= 0
+                            ? activeWord.originalSegmentIndex
+                            : coreRow.word.segmentIndex;
+                        row.originalWordIndex = activeWord.originalWordIndex >= 0
+                            ? activeWord.originalWordIndex
+                            : coreRow.word.wordIndex;
+                    }
+                }
+                allRows.push_back(std::move(row));
+            }
+
             return TranscriptRowsBuildResult{requestId, allRows};
         }));
 }
@@ -1597,25 +1277,6 @@ QString TranscriptTab::nextScriptVersionPathForClip(const QString& clipFilePath)
     }
 
     return dir.absoluteFilePath(prefix + QString::number(maxVersion + 1) + QStringLiteral(".json"));
-}
-
-void TranscriptTab::computeRenderFrames(QVector<TranscriptRow>* rows) const
-{
-    if (!rows) {
-        return;
-    }
-    int64_t cursor = 0;
-    for (TranscriptRow& row : *rows) {
-        if (row.isOutsideActiveCut) {
-            row.renderStartFrame = -1;
-            row.renderEndFrame = -1;
-            continue;
-        }
-        const int64_t duration = qMax<int64_t>(1, row.endFrame - row.startFrame + 1);
-        row.renderStartFrame = cursor;
-        row.renderEndFrame = cursor + duration - 1;
-        cursor = row.renderEndFrame + 1;
-    }
 }
 
 void TranscriptTab::persistRenderOrderFromTable()

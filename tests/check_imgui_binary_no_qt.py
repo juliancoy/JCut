@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import pathlib
 import platform
 import subprocess
@@ -7,14 +8,19 @@ import sys
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: check_imgui_binary_no_qt.py <binary>", file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(
+        description="Check that a binary does not link Qt, or one Qt component."
+    )
+    parser.add_argument(
+        "--component",
+        help="Only forbid this Qt component (for example, Widgets).",
+    )
+    parser.add_argument("binary", type=pathlib.Path)
+    args = parser.parse_args()
 
-    binary = pathlib.Path(sys.argv[1])
+    binary = args.binary
     if not binary.exists():
-        print(f"binary not found: {binary}", file=sys.stderr)
-        return 2
+        parser.error(f"binary not found: {binary}")
 
     system = platform.system()
     if system == "Linux":
@@ -32,13 +38,29 @@ def main() -> int:
         return result.returncode
 
     output = result.stdout
-    forbidden_markers = ("Qt6", "Qt5", "libQt")
+    if args.component:
+        component = args.component.strip()
+        if not component:
+            parser.error("--component must not be empty")
+        forbidden_markers = (
+            f"Qt6{component}",
+            f"Qt5{component}",
+            f"Qt{component}",
+        )
+        linkage_description = f"Qt {component}"
+    else:
+        forbidden_markers = ("Qt6", "Qt5", "libQt")
+        linkage_description = "Qt"
+
     if any(marker in output for marker in forbidden_markers):
         print(output, end="")
-        print("jcut_imgui must not link Qt libraries", file=sys.stderr)
+        print(
+            f"{binary.name} must not link {linkage_description} libraries",
+            file=sys.stderr,
+        )
         return 1
 
-    print("jcut_imgui has no Qt linkage")
+    print(f"{binary.name} has no {linkage_description} linkage")
     return 0
 
 

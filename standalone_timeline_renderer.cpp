@@ -1,4 +1,5 @@
 #include "standalone_timeline_renderer.h"
+#include "image_sequence_directory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,9 +24,11 @@ namespace {
 
 using jcut::EditorClip;
 using jcut::EditorDocumentCore;
+using jcut::ImageSequenceDirectoryInfo;
 using jcut::core::ImageBuffer;
 using jcut::core::PixelFormat;
 using jcut::core::SizeI;
+using jcut::probeImageSequenceDirectory;
 
 struct AvFormatContextDeleter {
     void operator()(AVFormatContext* value) const
@@ -170,6 +173,9 @@ public:
     explicit MediaSource(std::string path)
         : m_path(std::move(path))
     {
+        ImageSequenceDirectoryInfo sequence =
+            probeImageSequenceDirectory(std::filesystem::path(m_path));
+        m_sequenceFramePaths = std::move(sequence.framePaths);
     }
 
     bool open(std::string* errorOut)
@@ -247,6 +253,21 @@ public:
     {
         if (!imageOut) {
             return false;
+        }
+        if (!m_sequenceFramePaths.empty()) {
+            const int sequenceFrameIndex = std::clamp(
+                frameIndex,
+                0,
+                static_cast<int>(m_sequenceFramePaths.size()) - 1);
+            if (!m_sequenceFrameSource ||
+                sequenceFrameIndex != m_sequenceFrameSourceIndex) {
+                m_sequenceFrameSource = std::make_unique<MediaSource>(
+                    m_sequenceFramePaths[static_cast<std::size_t>(
+                        sequenceFrameIndex)].string());
+                m_sequenceFrameSourceIndex = sequenceFrameIndex;
+            }
+            return m_sequenceFrameSource->decodeScaledFrame(
+                0, outputSize, imageOut, errorOut);
         }
         if (!open(errorOut)) {
             return false;
@@ -360,6 +381,9 @@ private:
     }
 
     std::string m_path;
+    std::vector<std::filesystem::path> m_sequenceFramePaths;
+    int m_sequenceFrameSourceIndex = -1;
+    std::unique_ptr<MediaSource> m_sequenceFrameSource;
     bool m_opened = false;
     int m_videoStreamIndex = -1;
     int m_lastDecodedFrameIndex = -1;
@@ -375,6 +399,135 @@ private:
 } // namespace
 
 namespace jcut::standalone_render {
+
+StandaloneMediaInfo probeStandaloneMedia(const std::string& path)
+{
+    StandaloneMediaInfo result;
+    if (path.empty()) {
+        result.message = "media path is empty";
+        return result;
+    }
+
+    const ImageSequenceDirectoryInfo sequence =
+        probeImageSequenceDirectory(std::filesystem::path(path));
+    if (sequence.detected()) {
+        result.probed = true;
+        result.hasVideo = true;
+        result.hasAudio = false;
+        result.videoFps = kImageSequenceFramesPerSecond;
+        result.durationFrames = sequence.frameCount();
+        if (!sequence.framePaths.empty()) {
+            const StandaloneMediaInfo firstFrame = probeStandaloneMedia(
+                sequence.framePaths.front().string());
+            result.frameSize = firstFrame.frameSize;
+        }
+        result.mediaKind = "video";
+        result.message = "image sequence directory probed";
+        return result;
+    }
+
+    AVFormatContext* rawFormatContext = nullptr;
+    if (avformat_open_input(&rawFormatContext, path.c_str(), nullptr, nullptr) < 0) {
+        result.message = "failed to open media source";
+        return result;
+    }
+    std::unique_ptr<AVFormatContext, AvFormatContextDeleter> formatContext(
+        rawFormatContext);
+    if (avformat_find_stream_info(formatContext.get(), nullptr) < 0) {
+        result.message = "failed to read media stream info";
+        return result;
+    }
+
+    AVStream* firstVideoStream = nullptr;
+    for (unsigned int index = 0; index < formatContext->nb_streams; ++index) {
+        AVStream* stream = formatContext->streams[index];
+        if (!stream || !stream->codecpar) {
+            continue;
+        }
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            result.hasVideo = true;
+            if (!firstVideoStream) {
+                firstVideoStream = stream;
+            }
+        } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            result.hasAudio = true;
+            if (result.audioStreamIndex < 0) {
+                result.audioStreamIndex = static_cast<int>(index);
+            }
+        }
+    }
+
+    result.probed = result.hasVideo || result.hasAudio;
+    result.mediaKind = result.hasVideo
+        ? "video"
+        : (result.hasAudio ? "audio" : "unknown");
+    if (firstVideoStream) {
+        result.videoFps = streamFps(firstVideoStream);
+        if (firstVideoStream->codecpar &&
+            firstVideoStream->codecpar->width > 0 &&
+            firstVideoStream->codecpar->height > 0) {
+            result.frameSize = {
+                firstVideoStream->codecpar->width,
+                firstVideoStream->codecpar->height};
+        }
+    }
+    if (formatContext->duration > 0) {
+        const double seconds = static_cast<double>(formatContext->duration) /
+            static_cast<double>(AV_TIME_BASE);
+        result.durationFrames = static_cast<std::int64_t>(
+            std::llround(seconds * 30.0));
+    }
+    result.message = result.probed
+        ? "media streams probed"
+        : "no audio or video streams found";
+    return result;
+}
+
+std::size_t probeUnknownAudioPresence(EditorDocumentCore* document,
+                                      const std::string& rootDirectory)
+{
+    if (!document) {
+        return 0;
+    }
+
+    std::unordered_map<std::string, StandaloneMediaInfo> probeByPath;
+    std::size_t resolvedClipCount = 0;
+    for (EditorClip& clip : document->clips) {
+        if (clip.audioPresenceKnown ||
+            !mediaKindMayContainAudio(clip.mediaKind, clip.sourcePath)) {
+            continue;
+        }
+
+        std::filesystem::path resolvedPath(clip.sourcePath);
+        if (resolvedPath.is_relative() && !rootDirectory.empty()) {
+            resolvedPath = std::filesystem::path(rootDirectory) / resolvedPath;
+        }
+        const std::string probePath = resolvedPath.lexically_normal().string();
+        if (probePath.empty()) {
+            continue;
+        }
+
+        auto [probeIt, inserted] = probeByPath.try_emplace(probePath);
+        if (inserted) {
+            probeIt->second = probeStandaloneMedia(probePath);
+        }
+        const StandaloneMediaInfo& info = probeIt->second;
+        if (!info.probed) {
+            continue;
+        }
+
+        clip.audioPresenceKnown = true;
+        clip.hasAudio = info.hasAudio;
+        ++resolvedClipCount;
+        for (EditorMediaItem& mediaItem : document->mediaItems) {
+            if (mediaItem.id == clip.sourcePath) {
+                mediaItem.audioPresenceKnown = true;
+                mediaItem.hasAudio = info.hasAudio;
+            }
+        }
+    }
+    return resolvedClipCount;
+}
 
 class TimelineRenderer::Impl {
 public:

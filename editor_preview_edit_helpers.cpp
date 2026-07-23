@@ -156,6 +156,40 @@ bool clipSupportsTranscriptOverlayPreviewEdits(const TimelineClip& clip) {
            clip.transcriptOverlay.enabled;
 }
 
+QString previewTransformOwnerClipId(const QVector<TimelineClip>& clips,
+                                    const QString& requestedClipId) {
+    if (requestedClipId.trimmed().isEmpty()) {
+        return {};
+    }
+
+    const TimelineClip* requestedClip = nullptr;
+    for (const TimelineClip& clip : clips) {
+        if (clip.id == requestedClipId) {
+            requestedClip = &clip;
+            break;
+        }
+    }
+    if (!requestedClip) {
+        return {};
+    }
+    if (requestedClip->clipRole != ClipRole::MaskMatte) {
+        return requestedClip->id;
+    }
+
+    const QString parentId = requestedClip->linkedSourceClipId.trimmed();
+    if (parentId.isEmpty()) {
+        return {};
+    }
+    for (const TimelineClip& clip : clips) {
+        if (clip.id.trimmed() == parentId &&
+            clip.clipRole == ClipRole::Media &&
+            clip.mediaType == ClipMediaType::Video) {
+            return clip.id;
+        }
+    }
+    return {};
+}
+
 int64_t resolvePreviewDragKeyframeTimelineFrame(QHash<QString, int64_t>& anchorFrames,
                                                 const QString& clipId,
                                                 int64_t currentFrame,

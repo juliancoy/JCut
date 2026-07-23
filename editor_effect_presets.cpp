@@ -93,6 +93,26 @@ int appendGeneratedTrack(QVector<TimelineTrack>& tracks, const QString& trackBas
     return tracks.size() - 1;
 }
 
+bool isSupportedMaskMatteParent(const TimelineClip& clip)
+{
+    return clip.clipRole == ClipRole::Media &&
+           clip.mediaType == ClipMediaType::Video &&
+           !clip.id.trimmed().isEmpty() &&
+           !clip.filePath.trimmed().isEmpty();
+}
+
+QString effectiveMaskSidecarId(const TimelineClip& clip)
+{
+    const QString directory = clip.maskFramesDir.trimmed();
+    const QString persistedId = clip.generatedFromMaskId.trimmed();
+    if (!persistedId.isEmpty() && persistedId != directory) {
+        return persistedId;
+    }
+    return directory.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(directory);
+}
+
 } // namespace
 
 QVector<EffectPresetUiOption> effectPresetUiOptions()
@@ -206,6 +226,7 @@ bool effectPresetUsesTilingControls(ClipEffectPreset preset)
 TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
 {
     TimelineClip maskClip = sourceClip;
+    const TimelineClip defaults;
     const QString sourceId = sourceClip.id.trimmed();
     const QString maskId = sourceClip.maskFramesDir.trimmed();
     maskClip.id = sourceId.isEmpty()
@@ -213,7 +234,9 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
                       : QStringLiteral("%1-mask-matte").arg(sourceId);
     maskClip.clipRole = ClipRole::MaskMatte;
     maskClip.linkedSourceClipId = sourceId;
-    maskClip.generatedFromMaskId = maskId;
+    maskClip.generatedFromMaskId = maskId.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(maskId);
     maskClip.syncLockedToSource = true;
     maskClip.sourceTransformLocked = true;
     maskClip.label = sourceClip.label.trimmed().isEmpty()
@@ -229,11 +252,43 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.audioSourceOriginalPath.clear();
     maskClip.audioSourceStatus = QStringLiteral("generated");
     maskClip.audioStreamIndex = -1;
+    maskClip.audioSourceMode = defaults.audioSourceMode;
+    maskClip.audioGain = defaults.audioGain;
+    maskClip.audioPan = defaults.audioPan;
+    maskClip.audioSolo = defaults.audioSolo;
+    maskClip.audioSourceLastVerifiedMs = 0;
     maskClip.maskEnabled = sourceClip.maskEnabled && !maskId.isEmpty();
     maskClip.maskFramesDir = maskId;
     maskClip.maskShowOnly = false;
     maskClip.maskForegroundLayerEnabled = false;
     maskClip.effectPreset = ClipEffectPreset::None;
+    maskClip.effectRows = defaults.effectRows;
+    maskClip.effectSpeed = defaults.effectSpeed;
+    maskClip.effectScale = defaults.effectScale;
+    maskClip.effectAlternateDirection = defaults.effectAlternateDirection;
+    maskClip.effectSkipAwareTiming = defaults.effectSkipAwareTiming;
+    maskClip.maskRepeatEnabled = defaults.maskRepeatEnabled;
+    maskClip.maskRepeatDeltaX = defaults.maskRepeatDeltaX;
+    maskClip.maskRepeatDeltaY = defaults.maskRepeatDeltaY;
+    maskClip.differenceReferenceFrames = defaults.differenceReferenceFrames;
+    maskClip.differenceThreshold = defaults.differenceThreshold;
+    maskClip.differenceSoftness = defaults.differenceSoftness;
+    maskClip.temporalEchoCount = defaults.temporalEchoCount;
+    maskClip.temporalEchoSpacingFrames = defaults.temporalEchoSpacingFrames;
+    maskClip.temporalEchoDecay = defaults.temporalEchoDecay;
+    maskClip.tilingPattern = defaults.tilingPattern;
+    maskClip.tilingSpacing = defaults.tilingSpacing;
+    maskClip.tilingWrap = defaults.tilingWrap;
+    maskClip.effectParameterSets = {};
+    // Opacity, corrections, effects, and overlays are child-owned. Start them
+    // from a neutral state instead of accidentally cloning the parent's
+    // evaluated visual treatment into a second layer.
+    maskClip.opacity = defaults.opacity;
+    maskClip.opacityKeyframes.clear();
+    maskClip.correctionPolygons.clear();
+    maskClip.titleKeyframes.clear();
+    maskClip.speakerTitleEngineActive = false;
+    maskClip.transcriptOverlay = TimelineClip::TranscriptOverlaySettings{};
     // A mask matte is independently gradeable. Do not inherit the source
     // clip's grade; migrate the former masked-area grade into its standard
     // grading model instead.
@@ -255,10 +310,52 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
         maskClip.gradingKeyframes = {grade};
     }
     maskClip.maskGradeEnabled = false;
+    maskClip.maskGradeBrightness = defaults.maskGradeBrightness;
+    maskClip.maskGradeContrast = defaults.maskGradeContrast;
+    maskClip.maskGradeSaturation = defaults.maskGradeSaturation;
+    maskClip.maskGradeCurvePointsR.clear();
+    maskClip.maskGradeCurvePointsG.clear();
+    maskClip.maskGradeCurvePointsB.clear();
+    maskClip.maskGradeCurvePointsLuma.clear();
+    maskClip.maskGradeCurveSmoothingEnabled = defaults.maskGradeCurveSmoothingEnabled;
     maskClip.trackIndex = sourceClip.trackIndex;
     maskClip.zLevel = effectiveClipZLevel(sourceClip) + 1;
     maskClip.zLevelUserSet = false;
     return maskClip;
+}
+
+bool setMaskSidecarAssociation(TimelineClip& clip, const QString& directory)
+{
+    const QString normalizedDirectory = directory.trimmed();
+    const QString stableId = normalizedDirectory.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(normalizedDirectory);
+    if (clip.maskFramesDir == normalizedDirectory &&
+        clip.generatedFromMaskId == stableId) {
+        return false;
+    }
+    clip.maskFramesDir = normalizedDirectory;
+    clip.generatedFromMaskId = stableId;
+    return true;
+}
+
+QString maskMatteChildIdForSidecar(const QVector<TimelineClip>& clips,
+                                   const QString& sourceClipId,
+                                   const QString& stableSidecarId)
+{
+    const QString normalizedSourceId = sourceClipId.trimmed();
+    const QString normalizedSidecarId = stableSidecarId.trimmed();
+    if (normalizedSourceId.isEmpty() || normalizedSidecarId.isEmpty()) {
+        return {};
+    }
+    for (const TimelineClip& clip : clips) {
+        if (clip.clipRole == ClipRole::MaskMatte &&
+            clip.linkedSourceClipId.trimmed() == normalizedSourceId &&
+            effectiveMaskSidecarId(clip) == normalizedSidecarId) {
+            return clip.id;
+        }
+    }
+    return {};
 }
 
 TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
@@ -272,7 +369,9 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
         sidecar.id);
     maskClip.generatedFromMaskId = sidecar.id;
     maskClip.maskFramesDir = sidecar.directory;
-    maskClip.maskEnabled = sidecar.isValid();
+    maskClip.maskEnabled = true;
+    maskClip.maskSidecarAvailable = sidecar.isReadyForTimeline();
+    maskClip.maskSidecarAvailabilityIssue = sidecar.readinessIssue;
     maskClip.trackIndex = sourceClip.trackIndex;
     maskClip.zLevel = zLevel;
     const QString sourceLabel = sourceClip.label.trimmed().isEmpty()
@@ -288,15 +387,64 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
 
 bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
 {
+    QHash<QString, QString> sourceMaskDirectoryById;
+    for (const TimelineClip& clip : std::as_const(clips)) {
+        if (isSupportedMaskMatteParent(clip)) {
+            sourceMaskDirectoryById.insert(clip.id.trimmed(), clip.maskFramesDir.trimmed());
+        }
+    }
+
+    // The first child in persisted timeline order owns the association. This
+    // deterministic rule removes malformed duplicates without merging or
+    // overwriting any child-owned visual state on the retained clip.
+    QSet<QString> seenAssociations;
+    bool changed = false;
+    const qsizetype originalSize = clips.size();
+    clips.erase(std::remove_if(clips.begin(), clips.end(), [&](TimelineClip& clip) {
+        if (clip.clipRole != ClipRole::MaskMatte) {
+            return false;
+        }
+
+        const QString sourceId = clip.linkedSourceClipId.trimmed();
+        if (!sourceMaskDirectoryById.contains(sourceId)) {
+            return true;
+        }
+
+        QString directory = clip.maskFramesDir.trimmed();
+        if (directory.isEmpty()) {
+            directory = sourceMaskDirectoryById.value(sourceId);
+            if (!directory.isEmpty() && clip.maskFramesDir != directory) {
+                clip.maskFramesDir = directory;
+                changed = true;
+            }
+        }
+
+        const QString stableId = effectiveMaskSidecarId(clip);
+        if (stableId.isEmpty()) {
+            return true;
+        }
+        if (clip.generatedFromMaskId != stableId) {
+            clip.generatedFromMaskId = stableId;
+            changed = true;
+        }
+
+        const QString associationKey = sourceId + QChar(0x1f) + stableId;
+        if (seenAssociations.contains(associationKey)) {
+            return true;
+        }
+        seenAssociations.insert(associationKey);
+        return false;
+    }), clips.end());
+
     QHash<QString, int> sourceIndexById;
     for (int i = 0; i < clips.size(); ++i) {
         const QString id = clips.at(i).id.trimmed();
-        if (!id.isEmpty() && clips.at(i).clipRole != ClipRole::MaskMatte) {
+        if (isSupportedMaskMatteParent(clips.at(i))) {
             sourceIndexById.insert(id, i);
         }
     }
 
-    bool changed = false;
+    changed = clips.size() != originalSize || changed;
     auto assignIfChanged = [&changed](auto& field, const auto& value) {
         if (field == value) {
             return;
@@ -323,9 +471,14 @@ bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
         assignIfChanged(clip.audioSourceOriginalPath, QString());
         assignIfChanged(clip.audioSourceStatus, QStringLiteral("generated"));
         assignIfChanged(clip.audioStreamIndex, -1);
-        assignIfChanged(clip.maskShowOnly, false);
         assignIfChanged(clip.maskForegroundLayerEnabled, false);
-        assignIfChanged(clip.effectPreset, ClipEffectPreset::None);
+        assignIfChanged(clip.speakerTitleEngineActive, false);
+        assignIfChanged(clip.transcriptOverlay.enabled, false);
+        assignIfChanged(clip.transcriptOverlay.showSpeakerTitle, false);
+        if (!clip.titleKeyframes.isEmpty()) {
+            clip.titleKeyframes.clear();
+            changed = true;
+        }
 
         if (!sourceIndexById.contains(sourceId)) {
             continue;
@@ -358,7 +511,6 @@ bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
         assignIfChanged(clip.baseScaleX, source.baseScaleX);
         assignIfChanged(clip.baseScaleY, source.baseScaleY);
         assignIfChanged(clip.transformSkipAwareTiming, source.transformSkipAwareTiming);
-        assignIfChanged(clip.effectSkipAwareTiming, source.effectSkipAwareTiming);
         if (!transformKeyframesEqual(clip.transformKeyframes, source.transformKeyframes)) {
             clip.transformKeyframes = source.transformKeyframes;
             changed = true;
@@ -366,9 +518,10 @@ bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
         if (clip.maskFramesDir.trimmed().isEmpty()) {
             assignIfChanged(clip.maskFramesDir, source.maskFramesDir);
         }
-        assignIfChanged(clip.maskEnabled, !clip.maskFramesDir.trimmed().isEmpty());
-        if (clip.generatedFromMaskId.trimmed().isEmpty()) {
-            assignIfChanged(clip.generatedFromMaskId, clip.maskFramesDir.trimmed());
+        if (clip.generatedFromMaskId.trimmed().isEmpty() &&
+            !clip.maskFramesDir.trimmed().isEmpty()) {
+            assignIfChanged(clip.generatedFromMaskId,
+                            editor::masks::stableMaskSidecarId(clip.maskFramesDir));
         }
         if (clip.zLevel == TimelineClip::kAutomaticZLevel) {
             assignIfChanged(clip.zLevel, effectiveClipZLevel(source) + 1);
@@ -400,19 +553,51 @@ bool normalizeMaskMatteClips(QVector<TimelineClip>& clips)
     return changed;
 }
 
-bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips)
+bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips,
+                                        bool* runtimeAvailabilityChanged)
 {
-    bool changed = normalizeMaskMatteClips(clips);
+    bool persistentChanged = normalizeMaskMatteClips(clips);
+    bool availabilityChanged = false;
+    auto setAvailability = [&availabilityChanged](TimelineClip& clip,
+                                                  bool available,
+                                                  const QString& issue) {
+        if (clip.maskSidecarAvailable != available) {
+            clip.maskSidecarAvailable = available;
+            availabilityChanged = true;
+        }
+        if (clip.maskSidecarAvailabilityIssue != issue) {
+            clip.maskSidecarAvailabilityIssue = issue;
+            availabilityChanged = true;
+        }
+    };
     const QVector<TimelineClip> snapshot = clips;
     for (const TimelineClip& source : snapshot) {
-        if (source.clipRole != ClipRole::Media ||
-            source.mediaType != ClipMediaType::Video ||
-            source.id.trimmed().isEmpty() ||
-            source.filePath.trimmed().isEmpty()) {
+        if (!isSupportedMaskMatteParent(source)) {
             continue;
         }
         const QVector<editor::masks::MaskSidecar> sidecars =
             editor::masks::discoverMaskSidecars(source);
+        QSet<QString> discoveredIds;
+        for (const editor::masks::MaskSidecar& sidecar : sidecars) {
+            discoveredIds.insert(sidecar.id);
+        }
+        for (TimelineClip& existing : clips) {
+            if (existing.clipRole != ClipRole::MaskMatte ||
+                existing.linkedSourceClipId.trimmed() != source.id.trimmed()) {
+                continue;
+            }
+            const QString sidecarId = effectiveMaskSidecarId(existing);
+            if (!sidecarId.isEmpty() && discoveredIds.contains(sidecarId)) {
+                continue;
+            }
+            const QFileInfo directory(existing.maskFramesDir.trimmed());
+            setAvailability(
+                existing,
+                false,
+                directory.isDir()
+                    ? QStringLiteral("No mask frames")
+                    : QStringLiteral("Sidecar missing"));
+        }
         int nextZ = effectiveClipZLevel(source) + 1;
         for (const editor::masks::MaskSidecar& sidecar : sidecars) {
             auto existing = std::find_if(clips.begin(), clips.end(), [&](const TimelineClip& clip) {
@@ -423,21 +608,32 @@ bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips)
                 return clip.generatedFromMaskId.trimmed() == sidecar.id ||
                        editor::masks::stableMaskSidecarId(clip.maskFramesDir) == sidecar.id;
             });
+            if (!sidecar.isReadyForTimeline()) {
+                // Preserve a previously materialized child and its edits, but
+                // never turn transient artifact availability into a durable
+                // change to the user's maskEnabled intent.
+                if (existing != clips.end()) {
+                    setAvailability(*existing, false, sidecar.readinessIssue);
+                    ++nextZ;
+                }
+                continue;
+            }
             if (existing == clips.end()) {
                 clips.push_back(makeMaskMatteClip(source, sidecar, nextZ));
-                changed = true;
+                persistentChanged = true;
             } else {
+                setAvailability(*existing, true, QString());
                 if (existing->maskFramesDir != sidecar.directory) {
                     existing->maskFramesDir = sidecar.directory;
-                    changed = true;
+                    persistentChanged = true;
                 }
                 if (existing->generatedFromMaskId != sidecar.id) {
                     existing->generatedFromMaskId = sidecar.id;
-                    changed = true;
+                    persistentChanged = true;
                 }
                 if (!existing->zLevelUserSet && existing->zLevel != nextZ) {
                     existing->zLevel = nextZ;
-                    changed = true;
+                    persistentChanged = true;
                 }
                 // Replace only the old generated label. A user-supplied label
                 // remains untouched, while migrated children become
@@ -456,15 +652,18 @@ bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips)
                             : sidecar.displayName.trimmed());
                     if (existing->label != desiredLabel) {
                         existing->label = desiredLabel;
-                        changed = true;
+                        persistentChanged = true;
                     }
                 }
             }
             ++nextZ;
         }
     }
-    changed = normalizeMaskMatteClips(clips) || changed;
-    return changed;
+    persistentChanged = normalizeMaskMatteClips(clips) || persistentChanged;
+    if (runtimeAvailabilityChanged) {
+        *runtimeAvailabilityChanged = availabilityChanged;
+    }
+    return persistentChanged;
 }
 
 bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips)

@@ -137,6 +137,62 @@ private slots:
         }
     }
 
+    void cancelledWriteDoesNotReplaceCommittedSidecar()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString sourcePath = dir.filePath(QStringLiteral("source.wav"));
+        QFile source(sourcePath);
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        QVERIFY(source.write("source-audio") > 0);
+        source.close();
+
+        AudioTimeStretchCacheEntry committedEntry;
+        committedEntry.samples = QVector<float>{0.1f, 0.2f, 0.3f, 0.4f};
+        committedEntry.sampleRate = 48000;
+        committedEntry.channelCount = 2;
+        committedEntry.valid = true;
+        committedEntry.fullyDecoded = true;
+        QVERIFY(writeAudioTimeStretchSidecar(sourcePath, 1500,
+                                             committedEntry));
+
+        AudioTimeStretchCacheEntry staleReplacement = committedEntry;
+        staleReplacement.samples.resize(
+            (8 * 1024 * 1024 / static_cast<int>(sizeof(float))) + 4);
+        staleReplacement.samples.fill(0.75f);
+
+        bool continueWriting = true;
+        int progressCallbacks = 0;
+        QVERIFY(!writeAudioTimeStretchSidecar(
+            sourcePath, 1500, staleReplacement,
+            [&continueWriting, &progressCallbacks](double) {
+                ++progressCallbacks;
+                continueWriting = false;
+            },
+            [&continueWriting]() { return continueWriting; }));
+        QCOMPARE(progressCallbacks, 1);
+
+        AudioTimeStretchCacheEntry loaded;
+        QVERIFY(readAudioTimeStretchSidecar(sourcePath, 1500, &loaded));
+        QCOMPARE(loaded.samples, committedEntry.samples);
+        QCOMPARE(loaded.sampleRate, committedEntry.sampleRate);
+        QCOMPARE(loaded.channelCount, committedEntry.channelCount);
+
+        AudioTimeStretchCacheEntry guardedReplacement = committedEntry;
+        guardedReplacement.samples = QVector<float>{0.8f, 0.7f, 0.6f, 0.5f};
+        bool commitGuardCalled = false;
+        QVERIFY(!writeAudioTimeStretchSidecar(
+            sourcePath, 1500, guardedReplacement, {}, {},
+            [&commitGuardCalled](const std::function<bool()>&) {
+                commitGuardCalled = true;
+                return false;
+            }));
+        QVERIFY(commitGuardCalled);
+        loaded = {};
+        QVERIFY(readAudioTimeStretchSidecar(sourcePath, 1500, &loaded));
+        QCOMPARE(loaded.samples, committedEntry.samples);
+    }
+
     void segmentCoverageUsesRetimedDomain()
     {
         QCOMPARE(audioTimeStretchCacheSampleForSourceSample(3000, 1.5), static_cast<int64_t>(2000));

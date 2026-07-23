@@ -1,6 +1,7 @@
 #include "timeline_widget.h"
 #include "editor_effect_presets.h"
 #include "editor_shared_timing.h"
+#include "timeline_clip_title.h"
 #include "titles.h"
 
 #include <QApplication>
@@ -45,8 +46,9 @@ void setClipTimelineDurationSamples(TimelineClip& clip, int64_t durationSamples)
                                clip.durationSubframeSamples);
 }
 
-void setClipSourceInSample(TimelineClip& clip, int64_t sourceSample) {
-    setFrameAndSubframeSamples(sourceSample, clip.sourceInFrame, clip.sourceInSubframeSamples);
+bool isGeneratedChildTrack(const QVector<TimelineTrack>& tracks, int trackIndex) {
+    return trackIndex >= 0 && trackIndex < tracks.size() &&
+           tracks.at(trackIndex).generatedChildTrack;
 }
 
 } // namespace
@@ -114,6 +116,9 @@ void TimelineWidget::updateHoverCursor(const QPoint& pos) {
 const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut) const {
     for (int i = m_clips.size() - 1; i >= 0; --i) {
         const TimelineClip& clip = m_clips[i];
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            continue;
+        }
         const QVector<RenderSyncMarker>* clipMarkers = renderSyncMarkersForClipId(clip.id);
         if (!clipMarkers) {
             continue;
@@ -365,7 +370,7 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
         targetTrack = nextTrackIndex();
         insertsTrack = true;
     }
-    if (insertsTrack) {
+    if (insertsTrack || isGeneratedChildTrack(m_tracks, targetTrack)) {
         insertTrackAt(targetTrack);
     }
 
@@ -386,7 +391,8 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
             int newTrack = targetTrack;
             bool foundNonConflictingTrack = false;
             for (int t = 0; t <= trackCount(); ++t) {
-                if (!wouldClipConflictWithTrack(clip, t)) {
+                if (!isGeneratedChildTrack(m_tracks, t) &&
+                    !wouldClipConflictWithTrack(clip, t)) {
                     newTrack = t;
                     foundNonConflictingTrack = true;
                     break;
@@ -423,6 +429,11 @@ void TimelineWidget::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         const int trackHit = trackIndexAt(event->position().toPoint());
         if (trackHit >= 0) {
+            if (trackHit < m_tracks.size() && m_tracks[trackHit].generatedChildTrack) {
+                setSelectedTrackIndex(trackHit);
+                event->accept();
+                return;
+            }
             QMenu menu(this);
             QAction* renameAction = menu.addAction(QStringLiteral("Rename"));
             QAction* crossfadeAction = menu.addAction(QStringLiteral("Crossfade Consecutive Clips..."));
@@ -460,6 +471,7 @@ void TimelineWidget::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void TimelineWidget::mousePressEvent(QMouseEvent* event) {
+    invalidateHoveredClipToolTipCache();
     if (event->button() == Qt::LeftButton) {
         int markerClipIndex = -1;
         if (const RenderSyncMarker* marker = renderSyncMarkerAtPos(event->position().toPoint(), &markerClipIndex)) {
@@ -529,6 +541,17 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
             const bool clickedWasSelected = isClipSelected(clickedClipId);
             if (!clickedWasSelected) {
                 setSelectedClipId(clickedClipId);
+            }
+            if (m_clips[hitIndex].clipRole == ClipRole::MaskMatte) {
+                m_dragMode = ClipDragMode::None;
+                m_draggedClipIndex = -1;
+                m_dragMoveClipIds.clear();
+                m_dragMoveOriginalStartFrames.clear();
+                m_dragMoveOriginalStartSamples.clear();
+                m_dragLockedTrackOnly = false;
+                update();
+                event->accept();
+                return;
             }
             m_dragMode = clipDragModeAt(m_clips[hitIndex], event->position().toPoint());
             m_draggedClipIndex = hitIndex;
@@ -611,8 +634,13 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                 return;
             }
             setSelectedTrackIndex(trackHit);
-            m_draggedTrackIndex = trackHit;
-            m_trackDropIndex = trackHit;
+            if (trackHit >= m_tracks.size() || !m_tracks[trackHit].generatedChildTrack) {
+                m_draggedTrackIndex = trackHit;
+                m_trackDropIndex = trackHit;
+            } else {
+                m_draggedTrackIndex = -1;
+                m_trackDropIndex = -1;
+            }
             update();
             return;
         }
@@ -636,30 +664,46 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
     }
     if (hoveredClipIndex >= 0) {
         const TimelineClip& hoveredClip = m_clips[hoveredClipIndex];
-        const bool isSequence = hoveredClip.sourceKind == MediaSourceKind::ImageSequence;
-        const QString typeLabel =
-            hoveredClip.mediaType == ClipMediaType::Audio ? QStringLiteral("Audio")
-            : (hoveredClip.mediaType == ClipMediaType::Image ? QStringLiteral("Image")
-               : (isSequence ? QStringLiteral("Sequence") : QStringLiteral("Video")));
-        const bool proxyVideoAvailable = clipHasProxyAvailable(hoveredClip);
-        const bool proxyAudioAvailable = playbackUsesAlternateAudioSource(hoveredClip);
-        const QString transcriptPath = transcriptWorkingPathForClip(hoveredClip);
-        const bool transcriptAvailable =
-            !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
-        const bool facedetectionsSidecarAvailable = facedetectionsSidecarExistsForClip(hoveredClip);
-        const int64_t localTimelineFrame =
-            qBound<int64_t>(0,
-                            m_currentFrame - hoveredClip.startFrame,
-                            qMax<int64_t>(0, hoveredClip.durationFrames - 1));
-        const int64_t clipFrame =
-            adjustedClipLocalFrameAtTimelineFrame(hoveredClip, localTimelineFrame, m_renderSyncMarkers);
-        setToolTip(QStringLiteral("%1\n%2\nFrame %3\nProxy Video: %4\nProxy Audio: %5\nTranscript: %6\nFaceDetections Sidecar: %7")
-                       .arg(hoveredClip.label, typeLabel)
-                       .arg(clipFrame)
-                       .arg(proxyVideoAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
-                       .arg(proxyAudioAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
-                       .arg(transcriptAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
-                       .arg(facedetectionsSidecarAvailable ? QStringLiteral("Yes") : QStringLiteral("No")));
+        if (m_hoveredClipToolTipCacheId != hoveredClip.id ||
+            m_hoveredClipToolTipCacheFrame != m_currentFrame ||
+            m_hoveredClipToolTipCacheText.isEmpty()) {
+            const TimelineClipTitleModel titleModel(m_clips, m_tracks);
+            const TimelineClipTitlePresentation title = titleModel.describe(hoveredClip, true);
+            const bool proxyVideoAvailable = clipHasProxyAvailable(hoveredClip);
+            const bool proxyAudioAvailable = playbackUsesAlternateAudioSource(hoveredClip);
+            const QString transcriptPath = transcriptWorkingPathForClip(hoveredClip);
+            const bool transcriptAvailable =
+                !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+            const bool facedetectionsSidecarAvailable = facedetectionsSidecarExistsForClip(hoveredClip);
+            const std::optional<int64_t> sourceFrame =
+                timelineClipSourceFrameAtTimelinePosition(
+                    hoveredClip,
+                    m_clips,
+                    static_cast<qreal>(m_currentFrame),
+                    m_renderSyncMarkers);
+            QStringList tooltipLines;
+            tooltipLines.push_back(title.tooltipText);
+            tooltipLines.push_back(sourceFrame
+                ? QStringLiteral("Source frame at playhead: %1").arg(*sourceFrame)
+                : QStringLiteral("Source frame at playhead: Unavailable"));
+            tooltipLines.push_back(QStringLiteral("Proxy video: %1")
+                                       .arg(proxyVideoAvailable ? QStringLiteral("Yes")
+                                                                : QStringLiteral("No")));
+            tooltipLines.push_back(QStringLiteral("Proxy audio: %1")
+                                       .arg(proxyAudioAvailable ? QStringLiteral("Yes")
+                                                                : QStringLiteral("No")));
+            tooltipLines.push_back(QStringLiteral("Transcript: %1")
+                                       .arg(transcriptAvailable ? QStringLiteral("Yes")
+                                                                : QStringLiteral("No")));
+            tooltipLines.push_back(QStringLiteral("FaceDetections sidecar: %1")
+                                       .arg(facedetectionsSidecarAvailable
+                                                ? QStringLiteral("Yes")
+                                                : QStringLiteral("No")));
+            m_hoveredClipToolTipCacheId = hoveredClip.id;
+            m_hoveredClipToolTipCacheFrame = m_currentFrame;
+            m_hoveredClipToolTipCacheText = tooltipLines.join(QLatin1Char('\n'));
+        }
+        setToolTip(m_hoveredClipToolTipCacheText);
     } else {
         setToolTip(QString());
     }
@@ -752,7 +796,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             if (m_dragLockedTrackOnly) {
                 bool insertsTrack = false;
                 const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
-                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex &&
+                    !isGeneratedChildTrack(m_tracks, proposedTrack)) {
                     TimelineClip tempClip = clip;
                     tempClip.trackIndex = proposedTrack;
                     if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
@@ -813,7 +858,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                     m_trackDropInGap = false;
                 } else {
                     setClipTimelineStartSample(clip, m_dragOriginalStartSample + moveDeltaSamples);
-                    if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                    if (proposedTrack >= 0 && proposedTrack != clip.trackIndex &&
+                        !isGeneratedChildTrack(m_tracks, proposedTrack)) {
                         TimelineClip tempClip = clip;
                         tempClip.trackIndex = proposedTrack;
                         if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
@@ -862,7 +908,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
 
             if (!movingMultipleClips) {
                 // Check for conflict when moving to a different track
-                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex &&
+                    !isGeneratedChildTrack(m_tracks, proposedTrack)) {
                     TimelineClip tempClip = clip;
                     tempClip.trackIndex = proposedTrack;
                     if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
@@ -893,7 +940,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                     qBound<int64_t>(0,
                                     m_dragOriginalSourceInSamples + consumedSourceSamples,
                                     qMax<int64_t>(0, sourceDurationSamples - 1));
-                setClipSourceInSample(clip, nextSourceInSample);
+                setClipSourceInSamples(clip, nextSourceInSample);
                 setClipTimelineDurationSamples(clip, m_dragOriginalDurationSamples - trimDeltaSamples);
                 m_snapIndicatorFrame = -1;
                 m_currentFrame = clip.startFrame;
@@ -1038,7 +1085,15 @@ void TimelineWidget::leaveEvent(QEvent* event) {
         update();
     }
     setToolTip(QString());
+    invalidateHoveredClipToolTipCache();
     QWidget::leaveEvent(event);
+}
+
+void TimelineWidget::invalidateHoveredClipToolTipCache()
+{
+    m_hoveredClipToolTipCacheId.clear();
+    m_hoveredClipToolTipCacheFrame = -1;
+    m_hoveredClipToolTipCacheText.clear();
 }
 
 void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
@@ -1068,24 +1123,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         const int fromTrack = m_draggedTrackIndex;
         const int toTrack = qBound(0, m_trackDropIndex, trackCount() - 1);
         if (fromTrack != toTrack) {
-            ensureTrackCount(trackCount());
-            for (TimelineClip& clip : m_clips) {
-                if (clip.trackIndex == fromTrack) {
-                    clip.trackIndex = toTrack;
-                } else if (fromTrack < toTrack && clip.trackIndex > fromTrack && clip.trackIndex <= toTrack) {
-                    clip.trackIndex -= 1;
-                } else if (fromTrack > toTrack && clip.trackIndex >= toTrack && clip.trackIndex < fromTrack) {
-                    clip.trackIndex += 1;
-                }
-            }
-            if (fromTrack >= 0 && fromTrack < m_tracks.size() && toTrack >= 0 && toTrack < m_tracks.size()) {
-                TimelineTrack movedTrack = m_tracks.takeAt(fromTrack);
-                m_tracks.insert(toTrack, movedTrack);
-            }
-            normalizeTrackIndices();
-            sortClips();
-            removeEmptyTracks();
-            if (clipsChanged) clipsChanged();
+            moveTrack(fromTrack, toTrack);
         }
         m_draggedTrackIndex = -1;
         m_trackDropIndex = -1;
@@ -1105,6 +1143,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
                 }
             }
         }
+        reorderTracksForView();
         normalizeTrackIndices();
         sortClips();
         removeEmptyTracks();

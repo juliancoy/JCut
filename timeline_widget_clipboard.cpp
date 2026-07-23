@@ -7,9 +7,19 @@
 bool TimelineWidget::copySelectedClips()
 {
     m_clipClipboard.clear();
+    m_renderSyncMarkerClipboard.clear();
+    // Structural clipboard operations work on the ownership aggregate.  A
+    // generated child cannot be meaningfully pasted without its parent, and a
+    // copied parent must not silently lose its mask mattes.
+    const QSet<QString> copiedIds = ownershipClosure(m_clipSelection.ids, true);
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        if (m_clipSelection.ids.contains(clip.id)) {
+        if (copiedIds.contains(clip.id)) {
             m_clipClipboard.push_back(clip);
+        }
+    }
+    for (const RenderSyncMarker& marker : std::as_const(m_renderSyncMarkers)) {
+        if (copiedIds.contains(marker.clipId)) {
+            m_renderSyncMarkerClipboard.push_back(marker);
         }
     }
     std::sort(m_clipClipboard.begin(), m_clipClipboard.end(), [](const TimelineClip& a, const TimelineClip& b) {
@@ -24,21 +34,50 @@ bool TimelineWidget::cutSelectedClips()
         return false;
     }
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        if (m_clipSelection.ids.contains(clip.id) && clip.locked) {
+        if (!m_clipSelection.ids.contains(clip.id)) {
+            continue;
+        }
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            // A selected child is valid only as an explicitly selected
+            // descendant of its selected parent. Copy/cut still expands the
+            // complete ownership closure; a child alone remains non-cuttable.
+            if (!m_clipSelection.ids.contains(clip.linkedSourceClipId.trimmed())) {
+                return false;
+            }
+            continue;
+        }
+        if (clip.locked) {
             return false;
         }
     }
     if (!copySelectedClips()) {
         return false;
     }
-    m_clips.erase(std::remove_if(m_clips.begin(), m_clips.end(), [this](const TimelineClip& clip) {
-        return m_clipSelection.ids.contains(clip.id);
-    }), m_clips.end());
+    QSet<QString> cutIds;
+    for (const TimelineClip& clip : std::as_const(m_clipClipboard)) {
+        cutIds.insert(clip.id);
+    }
+    QVector<TimelineClip> remaining;
+    remaining.reserve(m_clips.size() - cutIds.size());
+    for (const TimelineClip& clip : std::as_const(m_clips)) {
+        if (!cutIds.contains(clip.id)) {
+            remaining.push_back(clip);
+        }
+    }
+    const qsizetype markerCountBefore = m_renderSyncMarkers.size();
+    m_renderSyncMarkers.erase(
+        std::remove_if(m_renderSyncMarkers.begin(), m_renderSyncMarkers.end(),
+                       [&cutIds](const RenderSyncMarker& marker) {
+                           return cutIds.contains(marker.clipId);
+                       }),
+        m_renderSyncMarkers.end());
+    rebuildRenderSyncMarkerIndex();
+    const bool removedMarkers = m_renderSyncMarkers.size() != markerCountBefore;
+    setClips(remaining);
     applyClipSelection({}, QString(), false);
-    normalizeTrackIndices();
-    sortClips();
     if (selectionChanged) selectionChanged();
     if (clipsChanged) clipsChanged();
+    if (removedMarkers && renderSyncMarkersChanged) renderSyncMarkersChanged();
     update();
     return true;
 }
@@ -74,10 +113,24 @@ bool TimelineWidget::pasteClipsAtCurrentFrame()
         if (oldId == m_clipSelection.primaryId || primary.isEmpty()) primary = clip.id;
         m_clips.push_back(std::move(clip));
     }
-    sortClips();
+    bool pastedMarkers = false;
+    for (RenderSyncMarker marker : std::as_const(m_renderSyncMarkerClipboard)) {
+        if (!pastedIds.contains(marker.clipId)) {
+            continue;
+        }
+        marker.clipId = pastedIds.value(marker.clipId);
+        marker.frame = qMax<int64_t>(0, m_currentFrame + (marker.frame - anchorFrame));
+        m_renderSyncMarkers.push_back(marker);
+        pastedMarkers = true;
+    }
+    sortRenderSyncMarkers();
+    rebuildRenderSyncMarkerIndex();
+    const QVector<TimelineClip> pastedModel = m_clips;
+    setClips(pastedModel);
     applyClipSelection(selection, primary, false);
     if (selectionChanged) selectionChanged();
     if (clipsChanged) clipsChanged();
+    if (pastedMarkers && renderSyncMarkersChanged) renderSyncMarkersChanged();
     update();
     return true;
 }

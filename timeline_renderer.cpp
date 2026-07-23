@@ -5,6 +5,7 @@
 #include "debug_controls.h"
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
+#include "timeline_clip_title.h"
 #include "waveform_service.h"
 
 #include <QFileInfo>
@@ -103,6 +104,46 @@ void drawClipAudioWaveform(QPainter* painter,
     }
 
     painter->restore();
+}
+
+qreal linearColorChannel(int channel)
+{
+    const qreal normalized = static_cast<qreal>(channel) / 255.0;
+    return normalized <= 0.04045
+        ? normalized / 12.92
+        : std::pow((normalized + 0.055) / 1.055, 2.4);
+}
+
+qreal relativeLuminance(const QColor& color)
+{
+    return 0.2126 * linearColorChannel(color.red()) +
+           0.7152 * linearColorChannel(color.green()) +
+           0.0722 * linearColorChannel(color.blue());
+}
+
+qreal contrastRatio(const QColor& first, const QColor& second)
+{
+    const qreal lighter = qMax(relativeLuminance(first), relativeLuminance(second));
+    const qreal darker = qMin(relativeLuminance(first), relativeLuminance(second));
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+QColor opaqueColorOver(const QColor& foreground, const QColor& background)
+{
+    const qreal alpha = foreground.alphaF();
+    return QColor::fromRgbF(
+        foreground.redF() * alpha + background.redF() * (1.0 - alpha),
+        foreground.greenF() * alpha + background.greenF() * (1.0 - alpha),
+        foreground.blueF() * alpha + background.blueF() * (1.0 - alpha));
+}
+
+QColor readableTitleColor(const QColor& clipFill)
+{
+    const QColor light(Qt::white);
+    const QColor dark(Qt::black);
+    return contrastRatio(light, clipFill) >= contrastRatio(dark, clipFill)
+        ? light
+        : dark;
 }
 
 } // namespace
@@ -212,6 +253,7 @@ void TimelineRenderer::paint(QPainter* painter) {
 
     painter->save();
     painter->setClipRect(content);
+    const TimelineClipTitleModel clipTitleModel(m_widget->m_clips, m_widget->m_tracks);
     for (const TimelineClip& clip : m_widget->m_clips) {
         const QRect clipRect = layout.clipRectFor(clip);
         if (clipRect.right() < content.left() || clipRect.left() > content.right()) {
@@ -254,6 +296,8 @@ void TimelineRenderer::paint(QPainter* painter) {
             clipFill = clipFill.darker(160);
             clipFill.setAlpha(160);
         }
+        QColor titleFill = opaqueColorOver(
+            clipFill, QColor(QStringLiteral("#171c22")));
         painter->setPen(QColor(255, 255, 255, 32));
         painter->setBrush(clipFill);
         painter->drawRoundedRect(visibleClipRect, 7, 7);
@@ -280,7 +324,9 @@ void TimelineRenderer::paint(QPainter* painter) {
                 painter->setPen(QPen(innerBorder, 2));
                 painter->drawRoundedRect(visibleClipRect.adjusted(2, 2, -2, -2), 6, 6);
             } else {
-                painter->setBrush(clip.color.lighter(108));
+                const QColor selectedFill = clip.color.lighter(108);
+                titleFill = opaqueColorOver(selectedFill, titleFill);
+                painter->setBrush(selectedFill);
                 painter->drawRoundedRect(visibleClipRect, 7, 7);
             }
             painter->setPen(Qt::NoPen);
@@ -308,6 +354,9 @@ void TimelineRenderer::paint(QPainter* painter) {
             drawClipAudioWaveform(painter, clip, clipRect, visibleClipRect, audioOnly);
         }
 
+        // Status decorations are an isolated paint layer. In particular, none
+        // of their NoPen/brush state may leak into the title layer below.
+        painter->save();
         const int barHeight = qBound(3, visibleClipRect.height() / 10, 6);
         int barBottom = visibleClipRect.bottom() - 1;
 
@@ -369,36 +418,104 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->setBrush(QColor(QStringLiteral("#ff9e3d")));
             painter->drawRoundedRect(proxyBarRect, 2, 2);
         }
+        painter->restore();
 
-        QString clipTitle;
-        if (clip.mediaType == ClipMediaType::Title) {
-            const QString titleText = clip.titleKeyframes.isEmpty()
-                ? QStringLiteral("Title") : clip.titleKeyframes.constFirst().text;
-            clipTitle = QStringLiteral("T  %1").arg(titleText);
-        } else if (clip.clipRole == ClipRole::MaskMatte) {
-            clipTitle = QStringLiteral("↳  %1  ·  Z %2")
-                            .arg(clip.label)
-                            .arg(effectiveClipZLevel(clip));
-        } else if (audioOnly) {
-            clipTitle = QStringLiteral("AUDIO  %1").arg(clip.label);
-        } else {
-            clipTitle = clip.label;
+        const TimelineClipTitlePresentation title = clipTitleModel.describe(clip);
+        const QRect titleRect = visibleClipRect.adjusted(10, 2, -10, -2);
+        if (!titleRect.isEmpty()) {
+            painter->save();
+            painter->setClipRect(titleRect, Qt::IntersectClip);
+
+            QFont labelFont = painter->font();
+            labelFont.setWeight(QFont::DemiBold);
+            const QFontMetrics labelMetrics(labelFont);
+            QFont badgeFont = labelFont;
+            badgeFont.setPointSizeF(qMax<qreal>(7.0, labelFont.pointSizeF() - 1.0));
+            badgeFont.setWeight(QFont::Bold);
+            const QFontMetrics badgeMetrics(badgeFont);
+            const int badgeWidth = badgeMetrics.horizontalAdvance(title.badge) + 12;
+            const int badgeHeight = qMin(titleRect.height(), badgeMetrics.height() + 4);
+            const int badgeGap = 7;
+            const int minimumPrimaryWidth = qMax(
+                52, labelMetrics.horizontalAdvance(title.primary.left(5)));
+            const bool badgeFits =
+                titleRect.width() >= badgeWidth + badgeGap + minimumPrimaryWidth;
+            // Audio waveforms can vary from nearly black to white beneath the
+            // title. A compact, near-opaque backplate keeps the text contrast
+            // deterministic without hiding the rest of the envelope.
+            const QColor waveformTitleBackplate(10, 15, 20, 220);
+            const QColor titleColor = showWaveform
+                ? QColor(QStringLiteral("#ffffff"))
+                : readableTitleColor(titleFill);
+            const auto drawWaveformTitleBackplate =
+                [&](const QRect& textRect, const QString& text) {
+                    if (!showWaveform || textRect.isEmpty() || text.isEmpty()) {
+                        return;
+                    }
+                    const int backplateWidth = qMin(
+                        textRect.width(), labelMetrics.horizontalAdvance(text) + 8);
+                    const int backplateHeight = qMin(
+                        textRect.height(), labelMetrics.height() + 4);
+                    const QRect backplateRect(
+                        textRect.left() - 4,
+                        textRect.center().y() - backplateHeight / 2,
+                        backplateWidth + 4,
+                        backplateHeight);
+                    painter->setPen(Qt::NoPen);
+                    painter->setBrush(waveformTitleBackplate);
+                    painter->drawRoundedRect(backplateRect, 4, 4);
+                };
+
+            if (badgeFits) {
+                const QRect badgeRect(titleRect.left(),
+                                      titleRect.center().y() - badgeHeight / 2,
+                                      badgeWidth,
+                                      badgeHeight);
+                QColor badgeColor(QStringLiteral("#315b7d"));
+                if (title.badge == QStringLiteral("MASK")) {
+                    badgeColor = QColor(QStringLiteral("#14738f"));
+                } else if (title.badge == QStringLiteral("SOURCE")) {
+                    badgeColor = QColor(QStringLiteral("#6b3e78"));
+                } else if (title.badge == QStringLiteral("AUDIO")) {
+                    badgeColor = QColor(QStringLiteral("#26735d"));
+                } else if (title.badge == QStringLiteral("TITLE")) {
+                    badgeColor = QColor(QStringLiteral("#8a5b25"));
+                } else if (title.badge == QStringLiteral("FX")) {
+                    badgeColor = QColor(QStringLiteral("#704b91"));
+                }
+                const QRect labelRect = titleRect.adjusted(badgeWidth + badgeGap, 0, 0, 0);
+                const QString labelText = labelMetrics.elidedText(
+                    title.inlineText(), Qt::ElideRight, qMax(1, labelRect.width()));
+                drawWaveformTitleBackplate(labelRect, labelText);
+
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(badgeColor);
+                painter->drawRoundedRect(badgeRect, 5, 5);
+                painter->setFont(badgeFont);
+                painter->setPen(QColor(QStringLiteral("#ffffff")));
+                painter->drawText(badgeRect, Qt::AlignCenter, title.badge);
+
+                painter->setFont(labelFont);
+                painter->setPen(titleColor);
+                painter->drawText(
+                    labelRect,
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    labelText);
+            } else {
+                painter->setFont(labelFont);
+                const QString compactTitle =
+                    QStringLiteral("%1 %2").arg(title.badge, title.primary);
+                const QString compactText = labelMetrics.elidedText(
+                    compactTitle, Qt::ElideRight, qMax(1, titleRect.width()));
+                drawWaveformTitleBackplate(titleRect, compactText);
+                painter->setPen(titleColor);
+                painter->drawText(
+                    titleRect,
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    compactText);
+            }
+            painter->restore();
         }
-        if (clip.locked) {
-            clipTitle = QStringLiteral("🔒 %1").arg(clipTitle);
-        }
-        if (!visualsEnabled && clipHasVisuals(clip)) {
-            clipTitle = QStringLiteral("Hidden  %1").arg(clipTitle);
-        }
-        if (!audioEnabled && clip.hasAudio) {
-            clipTitle = QStringLiteral("Muted  %1").arg(clipTitle);
-        }
-        if (qAbs(clip.playbackRate - 1.0) > 0.001) {
-            clipTitle = QStringLiteral("%1  %2x").arg(clipTitle).arg(clip.playbackRate, 0, 'g', 3);
-        }
-        painter->drawText(visibleClipRect.adjusted(10, 0, -10, 0),
-                        Qt::AlignLeft | Qt::AlignVCenter,
-                        clipTitle);
     }
     painter->restore();
 

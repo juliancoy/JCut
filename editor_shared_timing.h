@@ -34,6 +34,7 @@ int64_t clipTimelineStartSamples(const TimelineClip& clip);
 int64_t clipTimelineDurationSamples(const TimelineClip& clip);
 int64_t clipTimelineEndSamples(const TimelineClip& clip);
 int64_t clipSourceInSamples(const TimelineClip& clip);
+void setClipSourceInSamples(TimelineClip& clip, int64_t sourceSample);
 void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples);
 void normalizeClipTiming(TimelineClip& clip);
 int64_t playableSampleAtOrAfter(int64_t samplePos,

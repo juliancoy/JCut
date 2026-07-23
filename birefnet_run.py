@@ -9,6 +9,7 @@ responsible for soft hair, motion-blur, and semi-transparent boundaries.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -25,6 +26,12 @@ import torch
 from PIL import Image
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation
+from jcut_frame_index_map import (
+    source_identity,
+    source_identities_match,
+    validated_frame_index_map_metadata,
+)
+from sam3_resume import image_file_looks_complete
 
 
 MODEL_ID = "ZhengPeng7/BiRefNet-matting"
@@ -44,6 +51,7 @@ class RunState:
     total_frames: int = 0
     rendered_frames: int = 0
     started_monotonic: float = 0.0
+    render_started_monotonic: float | None = None
     device: str = "unresolved"
 
 
@@ -56,6 +64,8 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         temporary = Path(handle.name)
         json.dump(payload, handle, indent=2)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     try:
         os.replace(temporary, path)
     finally:
@@ -71,7 +81,16 @@ def write_progress(
     if not args.progress_json:
         return
     elapsed = max(0.0, time.monotonic() - state.started_monotonic)
-    render_fps = state.rendered_frames / elapsed if elapsed > 0.0 else 0.0
+    render_elapsed = (
+        max(0.0, time.monotonic() - state.render_started_monotonic)
+        if state.render_started_monotonic is not None
+        else 0.0
+    )
+    render_fps = (
+        state.rendered_frames / render_elapsed
+        if state.rendered_frames > 0 and render_elapsed > 0.0
+        else 0.0
+    )
     remaining = max(0, state.total_frames - state.completed_frame)
     payload = {
         "schema": "jcut_processing_progress_v1",
@@ -86,6 +105,7 @@ def write_progress(
             if state.total_frames > 0 else None
         ),
         "elapsed_seconds": elapsed,
+        "render_elapsed_seconds": render_elapsed,
         "render_fps": render_fps,
         "eta_seconds": remaining / render_fps if render_fps > 0.0 else None,
         "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -93,6 +113,71 @@ def write_progress(
     if error:
         payload["error"] = error
     atomic_write_json(Path(args.progress_json), payload)
+
+
+def identities_match(left: dict, right: dict) -> bool:
+    return source_identities_match(left, right)
+
+
+def read_json_object(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def small_file_identity(path: Path) -> dict | None:
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return None
+    return {
+        "name": path.name,
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def guidance_identity(directory: Path | None) -> dict | None:
+    if directory is None:
+        return None
+    return {
+        "path": str(directory.resolve()),
+        "frame_map": small_file_identity(directory / "jcut_frame_map.tsv"),
+        "frame_map_metadata": small_file_identity(directory / "jcut_frame_map.json"),
+        "completion": (
+            small_file_identity(directory / "jcut_mask.json")
+            or small_file_identity(directory / "jcut_alpha.json")
+        ),
+    }
+
+
+def prepare_resume_artifacts(
+    output_dir: Path,
+    expected_provenance: dict,
+    resume: bool,
+) -> None:
+    manifest_path = output_dir / "jcut_alpha_run.json"
+    frame_paths = []
+    for path in output_dir.glob("frame_*.png"):
+        try:
+            index = int(path.stem.removeprefix("frame_"))
+        except ValueError:
+            continue
+        if index > 0:
+            frame_paths.append(path)
+    existing = read_json_object(manifest_path)
+    if resume and frame_paths and existing != expected_provenance:
+        raise RuntimeError(
+            f"Refusing to resume unverified or mismatched alpha frames in {output_dir}. "
+            "Use --no-resume to start this generated sidecar again."
+        )
+    if not resume:
+        for path in frame_paths:
+            path.unlink()
+    if existing != expected_provenance:
+        atomic_write_json(manifest_path, expected_provenance)
 
 
 def try_write_progress(
@@ -113,7 +198,7 @@ def first_missing_frame(output_dir: Path, total_frames: int) -> int:
     for path in output_dir.glob("frame_*.png"):
         try:
             index = int(path.stem.removeprefix("frame_"))
-            if index > 0 and path.stat().st_size > 0:
+            if index > 0 and image_file_looks_complete(path):
                 completed.add(index)
         except (OSError, ValueError):
             continue
@@ -149,6 +234,8 @@ def atomic_save_grayscale(path: Path, alpha: np.ndarray) -> None:
         temporary = Path(handle.name)
     try:
         image.save(temporary, format="PNG", compress_level=4)
+        with temporary.open("rb") as completed:
+            os.fsync(completed.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -163,6 +250,8 @@ def atomic_save_rgb(path: Path, rgb: np.ndarray) -> None:
         temporary = Path(handle.name)
     try:
         image.save(temporary, format="PNG", compress_level=4)
+        with temporary.open("rb") as completed:
+            os.fsync(completed.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -210,9 +299,16 @@ def apply_alpha_tolerance(alpha: np.ndarray, tolerance: float) -> np.ndarray:
     return np.clip((alpha - tolerance) / (1.0 - tolerance), 0.0, 1.0)
 
 
-def write_metadata(output_dir: Path, args: argparse.Namespace, device: torch.device) -> None:
+def write_metadata(
+    output_dir: Path,
+    args: argparse.Namespace,
+    device: torch.device,
+    frame_map_metadata: dict,
+    expected_frame_count: int,
+) -> None:
     metadata = {
         "schema": "jcut_alpha_sidecar_v1",
+        "complete": True,
         "source_type": "birefnet_continuous_alpha",
         "model": args.model,
         "fp16": bool(args.fp16),
@@ -220,15 +316,40 @@ def write_metadata(output_dir: Path, args: argparse.Namespace, device: torch.dev
         "input": str(Path(args.input).resolve()),
         "guidance_dir": str(Path(args.guidance_dir).resolve()) if args.guidance_dir else None,
         "frame_pattern": "frame_%06d.png",
+        "frame_domain": "decode_ordinal",
+        "frame_index_map": "jcut_frame_map.tsv",
+        "frame_index_metadata": "jcut_frame_map.json",
+        "frame_map_sha256": frame_map_metadata.get("map_sha256"),
+        "expected_frame_count": expected_frame_count,
+        "source_identity": frame_map_metadata.get("source_identity"),
         "alpha_encoding": "grayscale_u8_unorm",
         "continuous_alpha": True,
         "alpha_tolerance": args.alpha_tolerance,
         "device": str(device),
         "fp16": bool(args.fp16 and device.type == "cuda"),
     }
-    temporary = output_dir / ".jcut_alpha.json.tmp"
-    temporary.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, output_dir / "jcut_alpha.json")
+    atomic_write_json(output_dir / "jcut_alpha.json", metadata)
+
+
+def verify_contiguous_alpha_frames(output_dir: Path, expected_frames: int) -> None:
+    completed: set[int] = set()
+    for path in output_dir.glob("frame_*.png"):
+        try:
+            index = int(path.stem.removeprefix("frame_"))
+            if index > 0 and image_file_looks_complete(path):
+                completed.add(index - 1)
+        except (OSError, ValueError):
+            continue
+    if (
+        expected_frames <= 0
+        or len(completed) != expected_frames
+        or min(completed, default=-1) != 0
+        or max(completed, default=-1) != expected_frames - 1
+    ):
+        raise RuntimeError(
+            f"Incomplete alpha sidecar: found {len(completed)} valid frame(s), "
+            f"expected contiguous ordinals 0..{expected_frames - 1}."
+        )
 
 
 def cuda_memory_diagnostics() -> dict:
@@ -297,6 +418,24 @@ def run(args: argparse.Namespace, state: RunState) -> None:
     guidance_dir = Path(args.guidance_dir) if args.guidance_dir else None
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / ERROR_ARTIFACT_NAME).unlink(missing_ok=True)
+    frame_map_metadata: dict = {}
+    expected_frame_count = 0
+    initial_source_identity: dict = {}
+    initial_guidance_identity: dict | None = None
+    if args.frame_index is None:
+        validated = validated_frame_index_map_metadata(
+            input_path, output_dir / "jcut_frame_map.tsv"
+        )
+        if validated is None:
+            raise RuntimeError(
+                "Missing, incomplete, or source-mismatched jcut_frame_map metadata."
+            )
+        frame_map_metadata = validated
+        expected_frame_count = int(validated.get("expected_output_frame_count") or 0)
+        if expected_frame_count <= 0:
+            raise RuntimeError("Frame-map metadata has no positive output-frame count.")
+        initial_source_identity = source_identity(input_path)
+        initial_guidance_identity = guidance_identity(guidance_dir)
     state.started_monotonic = time.monotonic()
     try_write_progress(args, state, "starting")
 
@@ -309,6 +448,28 @@ def run(args: argparse.Namespace, state: RunState) -> None:
     )
     state.device = str(device)
     dtype = torch.float16 if args.fp16 and device.type == "cuda" else torch.float32
+    if args.frame_index is None:
+        prepare_resume_artifacts(
+            output_dir,
+            {
+                "schema": "jcut_birefnet_alpha_run_v1",
+                "source_identity": frame_map_metadata.get("source_identity"),
+                "frame_map_sha256": frame_map_metadata.get("map_sha256"),
+                "expected_frame_count": expected_frame_count,
+                "model": args.model,
+                "revision": args.revision,
+                "device": str(device),
+                "fp16": bool(args.fp16 and device.type == "cuda"),
+                "alpha_tolerance": args.alpha_tolerance,
+                "guidance_gate_radius": args.guidance_gate_radius,
+                "guidance_identity": initial_guidance_identity,
+            },
+            args.resume,
+        )
+        # Completion is transient availability, not enable intent. Withdraw it
+        # only after the map and resume provenance are valid, immediately
+        # before this run may mutate an alpha frame.
+        (output_dir / "jcut_alpha.json").unlink(missing_ok=True)
     print(f"[birefnet] loading {args.model}@{args.revision} on {device} ({dtype})", flush=True)
     state.phase = "model_load"
     model = AutoModelForImageSegmentation.from_pretrained(
@@ -325,15 +486,16 @@ def run(args: argparse.Namespace, state: RunState) -> None:
     capture = cv2.VideoCapture(str(input_path))
     if not capture.isOpened():
         raise RuntimeError(f"Unable to open input video: {input_path}")
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    state.total_frames = max(0, total)
+    decoder_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    total = expected_frame_count if args.frame_index is None else max(0, decoder_total)
+    state.total_frames = total
     frame_index = 1  # Matches ffmpeg's default frame_%06d numbering used by SAM3.
     if args.resume and args.frame_index is None:
         first_missing = first_missing_frame(output_dir, total)
         state.completed_frame = first_missing - 1
-        frame_index = seek_to_frame(capture, first_missing)
-        if frame_index == 1:
-            state.completed_frame = 0
+        # Decode from the beginning even on resume. Positional OpenCV seeks can
+        # land on an adjacent decoded frame while reporting the requested
+        # ordinal, which would permanently shift every resumed matte.
     processed = 0
     try_write_progress(args, state, "running")
     try:
@@ -345,7 +507,7 @@ def run(args: argparse.Namespace, state: RunState) -> None:
                 frame_index += 1
                 continue
             output_path = output_dir / f"frame_{frame_index:06d}.png"
-            if args.resume and output_path.exists() and output_path.stat().st_size > 0:
+            if args.resume and image_file_looks_complete(output_path):
                 state.phase = "resume_scan"
                 state.frame_index = frame_index
                 state.completed_frame = frame_index
@@ -355,6 +517,8 @@ def run(args: argparse.Namespace, state: RunState) -> None:
                 continue
             state.phase = "frame_preprocess"
             state.frame_index = frame_index
+            if state.render_started_monotonic is None:
+                state.render_started_monotonic = time.monotonic()
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             if args.frame_index is not None:
                 atomic_save_rgb(output_dir / "preview_source.png", rgb)
@@ -399,8 +563,34 @@ def run(args: argparse.Namespace, state: RunState) -> None:
             f"Preview frame {args.frame_index} is outside the decoded video range"
         )
     if args.frame_index is None:
+        decoded_frame_count = frame_index - 1
+        if decoded_frame_count != expected_frame_count:
+            raise RuntimeError(
+                "Video decode ended before the validated frame-map boundary: "
+                f"decoded {decoded_frame_count}, expected {expected_frame_count}."
+            )
+        verify_contiguous_alpha_frames(output_dir, expected_frame_count)
+        revalidated = validated_frame_index_map_metadata(
+            input_path, output_dir / "jcut_frame_map.tsv"
+        )
+        if (
+            revalidated is None
+            or revalidated.get("map_sha256") != frame_map_metadata.get("map_sha256")
+            or not identities_match(initial_source_identity, source_identity(input_path))
+            or guidance_identity(guidance_dir) != initial_guidance_identity
+        ):
+            raise RuntimeError(
+                "Source media, frame map, or guidance changed while alpha masks were generated."
+            )
+        frame_map_metadata = revalidated
         state.phase = "metadata_write"
-        write_metadata(output_dir, args, device)
+        write_metadata(
+            output_dir,
+            args,
+            device,
+            frame_map_metadata,
+            expected_frame_count,
+        )
     state.phase = "complete"
     state.frame_index = state.completed_frame
     try_write_progress(args, state, "completed")

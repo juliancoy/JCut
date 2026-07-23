@@ -1,5 +1,6 @@
 #include "editor.h"
 
+#include "editor_shared_render_sync.h"
 #include "inspector_pane.h"
 #include "processing_job_docker.h"
 #include "processing_job_manifest.h"
@@ -36,6 +37,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -208,7 +210,7 @@ bool showBiRefNetPreview(QWidget* parent,
                         QStringLiteral("--model"), model,
                         QStringLiteral("--revision"), revision,
                         QStringLiteral("--alpha-tolerance"), QString::number(alphaTolerance, 'f', 4),
-                        QStringLiteral("--frame-index"), QString::number(frameIndex)};
+                        QStringLiteral("--source-frame"), QString::number(frameIndex)};
     if (device == QStringLiteral("cpu")) command << QStringLiteral("--cpu");
     if (!fp16) command << QStringLiteral("--fp32");
 
@@ -256,8 +258,13 @@ bool showBiRefNetPreview(QWidget* parent,
         return false;
     }
     const QString sourcePath = QDir(previewDirectory.path()).filePath(QStringLiteral("preview_source.png"));
-    const QString alphaPath = QDir(previewDirectory.path()).filePath(
-        QStringLiteral("frame_%1.png").arg(frameIndex, 6, 10, QLatin1Char('0')));
+    const QStringList alphaFrames = QDir(previewDirectory.path()).entryList(
+        QStringList{QStringLiteral("frame_*.png")},
+        QDir::Files | QDir::NoSymLinks,
+        QDir::Name);
+    const QString alphaPath = alphaFrames.size() == 1
+        ? QDir(previewDirectory.path()).filePath(alphaFrames.constFirst())
+        : QString();
     const QImage source(sourcePath);
     const QImage alpha(alphaPath);
     if (source.isNull() || alpha.isNull()) {
@@ -320,9 +327,12 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     }
     previewOffset = qBound<int64_t>(
         0, previewOffset, qMax<int64_t>(0, clipSnapshot.durationFrames - 1));
-    const int64_t previewSourceFrame = qMax<int64_t>(
-        1, clipSnapshot.sourceInFrame +
-               static_cast<int64_t>(std::llround(previewOffset * clipSnapshot.playbackRate)) + 1);
+    const int64_t previewTimelineFrame = clipSnapshot.startFrame + previewOffset;
+    const int64_t previewSourceFrame = requestedSourceFrameForGeneratedMaskPreview(
+        clipSnapshot,
+        m_timeline->clips(),
+        static_cast<qreal>(previewTimelineFrame),
+        m_timeline->renderSyncMarkers());
     if (!inputInfo.isFile()) {
         QMessageBox::warning(this, QStringLiteral("BiRefNet"),
                              QStringLiteral("The source video does not exist:\n%1")
@@ -394,14 +404,14 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
         "Minimum foreground confidence. Higher values remove faint background leakage; "
         "0% preserves BiRefNet's original continuous alpha."));
     form->addRow(QStringLiteral("Alpha tolerance"), alphaToleranceSpin);
-    auto* createMaskMarker = new QCheckBox(
-        QStringLiteral("Create a Mask Z Marker when generation finishes"), &preflight);
-    createMaskMarker->setChecked(
-        settings.value(QStringLiteral("birefnet/createMaskMarker"), true).toBool());
-    createMaskMarker->setToolTip(QStringLiteral(
-        "Creates a locked, movable masked foreground layer so effects and replacement "
-        "backgrounds can be placed behind the rotoscoped subject immediately."));
-    form->addRow(QString(), createMaskMarker);
+    auto* maskMatteNote = new QLabel(QStringLiteral(
+        "The generated alpha is added as a source-linked Mask Matte child."),
+        &preflight);
+    maskMatteNote->setWordWrap(true);
+    maskMatteNote->setToolTip(QStringLiteral(
+        "The Mask Matte child owns the sidecar and visual treatment while the source "
+        "parent remains authoritative for media, timing, and transforms."));
+    form->addRow(QStringLiteral("Timeline"), maskMatteNote);
     auto* rootMode = new QCheckBox(QStringLiteral("Run Docker container as root"), &preflight);
     rootMode->setChecked(false);
     form->addRow(QString(), rootMode);
@@ -479,9 +489,6 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     const double alphaTolerance = alphaToleranceSpin->value() / 100.0;
     settings.setValue(
         QStringLiteral("birefnet/alphaTolerancePercent"), alphaToleranceSpin->value());
-    const bool shouldCreateMaskMarker = createMaskMarker->isChecked();
-    settings.setValue(QStringLiteral("birefnet/createMaskMarker"), shouldCreateMaskMarker);
-
     const QString outputDir = inputInfo.dir().absoluteFilePath(
         QStringLiteral("%1_birefnet_alpha_masks").arg(inputInfo.completeBaseName()));
     const QString jobRoot = jcut::jobs::defaultJobRootForInput(
@@ -548,7 +555,7 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
                     {QStringLiteral("device"), deviceCombo->currentData().toString()},
                     {QStringLiteral("fp16"), fp16->isChecked()},
                     {QStringLiteral("alpha_tolerance"), alphaTolerance},
-                    {QStringLiteral("create_mask_marker"), shouldCreateMaskMarker},
+                    {QStringLiteral("create_mask_marker"), true},
                     {QStringLiteral("docker_root_mode"), rootMode->isChecked()},
                     {QStringLiteral("live_preview"), true}},
         QJsonObject{{QStringLiteral("alpha_masks_dir"), outputDir},
@@ -727,7 +734,7 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
                                    QStringLiteral("15"), containerName});
     });
     connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), progress,
-            [this, manifestPath, output, stop, clipId, outputDir, shouldCreateMaskMarker,
+            [this, manifestPath, output, stop, clipId, outputDir,
              previewTimer, refreshLivePreview, process, processLog,
              statusLabel, frameProgress, stopRequested](int exitCode, QProcess::ExitStatus status) {
         const QByteArray finalChunk = process->readAllStandardOutput();
@@ -771,35 +778,39 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
             succeeded ? QStringLiteral("completed")
                       : stopped ? QStringLiteral("stopped") : QStringLiteral("failed"),
             manifestPatch, nullptr);
-        bool attached = false;
-        bool markerCreated = false;
+        bool sourceAvailable = false;
+        bool matteCreated = false;
         if (succeeded && m_timeline) {
-            attached = m_timeline->updateClipById(clipId, [outputDir](TimelineClip& item) {
-                item.maskEnabled = true;
-                item.maskFramesDir = outputDir;
-            });
-            if (attached && shouldCreateMaskMarker) {
-                markerCreated = m_timeline->createOrReplaceMaskZMarker(clipId, false);
+            sourceAvailable = std::any_of(
+                m_timeline->clips().cbegin(),
+                m_timeline->clips().cend(),
+                [&](const TimelineClip& clip) {
+                    return clip.id == clipId &&
+                           clip.clipRole == ClipRole::Media &&
+                           clip.mediaType == ClipMediaType::Video;
+                });
+            if (sourceAvailable) {
+                matteCreated = m_timeline->createOrReplaceMaskMatteForSidecar(
+                    clipId, outputDir, false);
             }
         }
-        if (attached) {
+        if (sourceAvailable) {
             if (m_preview) {
                 m_preview->setTimelineTracks(m_timeline->tracks());
                 m_preview->setTimelineClips(m_timeline->clips());
             }
             if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Masks"));
-            scheduleSaveState();
         }
-        if (succeeded && attached) {
+        if (succeeded && sourceAvailable) {
             frameProgress->setValue(1000);
             frameProgress->setFormat(QStringLiteral("Completed"));
             statusLabel->setText(QStringLiteral("BiRefNet completed successfully."));
             statusLabel->setStyleSheet(QStringLiteral(
                 "QLabel { color: #78d99b; font-weight: 600; padding: 4px 8px; }"));
             output->appendPlainText(
-                markerCreated
-                    ? QStringLiteral("\nBiRefNet completed. The alpha sidecar is active and a Mask Z Marker was created.")
-                    : QStringLiteral("\nBiRefNet completed and the alpha sidecar is active on the clip."));
+                matteCreated
+                    ? QStringLiteral("\nBiRefNet completed. The alpha sidecar is active and a Mask Matte layer was created.")
+                    : QStringLiteral("\nBiRefNet completed. The alpha sidecar is available in the Masks tab."));
         } else {
             if (succeeded) {
                 statusLabel->setText(QStringLiteral(

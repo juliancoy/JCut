@@ -39,6 +39,32 @@ RenderFrameClock renderFrameClockForTimelineSample(int64_t timelineSample);
 ClipFrameMapping clipFrameMappingForClock(const TimelineClip& clip,
                                           const RenderFrameClock& clock,
                                           const QVector<RenderSyncMarker>& markers);
+// A sync-locked generated follower has no independent media clock. Resolve
+// the clip whose trim/rate/marker identity owns timeline-to-source mapping.
+// The returned reference is either `clip` or an element of `timelineClips`.
+const TimelineClip& resolvedClipTimingSource(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips);
+// Return the visual/effect owner with only its clock identity replaced by the
+// resolved source owner. This lets generated followers keep their own grade,
+// masks, corrections, and effect parameters while render-sync markers and
+// playback timing are evaluated in the parent's domain.
+TimelineClip clipWithResolvedTimingOwner(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips);
+ClipFrameMapping clipFrameMappingForClock(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    const RenderFrameClock& clock,
+    const QVector<RenderSyncMarker>& markers);
+// Resolve the source-frame request used by generated-mask single-frame
+// previews. The generated child has no independent clock, so this must use the
+// same parent-aware trim/rate/render-sync mapping as preview and export.
+int64_t requestedSourceFrameForGeneratedMaskPreview(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers);
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers);

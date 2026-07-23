@@ -62,6 +62,7 @@ public:
     size_t descriptorSetIndex() const { return m_descriptorSetIndex; }
     size_t descriptorSetCount() const { return m_descriptorSets.size(); }
     bool isReady() const { return m_initialized; }
+    VkImage sampledImage() const { return m_textureImage; }
     VkImageView sampledImageView() const { return m_textureView; }
     VkImageLayout sampledImageLayout() const { return m_textureLayout; }
 

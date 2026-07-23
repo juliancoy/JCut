@@ -6,6 +6,7 @@
 #include "direct_vulkan_preview_config.h"
 #include "direct_vulkan_preview_geometry.h"
 #include "direct_vulkan_preview_interaction.h"
+#include "direct_vulkan_media_handoff_plan.h"
 #include "direct_vulkan_preview_overlay_rendering.h"
 #include "direct_vulkan_preview_transcript.h"
 #include "direct_vulkan_frame_handoff_pipeline.h"
@@ -289,62 +290,11 @@ public:
 
     void schedulePreviewUpdate()
     {
-        constexpr qint64 kStalePreviewUpdateMs = 250;
-        constexpr int kStaleRequestsBeforeSurfaceRestart = 4;
-        const qint64 now = previewUpdateClockMs();
         if (m_updatePending) {
-            const qint64 pendingAgeMs = m_updateRequestMs >= 0 ? now - m_updateRequestMs : 0;
-            if (pendingAgeMs < kStalePreviewUpdateMs) {
-                return;
-            }
-            // QVulkanWindow update requests can occasionally be dropped by the
-            // platform integration. Do not let one lost event latch the preview
-            // permanently: refresh the request timestamp and ask Qt again.
-            if (m_stats) {
-                ++m_stats->stalePreviewUpdateRecoveries;
-                m_stats->lastStalePreviewUpdateAgeMs = static_cast<double>(pendingAgeMs);
-                const int64_t recoveryCount = m_stats->stalePreviewUpdateRecoveries;
-                if (recoveryCount == 1 || recoveryCount % 30 == 0) {
-                    qWarning().noquote()
-                        << QStringLiteral("[vulkan-preview] recovering stale update request age_ms=%1 count=%2")
-                               .arg(pendingAgeMs)
-                               .arg(recoveryCount);
-                }
-            }
-            ++m_consecutiveStaleUpdateRequests;
-            if (m_consecutiveStaleUpdateRequests >= kStaleRequestsBeforeSurfaceRestart) {
-                const bool waylandPlatform =
-                    QGuiApplication::platformName().startsWith(QStringLiteral("wayland"),
-                                                               Qt::CaseInsensitive);
-                if (!waylandPlatform) {
-                    // requestUpdate() cannot clear QVulkanWindow's private
-                    // frame-pending latch when a platform UpdateRequest is
-                    // lost. Cycling visibility is safe for the X11 container
-                    // and forces Qt to recreate its swapchain state.
-                    if (m_stats) {
-                        ++m_stats->previewSurfaceRestarts;
-                    }
-                    qWarning().noquote()
-                        << QStringLiteral("[vulkan-preview] restarting stalled preview surface after %1 stale update requests")
-                               .arg(m_consecutiveStaleUpdateRequests);
-                    hide();
-                    show();
-                } else {
-                    // Recreating an embedded Vulkan native child invalidates
-                    // Qt's Wayland surface role and can terminate the entire
-                    // display connection with EINVAL. Keep the surface alive
-                    // and re-arm the update request instead.
-                    qWarning().noquote()
-                        << QStringLiteral("[vulkan-preview] rearming stalled Wayland preview after %1 stale update requests")
-                               .arg(m_consecutiveStaleUpdateRequests);
-                }
-                m_consecutiveStaleUpdateRequests = 0;
-                m_updatePending = false;
-                m_updateRequestMs = -1;
-            }
+            return;
         }
         m_updatePending = true;
-        m_updateRequestMs = now;
+        m_updateRequestMs = QDateTime::currentMSecsSinceEpoch();
         if (m_stats) {
             ++m_stats->previewUpdateRequests;
         }
@@ -366,21 +316,7 @@ public:
                 }
             }
         }
-        // Do not call QVulkanWindow::requestUpdate() synchronously from
-        // startNextFrame(). On Wayland, frameReady() does not clear Qt's
-        // private update-pending latch until control returns to the event
-        // loop, so a synchronous request for the next playback frame can be
-        // silently discarded. Delivering it on the next event-loop turn
-        // makes the request after Qt has finished the current frame.
-        if (!m_updateDeliveryQueued) {
-            m_updateDeliveryQueued = true;
-            QMetaObject::invokeMethod(this, [this]() {
-                m_updateDeliveryQueued = false;
-                if (m_updatePending) {
-                    requestUpdate();
-                }
-            }, Qt::QueuedConnection);
-        }
+        requestUpdate();
     }
 
     bool updatePending() const
@@ -1215,7 +1151,7 @@ public:
     {
         if (m_updatePending && m_updateRequestMs >= 0 && m_stats) {
             const double latencyMs =
-                static_cast<double>(previewUpdateClockMs() - m_updateRequestMs);
+                static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_updateRequestMs);
             ++m_stats->previewUpdatesDelivered;
             m_stats->lastPreviewUpdateLatencyMs = latencyMs;
             m_stats->maxPreviewUpdateLatencyMs =
@@ -1223,7 +1159,6 @@ public:
         }
         m_updatePending = false;
         m_updateRequestMs = -1;
-        m_consecutiveStaleUpdateRequests = 0;
     }
     void setLatestVulkanReadbackImage(const QImage& image)
     {
@@ -1318,21 +1253,10 @@ private:
     bool m_pipelineThumbnailReadbackPending = false;
     qint64 m_lastPipelineThumbnailReadbackMs = 0;
     bool m_updatePending = false;
-    bool m_updateDeliveryQueued = false;
     bool m_scheduledWhileExposed = false;
     QSize m_lastExposeScheduledSize;
     qint64 m_updateRequestMs = -1;
-    int m_consecutiveStaleUpdateRequests = 0;
-    QElapsedTimer m_previewUpdateClock;
     qint64 m_lastPresentMs = 0;
-
-    qint64 previewUpdateClockMs()
-    {
-        if (!m_previewUpdateClock.isValid()) {
-            m_previewUpdateClock.start();
-        }
-        return m_previewUpdateClock.elapsed();
-    }
 };
 
 void DirectVulkanPreviewRenderer::initResources()
@@ -2244,33 +2168,195 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     QHash<QString, PreparedTitleOverlay> preparedTitleOverlays;
     QHash<QString, EvaluatedTitle> prepared3DTitleOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
+    qint64 mediaOwnerHandoffAttemptCount = 0;
+    qint64 mediaOwnerHandoffSuccessCount = 0;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
                                 m_pipeline->isReady();
     if (state && !forceChecker && canDrawTexture) {
+        const QVector<MediaOwnerHandoffPlanEntry> handoffPlan =
+            mediaOwnerHandoffPlan(state->vulkanFrameStatuses);
         QSet<QString> activeHandoffClipIds;
-        for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
-            if (!status.active || status.drawSuppressed) {
-                continue;
+        for (const MediaOwnerHandoffPlanEntry& entry : handoffPlan) {
+            activeHandoffClipIds.insert(entry.mediaOwnerClipId);
+            if (entry.providerStatusIndex >= 0 &&
+                entry.providerStatusIndex < state->vulkanFrameStatuses.size()) {
+                const VulkanPreviewClipFrameStatus& providerStatus =
+                    state->vulkanFrameStatuses.at(entry.providerStatusIndex);
+                if (providerStatus.frameCrossfadeActive &&
+                    !providerStatus.frameCrossfadeFrame.isNull()) {
+                    activeHandoffClipIds.insert(
+                        entry.mediaOwnerClipId + QStringLiteral("#frameCrossfade"));
+                }
             }
-            activeHandoffClipIds.insert(status.clipId);
-            if (status.frameCrossfadeActive) {
-                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#frameCrossfade"));
-            }
-            if (status.differenceMatteEnabled) {
-                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#differenceReference"));
-            }
-            for (int i = 0; i < status.temporalEchoFrames.size(); ++i) {
-                activeHandoffClipIds.insert(status.clipId + QStringLiteral("#temporalEcho%1").arg(i));
+            for (const int statusIndex : entry.consumerStatusIndices) {
+                const VulkanPreviewClipFrameStatus& status =
+                    state->vulkanFrameStatuses.at(statusIndex);
+                activeHandoffClipIds.insert(status.clipId);
+                if (status.frameCrossfadeActive) {
+                    activeHandoffClipIds.insert(status.clipId + QStringLiteral("#frameCrossfade"));
+                }
+                if (status.differenceMatteEnabled) {
+                    activeHandoffClipIds.insert(status.clipId + QStringLiteral("#differenceReference"));
+                }
+                for (int i = 0; i < status.temporalEchoFrames.size(); ++i) {
+                    activeHandoffClipIds.insert(
+                        status.clipId + QStringLiteral("#temporalEcho%1").arg(i));
+                }
             }
         }
         pruneClipHandoffResources(activeHandoffClipIds);
         updateClipHandoffResourceStats();
-        for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
-            if (!status.active || status.drawSuppressed) {
+
+        const auto prepareBaseMediaOwner = [&](
+            const VulkanPreviewClipFrameStatus& providerStatus,
+            ClipHandoffResources* mediaOwnerResources) {
+            DirectVulkanFrameHandoffPipeline::Result ownerResult;
+            if (!mediaOwnerResources || !mediaOwnerResources->resources ||
+                !mediaOwnerResources->pipeline) {
+                return ownerResult;
+            }
+            if (providerStatus.frame.hasCpuImage() &&
+                !providerStatus.frame.hasHardwareFrame() &&
+                !providerStatus.externalVulkanFrame) {
+                ownerResult.attempted = true;
+                ownerResult.sampledFrameReady =
+                    mediaOwnerResources->resources->uploadImageTexture(
+                        cb, providerStatus.frame.cpuImage());
+                ownerResult.descriptorSet = ownerResult.sampledFrameReady
+                    ? mediaOwnerResources->resources->descriptorSet()
+                    : VK_NULL_HANDLE;
+                ownerResult.descriptorSetIndex = static_cast<int>(
+                    mediaOwnerResources->resources->descriptorSetIndex());
+                ownerResult.descriptorSetCount = static_cast<int>(
+                    mediaOwnerResources->resources->descriptorSetCount());
+                const QSize providerFrameSize = providerStatus.frameSize.isValid()
+                    ? providerStatus.frameSize
+                    : providerStatus.frame.size();
+                ownerResult.size = {providerFrameSize.width(), providerFrameSize.height()};
+                ownerResult.format = VK_FORMAT_R8G8B8A8_UNORM;
+                if (ownerResult.sampledFrameReady) {
+                    ownerResult.image = mediaOwnerResources->resources->sampledImage();
+                    ownerResult.imageView = mediaOwnerResources->resources->sampledImageView();
+                    ownerResult.layout = mediaOwnerResources->resources->sampledImageLayout();
+                }
+                if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+                    ++stats->handoffAttempts;
+                    if (ownerResult.sampledFrameReady) {
+                        ++stats->handoffSuccesses;
+                        ++stats->sampledImageReady;
+                        stats->lastHandoffError.clear();
+                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload");
+                        stats->lastExternalImageSize = providerFrameSize;
+                        stats->lastVulkanImageFormat =
+                            jcut::direct_vulkan_preview::vulkanFormatName(ownerResult.format);
+                        stats->descriptorSetIndex = ownerResult.descriptorSetIndex;
+                        stats->descriptorSetCount = ownerResult.descriptorSetCount;
+                    } else {
+                        ++stats->handoffFailures;
+                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload_failed");
+                        stats->lastHandoffError = QStringLiteral(
+                            "Failed to upload CPU media-owner frame to Vulkan texture.");
+                    }
+                }
+            } else {
+                ownerResult = mediaOwnerResources->pipeline->record(
+                    cb,
+                    swapchainImageIndex,
+                    providerStatus,
+                    mediaOwnerResources->resources.get(),
+                    m_owner ? m_owner->stats() : nullptr);
+            }
+            return ownerResult;
+        };
+        const auto frameCrossfadeHandoffStatus = [](
+            const VulkanPreviewClipFrameStatus& status,
+            const QString& handoffKey) {
+            VulkanPreviewClipFrameStatus secondaryStatus = status;
+            secondaryStatus.clipId = handoffKey;
+            secondaryStatus.frame = status.frameCrossfadeFrame;
+            secondaryStatus.frameSize = status.frameCrossfadeFrameSize;
+            secondaryStatus.requestedSourceFrame =
+                status.frameCrossfadeRequestedSourceFrame;
+            secondaryStatus.presentedSourceFrame =
+                status.frameCrossfadePresentedSourceFrame;
+            secondaryStatus.hasFrame = !secondaryStatus.frame.isNull();
+            secondaryStatus.externalVulkanFrame = false;
+            secondaryStatus.externalImage = VK_NULL_HANDLE;
+            secondaryStatus.externalImageView = VK_NULL_HANDLE;
+            secondaryStatus.externalImageMemory = VK_NULL_HANDLE;
+            secondaryStatus.externalReadySemaphoreFd = -1;
+            return secondaryStatus;
+        };
+
+        // Upload/import each decoded media payload exactly once. A hidden
+        // parent can be the provider even though it is never composited; when
+        // that status was omitted, the first child carries its cloned payload.
+        QHash<QString, DirectVulkanFrameHandoffPipeline::Result> mediaOwnerHandoffResults;
+        for (const MediaOwnerHandoffPlanEntry& entry : handoffPlan) {
+            if (entry.providerStatusIndex < 0 ||
+                entry.providerStatusIndex >= state->vulkanFrameStatuses.size()) {
                 continue;
             }
-            const QString mediaOwnerId = status.mediaOwnerClipId.trimmed();
+            const VulkanPreviewClipFrameStatus& providerStatus =
+                state->vulkanFrameStatuses.at(entry.providerStatusIndex);
+            ClipHandoffResources* mediaOwnerResources =
+                ensureClipHandoffResources(entry.mediaOwnerClipId);
+            if (!mediaOwnerResources || !mediaOwnerResources->resources ||
+                !mediaOwnerResources->pipeline ||
+                !mediaOwnerResources->resources->beginFrameUploads(
+                    swapchainImageIndex,
+                    qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                 static_cast<size_t>(swapchainImageIndex) + 1))) {
+                continue;
+            }
+            DirectVulkanFrameHandoffPipeline::Result ownerResult =
+                prepareBaseMediaOwner(providerStatus, mediaOwnerResources);
+            mediaOwnerHandoffAttemptCount += ownerResult.attempted ? 1 : 0;
+            mediaOwnerHandoffSuccessCount += ownerResult.sampledFrameReady ? 1 : 0;
+            mediaOwnerHandoffResults.insert(entry.mediaOwnerClipId, ownerResult);
+            frameHandoffResults.insert(entry.mediaOwnerClipId, ownerResult);
+            mediaOwnerResources->resources->ensureAuxiliaryImagesReadable(cb);
+
+            if (providerStatus.frameCrossfadeActive &&
+                !providerStatus.frameCrossfadeFrame.isNull()) {
+                const QString ownerSecondaryKey =
+                    entry.mediaOwnerClipId + QStringLiteral("#frameCrossfade");
+                ClipHandoffResources* ownerSecondaryResources =
+                    ensureClipHandoffResources(ownerSecondaryKey);
+                if (ownerSecondaryResources && ownerSecondaryResources->resources &&
+                    ownerSecondaryResources->pipeline &&
+                    ownerSecondaryResources->resources->beginFrameUploads(
+                        swapchainImageIndex,
+                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
+                    const VulkanPreviewClipFrameStatus ownerSecondaryStatus =
+                        frameCrossfadeHandoffStatus(providerStatus, ownerSecondaryKey);
+                    DirectVulkanFrameHandoffPipeline::Result secondaryOwnerResult =
+                        prepareBaseMediaOwner(ownerSecondaryStatus, ownerSecondaryResources);
+                    mediaOwnerHandoffAttemptCount += secondaryOwnerResult.attempted ? 1 : 0;
+                    mediaOwnerHandoffSuccessCount +=
+                        secondaryOwnerResult.sampledFrameReady ? 1 : 0;
+                    mediaOwnerHandoffResults.insert(ownerSecondaryKey, secondaryOwnerResult);
+                    frameHandoffResults.insert(ownerSecondaryKey, secondaryOwnerResult);
+                    ownerSecondaryResources->resources->ensureAuxiliaryImagesReadable(cb);
+                }
+            }
+        }
+
+        for (const MediaOwnerHandoffPlanEntry& entry : handoffPlan) {
+            if (entry.providerStatusIndex < 0 ||
+                entry.providerStatusIndex >= state->vulkanFrameStatuses.size()) {
+                continue;
+            }
+            const VulkanPreviewClipFrameStatus& providerStatus =
+                state->vulkanFrameStatuses.at(entry.providerStatusIndex);
+            const DirectVulkanFrameHandoffPipeline::Result ownerResult =
+                mediaOwnerHandoffResults.value(entry.mediaOwnerClipId);
+            for (const int statusIndex : entry.consumerStatusIndices) {
+                const VulkanPreviewClipFrameStatus& status =
+                    state->vulkanFrameStatuses.at(statusIndex);
+                const QString mediaOwnerId = entry.mediaOwnerClipId;
             // A virtual mask child may reuse the parent's decoded image, but
             // it must own a descriptor set so its mask and curve bindings
             // cannot alter the parent's draw.
@@ -2279,24 +2365,23 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
                 continue;
             }
-            const bool reusesParentMedia =
-                !mediaOwnerId.isEmpty() &&
-                mediaOwnerId != status.clipId &&
-                frameHandoffResults.contains(mediaOwnerId) &&
-                frameHandoffResults.value(mediaOwnerId).imageView != VK_NULL_HANDLE;
-            if (!handoffResources->resources->beginFrameUploads(
-                    swapchainImageIndex,
-                    qMax<size_t>(VulkanResources::kDescriptorSetCount,
-                                 static_cast<size_t>(swapchainImageIndex) + 1))) {
-                continue;
-            }
             DirectVulkanFrameHandoffPipeline::Result handoffResult;
-            if (reusesParentMedia) {
-                const DirectVulkanFrameHandoffPipeline::Result ownerResult =
-                    frameHandoffResults.value(mediaOwnerId);
+            if (handoffResourceId == mediaOwnerId) {
+                handoffResult = ownerResult;
+            } else {
+                if (!handoffResources->resources->beginFrameUploads(
+                        swapchainImageIndex,
+                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
+                    continue;
+                }
+                const bool reusesParentMedia =
+                    mediaOwnerPayloadMatches(providerStatus, status) &&
+                    ownerResult.sampledFrameReady &&
+                    ownerResult.imageView != VK_NULL_HANDLE;
                 handoffResult = ownerResult;
                 handoffResult.attempted = false;
-                handoffResult.sampledFrameReady = ownerResult.sampledFrameReady &&
+                handoffResult.sampledFrameReady = reusesParentMedia &&
                     handoffResources->resources->setSampledImage(ownerResult.imageView,
                                                                   ownerResult.layout);
                 handoffResult.descriptorSet = handoffResult.sampledFrameReady
@@ -2306,48 +2391,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     static_cast<int>(handoffResources->resources->descriptorSetIndex());
                 handoffResult.descriptorSetCount =
                     static_cast<int>(handoffResources->resources->descriptorSetCount());
-            } else if (status.frame.hasCpuImage() &&
-                !status.frame.hasHardwareFrame() &&
-                !status.externalVulkanFrame) {
-                handoffResult.attempted = true;
-                handoffResult.sampledFrameReady =
-                    handoffResources->resources->uploadImageTexture(cb, status.frame.cpuImage());
-                handoffResult.descriptorSet =
-                    handoffResult.sampledFrameReady
-                        ? handoffResources->resources->descriptorSet()
-                        : VK_NULL_HANDLE;
-                handoffResult.descriptorSetIndex =
-                    static_cast<int>(handoffResources->resources->descriptorSetIndex());
-                handoffResult.descriptorSetCount =
-                    static_cast<int>(handoffResources->resources->descriptorSetCount());
-                handoffResult.size = {status.frameSize.width(), status.frameSize.height()};
-                handoffResult.format = VK_FORMAT_R8G8B8A8_UNORM;
-                if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
-                    ++stats->handoffAttempts;
-                    if (handoffResult.sampledFrameReady) {
-                        ++stats->handoffSuccesses;
-                        ++stats->sampledImageReady;
-                        stats->lastHandoffError.clear();
-                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload");
-                        stats->lastExternalImageSize = status.frameSize;
-                        stats->lastVulkanImageFormat =
-                            jcut::direct_vulkan_preview::vulkanFormatName(handoffResult.format);
-                        stats->descriptorSetIndex = handoffResult.descriptorSetIndex;
-                        stats->descriptorSetCount = handoffResult.descriptorSetCount;
-                    } else {
-                        ++stats->handoffFailures;
-                        stats->lastHandoffMode = QStringLiteral("cpu_image_upload_failed");
-                        stats->lastHandoffError =
-                            QStringLiteral("Failed to upload CPU image frame to Vulkan texture.");
-                    }
-                }
-            } else {
-                handoffResult = handoffResources->pipeline->record(
-                    cb,
-                    swapchainImageIndex,
-                    status,
-                    handoffResources->resources.get(),
-                    m_owner ? m_owner->stats() : nullptr);
             }
             frameHandoffResults.insert(status.clipId, handoffResult);
             const auto prepareAuxiliaryFrame = [&](const QString& key, const editor::FrameHandle& frame) {
@@ -2394,55 +2437,45 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 !status.frameCrossfadeFrame.isNull()) {
                 const QString secondaryHandoffKey =
                     status.clipId + QStringLiteral("#frameCrossfade");
+                const QString ownerSecondaryKey =
+                    mediaOwnerId + QStringLiteral("#frameCrossfade");
                 ClipHandoffResources* secondaryHandoffResources =
                     ensureClipHandoffResources(secondaryHandoffKey);
                 if (secondaryHandoffResources &&
                     secondaryHandoffResources->resources &&
-                    secondaryHandoffResources->pipeline &&
-                    secondaryHandoffResources->resources->beginFrameUploads(
-                        swapchainImageIndex,
-                        qMax<size_t>(VulkanResources::kDescriptorSetCount,
-                                     static_cast<size_t>(swapchainImageIndex) + 1))) {
-                    VulkanPreviewClipFrameStatus secondaryStatus = status;
-                    secondaryStatus.frame = status.frameCrossfadeFrame;
-                    secondaryStatus.frameSize = status.frameCrossfadeFrameSize;
-                    secondaryStatus.requestedSourceFrame =
-                        status.frameCrossfadeRequestedSourceFrame;
-                    secondaryStatus.presentedSourceFrame =
-                        status.frameCrossfadePresentedSourceFrame;
-                    secondaryStatus.hasFrame = true;
-                    secondaryStatus.externalVulkanFrame = false;
-                    secondaryStatus.externalImage = VK_NULL_HANDLE;
-                    secondaryStatus.externalImageView = VK_NULL_HANDLE;
-                    secondaryStatus.externalImageMemory = VK_NULL_HANDLE;
-                    secondaryStatus.externalReadySemaphoreFd = -1;
-
+                    secondaryHandoffResources->pipeline) {
+                    const VulkanPreviewClipFrameStatus secondaryStatus =
+                        frameCrossfadeHandoffStatus(status, secondaryHandoffKey);
+                    const VulkanPreviewClipFrameStatus providerSecondaryStatus =
+                        frameCrossfadeHandoffStatus(providerStatus, ownerSecondaryKey);
+                    const DirectVulkanFrameHandoffPipeline::Result secondaryOwnerResult =
+                        mediaOwnerHandoffResults.value(ownerSecondaryKey);
                     DirectVulkanFrameHandoffPipeline::Result secondaryResult;
-                    if (secondaryStatus.frame.hasCpuImage() &&
-                        !secondaryStatus.frame.hasHardwareFrame()) {
-                        secondaryResult.attempted = true;
-                        secondaryResult.sampledFrameReady =
-                            secondaryHandoffResources->resources->uploadImageTexture(
-                                cb, secondaryStatus.frame.cpuImage());
-                        secondaryResult.descriptorSet =
-                            secondaryResult.sampledFrameReady
-                                ? secondaryHandoffResources->resources->descriptorSet()
-                                : VK_NULL_HANDLE;
+                    if (secondaryHandoffKey == ownerSecondaryKey) {
+                        secondaryResult = secondaryOwnerResult;
+                    } else if (secondaryHandoffResources->resources->beginFrameUploads(
+                                   swapchainImageIndex,
+                                   qMax<size_t>(VulkanResources::kDescriptorSetCount,
+                                                static_cast<size_t>(swapchainImageIndex) + 1))) {
+                        const bool reusesOwnerSecondary =
+                            mediaOwnerPayloadMatches(providerSecondaryStatus, secondaryStatus) &&
+                            secondaryOwnerResult.sampledFrameReady &&
+                            secondaryOwnerResult.imageView != VK_NULL_HANDLE;
+                        secondaryResult = secondaryOwnerResult;
+                        secondaryResult.attempted = false;
+                        secondaryResult.sampledFrameReady = reusesOwnerSecondary &&
+                            secondaryHandoffResources->resources->setSampledImage(
+                                secondaryOwnerResult.imageView,
+                                secondaryOwnerResult.layout);
+                        secondaryResult.descriptorSet = secondaryResult.sampledFrameReady
+                            ? secondaryHandoffResources->resources->descriptorSet()
+                            : VK_NULL_HANDLE;
                         secondaryResult.descriptorSetIndex = static_cast<int>(
                             secondaryHandoffResources->resources->descriptorSetIndex());
                         secondaryResult.descriptorSetCount = static_cast<int>(
                             secondaryHandoffResources->resources->descriptorSetCount());
-                        secondaryResult.size = {
-                            secondaryStatus.frameSize.width(),
-                            secondaryStatus.frameSize.height()};
-                        secondaryResult.format = VK_FORMAT_R8G8B8A8_UNORM;
                     } else {
-                        secondaryResult = secondaryHandoffResources->pipeline->record(
-                            cb,
-                            swapchainImageIndex,
-                            secondaryStatus,
-                            secondaryHandoffResources->resources.get(),
-                            m_owner ? m_owner->stats() : nullptr);
+                        secondaryResult = {};
                     }
                     frameHandoffResults.insert(secondaryHandoffKey, secondaryResult);
                     secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
@@ -2479,6 +2512,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 handoffResult.descriptorSetIndex =
                     static_cast<int>(handoffResources->resources->descriptorSetIndex());
                 frameHandoffResults.insert(status.clipId, handoffResult);
+            }
             }
         }
         updateClipHandoffResourceStats();
@@ -2985,8 +3019,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     beginRenderPass();
     int64_t presentedSourceFrame = -1;
-    qint64 handoffAttemptCount = 0;
-    qint64 handoffSuccessCount = 0;
+    qint64 handoffAttemptCount = mediaOwnerHandoffAttemptCount;
+    qint64 handoffSuccessCount = mediaOwnerHandoffSuccessCount;
     VulkanPipeline::Push finalCompositeStretchPush{};
     bool finalCompositeStretchReady = false;
     QRectF finalCompositeRect;
@@ -3101,9 +3135,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             const bool sampledFrameReady =
                 handoffResult.sampledFrameReady && handoffResult.descriptorSet != VK_NULL_HANDLE;
-            const bool handoffAttempted = handoffResult.attempted;
-            handoffAttemptCount += handoffAttempted ? 1 : 0;
-            handoffSuccessCount += sampledFrameReady ? 1 : 0;
+            const QString mediaOwnerClipId = status
+                ? status->mediaOwnerClipId.trimmed()
+                : QString();
+            const bool handoffAttempted = handoffResult.attempted ||
+                (!mediaOwnerClipId.isEmpty() &&
+                 frameHandoffResults.value(mediaOwnerClipId).attempted);
             if (sampledFrameReady) {
                 decoderReadbackCandidate.image = handoffResult.image;
                 decoderReadbackCandidate.layout = handoffResult.layout;
@@ -3116,8 +3153,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     ++stats->textureDraws;
                     ++stats->activeClipDraws;
                 }
-                const TimelineClip effectClip =
-                    clipWithTrackEffectSettings(clip, state->tracks);
+                const TimelineClip effectClip = clipWithResolvedTimingOwner(
+                    clipWithRenderableEffectSettings(clip, state->tracks),
+                    state->clips);
                 const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
                     render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks);
                 const bool progressiveEdgeStretchEffect =
@@ -3401,7 +3439,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             basePush.brightness = static_cast<float>(status->maskGradeBrightness);
                             basePush.contrast = static_cast<float>(status->maskGradeContrast);
                             basePush.saturation = static_cast<float>(status->maskGradeSaturation);
-                            basePush.opacity = 1.0f;
                             if (maskCurveLutUploadResults.value(status->clipId, false)) {
                                 basePush.midtones[3] = render_detail::kVulkanMaskGradeUseSelectedCurveLut;
                             } else if (status->maskCurveLutApplied) {

@@ -531,6 +531,14 @@ QVector<ExportRangeSegment> subtractRanges(const QVector<ExportRangeSegment>& ba
 
 QString TranscriptEngine::transcriptPathForClip(const TimelineClip &clip) const
     {
+        const QString registeredCutPath = registeredActiveTranscriptPathForClip(clip);
+        if (!registeredCutPath.isEmpty()) {
+            return registeredCutPath;
+        }
+        const QString explicitCutPath = clip.transcriptActiveCutPath.trimmed();
+        if (!explicitCutPath.isEmpty() && QFileInfo::exists(explicitCutPath)) {
+            return QFileInfo(explicitCutPath).absoluteFilePath();
+        }
         return activeTranscriptPathForClip(clip);
     }
 

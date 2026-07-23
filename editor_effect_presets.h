@@ -23,9 +23,16 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip);
 TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip,
                                const editor::masks::MaskSidecar& sidecar,
                                int zLevel);
+// Updates the path and its derived stable identity as one association change.
+// An empty path clears both fields.
+bool setMaskSidecarAssociation(TimelineClip& clip, const QString& directory);
+QString maskMatteChildIdForSidecar(const QVector<TimelineClip>& clips,
+                                   const QString& sourceClipId,
+                                   const QString& stableSidecarId);
 bool migrateLegacyMaskGradingToMattes(QVector<TimelineClip>& clips);
 bool normalizeMaskMatteClips(QVector<TimelineClip>& clips);
-bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips);
+bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips,
+                                        bool* runtimeAvailabilityChanged = nullptr);
 TimelineClip makeAlternatingMotionBackgroundClip(const TimelineClip& sourceClip, int trackIndex);
 TimelineClip makeSourceTilingClip(const TimelineClip& sourceClip, int trackIndex);
 

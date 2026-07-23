@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/geometry.h"
+#include "core/offscreen_vulkan_frame.h"
 #include "render.h"
 
 #include "async_decoder.h"
@@ -204,22 +205,6 @@ QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& 
                                                    const QVector<TimelineTrack>& tracks);
 
 class OffscreenVulkanRendererPrivate;
-
-struct OffscreenVulkanFrame {
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint32_t queueFamilyIndex = UINT32_MAX;
-    VkImage image = VK_NULL_HANDLE;
-    VkImageView imageView = VK_NULL_HANDLE;
-    VkDeviceMemory imageMemory = VK_NULL_HANDLE;
-    VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkFormat imageFormat = VK_FORMAT_UNDEFINED;
-    int readySemaphoreFd = -1;
-    jcut::core::SizeI size;
-    bool queueSupportsCompute = false;
-    bool valid = false;
-};
 
 struct OffscreenRenderFrame {
     QImage cpuImage;

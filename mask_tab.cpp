@@ -1,11 +1,15 @@
 #include "mask_tab.h"
+#include "editor_effect_presets.h"
 #include "editor_tab_edit_effects.h"
 #include "mask_sidecar.h"
 
 #include <QComboBox>
 #include <QDir>
+#include <QFileInfo>
 #include <QSignalBlocker>
 #include <QSpinBox>
+
+#include <algorithm>
 
 MaskTab::MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : QObject(parent)
@@ -15,6 +19,9 @@ MaskTab::MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* pare
 }
 
 namespace {
+constexpr int kSidecarIdRole = Qt::UserRole + 1;
+constexpr int kSidecarReadyRole = Qt::UserRole + 2;
+
 TabEditCallbacks maskEditCallbacks(const MaskTab::Dependencies& deps)
 {
     return TabEditCallbacks{
@@ -25,11 +32,31 @@ TabEditCallbacks maskEditCallbacks(const MaskTab::Dependencies& deps)
     };
 }
 
-QString autoMaskFramesDirForClip(const TimelineClip& clip)
+editor::masks::MaskSidecar autoMaskSidecarForClip(const TimelineClip& clip)
 {
     const QVector<editor::masks::MaskSidecar> sidecars =
         editor::masks::discoverMaskSidecars(clip);
-    return sidecars.isEmpty() ? QString() : sidecars.constFirst().directory;
+    const auto ready = std::find_if(
+        sidecars.cbegin(), sidecars.cend(), [](const editor::masks::MaskSidecar& sidecar) {
+            return sidecar.isReadyForTimeline();
+        });
+    return ready == sidecars.cend() ? editor::masks::MaskSidecar{} : *ready;
+}
+
+QString maskSourceIdForClip(const TimelineClip& clip)
+{
+    if (clip.clipRole == ClipRole::MaskMatte) {
+        return clip.linkedSourceClipId.trimmed();
+    }
+    return clip.clipRole == ClipRole::Media ? clip.id.trimmed() : QString();
+}
+
+QString maskSidecarIdForClip(const TimelineClip& clip)
+{
+    const QString persistedId = clip.generatedFromMaskId.trimmed();
+    return !persistedId.isEmpty()
+        ? persistedId
+        : editor::masks::stableMaskSidecarId(clip.maskFramesDir);
 }
 
 }
@@ -59,7 +86,10 @@ void MaskTab::wire()
             if (m_updating || index < 0 || !m_widgets.framesDirEdit) return;
             m_widgets.framesDirEdit->setText(
                 m_widgets.sidecarCombo->itemData(index).toString());
-            if (m_widgets.enabledCheck) m_widgets.enabledCheck->setChecked(true);
+            if (m_widgets.enabledCheck) {
+                QSignalBlocker blocker(m_widgets.enabledCheck);
+                m_widgets.enabledCheck->setChecked(true);
+            }
             apply(true);
         });
     }
@@ -76,6 +106,7 @@ void MaskTab::wire()
             }
             m_widgets.framesDirEdit->setText(selected);
             if (m_widgets.enabledCheck) {
+                QSignalBlocker blocker(m_widgets.enabledCheck);
                 m_widgets.enabledCheck->setChecked(true);
             }
             apply(true);
@@ -85,7 +116,12 @@ void MaskTab::wire()
         connect(m_widgets.newPromptButton, &QPushButton::clicked, this, [this]() {
             const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
             if (clip && m_deps.generatePromptMask) {
-                m_deps.generatePromptMask(clip->id);
+                const QString sourceId = clip->clipRole == ClipRole::MaskMatte
+                    ? clip->linkedSourceClipId.trimmed()
+                    : clip->id;
+                if (!sourceId.isEmpty()) {
+                    m_deps.generatePromptMask(sourceId);
+                }
             }
         });
     }
@@ -128,8 +164,47 @@ void MaskTab::wire()
 void MaskTab::refresh()
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    const bool validClip = clip && (!m_deps.clipHasVisuals || m_deps.clipHasVisuals(*clip)) &&
+    const bool validClip = clip &&
+                           (clip->clipRole == ClipRole::Media ||
+                            clip->clipRole == ClipRole::MaskMatte) &&
+                           (!m_deps.clipHasVisuals || m_deps.clipHasVisuals(*clip)) &&
                            clip->mediaType == ClipMediaType::Video;
+    const bool maskInspectorActive =
+        m_deps.isMaskInspectorActive && m_deps.isMaskInspectorActive();
+
+    // The Masks tab edits child-owned state. A source selection is only a
+    // discovery context: resolve its chosen sidecar to a materialized child
+    // before populating or enabling any treatment controls.
+    if (validClip &&
+        clip->clipRole == ClipRole::Media &&
+        maskInspectorActive) {
+        const QString sourceId = clip->id.trimmed();
+        QString directory = clip->maskFramesDir.trimmed();
+        QString sidecarId = directory.isEmpty()
+            ? QString()
+            : editor::masks::stableMaskSidecarId(directory);
+        if (directory.isEmpty()) {
+            const editor::masks::MaskSidecar discoveredSidecar = autoMaskSidecarForClip(*clip);
+            if (discoveredSidecar.isValid()) {
+                directory = discoveredSidecar.directory;
+                sidecarId = discoveredSidecar.id;
+            }
+        }
+
+        QString childId = m_deps.findMaskMatteChildForSidecar && !sidecarId.isEmpty()
+            ? m_deps.findMaskMatteChildForSidecar(sourceId, sidecarId)
+            : QString();
+        if (childId.isEmpty() &&
+            !directory.isEmpty() &&
+            m_deps.materializeMaskMatteForSidecar) {
+            childId = m_deps.materializeMaskMatteForSidecar(sourceId, directory);
+        }
+        if (!childId.isEmpty() && childId != sourceId && m_deps.selectClipById) {
+            m_deps.selectClipById(childId);
+            return;
+        }
+    }
+
     m_updating = true;
 
     if (m_widgets.clipLabel) {
@@ -141,6 +216,7 @@ void MaskTab::refresh()
 
     if (m_widgets.enabledCheck) QSignalBlocker blocker(m_widgets.enabledCheck);
     setControlsEnabled(validClip);
+    setTreatmentControlsEnabled(validClip && clip->clipRole == ClipRole::MaskMatte);
 
     auto setSpin = [](QDoubleSpinBox* spin, double value) {
         if (!spin) return;
@@ -152,29 +228,11 @@ void MaskTab::refresh()
         check->setChecked(value);
     };
 
-    bool effectiveMaskEnabled = validClip ? clip->maskEnabled : false;
-    QString effectiveMaskFramesDir = validClip ? clip->maskFramesDir : QString();
-    if (validClip && effectiveMaskFramesDir.trimmed().isEmpty()) {
-        const QString discoveredMaskDir = autoMaskFramesDirForClip(*clip);
-        if (!discoveredMaskDir.isEmpty() && m_deps.updateClipById) {
-            const QString clipId = clip->id;
-            if (m_deps.updateClipById(clipId, [discoveredMaskDir](TimelineClip& timelineClip) {
-                    timelineClip.maskEnabled = true;
-                    timelineClip.maskFramesDir = discoveredMaskDir;
-                })) {
-                effectiveMaskEnabled = true;
-                effectiveMaskFramesDir = discoveredMaskDir;
-                if (m_deps.setPreviewTimelineClips) {
-                    m_deps.setPreviewTimelineClips();
-                }
-                if (m_deps.scheduleSaveState) {
-                    m_deps.scheduleSaveState();
-                }
-            }
-        }
-    }
+    const bool effectiveMaskEnabled = validClip ? clip->maskEnabled : false;
+    const QString effectiveMaskFramesDir = validClip ? clip->maskFramesDir : QString();
 
     if (validClip) {
+        const bool treatmentActive = clip->clipRole == ClipRole::MaskMatte;
         if (m_widgets.zLevelSpin) {
             QSignalBlocker blocker(m_widgets.zLevelSpin);
             m_widgets.zLevelSpin->setValue(effectiveClipZLevel(*clip));
@@ -184,7 +242,7 @@ void MaskTab::refresh()
             QSignalBlocker blocker(m_widgets.framesDirEdit);
             m_widgets.framesDirEdit->setText(effectiveMaskFramesDir);
         }
-        if (m_widgets.sidecarCombo) {
+        if (m_widgets.sidecarCombo && maskInspectorActive) {
             QSignalBlocker blocker(m_widgets.sidecarCombo);
             m_widgets.sidecarCombo->clear();
             const QVector<editor::masks::MaskSidecar> sidecars =
@@ -199,16 +257,50 @@ void MaskTab::refresh()
                     ? QStringLiteral("%1 · %2 frames · %3–%4")
                           .arg(kind).arg(sidecar.frameCount).arg(sidecar.firstFrame).arg(sidecar.lastFrame)
                     : QStringLiteral("%1 · %2 frames").arg(kind).arg(sidecar.frameCount);
+                const QString readiness = sidecar.isReadyForTimeline()
+                    ? QString()
+                    : QStringLiteral(" — %1").arg(sidecar.readinessIssue);
                 m_widgets.sidecarCombo->addItem(
-                    QStringLiteral("%1 (%2)").arg(sidecar.displayName, coverage),
+                    QStringLiteral("%1 (%2)%3").arg(
+                        sidecar.displayName, coverage, readiness),
                     sidecar.directory);
                 m_widgets.sidecarCombo->setItemData(
-                    m_widgets.sidecarCombo->count() - 1, sidecar.id, Qt::UserRole + 1);
+                    m_widgets.sidecarCombo->count() - 1, sidecar.id, kSidecarIdRole);
+                m_widgets.sidecarCombo->setItemData(
+                    m_widgets.sidecarCombo->count() - 1,
+                    sidecar.isReadyForTimeline(),
+                    kSidecarReadyRole);
+                if (!sidecar.isReadyForTimeline()) {
+                    m_widgets.sidecarCombo->setItemData(
+                        m_widgets.sidecarCombo->count() - 1,
+                        sidecar.readinessIssue,
+                        Qt::ToolTipRole);
+                }
             }
-            if (sidecars.isEmpty()) {
+            int selected = m_widgets.sidecarCombo->findData(effectiveMaskFramesDir);
+            if (selected < 0 && !effectiveMaskFramesDir.trimmed().isEmpty()) {
+                const QString issue = clip->maskSidecarAvailabilityIssue.trimmed();
+                m_widgets.sidecarCombo->addItem(
+                    issue.isEmpty()
+                        ? QStringLiteral("Current sidecar (unavailable)")
+                        : QStringLiteral("Current sidecar — %1").arg(issue),
+                    effectiveMaskFramesDir);
+                m_widgets.sidecarCombo->setItemData(
+                    m_widgets.sidecarCombo->count() - 1,
+                    maskSidecarIdForClip(*clip),
+                    kSidecarIdRole);
+                m_widgets.sidecarCombo->setItemData(
+                    m_widgets.sidecarCombo->count() - 1,
+                    false,
+                    kSidecarReadyRole);
+                m_widgets.sidecarCombo->setItemData(
+                    m_widgets.sidecarCombo->count() - 1,
+                    issue.isEmpty() ? QStringLiteral("Sidecar unavailable") : issue,
+                    Qt::ToolTipRole);
+                selected = m_widgets.sidecarCombo->count() - 1;
+            } else if (sidecars.isEmpty()) {
                 m_widgets.sidecarCombo->addItem(QStringLiteral("No sidecar masks found"), QString());
             }
-            const int selected = m_widgets.sidecarCombo->findData(effectiveMaskFramesDir);
             m_widgets.sidecarCombo->setCurrentIndex(selected >= 0 ? selected : 0);
         }
         setSpin(m_widgets.featherSpin, clip->maskFeather);
@@ -219,13 +311,15 @@ void MaskTab::refresh()
             m_widgets.featherFalloffCombo->setCurrentIndex(index >= 0 ? index : 0);
         }
         if (m_widgets.featherPowerSpin) {
-            m_widgets.featherPowerSpin->setEnabled(clip->maskFeatherFalloff == 0);
+            m_widgets.featherPowerSpin->setEnabled(
+                treatmentActive && clip->maskFeatherFalloff == 0);
         }
         setSpin(m_widgets.dilateSpin, clip->maskDilate);
         setSpin(m_widgets.erodeSpin, clip->maskErode);
         setSpin(m_widgets.blurSpin, clip->maskBlur);
         setCheck(m_widgets.invertCheck, clip->maskInvert);
-        const bool showOnlyAvailable = !clip->maskForegroundLayerEnabled;
+        const bool showOnlyAvailable =
+            treatmentActive && !clip->maskForegroundLayerEnabled;
         setCheck(m_widgets.showOnlyCheck, showOnlyAvailable && clip->maskShowOnly);
         if (m_widgets.showOnlyCheck) {
             m_widgets.showOnlyCheck->setEnabled(showOnlyAvailable);
@@ -253,18 +347,102 @@ void MaskTab::apply(bool pushHistory)
         return;
     }
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!selectedClip || selectedClip->mediaType != ClipMediaType::Video) {
+    if (!selectedClip ||
+        (selectedClip->clipRole != ClipRole::Media &&
+         selectedClip->clipRole != ClipRole::MaskMatte) ||
+        selectedClip->mediaType != ClipMediaType::Video) {
         return;
     }
 
+    QString requestedDirectory =
+        m_widgets.framesDirEdit ? m_widgets.framesDirEdit->text().trimmed() : QString();
+    const QString sourceId = maskSourceIdForClip(*selectedClip);
+    const editor::masks::MaskSidecar requestedSidecar =
+        editor::masks::inspectMaskSidecar(
+            requestedDirectory,
+            QFileInfo(selectedClip->filePath).completeBaseName(),
+            selectedClip->filePath);
+    const bool requestedSidecarReady =
+        requestedDirectory.isEmpty() || requestedSidecar.isReadyForTimeline();
+
+    if (selectedClip->clipRole == ClipRole::Media) {
+        // A source parent is only a discovery/materialization context. Never
+        // copy child-owned sidecar or mask-treatment fields onto it.
+        QString childId;
+        const QString requestedSidecarId = requestedDirectory.isEmpty()
+            ? QString()
+            : editor::masks::stableMaskSidecarId(requestedDirectory);
+        if (!requestedSidecarId.isEmpty() && m_deps.findMaskMatteChildForSidecar) {
+            childId = m_deps.findMaskMatteChildForSidecar(sourceId, requestedSidecarId);
+        }
+        if (requestedSidecarReady && childId.isEmpty() &&
+            !requestedDirectory.isEmpty() &&
+            m_deps.materializeMaskMatteForSidecar) {
+            childId = m_deps.materializeMaskMatteForSidecar(sourceId, requestedDirectory);
+        }
+        if (!childId.isEmpty() && m_deps.selectClipById) {
+            m_deps.selectClipById(childId);
+        }
+        return;
+    }
+
+    const bool clearedChildAssociation =
+        requestedDirectory.isEmpty();
+    if (clearedChildAssociation) {
+        // A materialized child has a durable sidecar identity. Clearing the
+        // text field disables it through maskEnabled; it must not turn a UI
+        // edit into an implicit association deletion that disk discovery will
+        // immediately recreate.
+        requestedDirectory = selectedClip->maskFramesDir.trimmed();
+    }
+    const QString requestedSidecarId = requestedDirectory.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(requestedDirectory);
+    const QString currentSidecarId = maskSidecarIdForClip(*selectedClip);
+    if (!requestedSidecarId.isEmpty() &&
+        !sourceId.isEmpty() &&
+        requestedSidecarId != currentSidecarId) {
+        QString childId = m_deps.findMaskMatteChildForSidecar
+            ? m_deps.findMaskMatteChildForSidecar(sourceId, requestedSidecarId)
+            : QString();
+        if (childId.isEmpty() && m_deps.materializeMaskMatteForSidecar) {
+            childId = m_deps.materializeMaskMatteForSidecar(sourceId, requestedDirectory);
+        }
+        if (!childId.isEmpty() && m_deps.selectClipById) {
+            // Switching associations means switching children. It must not
+            // retarget the selected child's effects, grading, or mask treatment.
+            m_deps.selectClipById(childId);
+        }
+        return;
+    }
+    if (!requestedSidecarId.isEmpty() &&
+        !sourceId.isEmpty() &&
+        m_deps.findMaskMatteChildForSidecar) {
+        const QString existingChildId =
+            m_deps.findMaskMatteChildForSidecar(sourceId, requestedSidecarId);
+        if (!existingChildId.isEmpty() && existingChildId != selectedClip->id) {
+            // Every discovered sidecar has its own materialized child. Switching
+            // the inspector therefore switches selection instead of retargeting
+            // another child's visual state to the same association.
+            if (m_deps.selectClipById) {
+                m_deps.selectClipById(existingChildId);
+            }
+            return;
+        }
+    }
+
     const QString id = selectedClip->id;
-    const bool updated = m_deps.updateClipById(id, [this](TimelineClip& clip) {
+    const bool updated = m_deps.updateClipById(
+        id,
+        [this, requestedDirectory, clearedChildAssociation](TimelineClip& clip) {
         if (m_widgets.zLevelSpin) {
             clip.zLevel = m_widgets.zLevelSpin->value();
             clip.zLevelUserSet = true;
         }
-        clip.maskEnabled = m_widgets.enabledCheck && m_widgets.enabledCheck->isChecked();
-        clip.maskFramesDir = m_widgets.framesDirEdit ? m_widgets.framesDirEdit->text().trimmed() : QString();
+        clip.maskEnabled = !clearedChildAssociation &&
+                           m_widgets.enabledCheck &&
+                           m_widgets.enabledCheck->isChecked();
+        setMaskSidecarAssociation(clip, requestedDirectory);
         clip.maskFeather = m_widgets.featherSpin ? m_widgets.featherSpin->value() : 0.0;
         clip.maskFeatherGamma = m_widgets.featherPowerSpin ? m_widgets.featherPowerSpin->value() : 2.0;
         clip.maskFeatherFalloff = m_widgets.featherFalloffCombo
@@ -283,7 +461,7 @@ void MaskTab::apply(bool pushHistory)
         clip.maskDropShadowOffsetX = m_widgets.shadowOffsetXSpin ? m_widgets.shadowOffsetXSpin->value() : 0.0;
         clip.maskDropShadowOffsetY = m_widgets.shadowOffsetYSpin ? m_widgets.shadowOffsetYSpin->value() : 4.0;
         clip.maskDropShadowOpacity = m_widgets.shadowOpacitySpin ? m_widgets.shadowOpacitySpin->value() : 0.45;
-    });
+        });
     if (!updated) {
         return;
     }
@@ -318,5 +496,37 @@ void MaskTab::setControlsEnabled(bool enabled)
     }
     if (enabled && m_widgets.showOnlyCheck) {
         m_widgets.showOnlyCheck->setEnabled(true);
+    }
+}
+
+void MaskTab::setTreatmentControlsEnabled(bool enabled)
+{
+    for (QWidget* widget : {static_cast<QWidget*>(m_widgets.enabledCheck),
+                            static_cast<QWidget*>(m_widgets.zLevelSpin),
+                            static_cast<QWidget*>(m_widgets.featherSpin),
+                            static_cast<QWidget*>(m_widgets.featherFalloffCombo),
+                            static_cast<QWidget*>(m_widgets.featherPowerSpin),
+                            static_cast<QWidget*>(m_widgets.dilateSpin),
+                            static_cast<QWidget*>(m_widgets.erodeSpin),
+                            static_cast<QWidget*>(m_widgets.blurSpin),
+                            static_cast<QWidget*>(m_widgets.invertCheck),
+                            static_cast<QWidget*>(m_widgets.showOnlyCheck),
+                            static_cast<QWidget*>(m_widgets.opacitySpin),
+                            static_cast<QWidget*>(m_widgets.shadowEnabledCheck),
+                            static_cast<QWidget*>(m_widgets.shadowRadiusSpin),
+                            static_cast<QWidget*>(m_widgets.shadowOffsetXSpin),
+                            static_cast<QWidget*>(m_widgets.shadowOffsetYSpin),
+                            static_cast<QWidget*>(m_widgets.shadowOpacitySpin)}) {
+        if (widget) {
+            widget->setEnabled(enabled);
+        }
+    }
+    if (enabled && m_widgets.featherPowerSpin && m_widgets.featherFalloffCombo) {
+        m_widgets.featherPowerSpin->setEnabled(
+            m_widgets.featherFalloffCombo->currentData().toInt() == 0);
+    }
+    if (enabled && m_widgets.showOnlyCheck) {
+        const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        m_widgets.showOnlyCheck->setEnabled(clip && !clip->maskForegroundLayerEnabled);
     }
 }

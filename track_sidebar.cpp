@@ -340,9 +340,9 @@ void TrackSidebar::mouseMoveEvent(QMouseEvent *event) {
 
     if (event->buttons() & Qt::LeftButton) {
         if (!m_dragging && (event->pos() - m_dragStartPos).manhattanLength() > 10) {
-            m_dragging = true;
             const int track = trackAt(m_dragStartPos);
-            if (track >= 0) {
+            if (track >= 0 && !m_tracks[track].generatedChildTrack) {
+                m_dragging = true;
                 setDraggedTrack(track);
                 setDropTarget(track, false);
                 emit trackDragStarted(track);
@@ -357,7 +357,9 @@ void TrackSidebar::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void TrackSidebar::mouseReleaseEvent(QMouseEvent *event) {
-    if (event && event->button() == Qt::LeftButton && m_dragging && m_draggedTrack >= 0 && m_dropTarget >= 0) {
+    if (event && event->button() == Qt::LeftButton && m_dragging &&
+        m_draggedTrack >= 0 && m_draggedTrack < m_tracks.size() &&
+        !m_tracks[m_draggedTrack].generatedChildTrack && m_dropTarget >= 0) {
         emit trackDropped(m_draggedTrack, m_dropTarget);
     }
     m_resizingWidth = false;
@@ -411,14 +413,18 @@ void TrackSidebar::contextMenuEvent(QContextMenuEvent *event) {
     QAction *moveUpAction = menu.addAction(QStringLiteral("Move Track Up"));
     QAction *moveDownAction = menu.addAction(QStringLiteral("Move Track Down"));
 
-    moveUpAction->setEnabled(track > 0);
-    moveDownAction->setEnabled(track < m_tracks.size() - 1);
+    const bool mutableTrack = !m_tracks[track].generatedChildTrack;
+    moveUpAction->setEnabled(mutableTrack && track > 0);
+    moveDownAction->setEnabled(mutableTrack && track < m_tracks.size() - 1);
 
     menu.addSeparator();
 
     QAction *renameAction = menu.addAction(QStringLiteral("Rename Track..."));
     QAction *deleteAction = menu.addAction(QStringLiteral("Delete Track"));
     QAction *crossfadeAction = menu.addAction(QStringLiteral("Crossfade Consecutive Clips..."));
+    renameAction->setEnabled(mutableTrack);
+    deleteAction->setEnabled(mutableTrack);
+    crossfadeAction->setEnabled(mutableTrack);
 
     QAction *chosen = menu.exec(event->globalPos());
     if (!chosen) {

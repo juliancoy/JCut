@@ -1,6 +1,7 @@
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
 #include "debug_controls.h"
+#include "image_sequence_directory.h"
 
 #include <QFile>
 
@@ -48,20 +49,20 @@ bool zeroCopyInteropEnvironmentDetected()
 
 #include <QDateTime>
 #include <QDir>
-#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHash>
 #include <QImage>
+#include <QImageReader>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPainter>
 #include <QPainterPath>
-#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -255,226 +256,20 @@ bool interactivePreviewPathAllowedCachedImpl(const QString& path, int durationFr
 }
 
 bool cachedIsImageSequencePathImpl(const QString& path) {
-    static QMutex cacheMutex;
-    static QHash<QString, bool> cachedResultByKey;
-
-    const QFileInfo info(path);
-    const QFileInfo parentInfo(info.absolutePath());
-    const qint64 pathMtime =
-        (info.exists() && info.isDir()) ? info.lastModified().toMSecsSinceEpoch() : -1;
-    const qint64 parentMtime =
-        parentInfo.exists() ? parentInfo.lastModified().toMSecsSinceEpoch() : -1;
-    const QString key = info.absoluteFilePath() + QLatin1Char('|') +
-                        QString::number(pathMtime) + QLatin1Char('|') +
-                        QString::number(parentMtime);
-
-    {
-        QMutexLocker locker(&cacheMutex);
-        const auto it = cachedResultByKey.constFind(key);
-        if (it != cachedResultByKey.cend()) {
-            return it.value();
-        }
-    }
-
-    const QFileInfo dirInfo(path);
-    if (!dirInfo.exists() || !dirInfo.isDir()) {
-        QMutexLocker locker(&cacheMutex);
-        cachedResultByKey.insert(key, false);
-        return false;
-    }
-
-    static const QRegularExpression kDigitsPattern(QStringLiteral("(\\d+)"));
-    constexpr int kFastSequenceProbeLimit = 4096;
-
-    QHash<QString, int> suffixCounts;
-    QHash<QString, int> numberedSuffixCounts;
-    int visited = 0;
-    bool isSequence = false;
-
-    QDirIterator it(dirInfo.absoluteFilePath(), QDir::Files | QDir::NoDotAndDotDot);
-    while (it.hasNext() && visited < kFastSequenceProbeLimit) {
-        it.next();
-        ++visited;
-
-        const QFileInfo entry = it.fileInfo();
-        const QString suffix = entry.suffix().toLower();
-        if (!isImageSuffix(suffix)) {
-            continue;
-        }
-
-        const int suffixCount = suffixCounts.value(suffix, 0) + 1;
-        suffixCounts.insert(suffix, suffixCount);
-
-        int numberedCount = numberedSuffixCounts.value(suffix, 0);
-        if (kDigitsPattern.match(entry.completeBaseName()).hasMatch()) {
-            ++numberedCount;
-            numberedSuffixCounts.insert(suffix, numberedCount);
-        }
-
-        if (suffixCount >= 8 && numberedCount >= 4 && (numberedCount * 2) >= suffixCount) {
-            isSequence = true;
-            break;
-        }
-    }
-
-    if (!isSequence) {
-        QString bestSuffix;
-        int bestCount = 0;
-        for (auto it = suffixCounts.cbegin(); it != suffixCounts.cend(); ++it) {
-            if (it.value() > bestCount) {
-                bestCount = it.value();
-                bestSuffix = it.key();
-            }
-        }
-        const int bestNumbered = numberedSuffixCounts.value(bestSuffix, 0);
-        isSequence = bestCount >= 2 && bestNumbered >= 2 && (bestNumbered * 2) >= bestCount;
-    }
-
-    {
-        QMutexLocker locker(&cacheMutex);
-        cachedResultByKey.insert(key, isSequence);
-    }
-    return isSequence;
-}
-
-bool naturalFileNameLessCaseInsensitive(const QString& a, const QString& b) {
-    int ia = 0;
-    int ib = 0;
-    const int na = a.size();
-    const int nb = b.size();
-
-    while (ia < na && ib < nb) {
-        const QChar ca = a.at(ia);
-        const QChar cb = b.at(ib);
-        const bool aDigit = ca.isDigit();
-        const bool bDigit = cb.isDigit();
-
-        if (aDigit && bDigit) {
-            int sa = ia;
-            int sb = ib;
-            while (sa < na && a.at(sa) == QLatin1Char('0')) ++sa;
-            while (sb < nb && b.at(sb) == QLatin1Char('0')) ++sb;
-
-            int ea = sa;
-            int eb = sb;
-            while (ea < na && a.at(ea).isDigit()) ++ea;
-            while (eb < nb && b.at(eb).isDigit()) ++eb;
-
-            const int lenA = ea - sa;
-            const int lenB = eb - sb;
-            if (lenA != lenB) {
-                return lenA < lenB;
-            }
-
-            for (int i = 0; i < lenA; ++i) {
-                const QChar da = a.at(sa + i);
-                const QChar db = b.at(sb + i);
-                if (da != db) {
-                    return da < db;
-                }
-            }
-
-            const int runA = ea - ia;
-            const int runB = eb - ib;
-            if (runA != runB) {
-                return runA < runB;
-            }
-
-            ia = ea;
-            ib = eb;
-            continue;
-        }
-
-        const QChar fa = ca.toCaseFolded();
-        const QChar fb = cb.toCaseFolded();
-        if (fa != fb) {
-            return fa < fb;
-        }
-
-        ++ia;
-        ++ib;
-    }
-
-    return na < nb;
+    const QByteArray encodedPath = QFile::encodeName(QFileInfo(path).absoluteFilePath());
+    return jcut::isImageSequenceDirectory(
+        std::filesystem::path(encodedPath.constData()));
 }
 
 QStringList collectSequenceFrames(const QString& path) {
-    static QMutex cacheMutex;
-    static QHash<QString, QStringList> cachedFramesByKey;
-
-    const QFileInfo dirInfo(path);
-    if (!dirInfo.exists() || !dirInfo.isDir()) {
-        return {};
-    }
-
-    const QString cacheKey = dirInfo.absoluteFilePath() + QLatin1Char('|') +
-                             QString::number(dirInfo.lastModified().toMSecsSinceEpoch());
-    {
-        QMutexLocker locker(&cacheMutex);
-        const auto it = cachedFramesByKey.constFind(cacheKey);
-        if (it != cachedFramesByKey.cend()) {
-            return it.value();
-        }
-    }
-
-    const QDir dir(dirInfo.absoluteFilePath());
-    static const QRegularExpression kDigitsPattern(QStringLiteral("(\\d+)"));
-    QHash<QString, int> suffixCounts;
-    QHash<QString, int> numberedSuffixCounts;
-
-    QDirIterator countIt(dir.absolutePath(), QDir::Files | QDir::NoDotAndDotDot);
-    while (countIt.hasNext()) {
-        countIt.next();
-        const QFileInfo entry = countIt.fileInfo();
-        const QString suffix = entry.suffix().toLower();
-        if (!isImageSuffix(suffix)) {
-            continue;
-        }
-        const int count = suffixCounts.value(suffix, 0) + 1;
-        suffixCounts.insert(suffix, count);
-        if (kDigitsPattern.match(entry.completeBaseName()).hasMatch()) {
-            numberedSuffixCounts.insert(suffix, numberedSuffixCounts.value(suffix, 0) + 1);
-        }
-    }
-
-    QString bestSuffix;
-    int bestCount = 0;
-    for (auto it = suffixCounts.cbegin(); it != suffixCounts.cend(); ++it) {
-        if (it.value() > bestCount) {
-            bestCount = it.value();
-            bestSuffix = it.key();
-        }
-    }
-    const int bestNumberedCount = numberedSuffixCounts.value(bestSuffix, 0);
-    if (bestCount < 2 || bestNumberedCount < 2 || (bestNumberedCount * 2) < bestCount) {
-        QMutexLocker locker(&cacheMutex);
-        cachedFramesByKey.insert(cacheKey, {});
-        return {};
-    }
-
-    QStringList frameNames;
-    frameNames.reserve(bestCount);
-    QDirIterator collectIt(dir.absolutePath(), QDir::Files | QDir::NoDotAndDotDot);
-    while (collectIt.hasNext()) {
-        collectIt.next();
-        const QFileInfo entry = collectIt.fileInfo();
-        if (entry.suffix().compare(bestSuffix, Qt::CaseInsensitive) == 0) {
-            frameNames.push_back(entry.fileName());
-        }
-    }
-
-    std::sort(frameNames.begin(), frameNames.end(), [](const QString& a, const QString& b) {
-        return naturalFileNameLessCaseInsensitive(a, b);
-    });
-
+    const QByteArray encodedPath = QFile::encodeName(QFileInfo(path).absoluteFilePath());
+    const jcut::ImageSequenceDirectoryInfo sequence =
+        jcut::probeImageSequenceDirectory(std::filesystem::path(encodedPath.constData()));
     QStringList frames;
-    frames.reserve(frameNames.size());
-    for (const QString& frameName : frameNames) {
-        frames.push_back(dir.absoluteFilePath(frameName));
-    }
-    {
-        QMutexLocker locker(&cacheMutex);
-        cachedFramesByKey.insert(cacheKey, frames);
+    frames.reserve(static_cast<qsizetype>(sequence.framePaths.size()));
+    for (const std::filesystem::path& framePath : sequence.framePaths) {
+        frames.push_back(QFile::decodeName(
+            QByteArray::fromStdString(framePath.string())));
     }
     return frames;
 }
@@ -943,6 +738,8 @@ ClipSelectionContext clipSelectionContext(const TimelineClip* selected,
 bool clipChildPlaybackEnabled(const TimelineClip& child,
                                      const QVector<TimelineTrack>& tracks) {
     return child.clipRole != ClipRole::Media &&
+           (child.clipRole != ClipRole::MaskMatte ||
+            (child.maskEnabled && child.maskSidecarAvailable)) &&
            child.videoEnabled &&
            trackVisualModeForClip(child, tracks) != TrackVisualMode::Hidden;
 }
@@ -1105,6 +902,10 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
     if (isImageSuffix(suffix)) {
         result.mediaType = ClipMediaType::Image;
         result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
+        const QSize imageSize = QImageReader(filePath).size();
+        if (imageSize.isValid()) {
+            result.frameSize = imageSize;
+        }
         return result;
     }
 
@@ -1345,7 +1146,7 @@ void refreshClipAudioSource(TimelineClip& clip) {
     clip.audioSourceLastVerifiedMs = nowMs;
     clip.audioSourceOriginalPath = QFileInfo(clip.filePath).absoluteFilePath();
 
-    if (!clip.hasAudio || clip.filePath.isEmpty()) {
+    if (!clip.hasAudio) {
         clip.audioSourceMode = QStringLiteral("embedded");
         clip.audioSourcePath = clip.filePath;
         clip.audioSourceStatus = QStringLiteral("disabled");
@@ -1361,6 +1162,13 @@ void refreshClipAudioSource(TimelineClip& clip) {
             clip.audioSourceStatus = QStringLiteral("ok");
             return;
         }
+    }
+
+    if (clip.filePath.isEmpty()) {
+        clip.audioSourceMode = QStringLiteral("embedded");
+        clip.audioSourcePath.clear();
+        clip.audioSourceStatus = QStringLiteral("disabled");
+        return;
     }
 
     const QFileInfo sourceInfo(clip.filePath);

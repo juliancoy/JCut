@@ -9,6 +9,7 @@ set(EDITOR_TEST_TARGETS
     test_async_decoder
     test_explorer_pane
     test_media_drag_drop
+    test_mask_tab
     test_media_root_contract
     test_timeline_cache
     test_integration
@@ -16,6 +17,7 @@ set(EDITOR_TEST_TARGETS
     test_transcript_tab_follow
     test_playback_policy
     test_temporal_sync_contract
+    test_vfr_preview_mapping
     test_realtime_render_contract
     test_realtime_frame_loss_probe
     test_standard_preview_presentation_pipeline
@@ -35,6 +37,7 @@ set(EDITOR_TEST_TARGETS
     test_effect_presets
     test_speaker_title_fly_in_video
     test_editor_runtime
+    test_imgui_project_history
     test_facedetections_time_mapping
     test_facedetections_tracking
     test_facedetections_assignment
@@ -60,7 +63,7 @@ set(EDITOR_TEST_TARGETS
 # gpu-hw: targets that need real GPU hardware (NVDEC/CUDA interop).
 function(_jcut_assign_tier_labels target_name)
     set(_labels "logic")
-    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
+    if(target_name MATCHES "^(test_async_decoder|test_timeline_cache|test_integration|test_media_color_passthrough|test_control_server_media_diag|test_waveform_service|test_audio_time_stretch|test_audio_time_stretch_cache|test_audio_mix_policy|test_transform_skip_aware_timing|test_vfr_preview_mapping|test_realtime_render_contract|test_realtime_frame_loss_probe|test_standard_preview_presentation_pipeline|test_no_proxy_hardware_playback_contract|test_direct_vulkan_handoff_pipeline_contract|test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_editor_runtime_vulkan_export_backend|test_facedetections_flow|test_facedetections_artifacts|test_facedetections_preview_smoke|test_facestream_overlay_snapshot|test_speaker_title_fly_in_video)$")
         list(APPEND _labels "decode")
     endif()
     if(target_name MATCHES "^(test_vulkan_direct_render_parity|test_progressive_edge_stretch_render_path|test_vulkan_text_generation|test_direct_vulkan_handoff_pipeline_contract|test_no_proxy_hardware_playback_contract|test_editor_runtime_vulkan_export_backend|test_facedetections_preview_smoke|test_facestream_overlay_snapshot)$")
@@ -106,6 +109,9 @@ set_tests_properties(test_explorer_pane PROPERTIES
 set_tests_properties(test_media_drag_drop PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
+set_tests_properties(test_mask_tab PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
 target_sources(test_explorer_pane PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../explorer_pane.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../media_drag_payload.cpp
@@ -122,6 +128,10 @@ target_sources(test_media_drag_drop PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_layout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_model.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../timeline_widget_paint.cpp
+)
+target_sources(test_mask_tab PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.h
 )
 
 target_sources(test_editor_runtime
@@ -175,6 +185,7 @@ endif()
 set_tests_properties(
     test_playback_policy
     test_temporal_sync_contract
+    test_vfr_preview_mapping
     test_realtime_render_contract
     test_realtime_frame_loss_probe
     test_standard_preview_presentation_pipeline
@@ -209,6 +220,7 @@ add_executable(test_vulkan_subtitle_render
 target_link_libraries(test_vulkan_subtitle_render
     PRIVATE
         editor_test_support
+        jcut_vulkan_frame_import_core
         Qt6::Test
         Vulkan::Vulkan
 )
@@ -326,6 +338,205 @@ target_sources(test_facedetections_flow
 
 find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
 
+set(JCUT_IMGUI_RUNTIME_BOUNDARY_TARGETS
+    jcut_frame_payload_core
+    jcut_transcript_document_core
+    jcut_media_path_core
+    jcut_editor_core
+    jcut_vulkan_frame_import_core
+    jcut_imgui_vulkan_import
+    jcut_imgui_runtime
+    jcut_imgui_standalone_runtime
+    jcut_imgui_qt_adapters
+    jcut_editor_runtime
+    jcut_runtime_support
+    jcut_preview_decode_runtime
+)
+set(JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST "")
+foreach(boundary_target IN LISTS JCUT_IMGUI_RUNTIME_BOUNDARY_TARGETS)
+    string(APPEND JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST
+        "[${boundary_target}]\n"
+        "LINK_LIBRARIES=$<JOIN:$<TARGET_PROPERTY:${boundary_target},LINK_LIBRARIES>,;>\n"
+        "INTERFACE_LINK_LIBRARIES=$<JOIN:$<TARGET_PROPERTY:${boundary_target},INTERFACE_LINK_LIBRARIES>,;>\n")
+endforeach()
+set(JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST_PATH
+    "${CMAKE_CURRENT_BINARY_DIR}/imgui_runtime_link_interfaces.txt")
+file(GENERATE
+    OUTPUT "${JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST_PATH}"
+    CONTENT "${JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST}")
+add_test(
+    NAME test_imgui_cmake_qt_boundary
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_cmake_qt_boundary.py
+            ${JCUT_IMGUI_RUNTIME_LINK_INTERFACE_MANIFEST_PATH}
+)
+set_tests_properties(test_imgui_cmake_qt_boundary PROPERTIES
+    LABELS "imgui;linkage;logic"
+)
+
+add_executable(test_frame_payload_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_payload_core.cpp
+)
+set_target_properties(test_frame_payload_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_frame_payload_core
+    PRIVATE
+        jcut_frame_payload_core
+        PkgConfig::FFMPEG
+)
+jcut_force_bundled_ffmpeg_runtime(test_frame_payload_core)
+add_test(
+    NAME test_frame_payload_core
+    COMMAND test_frame_payload_core
+)
+set_tests_properties(test_frame_payload_core PROPERTIES
+    LABELS "imgui;decode;linkage;logic"
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_test(
+    NAME test_frame_payload_core_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_frame_payload_core>
+)
+set_tests_properties(test_frame_payload_core_no_qt PROPERTIES
+    LABELS "imgui;decode;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_executable(test_transcript_document_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_transcript_document_core.cpp
+)
+set_target_properties(test_transcript_document_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_transcript_document_core
+    PRIVATE
+        jcut_transcript_document_core
+)
+add_test(
+    NAME test_transcript_document_core
+    COMMAND test_transcript_document_core
+)
+set_tests_properties(test_transcript_document_core PROPERTIES
+    LABELS "imgui;transcript;logic"
+)
+
+add_test(
+    NAME test_transcript_document_core_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_transcript_document_core>
+)
+set_tests_properties(test_transcript_document_core_no_qt PROPERTIES
+    LABELS "imgui;transcript;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_executable(test_transcript_cut_session_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_transcript_cut_session_core.cpp
+)
+set_target_properties(test_transcript_cut_session_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_transcript_cut_session_core
+    PRIVATE
+        jcut_editor_core
+)
+target_compile_definitions(test_transcript_cut_session_core
+    PRIVATE
+        JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+    NAME test_transcript_cut_session_core
+    COMMAND test_transcript_cut_session_core
+)
+set_tests_properties(test_transcript_cut_session_core PROPERTIES
+    LABELS "imgui;transcript;logic"
+)
+add_test(
+    NAME test_transcript_cut_session_core_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_transcript_cut_session_core>
+)
+set_tests_properties(test_transcript_cut_session_core_no_qt PROPERTIES
+    LABELS "imgui;transcript;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_executable(test_imgui_neutral_boundary
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_imgui_neutral_boundary.cpp
+)
+set_target_properties(test_imgui_neutral_boundary PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_imgui_neutral_boundary
+    PRIVATE
+        jcut_editor_core
+        jcut_media_path_core
+        Vulkan::Vulkan
+)
+add_test(
+    NAME test_imgui_neutral_boundary
+    COMMAND test_imgui_neutral_boundary
+)
+set_tests_properties(test_imgui_neutral_boundary PROPERTIES
+    LABELS "imgui;linkage;logic"
+)
+
+add_test(
+    NAME test_imgui_neutral_boundary_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_imgui_neutral_boundary>
+)
+set_tests_properties(test_imgui_neutral_boundary_no_qt PROPERTIES
+    LABELS "imgui;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_executable(test_imgui_vulkan_import_boundary
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_imgui_vulkan_import_boundary.cpp
+)
+set_target_properties(test_imgui_vulkan_import_boundary PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_link_libraries(test_imgui_vulkan_import_boundary
+    PRIVATE
+        jcut_imgui_vulkan_import
+)
+add_test(
+    NAME test_imgui_vulkan_import_boundary
+    COMMAND test_imgui_vulkan_import_boundary
+)
+set_tests_properties(test_imgui_vulkan_import_boundary PROPERTIES
+    LABELS "imgui;linkage;logic;vulkan"
+)
+
+add_test(
+    NAME test_imgui_vulkan_import_boundary_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:test_imgui_vulkan_import_boundary>
+)
+set_tests_properties(test_imgui_vulkan_import_boundary_no_qt PROPERTIES
+    LABELS "imgui;linkage;logic;vulkan"
+    SKIP_RETURN_CODE 77
+)
+
 add_test(
     NAME test_live_playback_lag_probe
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
@@ -350,9 +561,55 @@ set_tests_properties(test_imgui_binary_no_qt PROPERTIES
 )
 
 add_test(
+    NAME test_imgui_binary_no_qt_widgets
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            --component Widgets
+            $<TARGET_FILE:jcut_imgui>
+)
+set_tests_properties(test_imgui_binary_no_qt_widgets PROPERTIES
+    LABELS "imgui;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_test(
+    NAME test_imgui_binary_no_qt_network
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            --component Network
+            $<TARGET_FILE:jcut_imgui>
+)
+set_tests_properties(test_imgui_binary_no_qt_network PROPERTIES
+    LABELS "imgui;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_test(
+    NAME test_imgui_binary_no_qt_concurrent
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            --component Concurrent
+            $<TARGET_FILE:jcut_imgui>
+)
+set_tests_properties(test_imgui_binary_no_qt_concurrent PROPERTIES
+    LABELS "imgui;linkage;logic"
+    SKIP_RETURN_CODE 77
+)
+
+add_test(
     NAME test_sam3_resume
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/test_sam3_resume.py
+)
+
+add_test(
+    NAME test_jcut_frame_index_map
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_jcut_frame_index_map.py
+)
+set_tests_properties(test_jcut_frame_index_map PROPERTIES
+    LABELS "logic;sam3;temporal"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/..:$ENV{PYTHONPATH}"
 )
 set_tests_properties(test_sam3_resume PROPERTIES
     LABELS "logic;sam3"
@@ -396,7 +653,7 @@ add_executable(test_imgui_standalone_export
 )
 target_link_libraries(test_imgui_standalone_export
     PRIVATE
-        jcut_imgui_runtime
+        jcut_imgui_standalone_runtime
         Qt6::Test
 )
 target_compile_definitions(test_imgui_standalone_export

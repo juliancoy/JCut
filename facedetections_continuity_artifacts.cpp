@@ -2,7 +2,7 @@
 
 #include "facedetections_artifact_utils.h"
 #include "json_io_utils.h"
-#include "speakers_tab_internal.h"
+#include "speaker_profile_keys.h"
 #include "transcript_engine.h"
 
 #include <QDateTime>

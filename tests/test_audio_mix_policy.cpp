@@ -1,7 +1,13 @@
 #include "../audio_engine.h"
+#include "../audio_clip_fade.h"
 #include "../audio_mix_readiness.h"
+#include "../render_internal.h"
 
 #include <QtTest/QtTest>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 // Multi-stream mix readiness policy (TIME.md "Multi-Stream Audio Readiness"):
 // a starved clip degrades per-clip instead of stalling ready clips, and the
@@ -17,6 +23,12 @@ private slots:
   void testSpeechFilterFadeModesShapeBoundaryGain();
   void testSpliceSecondaryTapStopsAtClipEnd();
   void testTrackGainMuteAndSoloAffectMix();
+  void testExportMixerUsesPreviewClipFadePolicy();
+  void testTimelineStateAtFrameRejectsStaleMixerGeneration();
+  void testAudioSourceCacheInvalidationVersionsQueuedWork();
+  void testStaleTimeStretchStateRejectedAfterSourceInvalidation();
+  void testWarmupPermanentFailureIsSourceGenerationScoped();
+  void testRingBufferClearWaitsForReaderAndRejectsReadsDuringReset();
 
 private:
   static TimelineClip makeAudioClip(const QString &id, const QString &path,
@@ -272,6 +284,349 @@ void TestAudioMixPolicy::testTrackGainMuteAndSoloAffectMix() {
   output.fill(0.0f);
   QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
   QVERIFY(std::abs(output[512 * 2] - 0.2f) < 0.01f);
+}
+
+void TestAudioMixPolicy::testExportMixerUsesPreviewClipFadePolicy() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_export_clip_fade.wav");
+  TimelineClip clip =
+      makeAudioClip(QStringLiteral("export-fade"), path, 0, 2);
+  const int64_t clipStartSample = clipTimelineStartSamples(clip);
+  const int64_t clipEndSample = clipTimelineEndSamples(clip);
+
+  render_detail::DecodedAudioClip decoded;
+  decoded.samples = QVector<float>(
+      static_cast<int>(clipEndSample - clipStartSample) * 2, 0.5f);
+  decoded.sourceStartSample = 0;
+  decoded.fullyDecoded = true;
+  decoded.valid = true;
+  const QHash<QString, render_detail::DecodedAudioClip> cache{{path, decoded}};
+
+  for (const int configuredFadeSamples : {100, 0}) {
+    clip.fadeSamples = configuredFadeSamples;
+    const int effectiveFadeSamples =
+        editor::audio::effectiveClipFadeSamples(configuredFadeSamples);
+    const std::array<int64_t, 5> positions{
+        clipStartSample,
+        clipStartSample + (effectiveFadeSamples / 2),
+        clipStartSample + effectiveFadeSamples,
+        clipEndSample - (effectiveFadeSamples / 2),
+        clipEndSample - 1};
+
+    for (const int64_t samplePosition : positions) {
+      std::array<float, 2> output{};
+      render_detail::mixAudioChunk(
+          QVector<TimelineClip>{clip}, {}, {}, cache, output.data(), 1,
+          samplePosition, 1.0);
+      const float previewGain = engine.calculateClipCrossfadeGain(
+          samplePosition, clip, clipStartSample, clipEndSample,
+          effectiveFadeSamples);
+      QVERIFY2(std::abs(output[0] - (0.5f * previewGain)) < 0.00001f,
+               "export mix must use the same clip fade gain as preview");
+      QVERIFY2(std::abs(output[1] - (0.5f * previewGain)) < 0.00001f,
+               "export mix must apply the fade equally to both channels");
+    }
+  }
+}
+
+void TestAudioMixPolicy::testTimelineStateAtFrameRejectsStaleMixerGeneration() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_mix_generation.wav");
+  const TimelineClip clip =
+      makeAudioClip(QStringLiteral("generation"), path, 0, 120);
+  const QVector<TimelineTrack> tracks(1);
+  const QVector<TimelineClip> clips{clip};
+  const QVector<ExportRangeSegment> ranges{{0, 119}};
+  const QVector<RenderSyncMarker> markers;
+
+  uint64_t staleGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    engine.m_playing = true;
+    staleGeneration = engine.m_mixGeneration;
+  }
+
+  engine.setTimelineStateAtFrame(tracks, clips, ranges, markers, 42);
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QCOMPARE(engine.m_ringBufferEndSample.load(), frameToSamples(42));
+  QCOMPARE(engine.scheduledAudioSourcePaths(), QVector<QString>{path});
+
+  const QVector<int16_t> stalePcm(16, 123);
+  QVERIFY(!engine.commitMixedChunk(staleGeneration, stalePcm.constData(),
+                                   static_cast<size_t>(stalePcm.size()),
+                                   frameToSamples(43)));
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QCOMPARE(engine.m_ringBufferEndSample.load(), frameToSamples(42));
+
+  uint64_t currentGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    currentGeneration = engine.m_mixGeneration;
+  }
+  QVERIFY(engine.commitMixedChunk(currentGeneration, stalePcm.constData(),
+                                  static_cast<size_t>(stalePcm.size()),
+                                  frameToSamples(43)));
+  QCOMPARE(engine.m_ringBuffer.available(),
+           static_cast<size_t>(stalePcm.size()));
+
+  engine.seek(10);
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QVERIFY(!engine.commitMixedChunk(currentGeneration, stalePcm.constData(),
+                                   static_cast<size_t>(stalePcm.size()),
+                                   frameToSamples(44)));
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QCOMPARE(engine.m_ringBufferEndSample.load(), frameToSamples(10));
+}
+
+void TestAudioMixPolicy::
+    testAudioSourceCacheInvalidationVersionsQueuedWork() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_source_generation.wav");
+  const TimelineClip clip =
+      makeAudioClip(QStringLiteral("source-generation"), path, 0, 120);
+  engine.setTimelineStateAtFrame(
+      QVector<TimelineTrack>(1), QVector<TimelineClip>{clip},
+      QVector<ExportRangeSegment>{{0, 119}}, QVector<RenderSyncMarker>{}, 24);
+
+  uint64_t previousSourceGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    previousSourceGeneration = engine.m_sourceGeneration;
+    engine.m_audioCache.insert(path, makeCacheEntry(0, 48000, 0.25f));
+    engine.m_timeStretchAudioCache[path][1000].push_back(
+        makeCacheEntry(0, 48000, 0.25f));
+    engine.m_timeStretchSidecarEntryCache.insert(
+        QStringLiteral("stale-sidecar"), AudioTimeStretchCacheEntry{});
+  }
+  const std::array<int16_t, 4> stalePcm{{1, 2, 3, 4}};
+  QCOMPARE(engine.m_ringBuffer.write(stalePcm.data(), stalePcm.size()),
+           stalePcm.size());
+
+  engine.invalidateAudioSourceCaches();
+
+  std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+  QCOMPARE(engine.m_sourceGeneration, previousSourceGeneration + 1);
+  QVERIFY(engine.m_audioCache.isEmpty());
+  QVERIFY(engine.m_timeStretchAudioCache.isEmpty());
+  QVERIFY(engine.m_timeStretchSidecarEntryCache.isEmpty());
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QCOMPARE(engine.m_timelineSampleCursor,
+           engine.m_audioClockSample.load(std::memory_order_acquire));
+  QVERIFY(!engine.m_pendingDecodePaths.empty());
+  for (const AudioEngine::DecodeTask& task : engine.m_pendingDecodePaths) {
+    QCOMPARE(task.sourceGeneration, engine.m_sourceGeneration);
+  }
+}
+
+void TestAudioMixPolicy::
+    testStaleTimeStretchStateRejectedAfterSourceInvalidation() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_stale_time_stretch.wav");
+  constexpr int speedKey = 1500;
+
+  uint64_t staleSourceGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    staleSourceGeneration = engine.m_sourceGeneration;
+  }
+  QCOMPARE(engine.beginTimeStretchJobAttempt(path, speedKey,
+                                              staleSourceGeneration),
+           1);
+  QVERIFY(engine.beginTimeStretchGenerationForSourceGeneration(
+      path, speedKey, 48000, staleSourceGeneration));
+  QVERIFY(engine.updateTimeStretchGenerationForSourceGeneration(
+      path, speedKey, AudioEngine::TimeStretchJobWritingSidecar, 0.98,
+      AudioEngine::TimeStretchGenerationWritingSidecar,
+      staleSourceGeneration));
+
+  engine.invalidateAudioSourceCaches();
+
+  uint64_t currentSourceGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    currentSourceGeneration = engine.m_sourceGeneration;
+  }
+  QCOMPARE(currentSourceGeneration, staleSourceGeneration + 1);
+
+  // These calls model a sidecar progress callback and terminal write result
+  // arriving after invalidation. Neither may recreate current-generation
+  // jobs or failures.
+  QVERIFY(!engine.updateTimeStretchGenerationForSourceGeneration(
+      path, speedKey, AudioEngine::TimeStretchJobWritingSidecar, 0.99,
+      AudioEngine::TimeStretchGenerationWritingSidecar,
+      staleSourceGeneration));
+  QVERIFY(!engine.finishTimeStretchGenerationForSourceGeneration(
+      path, speedKey, false, 0, QStringLiteral("sidecar_write_failed"),
+      QStringLiteral("stale_sidecar_write_result"), staleSourceGeneration));
+  QVERIFY(!engine.markTimeStretchJobForSourceGeneration(
+      path, speedKey, AudioEngine::TimeStretchJobFailed, 0.0,
+      staleSourceGeneration));
+  {
+    std::lock_guard<std::mutex> lock(engine.m_timeStretchGenerationMutex);
+    QVERIFY(engine.m_timeStretchJobs.isEmpty());
+    QVERIFY(engine.m_timeStretchFailedJobs.isEmpty());
+    QVERIFY(!engine.m_timeStretchGenerationActive.load());
+    QCOMPARE(engine.m_timeStretchGenerationSourceGeneration, uint64_t{0});
+    QCOMPARE(engine.m_timeStretchGenerationLastEndReason,
+             QStringLiteral("source_generation_invalidated"));
+  }
+
+  // A stale worker abandoning its telemetry must not clear telemetry owned
+  // by work started after the source-generation change.
+  QCOMPARE(engine.beginTimeStretchJobAttempt(path, speedKey,
+                                              currentSourceGeneration),
+           1);
+  QVERIFY(engine.beginTimeStretchGenerationForSourceGeneration(
+      path, speedKey, 96000, currentSourceGeneration));
+  engine.abandonTimeStretchGenerationForSourceGeneration(
+      path, speedKey, staleSourceGeneration);
+  {
+    std::lock_guard<std::mutex> lock(engine.m_timeStretchGenerationMutex);
+    QVERIFY(engine.m_timeStretchGenerationActive.load());
+    QCOMPARE(engine.m_timeStretchGenerationSourceGeneration,
+             currentSourceGeneration);
+    QCOMPARE(engine.m_timeStretchGenerationPhase.load(),
+             static_cast<int>(AudioEngine::TimeStretchGenerationReadingSidecar));
+  }
+  QVERIFY(engine.finishTimeStretchGenerationForSourceGeneration(
+      path, speedKey, true, 64000,
+      QStringLiteral("generated_and_sidecar_committed"), QString(),
+      currentSourceGeneration));
+  {
+    std::lock_guard<std::mutex> lock(engine.m_timeStretchGenerationMutex);
+    const QString key = AudioEngine::timeStretchJobKey(path, speedKey);
+    QVERIFY(engine.m_timeStretchJobs.contains(key));
+    QCOMPARE(engine.m_timeStretchJobs.value(key).state,
+             static_cast<int>(AudioEngine::TimeStretchJobComplete));
+    QCOMPARE(engine.m_timeStretchJobs.value(key).sourceGeneration,
+             currentSourceGeneration);
+    QVERIFY(!engine.m_timeStretchFailedJobs.contains(key));
+    QVERIFY(!engine.m_timeStretchGenerationActive.load());
+  }
+}
+
+void TestAudioMixPolicy::
+    testWarmupPermanentFailureIsSourceGenerationScoped() {
+  AudioEngine engine;
+  const QString path = QStringLiteral("/tmp/jcut_warmup_failure.wav");
+  const TimelineClip clip =
+      makeAudioClip(QStringLiteral("warmup-failure"), path, 0, 120);
+  engine.setTimelineStateAtFrame(
+      QVector<TimelineTrack>(1), QVector<TimelineClip>{clip},
+      QVector<ExportRangeSegment>{{0, 119}}, QVector<RenderSyncMarker>{}, 0);
+  const QString sourceKey = engine.clipAudioPathForScheduling(clip);
+
+  uint64_t failedSourceGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    failedSourceGeneration = engine.m_sourceGeneration;
+    QVERIFY(engine.recordDecodeResultLocked(sourceKey, failedSourceGeneration,
+                                             false));
+  }
+  QVERIFY(engine.playbackAudioWarmupPermanentlyFailed(0));
+
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    QVERIFY(engine.recordDecodeResultLocked(sourceKey, failedSourceGeneration,
+                                             true));
+  }
+  QVERIFY(!engine.playbackAudioWarmupPermanentlyFailed(0));
+
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    QVERIFY(engine.recordDecodeResultLocked(sourceKey, failedSourceGeneration,
+                                             false));
+  }
+  engine.invalidateAudioSourceCaches();
+  uint64_t currentSourceGeneration = 0;
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    currentSourceGeneration = engine.m_sourceGeneration;
+    QVERIFY(engine.m_failedDecodePaths.isEmpty());
+    QVERIFY(!engine.recordDecodeResultLocked(sourceKey, failedSourceGeneration,
+                                              false));
+  }
+  QVERIFY(!engine.playbackAudioWarmupPermanentlyFailed(0));
+
+  engine.setPlaybackWarpMode(PlaybackAudioWarpMode::TimeStretch);
+  engine.setPlaybackRate(1.5);
+  const int speedKey = AudioEngine::precomputedTimeStretchSpeedKey(
+      1.5, PlaybackAudioWarpMode::TimeStretch);
+  QCOMPARE(engine.beginTimeStretchJobAttempt(sourceKey, speedKey,
+                                              currentSourceGeneration),
+           1);
+  QVERIFY(engine.beginTimeStretchGenerationForSourceGeneration(
+      sourceKey, speedKey, 48000, currentSourceGeneration));
+  QVERIFY(engine.finishTimeStretchGenerationForSourceGeneration(
+      sourceKey, speedKey, false, 0,
+      QStringLiteral("rubberband_empty_output"),
+      QStringLiteral("rubberband_empty_output"), currentSourceGeneration));
+
+  engine.m_timeStretchReadinessState.store(
+      AudioEngine::TimeStretchReadinessQueuedPrecompute);
+  QVERIFY(!engine.playbackAudioWarmupPermanentlyFailed(0));
+  engine.m_timeStretchReadinessState.store(
+      AudioEngine::TimeStretchReadinessMissing);
+  QVERIFY(engine.playbackAudioWarmupPermanentlyFailed(0));
+
+  engine.invalidateAudioSourceCaches();
+  QVERIFY(!engine.playbackAudioWarmupPermanentlyFailed(0));
+}
+
+void TestAudioMixPolicy::
+    testRingBufferClearWaitsForReaderAndRejectsReadsDuringReset() {
+  AudioRingBuffer ring;
+  const std::array<int16_t, 4> buffered{{1, 2, 3, 4}};
+  QCOMPARE(ring.write(buffered.data(), buffered.size()), buffered.size());
+
+  // Hold the consumer side active so clear() deterministically reaches its
+  // rendezvous and waits rather than relying on scheduler timing to overlap
+  // a short read operation.
+  ring.m_readerActive.store(true, std::memory_order_seq_cst);
+  std::atomic<bool> clearDone{false};
+  std::thread clearer([&] {
+    ring.clear();
+    clearDone.store(true, std::memory_order_release);
+  });
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!ring.m_resetting.load(std::memory_order_seq_cst) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+
+  const bool resetObserved =
+      ring.m_resetting.load(std::memory_order_seq_cst);
+  const bool completedWhileReaderActive =
+      clearDone.load(std::memory_order_acquire);
+  int16_t sample = -1;
+  const size_t readDuringReset = ring.read(&sample, 1);
+
+  // A write can race a reset, but clear's linearization point must discard
+  // every sample published before it completes.
+  const std::array<int16_t, 2> writtenDuringReset{{5, 6}};
+  const size_t writeDuringReset =
+      ring.write(writtenDuringReset.data(), writtenDuringReset.size());
+
+  // Always release and join before making Qt assertions: an early-returning
+  // assertion with a joinable std::thread would terminate the test process.
+  ring.m_readerActive.store(false, std::memory_order_seq_cst);
+  clearer.join();
+
+  QVERIFY(resetObserved);
+  QVERIFY(!completedWhileReaderActive);
+  QCOMPARE(readDuringReset, size_t{0});
+  QCOMPARE(sample, int16_t{-1});
+  QCOMPARE(writeDuringReset, writtenDuringReset.size());
+  QCOMPARE(ring.available(), size_t{0});
+  QCOMPARE(ring.space(), AudioRingBuffer::kCapacity);
+
+  const std::array<int16_t, 3> fresh{{7, 8, 9}};
+  std::array<int16_t, 3> output{};
+  QCOMPARE(ring.write(fresh.data(), fresh.size()), fresh.size());
+  QCOMPARE(ring.read(output.data(), output.size()), output.size());
+  QVERIFY(output == fresh);
 }
 
 QTEST_MAIN(TestAudioMixPolicy)

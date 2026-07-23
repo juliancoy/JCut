@@ -1,6 +1,6 @@
 # TIME.md
 
-> **Doc status (2026-06-13):** This document defines JCut's intended timing model.
+> **Doc status (2026-07-21):** This document defines JCut's intended timing model.
 > If code disagrees with this document, either fix the code or update this file in the
 > same change. Do not leave temporal behavior implicit.
 
@@ -157,6 +157,12 @@ The supported modes are:
   - Convert source media seconds to the 30 fps transcript clock.
   - `transcriptFrameForClipAtTimelineSample(...)`
   - `transcriptFrameForClipSourceFrame(...)`
+- Source parent timeline time -> Mask Matte sample:
+  - Resolve the source parent's timeline-to-source mapping once, including trim,
+    rate, source FPS, and render-sync markers.
+  - Use that exact resolved or presented source frame for every linked Mask Matte
+    child and select the sidecar sample in the same source-media domain.
+  - Never map a Mask Matte independently by its child ID or cached timing fields.
 - Facestream stored frame -> source media frame:
   - `mapFacestreamFrameToSourceFrame(...)`
   - Output is a source/decode frame, not a timeline frame.
@@ -249,9 +255,9 @@ over about 16.7 minutes, but larger mismatch usually means an FPS assumption,
 sample-rate interpretation, trim, or prior export changed one stream. Diagnose
 those causes before adding creative edits.
 
-Generated timeline followers, such as locked rotoscope mask matte clips, are not A/V
+Generated timeline followers, such as locked Mask Matte children, are not A/V
 streams. Timing diagnostics must exclude them from stream counts and drift
-analysis; they inherit timing from their linked source clip.
+analysis; they inherit timing from their source parent.
 
 ## Video
 
@@ -268,6 +274,36 @@ For each presentation tick:
 
 Decoder PTS and cache completion order are readiness signals only. They must not
 advance or delay the runtime clock.
+
+## Mask Matte Children
+
+A Mask Matte child is a visual projection of a source parent, not an independent
+timed stream. `linkedSourceClipId` identifies the authoritative parent. The parent
+owns timeline start and subframe position, source-in, duration, playback rate,
+render-sync markers, decoded/presented source frame, and transform timing. Copies
+of those values on the child are normalization caches only and must never become a
+second temporal authority.
+
+At each preview presentation or export step:
+
+1. Resolve timeline time through the source parent's marker-aware mapping.
+2. Decode or select the parent's source frame.
+3. Give every linked Mask Matte the exact same resolved frame identity and media
+   payload.
+4. Select its mask-sidecar sample in that same source-media frame domain.
+5. Evaluate only the child's visual state (mask processing, opacity, grading,
+   correction polygons, and effects) independently.
+
+If preview presents a bounded stale/approximate parent frame, its children must use
+that presented frame too; combining a newer requested mask with an older presented
+image is forbidden. If the parent frame or the matching sidecar sample is
+unavailable, the child fails closed and contributes no masked foreground. Export
+uses the same resolver and must not perform an independent child-ID marker lookup.
+
+Move, trim, slip/source-in, rate, marker, and transform mutations operate on the
+parent-child aggregate at one model boundary. Split, copy/paste, cut, delete, and
+orphan reconciliation follow the lifecycle contract in `MASKS.md`. These editing
+rules preserve the mapping; they do not create an additional runtime clock.
 
 ## Subtitles And Transcript Follow
 
@@ -370,6 +406,8 @@ Common failure modes:
 - Transcript logic compares 60 fps media source frames directly to 30 fps transcript
   frames.
 - Render-sync marker adjustments are applied in one path but bypassed in another.
+- A Mask Matte is mapped by its child ID, so parent render-sync markers are skipped
+  or a different cached source frame is selected.
 - Speech-filtered playback advances one consumer through filtered time and another
   through unfiltered timeline time.
 - Pitch-preserving audio cache misses make audio stall while video/subtitles continue
@@ -398,3 +436,6 @@ domain at each boundary.
 - Invariant 9: Retimed audio cache selection must prove coverage before use.
 - Invariant 10: Stale video or overlay reuse is a bounded display hold, not evidence
   that playback time stopped.
+- Invariant 11: Every Mask Matte uses its source parent's marker-aware mapping,
+  presented source frame, and transform; child timing fields are never an
+  independent clock or source-frame mapping.

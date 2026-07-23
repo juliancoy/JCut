@@ -1,5 +1,7 @@
 #pragma once
 
+#include "speaker_profile_keys.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QImage>
@@ -11,38 +13,6 @@
 #include <limits>
 
 namespace {
-const QLatin1String kTranscriptWordSpeakerKey("speaker");
-const QLatin1String kTranscriptSegmentSpeakerKey("speaker");
-const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
-const QLatin1String kTranscriptSpeakerNameKey("name");
-const QLatin1String kTranscriptSpeakerOrganizationKey("organization");
-const QLatin1String kTranscriptSpeakerLogoPathKey("logo_path");
-const QLatin1String kTranscriptSpeakerPrimaryColorKey("primary_color");
-const QLatin1String kTranscriptSpeakerSecondaryColorKey("secondary_color");
-const QLatin1String kTranscriptSpeakerAccentColorKey("accent_color");
-const QLatin1String kTranscriptSpeakerLocationKey("location");
-const QLatin1String kTranscriptSpeakerLocationXKey("x");
-const QLatin1String kTranscriptSpeakerLocationYKey("y");
-const QLatin1String kTranscriptSpeakerFaceRefsKey("face_refs");
-const QLatin1String kTranscriptSpeakerFramingKey("framing");
-const QLatin1String kTranscriptSpeakerTrackingKey("tracking");
-const QLatin1String kTranscriptSpeakerTrackingModeKey("mode");
-const QLatin1String kTranscriptSpeakerTrackingEnabledKey("enabled");
-const QLatin1String kTranscriptSpeakerTrackingAutoStateKey("auto_state");
-const QLatin1String kTranscriptSpeakerTrackingFrameKey("frame");
-const QLatin1String kTranscriptSpeakerTrackingBoxSizeKey("box_size");
-const QLatin1String kTranscriptSpeakerTrackingBoxLeftKey("box_left");
-const QLatin1String kTranscriptSpeakerTrackingBoxTopKey("box_top");
-const QLatin1String kTranscriptSpeakerTrackingBoxRightKey("box_right");
-const QLatin1String kTranscriptSpeakerTrackingBoxBottomKey("box_bottom");
-const QLatin1String kTranscriptSpeakerTrackingKeyframesKey("keyframes");
-const QLatin1String kTranscriptSpeakerTrackingConfidenceKey("confidence");
-const QLatin1String kTranscriptSpeakerTrackingSourceKey("source");
-const QLatin1String kSpeakerFlowAnchorSourceFrameKey("anchor_source_frame");
-const QLatin1String kSpeakerFlowAnchorXKey("anchor_x");
-const QLatin1String kSpeakerFlowAnchorYKey("anchor_y");
-const QLatin1String kSpeakerFlowAnchorBoxSizeKey("anchor_box_size");
-
 bool transcriptTrackingHasPointstream(const QJsonObject& tracking);
 
 bool transcriptTrackingEnabled(const QJsonObject& tracking)

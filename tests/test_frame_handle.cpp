@@ -13,6 +13,8 @@ class TestFrameHandle : public QObject {
 private slots:
     void testDefaultConstruction();
     void testNullFrame();
+    void testNullCpuFramePreservesEmptyPayload();
+    void testLegacyQrhiApiRemainsLinkable();
     void testCpuFrameCreation();
     void testFrameComparison();
     void testMemoryUsage();
@@ -35,6 +37,30 @@ void TestFrameHandle::testNullFrame() {
     QCOMPARE(frame.memoryUsage(), 0);
 }
 
+void TestFrameHandle::testNullCpuFramePreservesEmptyPayload() {
+    const FrameHandle frame = FrameHandle::createCpuFrame(
+        QImage(), 5, QStringLiteral("empty.png"));
+
+    QVERIFY(!frame.isNull());
+    QVERIFY(!frame.hasCpuImage());
+    QVERIFY(frame.cpuImage().isNull());
+    QCOMPARE(frame.frameNumber(), 5);
+    QCOMPARE(frame.sourcePath(), QStringLiteral("empty.png"));
+    QCOMPARE(frame.cpuMemoryUsage(), static_cast<size_t>(0));
+    QCOMPARE(frame.memoryUsage(), static_cast<size_t>(0));
+}
+
+void TestFrameHandle::testLegacyQrhiApiRemainsLinkable() {
+    const FrameHandle gpuFrame = FrameHandle::createGpuFrame(
+        nullptr, 9, QStringLiteral("gpu.mov"));
+    QVERIFY(gpuFrame.isNull());
+
+    FrameHandle nullFrame;
+    nullFrame.uploadToGpu(nullptr);
+    QVERIFY(nullFrame.isNull());
+    QVERIFY(!nullFrame.isGpuUploadPending());
+}
+
 void TestFrameHandle::testCpuFrameCreation() {
     QImage testImage(100, 100, QImage::Format_RGB32);
     testImage.fill(Qt::red);
@@ -47,7 +73,9 @@ void TestFrameHandle::testCpuFrameCreation() {
     QCOMPARE(frame.frameNumber(), 42);
     QCOMPARE(frame.sourcePath(), QString("/path/to/video.mp4"));
     QCOMPARE(frame.size(), QSize(100, 100));
-    QVERIFY(frame.memoryUsage() > 0);
+    QCOMPARE(frame.cpuMemoryUsage(), static_cast<size_t>(testImage.sizeInBytes()));
+    QCOMPARE(frame.memoryUsage(), frame.cpuMemoryUsage());
+    QCOMPARE(frame.gpuMemoryUsage(), static_cast<size_t>(0));
 }
 
 void TestFrameHandle::testFrameComparison() {
@@ -104,6 +132,12 @@ void TestFrameHandle::testHardwareFramePreservesValidCropRect() {
     av_frame_free(&avFrame);
 
     QVERIFY(frame.hasHardwareFrame());
+    QCOMPARE(frame.hardwarePixelFormat(), static_cast<int>(AV_PIX_FMT_NV12));
+    QCOMPARE(frame.hardwareSwPixelFormat(), static_cast<int>(AV_PIX_FMT_NV12));
+    QCOMPARE(frame.cpuMemoryUsage(), static_cast<size_t>(0));
+    QCOMPARE(frame.memoryUsage(), static_cast<size_t>(0));
+    QCOMPARE(frame.gpuMemoryUsage(),
+             static_cast<size_t>(1920 * 1088 * 3 / 2) * 4);
     const QRectF crop = frame.validTextureRectNormalized();
     QVERIFY(qAbs(crop.left() - (8.0 / 1920.0)) < 0.000001);
     QVERIFY(qAbs(crop.top() - (4.0 / 1088.0)) < 0.000001);

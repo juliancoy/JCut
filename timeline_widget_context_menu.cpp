@@ -10,37 +10,177 @@
 #include <QJsonArray>
 
 #include <algorithm>
+#include <utility>
 
-bool TimelineWidget::createOrReplaceMaskZMarker(const QString& clipId, bool selectMarker)
+bool TimelineWidget::createOrReplaceMaskMatte(const QString& clipId, bool selectMatte)
 {
+    if (clipId.trimmed().isEmpty()) {
+        return false;
+    }
     int sourceIndex = -1;
     for (int i = 0; i < m_clips.size(); ++i) {
-        if (m_clips[i].id == clipId && m_clips[i].clipRole != ClipRole::MaskMatte) {
+        if (m_clips[i].id == clipId &&
+            m_clips[i].clipRole == ClipRole::Media &&
+            m_clips[i].mediaType == ClipMediaType::Video &&
+            !m_clips[i].filePath.trimmed().isEmpty()) {
             sourceIndex = i;
             break;
         }
     }
-    if (sourceIndex < 0 || !clipHasVisuals(m_clips[sourceIndex]) ||
-        !m_clips[sourceIndex].maskEnabled ||
-        m_clips[sourceIndex].maskFramesDir.trimmed().isEmpty()) {
+    if (sourceIndex < 0 || !clipHasVisuals(m_clips[sourceIndex])) {
         return false;
     }
 
-    const QString selectedSidecarId =
-        editor::masks::stableMaskSidecarId(m_clips.at(sourceIndex).maskFramesDir);
-    reconcileMaskMatteChildrenFromDisk(m_clips);
-    const QVector<TimelineClip> reconciledClips = m_clips;
-    setClips(reconciledClips);
-    if (selectMarker) {
-        const auto child = std::find_if(m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+    const QString preferredDirectory =
+        m_clips.at(sourceIndex).maskFramesDir.trimmed();
+    const QString preferredId = preferredDirectory.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(preferredDirectory);
+    const auto preferredChild = std::find_if(
+        m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
             return clip.clipRole == ClipRole::MaskMatte &&
-                   clip.linkedSourceClipId == clipId &&
-                   (clip.generatedFromMaskId == selectedSidecarId ||
-                    editor::masks::stableMaskSidecarId(clip.maskFramesDir) == selectedSidecarId);
+                   clip.linkedSourceClipId.trimmed() == clipId.trimmed() &&
+                   ((!preferredId.isEmpty() &&
+                     (clip.generatedFromMaskId.trimmed() == preferredId ||
+                      editor::masks::stableMaskSidecarId(clip.maskFramesDir) == preferredId)) ||
+                    (!preferredDirectory.isEmpty() &&
+                     QDir::cleanPath(clip.maskFramesDir.trimmed()) ==
+                         QDir::cleanPath(preferredDirectory)));
         });
-        if (child != m_clips.cend()) setSelectedClipId(child->id);
+    if (preferredChild != m_clips.cend()) {
+        if (selectMatte) {
+            setSelectedClipId(preferredChild->id);
+        }
+        update();
+        return true;
     }
-    if (clipsChanged) clipsChanged();
+    if (!preferredDirectory.isEmpty()) {
+        // An explicit legacy preference either resolves to its durable child
+        // or materializes that exact sidecar. Never substitute an unrelated
+        // available sibling when the preferred artifact is unavailable.
+        return createOrReplaceMaskMatteForSidecar(
+            clipId, preferredDirectory, selectMatte);
+    }
+
+    const auto existingChild = std::find_if(
+        m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+            return clip.clipRole == ClipRole::MaskMatte &&
+                   clip.linkedSourceClipId.trimmed() == clipId.trimmed();
+        });
+    if (existingChild != m_clips.cend()) {
+        if (selectMatte) {
+            setSelectedClipId(existingChild->id);
+        }
+        update();
+        return true;
+    }
+
+    const QVector<editor::masks::MaskSidecar> sidecars =
+        editor::masks::discoverMaskSidecars(m_clips.at(sourceIndex));
+    const auto readySidecar = std::find_if(
+        sidecars.cbegin(), sidecars.cend(), [](const editor::masks::MaskSidecar& sidecar) {
+            return sidecar.isReadyForTimeline();
+        });
+    if (readySidecar == sidecars.cend()) {
+        return false;
+    }
+    return createOrReplaceMaskMatteForSidecar(
+        clipId, readySidecar->directory, selectMatte);
+}
+
+bool TimelineWidget::createOrReplaceMaskMatteForSidecar(const QString& clipId,
+                                                        const QString& sidecarDirectory,
+                                                        bool selectMatte)
+{
+    if (clipId.trimmed().isEmpty()) {
+        return false;
+    }
+    const auto source = std::find_if(
+        m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+            return clip.id == clipId &&
+                   clip.clipRole == ClipRole::Media &&
+                   clip.mediaType == ClipMediaType::Video &&
+                   !clip.id.trimmed().isEmpty() &&
+                   !clip.filePath.trimmed().isEmpty() &&
+                   clipHasVisuals(clip);
+        });
+    if (source == m_clips.cend()) {
+        return false;
+    }
+
+    const QString normalizedDirectory = sidecarDirectory.trimmed();
+    const QString requestedSidecarId = normalizedDirectory.isEmpty()
+        ? QString()
+        : editor::masks::stableMaskSidecarId(normalizedDirectory);
+    QString childId = maskMatteChildIdForSidecar(
+        m_clips, clipId, requestedSidecarId);
+    if (childId.isEmpty() && !normalizedDirectory.isEmpty()) {
+        const QString cleanRequestedDirectory = QDir::cleanPath(normalizedDirectory);
+        const auto childByPath = std::find_if(
+            m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+                return clip.clipRole == ClipRole::MaskMatte &&
+                       clip.linkedSourceClipId.trimmed() == clipId.trimmed() &&
+                       QDir::cleanPath(clip.maskFramesDir.trimmed()) ==
+                           cleanRequestedDirectory;
+            });
+        if (childByPath != m_clips.cend()) {
+            childId = childByPath->id;
+        }
+    }
+    if (!childId.isEmpty()) {
+        if (selectMatte) {
+            setSelectedClipId(childId);
+        }
+        update();
+        return true;
+    }
+
+    const editor::masks::MaskSidecar sidecar = editor::masks::inspectMaskSidecar(
+        normalizedDirectory,
+        QFileInfo(source->filePath).completeBaseName(),
+        source->filePath);
+    if (!sidecar.isReadyForTimeline()) {
+        return false;
+    }
+
+    QVector<TimelineClip> nextClips = m_clips;
+    bool availabilityChanged = false;
+    bool modelChanged = reconcileMaskMatteChildrenFromDisk(
+        nextClips, &availabilityChanged);
+    childId = maskMatteChildIdForSidecar(nextClips, clipId, sidecar.id);
+    if (childId.isEmpty()) {
+        int nextZLevel = effectiveClipZLevel(*source) + 1;
+        for (const TimelineClip& clip : std::as_const(nextClips)) {
+            if (clip.clipRole == ClipRole::MaskMatte &&
+                clip.linkedSourceClipId.trimmed() == clipId.trimmed()) {
+                nextZLevel = qMax(nextZLevel, effectiveClipZLevel(clip) + 1);
+            }
+        }
+        nextClips.push_back(makeMaskMatteClip(*source, sidecar, nextZLevel));
+        childId = nextClips.constLast().id;
+        modelChanged = true;
+    } else {
+        for (TimelineClip& clip : nextClips) {
+            if (clip.id == childId) {
+                modelChanged = setMaskSidecarAssociation(clip, sidecar.directory) ||
+                               modelChanged;
+                break;
+            }
+        }
+    }
+
+    modelChanged = normalizeMaskMatteClips(nextClips) || modelChanged;
+    if (modelChanged || availabilityChanged) {
+        setClips(nextClips);
+        childId = maskMatteChildIdForSidecar(m_clips, clipId, sidecar.id);
+    }
+    if (childId.isEmpty()) {
+        return false;
+    }
+    if (selectMatte) {
+        setSelectedClipId(childId);
+    }
+    if (modelChanged && clipsChanged) clipsChanged();
     update();
     return true;
 }
@@ -111,6 +251,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* deleteFaceDetectionsAction = nullptr;
     QAction* generateSamMaskMatteAction = nullptr;
     QAction* generateSpeakerTitleClipsAction = nullptr;
+    QString rotoscopeSourceClipId;
 
     QSet<QString> contextSelection = selectedClipIds();
     if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
@@ -189,24 +330,44 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             !m_clips[clipIndex].locked);
         QMenu* generatedMenu = menu.addMenu(QStringLiteral("Generated Clips"));
         generateSamMaskMatteAction =
-            generatedMenu->addAction(QStringLiteral("Add Mask Z Marker"));
+            generatedMenu->addAction(QStringLiteral("Add Mask Matte Layer"));
         generateSamMaskMatteAction->setToolTip(
-            QStringLiteral("Create a locked timeline-only marker that controls where the source mask foreground sits in Z."));
+            QStringLiteral("Create or select the source-linked Mask Matte child layer."));
+        const TimelineClip& generatedSource = m_clips.at(clipIndex);
+        const bool eligibleMaskSource =
+            generatedSource.clipRole == ClipRole::Media &&
+            generatedSource.mediaType == ClipMediaType::Video &&
+            clipHasVisuals(generatedSource);
+        const bool hasDurableMaskChild = eligibleMaskSource && std::any_of(
+            m_clips.cbegin(), m_clips.cend(), [&](const TimelineClip& clip) {
+                return clip.clipRole == ClipRole::MaskMatte &&
+                       clip.linkedSourceClipId.trimmed() == generatedSource.id.trimmed();
+            });
+        const bool hasDiscoveredMaskSidecar =
+            eligibleMaskSource &&
+            !hasDurableMaskChild &&
+            editor::masks::hasReadyMaskSidecar(generatedSource);
         generateSamMaskMatteAction->setEnabled(
-            clipHasVisuals(m_clips[clipIndex]) &&
-            m_clips[clipIndex].maskEnabled &&
-            !m_clips[clipIndex].maskFramesDir.trimmed().isEmpty());
+            eligibleMaskSource &&
+            (hasDiscoveredMaskSidecar || hasDurableMaskChild));
         QMenu* rotoscopeMenu = menu.addMenu(QStringLiteral("Rotoscope"));
         detectAction = rotoscopeMenu->addAction(QStringLiteral("Run SAM 3..."));
         detectAction->setToolTip(QStringLiteral("Select a subject with a text prompt and generate binary mask frames."));
         birefnetAction = rotoscopeMenu->addAction(QStringLiteral("Run BiRefNet..."));
         birefnetAction->setToolTip(QStringLiteral("Preview and generate an automatic continuous-alpha foreground matte."));
-        detectAction->setEnabled(
-            m_clips[clipIndex].mediaType == ClipMediaType::Video &&
-            !m_clips[clipIndex].filePath.trimmed().isEmpty());
-        birefnetAction->setEnabled(
-            m_clips[clipIndex].mediaType == ClipMediaType::Video &&
-            !m_clips[clipIndex].filePath.trimmed().isEmpty());
+        const TimelineClip* rotoscopeSource = &m_clips.at(clipIndex);
+        if (rotoscopeSource->clipRole == ClipRole::MaskMatte) {
+            rotoscopeSource = clipParent(*rotoscopeSource, m_clips);
+        }
+        if (rotoscopeSource &&
+            rotoscopeSource->clipRole == ClipRole::Media &&
+            rotoscopeSource->mediaType == ClipMediaType::Video &&
+            !rotoscopeSource->id.trimmed().isEmpty() &&
+            !rotoscopeSource->filePath.trimmed().isEmpty()) {
+            rotoscopeSourceClipId = rotoscopeSource->id;
+        }
+        detectAction->setEnabled(!rotoscopeSourceClipId.isEmpty());
+        birefnetAction->setEnabled(!rotoscopeSourceClipId.isEmpty());
         QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
         transcribeAction = transcriptMenu->addAction(QStringLiteral("Transcribe"));
         generateSpeakerTitleClipsAction =
@@ -227,9 +388,11 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         const QString detectedProxyPath = !m_clips[clipIndex].proxyPath.isEmpty()
                                               ? m_clips[clipIndex].proxyPath
                                               : playbackProxyPathForClip(proxyDetectionClip);
-        const bool canProxy = m_clips[clipIndex].mediaType == ClipMediaType::Video;
+        const bool ownsMedia = m_clips[clipIndex].clipRole != ClipRole::MaskMatte;
+        const bool canProxy = ownsMedia && m_clips[clipIndex].mediaType == ClipMediaType::Video;
         const bool proxyPlaybackIsEnabled = proxyPlaybackEnabled ? proxyPlaybackEnabled() : false;
         QMenu* proxyMenu = menu.addMenu(QStringLiteral("Proxy"));
+        proxyMenu->setEnabled(ownsMedia);
         useProxyAction = proxyMenu->addAction(QStringLiteral("Use Proxy"));
         useProxyAction->setCheckable(true);
         useProxyAction->setChecked(canProxy && m_clips[clipIndex].useProxy && proxyPlaybackIsEnabled);
@@ -276,7 +439,10 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* lockAction = nullptr;
     QAction* unlockAction = nullptr;
     if (clipIndex >= 0) {
-        if (m_clips[clipIndex].locked) {
+        if (m_clips[clipIndex].clipRole == ClipRole::MaskMatte) {
+            QAction* sourceLockAction = menu.addAction(QStringLiteral("Locked to Source"));
+            sourceLockAction->setEnabled(false);
+        } else if (m_clips[clipIndex].locked) {
             unlockAction = menu.addAction(QStringLiteral("Unlock"));
         } else {
             lockAction = menu.addAction(QStringLiteral("Lock"));
@@ -623,7 +789,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     };
     if (selected == generateSamMaskMatteAction) {
         if (clipIndex >= 0) {
-            createOrReplaceMaskZMarker(m_clips[clipIndex].id);
+            createOrReplaceMaskMatte(m_clips[clipIndex].id);
         }
         return;
     }
@@ -655,15 +821,15 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == detectAction) {
-        if (detectRequested && clipIndex >= 0) {
-            detectRequested(m_clips[clipIndex].id);
+        if (detectRequested && !rotoscopeSourceClipId.isEmpty()) {
+            detectRequested(rotoscopeSourceClipId);
         }
         return;
     }
 
     if (selected == birefnetAction) {
-        if (birefnetRequested && clipIndex >= 0) {
-            birefnetRequested(m_clips[clipIndex].id);
+        if (birefnetRequested && !rotoscopeSourceClipId.isEmpty()) {
+            birefnetRequested(rotoscopeSourceClipId);
         }
         return;
     }
@@ -693,7 +859,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == useProxyAction) {
-        if (clipIndex >= 0) {
+        if (clipIndex >= 0 && m_clips[clipIndex].clipRole != ClipRole::MaskMatte) {
             m_clips[clipIndex].useProxy = useProxyAction->isChecked();
             if (useProxyAction->isChecked() && proxyPlaybackEnabledChanged) {
                 proxyPlaybackEnabledChanged(true);
@@ -891,7 +1057,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == unlockAction) {
-        m_clips[clipIndex].locked = false;
+        if (m_clips[clipIndex].clipRole != ClipRole::MaskMatte) {
+            m_clips[clipIndex].locked = false;
+        }
         update();
         return;
     }

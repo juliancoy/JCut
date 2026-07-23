@@ -2,6 +2,7 @@
 
 #include "core/geometry.h"
 #include "frame_handle.h"
+#include "vulkan_external_frame_import_core.h"
 #include "vulkan_zero_copy_face_detector.h"
 
 #include <QElapsedTimer>
@@ -59,9 +60,9 @@ public:
 
     bool isInitialized() const { return m_initialized; }
     FrameHandoffMode lastMode() const { return m_lastMode; }
-    VkImage image() const { return m_image; }
-    VkImageLayout imageLayout() const { return m_imageLayout; }
-    VkFormat imageFormat() const { return m_imageFormat; }
+    VkImage image() const;
+    VkImageLayout imageLayout() const;
+    VkFormat imageFormat() const;
     bool usedCpuUpload() const { return m_lastMode == FrameHandoffMode::CpuUpload; }
     const HardwareInteropProbeResult& lastProbe() const { return m_lastProbe; }
     QString lastYuvRgbMatrix() const { return m_lastYuvRgbMatrix; }
@@ -84,7 +85,7 @@ public:
                                  const render_detail::OffscreenVulkanFrame& frame,
                                  std::string* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
-    FrameHandoffResourceStats resourceStats() const { return m_resourceStats; }
+    FrameHandoffResourceStats resourceStats() const;
     void resetResourceStats();
 
     VulkanExternalImage externalImage() const;
@@ -134,14 +135,6 @@ private:
     bool ensureImageResources(const jcut::core::SizeI& size,
                               VkFormat format,
                               QString* errorMessage);
-    bool ensureImportedImageResources(const jcut::core::SizeI& size,
-                                      VkFormat format,
-                                      QString* errorMessage);
-    bool copyImportedFrameToLocal(VkImageLayout sourceLayout,
-                                  QString* errorMessage);
-    bool recordImportedFrameCopyToLocal(VkCommandBuffer commandBuffer,
-                                        VkImageLayout sourceLayout,
-                                        QString* errorMessage);
     bool ensureStagingBuffer(VkDeviceSize bytes, QString* errorMessage);
     void transitionImage(VkCommandBuffer commandBuffer,
                          VkImageLayout oldLayout,
@@ -170,15 +163,7 @@ private:
     VkImageLayout m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat m_imageFormat = VK_FORMAT_UNDEFINED;
     jcut::core::SizeI m_imageSize;
-    bool m_imageImported = false;
-    VkDevice m_importSourceDevice = VK_NULL_HANDLE;
-    VkDeviceMemory m_importSourceMemory = VK_NULL_HANDLE;
-    VkImage m_importedImage = VK_NULL_HANDLE;
-    VkDeviceMemory m_importedImageMemory = VK_NULL_HANDLE;
-    VkImageView m_importedImageView = VK_NULL_HANDLE;
-    VkImageLayout m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkFormat m_importedImageFormat = VK_FORMAT_UNDEFINED;
-    jcut::core::SizeI m_importedImageSize;
+    jcut::vulkan_import::VulkanExternalFrameImportCore m_externalFrameImporter;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;

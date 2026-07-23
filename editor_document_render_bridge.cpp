@@ -1,12 +1,13 @@
 #include "editor_document_render_bridge.h"
 
+#include "clip_serialization.h"
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
 #include "editor_timeline_types.h"
 
-#include <QFileInfo>
-
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <unordered_map>
 
 namespace {
@@ -35,24 +36,20 @@ ClipMediaType inferClipMediaType(const std::string& kind, const std::string& sou
         return explicitType;
     }
 
-    const QString suffix = QFileInfo(QString::fromStdString(sourcePath)).suffix().toLower();
-    if (suffix == QStringLiteral("png") ||
-        suffix == QStringLiteral("jpg") ||
-        suffix == QStringLiteral("jpeg") ||
-        suffix == QStringLiteral("webp") ||
-        suffix == QStringLiteral("tga") ||
-        suffix == QStringLiteral("tif") ||
-        suffix == QStringLiteral("tiff") ||
-        suffix == QStringLiteral("bmp") ||
-        suffix == QStringLiteral("exr")) {
+    std::string suffix = std::filesystem::path(sourcePath).extension().string();
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (!suffix.empty() && suffix.front() == '.') {
+        suffix.erase(suffix.begin());
+    }
+    if (suffix == "png" || suffix == "jpg" || suffix == "jpeg" ||
+        suffix == "webp" || suffix == "tga" || suffix == "tif" ||
+        suffix == "tiff" || suffix == "bmp" || suffix == "exr") {
         return ClipMediaType::Image;
     }
-    if (suffix == QStringLiteral("wav") ||
-        suffix == QStringLiteral("mp3") ||
-        suffix == QStringLiteral("aac") ||
-        suffix == QStringLiteral("m4a") ||
-        suffix == QStringLiteral("flac") ||
-        suffix == QStringLiteral("ogg")) {
+    if (suffix == "wav" || suffix == "mp3" || suffix == "aac" ||
+        suffix == "m4a" || suffix == "flac" || suffix == "ogg") {
         return ClipMediaType::Audio;
     }
     if (!sourcePath.empty()) {
@@ -61,11 +58,27 @@ ClipMediaType inferClipMediaType(const std::string& kind, const std::string& sou
     return ClipMediaType::Unknown;
 }
 
+ClipRole clipRoleFromCore(const std::string& role)
+{
+    const std::string canonical = jcut::canonicalEditorClipRole(role);
+    if (canonical == "mask_matte") {
+        return ClipRole::MaskMatte;
+    }
+    if (canonical == "effect_synth") {
+        return ClipRole::EffectSynth;
+    }
+    if (canonical == "speaker_title") {
+        return ClipRole::SpeakerTitle;
+    }
+    return ClipRole::Media;
+}
+
 } // namespace
 
 namespace jcut::render {
 
-TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document)
+TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
+                                           bool probeMedia)
 {
     TimelineRenderData timelineData;
 
@@ -75,6 +88,20 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document)
         const EditorTrack& track = document.tracks[index];
         TimelineTrack timelineTrack;
         timelineTrack.name = QString::fromStdString(track.label);
+        timelineTrack.height = std::max(24, track.height);
+        timelineTrack.visualMode = static_cast<TrackVisualMode>(std::clamp(track.visualMode, 0, 2));
+        timelineTrack.gradingPreviewEnabled = track.gradingPreviewEnabled;
+        timelineTrack.audioEnabled = track.audioEnabled;
+        timelineTrack.audioBusId = QString::fromStdString(track.audioBusId);
+        timelineTrack.audioGain = track.audioGain;
+        timelineTrack.audioMuted = track.audioMuted;
+        timelineTrack.audioSolo = track.audioSolo;
+        timelineTrack.audioWaveformVisible = track.audioWaveformVisible;
+        timelineTrack.generatedChildTrack = track.generatedChildTrack;
+        timelineTrack.parentClipId =
+            QString::fromStdString(track.parentClipId).trimmed();
+        timelineTrack.childClipId =
+            QString::fromStdString(track.childClipId).trimmed();
         timelineData.tracks.push_back(timelineTrack);
         trackIndexById.emplace(track.id, static_cast<int>(index));
     }
@@ -91,52 +118,240 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document)
             continue;
         }
         TimelineClip timelineClip;
-        timelineClip.id = QStringLiteral("core-clip-%1").arg(clip.id);
+        timelineClip.id = clip.persistentId.empty()
+            ? QStringLiteral("imgui-clip-%1").arg(clip.id)
+            : QString::fromStdString(clip.persistentId);
+        timelineClip.clipRole = clipRoleFromCore(clip.clipRole);
+        timelineClip.linkedSourceClipId =
+            QString::fromStdString(clip.linkedSourceClipId).trimmed();
         timelineClip.filePath = QString::fromStdString(clip.sourcePath);
+        timelineClip.proxyPath = QString::fromStdString(clip.proxyPath);
+        timelineClip.useProxy = clip.useProxy;
         timelineClip.label = QString::fromStdString(clip.label);
         timelineClip.trackIndex = trackIt->second;
         timelineClip.startFrame = clip.startFrame;
+        timelineClip.startSubframeSamples = clip.startSubframeSamples;
         timelineClip.durationFrames = std::max(1, clip.durationFrames);
+        timelineClip.durationSubframeSamples = clip.durationSubframeSamples;
+        timelineClip.sourceDurationFrames = clip.sourceDurationFrames;
+        timelineClip.sourceInFrame = clip.sourceInFrame;
+        timelineClip.sourceInSubframeSamples = clip.sourceInSubframeSamples;
+        timelineClip.sourceFps = clip.sourceFps;
+        timelineClip.playbackRate = clip.playbackRate;
+        timelineClip.videoEnabled = clip.videoEnabled;
+        timelineClip.audioEnabled = clip.audioEnabled;
+        timelineClip.hasAudio = clip.hasAudio;
+        timelineClip.audioSourceMode = QString::fromStdString(clip.audioSourceMode);
+        timelineClip.audioSourcePath = QString::fromStdString(clip.audioSourcePath);
+        timelineClip.audioSourceStatus = QString::fromStdString(clip.audioSourceStatus);
+        timelineClip.audioStreamIndex = clip.audioStreamIndex;
+        timelineClip.transcriptActiveCutPath =
+            QString::fromStdString(clip.transcriptActiveCutPath);
+        timelineClip.audioBusId = QString::fromStdString(clip.audioBusId);
+        timelineClip.audioGain = clip.audioGain;
+        timelineClip.audioPan = clip.audioPan;
+        timelineClip.audioSolo = clip.audioSolo;
+        timelineClip.audioLinkedToVideo = clip.audioLinkedToVideo;
+        timelineClip.fadeSamples = std::max(0, clip.fadeSamples);
+        timelineClip.brightness = clip.brightness;
+        timelineClip.contrast = clip.contrast;
+        timelineClip.saturation = clip.saturation;
+        timelineClip.opacity = clip.opacity;
+        timelineClip.baseTranslationX = clip.baseTranslationX;
+        timelineClip.baseTranslationY = clip.baseTranslationY;
+        timelineClip.baseRotation = clip.baseRotation;
+        timelineClip.baseScaleX = clip.baseScaleX;
+        timelineClip.baseScaleY = clip.baseScaleY;
+        timelineClip.gradingPreviewEnabled = clip.gradingPreviewEnabled;
+        timelineClip.locked = clip.locked;
+        timelineClip.maskEnabled = clip.maskEnabled;
+        timelineClip.maskFramesDir = QString::fromStdString(clip.maskFramesDir);
+        timelineClip.maskFeather = clip.maskFeather;
+        timelineClip.maskFeatherGamma = clip.maskFeatherGamma;
+        timelineClip.maskFeatherFalloff = std::clamp(clip.maskFeatherFalloff, 0, 5);
+        timelineClip.maskDilate = clip.maskDilate;
+        timelineClip.maskErode = clip.maskErode;
+        timelineClip.maskBlur = clip.maskBlur;
+        timelineClip.maskInvert = clip.maskInvert;
+        timelineClip.maskShowOnly = clip.maskShowOnly;
+        timelineClip.maskOpacity = clip.maskOpacity;
+        timelineClip.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
+        timelineClip.maskRepeatEnabled = clip.maskRepeatEnabled;
+        timelineClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
+        timelineClip.maskRepeatDeltaY = clip.maskRepeatDeltaY;
+        timelineClip.effectPreset = editor::effectPresetFromJson(QString::fromStdString(clip.effectPreset));
+        timelineClip.effectRows = clip.effectRows;
+        timelineClip.effectSpeed = clip.effectSpeed;
+        timelineClip.effectScale = clip.effectScale;
+        timelineClip.effectAlternateDirection = clip.effectAlternateDirection;
+        for (const EditorCorrectionPolygon& polygon : clip.correctionPolygons) {
+            TimelineClip::CorrectionPolygon value;
+            value.enabled = polygon.enabled;
+            value.startFrame = polygon.startFrame;
+            value.endFrame = polygon.endFrame;
+            for (const EditorPoint& point : polygon.pointsNormalized) {
+                value.pointsNormalized.push_back(QPointF(point.x, point.y));
+            }
+            timelineClip.correctionPolygons.push_back(std::move(value));
+        }
+        timelineClip.transcriptOverlay.enabled = clip.transcriptOverlay.enabled;
+        timelineClip.transcriptOverlay.showBackground = clip.transcriptOverlay.showBackground;
+        timelineClip.transcriptOverlay.backgroundOpacity = clip.transcriptOverlay.backgroundOpacity;
+        timelineClip.transcriptOverlay.showShadow = clip.transcriptOverlay.showShadow;
+        timelineClip.transcriptOverlay.highlightCurrentWord = clip.transcriptOverlay.highlightCurrentWord;
+        timelineClip.transcriptOverlay.autoScroll = clip.transcriptOverlay.autoScroll;
+        timelineClip.transcriptOverlay.useManualPlacement = clip.transcriptOverlay.useManualPlacement;
+        timelineClip.transcriptOverlay.translationX = clip.transcriptOverlay.translationX;
+        timelineClip.transcriptOverlay.translationY = clip.transcriptOverlay.translationY;
+        timelineClip.transcriptOverlay.boxWidth = clip.transcriptOverlay.boxWidth;
+        timelineClip.transcriptOverlay.boxHeight = clip.transcriptOverlay.boxHeight;
+        timelineClip.transcriptOverlay.maxLines = std::max(1, clip.transcriptOverlay.maxLines);
+        timelineClip.transcriptOverlay.maxCharsPerLine = std::max(1, clip.transcriptOverlay.maxCharsPerLine);
+        timelineClip.transcriptOverlay.fontFamily = QString::fromStdString(clip.transcriptOverlay.fontFamily);
+        timelineClip.transcriptOverlay.fontPointSize = std::max(8, clip.transcriptOverlay.fontPointSize);
+        timelineClip.transcriptOverlay.bold = clip.transcriptOverlay.bold;
+        timelineClip.transcriptOverlay.italic = clip.transcriptOverlay.italic;
+        timelineClip.transcriptOverlay.textColor = QColor(QString::fromStdString(clip.transcriptOverlay.textColor));
+        timelineClip.transcriptOverlay.textOpacity = clip.transcriptOverlay.textOpacity;
+        timelineClip.transcriptOverlay.backgroundColor = QColor(QString::fromStdString(clip.transcriptOverlay.backgroundColor));
+        timelineClip.transcriptOverlay.highlightColor = QColor(QString::fromStdString(clip.transcriptOverlay.highlightColor));
+        timelineClip.transcriptOverlay.highlightTextColor = QColor(QString::fromStdString(clip.transcriptOverlay.highlightTextColor));
+        for (const EditorTransformKeyframe& keyframe : clip.transformKeyframes) {
+            TimelineClip::TransformKeyframe value;
+            value.frame = keyframe.frame;
+            value.title = QString::fromStdString(keyframe.title);
+            value.translationX = keyframe.translationX;
+            value.translationY = keyframe.translationY;
+            value.rotation = keyframe.rotation;
+            value.scaleX = keyframe.scaleX;
+            value.scaleY = keyframe.scaleY;
+            value.linearInterpolation = keyframe.linearInterpolation;
+            timelineClip.transformKeyframes.push_back(std::move(value));
+        }
+        for (const EditorGradingKeyframe& keyframe : clip.gradingKeyframes) {
+            TimelineClip::GradingKeyframe value;
+            value.frame = keyframe.frame;
+            value.brightness = keyframe.brightness;
+            value.contrast = keyframe.contrast;
+            value.saturation = keyframe.saturation;
+            value.opacity = keyframe.opacity;
+            value.linearInterpolation = keyframe.linearInterpolation;
+            value.shadowsR = keyframe.shadowsR;
+            value.shadowsG = keyframe.shadowsG;
+            value.shadowsB = keyframe.shadowsB;
+            value.midtonesR = keyframe.midtonesR;
+            value.midtonesG = keyframe.midtonesG;
+            value.midtonesB = keyframe.midtonesB;
+            value.highlightsR = keyframe.highlightsR;
+            value.highlightsG = keyframe.highlightsG;
+            value.highlightsB = keyframe.highlightsB;
+            const auto copyPoints = [](const std::vector<EditorPoint>& points) {
+                QVector<QPointF> result;
+                result.reserve(static_cast<qsizetype>(points.size()));
+                for (const EditorPoint& point : points) {
+                    result.push_back(QPointF(point.x, point.y));
+                }
+                if (result.isEmpty()) {
+                    result = {QPointF(0.0, 0.0), QPointF(1.0, 1.0)};
+                }
+                return result;
+            };
+            value.curvePointsR = copyPoints(keyframe.curvePointsR);
+            value.curvePointsG = copyPoints(keyframe.curvePointsG);
+            value.curvePointsB = copyPoints(keyframe.curvePointsB);
+            value.curvePointsLuma = copyPoints(keyframe.curvePointsLuma);
+            value.curveThreePointLock = keyframe.curveThreePointLock;
+            value.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
+            timelineClip.gradingKeyframes.push_back(std::move(value));
+        }
+        for (const EditorOpacityKeyframe& keyframe : clip.opacityKeyframes) {
+            timelineClip.opacityKeyframes.push_back({
+                keyframe.frame,
+                keyframe.opacity,
+                keyframe.linearInterpolation
+            });
+        }
+        for (const EditorTitleKeyframe& keyframe : clip.titleKeyframes) {
+            TimelineClip::TitleKeyframe value;
+            value.frame = keyframe.frame;
+            value.text = QString::fromStdString(keyframe.text);
+            value.translationX = keyframe.translationX;
+            value.translationY = keyframe.translationY;
+            value.fontSize = keyframe.fontSize;
+            value.opacity = keyframe.opacity;
+            value.fontFamily = QString::fromStdString(keyframe.fontFamily);
+            value.bold = keyframe.bold;
+            value.italic = keyframe.italic;
+            value.color = QColor(QString::fromStdString(keyframe.color));
+            value.linearInterpolation = keyframe.linearInterpolation;
+            timelineClip.titleKeyframes.push_back(std::move(value));
+        }
         const auto mediaIt = mediaKindById.find(clip.sourcePath);
         timelineClip.mediaType = inferClipMediaType(
-            mediaIt == mediaKindById.end() ? std::string{} : mediaIt->second,
+            !clip.mediaKind.empty()
+                ? clip.mediaKind
+                : (mediaIt == mediaKindById.end() ? std::string{} : mediaIt->second),
             clip.sourcePath);
         timelineClip.sourceKind = isImageSequencePath(timelineClip.filePath)
             ? MediaSourceKind::ImageSequence
             : MediaSourceKind::File;
-        timelineClip.videoEnabled = timelineClip.mediaType != ClipMediaType::Audio;
-        timelineClip.audioEnabled = timelineClip.mediaType != ClipMediaType::Image &&
-            timelineClip.mediaType != ClipMediaType::Title;
-        timelineClip.hasAudio = timelineClip.mediaType == ClipMediaType::Video ||
-            timelineClip.mediaType == ClipMediaType::Audio;
-        if (!timelineClip.filePath.isEmpty() &&
-            timelineClip.mediaType != ClipMediaType::Title) {
+        std::error_code pathError;
+        const bool sourceExists = !clip.sourcePath.empty() &&
+            std::filesystem::exists(std::filesystem::path(clip.sourcePath), pathError) &&
+            !pathError;
+        if (probeMedia && sourceExists && timelineClip.mediaType != ClipMediaType::Title) {
             const MediaProbeResult probe = probeMediaFile(
                 timelineClip.filePath,
                 static_cast<qreal>(timelineClip.durationFrames) /
                     static_cast<qreal>(kTimelineFps));
-            if (probe.fps > 0.001) {
+            const bool probeHasAuthoritativeMedia = probe.hasVideo || probe.hasAudio ||
+                probe.mediaType != ClipMediaType::Unknown;
+            if (probeHasAuthoritativeMedia && probe.hasVideo && probe.fps > 0.001) {
                 timelineClip.sourceFps = probe.fps;
             }
-            if (probe.durationFrames > 0) {
+            if (probeHasAuthoritativeMedia &&
+                probe.mediaType != ClipMediaType::Image && probe.durationFrames > 0) {
                 timelineClip.sourceDurationFrames = probe.durationFrames;
             }
             if (probe.frameSize.isValid()) {
                 timelineClip.sourceFrameSize = probe.frameSize;
             }
-            if (probe.mediaType != ClipMediaType::Unknown) {
+            if (probeHasAuthoritativeMedia && probe.mediaType != ClipMediaType::Unknown) {
                 timelineClip.mediaType = probe.mediaType;
             }
-            timelineClip.sourceKind = probe.sourceKind;
-            timelineClip.hasAudio = probe.hasAudio ||
-                timelineClip.mediaType == ClipMediaType::Video ||
-                timelineClip.mediaType == ClipMediaType::Audio;
+            if (probeHasAuthoritativeMedia) {
+                timelineClip.sourceKind = probe.sourceKind;
+                timelineClip.hasAudio = probe.hasAudio;
+            }
         }
+        // Resolve the audio source only after probing so the selected path and
+        // status reflect the authoritative hasAudio value when one is
+        // available. This remains filesystem-only when probing is disabled.
+        refreshClipAudioSource(timelineClip);
         if (timelineClip.sourceDurationFrames <= 0) {
             timelineClip.sourceDurationFrames =
                 timelineClip.sourceInFrame + timelineClip.durationFrames;
         }
         timelineData.clips.push_back(std::move(timelineClip));
+    }
+
+    timelineData.renderSyncMarkers.reserve(document.renderSyncMarkers.size());
+    for (const EditorRenderSyncMarker& marker : document.renderSyncMarkers) {
+        RenderSyncMarker value;
+        value.clipId = QString::fromStdString(marker.clipId);
+        value.frame = marker.frame;
+        value.action = marker.skipFrame
+            ? RenderSyncAction::SkipFrame
+            : RenderSyncAction::DuplicateFrame;
+        value.count = std::max(1, marker.count);
+        timelineData.renderSyncMarkers.push_back(std::move(value));
+    }
+
+    timelineData.exportRanges.reserve(document.exportRanges.size());
+    for (const EditorExportRange& range : document.exportRanges) {
+        if (range.endFrame > range.startFrame) {
+            timelineData.exportRanges.push_back({range.startFrame, range.endFrame});
+        }
     }
 
     const int exportEndFrame = document.exportRequest.exportEndFrame > document.exportRequest.exportStartFrame
@@ -149,7 +364,8 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document)
               return maxFrame;
           }();
 
-    if (exportEndFrame > document.exportRequest.exportStartFrame) {
+    if (timelineData.exportRanges.empty() &&
+        exportEndFrame > document.exportRequest.exportStartFrame) {
         ExportRangeSegment segment;
         segment.startFrame = document.exportRequest.exportStartFrame;
         segment.endFrame = exportEndFrame;

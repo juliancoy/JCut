@@ -233,6 +233,74 @@ ClipFrameMapping clipFrameMappingForClock(const TimelineClip& clip,
     return mapping;
 }
 
+const TimelineClip& resolvedClipTimingSource(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips)
+{
+    // Mask mattes are generated followers by definition. Treat the role as a
+    // timing lock as well so legacy documents that predate the persisted lock
+    // flag cannot silently acquire an independent export clock.
+    if ((!clip.syncLockedToSource && clip.clipRole != ClipRole::MaskMatte) ||
+        clip.linkedSourceClipId.trimmed().isEmpty()) {
+        return clip;
+    }
+
+    const QString sourceId = clip.linkedSourceClipId.trimmed();
+    for (const TimelineClip& candidate : timelineClips) {
+        if (&candidate != &clip && candidate.id.trimmed() == sourceId) {
+            return candidate;
+        }
+    }
+    return clip;
+}
+
+TimelineClip clipWithResolvedTimingOwner(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips)
+{
+    const TimelineClip& timingOwner = resolvedClipTimingSource(clip, timelineClips);
+    if (&timingOwner == &clip) {
+        return clip;
+    }
+
+    TimelineClip resolved = clip;
+    resolved.id = timingOwner.id;
+    resolved.startFrame = timingOwner.startFrame;
+    resolved.startSubframeSamples = timingOwner.startSubframeSamples;
+    resolved.durationFrames = timingOwner.durationFrames;
+    resolved.durationSubframeSamples = timingOwner.durationSubframeSamples;
+    resolved.sourceFps = timingOwner.sourceFps;
+    resolved.sourceDurationFrames = timingOwner.sourceDurationFrames;
+    resolved.sourceInFrame = timingOwner.sourceInFrame;
+    resolved.sourceInSubframeSamples = timingOwner.sourceInSubframeSamples;
+    resolved.playbackRate = timingOwner.playbackRate;
+    return resolved;
+}
+
+ClipFrameMapping clipFrameMappingForClock(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    const RenderFrameClock& clock,
+    const QVector<RenderSyncMarker>& markers)
+{
+    return clipFrameMappingForClock(
+        resolvedClipTimingSource(clip, timelineClips), clock, markers);
+}
+
+int64_t requestedSourceFrameForGeneratedMaskPreview(
+    const TimelineClip& clip,
+    const QVector<TimelineClip>& timelineClips,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers)
+{
+    return clipFrameMappingForClock(
+               clip,
+               timelineClips,
+               renderFrameClockForTimelinePosition(timelineFramePosition),
+               markers)
+        .sourceFrame;
+}
+
 int64_t sourceFrameForClipAtTimelineSample(const TimelineClip& clip,
                                            int64_t timelineSample,
                                            const QVector<RenderSyncMarker>& markers) {

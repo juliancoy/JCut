@@ -17,6 +17,17 @@
 
 namespace {
 
+void upsertTransformKeyframe(QVector<TimelineClip::TransformKeyframe>& keyframes,
+                             const TimelineClip::TransformKeyframe& keyframe) {
+    for (TimelineClip::TransformKeyframe& existing : keyframes) {
+        if (existing.frame == keyframe.frame) {
+            existing = keyframe;
+            return;
+        }
+    }
+    keyframes.push_back(keyframe);
+}
+
 void upsertGradingKeyframe(QVector<TimelineClip::GradingKeyframe>& keyframes,
                            const TimelineClip::GradingKeyframe& keyframe) {
     for (TimelineClip::GradingKeyframe& existing : keyframes) {
@@ -37,6 +48,135 @@ void upsertOpacityKeyframe(QVector<TimelineClip::OpacityKeyframe>& keyframes,
         }
     }
     keyframes.push_back(keyframe);
+}
+
+void splitTransformKeyframes(const TimelineClip& source,
+                             int64_t splitLocalFrame,
+                             QVector<TimelineClip::TransformKeyframe>* left,
+                             QVector<TimelineClip::TransformKeyframe>* right) {
+    left->clear();
+    right->clear();
+    bool hasLeftKey = false;
+    bool hasRightKey = false;
+    for (const TimelineClip::TransformKeyframe& keyframe : source.transformKeyframes) {
+        if (keyframe.frame < splitLocalFrame) {
+            left->push_back(keyframe);
+            hasLeftKey = true;
+        } else {
+            TimelineClip::TransformKeyframe shifted = keyframe;
+            shifted.frame -= splitLocalFrame;
+            right->push_back(shifted);
+            hasRightKey = true;
+        }
+    }
+    if (hasRightKey && splitLocalFrame > 0) {
+        TimelineClip::TransformKeyframe leftBoundary =
+            evaluateClipKeyframeOffsetAtFrame(source, source.startFrame + splitLocalFrame - 1);
+        leftBoundary.frame = splitLocalFrame - 1;
+        upsertTransformKeyframe(*left, leftBoundary);
+    }
+    if (hasLeftKey) {
+        TimelineClip::TransformKeyframe rightBoundary =
+            evaluateClipKeyframeOffsetAtFrame(source, source.startFrame + splitLocalFrame);
+        rightBoundary.frame = 0;
+        upsertTransformKeyframe(*right, rightBoundary);
+    }
+}
+
+void splitGradingKeyframes(const TimelineClip& source,
+                           int64_t splitLocalFrame,
+                           QVector<TimelineClip::GradingKeyframe>* left,
+                           QVector<TimelineClip::GradingKeyframe>* right) {
+    left->clear();
+    right->clear();
+    bool hasLeftKey = false;
+    bool hasRightKey = false;
+    for (const TimelineClip::GradingKeyframe& keyframe : source.gradingKeyframes) {
+        if (keyframe.frame < splitLocalFrame) {
+            left->push_back(keyframe);
+            hasLeftKey = true;
+        } else {
+            TimelineClip::GradingKeyframe shifted = keyframe;
+            shifted.frame -= splitLocalFrame;
+            right->push_back(shifted);
+            hasRightKey = true;
+        }
+    }
+    if (hasRightKey && splitLocalFrame > 0) {
+        TimelineClip::GradingKeyframe leftBoundary = evaluateClipGradingAtPosition(
+            source, static_cast<qreal>(source.startFrame + splitLocalFrame - 1));
+        leftBoundary.frame = splitLocalFrame - 1;
+        upsertGradingKeyframe(*left, leftBoundary);
+    }
+    if (hasLeftKey) {
+        TimelineClip::GradingKeyframe rightBoundary = evaluateClipGradingAtPosition(
+            source, static_cast<qreal>(source.startFrame + splitLocalFrame));
+        rightBoundary.frame = 0;
+        upsertGradingKeyframe(*right, rightBoundary);
+    }
+}
+
+void splitOpacityKeyframes(const TimelineClip& source,
+                           int64_t splitLocalFrame,
+                           QVector<TimelineClip::OpacityKeyframe>* left,
+                           QVector<TimelineClip::OpacityKeyframe>* right) {
+    left->clear();
+    right->clear();
+    bool hasLeftKey = false;
+    bool hasRightKey = false;
+    for (const TimelineClip::OpacityKeyframe& keyframe : source.opacityKeyframes) {
+        if (keyframe.frame < splitLocalFrame) {
+            left->push_back(keyframe);
+            hasLeftKey = true;
+        } else {
+            TimelineClip::OpacityKeyframe shifted = keyframe;
+            shifted.frame -= splitLocalFrame;
+            right->push_back(shifted);
+            hasRightKey = true;
+        }
+    }
+    if (hasRightKey && splitLocalFrame > 0) {
+        TimelineClip::OpacityKeyframe leftBoundary;
+        leftBoundary.frame = splitLocalFrame - 1;
+        leftBoundary.opacity = evaluateClipOpacityAtPosition(
+            source, static_cast<qreal>(source.startFrame + splitLocalFrame - 1));
+        upsertOpacityKeyframe(*left, leftBoundary);
+    }
+    if (hasLeftKey) {
+        TimelineClip::OpacityKeyframe rightBoundary;
+        rightBoundary.frame = 0;
+        rightBoundary.opacity = evaluateClipOpacityAtPosition(
+            source, static_cast<qreal>(source.startFrame + splitLocalFrame));
+        upsertOpacityKeyframe(*right, rightBoundary);
+    }
+}
+
+void splitCorrectionPolygons(const QVector<TimelineClip::CorrectionPolygon>& source,
+                             int64_t splitLocalFrame,
+                             QVector<TimelineClip::CorrectionPolygon>* left,
+                             QVector<TimelineClip::CorrectionPolygon>* right) {
+    left->clear();
+    right->clear();
+    for (const TimelineClip::CorrectionPolygon& polygon : source) {
+        const int64_t polygonEnd = polygon.endFrame < 0
+            ? std::numeric_limits<int64_t>::max()
+            : polygon.endFrame;
+        if (polygon.startFrame < splitLocalFrame) {
+            TimelineClip::CorrectionPolygon leftPolygon = polygon;
+            if (leftPolygon.endFrame < 0 || leftPolygon.endFrame >= splitLocalFrame) {
+                leftPolygon.endFrame = splitLocalFrame - 1;
+            }
+            left->push_back(std::move(leftPolygon));
+        }
+        if (polygonEnd >= splitLocalFrame) {
+            TimelineClip::CorrectionPolygon rightPolygon = polygon;
+            rightPolygon.startFrame = qMax<int64_t>(0, rightPolygon.startFrame - splitLocalFrame);
+            if (rightPolygon.endFrame >= 0) {
+                rightPolygon.endFrame -= splitLocalFrame;
+            }
+            right->push_back(std::move(rightPolygon));
+        }
+    }
 }
 
 void applyVisualCrossfade(TimelineClip& clip, bool fadeIn, int64_t fadeFrames) {
@@ -330,6 +470,7 @@ void TimelineWidget::selectClipWithModifiers(const QString& clipId, Qt::Keyboard
 }
 
 void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
+    invalidateHoveredClipToolTipCache();
     m_clips = clips;
     for (TimelineClip& clip : m_clips) {
         if (clip.zLevel == TimelineClip::kAutomaticZLevel) {
@@ -337,6 +478,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         }
     }
     reconcileMaskMatteChildrenFromDisk(m_clips);
+    normalizeRenderSyncMarkerOwnership();
 
     // A persisted/generated child track is identified by its child clip, not
     // by its row index. Older states can contain duplicate or stale rows after
@@ -376,6 +518,35 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         if (keep) {
             continue;
         }
+        const TimelineClip* foreignOccupant = nullptr;
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (clip.trackIndex == trackIndex && clip.id.trimmed() != childId) {
+                foreignOccupant = &clip;
+                break;
+            }
+        }
+        if (foreignOccupant) {
+            // A historical row-reorder bug could strand the source parent on
+            // a duplicate generated row. Deleting that row would remap the
+            // parent onto the surviving child row and recreate the duplicate
+            // on the next reconciliation pass. Recover the occupied row as a
+            // neutral base track instead; the generated binding is derived.
+            // Preserve the row's user-facing playback state. In real projects
+            // the source plate is often intentionally hidden while its Mask
+            // Matte children remain visible; resetting visualMode here would
+            // expose the full-frame parent after repair. Only the stale
+            // relationship fields are derived and therefore safe to clear.
+            TimelineTrack recoveredTrack = track;
+            recoveredTrack.generatedChildTrack = false;
+            recoveredTrack.parentClipId.clear();
+            recoveredTrack.childClipId.clear();
+            recoveredTrack.name = foreignOccupant->label.trimmed().isEmpty()
+                ? defaultTrackName(trackIndex)
+                : foreignOccupant->label.trimmed();
+            recoveredTrack.height = qMax(kMinTrackHeight, track.height);
+            m_tracks[trackIndex] = std::move(recoveredTrack);
+            continue;
+        }
         m_tracks.removeAt(trackIndex);
         for (TimelineClip& clip : m_clips) {
             if (clip.trackIndex > trackIndex) {
@@ -388,6 +559,36 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
             --m_selectedTrackIndex;
         } else if (m_selectedTrackIndex == trackIndex) {
             m_selectedTrackIndex = -1;
+        }
+    }
+
+    // A surviving generated row must contain only its designated child. If a
+    // malformed project placed ordinary media on that row, give the media a
+    // neutral base track before child-track discovery. Guessing another
+    // existing row could create overlaps or transfer child visibility/effect
+    // state to the parent.
+    const int trackCountBeforeRecovery = m_tracks.size();
+    for (int trackIndex = 0; trackIndex < trackCountBeforeRecovery; ++trackIndex) {
+        if (!m_tracks.at(trackIndex).generatedChildTrack) {
+            continue;
+        }
+        const QString designatedChildId = m_tracks.at(trackIndex).childClipId.trimmed();
+        int recoveredTrackIndex = -1;
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex != trackIndex || clip.id.trimmed() == designatedChildId ||
+                clip.clipRole == ClipRole::MaskMatte) {
+                continue;
+            }
+            if (recoveredTrackIndex < 0) {
+                TimelineTrack recoveredTrack;
+                recoveredTrack.name = clip.label.trimmed().isEmpty()
+                    ? defaultTrackName(m_tracks.size())
+                    : clip.label.trimmed();
+                recoveredTrack.height = qMax(kMinTrackHeight, m_tracks.at(trackIndex).height);
+                recoveredTrackIndex = m_tracks.size();
+                m_tracks.push_back(std::move(recoveredTrack));
+            }
+            clip.trackIndex = recoveredTrackIndex;
         }
     }
     ensureTrackCount(trackCount());
@@ -550,6 +751,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
 }
 
 void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
+    invalidateHoveredClipToolTipCache();
     m_tracks = tracks;
     ensureTrackCount(trackCount());
     reorderTracksForView();
@@ -686,14 +888,100 @@ void TimelineWidget::setSelectedTrackIndex(int trackIndex) {
 bool TimelineWidget::updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater) {
     for (TimelineClip& clip : m_clips) {
         if (clip.id == clipId) {
+            invalidateHoveredClipToolTipCache();
             updater(clip);
             normalizeClipTiming(clip);
             refreshClipAudioSource(clip);
+            // updateClipById is the common programmatic mutation boundary used
+            // by Properties and inspector tabs.  Followers must be coherent
+            // before callers snapshot the model for preview, save, or export.
+            normalizeMaskMatteClips(m_clips);
             update();
             return true;
         }
     }
     return false;
+}
+
+QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
+                                               bool includeAncestors) const
+{
+    QSet<QString> closure = clipIds;
+    if (includeAncestors) {
+        bool expanded = true;
+        while (expanded) {
+            expanded = false;
+            for (const TimelineClip& clip : m_clips) {
+                if (!closure.contains(clip.id) || clip.clipRole != ClipRole::MaskMatte) {
+                    continue;
+                }
+                const QString parentId = clip.linkedSourceClipId.trimmed();
+                if (!parentId.isEmpty() && !closure.contains(parentId)) {
+                    closure.insert(parentId);
+                    expanded = true;
+                }
+            }
+        }
+    }
+
+    bool expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.clipRole != ClipRole::MaskMatte || closure.contains(clip.id)) {
+                continue;
+            }
+            if (closure.contains(clip.linkedSourceClipId.trimmed())) {
+                closure.insert(clip.id);
+                expanded = true;
+            }
+        }
+    }
+    return closure;
+}
+
+QString TimelineWidget::renderSyncOwnerClipId(const QString& clipId) const
+{
+    const QString normalizedId = clipId.trimmed();
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id.trimmed() != normalizedId) {
+            continue;
+        }
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            const QString parentId = clip.linkedSourceClipId.trimmed();
+            if (!parentId.isEmpty()) {
+                return parentId;
+            }
+        }
+        break;
+    }
+    return normalizedId;
+}
+
+void TimelineWidget::normalizeRenderSyncMarkerOwnership()
+{
+    QVector<RenderSyncMarker> canonicalMarkers;
+    canonicalMarkers.reserve(m_renderSyncMarkers.size());
+    QHash<QString, QHash<int64_t, int>> markerIndexByOwnerAndFrame;
+    for (RenderSyncMarker marker : std::as_const(m_renderSyncMarkers)) {
+        marker.clipId = renderSyncOwnerClipId(marker.clipId);
+        if (marker.clipId.isEmpty()) {
+            continue;
+        }
+        QHash<int64_t, int>& indexByFrame = markerIndexByOwnerAndFrame[marker.clipId];
+        const auto existing = indexByFrame.constFind(marker.frame);
+        if (existing != indexByFrame.constEnd()) {
+            // One mapping decision is allowed per source/frame. Last input
+            // wins when migrating a legacy child-owned duplicate.
+            canonicalMarkers[existing.value()] = marker;
+        } else {
+            indexByFrame.insert(marker.frame, canonicalMarkers.size());
+            canonicalMarkers.push_back(marker);
+        }
+    }
+    m_renderSyncMarkers = std::move(canonicalMarkers);
+    sortRenderSyncMarkers();
+    rebuildRenderSyncMarkerIndex();
 }
 
 bool TimelineWidget::updateTrackByIndex(int trackIndex, const std::function<void(TimelineTrack&)>& updater) {
@@ -702,6 +990,7 @@ bool TimelineWidget::updateTrackByIndex(int trackIndex, const std::function<void
     }
     ensureTrackCount(trackIndex + 1);
     updater(m_tracks[trackIndex]);
+    invalidateHoveredClipToolTipCache();
     if (clipsChanged) {
         clipsChanged();
     }
@@ -726,87 +1015,29 @@ bool TimelineWidget::crossfadeTrack(int trackIndex, double seconds) {
 }
 
 bool TimelineWidget::moveTrackUp(int trackIndex) {
-    if (trackIndex <= 0 || trackIndex >= m_tracks.size()) {
+    if (trackIndex <= 0 || trackIndex >= m_tracks.size() ||
+        m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
-    
-    ensureTrackCount(trackCount());
-    
-    // Swap track indices
-    std::swap(m_tracks[trackIndex], m_tracks[trackIndex - 1]);
-    
-    // Update clip track indices
-    for (TimelineClip& clip : m_clips) {
-        if (clip.trackIndex == trackIndex) {
-            clip.trackIndex = trackIndex - 1;
-        } else if (clip.trackIndex == trackIndex - 1) {
-            clip.trackIndex = trackIndex;
+    for (int target = trackIndex - 1; target >= 0; --target) {
+        if (!m_tracks.at(target).generatedChildTrack) {
+            return moveTrack(trackIndex, target);
         }
     }
-    
-    normalizeTrackIndices();
-    sortClips();
-    
-    // Update selected track
-    if (m_selectedTrackIndex == trackIndex) {
-        m_selectedTrackIndex = trackIndex - 1;
-    } else if (m_selectedTrackIndex == trackIndex - 1) {
-        m_selectedTrackIndex = trackIndex;
-    }
-    
-    if (selectionChanged) {
-        selectionChanged();
-    }
-    if (clipsChanged) {
-        clipsChanged();
-    }
-    if (trackLayoutChanged) {
-        trackLayoutChanged();
-    }
-    update();
-    return true;
+    return false;
 }
 
 bool TimelineWidget::moveTrackDown(int trackIndex) {
-    if (trackIndex < 0 || trackIndex >= m_tracks.size() - 1) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() - 1 ||
+        m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
-    
-    ensureTrackCount(trackCount());
-    
-    // Swap track indices
-    std::swap(m_tracks[trackIndex], m_tracks[trackIndex + 1]);
-    
-    // Update clip track indices
-    for (TimelineClip& clip : m_clips) {
-        if (clip.trackIndex == trackIndex) {
-            clip.trackIndex = trackIndex + 1;
-        } else if (clip.trackIndex == trackIndex + 1) {
-            clip.trackIndex = trackIndex;
+    for (int target = trackIndex + 1; target < m_tracks.size(); ++target) {
+        if (!m_tracks.at(target).generatedChildTrack) {
+            return moveTrack(trackIndex, target);
         }
     }
-    
-    normalizeTrackIndices();
-    sortClips();
-    
-    // Update selected track
-    if (m_selectedTrackIndex == trackIndex) {
-        m_selectedTrackIndex = trackIndex + 1;
-    } else if (m_selectedTrackIndex == trackIndex + 1) {
-        m_selectedTrackIndex = trackIndex;
-    }
-    
-    if (selectionChanged) {
-        selectionChanged();
-    }
-    if (clipsChanged) {
-        clipsChanged();
-    }
-    if (trackLayoutChanged) {
-        trackLayoutChanged();
-    }
-    update();
-    return true;
+    return false;
 }
 
 bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
@@ -814,6 +1045,11 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
         return false;
     }
     if (fromTrack == toTrack) {
+        return false;
+    }
+    // Generated rows are derived presentation state. Reorder only source
+    // tracks; reorderTracksForView() carries every child row with its owner.
+    if (m_tracks.at(fromTrack).generatedChildTrack || m_tracks.at(toTrack).generatedChildTrack) {
         return false;
     }
 
@@ -832,9 +1068,6 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
     TimelineTrack movedTrack = m_tracks.takeAt(fromTrack);
     m_tracks.insert(toTrack, movedTrack);
 
-    normalizeTrackIndices();
-    sortClips();
-
     if (m_selectedTrackIndex == fromTrack) {
         m_selectedTrackIndex = toTrack;
     } else if (fromTrack < toTrack && m_selectedTrackIndex > fromTrack && m_selectedTrackIndex <= toTrack) {
@@ -842,6 +1075,11 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
     } else if (fromTrack > toTrack && m_selectedTrackIndex >= toTrack && m_selectedTrackIndex < fromTrack) {
         m_selectedTrackIndex += 1;
     }
+
+    reorderTracksForView();
+    normalizeTrackIndices();
+    sortClips();
+    invalidateHoveredClipToolTipCache();
 
     if (selectionChanged) {
         selectionChanged();
@@ -864,16 +1102,35 @@ bool TimelineWidget::deleteClipById(const QString& clipId) {
         if (m_clips[i].id != clipId) {
             continue;
         }
-        if (m_clips[i].locked) {
+        if (m_clips[i].locked || m_clips[i].clipRole == ClipRole::MaskMatte) {
             return false;
         }
-        m_clips.removeAt(i);
+        const QSet<QString> removedIds = ownershipClosure(QSet<QString>{clipId}, false);
+        QVector<TimelineClip> remaining;
+        remaining.reserve(m_clips.size() - removedIds.size());
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (!removedIds.contains(clip.id)) {
+                remaining.push_back(clip);
+            }
+        }
+        const qsizetype markerCountBefore = m_renderSyncMarkers.size();
+        m_renderSyncMarkers.erase(
+            std::remove_if(m_renderSyncMarkers.begin(), m_renderSyncMarkers.end(),
+                           [&removedIds](const RenderSyncMarker& marker) {
+                               return removedIds.contains(marker.clipId);
+                           }),
+            m_renderSyncMarkers.end());
+        rebuildRenderSyncMarkerIndex();
+        const bool removedMarkers = m_renderSyncMarkers.size() != markerCountBefore;
         QSet<QString> nextSelection = m_clipSelection.ids;
-        nextSelection.remove(clipId);
+        nextSelection.subtract(removedIds);
+        setClips(remaining);
         applyClipSelection(nextSelection, m_clipSelection.primaryId, false);
-        sortClips();
         if (clipsChanged) {
             clipsChanged();
+        }
+        if (removedMarkers && renderSyncMarkersChanged) {
+            renderSyncMarkersChanged();
         }
         update();
         return true;
@@ -891,21 +1148,40 @@ bool TimelineWidget::deleteSelectedClip() {
             continue;
         }
 
-        if (m_clips[i].locked) {
+        if (m_clips[i].locked || m_clips[i].clipRole == ClipRole::MaskMatte) {
             return false;
         }
 
-        m_clips.removeAt(i);
+        const QString selectedId = m_clips[i].id;
+        const QSet<QString> removedIds = ownershipClosure(QSet<QString>{selectedId}, false);
+        QVector<TimelineClip> remaining;
+        remaining.reserve(m_clips.size() - removedIds.size());
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (!removedIds.contains(clip.id)) {
+                remaining.push_back(clip);
+            }
+        }
+        const qsizetype markerCountBefore = m_renderSyncMarkers.size();
+        m_renderSyncMarkers.erase(
+            std::remove_if(m_renderSyncMarkers.begin(), m_renderSyncMarkers.end(),
+                           [&removedIds](const RenderSyncMarker& marker) {
+                               return removedIds.contains(marker.clipId);
+                           }),
+            m_renderSyncMarkers.end());
+        rebuildRenderSyncMarkerIndex();
+        const bool removedMarkers = m_renderSyncMarkers.size() != markerCountBefore;
         QSet<QString> nextSelection = m_clipSelection.ids;
-        nextSelection.remove(m_clipSelection.primaryId);
+        nextSelection.subtract(removedIds);
+        setClips(remaining);
         applyClipSelection(nextSelection, QString(), false);
-        normalizeTrackIndices();
-        sortClips();
         if (selectionChanged) {
             selectionChanged();
         }
         if (clipsChanged) {
             clipsChanged();
+        }
+        if (removedMarkers && renderSyncMarkersChanged) {
+            renderSyncMarkersChanged();
         }
         update();
         return true;
@@ -938,6 +1214,7 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
     QSet<QString> newSelection;
     newSelection.reserve(targetClipIds.size());
     bool splitAny = false;
+    bool movedAnyMarkers = false;
     const QString previousPrimarySelection = m_clipSelection.primaryId;
     QString nextPrimarySelection;
 
@@ -947,7 +1224,8 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
             if (clip.id != targetClipId) {
                 continue;
             }
-            if (clip.locked || frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
+            if (clip.locked || clip.clipRole == ClipRole::MaskMatte ||
+                frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
                 break;
             }
 
@@ -956,12 +1234,26 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
             if (leftDuration <= 0 || rightDuration <= 0) {
                 break;
             }
+
+            // A Mask Matte is an owned layer, so splitting its source must
+            // split the complete aggregate.  Capture child-owned state before
+            // inserting anything into m_clips (which would invalidate clip).
+            QVector<TimelineClip> ownedMaskMattes;
+            if (clip.clipRole != ClipRole::MaskMatte) {
+                for (const TimelineClip& candidate : std::as_const(m_clips)) {
+                    if (candidate.clipRole == ClipRole::MaskMatte &&
+                        candidate.linkedSourceClipId.trimmed() == clip.id.trimmed()) {
+                        ownedMaskMattes.push_back(candidate);
+                    }
+                }
+            }
             const int64_t splitTimelineSample = frameToSamples(frame) + clip.startSubframeSamples;
             const int64_t splitSourceSample =
                 sourceSampleForClipAtTimelineSample(clip, splitTimelineSample, m_renderSyncMarkers);
 
-            const bool isImage = clip.mediaType == ClipMediaType::Image;
-            TimelineClip rightClip = clip;
+            const TimelineClip originalClip = clip;
+            const bool isImage = originalClip.mediaType == ClipMediaType::Image;
+            TimelineClip rightClip = originalClip;
             rightClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             rightClip.startFrame = frame;
             rightClip.startSubframeSamples = clip.startSubframeSamples;
@@ -971,59 +1263,30 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                 rightClip.sourceInSubframeSamples = 0;
                 rightClip.sourceDurationFrames = rightDuration;
             } else {
-                rightClip.sourceInFrame = splitSourceSample / kSamplesPerFrame;
-                rightClip.sourceInSubframeSamples = splitSourceSample % kSamplesPerFrame;
+                setClipSourceInSamples(rightClip, splitSourceSample);
             }
-            rightClip.transformKeyframes.clear();
-            for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
-                if (keyframe.frame >= leftDuration) {
-                    TimelineClip::TransformKeyframe shifted = keyframe;
-                    shifted.frame -= leftDuration;
-                    rightClip.transformKeyframes.push_back(shifted);
-                }
-            }
-
-            QVector<TimelineClip::TransformKeyframe> leftKeyframes;
-            for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
-                if (keyframe.frame < leftDuration) {
-                    leftKeyframes.push_back(keyframe);
-                }
-            }
-            clip.transformKeyframes = leftKeyframes;
-
-            rightClip.gradingKeyframes.clear();
-            for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
-                if (keyframe.frame >= leftDuration) {
-                    TimelineClip::GradingKeyframe shifted = keyframe;
-                    shifted.frame -= leftDuration;
-                    rightClip.gradingKeyframes.push_back(shifted);
-                }
-            }
-            QVector<TimelineClip::GradingKeyframe> leftGradingKeyframes;
-            for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
-                if (keyframe.frame < leftDuration) {
-                    leftGradingKeyframes.push_back(keyframe);
-                }
-            }
-            clip.gradingKeyframes = leftGradingKeyframes;
-
-            rightClip.opacityKeyframes.clear();
-            for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
-                if (keyframe.frame >= leftDuration) {
-                    TimelineClip::OpacityKeyframe shifted = keyframe;
-                    shifted.frame -= leftDuration;
-                    rightClip.opacityKeyframes.push_back(shifted);
-                }
-            }
-            QVector<TimelineClip::OpacityKeyframe> leftOpacityKeyframes;
-            for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
-                if (keyframe.frame < leftDuration) {
-                    leftOpacityKeyframes.push_back(keyframe);
-                }
-            }
-            clip.opacityKeyframes = leftOpacityKeyframes;
+            splitTransformKeyframes(originalClip,
+                                    leftDuration,
+                                    &clip.transformKeyframes,
+                                    &rightClip.transformKeyframes);
+            splitGradingKeyframes(originalClip,
+                                  leftDuration,
+                                  &clip.gradingKeyframes,
+                                  &rightClip.gradingKeyframes);
+            splitOpacityKeyframes(originalClip,
+                                  leftDuration,
+                                  &clip.opacityKeyframes,
+                                  &rightClip.opacityKeyframes);
+            splitCorrectionPolygons(originalClip.correctionPolygons,
+                                    leftDuration,
+                                    &clip.correctionPolygons,
+                                    &rightClip.correctionPolygons);
 
             clip.durationFrames = leftDuration;
+            // The split point is frame-aligned. Any fractional duration tail
+            // belongs only to the right half; duplicating it lengthens the
+            // aggregate and eventually desynchronizes source mapping.
+            clip.durationSubframeSamples = 0;
             if (isImage) {
                 clip.sourceInFrame = 0;
                 clip.sourceInSubframeSamples = 0;
@@ -1045,13 +1308,52 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                     movedMarkers = true;
                 }
             }
+
+            QVector<TimelineClip> rightMaskMattes;
+            rightMaskMattes.reserve(ownedMaskMattes.size());
+            for (const TimelineClip& originalChild : std::as_const(ownedMaskMattes)) {
+                TimelineClip leftChild = originalChild;
+                TimelineClip rightChild = originalChild;
+                rightChild.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                rightChild.linkedSourceClipId = rightClip.id;
+
+                splitGradingKeyframes(originalChild,
+                                      leftDuration,
+                                      &leftChild.gradingKeyframes,
+                                      &rightChild.gradingKeyframes);
+                splitOpacityKeyframes(originalChild,
+                                      leftDuration,
+                                      &leftChild.opacityKeyframes,
+                                      &rightChild.opacityKeyframes);
+                splitCorrectionPolygons(originalChild.correctionPolygons,
+                                        leftDuration,
+                                        &leftChild.correctionPolygons,
+                                        &rightChild.correctionPolygons);
+                normalizeClipGradingKeyframes(leftChild);
+                normalizeClipGradingKeyframes(rightChild);
+                normalizeClipOpacityKeyframes(leftChild);
+                normalizeClipOpacityKeyframes(rightChild);
+
+                for (TimelineClip& candidate : m_clips) {
+                    if (candidate.id == originalChild.id) {
+                        candidate = std::move(leftChild);
+                        break;
+                    }
+                }
+                rightMaskMattes.push_back(std::move(rightChild));
+            }
+
             m_clips.insert(i + 1, rightClip);
+            for (TimelineClip& rightChild : rightMaskMattes) {
+                m_clips.push_back(std::move(rightChild));
+            }
             newSelection.insert(rightClip.id);
             if (nextPrimarySelection.isEmpty() || targetClipId == previousPrimarySelection) {
                 nextPrimarySelection = rightClip.id;
             }
             splitAny = true;
             if (movedMarkers) {
+                movedAnyMarkers = true;
                 sortRenderSyncMarkers();
                 rebuildRenderSyncMarkerIndex();
             }
@@ -1063,13 +1365,19 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
         return false;
     }
 
-    sortClips();
+    // Rebuild derived child-track ownership as well as normalizing inherited
+    // timing and transforms for both halves of every split aggregate.
+    const QVector<TimelineClip> splitModel = m_clips;
+    setClips(splitModel);
     applyClipSelection(newSelection, nextPrimarySelection, false);
     if (selectionChanged) {
         selectionChanged();
     }
     if (clipsChanged) {
         clipsChanged();
+    }
+    if (movedAnyMarkers && renderSyncMarkersChanged) {
+        renderSyncMarkersChanged();
     }
     update();
     return true;
@@ -1128,6 +1436,7 @@ void TimelineWidget::sortRenderSyncMarkers() {
 }
 
 void TimelineWidget::rebuildRenderSyncMarkerIndex() {
+    invalidateHoveredClipToolTipCache();
     m_renderSyncMarkersByClip.clear();
     if (m_renderSyncMarkers.isEmpty()) {
         return;
@@ -1138,7 +1447,7 @@ void TimelineWidget::rebuildRenderSyncMarkerIndex() {
 }
 
 const QVector<RenderSyncMarker>* TimelineWidget::renderSyncMarkersForClipId(const QString& clipId) const {
-    const auto it = m_renderSyncMarkersByClip.constFind(clipId);
+    const auto it = m_renderSyncMarkersByClip.constFind(renderSyncOwnerClipId(clipId));
     if (it == m_renderSyncMarkersByClip.constEnd()) {
         return nullptr;
     }
@@ -1147,8 +1456,7 @@ const QVector<RenderSyncMarker>* TimelineWidget::renderSyncMarkersForClipId(cons
 
 void TimelineWidget::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) {
     m_renderSyncMarkers = markers;
-    sortRenderSyncMarkers();
-    rebuildRenderSyncMarkerIndex();
+    normalizeRenderSyncMarkerOwnership();
     update();
 }
 
@@ -1168,12 +1476,13 @@ const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtFrame(const QString& c
 }
 
 bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, RenderSyncAction action, int count) {
-    if (clipId.isEmpty()) {
+    const QString ownerClipId = renderSyncOwnerClipId(clipId);
+    if (ownerClipId.isEmpty()) {
         return false;
     }
     count = qMax(1, count);
     for (RenderSyncMarker& marker : m_renderSyncMarkers) {
-        if (marker.clipId == clipId && marker.frame == m_currentFrame) {
+        if (marker.clipId == ownerClipId && marker.frame == m_currentFrame) {
             if (marker.action == action && marker.count == count) {
                 return false;
             }
@@ -1190,7 +1499,7 @@ bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, Re
     }
 
     RenderSyncMarker marker;
-    marker.clipId = clipId;
+    marker.clipId = ownerClipId;
     marker.frame = m_currentFrame;
     marker.action = action;
     marker.count = count;
@@ -1205,11 +1514,13 @@ bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, Re
 }
 
 bool TimelineWidget::clearRenderSyncMarkerAtCurrentFrame(const QString& clipId) {
-    if (clipId.isEmpty()) {
+    const QString ownerClipId = renderSyncOwnerClipId(clipId);
+    if (ownerClipId.isEmpty()) {
         return false;
     }
     for (int i = 0; i < m_renderSyncMarkers.size(); ++i) {
-        if (m_renderSyncMarkers[i].clipId == clipId && m_renderSyncMarkers[i].frame == m_currentFrame) {
+        if (m_renderSyncMarkers[i].clipId == ownerClipId &&
+            m_renderSyncMarkers[i].frame == m_currentFrame) {
             m_renderSyncMarkers.removeAt(i);
             rebuildRenderSyncMarkerIndex();
             if (renderSyncMarkersChanged) {
@@ -1422,7 +1733,7 @@ bool TimelineWidget::nudgeSelectedClip(int direction) {
             continue;
         }
 
-        if (clip.locked) {
+        if (clip.locked || clip.clipRole == ClipRole::MaskMatte) {
             return false;
         }
 
@@ -1448,7 +1759,8 @@ bool TimelineWidget::nudgeSelectedClip(int direction) {
 }
 
 bool TimelineWidget::renameTrack(int trackIndex) {
-    if (trackIndex < 0) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() ||
+        m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
 
@@ -1475,25 +1787,37 @@ bool TimelineWidget::renameTrack(int trackIndex) {
 }
 
 bool TimelineWidget::deleteTrack(int trackIndex) {
-    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() ||
+        m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
 
-    int clipCountOnTrack = 0;
+    QSet<QString> directClipIds;
     for (const TimelineClip& clip : m_clips) {
         if (clip.trackIndex == trackIndex) {
-            ++clipCountOnTrack;
+            directClipIds.insert(clip.id);
         }
     }
+    const QSet<QString> removedIds = ownershipClosure(directClipIds, false);
+    const int clipCountOnTrack = directClipIds.size();
+    const int relatedClipCount = removedIds.size() - clipCountOnTrack;
 
     if (clipCountOnTrack > 0) {
+        QString detail = QStringLiteral("Track \"%1\" contains %2 clip%3.")
+                             .arg(m_tracks[trackIndex].name.trimmed().isEmpty()
+                                      ? defaultTrackName(trackIndex)
+                                      : m_tracks[trackIndex].name)
+                             .arg(clipCountOnTrack)
+                             .arg(clipCountOnTrack == 1 ? QString() : QStringLiteral("s"));
+        if (relatedClipCount > 0) {
+            detail += QStringLiteral(" Its %1 owned Mask Matte layer%2 will also be removed.")
+                          .arg(relatedClipCount)
+                          .arg(relatedClipCount == 1 ? QString() : QStringLiteral("s"));
+        }
         const QMessageBox::StandardButton choice = QMessageBox::warning(
             this,
             QStringLiteral("Delete Track"),
-            QStringLiteral("Track \"%1\" contains %2 clip%3.\n\nDelete the track and all clips on it?")
-                .arg(m_tracks[trackIndex].name.trimmed().isEmpty() ? defaultTrackName(trackIndex) : m_tracks[trackIndex].name)
-                .arg(clipCountOnTrack)
-                .arg(clipCountOnTrack == 1 ? QString() : QStringLiteral("s")),
+            detail + QStringLiteral("\n\nDelete the track and this complete ownership set?"),
             QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel);
         if (choice != QMessageBox::Yes) {
@@ -1502,10 +1826,18 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
     }
 
     for (int i = m_clips.size() - 1; i >= 0; --i) {
-        if (m_clips[i].trackIndex == trackIndex) {
+        if (removedIds.contains(m_clips.at(i).id)) {
             m_clips.removeAt(i);
         }
     }
+    const auto markerEnd = std::remove_if(
+        m_renderSyncMarkers.begin(), m_renderSyncMarkers.end(),
+        [&removedIds](const RenderSyncMarker& marker) {
+            return removedIds.contains(marker.clipId);
+        });
+    const bool removedMarkers = markerEnd != m_renderSyncMarkers.end();
+    m_renderSyncMarkers.erase(markerEnd, m_renderSyncMarkers.end());
+    rebuildRenderSyncMarkerIndex();
     applyClipSelection(m_clipSelection.ids, m_clipSelection.primaryId, false);
 
     if (m_tracks.size() > 1) {
@@ -1528,8 +1860,10 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
         m_selectedTrackIndex -= 1;
     }
 
-    normalizeTrackIndices();
-    sortClips();
+    // Reconciliation removes stale generated rows and re-derives every
+    // surviving child binding after the base-row index remap.
+    const QVector<TimelineClip> remaining = m_clips;
+    setClips(remaining);
 
     if (selectionChanged) {
         selectionChanged();
@@ -1539,6 +1873,9 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
     }
     if (trackLayoutChanged) {
         trackLayoutChanged();
+    }
+    if (removedMarkers && renderSyncMarkersChanged) {
+        renderSyncMarkersChanged();
     }
     update();
     return true;

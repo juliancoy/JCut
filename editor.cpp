@@ -1085,6 +1085,8 @@ void EditorWindow::restoreToHistoryIndex(int index)
 void EditorWindow::applyStateJson(const QJsonObject &root)
 {
     m_loadingState = true;
+    m_projectMediaItemsExtension =
+        root.value(QStringLiteral("mediaItems")).toArray();
     const bool startupMarking = !m_startupProfileCompleted;
     auto markStartup = [this, startupMarking](const QString& phase, const QJsonObject& extra = QJsonObject()) {
         if (!startupMarking) {

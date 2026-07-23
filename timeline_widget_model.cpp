@@ -175,6 +175,7 @@ bool TimelineWidget::setTrackVisualMode(int trackIndex, TrackVisualMode mode) {
         clipsChanged();
     }
     if (changed) {
+        invalidateHoveredClipToolTipCache();
         update();
     }
     return changed;
@@ -200,6 +201,7 @@ bool TimelineWidget::setTrackAudioEnabled(int trackIndex, bool enabled) {
         clipsChanged();
     }
     if (changed) {
+        invalidateHoveredClipToolTipCache();
         update();
     }
     return changed;
