@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 #include <utility>
 #include <QDateTime>
@@ -47,6 +48,7 @@ constexpr size_t kVulkanPreviewCpuCacheBytes = 192ull * 1024ull * 1024ull;
 constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
+constexpr int kMaximumMaskLookaheadFrames = 4;
 
 bool gradingPreviewEnabledForTrack(const TimelineClip& clip,
                                    const QVector<TimelineTrack>& tracks)
@@ -88,6 +90,17 @@ bool directVulkanPreviewSupportsClip(const TimelineClip& clip)
     return !clip.filePath.isEmpty() &&
            clip.sourceKind != MediaSourceKind::ImageSequence &&
            (clip.mediaType == ClipMediaType::Video || clip.mediaType == ClipMediaType::Image);
+}
+
+bool clipUsesSidecarMask(const TimelineClip& clip)
+{
+    if (!clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
+        return false;
+    }
+    return clip.clipRole == ClipRole::MaskMatte ||
+           clip.maskShowOnly ||
+           clip.maskForegroundLayerEnabled ||
+           clip.maskRepeatEnabled;
 }
 
 bool visualClipActiveAtSample(const TimelineClip& clip,
@@ -149,6 +162,50 @@ bool pointInNormalizedPolygon(const QPointF& p, const QVector<QPointF>& polygon)
         }
     }
     return inside;
+}
+
+QImage qtImageFromCoreBuffer(
+    const std::shared_ptr<const jcut::core::ImageBuffer>& buffer)
+{
+    if (!buffer || buffer->empty()) {
+        return {};
+    }
+    auto* retained =
+        new std::shared_ptr<const jcut::core::ImageBuffer>(buffer);
+    return QImage(
+        buffer->bytes.data(),
+        buffer->size.width,
+        buffer->size.height,
+        buffer->strideBytes,
+        QImage::Format_RGBA8888,
+        [](void* value) {
+            delete static_cast<
+                std::shared_ptr<const jcut::core::ImageBuffer>*>(value);
+        },
+        retained);
+}
+
+std::shared_ptr<const jcut::core::ImageBuffer> coreBufferFromQtImage(
+    const QImage& image)
+{
+    const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    if (rgba.isNull()) {
+        return {};
+    }
+    auto result = std::make_shared<jcut::core::ImageBuffer>();
+    result->size = {rgba.width(), rgba.height()};
+    result->strideBytes = rgba.width() * 4;
+    result->bytes.resize(
+        static_cast<std::size_t>(result->strideBytes) *
+        static_cast<std::size_t>(rgba.height()));
+    for (int y = 0; y < rgba.height(); ++y) {
+        std::memcpy(
+            result->bytes.data() +
+                static_cast<std::size_t>(y) * result->strideBytes,
+            rgba.constScanLine(y),
+            static_cast<std::size_t>(result->strideBytes));
+    }
+    return result;
 }
 
 QImage applyCorrectionMasksToCpuImage(const QImage& source,
@@ -501,6 +558,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
         jcut::direct_vulkan_preview::clearVulkanDragOverrides(&m_interaction);
     }
     m_lastPresentedFrameByClip.clear();
+    m_maskPrefetchWindowKeys.clear();
     warmClipsSpeakerFramingContinuityRuntime(m_interaction.clips);
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
@@ -1304,6 +1362,90 @@ void VulkanPreviewSurface::registerVisibleClips()
     m_registeredClipRegistrationKeys = nextRegisteredClipRegistrationKeys;
 }
 
+void VulkanPreviewSurface::prefetchMaskBuffersForPlayback()
+{
+    const int futureFrames = m_interaction.playing
+        ? qMin(effectivePlaybackLookaheadFrames(), kMaximumMaskLookaheadFrames)
+        : 0;
+    QSet<QString> nextWindowKeys;
+
+    const auto requestMasksAt = [this, &nextWindowKeys](
+                                    int64_t samplePosition,
+                                    qreal framePosition) {
+        const qreal visualFramePosition =
+            playbackVisualTimelineFramePosition(framePosition,
+                                                m_interaction.playbackTiming);
+        const int64_t visualSample =
+            framePositionToSamples(visualFramePosition);
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (!clipUsesSidecarMask(clip) ||
+                !clipVisualPlaybackEnabled(clip, m_interaction.tracks)) {
+                continue;
+            }
+
+            const TimelineClip* mediaOwner = &clip;
+            if (clip.clipRole == ClipRole::MaskMatte) {
+                mediaOwner = clipParent(clip, m_interaction.clips);
+                if (!mediaOwner ||
+                    mediaOwner->clipRole != ClipRole::Media ||
+                    mediaOwner->mediaType != ClipMediaType::Video ||
+                    mediaOwner->filePath.trimmed().isEmpty()) {
+                    continue;
+                }
+                const TimelineClip& timingSource =
+                    resolvedClipTimingSource(clip, m_interaction.clips);
+                if (visualFramePosition < timingSource.startFrame ||
+                    visualFramePosition >=
+                        timingSource.startFrame + timingSource.durationFrames) {
+                    continue;
+                }
+            } else if (!visualClipActiveAtSample(
+                           clip,
+                           m_interaction.tracks,
+                           visualSample,
+                           visualFramePosition,
+                           m_bypassGrading)) {
+                continue;
+            }
+
+            const int64_t sourceFrame =
+                mediaOwner->mediaType == ClipMediaType::Image
+                    ? 0
+                    : sourceFrameForSample(*mediaOwner, visualSample);
+            const QString requestKey =
+                QStringLiteral("%1\x1f%2\x1f%3")
+                    .arg(clip.id, clip.maskFramesDir)
+                    .arg(sourceFrame);
+            if (nextWindowKeys.contains(requestKey)) {
+                continue;
+            }
+            nextWindowKeys.insert(requestKey);
+            if (m_maskPrefetchWindowKeys.contains(requestKey)) {
+                continue;
+            }
+            rawClipMaskBuffer(clip, qMax<int64_t>(0, sourceFrame));
+        }
+    };
+
+    for (int offset = 0; offset <= futureFrames; ++offset) {
+        const int64_t samplePosition =
+            m_interaction.currentSample + frameToSamples(offset);
+        requestMasksAt(samplePosition, samplesToFramePosition(samplePosition));
+    }
+
+    const PlaybackFrameCrossfade frameCrossfade =
+        playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
+                                              m_interaction.playbackTiming);
+    if (frameCrossfade.active) {
+        const int64_t secondaryTimelineFrame =
+            qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame);
+        requestMasksAt(frameToSamples(secondaryTimelineFrame),
+                       static_cast<qreal>(secondaryTimelineFrame));
+    }
+
+    m_maskPrefetchWindowKeys = std::move(nextWindowKeys);
+}
+
 void VulkanPreviewSurface::requestFramesForCurrentPosition()
 {
     if (m_bulkUpdating) {
@@ -1372,6 +1514,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     }
 
     registerVisibleClips();
+    prefetchMaskBuffersForPlayback();
     if (m_interaction.playing && m_playbackPipeline) {
         qint64 visibleAttemptCount = 0;
         qint64 readyCount = 0;
@@ -2036,9 +2179,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             const int64_t maskSourceFrame =
                 staticImageClip ? 0 : qMax<int64_t>(0, status.presentedSourceFrame);
             if (gpuMaskEnabled && maskSourceFrame >= 0) {
-                const QImage mask = rawClipMaskImage(clip, maskSourceFrame);
-                if (!mask.isNull()) {
-                    status.maskImage = mask;
+                const auto mask = rawClipMaskBuffer(clip, maskSourceFrame);
+                if (mask && !mask->empty()) {
+                    status.maskBuffer = mask;
                     status.maskTextureEnabled = true;
                     status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
@@ -2137,11 +2280,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.frameCrossfadeFrame = secondaryFrame;
                     status.frameCrossfadeFrameSize = secondaryFrame.size();
                     if (gpuMaskEnabled) {
-                        status.frameCrossfadeMaskImage = rawClipMaskImage(
+                        status.frameCrossfadeMaskBuffer = rawClipMaskBuffer(
                             clip,
                             qMax<int64_t>(0, status.frameCrossfadePresentedSourceFrame));
                         status.frameCrossfadeMaskTextureEnabled =
-                            !status.frameCrossfadeMaskImage.isNull();
+                            status.frameCrossfadeMaskBuffer &&
+                            !status.frameCrossfadeMaskBuffer->empty();
                     }
                     maxFrameLag = qMax(
                         maxFrameLag,
@@ -2203,17 +2347,20 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.timingOwnerClipId = sourceId;
                     markerStatus.effectsOwnerClipId = clip.id;
                     markerStatus.matteOwnerClipId = clip.id;
-                    markerStatus.maskImage = rawClipMaskImage(
+                    markerStatus.maskBuffer = rawClipMaskBuffer(
                         clip, qMax<int64_t>(0, markerStatus.presentedSourceFrame));
-                    markerStatus.maskTextureEnabled = !markerStatus.maskImage.isNull();
-                    markerStatus.frameCrossfadeMaskImage = markerStatus.frameCrossfadeActive
-                        ? rawClipMaskImage(
+                    markerStatus.maskTextureEnabled =
+                        markerStatus.maskBuffer &&
+                        !markerStatus.maskBuffer->empty();
+                    markerStatus.frameCrossfadeMaskBuffer = markerStatus.frameCrossfadeActive
+                        ? rawClipMaskBuffer(
                               clip,
                               qMax<int64_t>(
                                   0, markerStatus.frameCrossfadePresentedSourceFrame))
-                        : QImage{};
+                        : std::shared_ptr<const jcut::core::ImageBuffer>{};
                     markerStatus.frameCrossfadeMaskTextureEnabled =
-                        !markerStatus.frameCrossfadeMaskImage.isNull();
+                        markerStatus.frameCrossfadeMaskBuffer &&
+                        !markerStatus.frameCrossfadeMaskBuffer->empty();
                     markerStatus.maskClipSource = true;
                     markerStatus.maskForegroundLayerEnabled = false;
                     markerStatus.maskShowOnly = clip.maskShowOnly;
@@ -2265,9 +2412,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.correctionsSupported = true;
                     if (!matteEffects.correctionPolygons.isEmpty()) {
                         const QImage correctedMask = applyCorrectionPolygonsToMaskImage(
-                            markerStatus.maskImage, matteEffects.correctionPolygons);
+                            qtImageFromCoreBuffer(markerStatus.maskBuffer),
+                            matteEffects.correctionPolygons);
                         if (!correctedMask.isNull()) {
-                            markerStatus.maskImage = correctedMask;
+                            markerStatus.maskBuffer =
+                                coreBufferFromQtImage(correctedMask);
                             markerStatus.maskTextureEnabled = true;
                             markerStatus.correctionsApplied = true;
                         } else {
@@ -2277,13 +2426,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                         if (markerStatus.frameCrossfadeMaskTextureEnabled) {
                             const QImage correctedSecondaryMask =
                                 applyCorrectionPolygonsToMaskImage(
-                                    markerStatus.frameCrossfadeMaskImage,
+                                    qtImageFromCoreBuffer(
+                                        markerStatus.frameCrossfadeMaskBuffer),
                                     matteEffects.correctionPolygons);
                             if (!correctedSecondaryMask.isNull()) {
-                                markerStatus.frameCrossfadeMaskImage =
-                                    correctedSecondaryMask;
+                                markerStatus.frameCrossfadeMaskBuffer =
+                                    coreBufferFromQtImage(correctedSecondaryMask);
                             } else {
-                                markerStatus.frameCrossfadeMaskImage = {};
+                                markerStatus.frameCrossfadeMaskBuffer = {};
                                 markerStatus.frameCrossfadeMaskTextureEnabled = false;
                                 markerStatus.correctionsSupported = false;
                                 ++correctionsUnavailableCount;

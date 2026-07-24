@@ -209,6 +209,7 @@ class OffscreenVulkanRendererPrivate;
 struct OffscreenRenderFrame {
     QImage cpuImage;
     OffscreenVulkanFrame vulkanFrame;
+    QString failureReason;
 
     bool hasCpuImage() const { return !cpuImage.isNull(); }
     bool hasVulkanFrame() const { return vulkanFrame.valid; }

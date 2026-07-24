@@ -17,6 +17,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 extern "C" {
@@ -168,6 +169,12 @@ const AVCodec* pickVideoEncoder(const AVOutputFormat* outputFormat,
             return codec;
         }
         return avcodec_find_encoder_by_name("libvpx");
+    }
+    if (requestedFormat == "mp4") {
+        if (const AVCodec* codec =
+                avcodec_find_encoder_by_name("h264_nvenc")) {
+            return codec;
+        }
     }
     if (outputFormat && outputFormat->video_codec != AV_CODEC_ID_NONE) {
         if (const AVCodec* codec = avcodec_find_encoder(outputFormat->video_codec)) {
@@ -931,6 +938,7 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     std::unique_ptr<SwsContext, SwsContextDeleter> scaleContext;
     audio::DecodedAudioCache decodedAudio;
     std::unique_ptr<AudioOutput> audioOutput;
+    bool hardwareVideoEncoder = false;
 
     if (writeEncodedVideo) {
         std::string audioDecodeError;
@@ -966,46 +974,93 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
                 : "failed to find a video encoder";
             return result;
         }
-
         stream = avformat_new_stream(formatContext.get(), codec);
         if (!stream) {
             result.message = "failed to create output stream";
             return result;
         }
 
-        codecContext.reset(avcodec_alloc_context3(codec));
-        if (!codecContext) {
-            result.message = "failed to allocate encoder context";
-            return result;
-        }
+        const auto openVideoEncoder =
+            [&](const AVCodec* selected) {
+                codecContext.reset(
+                    avcodec_alloc_context3(selected));
+                if (!codecContext) {
+                    return AVERROR(ENOMEM);
+                }
+                hardwareVideoEncoder =
+                    selected->name &&
+                    std::string_view(selected->name).find(
+                        "_nvenc") != std::string_view::npos;
+                codecContext->codec_id = selected->id;
+                codecContext->codec_type = AVMEDIA_TYPE_VIDEO;
+                codecContext->pix_fmt =
+                    selected->id == AV_CODEC_ID_MJPEG
+                    ? AV_PIX_FMT_YUVJ420P
+                    : AV_PIX_FMT_YUV420P;
+                codecContext->width =
+                    exportRequest.outputSize.width;
+                codecContext->height =
+                    exportRequest.outputSize.height;
+                codecContext->time_base =
+                    av_inv_q(frameRate);
+                codecContext->framerate = frameRate;
+                codecContext->gop_size = std::max(
+                    1,
+                    static_cast<int>(
+                        std::lround(outputFps)));
+                codecContext->max_b_frames = 0;
+                codecContext->bit_rate =
+                    selected->id == AV_CODEC_ID_MJPEG
+                    ? 40'000'000
+                    : 8'000'000;
+                if (selected->id == AV_CODEC_ID_MJPEG) {
+                    codecContext->color_range =
+                        AVCOL_RANGE_JPEG;
+                }
+                if (formatContext->oformat->flags &
+                    AVFMT_GLOBALHEADER) {
+                    codecContext->flags |=
+                        AV_CODEC_FLAG_GLOBAL_HEADER;
+                }
+                if (hardwareVideoEncoder) {
+                    av_opt_set(
+                        codecContext->priv_data,
+                        "preset", "p4", 0);
+                } else if (
+                    selected->id == AV_CODEC_ID_H264 ||
+                    selected->id == AV_CODEC_ID_MPEG4) {
+                    av_opt_set(
+                        codecContext->priv_data,
+                        "preset", "veryfast", 0);
+                }
+                return avcodec_open2(
+                    codecContext.get(), selected, nullptr);
+            };
 
-        codecContext->codec_id = codec->id;
-        codecContext->codec_type = AVMEDIA_TYPE_VIDEO;
-        codecContext->pix_fmt = codec->id == AV_CODEC_ID_MJPEG
-            ? AV_PIX_FMT_YUVJ420P
-            : AV_PIX_FMT_YUV420P;
-        codecContext->width = exportRequest.outputSize.width;
-        codecContext->height = exportRequest.outputSize.height;
-        codecContext->time_base = av_inv_q(frameRate);
-        codecContext->framerate = frameRate;
-        codecContext->gop_size = std::max(1, static_cast<int>(std::lround(outputFps)));
-        codecContext->max_b_frames = 0;
-        codecContext->bit_rate = codec->id == AV_CODEC_ID_MJPEG
-            ? 40'000'000
-            : 8'000'000;
-        if (codec->id == AV_CODEC_ID_MJPEG) {
-            codecContext->color_range = AVCOL_RANGE_JPEG;
+        int openResult = openVideoEncoder(codec);
+        if (openResult < 0 && hardwareVideoEncoder) {
+            const AVCodec* softwareCodec =
+                avcodec_find_encoder_by_name("libx264");
+            if (!softwareCodec) {
+                softwareCodec =
+                    avcodec_find_encoder(AV_CODEC_ID_H264);
+            }
+            if (softwareCodec && softwareCodec->name &&
+                std::string_view(softwareCodec->name).find(
+                    "_nvenc") != std::string_view::npos) {
+                softwareCodec =
+                    avcodec_find_encoder(
+                        AV_CODEC_ID_MPEG4);
+            }
+            if (softwareCodec) {
+                codec = softwareCodec;
+                openResult = openVideoEncoder(codec);
+            }
         }
-        if (formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
-            codecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
-        if (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_MPEG4) {
-            av_opt_set(codecContext->priv_data, "preset", "veryfast", 0);
-        }
-
-        const int openResult = avcodec_open2(codecContext.get(), codec, nullptr);
         if (openResult < 0) {
-            result.message = "failed to open encoder: " + avErrorToString(openResult);
+            result.message =
+                "failed to open encoder: " +
+                avErrorToString(openResult);
             return result;
         }
         if (avcodec_parameters_from_context(stream->codecpar, codecContext.get()) < 0) {
@@ -1245,8 +1300,9 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
                     range.startFrame;
                 progress.segmentEndFrame =
                     range.endFrame;
-                progress.usingGpu = false;
-                progress.usingHardwareEncode = false;
+                progress.usingGpu = hardwareVideoEncoder;
+                progress.usingHardwareEncode =
+                    hardwareVideoEncoder;
                 progress.encoderLabel =
                     writeEncodedVideo && codec && codec->name
                     ? codec->name
@@ -1313,8 +1369,8 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
 
     const auto finishedTime = std::chrono::steady_clock::now();
     result.success = true;
-    result.usedGpu = false;
-    result.usedHardwareEncode = false;
+    result.usedGpu = hardwareVideoEncoder;
+    result.usedHardwareEncode = hardwareVideoEncoder;
     result.encoderLabel = writeEncodedVideo && codec && codec->name ? codec->name : "image_sequence";
     result.elapsedMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(finishedTime - startTime).count();

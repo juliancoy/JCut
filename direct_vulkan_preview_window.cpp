@@ -2220,9 +2220,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 !providerStatus.frame.hasHardwareFrame() &&
                 !providerStatus.externalVulkanFrame) {
                 ownerResult.attempted = true;
+                const auto cpuBuffer =
+                    providerStatus.frame.cpuImageBuffer();
                 ownerResult.sampledFrameReady =
+                    cpuBuffer &&
                     mediaOwnerResources->resources->uploadImageTexture(
-                        cb, providerStatus.frame.cpuImage());
+                        cb, *cpuBuffer);
                 ownerResult.descriptorSet = ownerResult.sampledFrameReady
                     ? mediaOwnerResources->resources->descriptorSet()
                     : VK_NULL_HANDLE;
@@ -2410,7 +2413,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 DirectVulkanFrameHandoffPipeline::Result result;
                 if (frame.hasCpuImage() && !frame.hasHardwareFrame()) {
                     result.attempted = true;
-                    result.sampledFrameReady = auxiliaryResources->resources->uploadImageTexture(cb, frame.cpuImage());
+                    const auto cpuBuffer = frame.cpuImageBuffer();
+                    result.sampledFrameReady =
+                        cpuBuffer &&
+                        auxiliaryResources->resources->uploadImageTexture(
+                            cb, *cpuBuffer);
                     result.descriptorSet = result.sampledFrameReady
                         ? auxiliaryResources->resources->descriptorSet() : VK_NULL_HANDLE;
                     result.imageView = auxiliaryResources->resources->sampledImageView();
@@ -2498,7 +2505,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                     cb, secondaryMaskCurveLut));
                         }
                     }
-                    if (status.frameCrossfadeMaskTextureEnabled) {
+                    if (status.frameCrossfadeMaskTextureEnabled &&
+                        status.frameCrossfadeMaskBuffer) {
                         VulkanMaskPreprocessOptions secondaryMaskOptions;
                         secondaryMaskOptions.outputSize =
                             status.frameCrossfadeFrameSize.isValid()
@@ -2515,7 +2523,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             status.clipId,
                             secondaryHandoffResources->resources->uploadMaskTexture(
                                 cb,
-                                status.frameCrossfadeMaskImage,
+                                *status.frameCrossfadeMaskBuffer,
                                 secondaryMaskOptions));
                     }
                     secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
@@ -2535,7 +2543,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     maskCurveLutUploadResults.insert(status.clipId, uploaded);
                 }
             }
-            if (status.maskTextureEnabled) {
+            if (status.maskTextureEnabled && status.maskBuffer) {
                 VulkanMaskPreprocessOptions maskOptions;
                 maskOptions.outputSize = status.frameSize;
                 maskOptions.invert = status.maskInvert;
@@ -2544,7 +2552,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 maskOptions.blurRadius = qRound(qMax<qreal>(status.maskFeather, status.maskBlur));
                 maskUploadResults.insert(
                     status.clipId,
-                    handoffResources->resources->uploadMaskTexture(cb, status.maskImage, maskOptions));
+                    handoffResources->resources->uploadMaskTexture(
+                        cb, *status.maskBuffer, maskOptions));
             }
             handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
             if (handoffResult.sampledFrameReady) {

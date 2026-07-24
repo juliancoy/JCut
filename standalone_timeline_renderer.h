@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace jcut::standalone_render {
 
@@ -21,6 +22,7 @@ struct TimelineRenderRequest {
     bool preferHardwareFrame = false;
     bool allowCpuFallback = true;
     bool transparentBackground = false;
+    bool deferLayerComposition = false;
 };
 
 struct StandaloneDecodeBenchmarkResult {
@@ -62,6 +64,7 @@ struct TimelineRenderResult {
     bool success = false;
     std::string message;
     core::ImageBuffer image;
+    std::vector<core::ImageBuffer> preparedLayers;
     std::shared_ptr<const core::FramePayloadCore> hardwareFrame;
     bool hardwareDirectEligible = false;
     std::string hardwareDirectFallbackReason;

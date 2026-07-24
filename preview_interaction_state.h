@@ -1,6 +1,7 @@
 #pragma once
 
 #include "background_fill_effect_fwd.h"
+#include "core/image_buffer.h"
 #include "frame_handle.h"
 #include "playback_timing_context.h"
 #include "preview_surface.h"
@@ -16,6 +17,7 @@
 #include <QSizeF>
 #include <QString>
 #include <QVector>
+#include <memory>
 #include <vulkan/vulkan.h>
 
 enum class PreviewDragMode {
@@ -120,7 +122,7 @@ struct VulkanPreviewClipFrameStatus {
     qreal maskGradeSaturation = 1.0;
     TimelineClip::GradingKeyframe maskGrade;
     bool maskCurveLutApplied = false;
-    QImage maskImage;
+    std::shared_ptr<const jcut::core::ImageBuffer> maskBuffer;
     QRect targetRect;
     QRect fittedRect;
     TimelineClip::TransformKeyframe transform;
@@ -142,7 +144,7 @@ struct VulkanPreviewClipFrameStatus {
     float frameCrossfadeOpacity = 0.0f;
     QSize frameCrossfadeFrameSize;
     editor::FrameHandle frameCrossfadeFrame;
-    QImage frameCrossfadeMaskImage;
+    std::shared_ptr<const jcut::core::ImageBuffer> frameCrossfadeMaskBuffer;
     bool frameCrossfadeMaskTextureEnabled = false;
     bool externalVulkanFrame = false;
     bool sampledFramePregraded = false;

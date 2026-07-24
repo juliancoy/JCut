@@ -312,6 +312,19 @@ public:
             !m_cacheReady) {
             return false;
         }
+        const int boundedColumns =
+            std::clamp(columns, 1, 16384);
+        const std::uint64_t cacheKey =
+            (static_cast<std::uint64_t>(
+                 static_cast<std::uint32_t>(clipId)) << 32U) |
+            static_cast<std::uint32_t>(boundedColumns);
+        const auto cachedEnvelope =
+            m_waveformEnvelopeCache.find(cacheKey);
+        if (cachedEnvelope != m_waveformEnvelopeCache.end()) {
+            *minimumOut = cachedEnvelope->second.first;
+            *maximumOut = cachedEnvelope->second.second;
+            return true;
+        }
         const auto clip = std::find_if(
             m_resolvedDocument.clips.begin(),
             m_resolvedDocument.clips.end(),
@@ -349,7 +362,9 @@ public:
         const std::int64_t sourceEnd =
             std::max(firstSource, lastSource) + 1;
         const auto& audio = decoded->second;
-        return audio::queryWaveformEnvelope(
+        std::vector<float> minimum;
+        std::vector<float> maximum;
+        if (!audio::queryWaveformEnvelope(
             audio::WaveformSampleView{
                 audio.samples.data(),
                 static_cast<std::int64_t>(
@@ -361,9 +376,17 @@ public:
                 audio.sourceSampleScale},
             sourceStart,
             sourceEnd,
-            columns,
-            minimumOut,
-            maximumOut);
+            boundedColumns,
+            &minimum,
+            &maximum)) {
+            return false;
+        }
+        m_waveformEnvelopeCache.emplace(
+            cacheKey,
+            std::make_pair(minimum, maximum));
+        *minimumOut = std::move(minimum);
+        *maximumOut = std::move(maximum);
+        return true;
     }
 
     void setBufferFrames(unsigned int frames)
@@ -758,6 +781,7 @@ private:
         m_cacheReady = false;
         m_decodeFailed = false;
         m_decodedCache.clear();
+        m_waveformEnvelopeCache.clear();
         ++m_timelineGeneration;
         return true;
     }
@@ -785,6 +809,7 @@ private:
         }
         m_resolvedDocument = std::move(decoded.document);
         m_decodedCache = std::move(decoded.cache);
+        m_waveformEnvelopeCache.clear();
         m_cacheReady = true;
         m_decodeFailed = false;
         m_outputUnavailable = false;
@@ -917,6 +942,10 @@ private:
     std::future<DecodeResult> m_decodeFuture;
     EditorDocumentCore m_resolvedDocument;
     standalone_render::audio::DecodedAudioCache m_decodedCache;
+    mutable std::unordered_map<
+        std::uint64_t,
+        std::pair<std::vector<float>, std::vector<float>>>
+        m_waveformEnvelopeCache;
     std::unordered_map<std::string, ProbeCacheEntry> m_probeCache;
     std::vector<std::string> m_scheduledPaths;
     std::vector<ImGuiAudioOutputDevice> m_outputDevices;

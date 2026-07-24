@@ -1,4 +1,5 @@
 #include "editor_shared_effects.h"
+#include "core/image_file_decoder.h"
 #include "mask_frame_map_core.h"
 #include "editor_grading_core.h"
 #include "editor_shared_keyframes.h"
@@ -26,10 +27,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
+#include <functional>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <sys/stat.h>
 
 bool trackHasEffectPreset(const TimelineTrack& track)
@@ -126,19 +136,110 @@ QMutex& preparedMaskCacheMutex()
     return mutex;
 }
 
-QCache<QString, QImage>& rawMaskCache()
+struct RawMaskCacheCore {
+    static constexpr std::size_t kMaximumBytes = 256ull * 1024ull * 1024ull;
+
+    std::mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<jcut::core::ImageBuffer>> images;
+    std::unordered_set<std::string> loadsInFlight;
+    std::deque<std::string> insertionOrder;
+    std::size_t storedBytes = 0;
+};
+
+RawMaskCacheCore& rawMaskCacheCore()
 {
-    // Cost units are KiB. Keeping a few seconds of decoded grayscale masks
-    // prevents repeated PNG inflation when multiple preview-status refreshes
-    // request the same presented frame.
-    static QCache<QString, QImage> cache(256 * 1024);
+    static RawMaskCacheCore cache;
     return cache;
 }
 
-QMutex& rawMaskCacheMutex()
+class RawMaskDecodeExecutor {
+public:
+    RawMaskDecodeExecutor()
+    {
+        const unsigned reportedConcurrency = std::thread::hardware_concurrency();
+        const unsigned workerCount =
+            std::clamp(reportedConcurrency == 0 ? 2u : reportedConcurrency, 1u, 4u);
+        workers_.reserve(workerCount);
+        for (unsigned i = 0; i < workerCount; ++i) {
+            workers_.emplace_back([this]() { run(); });
+        }
+    }
+
+    ~RawMaskDecodeExecutor()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        condition_.notify_all();
+        for (std::thread& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    void enqueue(std::function<void()> task)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            tasks_.push_back(std::move(task));
+        }
+        condition_.notify_one();
+    }
+
+private:
+    void run()
+    {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this]() {
+                    return stopping_ || !tasks_.empty();
+                });
+                if (stopping_ && tasks_.empty()) {
+                    return;
+                }
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+            task();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::deque<std::function<void()>> tasks_;
+    bool stopping_ = false;
+    std::vector<std::thread> workers_;
+};
+
+RawMaskDecodeExecutor& rawMaskDecodeExecutor()
 {
-    static QMutex mutex;
-    return mutex;
+    static RawMaskDecodeExecutor executor;
+    return executor;
+}
+
+QImage qtImageFromCoreBuffer(
+    const std::shared_ptr<const jcut::core::ImageBuffer>& buffer)
+{
+    if (!buffer || buffer->empty()) {
+        return {};
+    }
+    auto* retained =
+        new std::shared_ptr<const jcut::core::ImageBuffer>(buffer);
+    return QImage(
+        buffer->bytes.data(),
+        buffer->size.width,
+        buffer->size.height,
+        buffer->strideBytes,
+        QImage::Format_RGBA8888,
+        [](void* value) {
+            delete static_cast<
+                std::shared_ptr<const jcut::core::ImageBuffer>*>(value);
+        },
+        retained);
 }
 
 struct FileVersionSignature {
@@ -940,16 +1041,18 @@ QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, cons
     return preparedClipMask(clip, sourceFrame, size);
 }
 
-QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
+    const TimelineClip& clip,
+    int64_t sourceFrame)
 {
     const QString path = maskFramePathForSourceFrame(clip, sourceFrame);
     if (path.isEmpty()) {
-        return QImage();
+        return {};
     }
     const QFileInfo info(path);
     const FileVersionSignature version = fileVersionSignature(path);
     if (!version.valid || version.size <= 0) {
-        return QImage();
+        return {};
     }
     const QString cacheKey =
         QStringLiteral("%1\x1f%2\x1f%3\x1f%4\x1f%5\x1f%6")
@@ -959,25 +1062,60 @@ QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
             .arg(version.changedNanoseconds)
             .arg(version.device)
             .arg(version.inode);
+    const std::string coreCacheKey = cacheKey.toStdString();
+    std::shared_ptr<const jcut::core::ImageBuffer> cached;
     {
-        QMutexLocker lock(&rawMaskCacheMutex());
-        if (QImage* cached = rawMaskCache().object(cacheKey)) {
-            return *cached;
+        RawMaskCacheCore& cache = rawMaskCacheCore();
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        const auto found = cache.images.find(coreCacheKey);
+        if (found != cache.images.end()) {
+            cached = found->second;
+        } else if (!cache.loadsInFlight.insert(coreCacheKey).second) {
+            return {};
         }
     }
-    QImage mask(path);
-    if (mask.isNull()) {
-        return QImage();
+    if (cached) {
+        return cached;
     }
-    const qint64 costKb64 = qMax<qint64>(
-        1, (static_cast<qint64>(mask.sizeInBytes()) + 1023) / 1024);
-    const int costKb = static_cast<int>(qMin<qint64>(
-        costKb64, std::numeric_limits<int>::max()));
-    {
-        QMutexLocker lock(&rawMaskCacheMutex());
-        rawMaskCache().insert(cacheKey, new QImage(mask), costKb);
-    }
-    return mask;
+
+    const std::string corePath = info.absoluteFilePath().toStdString();
+    rawMaskDecodeExecutor().enqueue([corePath, coreCacheKey]() {
+        auto decoded = std::make_shared<jcut::core::ImageBuffer>(
+            jcut::core::decodeImageFileRgba(corePath));
+        RawMaskCacheCore& cache = rawMaskCacheCore();
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        cache.loadsInFlight.erase(coreCacheKey);
+        if (decoded->empty() ||
+            decoded->bytes.size() > RawMaskCacheCore::kMaximumBytes) {
+            return;
+        }
+        while (cache.storedBytes + decoded->bytes.size() >
+                   RawMaskCacheCore::kMaximumBytes &&
+               !cache.insertionOrder.empty()) {
+            const std::string oldest = std::move(cache.insertionOrder.front());
+            cache.insertionOrder.pop_front();
+            const auto found = cache.images.find(oldest);
+            if (found == cache.images.end()) {
+                continue;
+            }
+            cache.storedBytes -= found->second->bytes.size();
+            cache.images.erase(found);
+        }
+        const auto existing = cache.images.find(coreCacheKey);
+        if (existing != cache.images.end()) {
+            cache.storedBytes -= existing->second->bytes.size();
+        } else {
+            cache.insertionOrder.push_back(coreCacheKey);
+        }
+        cache.storedBytes += decoded->bytes.size();
+        cache.images[coreCacheKey] = std::move(decoded);
+    });
+    return {};
+}
+
+QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
+{
+    return qtImageFromCoreBuffer(rawClipMaskBuffer(clip, sourceFrame));
 }
 
 QImage applyCorrectionPolygonsToMaskImage(

@@ -1,28 +1,21 @@
 #include "imgui_gpu_renderer_plugin_api.h"
 
 #include "editor_document_core_json.h"
-#include "editor_document_render_bridge.h"
-#include "render_runtime.h"
+#include "standalone_export_renderer.h"
+#include "standalone_timeline_renderer.h"
+#include "vulkan_compositor_core.h"
 
-#include <QCoreApplication>
-#include <QGuiApplication>
-
-#include <algorithm>
-#include <array>
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <thread>
 
 namespace {
 
-std::unique_ptr<QGuiApplication> application;
-int applicationArgc = 1;
-std::array<char, 32> applicationName{"jcut-gpu-renderer"};
-std::array<char*, 2> applicationArgv{
-    applicationName.data(), nullptr};
+std::unique_ptr<jcut::standalone_render::TimelineRenderer>
+    previewRenderer;
+std::unique_ptr<jcut::vulkan::VulkanCompositorCore>
+    compositor;
 
 void writeError(
     char* buffer,
@@ -95,21 +88,17 @@ extern "C" bool jcut_imgui_gpu_initialize(
     char* errorBuffer,
     std::size_t errorBufferSize)
 {
-    if (QCoreApplication::instance()) {
-        return true;
-    }
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
-    }
     try {
-        application = std::make_unique<QGuiApplication>(
-            applicationArgc, applicationArgv.data());
+        previewRenderer = std::make_unique<
+            jcut::standalone_render::TimelineRenderer>();
+        compositor = std::make_unique<
+            jcut::vulkan::VulkanCompositorCore>();
     } catch (const std::exception& exception) {
         writeError(
             errorBuffer,
             errorBufferSize,
             std::string(
-                "could not initialize shared GPU renderer: ") +
+                "could not initialize neutral Vulkan renderer: ") +
                 exception.what());
         return false;
     }
@@ -118,11 +107,12 @@ extern "C" bool jcut_imgui_gpu_initialize(
 
 extern "C" void jcut_imgui_gpu_shutdown()
 {
-    application.reset();
+    compositor.reset();
+    previewRenderer.reset();
 }
 
 extern "C" bool jcut_imgui_gpu_render_preview(
-    const char* documentJson,
+    const jcut::EditorDocumentCore* documentInput,
     const char* rootDirectory,
     int outputWidth,
     int outputHeight,
@@ -143,50 +133,62 @@ extern "C" bool jcut_imgui_gpu_render_preview(
     if (imageOut) {
         *imageOut = {};
     }
-    std::string parseError;
-    const auto document = parseDocument(
-        documentJson, rootDirectory, &parseError);
-    if (!document) {
-        writeError(errorBuffer, errorBufferSize, parseError);
+    if (!documentInput) {
+        writeError(
+            errorBuffer, errorBufferSize,
+            "shared GPU preview document is null");
         return false;
     }
+    const jcut::EditorDocumentCore document =
+        resolvedDocument(
+            *documentInput,
+            rootDirectory ? rootDirectory : "");
 
-    jcut::render::RenderRequestCore request =
-        document->exportRequest;
-    request.outputPath = "preview://imgui-shared-gpu";
-    request.outputFormat = "preview";
-    request.outputSize = {outputWidth, outputHeight};
-    request.exportStartFrame = timelineFrame;
-    request.exportEndFrame = timelineFrame;
-    const jcut::render::TimelineRenderData timeline =
-        jcut::render::buildTimelineRenderData(
-            *document, false);
-
-    jcut::render::PreviewFrameResultCore result;
-    for (int attempt = 0; attempt < 40; ++attempt) {
-        result = jcut::render::renderPreviewFrameCore(
-            request,
-            timeline,
-            timelineFrame,
-            false,
-            readbackToCpuImage);
-        if (result.success && result.vulkanFrame.valid) {
-            *frameOut = result.vulkanFrame;
-            if (imageOut) {
-                *imageOut = std::move(result.image);
-            }
-            return true;
-        }
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(10));
+    if (!previewRenderer || !compositor) {
+        writeError(
+            errorBuffer, errorBufferSize,
+            "neutral Vulkan renderer is not initialized");
+        return false;
     }
-    writeError(
-        errorBuffer,
-        errorBufferSize,
-        result.message.empty()
-            ? "shared Vulkan preview returned no frame"
-            : result.message);
-    return false;
+    const jcut::standalone_render::TimelineRenderResult result =
+        previewRenderer->renderFrame(
+            jcut::standalone_render::TimelineRenderRequest{
+                document,
+                {outputWidth, outputHeight},
+                static_cast<double>(timelineFrame),
+                rootDirectory ? rootDirectory : "",
+                {},
+                false,
+                true,
+                false,
+                true});
+    if (!result.success || result.preparedLayers.empty()) {
+        writeError(
+            errorBuffer,
+            errorBufferSize,
+            result.message.empty()
+                ? "neutral compositor returned no frame"
+                : result.message);
+        return false;
+    }
+    std::string uploadError;
+    if (!compositor->compose(
+            result.preparedLayers, frameOut, &uploadError)) {
+        writeError(
+            errorBuffer, errorBufferSize, uploadError);
+        return false;
+    }
+    if (readbackToCpuImage && imageOut) {
+        if (!compositor->readback(
+                imageOut, &uploadError)) {
+            writeError(
+                errorBuffer,
+                errorBufferSize,
+                uploadError);
+            return false;
+        }
+    }
+    return true;
 }
 
 extern "C" bool jcut_imgui_gpu_export_timeline(
@@ -213,19 +215,20 @@ extern "C" bool jcut_imgui_gpu_export_timeline(
         writeError(errorBuffer, errorBufferSize, parseError);
         return false;
     }
-    const jcut::render::TimelineRenderData timeline =
-        jcut::render::buildTimelineRenderData(
-            *document, true);
-    *resultOut = jcut::render::renderTimelineToFileCore(
-        document->exportRequest,
-        timeline,
+    jcut::standalone_render::ExportRenderRequest request;
+    request.document = *document;
+    request.rootDirectory =
+        rootDirectory ? rootDirectory : "";
+    *resultOut =
+        jcut::standalone_render::exportTimelineToFile(
+        request,
         progressCallback
             ? [progressCallback, progressUserData](
                   const jcut::render::RenderProgressCore& progress) {
                   return progressCallback(
                       progressUserData, &progress);
               }
-            : jcut::render::RenderProgressCoreCallback{});
+            : jcut::standalone_render::ExportProgressCallback{});
     if (!resultOut->success && !resultOut->cancelled) {
         writeError(
             errorBuffer,

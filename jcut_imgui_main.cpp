@@ -321,6 +321,11 @@ struct ShellState {
     std::string projectRootPath;
     std::string mediaRootDirectory;
     std::uint64_t documentGeneration = 1;
+    std::uint64_t dirtyGeneration = 1;
+    std::uint64_t legacyStateGeneration = 1;
+    mutable std::uint64_t dirtyCacheGeneration = 0;
+    mutable std::uint64_t dirtyCacheLegacyGeneration = 0;
+    mutable bool dirtyCacheValue = false;
     std::string lastSavedSnapshotJson;
     std::string statusMessage;
     jcut::ImGuiAudioRuntime audioRuntime;
@@ -1516,6 +1521,9 @@ jcut::CommandResult applyCommand(ShellState* shellState, Command&& command)
         }
     }
     shellState->statusMessage = result.message;
+    if (result.applied) {
+        ++shellState->dirtyGeneration;
+    }
     requestPreviewRender(shellState);
     return result;
 }
@@ -2621,6 +2629,7 @@ void setLegacyStateOverride(ShellState* shellState,
         shellState->legacyStateOverrides = nlohmann::json::object();
     }
     shellState->legacyStateOverrides[key] = std::move(value);
+    ++shellState->legacyStateGeneration;
 }
 
 bool applyMediaRootPath(ShellState* shellState, const std::string& requestedPath)
@@ -2665,6 +2674,7 @@ void commitLegacyStateOverrides(ShellState* shellState,
     shellState->legacyStateOverrides = nlohmann::json::object();
     shellState->lastSavedLegacyExtensionSignature =
         legacyExtensionSignature(*shellState);
+    ++shellState->legacyStateGeneration;
 }
 
 jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
@@ -2712,7 +2722,7 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
     nlohmann::json renderStatus{
         {"ok", true},
         {"backend", shellState->gpuRenderer.available()
-            ? "shared_qt_vulkan"
+            ? "qt_free_vulkan"
             : "standalone_fallback"},
         {"sharedGpuRenderer", {
             {"available", shellState->gpuRenderer.available()},
@@ -3090,6 +3100,8 @@ void loadProjectSessionIntoShell(
     shellState->lastSavedSnapshotJson = snapshotJson(loadedDocument);
     shellState->lastSavedLegacyExtensionSignature =
         legacyExtensionSignature(*shellState);
+    ++shellState->dirtyGeneration;
+    ++shellState->legacyStateGeneration;
     std::snprintf(shellState->exportOutputPath.data(),
                   shellState->exportOutputPath.size(),
                   "%s",
@@ -3124,6 +3136,7 @@ bool saveCurrentDocument(ShellState* shellState)
         }
         commitLegacyStateOverrides(shellState, snapshot);
         shellState->lastSavedSnapshotJson = snapshotJson(snapshot);
+        ++shellState->dirtyGeneration;
         invalidateProjectHistoryCache(shellState);
         shellState->statusMessage = "project state saved";
         return true;
@@ -3138,6 +3151,7 @@ bool saveCurrentDocument(ShellState* shellState)
     shellState->lastSavedSnapshotJson = snapshotJson(snapshot);
     shellState->lastSavedLegacyExtensionSignature =
         legacyExtensionSignature(*shellState);
+    ++shellState->dirtyGeneration;
     shellState->statusMessage = "document saved";
     return true;
 }
@@ -3194,6 +3208,7 @@ bool reloadCurrentDocument(ShellState* shellState)
         shellState->runtime = jcut::EditorRuntime::fromDocument(document);
     }
     shellState->lastSavedSnapshotJson = snapshotJson(document);
+    ++shellState->dirtyGeneration;
     std::snprintf(shellState->mediaRootPath.data(),
                   shellState->mediaRootPath.size(),
                   "%s",
@@ -3213,10 +3228,22 @@ bool documentIsDirty(const ShellState& shellState, const jcut::EditorDocumentCor
     if (shellState.documentPath.empty() && !shellState.usesQtProjectStorage) {
         return false;
     }
-    return snapshotJson(snapshot) != shellState.lastSavedSnapshotJson ||
+    if (shellState.dirtyCacheGeneration ==
+            shellState.dirtyGeneration &&
+        shellState.dirtyCacheLegacyGeneration ==
+            shellState.legacyStateGeneration) {
+        return shellState.dirtyCacheValue;
+    }
+    shellState.dirtyCacheValue =
+        snapshotJson(snapshot) != shellState.lastSavedSnapshotJson ||
         (shellState.usesQtProjectStorage &&
          legacyExtensionSignature(shellState) !=
              shellState.lastSavedLegacyExtensionSignature);
+    shellState.dirtyCacheGeneration =
+        shellState.dirtyGeneration;
+    shellState.dirtyCacheLegacyGeneration =
+        shellState.legacyStateGeneration;
+    return shellState.dirtyCacheValue;
 }
 
 void adoptSavedProjectSession(
@@ -3242,6 +3269,8 @@ void adoptSavedProjectSession(
     shellState->lastSavedSnapshotJson = snapshotJson(savedDocument);
     shellState->lastSavedLegacyExtensionSignature =
         legacyExtensionSignature(*shellState);
+    ++shellState->dirtyGeneration;
+    ++shellState->legacyStateGeneration;
     invalidateProjectHistoryCache(shellState);
     shellState->statusMessage = statusMessage;
 }
@@ -3442,10 +3471,12 @@ void runPreviewWorker(ShellState* shellState)
                 &sharedGpuError)) {
             result.success = true;
             result.message =
-                "shared Qt Vulkan composition completed";
-            result.hardwareDirectEligible = true;
+                "Qt-free Vulkan composition completed";
+            result.hardwareDirectEligible = false;
             result.hardwareDeviceLabel =
-                "shared Qt Vulkan renderer";
+                "Qt-free neutral Vulkan renderer";
+            result.hardwareDirectFallbackReason =
+                "decoded/effect layers used neutral CPU preparation before Vulkan composition";
         } else {
             result =
                 jcut::standalone_render::renderPreviewFrame(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/image_buffer.h"
 #include "frame_payload_core.h"
 #include "qt_compat.h"  // Qt 6.4/GCC 13 compatibility
 #include <QExplicitlySharedDataPointer>
@@ -8,6 +9,7 @@
 #include <QSize>
 #include <QString>
 #include <cstdint>
+#include <memory>
 
 class QRhiTexture;
 class QRhi;
@@ -81,6 +83,7 @@ public:
     bool hasHardwareFrame() const { return d && d->payload.hasHardwareFrame(); }
     
     QImage cpuImage() const;
+    std::shared_ptr<const jcut::core::ImageBuffer> cpuImageBuffer() const;
     QRhiTexture* gpuTexture() const {
         return d
             ? static_cast<QRhiTexture*>(d->payload.opaqueGpuTexture())

@@ -3611,6 +3611,10 @@ public:
                 request.outputSize, 0, 0, 0, 0)
             : makeSolidImage(
                 request.outputSize, 12, 14, 18);
+        std::vector<ImageBuffer> preparedLayers;
+        if (request.deferLayerComposition) {
+            preparedLayers.push_back(canvas);
+        }
 
         for (const ActiveVisualClip& active : activeClips) {
             const EditorClip& clip = *active.clip;
@@ -3627,8 +3631,12 @@ public:
                     renderTitleClipLayer(
                         request, active);
                 if (!titleLayer.empty()) {
-                    blitImage(
-                        titleLayer, &canvas, 0, 0);
+                    if (request.deferLayerComposition) {
+                        preparedLayers.push_back(titleLayer);
+                    } else {
+                        blitImage(
+                            titleLayer, &canvas, 0, 0);
+                    }
                 }
                 continue;
             } else {
@@ -3806,15 +3814,35 @@ public:
                     result.sourcePath,
                     sourceFrame,
                     decoded.size);
-            blitTransformedImage(
-                decoded, &canvas, offsetX, offsetY, transform);
+            if (request.deferLayerComposition) {
+                ImageBuffer layer = makeSolidImage(
+                    request.outputSize, 0, 0, 0, 0);
+                blitTransformedImage(
+                    decoded,
+                    &layer,
+                    offsetX,
+                    offsetY,
+                    transform);
+                preparedLayers.push_back(std::move(layer));
+            } else {
+                blitTransformedImage(
+                    decoded,
+                    &canvas,
+                    offsetX,
+                    offsetY,
+                    transform);
+            }
         }
 
         const ImageBuffer transcriptOverlay =
             renderTranscriptOverlayLayer(request);
         if (!transcriptOverlay.empty()) {
-            blitImage(
-                transcriptOverlay, &canvas, 0, 0);
+            if (request.deferLayerComposition) {
+                preparedLayers.push_back(transcriptOverlay);
+            } else {
+                blitImage(
+                    transcriptOverlay, &canvas, 0, 0);
+            }
         }
 
         result.success = true;
@@ -3823,7 +3851,12 @@ public:
             : (activeClips.size() == 1
             ? "timeline frame rendered"
             : "timeline layers rendered");
-        result.image = std::move(canvas);
+        if (request.deferLayerComposition) {
+            result.preparedLayers =
+                std::move(preparedLayers);
+        } else {
+            result.image = std::move(canvas);
+        }
         return result;
     }
 

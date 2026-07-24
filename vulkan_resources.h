@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/image_buffer.h"
 #include "cpu_overlay_render_backend.h"
 
 #include <QByteArray>
@@ -39,8 +40,15 @@ public:
 
     bool ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer);
     bool setSampledImage(VkImageView imageView, VkImageLayout imageLayout);
+    bool uploadImageTexture(VkCommandBuffer commandBuffer,
+                            const jcut::core::ImageBuffer& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const render_detail::OverlayImage& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image);
+    bool uploadMaskTexture(VkCommandBuffer commandBuffer,
+                           const jcut::core::ImageBuffer& image);
+    bool uploadMaskTexture(VkCommandBuffer commandBuffer,
+                           const jcut::core::ImageBuffer& image,
+                           const VulkanMaskPreprocessOptions& options);
     bool uploadMaskTexture(VkCommandBuffer commandBuffer, const QImage& image);
     bool uploadMaskTexture(VkCommandBuffer commandBuffer,
                            const QImage& image,

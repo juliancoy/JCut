@@ -205,6 +205,7 @@ public:
     VkImage maskRawImage = VK_NULL_HANDLE;
     VkDeviceMemory maskRawMemory = VK_NULL_HANDLE;
     VkImageView maskRawView = VK_NULL_HANDLE;
+    QSize maskRawSize;
     VkImage maskWorkImage = VK_NULL_HANDLE;
     VkDeviceMemory maskWorkMemory = VK_NULL_HANDLE;
     VkImageView maskWorkView = VK_NULL_HANDLE;
@@ -2394,6 +2395,97 @@ public:
     return true;
   }
 
+  bool ensureMaskRawImage(LayerTextureSlot &slot,
+                          const QSize &size) {
+    if (!size.isValid() || size.isEmpty()) {
+      return false;
+    }
+    if (slot.maskRawImage != VK_NULL_HANDLE &&
+        slot.maskRawMemory != VK_NULL_HANDLE &&
+        slot.maskRawView != VK_NULL_HANDLE &&
+        slot.maskRawSize == size) {
+      return true;
+    }
+    if (vkDeviceWaitIdle(m_device) != VK_SUCCESS) {
+      return false;
+    }
+    if (slot.maskRawView != VK_NULL_HANDLE) {
+      vkDestroyImageView(m_device, slot.maskRawView, nullptr);
+    }
+    if (slot.maskRawImage != VK_NULL_HANDLE) {
+      vkDestroyImage(m_device, slot.maskRawImage, nullptr);
+    }
+    if (slot.maskRawMemory != VK_NULL_HANDLE) {
+      vkFreeMemory(m_device, slot.maskRawMemory, nullptr);
+    }
+    slot.maskRawView = VK_NULL_HANDLE;
+    slot.maskRawImage = VK_NULL_HANDLE;
+    slot.maskRawMemory = VK_NULL_HANDLE;
+    slot.maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    slot.maskRawSize = {};
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent = {
+        static_cast<uint32_t>(size.width()),
+        static_cast<uint32_t>(size.height()), 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                      VK_IMAGE_USAGE_STORAGE_BIT |
+                      VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateImage(
+            m_device, &imageInfo, nullptr,
+            &slot.maskRawImage) != VK_SUCCESS) {
+      return false;
+    }
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(
+        m_device, slot.maskRawImage, &requirements);
+    const uint32_t memoryType =
+        findMemoryType(
+            m_physicalDevice,
+            requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (memoryType == UINT32_MAX) {
+      return false;
+    }
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = memoryType;
+    if (vkAllocateMemory(
+            m_device, &allocation, nullptr,
+            &slot.maskRawMemory) != VK_SUCCESS ||
+        vkBindImageMemory(
+            m_device, slot.maskRawImage,
+            slot.maskRawMemory, 0) != VK_SUCCESS) {
+      return false;
+    }
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = slot.maskRawImage;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = VK_FORMAT_R8G8B8A8_UNORM;
+    view.subresourceRange.aspectMask =
+        VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount = 1;
+    view.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(
+            m_device, &view, nullptr,
+            &slot.maskRawView) != VK_SUCCESS) {
+      return false;
+    }
+    slot.maskRawSize = size;
+    return true;
+  }
+
   bool submitAndWait() {
     if (!submitActiveSlot()) {
       return false;
@@ -3040,6 +3132,17 @@ public:
           if (maskUpload.format() != QImage::Format_RGBA8888) {
             maskUpload = maskUpload.convertToFormat(QImage::Format_RGBA8888);
           }
+          if (static_cast<VkDeviceSize>(maskUpload.sizeInBytes()) >
+              layerImageBytes) {
+            maskUpload = maskUpload.scaled(
+                m_outputSize,
+                Qt::IgnoreAspectRatio,
+                Qt::SmoothTransformation);
+          }
+          if (!ensureMaskRawImage(slot, maskUpload.size())) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
           const VkDeviceSize maskStagingOffset =
               stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
           if (!writeRgbaImageToStagingTopLeft(maskUpload, maskStagingOffset)) {
@@ -3070,7 +3173,9 @@ public:
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
           slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-          if (!preprocessLayerMask(slot, layer)) {
+          LayerInput maskLayer = layer;
+          maskLayer.maskSourceSize = maskUpload.size();
+          if (!preprocessLayerMask(slot, maskLayer)) {
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
           }
@@ -3301,6 +3406,21 @@ public:
       }
       vkCmdEndRenderPass(m_commandBuffer);
       layerIndex += batchCount;
+      if (layerIndex < layers.size()) {
+        if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS ||
+            !submitAndWait()) {
+          return QImage();
+        }
+        vkResetCommandBuffer(m_commandBuffer, 0);
+        VkCommandBufferBeginInfo nextBatchBegin{};
+        nextBatchBegin.sType =
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        if (vkBeginCommandBuffer(
+                m_commandBuffer,
+                &nextBatchBegin) != VK_SUCCESS) {
+          return QImage();
+        }
+      }
     }
 
     if (!preparedTranscriptTextIndices.isEmpty() || !preparedTitle3DIndices.isEmpty() || preparedSpeakerText) {
@@ -5132,17 +5252,32 @@ bool OffscreenVulkanRenderer::renderFrameToOutput(
   frameContext.readbackMs = readbackToCpuImage ? context.readbackMs : nullptr;
   output->cpuImage = renderFrame(frameContext);
   if (!frameContext.externalVulkanOutput) {
-    return readbackToCpuImage
+    const bool rendered = readbackToCpuImage
         ? !output->cpuImage.isNull()
         : d->hasPendingGpuFrame();
+    if (!rendered) {
+      output->failureReason =
+          QStringLiteral("Vulkan compositor produced no frame.");
+    }
+    return rendered;
   }
   QString error;
   if (!lastRenderedVulkanFrame(&output->vulkanFrame, &error)) {
     output->vulkanFrame.valid = false;
-    return readbackToCpuImage ? !output->cpuImage.isNull() : false;
+    output->failureReason = error.isEmpty()
+        ? QStringLiteral("Vulkan compositor produced no external frame.")
+        : error;
+    return false;
   }
-  return readbackToCpuImage ? !output->cpuImage.isNull()
-                            : output->vulkanFrame.valid;
+  const bool rendered = readbackToCpuImage
+      ? !output->cpuImage.isNull()
+      : output->vulkanFrame.valid;
+  if (!rendered) {
+    output->failureReason = readbackToCpuImage
+        ? QStringLiteral("Vulkan compositor readback produced no CPU image.")
+        : QStringLiteral("Vulkan compositor produced an invalid external frame.");
+  }
+  return rendered;
 }
 
 bool OffscreenVulkanRenderer::convertLastFrameToNv12(AVFrame *frame,

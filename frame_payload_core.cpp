@@ -219,6 +219,11 @@ const void* FramePayloadCore::cpuPayload() const
     return m_cpuPayload.get();
 }
 
+FramePayloadCore::OpaqueCpuPayload FramePayloadCore::cpuPayloadShared() const
+{
+    return m_cpuPayload;
+}
+
 bool FramePayloadCore::hasOpaqueGpuTexture() const
 {
     return m_gpuTexture != nullptr;

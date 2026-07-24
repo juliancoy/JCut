@@ -54,6 +54,7 @@ public:
 
     [[nodiscard]] bool hasCpuPayload() const;
     [[nodiscard]] const void* cpuPayload() const;
+    [[nodiscard]] OpaqueCpuPayload cpuPayloadShared() const;
     [[nodiscard]] bool hasOpaqueGpuTexture() const;
     [[nodiscard]] void* opaqueGpuTexture() const;
     [[nodiscard]] bool adapterReportsGpuTextureOwnership() const;

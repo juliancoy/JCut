@@ -222,7 +222,9 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
         ? !previewFrame.cpuImage.isNull()
         : previewFrame.vulkanFrame.valid;
     if (!renderedOk || !hasRequestedOutput) {
-        result.message = "failed to render preview frame with Vulkan renderer";
+        result.message = previewFrame.failureReason.isEmpty()
+            ? "failed to render preview frame with Vulkan renderer"
+            : previewFrame.failureReason.toStdString();
         return result;
     }
 

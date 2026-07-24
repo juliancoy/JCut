@@ -430,6 +430,7 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/scrfd_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_infer_heuristic.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/neutral_composite.comp
 )
 set(JCUT_VULKAN_SHADER_OUTPUTS "")
 if(GLSLANG_VALIDATOR)
@@ -667,6 +668,8 @@ target_compile_definitions(editor_core
         QT_DEPRECATED_WARNINGS
         JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
         JCUT_HAVE_RUBBERBAND=${JCUT_HAVE_RUBBERBAND}
+    PRIVATE
+        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
 )
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(editor_core jcut_vulkan_shaders)
@@ -874,6 +877,20 @@ set(EDITOR_WIDGET_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_overlay.cpp
 )
 
+add_library(jcut_image_decode_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/image_file_decoder.cpp
+)
+set_target_properties(jcut_image_decode_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_image_decode_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(editor_core PRIVATE jcut_image_decode_core)
+
 add_library(jcut_runtime_support STATIC ${JCUT_RUNTIME_SUPPORT_SOURCES})
 
 target_include_directories(jcut_runtime_support
@@ -889,6 +906,7 @@ jcut_use_qt_widgets_headers_only(jcut_runtime_support)
 target_link_libraries(jcut_runtime_support
     PRIVATE
         jcut_preview_decode_runtime
+        jcut_image_decode_core
     PUBLIC
         jcut_decoder_policy_core
         jcut_ffmpeg_hardware_device_core
@@ -1143,6 +1161,7 @@ target_link_libraries(jcut_imgui_runtime
 
 add_library(jcut_imgui_gpu_renderer SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_gpu_renderer_plugin.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_compositor_core.cpp
 )
 target_include_directories(jcut_imgui_gpu_renderer
     PRIVATE
@@ -1151,10 +1170,17 @@ target_include_directories(jcut_imgui_gpu_renderer
 )
 target_link_libraries(jcut_imgui_gpu_renderer
     PRIVATE
-        jcut_editor_runtime
-        Qt6::Core
-        Qt6::Gui
+        jcut_imgui_standalone_runtime
+        Vulkan::Vulkan
 )
+target_compile_definitions(jcut_imgui_gpu_renderer PRIVATE
+    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(
+        jcut_imgui_gpu_renderer
+        jcut_vulkan_shaders)
+endif()
 set_target_properties(jcut_imgui_gpu_renderer PROPERTIES
     AUTOMOC OFF
     AUTORCC OFF

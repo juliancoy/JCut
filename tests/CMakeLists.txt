@@ -606,6 +606,17 @@ set_tests_properties(test_imgui_binary_no_qt PROPERTIES
 )
 
 add_test(
+    NAME test_imgui_renderer_plugin_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            $<TARGET_FILE:jcut_imgui_gpu_renderer>
+)
+set_tests_properties(test_imgui_renderer_plugin_no_qt PROPERTIES
+    LABELS "imgui;linkage;logic;vulkan"
+    SKIP_RETURN_CODE 77
+)
+
+add_test(
     NAME test_imgui_binary_no_qt_widgets
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py

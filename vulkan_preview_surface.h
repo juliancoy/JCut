@@ -172,6 +172,7 @@ private:
     bool visibleCpuUploadFallbackEnabled() const;
     bool visibleDecodeRequiresDirectVulkanPayload() const;
     void registerVisibleClips();
+    void prefetchMaskBuffersForPlayback();
     void requestFramesForCurrentPosition();
     void refreshVulkanFrameStatuses();
     bool loadedFrameAffectsCurrentView(const QString& clipId, int64_t frame) const;
@@ -270,6 +271,7 @@ private:
     int m_frameStatusHardwareCount = 0;
     int m_frameStatusCpuCount = 0;
     QHash<QString, editor::FrameHandle> m_lastPresentedFrameByClip;
+    QSet<QString> m_maskPrefetchWindowKeys;
     int64_t m_lastVisibleRequestFrame = -1;
     QString m_lastVisibleRequestClipId;
     QString m_lastVisibleRequestDecision;

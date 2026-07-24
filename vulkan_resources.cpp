@@ -1445,6 +1445,81 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
     return true;
 }
 
+bool VulkanResources::uploadImageTexture(
+    VkCommandBuffer commandBuffer,
+    const jcut::core::ImageBuffer& image)
+{
+    if (!m_initialized || !commandBuffer || image.empty() ||
+        image.format != jcut::core::PixelFormat::Rgba8) {
+        return false;
+    }
+    const int packedStride = image.size.width * 4;
+    if (image.strideBytes < packedStride) {
+        return false;
+    }
+    const QSize size(image.size.width, image.size.height);
+    std::vector<std::uint8_t> packed;
+    const std::uint8_t* pixels = image.bytes.data();
+    std::size_t byteCount =
+        static_cast<std::size_t>(packedStride) *
+        static_cast<std::size_t>(image.size.height);
+    if (image.strideBytes != packedStride) {
+        packed.resize(byteCount);
+        for (int y = 0; y < image.size.height; ++y) {
+            std::memcpy(
+                packed.data() + static_cast<std::size_t>(y) * packedStride,
+                image.bytes.data() +
+                    static_cast<std::size_t>(y) * image.strideBytes,
+                static_cast<std::size_t>(packedStride));
+        }
+        pixels = packed.data();
+    }
+    if (!ensureTextureSize(size)) {
+        return false;
+    }
+
+    VkDeviceSize stagingOffset = 0;
+    if (!writeStagingUpload(
+            pixels, static_cast<VkDeviceSize>(byteCount), &stagingOffset)) {
+        return false;
+    }
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0,
+                           VK_ACCESS_TRANSFER_WRITE_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = stagingOffset;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {static_cast<uint32_t>(size.width()),
+                          static_cast<uint32_t>(size.height()),
+                          1};
+    vkCmdCopyBufferToImage(commandBuffer,
+                          m_stagingBuffer,
+                          m_textureImage,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          1,
+                          &region);
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_SHADER_READ_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_textureUploaded = true;
+    setSampledImage(m_textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return true;
+}
+
 bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image)
 {
     if (!m_initialized || !commandBuffer || image.isNull()) {
@@ -1583,12 +1658,45 @@ bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer,
                                         const QImage& image,
                                         const VulkanMaskPreprocessOptions& options)
 {
-    if (!m_initialized || !commandBuffer || image.isNull()) {
+    if (image.isNull()) {
         return false;
     }
+    const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    if (rgba.isNull()) {
+        return false;
+    }
+    jcut::core::ImageBuffer buffer;
+    buffer.size = {rgba.width(), rgba.height()};
+    buffer.strideBytes = rgba.bytesPerLine();
+    buffer.bytes.assign(
+        rgba.constBits(),
+        rgba.constBits() + static_cast<std::size_t>(rgba.sizeInBytes()));
+    return uploadMaskTexture(commandBuffer, buffer, options);
+}
+
+bool VulkanResources::uploadMaskTexture(
+    VkCommandBuffer commandBuffer,
+    const jcut::core::ImageBuffer& image)
+{
+    return uploadMaskTexture(
+        commandBuffer, image, VulkanMaskPreprocessOptions{});
+}
+
+bool VulkanResources::uploadMaskTexture(
+    VkCommandBuffer commandBuffer,
+    const jcut::core::ImageBuffer& image,
+    const VulkanMaskPreprocessOptions& options)
+{
+    if (!m_initialized || !commandBuffer || image.empty() ||
+        image.format != jcut::core::PixelFormat::Rgba8 ||
+        image.strideBytes < image.size.width * 4) {
+        return false;
+    }
+    const QSize rawSize(image.size.width, image.size.height);
     const QSize requestedOutputSize =
-        options.outputSize.isValid() ? options.outputSize : image.size();
-    const qint64 sourceCacheKey = image.cacheKey();
+        options.outputSize.isValid() ? options.outputSize : rawSize;
+    const qint64 sourceCacheKey = static_cast<qint64>(
+        reinterpret_cast<std::uintptr_t>(image.bytes.data()));
     if (sourceCacheKey != 0 && sourceCacheKey == m_uploadedMaskCacheKey &&
         requestedOutputSize == m_uploadedMaskOutputSize &&
         options.invert == m_uploadedMaskInvert &&
@@ -1598,24 +1706,30 @@ bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer,
         m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         return true;
     }
-    const QImage gray = image.convertToFormat(QImage::Format_Grayscale8);
-    if (gray.isNull() || gray.width() <= 0 || gray.height() <= 0) {
-        return false;
-    }
-    QImage rgba(gray.size(), QImage::Format_RGBA8888);
-    for (int y = 0; y < gray.height(); ++y) {
-        const uchar* src = gray.constScanLine(y);
-        uchar* dst = rgba.scanLine(y);
-        for (int x = 0; x < gray.width(); ++x) {
-            const uchar v = src[x];
-            dst[x * 4 + 0] = v;
-            dst[x * 4 + 1] = v;
-            dst[x * 4 + 2] = v;
+    std::vector<std::uint8_t> rgba(
+        static_cast<std::size_t>(rawSize.width()) *
+        static_cast<std::size_t>(rawSize.height()) * 4u);
+    for (int y = 0; y < rawSize.height(); ++y) {
+        const std::uint8_t* src =
+            image.bytes.data() +
+            static_cast<std::size_t>(y) * image.strideBytes;
+        std::uint8_t* dst =
+            rgba.data() +
+            static_cast<std::size_t>(y) * rawSize.width() * 4u;
+        for (int x = 0; x < rawSize.width(); ++x) {
+            const unsigned int value =
+                77u * src[x * 4 + 0] +
+                150u * src[x * 4 + 1] +
+                29u * src[x * 4 + 2];
+            const std::uint8_t gray =
+                static_cast<std::uint8_t>(value >> 8);
+            dst[x * 4 + 0] = gray;
+            dst[x * 4 + 1] = gray;
+            dst[x * 4 + 2] = gray;
             dst[x * 4 + 3] = 255;
         }
     }
 
-    const QSize rawSize = rgba.size();
     const QSize outputSize = options.outputSize.isValid() && options.outputSize.width() > 0 && options.outputSize.height() > 0
         ? options.outputSize
         : rawSize;
@@ -1623,9 +1737,9 @@ bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer,
         return false;
     }
 
-    const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgba.sizeInBytes());
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgba.size());
     VkDeviceSize stagingOffset = 0;
-    if (!writeStagingUpload(rgba.constBits(), bytes, &stagingOffset)) {
+    if (!writeStagingUpload(rgba.data(), bytes, &stagingOffset)) {
         return false;
     }
 

@@ -30,6 +30,7 @@ private slots:
   void maskChildrenUseExplicitOwners();
   void descriptorUpdatesFollowAcquiredSwapchainOwnership();
   void maskChildrenFailClosedWithoutAMatte();
+  void maskSidecarsPrefetchWithPlaybackWindow();
   void directPreviewRequiresHardwarePayloadsFromCache();
   void handoffPipelineRejectsCpuOnlyFrames();
   void strictDisplayabilityDoesNotAcceptCpuFallback();
@@ -239,11 +240,11 @@ void TestDirectVulkanHandoffPipelineContract::
            "Mask Matte correction polygons must be applied to the preview matte");
   const QString previewState =
       readSourceFile(QStringLiteral("preview_interaction_state.h"));
-  QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskImage")) &&
+  QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskBuffer")) &&
                previewState.contains(QStringLiteral(
                    "frameCrossfadeMaskTextureEnabled")) &&
                previewSurface.contains(QStringLiteral(
-                   "markerStatus.frameCrossfadeMaskImage")) &&
+                   "markerStatus.frameCrossfadeMaskBuffer")) &&
                previewSurface.contains(QStringLiteral(
                    "markerStatus.frameCrossfadePresentedSourceFrame")),
            "masked speech-boundary crossfades must resolve the matte for the "
@@ -251,7 +252,7 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(source.contains(QStringLiteral(
                "frameCrossfadeMaskUploadResults.insert")) &&
                source.contains(QStringLiteral(
-                   "status.frameCrossfadeMaskImage")) &&
+                   "status.frameCrossfadeMaskBuffer")) &&
                source.contains(QStringLiteral("frameCrossfadeMaskReady")) &&
                source.contains(QStringLiteral(
                    "!status->maskTextureEnabled")),
@@ -270,6 +271,35 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(trackPreviewSources.contains(QStringLiteral(
                "trackObj[QStringLiteral(\"gradingPreviewEnabled\")]")),
            "per-track grading Preview state must persist with the timeline");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    maskSidecarsPrefetchWithPlaybackWindow() {
+  const QString surface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString effects =
+      readSourceFile(QStringLiteral("editor_shared_effects.cpp"));
+  QVERIFY2(!surface.isEmpty() && !effects.isEmpty(),
+           "mask playback sources must be readable");
+  QVERIFY2(surface.contains(QStringLiteral(
+               "prefetchMaskBuffersForPlayback();")) &&
+               surface.contains(QStringLiteral(
+                   "effectivePlaybackLookaheadFrames()")) &&
+               surface.contains(QStringLiteral(
+                   "rawClipMaskBuffer(clip, qMax<int64_t>(0, sourceFrame))")),
+           "mask-sidecar decoding must follow the configured video playback "
+           "window instead of starting only after a frame is presented");
+  QVERIFY2(surface.contains(QStringLiteral(
+               "m_maskPrefetchWindowKeys.contains(requestKey)")),
+           "the sliding mask window must not repeat filesystem work for frames "
+           "that remain inside the playback lookahead");
+  QVERIFY2(effects.contains(QStringLiteral(
+               "std::thread::hardware_concurrency()")) &&
+               effects.contains(QStringLiteral("workers_.emplace_back")),
+           "mask decoding must scale across a bounded architecture-neutral "
+           "worker pool rather than serialize every active matte");
+  QVERIFY2(!surface.contains(QStringLiteral("m_lastMaskBuffer")),
+           "preview must not pair a stale matte with a newer presented frame");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -1004,7 +1034,7 @@ void TestDirectVulkanHandoffPipelineContract::
            "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(previewSurface.contains(QStringLiteral("const int64_t maskSourceFrame")) &&
                previewSurface.contains(QStringLiteral("qMax<int64_t>(0, status.presentedSourceFrame)")) &&
-               previewSurface.contains(QStringLiteral("rawClipMaskImage(clip, maskSourceFrame)")) &&
+               previewSurface.contains(QStringLiteral("rawClipMaskBuffer(clip, maskSourceFrame)")) &&
                !previewSurface.contains(QStringLiteral("maskFrameMatchesPresentedFrame")),
            "live Vulkan masks and mask grading must sample the mask for the "
            "presented video frame, including playback lookahead/nearby frames");

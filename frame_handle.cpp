@@ -1,6 +1,7 @@
 #include "frame_handle.h"
 
 #include <chrono>
+#include <cstring>
 #include <memory>
 
 namespace {
@@ -38,9 +39,23 @@ FrameHandle FrameHandle::createCpuFrame(const QImage& image, int64_t frameNum, c
     handle.d->payload.setIdentity(frameNum, path.toStdString(), currentTimestampMs());
     handle.d->payload.setSize({image.width(), image.height()});
     if (!image.isNull()) {
+        const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+        auto buffer = std::make_shared<jcut::core::ImageBuffer>();
+        buffer->size = {rgba.width(), rgba.height()};
+        buffer->strideBytes = rgba.width() * 4;
+        buffer->bytes.resize(
+            static_cast<std::size_t>(buffer->strideBytes) *
+            static_cast<std::size_t>(rgba.height()));
+        for (int y = 0; y < rgba.height(); ++y) {
+            std::memcpy(
+                buffer->bytes.data() +
+                    static_cast<std::size_t>(y) * buffer->strideBytes,
+                rgba.constScanLine(y),
+                static_cast<std::size_t>(buffer->strideBytes));
+        }
         handle.d->payload.setCpuPayload(
-            std::make_shared<QImage>(image),
-            static_cast<std::size_t>(image.sizeInBytes()));
+            buffer,
+            buffer->bytes.size());
     }
     return handle;
 }
@@ -70,10 +85,32 @@ bool FrameHandle::operator==(const FrameHandle& other) const {
 }
 
 QImage FrameHandle::cpuImage() const {
-    if (!d || !d->payload.hasCpuPayload()) {
+    const auto buffer = cpuImageBuffer();
+    if (!buffer || buffer->empty()) {
         return QImage();
     }
-    return *static_cast<const QImage*>(d->payload.cpuPayload());
+    auto* retained =
+        new std::shared_ptr<const jcut::core::ImageBuffer>(buffer);
+    return QImage(
+        buffer->bytes.data(),
+        buffer->size.width,
+        buffer->size.height,
+        buffer->strideBytes,
+        QImage::Format_RGBA8888,
+        [](void* value) {
+            delete static_cast<
+                std::shared_ptr<const jcut::core::ImageBuffer>*>(value);
+        },
+        retained);
+}
+
+std::shared_ptr<const jcut::core::ImageBuffer>
+FrameHandle::cpuImageBuffer() const {
+    if (!d || !d->payload.hasCpuPayload()) {
+        return {};
+    }
+    return std::static_pointer_cast<const jcut::core::ImageBuffer>(
+        d->payload.cpuPayloadShared());
 }
 
 size_t FrameHandle::cpuMemoryUsage() const {

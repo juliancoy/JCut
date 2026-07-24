@@ -137,7 +137,7 @@ bool RendererBridge::initialize(
         return false;
     }
     impl_->currentStatus =
-        "shared Qt Vulkan renderer plugin is active";
+        "Qt-free neutral Vulkan renderer plugin is active";
     return true;
 }
 
@@ -180,10 +180,9 @@ bool RendererBridge::renderPreview(
         }
         return false;
     }
-    const std::string json = toJson(document).dump();
     std::array<char, 2048> error{};
     const bool rendered = impl_->renderPreviewFunction(
-        json.c_str(),
+        &document,
         rootDirectory.c_str(),
         outputSize.width,
         outputSize.height,

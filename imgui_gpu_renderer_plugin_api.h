@@ -2,6 +2,7 @@
 
 #include "core/image_buffer.h"
 #include "core/offscreen_vulkan_frame.h"
+#include "editor_document_core.h"
 #include "render_contract_types.h"
 
 #include <cstddef>
@@ -9,7 +10,7 @@
 
 namespace jcut::imgui_gpu {
 
-inline constexpr std::uint32_t kPluginApiVersion = 2;
+inline constexpr std::uint32_t kPluginApiVersion = 3;
 
 using ExportProgressCallback = bool (*)(
     void* userData,
@@ -21,7 +22,7 @@ using InitializeFunction = bool (*)(
     std::size_t errorBufferSize);
 using ShutdownFunction = void (*)();
 using RenderPreviewFunction = bool (*)(
-    const char* documentJson,
+    const EditorDocumentCore* document,
     const char* rootDirectory,
     int outputWidth,
     int outputHeight,
