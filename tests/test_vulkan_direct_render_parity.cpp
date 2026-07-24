@@ -481,10 +481,10 @@ private slots:
         QVERIFY2(source.contains(QStringLiteral("foregroundEffectClip.effectPreset = ClipEffectPreset::None")) &&
                      source.contains(QStringLiteral("foregroundEffectClip.maskRepeatEnabled = false")),
                  "A clip used as the progressive stretch source must not also run generated foreground effects.");
-        QVERIFY2(source.contains(QStringLiteral("(progressiveEdgeStretchEffect || !backgroundFilled)")),
-                 "Clip-basis progressive stretch must not be suppressed by an earlier global background fill.");
-        QVERIFY2(source.contains(QStringLiteral("if (!progressiveStretchOwnsClipBackground)")),
-                 "Only global background fills should consume the once-per-frame background fill guard.");
+        QVERIFY2(source.contains(QStringLiteral("(clipOwnedEdgeFill || !backgroundFilled)")),
+                 "Clip-owned Edge Fill must not be suppressed by an earlier background layer.");
+        QVERIFY2(source.contains(QStringLiteral("if (!clipOwnedEdgeFill)")),
+                 "Only non-clip background fills should consume the once-per-frame background fill guard.");
         QVERIFY2(source.contains(QStringLiteral("progressiveRenderSpaceFill")),
                  "Progressive edge stretch must use render/output-space shader coordinates in preview.");
         QVERIFY2(source.contains(QStringLiteral("render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks)")),
@@ -538,10 +538,10 @@ private slots:
                  "Offscreen progressive stretch source clips must not also run generated foreground effects.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("if (layer.maskTextureEnabled &&")),
                  "Offscreen renderer must retain mask foreground layers during progressive edge stretch.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("(progressiveEdgeStretchEffect || !backgroundFilled)")),
-                 "Offscreen clip-basis progressive stretch must not be suppressed by an earlier global background fill.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("if (!progressiveStretchOwnsClipBackground)")),
-                 "Offscreen global background fill guard must not consume clip-owned progressive stretch effects.");
+        QVERIFY2(offscreenSource.contains(QStringLiteral("(clipOwnedEdgeFill || !backgroundFilled)")),
+                 "Offscreen clip-owned Edge Fill must not be suppressed by an earlier background layer.");
+        QVERIFY2(offscreenSource.contains(QStringLiteral("if (!clipOwnedEdgeFill)")),
+                 "Offscreen background fill guard must not consume clip-owned Edge Fill effects.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")) &&
                      offscreenSource.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
                  "Offscreen renderer must source progressive edge parameters from the selected clip effect.");
@@ -550,9 +550,10 @@ private slots:
         QVERIFY2(editor.open(QIODevice::ReadOnly), "Unable to open editor source.");
         const QString editorSource = QString::fromUtf8(editor.readAll());
         QVERIFY2(editorSource.contains(QStringLiteral("migrateLegacyBackgroundProgressiveStretchToClipEffect")) &&
-                     editorSource.contains(QStringLiteral("target.effectPreset = ClipEffectPreset::ProgressiveEdgeStretch")) &&
+                     editorSource.contains(QStringLiteral("clip.edgeFillEnabled = true")) &&
+                     editorSource.contains(QStringLiteral("clip.edgeFillProgressive = progressive")) &&
                      editorSource.contains(QStringLiteral("backgroundFillEdgeProgressive = false")),
-                 "Legacy background progressive state must be normalized into the clip-owned effect.");
+                 "Legacy background progressive state must be normalized into clip-owned Edge Fill.");
     }
 
     void vulkanShaderBuildDoesNotDependOnlyOnOutputTimestamps()

@@ -133,6 +133,13 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskRepeatEnabled = true;
     clip.maskRepeatDeltaX = 120.0;
     clip.maskRepeatDeltaY = -15.0;
+    clip.edgeFillEnabled = true;
+    clip.edgeFillProgressive = true;
+    clip.edgeFillPixels = 24;
+    clip.edgeFillPower = 3.25;
+    clip.edgeFillOpacity = 0.72;
+    clip.edgeFillBrightness = -0.15;
+    clip.edgeFillSaturation = 1.35;
     clip.maskFeatherGamma = 2.4;
     clip.maskFeatherFalloff = 3;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
@@ -161,6 +168,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskFeatherFalloff")).toInt(), 3);
+    QCOMPARE(json.value(QStringLiteral("edgeFillEnabled")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("edgeFillProgressive")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("edgeFillPixels")).toInt(), 24);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaX")).toDouble() - 120.0) < 0.000001);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaY")).toDouble() + 15.0) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), QStringLiteral("news_logo_ticker"));
@@ -180,6 +190,13 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(loaded.maskFeatherGamma - 2.4) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);
+    QCOMPARE(loaded.edgeFillEnabled, true);
+    QCOMPARE(loaded.edgeFillProgressive, true);
+    QCOMPARE(loaded.edgeFillPixels, 24);
+    QVERIFY(std::abs(loaded.edgeFillPower - 3.25) < 0.000001);
+    QVERIFY(std::abs(loaded.edgeFillOpacity - 0.72) < 0.000001);
+    QVERIFY(std::abs(loaded.edgeFillBrightness + 0.15) < 0.000001);
+    QVERIFY(std::abs(loaded.edgeFillSaturation - 1.35) < 0.000001);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::NewsLogoTicker);
     QCOMPARE(loaded.effectRows, 32);
     QVERIFY(std::abs(loaded.effectSpeed - 1.75) < 0.000001);
@@ -2735,8 +2752,13 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
     QCOMPARE(result.insertedCount, 2);
     QCOMPARE(result.firstInsertedClipId, QStringLiteral("title-a"));
     QCOMPARE(tracks.size(), 3);
-    QCOMPARE(tracks.at(1).name, QStringLiteral("Transcript • Speaker Introductions"));
-    QCOMPARE(tracks.at(2).name, QStringLiteral("Transcript • Speaker Introductions 2"));
+    QCOMPARE(tracks.at(1).name, QStringLiteral("Speaker Titles"));
+    QCOMPARE(tracks.at(2).name,
+             QStringLiteral("↳ Transcript • Speaker Introductions"));
+    QVERIFY(tracks.at(2).generatedChildTrack);
+    QCOMPARE(tracks.at(2).parentClipId, source.id);
+    QCOMPARE(tracks.at(2).childClipId,
+             QStringLiteral("title-a"));
 
     int sourceTitleCount = 0;
     int titleATrack = -1;
@@ -2758,7 +2780,7 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
     }
     QCOMPARE(sourceTitleCount, 2);
     QVERIFY(keptUnrelated);
-    QCOMPARE(titleATrack, 1);
+    QCOMPARE(titleATrack, 2);
     QCOMPARE(titleBTrack, 2);
 }
 

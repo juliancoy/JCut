@@ -175,44 +175,6 @@ QWidget *InspectorPane::buildOutputTab()
                         "border: 1px solid #2e3b4a; border-radius: 4px; padding: 4px 8px; }"));
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
 
-    m_backgroundFillEffectCombo = new QComboBox(page);
-    m_backgroundFillEffectCombo->addItem(QStringLiteral("Edge Stretch"),
-                                         backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
-    m_backgroundFillEffectCombo->addItem(QStringLiteral("Mirror"),
-                                         backgroundFillEffectToString(BackgroundFillEffect::Mirror));
-    m_backgroundFillEffectCombo->addItem(QStringLiteral("Blur Cover"),
-                                         backgroundFillEffectToString(BackgroundFillEffect::BlurCover));
-    m_backgroundFillEffectCombo->setCurrentIndex(0);
-    m_backgroundFillEffectCombo->setToolTip(QStringLiteral("Background fill effect for preview and render"));
-    form->addRow(QStringLiteral("Fill Effect"), m_backgroundFillEffectCombo);
-
-    m_backgroundFillOpacitySpin = new QDoubleSpinBox(page);
-    m_backgroundFillOpacitySpin->setRange(0.0, 100.0);
-    m_backgroundFillOpacitySpin->setDecimals(0);
-    m_backgroundFillOpacitySpin->setSingleStep(5.0);
-    m_backgroundFillOpacitySpin->setSuffix(QStringLiteral("%"));
-    m_backgroundFillOpacitySpin->setValue(100.0);
-    m_backgroundFillOpacitySpin->setToolTip(QStringLiteral("Opacity for the background fill effect"));
-    form->addRow(QStringLiteral("Fill Opacity"), m_backgroundFillOpacitySpin);
-
-    m_backgroundFillBrightnessSpin = new QDoubleSpinBox(page);
-    m_backgroundFillBrightnessSpin->setRange(-100.0, 100.0);
-    m_backgroundFillBrightnessSpin->setDecimals(0);
-    m_backgroundFillBrightnessSpin->setSingleStep(5.0);
-    m_backgroundFillBrightnessSpin->setSuffix(QStringLiteral("%"));
-    m_backgroundFillBrightnessSpin->setValue(0.0);
-    m_backgroundFillBrightnessSpin->setToolTip(QStringLiteral("Brightness adjustment for the background fill effect"));
-    form->addRow(QStringLiteral("Fill Brightness"), m_backgroundFillBrightnessSpin);
-
-    m_backgroundFillSaturationSpin = new QDoubleSpinBox(page);
-    m_backgroundFillSaturationSpin->setRange(0.0, 300.0);
-    m_backgroundFillSaturationSpin->setDecimals(0);
-    m_backgroundFillSaturationSpin->setSingleStep(5.0);
-    m_backgroundFillSaturationSpin->setSuffix(QStringLiteral("%"));
-    m_backgroundFillSaturationSpin->setValue(100.0);
-    m_backgroundFillSaturationSpin->setToolTip(QStringLiteral("Saturation multiplier for the background fill effect"));
-    form->addRow(QStringLiteral("Fill Saturation"), m_backgroundFillSaturationSpin);
-
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
     auto rangeSection = createDisclosureSection(page, QStringLiteral("Export Range"), false);

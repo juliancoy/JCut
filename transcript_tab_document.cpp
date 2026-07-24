@@ -1344,12 +1344,19 @@ void TranscriptTab::persistRenderOrderFromTable()
         }
         const int wordId = sourceItem->data(Qt::UserRole + 16).toInt();
         if (wordId >= 0) {
-            references.push_back({
-                sourceItem->data(Qt::UserRole + 5).toInt(),
-                sourceItem->data(Qt::UserRole + 6).toInt(),
-                sourceItem->data(Qt::UserRole + 13).toInt(),
-                sourceItem->data(Qt::UserRole + 14).toInt(),
-                sourceItem->data(Qt::UserRole + 15).toInt()});
+            jcut::TranscriptWordRef reference;
+            reference.documentWordId = wordId;
+            reference.segmentIndex =
+                sourceItem->data(Qt::UserRole + 5).toInt();
+            reference.wordIndex =
+                sourceItem->data(Qt::UserRole + 6).toInt();
+            reference.originalSegmentIndex =
+                sourceItem->data(Qt::UserRole + 13).toInt();
+            reference.originalWordIndex =
+                sourceItem->data(Qt::UserRole + 14).toInt();
+            reference.renderOrder =
+                sourceItem->data(Qt::UserRole + 15).toInt();
+            references.push_back(reference);
         }
     }
     if (references.empty()) {

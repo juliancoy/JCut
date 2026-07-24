@@ -76,7 +76,10 @@ If your shell environment injects conflicting snap libraries, use:
 Create a relocatable AppDir and compressed distribution archive with:
 
 ```bash
-./scripts/package_linux.sh
+JCUT_COMMERCIAL_QT_CONFIRMED=1 \
+JCUT_COMMERCIAL_RUBBERBAND_CONFIRMED=1 \
+./scripts/package_linux.sh --version 1.0.0 \
+  --qt-license commercial --rubberband-license commercial
 ```
 
 The outputs are written to `dist/`:
@@ -95,7 +98,19 @@ produce release artifacts on the oldest Linux distribution supported by JCut.
 For packaging-only iteration after a successful build, use:
 
 ```bash
-./scripts/package_linux.sh --skip-build
+JCUT_COMMERCIAL_QT_CONFIRMED=1 \
+JCUT_COMMERCIAL_RUBBERBAND_CONFIRMED=1 \
+./scripts/package_linux.sh --skip-build --version 1.0.0 \
+  --qt-license commercial --rubberband-license commercial
+```
+
+An LGPL Qt release must instead provide a distributor-controlled corresponding
+source location:
+
+```bash
+./scripts/package_linux.sh --version 1.0.0 --qt-license lgpl \
+  --rubberband-license gpl \
+  --qt-source-url https://downloads.example.com/jcut/sources/qt-6.8.3.tar.xz
 ```
 
 ## Tests

@@ -1633,9 +1633,9 @@ ImageBuffer renderVulkan3DSynthEffect(const ImageBuffer& source,
     return result;
 }
 
-ImageBuffer renderProgressiveEdgeStretchEffect(const ImageBuffer& source,
-                                               const EditorClip& clip,
-                                               SizeI outputSize)
+ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
+                                    const EditorClip& clip,
+                                    SizeI outputSize)
 {
     ImageBuffer result = makeSolidImage(outputSize, 0, 0, 0);
     std::fill(result.bytes.begin(), result.bytes.end(), 0);
@@ -1646,9 +1646,27 @@ ImageBuffer renderProgressiveEdgeStretchEffect(const ImageBuffer& source,
     const double centerY = outputSize.height * 0.5;
     const double halfWidth = source.size.width * 0.5;
     const double halfHeight = source.size.height * 0.5;
+    const bool legacyProgressivePreset =
+        clip.effectPreset == "progressive_edge_stretch";
+    const bool progressive =
+        legacyProgressivePreset || clip.edgeFillProgressive;
     const double bandPixels = std::clamp(
-        static_cast<double>(clip.effectRows), 1.0, 512.0);
-    const double power = std::max(0.25, clip.effectScale);
+        static_cast<double>(legacyProgressivePreset
+                                ? clip.effectRows
+                                : clip.edgeFillPixels),
+        1.0, 512.0);
+    const double power = std::max(
+        0.25,
+        legacyProgressivePreset ? clip.effectScale : clip.edgeFillPower);
+    const double fillOpacity = legacyProgressivePreset
+        ? 1.0
+        : std::clamp(clip.edgeFillOpacity, 0.0, 1.0);
+    const double fillBrightness = legacyProgressivePreset
+        ? 0.0
+        : std::clamp(clip.edgeFillBrightness, -1.0, 1.0);
+    const double fillSaturation = legacyProgressivePreset
+        ? 1.0
+        : std::clamp(clip.edgeFillSaturation, 0.0, 3.0);
     for (int y = 0; y < outputSize.height; ++y) {
         for (int x = 0; x < outputSize.width; ++x) {
             if (x + 0.5 >= left && x + 0.5 <= left + source.size.width &&
@@ -1674,7 +1692,7 @@ ImageBuffer renderProgressiveEdgeStretchEffect(const ImageBuffer& source,
                 (1.0 - mediaScale) /
                     std::max(0.0001, canvasScale - mediaScale),
                 0.0, 1.0);
-            const double scan = std::pow(fill, power);
+            const double scan = progressive ? std::pow(fill, power) : 0.0;
             double sourceX = edgeX - left;
             double sourceY = edgeY - top;
             if (ratioX >= ratioY) {
@@ -1692,11 +1710,17 @@ ImageBuffer renderProgressiveEdgeStretchEffect(const ImageBuffer& source,
                 (sourceY + 0.5) / source.size.height);
             const std::size_t offset = static_cast<std::size_t>(
                 y * result.strideBytes + x * 4);
+            const double luma =
+                color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
             for (int channel = 0; channel < 3; ++channel) {
+                const double adjusted =
+                    (luma + (color[channel] - luma) * fillSaturation) +
+                    fillBrightness;
                 result.bytes[offset + channel] = static_cast<std::uint8_t>(
-                    std::clamp(std::lround(color[channel] * 255.0), 0L, 255L));
+                    std::clamp(std::lround(adjusted * 255.0), 0L, 255L));
             }
-            result.bytes[offset + 3] = 255;
+            result.bytes[offset + 3] = static_cast<std::uint8_t>(
+                std::clamp(std::lround(fillOpacity * 255.0), 0L, 255L));
         }
     }
     blitImage(source, &result,
@@ -3637,9 +3661,11 @@ public:
                        clip.effectPreset == "vulkan_3d_synth") {
                 decoded = renderVulkan3DSynthEffect(
                     decoded, clip, effectFrame, request.outputSize);
-            } else if (clip.mediaKind != "title" &&
-                       clip.effectPreset == "progressive_edge_stretch") {
-                decoded = renderProgressiveEdgeStretchEffect(
+            }
+            if (clip.mediaKind != "title" &&
+                (clip.edgeFillEnabled ||
+                 clip.effectPreset == "progressive_edge_stretch")) {
+                decoded = renderEdgeStretchEffect(
                     decoded, clip, request.outputSize);
             }
             const int offsetX = clip.mediaKind == "title" ? 0 :

@@ -551,13 +551,9 @@ int AsyncDecoder::laneIndexForRequest(const QString& path,
         return static_cast<int>(baseHash % laneCount);
     }
 
-    if (isImageSequencePath(path)) {
-        // Image sequences benefit from aggressive striping because random access
-        // cost is dominated by per-frame file I/O and decode.
-        const uint frameHash = static_cast<uint>(qMax<int64_t>(0, frameNumber));
-        return static_cast<int>((baseHash + frameHash) % laneCount);
-    }
-
+    // A DecoderContext owns the image-sequence frame cache. Keep every request
+    // for one sequence on one lane; striping frames would duplicate that cache
+    // across all workers and exhaust memory during playback.
     Q_UNUSED(frameNumber);
     Q_UNUSED(kind);
     // Regular video decode is stateful and currently serialized inside
@@ -582,8 +578,8 @@ std::vector<AsyncDecoder::LaneState*> AsyncDecoder::lanesForPath(const QString& 
         return lanes;
     }
 
-    const bool shardedPath =
-        isImageSequencePath(path) || (!isStillImagePath(path) && m_lanes.size() > 2);
+    const bool shardedPath = !isImageSequencePath(path) &&
+                             !isStillImagePath(path) && m_lanes.size() > 2;
     if (!shardedPath) {
         if (LaneState* lane = laneForRequest(path, 0, DecodeRequestKind::Visible)) {
             lanes.push_back(lane);

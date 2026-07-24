@@ -222,6 +222,13 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         coreClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
         coreClip.maskRepeatDeltaY = clip.maskRepeatDeltaY;
+        coreClip.edgeFillEnabled = clip.edgeFillEnabled;
+        coreClip.edgeFillProgressive = clip.edgeFillProgressive;
+        coreClip.edgeFillPixels = clip.edgeFillPixels;
+        coreClip.edgeFillPower = clip.edgeFillPower;
+        coreClip.edgeFillOpacity = clip.edgeFillOpacity;
+        coreClip.edgeFillBrightness = clip.edgeFillBrightness;
+        coreClip.edgeFillSaturation = clip.edgeFillSaturation;
         coreClip.effectPreset = editor::effectPresetToJson(clip.effectPreset).toStdString();
         coreClip.effectRows = clip.effectRows;
         coreClip.effectSpeed = clip.effectSpeed;

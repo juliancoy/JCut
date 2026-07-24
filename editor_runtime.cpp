@@ -254,18 +254,19 @@ bool prepareSelectedFrameShift(const jcut::EditorDocumentCore& document,
         return false;
     }
 
-    // A matte can participate only through its selected parent. Its persisted
-    // lock is a relationship invariant, not a reason to block a parent edit.
+    // A generated child can participate only through its selected parent. Its
+    // persisted lock is a relationship invariant, not a reason to block a
+    // parent edit.
     for (const jcut::EditorClip& clip : document.clips) {
         if (!clip.selected) {
             continue;
         }
-        if (jcut::canonicalEditorClipRole(clip.clipRole) == "mask_matte") {
+        if (jcut::isOwnedGeneratedEditorClip(clip)) {
             const std::string parentId =
                 jcut::trimmedEditorClipId(clip.linkedSourceClipId);
             if (parentId.empty() || selectedIds.find(parentId) == selectedIds.end()) {
                 if (error) {
-                    *error = "mask matte must be moved with its source";
+                    *error = "generated child must be moved with its source";
                 }
                 return false;
             }
@@ -439,8 +440,7 @@ ClipPersistentIdSet clipOwnershipClosure(
                 const std::string clipId =
                     jcut::trimmedEditorClipId(clip.persistentId);
                 if (closure.find(clipId) == closure.end() ||
-                    jcut::canonicalEditorClipRole(clip.clipRole) !=
-                        "mask_matte") {
+                    !jcut::isOwnedGeneratedEditorClip(clip)) {
                     continue;
                 }
                 const std::string parentId =
@@ -456,8 +456,7 @@ ClipPersistentIdSet clipOwnershipClosure(
     while (expanded) {
         expanded = false;
         for (const jcut::EditorClip& clip : document.clips) {
-            if (jcut::canonicalEditorClipRole(clip.clipRole) !=
-                "mask_matte") {
+            if (!jcut::isOwnedGeneratedEditorClip(clip)) {
                 continue;
             }
             const std::string clipId =
@@ -1532,6 +1531,7 @@ bool reconcilesGeneratedTrackTopology(const jcut::EditorCommand& command)
                 std::is_same_v<T, jcut::MoveClipCommand> ||
                 std::is_same_v<T, jcut::MoveSelectedClipsCommand> ||
                 std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
+                std::is_same_v<T, jcut::ReplaceSpeakerTitleClipsCommand> ||
                 std::is_same_v<T, jcut::SetClipLabelCommand>;
         },
         command);
@@ -1856,6 +1856,220 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         orderedTracks.push_back(std::move(fallback));
     }
     document->tracks = std::move(orderedTracks);
+
+    // Transcript-generated speaker introductions are one immutable collection
+    // per source clip. Unlike Mask Mattes, several generated clips share the
+    // same child lane, including when their title animations overlap.
+    struct SpeakerTitleGroup {
+        std::string parentId;
+        std::size_t parentIndex = 0;
+        std::vector<std::size_t> childIndices;
+        int laneTrackId = 0;
+    };
+    std::vector<SpeakerTitleGroup> titleGroups;
+    std::unordered_map<std::string, std::size_t> titleGroupIndexByParent;
+    for (std::size_t clipIndex = 0;
+         clipIndex < document->clips.size(); ++clipIndex) {
+        EditorClip& title = document->clips[clipIndex];
+        if (!isTranscriptGeneratedEditorTitle(title)) {
+            continue;
+        }
+        const std::string parentId =
+            trimmedEditorClipId(title.linkedSourceClipId);
+        const auto parentIt = clipIndexById.find(parentId);
+        if (parentId.empty() || parentIt == clipIndexById.end() ||
+            isOwnedGeneratedEditorClip(
+                document->clips[parentIt->second])) {
+            continue;
+        }
+        title.linkedSourceClipId = parentId;
+        title.syncLockedToSource = true;
+        title.locked = true;
+        auto [groupIt, inserted] =
+            titleGroupIndexByParent.emplace(
+                parentId, titleGroups.size());
+        if (inserted) {
+            titleGroups.push_back(
+                {parentId, parentIt->second, {}, 0});
+        }
+        titleGroups[groupIt->second].childIndices.push_back(
+            clipIndex);
+    }
+
+    std::unordered_map<int, std::vector<std::size_t>>
+        currentOccupantsByTrackId;
+    for (std::size_t clipIndex = 0;
+         clipIndex < document->clips.size(); ++clipIndex) {
+        currentOccupantsByTrackId[
+            document->clips[clipIndex].trackId].push_back(clipIndex);
+    }
+    std::unordered_map<int, std::size_t> currentTrackIndexByTrackId;
+    for (std::size_t trackIndex = 0;
+         trackIndex < document->tracks.size(); ++trackIndex) {
+        currentTrackIndexByTrackId.emplace(
+            document->tracks[trackIndex].id, trackIndex);
+    }
+    std::unordered_set<int> claimedSpeakerTrackIds;
+    std::unordered_set<int> obsoleteSpeakerTrackIds;
+    for (SpeakerTitleGroup& group : titleGroups) {
+        std::unordered_set<std::size_t> groupChildren(
+            group.childIndices.begin(), group.childIndices.end());
+        std::vector<int> dedicatedTrackIds;
+        for (const auto& [trackId, occupants] :
+             currentOccupantsByTrackId) {
+            if (trackId ==
+                    document->clips[group.parentIndex].trackId ||
+                occupants.empty()) {
+                continue;
+            }
+            const bool dedicated = std::all_of(
+                occupants.begin(), occupants.end(),
+                [&](std::size_t occupantIndex) {
+                    return groupChildren.contains(occupantIndex);
+                });
+            if (dedicated) {
+                dedicatedTrackIds.push_back(trackId);
+            }
+        }
+        std::sort(dedicatedTrackIds.begin(),
+                  dedicatedTrackIds.end());
+
+        for (const EditorTrack& track : document->tracks) {
+            if (isGeneratedEditorChildTrack(track) &&
+                trimmedEditorClipId(track.parentClipId) ==
+                    group.parentId &&
+                claimedSpeakerTrackIds.find(track.id) ==
+                    claimedSpeakerTrackIds.end()) {
+                group.laneTrackId = track.id;
+                break;
+            }
+        }
+        if (group.laneTrackId == 0) {
+            const auto dedicated = std::find_if(
+                dedicatedTrackIds.begin(),
+                dedicatedTrackIds.end(),
+                [&](int trackId) {
+                    return claimedSpeakerTrackIds.find(trackId) ==
+                        claimedSpeakerTrackIds.end();
+                });
+            if (dedicated != dedicatedTrackIds.end()) {
+                group.laneTrackId = *dedicated;
+            }
+        }
+        if (group.laneTrackId == 0) {
+            EditorTrack lane;
+            lane.id = nextGeneratedTrackId++;
+            lane.height = 44;
+            lane.audioEnabled = false;
+            lane.audioWaveformVisible = false;
+            document->tracks.push_back(std::move(lane));
+            group.laneTrackId = document->tracks.back().id;
+            currentTrackIndexByTrackId.emplace(
+                group.laneTrackId,
+                document->tracks.size() - 1);
+        }
+        claimedSpeakerTrackIds.insert(group.laneTrackId);
+        for (const int trackId : dedicatedTrackIds) {
+            if (trackId != group.laneTrackId) {
+                obsoleteSpeakerTrackIds.insert(trackId);
+            }
+        }
+
+        for (const std::size_t childIndex :
+             group.childIndices) {
+            document->clips[childIndex].trackId =
+                group.laneTrackId;
+        }
+        const auto laneIt =
+            currentTrackIndexByTrackId.find(group.laneTrackId);
+        if (laneIt != currentTrackIndexByTrackId.end()) {
+            EditorTrack& lane = document->tracks[laneIt->second];
+            lane.generatedChildTrack = true;
+            lane.parentClipId = group.parentId;
+            lane.childClipId = trimmedEditorClipId(
+                document->clips[
+                    group.childIndices.front()].persistentId);
+            lane.label =
+                "↳ Transcript • Speaker Introductions";
+            lane.height = std::clamp(
+                lane.height, kEditorTrackMinHeight, 56);
+            lane.audioEnabled = false;
+            lane.audioWaveformVisible = false;
+        }
+    }
+
+    if (!obsoleteSpeakerTrackIds.empty()) {
+        document->tracks.erase(
+            std::remove_if(
+                document->tracks.begin(),
+                document->tracks.end(),
+                [&](const EditorTrack& track) {
+                    if (!obsoleteSpeakerTrackIds.contains(
+                            track.id)) {
+                        return false;
+                    }
+                    return std::none_of(
+                        document->clips.begin(),
+                        document->clips.end(),
+                        [&](const EditorClip& clip) {
+                            return clip.trackId == track.id;
+                        });
+                }),
+            document->tracks.end());
+    }
+
+    // Re-run the adjacency projection now that speaker-title groups have been
+    // materialized as child tracks.
+    std::unordered_map<int, std::vector<int>>
+        generatedTrackIdsBySourceTrackId;
+    for (const EditorTrack& track : document->tracks) {
+        if (!isGeneratedEditorChildTrack(track)) {
+            continue;
+        }
+        const auto parentIt = clipIndexById.find(
+            trimmedEditorClipId(track.parentClipId));
+        if (parentIt != clipIndexById.end()) {
+            generatedTrackIdsBySourceTrackId[
+                document->clips[parentIt->second].trackId]
+                .push_back(track.id);
+        }
+    }
+    std::unordered_map<int, EditorTrack> trackById;
+    trackById.reserve(document->tracks.size());
+    for (const EditorTrack& track : document->tracks) {
+        trackById.emplace(track.id, track);
+    }
+    std::vector<EditorTrack> tracksWithGeneratedChildren;
+    tracksWithGeneratedChildren.reserve(document->tracks.size());
+    std::unordered_set<int> placedGeneratedTrackIds;
+    for (const EditorTrack& track : document->tracks) {
+        if (isGeneratedEditorChildTrack(track)) {
+            continue;
+        }
+        tracksWithGeneratedChildren.push_back(track);
+        const auto children =
+            generatedTrackIdsBySourceTrackId.find(track.id);
+        if (children == generatedTrackIdsBySourceTrackId.end()) {
+            continue;
+        }
+        for (const int childTrackId : children->second) {
+            const auto child = trackById.find(childTrackId);
+            if (child != trackById.end() &&
+                placedGeneratedTrackIds.insert(
+                    childTrackId).second) {
+                tracksWithGeneratedChildren.push_back(
+                    child->second);
+            }
+        }
+    }
+    for (const EditorTrack& track : document->tracks) {
+        if (isGeneratedEditorChildTrack(track) &&
+            placedGeneratedTrackIds.insert(track.id).second) {
+            tracksWithGeneratedChildren.push_back(track);
+        }
+    }
+    document->tracks = std::move(
+        tracksWithGeneratedChildren);
 
     if (!document->tracks.empty() &&
         std::none_of(document->tracks.begin(), document->tracks.end(),
@@ -2529,7 +2743,7 @@ CommandResult EditorRuntime::pasteClipboardAt(int targetFrame, int targetTrackId
          index < m_document.clips.size();
          ++index) {
         EditorClip& clip = m_document.clips[index];
-        if (canonicalEditorClipRole(clip.clipRole) != "mask_matte") {
+        if (!isOwnedGeneratedEditorClip(clip)) {
             continue;
         }
         const auto remappedSource = pastedPersistentIds.find(
@@ -2635,6 +2849,26 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
     const CommandResult result = std::visit(
         [this](const auto& typedCommand) -> CommandResult {
             using T = std::decay_t<decltype(typedCommand)>;
+
+            // Transcript speaker titles are materialized output from the
+            // generator. Selection remains available for inspection, but every
+            // clip-targeted mutation must go through replacement/regeneration
+            // of the complete source-owned set.
+            if constexpr (requires { typedCommand.clipId; }) {
+                if constexpr (
+                    std::is_same_v<
+                        std::remove_cvref_t<decltype(typedCommand.clipId)>,
+                        int> &&
+                    !std::is_same_v<T, SelectClipCommand>) {
+                    if (const EditorClip* target =
+                            findClip(&m_document.clips, typedCommand.clipId);
+                        target && isTranscriptGeneratedEditorTitle(*target)) {
+                        return {
+                            false,
+                            "generated transcript titles can only be changed by regenerating them"};
+                    }
+                }
+            }
 
             if constexpr (std::is_same_v<T, TogglePlaybackCommand>) {
                 const bool nextActive =
@@ -2933,12 +3167,11 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     if (!clip.selected) {
                         continue;
                     }
-                    if (canonicalEditorClipRole(clip.clipRole) ==
-                        "mask_matte") {
+                    if (isOwnedGeneratedEditorClip(clip)) {
                         if (!persistentClipIdInSet(
                                 selectedIds, clip.linkedSourceClipId)) {
                             return {false,
-                                    "mask matte must be cut with its source"};
+                                    "generated child must be cut with its source"};
                         }
                         continue;
                     }
@@ -3176,47 +3409,61 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 if (!typedCommand.generatedClips.empty()) {
                     source->transcriptOverlay.showSpeakerTitle = false;
                 }
+                std::unordered_set<int> previousTitleTrackIds;
+                for (const EditorClip& clip : m_document.clips) {
+                    if (isTranscriptGeneratedEditorTitle(clip) &&
+                        trimmedEditorClipId(clip.linkedSourceClipId) ==
+                            trimmedEditorClipId(sourcePersistentId)) {
+                        previousTitleTrackIds.insert(clip.trackId);
+                    }
+                }
+                std::vector<int> reusableTrackIds;
+                for (const int trackId : previousTitleTrackIds) {
+                    const bool dedicated = std::none_of(
+                        m_document.clips.begin(),
+                        m_document.clips.end(),
+                        [&](const EditorClip& clip) {
+                            return clip.trackId == trackId &&
+                                !(isTranscriptGeneratedEditorTitle(clip) &&
+                                  trimmedEditorClipId(
+                                      clip.linkedSourceClipId) ==
+                                      trimmedEditorClipId(
+                                          sourcePersistentId));
+                        });
+                    if (dedicated && trackId != source->trackId) {
+                        reusableTrackIds.push_back(trackId);
+                    }
+                }
+                std::sort(reusableTrackIds.begin(),
+                          reusableTrackIds.end());
                 const std::size_t before = m_document.clips.size();
                 m_document.clips.erase(
                     std::remove_if(
                         m_document.clips.begin(), m_document.clips.end(),
                         [&](const EditorClip& clip) {
-                            return canonicalEditorClipRole(clip.clipRole) ==
-                                    "speaker_title" &&
-                                clip.linkedSourceClipId == sourcePersistentId;
+                            return isTranscriptGeneratedEditorTitle(clip) &&
+                                trimmedEditorClipId(
+                                    clip.linkedSourceClipId) ==
+                                    trimmedEditorClipId(
+                                        sourcePersistentId);
                         }),
                     m_document.clips.end());
                 const int removed = static_cast<int>(
                     before - m_document.clips.size());
-                const auto titleTrack = [](const EditorTrack& track) {
-                    std::string label = trimmed(track.label);
-                    std::transform(
-                        label.begin(), label.end(), label.begin(),
-                        [](unsigned char value) {
-                            return static_cast<char>(std::tolower(value));
-                        });
-                    return label == "speaker titles" ||
-                        label.rfind("speaker titles ", 0) == 0;
-                };
-                const auto trackAvailable = [&](int trackId,
-                                                const EditorClip& proposed) {
-                    const std::int64_t start = proposed.startFrame;
-                    const std::int64_t end =
-                        start + std::max(1, proposed.durationFrames);
-                    return std::none_of(
-                        m_document.clips.begin(), m_document.clips.end(),
-                        [&](const EditorClip& clip) {
-                            if (clip.trackId != trackId ||
-                                !editorClipHasVisuals(clip)) {
-                                return false;
-                            }
-                            const std::int64_t clipStart = clip.startFrame;
-                            const std::int64_t clipEnd =
-                                clipStart + std::max(1, clip.durationFrames);
-                            return end > clipStart && start < clipEnd;
-                        });
-                };
+                int targetTrackId = reusableTrackIds.empty()
+                    ? 0 : reusableTrackIds.front();
+                if (!typedCommand.generatedClips.empty() &&
+                    targetTrackId == 0) {
+                    EditorTrack track;
+                    track.id = nextTrackId(m_document.tracks);
+                    track.height = 44;
+                    track.audioEnabled = false;
+                    track.audioWaveformVisible = false;
+                    m_document.tracks.push_back(std::move(track));
+                    targetTrackId = m_document.tracks.back().id;
+                }
                 int inserted = 0;
+                std::string representativeChildId;
                 for (EditorClip generated : typedCommand.generatedClips) {
                     generated.durationFrames =
                         std::max(1, generated.durationFrames);
@@ -3228,37 +3475,57 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     generated.audioEnabled = false;
                     generated.audioPresenceKnown = true;
                     generated.hasAudio = false;
-                    int targetTrackId = 0;
-                    for (const EditorTrack& track : m_document.tracks) {
-                        if (titleTrack(track) &&
-                            trackAvailable(track.id, generated)) {
-                            targetTrackId = track.id;
-                            break;
-                        }
-                    }
-                    if (targetTrackId == 0) {
-                        EditorTrack track;
-                        track.id = nextTrackId(m_document.tracks);
-                        const int titleTrackCount = static_cast<int>(
-                            std::count_if(
-                                m_document.tracks.begin(),
-                                m_document.tracks.end(), titleTrack));
-                        track.label = titleTrackCount == 0
-                            ? "Speaker Titles"
-                            : "Speaker Titles " +
-                                std::to_string(titleTrackCount + 1);
-                        track.audioEnabled = false;
-                        targetTrackId = track.id;
-                        m_document.tracks.push_back(std::move(track));
-                    }
+                    generated.locked = true;
                     generated.id = nextClipId(m_document.clips);
                     generated.persistentId = uniquePersistentClipId(
                         m_document.clips, generated.id);
                     generated.trackId = targetTrackId;
                     generated.selected = false;
+                    if (representativeChildId.empty()) {
+                        representativeChildId =
+                            generated.persistentId;
+                    }
                     m_document.clips.push_back(std::move(generated));
                     ++inserted;
                 }
+                if (targetTrackId != 0) {
+                    EditorTrack* track = findTrack(
+                        &m_document.tracks, targetTrackId);
+                    if (track) {
+                        track->generatedChildTrack = true;
+                        track->parentClipId =
+                            trimmedEditorClipId(sourcePersistentId);
+                        track->childClipId = representativeChildId;
+                        track->label =
+                            "↳ Transcript • Speaker Introductions";
+                        track->height = std::clamp(
+                            track->height, kEditorTrackMinHeight, 56);
+                        track->audioEnabled = false;
+                        track->audioWaveformVisible = false;
+                    }
+                }
+                const std::unordered_set<int> retainedTrackIds = {
+                    targetTrackId};
+                m_document.tracks.erase(
+                    std::remove_if(
+                        m_document.tracks.begin(),
+                        m_document.tracks.end(),
+                        [&](const EditorTrack& track) {
+                            if (retainedTrackIds.contains(track.id) ||
+                                std::find(reusableTrackIds.begin(),
+                                          reusableTrackIds.end(),
+                                          track.id) ==
+                                    reusableTrackIds.end()) {
+                                return false;
+                            }
+                            return std::none_of(
+                                m_document.clips.begin(),
+                                m_document.clips.end(),
+                                [&](const EditorClip& clip) {
+                                    return clip.trackId == track.id;
+                                });
+                        }),
+                    m_document.tracks.end());
                 if (removed == 0 && inserted == 0) {
                     return {false, "no speaker introductions were generated"};
                 }
@@ -3303,12 +3570,11 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     if (!clip.selected) {
                         continue;
                     }
-                    if (canonicalEditorClipRole(clip.clipRole) ==
-                        "mask_matte") {
+                    if (isOwnedGeneratedEditorClip(clip)) {
                         if (!persistentClipIdInSet(
                                 selectedIds, clip.linkedSourceClipId)) {
                             return {false,
-                                    "mask matte must be deleted with its source"};
+                                    "generated child must be deleted with its source"};
                         }
                         continue;
                     }
@@ -3546,8 +3812,7 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 bool changed = false;
                 for (EditorClip& clip : m_document.clips) {
                     if (!clip.selected ||
-                        canonicalEditorClipRole(clip.clipRole) ==
-                            "mask_matte") {
+                        isOwnedGeneratedEditorClip(clip)) {
                         continue;
                     }
                     found = true;
@@ -3743,9 +4008,9 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 if (!anchor) {
                     return {false, "anchor clip not found"};
                 }
-                if (canonicalEditorClipRole(anchor->clipRole) ==
-                    "mask_matte") {
-                    return {false, "mask matte must be moved with its source"};
+                if (isOwnedGeneratedEditorClip(*anchor)) {
+                    return {false,
+                            "generated child must be moved with its source"};
                 }
                 if (!anchor->selected) {
                     return {false, "anchor clip is not selected"};
@@ -3780,8 +4045,7 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     static_cast<std::int64_t>(anchorTrackIndex);
                 for (const EditorClip& clip : m_document.clips) {
                     if (!clip.selected ||
-                        canonicalEditorClipRole(clip.clipRole) ==
-                            "mask_matte") {
+                        isOwnedGeneratedEditorClip(clip)) {
                         continue;
                     }
                     const std::size_t sourceTrackIndex =
@@ -3807,8 +4071,7 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
 
                 for (EditorClip& clip : m_document.clips) {
                     if (!clip.selected ||
-                        canonicalEditorClipRole(clip.clipRole) ==
-                            "mask_matte") {
+                        isOwnedGeneratedEditorClip(clip)) {
                         continue;
                     }
                     const std::size_t sourceTrackIndex =
@@ -4234,6 +4497,13 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->maskRepeatEnabled = typedCommand.repeatEnabled;
                 clip->maskRepeatDeltaX = typedCommand.repeatDeltaX;
                 clip->maskRepeatDeltaY = typedCommand.repeatDeltaY;
+                clip->edgeFillEnabled = typedCommand.edgeFillEnabled;
+                clip->edgeFillProgressive = typedCommand.edgeFillProgressive;
+                clip->edgeFillPixels = std::clamp(typedCommand.edgeFillPixels, 1, 512);
+                clip->edgeFillPower = std::clamp(typedCommand.edgeFillPower, 0.25, 8.0);
+                clip->edgeFillOpacity = std::clamp(typedCommand.edgeFillOpacity, 0.0, 1.0);
+                clip->edgeFillBrightness = std::clamp(typedCommand.edgeFillBrightness, -1.0, 1.0);
+                clip->edgeFillSaturation = std::clamp(typedCommand.edgeFillSaturation, 0.0, 3.0);
                 clip->effectPreset = typedCommand.effectPreset.empty() ? "none" : typedCommand.effectPreset;
                 clip->effectRows = std::clamp(
                     typedCommand.effectRows,

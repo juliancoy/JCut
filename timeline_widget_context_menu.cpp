@@ -437,8 +437,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* lockAction = nullptr;
     QAction* unlockAction = nullptr;
     if (clipIndex >= 0) {
-        if (m_clips[clipIndex].clipRole == ClipRole::MaskMatte) {
-            QAction* sourceLockAction = menu.addAction(QStringLiteral("Locked to Source"));
+        if (m_clips[clipIndex].clipRole == ClipRole::MaskMatte ||
+            m_clips[clipIndex].clipRole == ClipRole::SpeakerTitle) {
+            QAction* sourceLockAction = menu.addAction(
+                m_clips[clipIndex].clipRole == ClipRole::SpeakerTitle
+                    ? QStringLiteral("Generated from Transcript")
+                    : QStringLiteral("Locked to Source"));
             sourceLockAction->setEnabled(false);
         } else if (m_clips[clipIndex].locked) {
             unlockAction = menu.addAction(QStringLiteral("Unlock"));
@@ -686,63 +690,6 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
 
-    auto removeGeneratedClipsForSource = [this](const QString& sourceId, ClipRole role) {
-        bool removed = false;
-        for (int i = m_clips.size() - 1; i >= 0; --i) {
-            if (m_clips[i].clipRole == role && m_clips[i].linkedSourceClipId == sourceId) {
-                m_clips.removeAt(i);
-                removed = true;
-            }
-        }
-        return removed;
-    };
-    auto trackNameStartsWith = [this](int trackIndex, const QString& prefix) {
-        return trackIndex >= 0 && trackIndex < m_tracks.size() &&
-               m_tracks[trackIndex].name.trimmed().startsWith(prefix, Qt::CaseInsensitive);
-    };
-    auto nextGeneratedTrackName = [this](const QString& baseName) {
-        int count = 0;
-        for (const TimelineTrack& track : m_tracks) {
-            if (track.name.trimmed().startsWith(baseName, Qt::CaseInsensitive)) {
-                ++count;
-            }
-        }
-        return count <= 0 ? baseName : QStringLiteral("%1 %2").arg(baseName).arg(count + 1);
-    };
-    auto placeGeneratedClip = [&](TimelineClip clip, const QString& trackBaseName, int preferredTrack) {
-        auto clipIdExists = [this](const QString& id) {
-            for (const TimelineClip& existingClip : m_clips) {
-                if (existingClip.id == id) {
-                    return true;
-                }
-            }
-            return false;
-        };
-        if (clip.id.trimmed().isEmpty() || clipIdExists(clip.id)) {
-            clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        }
-        int targetTrack = -1;
-        for (int t = 0; t < m_tracks.size(); ++t) {
-            if (!trackNameStartsWith(t, trackBaseName)) {
-                continue;
-            }
-            clip.trackIndex = t;
-            if (!wouldClipConflictWithTrack(clip, t)) {
-                targetTrack = t;
-                break;
-            }
-        }
-        if (targetTrack < 0) {
-            targetTrack = qBound(0, preferredTrack, trackCount());
-            insertTrackAt(targetTrack);
-            m_tracks[targetTrack].name = nextGeneratedTrackName(trackBaseName);
-            m_tracks[targetTrack].audioEnabled = false;
-        }
-        clip.trackIndex = targetTrack;
-        normalizeClipTiming(clip);
-        m_clips.push_back(clip);
-        return clip.id;
-    };
     auto finishGeneratedClipMutation = [this](const QString& primarySelection) {
         normalizeTrackIndices();
         sortClips();
@@ -766,7 +713,6 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             const TimelineClip source = m_clips[clipIndex];
             const QString transcriptPath = activeTranscriptPathForClip(source).trimmed();
             const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
-            const bool removedExisting = removeGeneratedClipsForSource(source.id, ClipRole::SpeakerTitle);
             const QVector<TimelineClip> generatedTitles =
                 makeSpeakerTitleClipsForTranscriptIntroductions(
                     source, transcriptPath, sections, source.trackIndex + 1,
@@ -776,11 +722,16 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 clip.speakerTitleEngineActive = !generatedTitles.isEmpty();
                 clip.transcriptOverlay.showSpeakerTitle = false;
             });
-            for (const TimelineClip& title : generatedTitles) {
-                placeGeneratedClip(
-                    title, QStringLiteral("Transcript • Speaker Introductions"), source.trackIndex + 1);
-            }
-            if (!generatedTitles.isEmpty() || removedExisting) {
+            const GeneratedClipPlacementResult placement =
+                replaceGeneratedClipsForSource(
+                    m_clips,
+                    m_tracks,
+                    source.id,
+                    ClipRole::SpeakerTitle,
+                    generatedTitles,
+                    QStringLiteral(
+                        "Transcript • Speaker Introductions"));
+            if (placement.changed) {
                 finishGeneratedClipMutation(source.id);
             }
         }
@@ -1024,7 +975,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == unlockAction) {
-        if (m_clips[clipIndex].clipRole != ClipRole::MaskMatte) {
+        if (m_clips[clipIndex].clipRole != ClipRole::MaskMatte &&
+            m_clips[clipIndex].clipRole != ClipRole::SpeakerTitle) {
             m_clips[clipIndex].locked = false;
         }
         update();

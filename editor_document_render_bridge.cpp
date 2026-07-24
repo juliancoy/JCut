@@ -236,6 +236,13 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         timelineClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
         timelineClip.maskRepeatDeltaY = clip.maskRepeatDeltaY;
+        timelineClip.edgeFillEnabled = clip.edgeFillEnabled;
+        timelineClip.edgeFillProgressive = clip.edgeFillProgressive;
+        timelineClip.edgeFillPixels = clip.edgeFillPixels;
+        timelineClip.edgeFillPower = clip.edgeFillPower;
+        timelineClip.edgeFillOpacity = clip.edgeFillOpacity;
+        timelineClip.edgeFillBrightness = clip.edgeFillBrightness;
+        timelineClip.edgeFillSaturation = clip.edgeFillSaturation;
         timelineClip.effectPreset = editor::effectPresetFromJson(QString::fromStdString(clip.effectPreset));
         timelineClip.effectRows = clip.effectRows;
         timelineClip.effectSpeed = clip.effectSpeed;

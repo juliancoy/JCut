@@ -706,6 +706,243 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         m_selectedTrackIndex = newIndexByOldIndex.value(m_selectedTrackIndex, m_selectedTrackIndex);
         m_tracks = reorderedTracks;
     }
+
+    // Speaker introductions are generated from transcript parameters as one
+    // immutable collection per source clip. Migrate legacy ordinary/multi-lane
+    // layouts into a single generated child track; overlapping titles remain
+    // on that lane because they are regenerated as a unit.
+    struct SpeakerTitleGroup {
+        QString parentId;
+        int parentTrackIndex = -1;
+        QVector<int> childClipIndices;
+        int childTrackIndex = -1;
+    };
+    QHash<QString, int> currentSourceTrackById;
+    for (const TimelineClip& clip : std::as_const(m_clips)) {
+        if (clip.clipRole != ClipRole::MaskMatte &&
+            clip.clipRole != ClipRole::SpeakerTitle &&
+            !clip.id.trimmed().isEmpty()) {
+            currentSourceTrackById.insert(
+                clip.id.trimmed(), clip.trackIndex);
+        }
+    }
+    QVector<SpeakerTitleGroup> speakerTitleGroups;
+    QHash<QString, int> speakerTitleGroupByParent;
+    for (int clipIndex = 0; clipIndex < m_clips.size();
+         ++clipIndex) {
+        TimelineClip& title = m_clips[clipIndex];
+        if (title.clipRole != ClipRole::SpeakerTitle) {
+            continue;
+        }
+        const QString parentId =
+            title.linkedSourceClipId.trimmed();
+        const int parentTrackIndex =
+            currentSourceTrackById.value(parentId, -1);
+        if (parentId.isEmpty() || parentTrackIndex < 0) {
+            continue;
+        }
+        title.linkedSourceClipId = parentId;
+        title.syncLockedToSource = true;
+        title.locked = true;
+        int groupIndex =
+            speakerTitleGroupByParent.value(parentId, -1);
+        if (groupIndex < 0) {
+            groupIndex = speakerTitleGroups.size();
+            speakerTitleGroupByParent.insert(
+                parentId, groupIndex);
+            SpeakerTitleGroup group;
+            group.parentId = parentId;
+            group.parentTrackIndex = parentTrackIndex;
+            speakerTitleGroups.push_back(std::move(group));
+        }
+        speakerTitleGroups[groupIndex].childClipIndices.push_back(
+            clipIndex);
+    }
+
+    QSet<int> claimedSpeakerTitleTracks;
+    QSet<int> obsoleteSpeakerTitleTracks;
+    for (SpeakerTitleGroup& group : speakerTitleGroups) {
+        QSet<int> childIndices(
+            group.childClipIndices.cbegin(),
+            group.childClipIndices.cend());
+        QVector<int> dedicatedTrackIndices;
+        for (int trackIndex = 0; trackIndex < m_tracks.size();
+             ++trackIndex) {
+            if (trackIndex == group.parentTrackIndex) {
+                continue;
+            }
+            QVector<int> occupants;
+            for (int clipIndex = 0;
+                 clipIndex < m_clips.size(); ++clipIndex) {
+                if (m_clips.at(clipIndex).trackIndex ==
+                    trackIndex) {
+                    occupants.push_back(clipIndex);
+                }
+            }
+            if (occupants.isEmpty()) {
+                continue;
+            }
+            const bool dedicated = std::all_of(
+                occupants.cbegin(), occupants.cend(),
+                [&](int occupantIndex) {
+                    return childIndices.contains(occupantIndex);
+                });
+            if (dedicated) {
+                dedicatedTrackIndices.push_back(trackIndex);
+            }
+        }
+
+        for (int trackIndex = 0; trackIndex < m_tracks.size();
+             ++trackIndex) {
+            const TimelineTrack& track = m_tracks.at(trackIndex);
+            if (track.generatedChildTrack &&
+                track.parentClipId.trimmed() == group.parentId &&
+                !claimedSpeakerTitleTracks.contains(trackIndex)) {
+                group.childTrackIndex = trackIndex;
+                break;
+            }
+        }
+        if (group.childTrackIndex < 0) {
+            std::sort(dedicatedTrackIndices.begin(),
+                      dedicatedTrackIndices.end());
+            for (const int trackIndex :
+                 std::as_const(dedicatedTrackIndices)) {
+                if (!claimedSpeakerTitleTracks.contains(
+                        trackIndex)) {
+                    group.childTrackIndex = trackIndex;
+                    break;
+                }
+            }
+        }
+        if (group.childTrackIndex < 0) {
+            TimelineTrack childTrack;
+            childTrack.height = 44;
+            childTrack.audioEnabled = false;
+            childTrack.audioWaveformVisible = false;
+            m_tracks.push_back(std::move(childTrack));
+            group.childTrackIndex = m_tracks.size() - 1;
+        }
+        claimedSpeakerTitleTracks.insert(
+            group.childTrackIndex);
+        for (const int trackIndex :
+             std::as_const(dedicatedTrackIndices)) {
+            if (trackIndex != group.childTrackIndex) {
+                obsoleteSpeakerTitleTracks.insert(trackIndex);
+            }
+        }
+        for (const int childIndex :
+             std::as_const(group.childClipIndices)) {
+            m_clips[childIndex].trackIndex =
+                group.childTrackIndex;
+        }
+        TimelineTrack& childTrack =
+            m_tracks[group.childTrackIndex];
+        childTrack.generatedChildTrack = true;
+        childTrack.parentClipId = group.parentId;
+        childTrack.childClipId =
+            m_clips.at(group.childClipIndices.constFirst())
+                .id.trimmed();
+        childTrack.name = QStringLiteral(
+            "↳ Transcript • Speaker Introductions");
+        childTrack.height = qBound(
+            kMinTrackHeight, childTrack.height, 56);
+        childTrack.audioEnabled = false;
+        childTrack.audioWaveformVisible = false;
+    }
+
+    QList<int> obsoleteTrackIndices =
+        obsoleteSpeakerTitleTracks.values();
+    std::sort(obsoleteTrackIndices.begin(),
+              obsoleteTrackIndices.end(), std::greater<int>());
+    for (const int trackIndex :
+         std::as_const(obsoleteTrackIndices)) {
+        const bool occupied = std::any_of(
+            m_clips.cbegin(), m_clips.cend(),
+            [trackIndex](const TimelineClip& clip) {
+                return clip.trackIndex == trackIndex;
+            });
+        if (occupied || trackIndex < 0 ||
+            trackIndex >= m_tracks.size()) {
+            continue;
+        }
+        m_tracks.removeAt(trackIndex);
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex > trackIndex) {
+                --clip.trackIndex;
+            }
+        }
+        if (m_selectedTrackIndex > trackIndex) {
+            --m_selectedTrackIndex;
+        } else if (m_selectedTrackIndex == trackIndex) {
+            m_selectedTrackIndex = -1;
+        }
+    }
+
+    currentSourceTrackById.clear();
+    for (const TimelineClip& clip : std::as_const(m_clips)) {
+        if (clip.clipRole != ClipRole::MaskMatte &&
+            clip.clipRole != ClipRole::SpeakerTitle &&
+            !clip.id.trimmed().isEmpty()) {
+            currentSourceTrackById.insert(
+                clip.id.trimmed(), clip.trackIndex);
+        }
+    }
+    QVector<int> allBaseTracks;
+    QHash<int, QVector<int>> allChildrenBySourceTrack;
+    QSet<int> allPlacedChildTracks;
+    for (int trackIndex = 0; trackIndex < m_tracks.size();
+         ++trackIndex) {
+        const TimelineTrack& track = m_tracks.at(trackIndex);
+        if (!track.generatedChildTrack) {
+            allBaseTracks.push_back(trackIndex);
+            continue;
+        }
+        const int parentTrackIndex =
+            currentSourceTrackById.value(
+                track.parentClipId.trimmed(), -1);
+        if (parentTrackIndex >= 0) {
+            allChildrenBySourceTrack[parentTrackIndex]
+                .push_back(trackIndex);
+        }
+    }
+    QVector<int> allDesiredTrackOrder;
+    allDesiredTrackOrder.reserve(m_tracks.size());
+    for (const int baseTrack :
+         std::as_const(allBaseTracks)) {
+        allDesiredTrackOrder.push_back(baseTrack);
+        for (const int childTrack :
+             allChildrenBySourceTrack.value(baseTrack)) {
+            allDesiredTrackOrder.push_back(childTrack);
+            allPlacedChildTracks.insert(childTrack);
+        }
+    }
+    for (int trackIndex = 0; trackIndex < m_tracks.size();
+         ++trackIndex) {
+        if (m_tracks.at(trackIndex).generatedChildTrack &&
+            !allPlacedChildTracks.contains(trackIndex)) {
+            allDesiredTrackOrder.push_back(trackIndex);
+        }
+    }
+    if (allDesiredTrackOrder.size() == m_tracks.size()) {
+        QVector<TimelineTrack> reorderedTracks;
+        reorderedTracks.reserve(m_tracks.size());
+        QHash<int, int> newIndexByOldIndex;
+        for (const int oldIndex :
+             std::as_const(allDesiredTrackOrder)) {
+            newIndexByOldIndex.insert(
+                oldIndex, reorderedTracks.size());
+            reorderedTracks.push_back(
+                m_tracks.at(oldIndex));
+        }
+        for (TimelineClip& clip : m_clips) {
+            clip.trackIndex = newIndexByOldIndex.value(
+                clip.trackIndex, clip.trackIndex);
+        }
+        m_selectedTrackIndex = newIndexByOldIndex.value(
+            m_selectedTrackIndex, m_selectedTrackIndex);
+        m_tracks = std::move(reorderedTracks);
+    }
+
     // Version-1 mask mattes occupied synthetic top-level tracks. Once their
     // clips are nested back into the source track, remove only those known
     // empty compatibility tracks and remap the remaining indices.
@@ -911,6 +1148,9 @@ void TimelineWidget::setSelectedTrackIndex(int trackIndex) {
 bool TimelineWidget::updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater) {
     for (TimelineClip& clip : m_clips) {
         if (clip.id == clipId) {
+            if (clip.clipRole == ClipRole::SpeakerTitle) {
+                return false;
+            }
             invalidateHoveredClipToolTipCache();
             updater(clip);
             normalizeClipTiming(clip);
@@ -935,7 +1175,9 @@ QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
         while (expanded) {
             expanded = false;
             for (const TimelineClip& clip : m_clips) {
-                if (!closure.contains(clip.id) || clip.clipRole != ClipRole::MaskMatte) {
+                if (!closure.contains(clip.id) ||
+                    (clip.clipRole != ClipRole::MaskMatte &&
+                     clip.clipRole != ClipRole::SpeakerTitle)) {
                     continue;
                 }
                 const QString parentId = clip.linkedSourceClipId.trimmed();
@@ -951,7 +1193,9 @@ QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
     while (expanded) {
         expanded = false;
         for (const TimelineClip& clip : m_clips) {
-            if (clip.clipRole != ClipRole::MaskMatte || closure.contains(clip.id)) {
+            if ((clip.clipRole != ClipRole::MaskMatte &&
+                 clip.clipRole != ClipRole::SpeakerTitle) ||
+                closure.contains(clip.id)) {
                 continue;
             }
             if (closure.contains(clip.linkedSourceClipId.trimmed())) {
@@ -1125,7 +1369,9 @@ bool TimelineWidget::deleteClipById(const QString& clipId) {
         if (m_clips[i].id != clipId) {
             continue;
         }
-        if (m_clips[i].locked || m_clips[i].clipRole == ClipRole::MaskMatte) {
+        if (m_clips[i].locked ||
+            m_clips[i].clipRole == ClipRole::MaskMatte ||
+            m_clips[i].clipRole == ClipRole::SpeakerTitle) {
             return false;
         }
         const QSet<QString> removedIds = ownershipClosure(QSet<QString>{clipId}, false);
@@ -1171,7 +1417,9 @@ bool TimelineWidget::deleteSelectedClip() {
             continue;
         }
 
-        if (m_clips[i].locked || m_clips[i].clipRole == ClipRole::MaskMatte) {
+        if (m_clips[i].locked ||
+            m_clips[i].clipRole == ClipRole::MaskMatte ||
+            m_clips[i].clipRole == ClipRole::SpeakerTitle) {
             return false;
         }
 
@@ -1247,7 +1495,9 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
             if (clip.id != targetClipId) {
                 continue;
             }
-            if (clip.locked || clip.clipRole == ClipRole::MaskMatte ||
+            if (clip.locked ||
+                clip.clipRole == ClipRole::MaskMatte ||
+                clip.clipRole == ClipRole::SpeakerTitle ||
                 frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
                 break;
             }
@@ -1731,7 +1981,9 @@ bool TimelineWidget::nudgeSelectedClip(int direction) {
             continue;
         }
 
-        if (clip.locked || clip.clipRole == ClipRole::MaskMatte) {
+        if (clip.locked ||
+            clip.clipRole == ClipRole::MaskMatte ||
+            clip.clipRole == ClipRole::SpeakerTitle) {
             return false;
         }
 

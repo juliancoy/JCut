@@ -346,7 +346,7 @@ void OutputTab::renderFromInspector()
     }
     request.backgroundFillEffect = (m_widgets.backgroundFillEffectCombo
         ? m_widgets.backgroundFillEffectCombo->currentData().toString()
-        : QStringLiteral("edge_stretch")).toStdString();
+        : QStringLiteral("none")).toStdString();
     request.backgroundFillOpacity = m_widgets.backgroundFillOpacitySpin
         ? qBound(0.0, m_widgets.backgroundFillOpacitySpin->value() / 100.0, 1.0)
         : 1.0;

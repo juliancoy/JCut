@@ -4742,6 +4742,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
         vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks);
     const bool progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground;
+    const bool clipEdgeFillEffect =
+        effectClip.edgeFillEnabled && progressiveStretchPolicy.sourceEligible;
+    const bool clipOwnedEdgeFill =
+        progressiveEdgeStretchEffect || clipEdgeFillEffect;
     const bool globalProgressiveFillSelected =
         request.backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
     const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
@@ -4813,32 +4817,47 @@ QImage OffscreenVulkanRenderer::renderFrame(
         QPointF(transform.scaleX, transform.scaleY),
         layer.mvp);
     const bool shouldDrawBackgroundFill =
-        progressiveStretchOwnsClipBackground ||
-        (!globalProgressiveFillSelected &&
+        clipOwnedEdgeFill ||
+        (request.backgroundFillEffect != BackgroundFillEffect::None &&
+         !globalProgressiveFillSelected &&
          shouldDrawBlurredFillBackground(sourceSize, request.outputSize));
-    if (clipVisible && (progressiveEdgeStretchEffect || !backgroundFilled) &&
+    if (clipVisible && (clipOwnedEdgeFill || !backgroundFilled) &&
         shouldDrawBackgroundFill) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
       const BackgroundFillEffect fillEffect =
           progressiveEdgeStretchEffect
               ? BackgroundFillEffect::ProgressiveEdgeStretch
+              : clipEdgeFillEffect
+              ? (effectClip.edgeFillProgressive
+                     ? BackgroundFillEffect::ProgressiveEdgeStretch
+                     : BackgroundFillEffect::EdgeStretch)
               : request.backgroundFillEffect;
       const int edgePixels =
           progressiveEdgeStretchEffect
               ? qBound(1, effectClip.effectRows, 512)
+              : clipEdgeFillEffect
+              ? qBound(1, effectClip.edgeFillPixels, 512)
               : request.backgroundFillEdgePixels;
       const qreal edgePower =
           progressiveEdgeStretchEffect
               ? qBound<qreal>(0.25, effectClip.effectScale, 8.0)
+              : clipEdgeFillEffect
+              ? qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0)
               : request.backgroundFillEdgePower;
       const VulkanDrawEffectState backgroundEffects =
           vulkanBackgroundFillEffectState(
               fillEffect,
               layerEffects,
-              static_cast<float>(request.backgroundFillOpacity),
-              static_cast<float>(request.backgroundFillBrightness),
-              static_cast<float>(request.backgroundFillSaturation),
+              static_cast<float>(clipEdgeFillEffect
+                                     ? effectClip.edgeFillOpacity
+                                     : request.backgroundFillOpacity),
+              static_cast<float>(clipEdgeFillEffect
+                                     ? effectClip.edgeFillBrightness
+                                     : request.backgroundFillBrightness),
+              static_cast<float>(clipEdgeFillEffect
+                                     ? effectClip.edgeFillSaturation
+                                     : request.backgroundFillSaturation),
               edgePixels,
               request.backgroundFillEdgeProgressive,
               static_cast<float>(edgePower),
@@ -4906,7 +4925,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {
         layers.push_back(backgroundLayer);
-        if (!progressiveStretchOwnsClipBackground) {
+        if (!clipOwnedEdgeFill) {
           backgroundFilled = true;
         }
       }

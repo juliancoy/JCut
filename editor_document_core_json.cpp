@@ -468,6 +468,13 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskRepeatEnabled = valueOr(value, "maskRepeatEnabled", false);
     clip->maskRepeatDeltaX = valueOr(value, "maskRepeatDeltaX", 160.0);
     clip->maskRepeatDeltaY = valueOr(value, "maskRepeatDeltaY", 0.0);
+    clip->edgeFillEnabled = valueOr(value, "edgeFillEnabled", false);
+    clip->edgeFillProgressive = valueOr(value, "edgeFillProgressive", false);
+    clip->edgeFillPixels = std::clamp(valueOr(value, "edgeFillPixels", 1), 1, 512);
+    clip->edgeFillPower = std::clamp(valueOr(value, "edgeFillPower", 2.0), 0.25, 8.0);
+    clip->edgeFillOpacity = std::clamp(valueOr(value, "edgeFillOpacity", 1.0), 0.0, 1.0);
+    clip->edgeFillBrightness = std::clamp(valueOr(value, "edgeFillBrightness", 0.0), -1.0, 1.0);
+    clip->edgeFillSaturation = std::clamp(valueOr(value, "edgeFillSaturation", 1.0), 0.0, 3.0);
     clip->effectPreset = stringOr(value, "effectPreset", "none");
     clip->effectRows = valueOr(value, "effectRows", 32);
     clip->effectSpeed = valueOr(value, "effectSpeed", 1.0);
@@ -797,7 +804,7 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
         document->exportRequest.disableParallelImageWrite =
             valueOr(exportRequest, "disableParallelImageWrite", false);
         document->exportRequest.backgroundFillEffect =
-            stringOr(exportRequest, "backgroundFillEffect", "edge_stretch");
+            stringOr(exportRequest, "backgroundFillEffect", "none");
         document->exportRequest.backgroundFillOpacity =
             valueOr(exportRequest, "backgroundFillOpacity", 1.0);
         document->exportRequest.backgroundFillBrightness =
@@ -897,7 +904,7 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     document->exportRequest.imageSequenceFormat =
         stringOr(root, "imageSequenceFormat");
     document->exportRequest.backgroundFillEffect =
-        stringOr(root, "backgroundFillEffect", "edge_stretch");
+        stringOr(root, "backgroundFillEffect", "none");
     document->exportRequest.backgroundFillOpacity =
         valueOr(root, "backgroundFillOpacity", 1.0);
     document->exportRequest.backgroundFillBrightness =
@@ -1515,6 +1522,13 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["maskRepeatEnabled"] = clip.maskRepeatEnabled;
     (*out)["maskRepeatDeltaX"] = clip.maskRepeatDeltaX;
     (*out)["maskRepeatDeltaY"] = clip.maskRepeatDeltaY;
+    (*out)["edgeFillEnabled"] = clip.edgeFillEnabled;
+    (*out)["edgeFillProgressive"] = clip.edgeFillProgressive;
+    (*out)["edgeFillPixels"] = clip.edgeFillPixels;
+    (*out)["edgeFillPower"] = clip.edgeFillPower;
+    (*out)["edgeFillOpacity"] = clip.edgeFillOpacity;
+    (*out)["edgeFillBrightness"] = clip.edgeFillBrightness;
+    (*out)["edgeFillSaturation"] = clip.edgeFillSaturation;
     (*out)["effectPreset"] = clip.effectPreset;
     (*out)["effectRows"] = clip.effectRows;
     (*out)["effectSpeed"] = clip.effectSpeed;
@@ -1924,6 +1938,47 @@ std::optional<EditorDocumentCore> editorDocumentCoreFromJson(
     if (document.exportRequest.outputFps <= 0.0) {
         document.exportRequest.outputFps = 30.0;
     }
+    std::string normalizedFill = document.exportRequest.backgroundFillEffect;
+    std::transform(
+        normalizedFill.begin(), normalizedFill.end(), normalizedFill.begin(),
+        [](unsigned char value) {
+            return value == '-' ? '_' : static_cast<char>(std::tolower(value));
+        });
+    const bool progressiveLegacyFill =
+        document.exportRequest.backgroundFillEdgeProgressive ||
+        normalizedFill == "progressive_edge_stretch" ||
+        normalizedFill == "progressive_stretch" ||
+        normalizedFill == "edge_stretch_progressive";
+    const bool legacyEdgeFill =
+        progressiveLegacyFill || normalizedFill == "edge_stretch";
+    for (EditorClip& clip : document.clips) {
+        const bool visualMedia =
+            (clip.mediaKind == "image" || clip.mediaKind == "video") &&
+            clip.clipRole == "media" && clip.videoEnabled;
+        if (clip.effectPreset == "progressive_edge_stretch" && visualMedia) {
+            clip.edgeFillEnabled = true;
+            clip.edgeFillProgressive = true;
+            clip.edgeFillPixels = std::clamp(clip.effectRows, 1, 512);
+            clip.edgeFillPower = std::clamp(clip.effectScale, 0.25, 8.0);
+            clip.effectPreset = "none";
+        }
+        if (legacyEdgeFill && visualMedia && !clip.edgeFillEnabled) {
+            clip.edgeFillEnabled = true;
+            clip.edgeFillProgressive = progressiveLegacyFill;
+            clip.edgeFillPixels = std::clamp(
+                document.exportRequest.backgroundFillEdgePixels, 1, 512);
+            clip.edgeFillPower = std::clamp(
+                document.exportRequest.backgroundFillEdgePower, 0.25, 8.0);
+            clip.edgeFillOpacity = std::clamp(
+                document.exportRequest.backgroundFillOpacity, 0.0, 1.0);
+            clip.edgeFillBrightness = std::clamp(
+                document.exportRequest.backgroundFillBrightness, -1.0, 1.0);
+            clip.edgeFillSaturation = std::clamp(
+                document.exportRequest.backgroundFillSaturation, 0.0, 3.0);
+        }
+    }
+    document.exportRequest.backgroundFillEffect = "none";
+    document.exportRequest.backgroundFillEdgeProgressive = false;
     document.exportRequest.clipCount = document.clips.size();
     document.exportRequest.trackCount = document.tracks.size();
     document.exportRequest.renderSyncMarkerCount = document.renderSyncMarkers.size();

@@ -27,6 +27,13 @@ public:
         QCheckBox* maskRepeatEnabledCheck = nullptr;
         QDoubleSpinBox* maskRepeatDeltaXSpin = nullptr;
         QDoubleSpinBox* maskRepeatDeltaYSpin = nullptr;
+        QCheckBox* edgeFillEnabledCheck = nullptr;
+        QCheckBox* edgeFillProgressiveCheck = nullptr;
+        QSpinBox* edgeFillPixelsSpin = nullptr;
+        QDoubleSpinBox* edgeFillPowerSpin = nullptr;
+        QDoubleSpinBox* edgeFillOpacitySpin = nullptr;
+        QDoubleSpinBox* edgeFillBrightnessSpin = nullptr;
+        QDoubleSpinBox* edgeFillSaturationSpin = nullptr;
         QComboBox* effectPresetCombo = nullptr;
         QSpinBox* effectRowsSpin = nullptr;
         QDoubleSpinBox* effectSpeedSpin = nullptr;

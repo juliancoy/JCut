@@ -28,7 +28,7 @@ struct RenderRequestCore {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
-    std::string backgroundFillEffect = "edge_stretch";
+    std::string backgroundFillEffect = "none";
     double backgroundFillOpacity = 1.0;
     double backgroundFillBrightness = 0.0;
     double backgroundFillSaturation = 1.0;

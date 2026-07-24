@@ -78,6 +78,7 @@ private slots:
     void explorerPayloadInsertsClipOnTimeline();
     void loadingTimelineRemovesDuplicateGeneratedMaskTracks();
     void loadingTimelineRecoversParentStrandedOnDuplicateMaskTrack();
+    void transcriptTitlesReconcileToImmutableGeneratedChildTrack();
     void clipClipboardPreservesRelativeLayoutAndUsesFreshIds();
     void cutClipboardRemovesAndRestoresSelection();
     void updatingParentTimingPropagatesToMaskChild();
@@ -142,6 +143,70 @@ void TestMediaDragDrop::explorerPayloadInsertsClipOnTimeline()
              QFileInfo(mediaFile.fileName()).absoluteFilePath());
     QCOMPARE(timeline.clips().constFirst().trackIndex, 0);
     QVERIFY(timeline.clips().constFirst().startFrame >= 0);
+}
+
+void TestMediaDragDrop::transcriptTitlesReconcileToImmutableGeneratedChildTrack()
+{
+    TimelineWidget timeline;
+    TimelineTrack sourceTrack;
+    sourceTrack.name = QStringLiteral("Transcript");
+    TimelineTrack legacyTitleTrackA;
+    legacyTitleTrackA.name = QStringLiteral("Speaker Titles");
+    TimelineTrack legacyTitleTrackB;
+    legacyTitleTrackB.name = QStringLiteral("Speaker Titles 2");
+    timeline.setTracks(
+        {sourceTrack, legacyTitleTrackA, legacyTitleTrackB});
+
+    TimelineClip source;
+    source.id = QStringLiteral("transcript-source");
+    source.label = QStringLiteral("Interview");
+    source.mediaType = ClipMediaType::Video;
+    source.trackIndex = 0;
+    source.durationFrames = 300;
+
+    TimelineClip titleA;
+    titleA.id = QStringLiteral("title-a");
+    titleA.label = QStringLiteral("Speaker: Alice");
+    titleA.clipRole = ClipRole::SpeakerTitle;
+    titleA.linkedSourceClipId = source.id;
+    titleA.mediaType = ClipMediaType::Title;
+    titleA.trackIndex = 1;
+    titleA.startFrame = 20;
+    titleA.durationFrames = 90;
+
+    TimelineClip titleB = titleA;
+    titleB.id = QStringLiteral("title-b");
+    titleB.label = QStringLiteral("Speaker: Bob");
+    titleB.trackIndex = 2;
+    titleB.startFrame = 50;
+
+    timeline.setClips({source, titleA, titleB});
+    QCOMPARE(timeline.tracks().size(), 2);
+    QVERIFY(timeline.tracks().at(1).generatedChildTrack);
+    QCOMPARE(timeline.tracks().at(1).parentClipId,
+             source.id);
+    QCOMPARE(timeline.tracks().at(1).name,
+             QStringLiteral(
+                 "↳ Transcript • Speaker Introductions"));
+
+    const TimelineClip* storedTitleA =
+        clipById(timeline, titleA.id);
+    const TimelineClip* storedTitleB =
+        clipById(timeline, titleB.id);
+    QVERIFY(storedTitleA);
+    QVERIFY(storedTitleB);
+    QCOMPARE(storedTitleA->trackIndex, 1);
+    QCOMPARE(storedTitleB->trackIndex, 1);
+    QVERIFY(storedTitleA->locked);
+    QVERIFY(storedTitleB->locked);
+
+    QVERIFY(!timeline.updateClipById(
+        titleA.id, [](TimelineClip& clip) {
+            clip.label = QStringLiteral("Manual override");
+        }));
+    QVERIFY(!timeline.deleteClipById(titleA.id));
+    QCOMPARE(clipById(timeline, titleA.id)->label,
+             QStringLiteral("Speaker: Alice"));
 }
 
 void TestMediaDragDrop::loadingTimelineRemovesDuplicateGeneratedMaskTracks()

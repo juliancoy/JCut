@@ -1428,9 +1428,9 @@ void EditorWindow::createSpeakersTab()
                 }
                 m_timeline->setTracks(tracks);
                 m_timeline->setClips(clips);
-                // Generated introductions are children of the transcript clip.
-                // Preserve the parent's selection; users can explicitly select
-                // a child when they want direct title-keyframe editing.
+                // Generated introductions are immutable children of the
+                // transcript clip. Preserve the parent selection so edits stay
+                // at the generator-parameter boundary.
                 m_timeline->setSelectedClipId(sourceClipId);
                 if (m_preview) {
                     m_preview->setTimelineTracks(m_timeline->tracks());
@@ -1681,6 +1681,13 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->maskRepeatEnabledCheck(),
             m_inspectorPane->maskRepeatDeltaXSpin(),
             m_inspectorPane->maskRepeatDeltaYSpin(),
+            m_inspectorPane->edgeFillEnabledCheck(),
+            m_inspectorPane->edgeFillProgressiveCheck(),
+            m_inspectorPane->edgeFillPixelsSpin(),
+            m_inspectorPane->edgeFillPowerSpin(),
+            m_inspectorPane->edgeFillOpacitySpin(),
+            m_inspectorPane->edgeFillBrightnessSpin(),
+            m_inspectorPane->edgeFillSaturationSpin(),
             m_inspectorPane->effectPresetCombo(),
             m_inspectorPane->effectRowsSpin(),
             m_inspectorPane->effectSpeedSpin(),

@@ -1493,34 +1493,10 @@ void TranscriptTab::deleteSelectedRows()
         return;
     }
 
-    QItemSelectionModel* selectionModel = m_widgets.transcriptTable->selectionModel();
-    if (!selectionModel) return;
-
-    const QModelIndexList selectedRows = selectionModel->selectedRows();
-    if (selectedRows.isEmpty()) return;
-
-    std::vector<jcut::TranscriptWordRef> references;
-    references.reserve(
-        static_cast<std::size_t>(selectedRows.size()));
-    for (const QModelIndex& index : selectedRows) {
-        const int row = index.row();
-        QTableWidgetItem* item = m_widgets.transcriptTable->item(row, 0);
-        if (!item || item->data(Qt::UserRole + 4).toBool() || item->data(Qt::UserRole + 12).toBool()) continue;
-        const int wordId = item->data(Qt::UserRole + 16).toInt();
-        if (wordId < 0) continue;
-        references.push_back({
-            item->data(Qt::UserRole + 5).toInt(),
-            item->data(Qt::UserRole + 6).toInt(),
-            item->data(Qt::UserRole + 13).toInt(),
-            item->data(Qt::UserRole + 14).toInt(),
-            item->data(Qt::UserRole + 15).toInt()});
-    }
+    const std::vector<jcut::TranscriptWordRef> references =
+        selectedMutableTranscriptWordReferences();
     if (references.empty()) return;
-    (void)applyTranscriptDocumentMutation(
-        [&](nlohmann::json* root, std::string* error) {
-            return jcut::deleteTranscriptWords(
-                root, references, error);
-        });
+    (void)deleteTranscriptWordReferences(references);
 }
 
 void TranscriptTab::setSelectedRowsSkipped(bool skipped)
@@ -1533,57 +1509,12 @@ void TranscriptTab::setSelectedRowsSkipped(bool skipped)
         return;
     }
 
-    QItemSelectionModel* selectionModel = m_widgets.transcriptTable->selectionModel();
-    if (!selectionModel) {
-        return;
-    }
-
-    const QModelIndexList selectedRows = selectionModel->selectedRows();
-    if (selectedRows.isEmpty()) {
-        return;
-    }
-
-    std::vector<jcut::TranscriptWordRef> references;
-    references.reserve(
-        static_cast<std::size_t>(selectedRows.size()));
-    for (const QModelIndex& index : selectedRows) {
-        QTableWidgetItem* item = m_widgets.transcriptTable->item(index.row(), 0);
-        if (!item || item->data(Qt::UserRole + 4).toBool() || item->data(Qt::UserRole + 12).toBool()) {
-            continue;
-        }
-        const int wordId = item->data(Qt::UserRole + 16).toInt();
-        if (wordId < 0) {
-            continue;
-        }
-        references.push_back({
-            item->data(Qt::UserRole + 5).toInt(),
-            item->data(Qt::UserRole + 6).toInt(),
-            item->data(Qt::UserRole + 13).toInt(),
-            item->data(Qt::UserRole + 14).toInt(),
-            item->data(Qt::UserRole + 15).toInt()});
-    }
+    const std::vector<jcut::TranscriptWordRef> references =
+        selectedMutableTranscriptWordReferences();
     if (references.empty()) {
         return;
     }
-    (void)applyTranscriptDocumentMutation(
-        [&](nlohmann::json* root, std::string* error) {
-            bool changed = false;
-            for (const jcut::TranscriptWordRef& reference :
-                 references) {
-                jcut::TranscriptWordPatch patch;
-                patch.skipped = skipped;
-                std::string wordError;
-                changed = jcut::patchTranscriptWord(
-                              root, reference, patch,
-                              &wordError) ||
-                    changed;
-                if (!wordError.empty()) {
-                    if (error) *error = std::move(wordError);
-                    return false;
-                }
-            }
-            return changed;
-        });
+    (void)setTranscriptWordReferencesSkipped(references, skipped);
 }
 
 void TranscriptTab::scheduleSeekToTranscriptRow(int row)
@@ -1608,6 +1539,126 @@ void TranscriptTab::scheduleSeekToTranscriptRow(int row)
         selectedClip->startFrame + (startFrame - selectedClip->sourceInFrame));
     m_pendingSeekTimelineFrame = timelineFrame;
     m_deferredSeekTimer.start(QApplication::doubleClickInterval());
+}
+
+void TranscriptTab::alignSelectionForContextMenuRow(int row)
+{
+    if (!m_widgets.transcriptTable || row < 0 ||
+        row >= m_widgets.transcriptTable->rowCount()) {
+        return;
+    }
+    QItemSelectionModel* selectionModel =
+        m_widgets.transcriptTable->selectionModel();
+    if (!selectionModel) {
+        return;
+    }
+
+    const QModelIndex rowIndex =
+        m_widgets.transcriptTable->model()->index(
+            row, kTranscriptColSourceStart);
+    if (!rowIndex.isValid()) {
+        return;
+    }
+
+    m_suppressSelectionSideEffects = true;
+    if (!selectionModel->isRowSelected(row, QModelIndex())) {
+        selectionModel->select(
+            rowIndex,
+            QItemSelectionModel::ClearAndSelect |
+                QItemSelectionModel::Rows);
+        selectionModel->setCurrentIndex(
+            rowIndex,
+            QItemSelectionModel::Current |
+                QItemSelectionModel::Rows);
+    }
+    m_suppressSelectionSideEffects = false;
+    persistSelectionIdentityFromRow(row);
+    m_manualSelectionTimer.restart();
+}
+
+std::vector<jcut::TranscriptWordRef>
+TranscriptTab::selectedMutableTranscriptWordReferences() const
+{
+    std::vector<jcut::TranscriptWordRef> references;
+    if (!m_widgets.transcriptTable) {
+        return references;
+    }
+    QItemSelectionModel* selectionModel =
+        m_widgets.transcriptTable->selectionModel();
+    if (!selectionModel) {
+        return references;
+    }
+
+    const QModelIndexList selectedRows =
+        selectionModel->selectedRows();
+    references.reserve(
+        static_cast<std::size_t>(selectedRows.size()));
+    for (const QModelIndex& index : selectedRows) {
+        QTableWidgetItem* item =
+            m_widgets.transcriptTable->item(index.row(), 0);
+        if (!item ||
+            item->data(Qt::UserRole + 4).toBool() ||
+            item->data(Qt::UserRole + 12).toBool()) {
+            continue;
+        }
+        const int wordId = item->data(Qt::UserRole + 16).toInt();
+        if (wordId < 0) {
+            continue;
+        }
+        jcut::TranscriptWordRef reference;
+        reference.documentWordId = wordId;
+        reference.segmentIndex = item->data(Qt::UserRole + 5).toInt();
+        reference.wordIndex = item->data(Qt::UserRole + 6).toInt();
+        reference.originalSegmentIndex =
+            item->data(Qt::UserRole + 13).toInt();
+        reference.originalWordIndex =
+            item->data(Qt::UserRole + 14).toInt();
+        reference.renderOrder =
+            item->data(Qt::UserRole + 15).toInt();
+        references.push_back(reference);
+    }
+    return references;
+}
+
+bool TranscriptTab::setTranscriptWordReferencesSkipped(
+    const std::vector<jcut::TranscriptWordRef>& references,
+    bool skipped)
+{
+    if (references.empty()) {
+        return false;
+    }
+    return applyTranscriptDocumentMutation(
+        [&](nlohmann::json* root, std::string* error) {
+            bool changed = false;
+            for (const jcut::TranscriptWordRef& reference :
+                 references) {
+                jcut::TranscriptWordPatch patch;
+                patch.skipped = skipped;
+                std::string wordError;
+                changed = jcut::patchTranscriptWord(
+                              root, reference, patch,
+                              &wordError) ||
+                    changed;
+                if (!wordError.empty()) {
+                    if (error) *error = std::move(wordError);
+                    return false;
+                }
+            }
+            return changed;
+        });
+}
+
+bool TranscriptTab::deleteTranscriptWordReferences(
+    const std::vector<jcut::TranscriptWordRef>& references)
+{
+    if (references.empty()) {
+        return false;
+    }
+    return applyTranscriptDocumentMutation(
+        [&](nlohmann::json* root, std::string* error) {
+            return jcut::deleteTranscriptWords(
+                root, references, error);
+        });
 }
 
 void TranscriptTab::configureTranscriptTableView()
@@ -1936,6 +1987,9 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     if (!index.isValid()) return;
 
     const int row = index.row();
+    alignSelectionForContextMenuRow(row);
+    const std::vector<jcut::TranscriptWordRef> selectedReferences =
+        selectedMutableTranscriptWordReferences();
     QTableWidgetItem* sourceItem = m_widgets.transcriptTable->item(row, kTranscriptColSourceStart);
     if (!sourceItem) return;
     const bool isGap = sourceItem->data(Qt::UserRole + 4).toBool();
@@ -1983,9 +2037,11 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     } else if (chosen == restoreAction) {
         restoreWordToOriginalState(wordId);
     } else if (chosen == skipAction) {
-        setSelectedRowsSkipped(!rowSkipped);
+        (void)setTranscriptWordReferencesSkipped(
+            selectedReferences, !rowSkipped);
     } else if (chosen == deleteAction) {
-        deleteSelectedRows();
+        (void)deleteTranscriptWordReferences(
+            selectedReferences);
     }
 }
 
@@ -2040,12 +2096,19 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         currentItem->data(Qt::UserRole + 12).toBool()) {
         return;
     }
-    const jcut::TranscriptWordRef reference{
-        currentItem->data(Qt::UserRole + 5).toInt(),
-        currentItem->data(Qt::UserRole + 6).toInt(),
-        currentItem->data(Qt::UserRole + 13).toInt(),
-        currentItem->data(Qt::UserRole + 14).toInt(),
-        currentItem->data(Qt::UserRole + 15).toInt()};
+    jcut::TranscriptWordRef reference;
+    reference.documentWordId =
+        currentItem->data(Qt::UserRole + 16).toInt();
+    reference.segmentIndex =
+        currentItem->data(Qt::UserRole + 5).toInt();
+    reference.wordIndex =
+        currentItem->data(Qt::UserRole + 6).toInt();
+    reference.originalSegmentIndex =
+        currentItem->data(Qt::UserRole + 13).toInt();
+    reference.originalWordIndex =
+        currentItem->data(Qt::UserRole + 14).toInt();
+    reference.renderOrder =
+        currentItem->data(Qt::UserRole + 15).toInt();
     (void)applyTranscriptDocumentMutation(
         [&](nlohmann::json* root, std::string* error) {
             return jcut::insertTranscriptWord(
@@ -2074,12 +2137,18 @@ void TranscriptTab::expandSelectedRow(int row)
     const int wordId =
         currentItem->data(Qt::UserRole + 16).toInt();
     if (wordId < 0) return;
-    const jcut::TranscriptWordRef reference{
-        currentItem->data(Qt::UserRole + 5).toInt(),
-        currentItem->data(Qt::UserRole + 6).toInt(),
-        currentItem->data(Qt::UserRole + 13).toInt(),
-        currentItem->data(Qt::UserRole + 14).toInt(),
-        currentItem->data(Qt::UserRole + 15).toInt()};
+    jcut::TranscriptWordRef reference;
+    reference.documentWordId = wordId;
+    reference.segmentIndex =
+        currentItem->data(Qt::UserRole + 5).toInt();
+    reference.wordIndex =
+        currentItem->data(Qt::UserRole + 6).toInt();
+    reference.originalSegmentIndex =
+        currentItem->data(Qt::UserRole + 13).toInt();
+    reference.originalWordIndex =
+        currentItem->data(Qt::UserRole + 14).toInt();
+    reference.renderOrder =
+        currentItem->data(Qt::UserRole + 15).toInt();
     (void)applyTranscriptDocumentMutation(
         [&](nlohmann::json* root, std::string* error) {
             return jcut::expandTranscriptWordTiming(
@@ -2114,12 +2183,15 @@ bool TranscriptTab::restoreWordToOriginalState(int wordId)
         m_transcriptWordAddressById.constEnd()) {
         return false;
     }
-    const jcut::TranscriptWordRef reference{
-        address->segmentIndex,
-        address->wordIndex,
-        word->originalSegmentIndex,
-        word->originalWordIndex,
-        word->renderOrder};
+    jcut::TranscriptWordRef reference;
+    reference.documentWordId = wordId;
+    reference.segmentIndex = address->segmentIndex;
+    reference.wordIndex = address->wordIndex;
+    reference.originalSegmentIndex =
+        word->originalSegmentIndex;
+    reference.originalWordIndex =
+        word->originalWordIndex;
+    reference.renderOrder = word->renderOrder;
     const nlohmann::json originalRoot =
         jcut::jsonio::toJson(
             QJsonValue(originalDoc.object()));

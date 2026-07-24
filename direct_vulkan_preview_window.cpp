@@ -3224,21 +3224,32 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 const bool progressiveEdgeStretchEffect =
                     progressiveStretchPolicy.drawBackground &&
                     !(status && status->maskClipSource);
+                const bool clipEdgeFillEffect =
+                    effectClip.edgeFillEnabled &&
+                    progressiveStretchPolicy.sourceEligible &&
+                    !(status && status->maskClipSource);
+                const bool clipOwnedEdgeFill =
+                    progressiveEdgeStretchEffect || clipEdgeFillEffect;
                 const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
                 const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
                 const bool globalProgressiveFillSelected =
                     fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
                 const bool shouldDrawBackgroundFill =
-                    progressiveStretchOwnsClipBackground ||
-                    (!globalProgressiveFillSelected &&
+                    clipOwnedEdgeFill ||
+                    (fillEffect != BackgroundFillEffect::None &&
+                     !globalProgressiveFillSelected &&
                      render_detail::shouldDrawBlurredFillBackground(
                          frameSize.isValid() ? frameSize : clip.sourceFrameSize,
                          state->outputSize));
-                if ((progressiveEdgeStretchEffect || !backgroundFilled) &&
+                if ((clipOwnedEdgeFill || !backgroundFilled) &&
                     shouldDrawBackgroundFill) {
                     const BackgroundFillEffect effectiveFillEffect =
                         progressiveEdgeStretchEffect
                             ? BackgroundFillEffect::ProgressiveEdgeStretch
+                            : clipEdgeFillEffect
+                            ? (effectClip.edgeFillProgressive
+                                   ? BackgroundFillEffect::ProgressiveEdgeStretch
+                                   : BackgroundFillEffect::EdgeStretch)
                             : fillEffect;
                     const bool fullCanvasFill =
                         effectiveFillEffect == BackgroundFillEffect::EdgeStretch ||
@@ -3308,18 +3319,36 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     const int edgePixels =
                         progressiveEdgeStretchEffect
                             ? qBound(1, effectClip.effectRows, 512)
+                            : clipEdgeFillEffect
+                            ? qBound(1, effectClip.edgeFillPixels, 512)
                             : state->backgroundFillEdgePixels;
                     const qreal edgePower =
                         progressiveEdgeStretchEffect
                             ? qBound<qreal>(0.25, effectClip.effectScale, 8.0)
+                            : clipEdgeFillEffect
+                            ? qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0)
                             : state->backgroundFillEdgePower;
+                    float backgroundFillOpacity =
+                        static_cast<float>(state->backgroundFillOpacity);
+                    float backgroundFillBrightness =
+                        static_cast<float>(state->backgroundFillBrightness);
+                    float backgroundFillSaturation =
+                        static_cast<float>(state->backgroundFillSaturation);
+                    if (clipEdgeFillEffect) {
+                        backgroundFillOpacity =
+                            static_cast<float>(effectClip.edgeFillOpacity);
+                        backgroundFillBrightness =
+                            static_cast<float>(effectClip.edgeFillBrightness);
+                        backgroundFillSaturation =
+                            static_cast<float>(effectClip.edgeFillSaturation);
+                    }
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
                             effectiveFillEffect,
                             baseEffects,
-                            static_cast<float>(state->backgroundFillOpacity),
-                            static_cast<float>(state->backgroundFillBrightness),
-                            static_cast<float>(state->backgroundFillSaturation),
+                            backgroundFillOpacity,
+                            backgroundFillBrightness,
+                            backgroundFillSaturation,
                             edgePixels,
                             state->backgroundFillEdgeProgressive,
                             static_cast<float>(edgePower),
@@ -3363,7 +3392,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                             handoffResult.descriptorSet,
                                             backgroundPush,
                                             backgroundFrameUniformOffset);
-                    if (!progressiveStretchOwnsClipBackground) {
+                    if (!clipOwnedEdgeFill) {
                         backgroundFilled = true;
                     }
                 }

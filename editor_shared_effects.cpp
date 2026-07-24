@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <sys/stat.h>
@@ -120,6 +121,21 @@ QCache<QString, QImage>& preparedMaskCache()
 }
 
 QMutex& preparedMaskCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QCache<QString, QImage>& rawMaskCache()
+{
+    // Cost units are KiB. Keeping a few seconds of decoded grayscale masks
+    // prevents repeated PNG inflation when multiple preview-status refreshes
+    // request the same presented frame.
+    static QCache<QString, QImage> cache(256 * 1024);
+    return cache;
+}
+
+QMutex& rawMaskCacheMutex()
 {
     static QMutex mutex;
     return mutex;
@@ -927,11 +943,41 @@ QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, cons
 QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
 {
     const QString path = maskFramePathForSourceFrame(clip, sourceFrame);
-    const QFileInfo info(path);
-    if (path.isEmpty() || !info.exists()) {
+    if (path.isEmpty()) {
         return QImage();
     }
-    return QImage(path);
+    const QFileInfo info(path);
+    const FileVersionSignature version = fileVersionSignature(path);
+    if (!version.valid || version.size <= 0) {
+        return QImage();
+    }
+    const QString cacheKey =
+        QStringLiteral("%1\x1f%2\x1f%3\x1f%4\x1f%5\x1f%6")
+            .arg(info.absoluteFilePath())
+            .arg(version.size)
+            .arg(version.modifiedNanoseconds)
+            .arg(version.changedNanoseconds)
+            .arg(version.device)
+            .arg(version.inode);
+    {
+        QMutexLocker lock(&rawMaskCacheMutex());
+        if (QImage* cached = rawMaskCache().object(cacheKey)) {
+            return *cached;
+        }
+    }
+    QImage mask(path);
+    if (mask.isNull()) {
+        return QImage();
+    }
+    const qint64 costKb64 = qMax<qint64>(
+        1, (static_cast<qint64>(mask.sizeInBytes()) + 1023) / 1024);
+    const int costKb = static_cast<int>(qMin<qint64>(
+        costKb64, std::numeric_limits<int>::max()));
+    {
+        QMutexLocker lock(&rawMaskCacheMutex());
+        rawMaskCache().insert(cacheKey, new QImage(mask), costKb);
+    }
+    return mask;
 }
 
 QImage applyCorrectionPolygonsToMaskImage(

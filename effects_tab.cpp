@@ -273,6 +273,28 @@ void EffectsTab::wire()
         connect(m_widgets.maskRepeatDeltaYSpin, &QDoubleSpinBox::editingFinished,
                 this, &EffectsTab::onEditingFinished);
     }
+    if (m_widgets.edgeFillEnabledCheck) {
+        connect(m_widgets.edgeFillEnabledCheck, &QCheckBox::toggled,
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    if (m_widgets.edgeFillProgressiveCheck) {
+        connect(m_widgets.edgeFillProgressiveCheck, &QCheckBox::toggled,
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    if (m_widgets.edgeFillPixelsSpin) {
+        connect(m_widgets.edgeFillPixelsSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    const QVector<QDoubleSpinBox*> edgeFillRealControls{
+        m_widgets.edgeFillPowerSpin, m_widgets.edgeFillOpacitySpin,
+        m_widgets.edgeFillBrightnessSpin, m_widgets.edgeFillSaturationSpin};
+    for (QDoubleSpinBox* spin : edgeFillRealControls) {
+        if (!spin) continue;
+        connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, &EffectsTab::onEffectControlChanged);
+        connect(spin, &QDoubleSpinBox::editingFinished,
+                this, &EffectsTab::onEditingFinished);
+    }
     if (m_widgets.effectPresetCombo) {
         connect(m_widgets.effectPresetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &EffectsTab::onEffectPresetChanged);
@@ -427,6 +449,18 @@ void EffectsTab::refresh()
             m_widgets.maskRepeatDeltaYSpin->setValue(0.0);
             m_widgets.maskRepeatDeltaYSpin->setEnabled(false);
         }
+        for (QWidget* widget : {
+                 static_cast<QWidget*>(m_widgets.edgeFillEnabledCheck),
+                 static_cast<QWidget*>(m_widgets.edgeFillProgressiveCheck),
+                 static_cast<QWidget*>(m_widgets.edgeFillPixelsSpin),
+                 static_cast<QWidget*>(m_widgets.edgeFillPowerSpin),
+                 static_cast<QWidget*>(m_widgets.edgeFillOpacitySpin),
+                 static_cast<QWidget*>(m_widgets.edgeFillBrightnessSpin),
+                 static_cast<QWidget*>(m_widgets.edgeFillSaturationSpin)}) {
+            if (widget) widget->setEnabled(false);
+        }
+        if (m_widgets.edgeFillEnabledCheck) m_widgets.edgeFillEnabledCheck->setChecked(false);
+        if (m_widgets.edgeFillProgressiveCheck) m_widgets.edgeFillProgressiveCheck->setChecked(false);
         if (m_widgets.effectPresetCombo) {
             m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
                 m_widgets.effectPresetCombo,
@@ -541,6 +575,36 @@ void EffectsTab::refresh()
     }
     if (m_widgets.maskRepeatDeltaYSpin) {
         m_widgets.maskRepeatDeltaYSpin->setValue(clip->maskRepeatDeltaY);
+    }
+    if (m_widgets.edgeFillEnabledCheck) {
+        m_widgets.edgeFillEnabledCheck->setChecked(clip->edgeFillEnabled);
+        m_widgets.edgeFillEnabledCheck->setEnabled(true);
+    }
+    if (m_widgets.edgeFillProgressiveCheck) {
+        m_widgets.edgeFillProgressiveCheck->setChecked(clip->edgeFillProgressive);
+        m_widgets.edgeFillProgressiveCheck->setEnabled(clip->edgeFillEnabled);
+    }
+    if (m_widgets.edgeFillPixelsSpin) {
+        m_widgets.edgeFillPixelsSpin->setValue(clip->edgeFillPixels);
+        m_widgets.edgeFillPixelsSpin->setEnabled(
+            clip->edgeFillEnabled && clip->edgeFillProgressive);
+    }
+    if (m_widgets.edgeFillPowerSpin) {
+        m_widgets.edgeFillPowerSpin->setValue(clip->edgeFillPower);
+        m_widgets.edgeFillPowerSpin->setEnabled(
+            clip->edgeFillEnabled && clip->edgeFillProgressive);
+    }
+    if (m_widgets.edgeFillOpacitySpin) {
+        m_widgets.edgeFillOpacitySpin->setValue(clip->edgeFillOpacity * 100.0);
+        m_widgets.edgeFillOpacitySpin->setEnabled(clip->edgeFillEnabled);
+    }
+    if (m_widgets.edgeFillBrightnessSpin) {
+        m_widgets.edgeFillBrightnessSpin->setValue(clip->edgeFillBrightness * 100.0);
+        m_widgets.edgeFillBrightnessSpin->setEnabled(clip->edgeFillEnabled);
+    }
+    if (m_widgets.edgeFillSaturationSpin) {
+        m_widgets.edgeFillSaturationSpin->setValue(clip->edgeFillSaturation * 100.0);
+        m_widgets.edgeFillSaturationSpin->setEnabled(clip->edgeFillEnabled);
     }
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
@@ -768,6 +832,20 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         m_widgets.maskRepeatDeltaXSpin ? m_widgets.maskRepeatDeltaXSpin->value() : 160.0;
     const double maskRepeatDeltaY =
         m_widgets.maskRepeatDeltaYSpin ? m_widgets.maskRepeatDeltaYSpin->value() : 0.0;
+    const bool edgeFillEnabled =
+        m_widgets.edgeFillEnabledCheck && m_widgets.edgeFillEnabledCheck->isChecked();
+    const bool edgeFillProgressive =
+        m_widgets.edgeFillProgressiveCheck && m_widgets.edgeFillProgressiveCheck->isChecked();
+    const int edgeFillPixels =
+        m_widgets.edgeFillPixelsSpin ? m_widgets.edgeFillPixelsSpin->value() : 1;
+    const double edgeFillPower =
+        m_widgets.edgeFillPowerSpin ? m_widgets.edgeFillPowerSpin->value() : 2.0;
+    const double edgeFillOpacity =
+        m_widgets.edgeFillOpacitySpin ? m_widgets.edgeFillOpacitySpin->value() / 100.0 : 1.0;
+    const double edgeFillBrightness =
+        m_widgets.edgeFillBrightnessSpin ? m_widgets.edgeFillBrightnessSpin->value() / 100.0 : 0.0;
+    const double edgeFillSaturation =
+        m_widgets.edgeFillSaturationSpin ? m_widgets.edgeFillSaturationSpin->value() / 100.0 : 1.0;
     const int differenceReferenceFrames = m_widgets.differenceReferenceFramesSpin ? m_widgets.differenceReferenceFramesSpin->value() : 1;
     const double differenceThreshold = m_widgets.differenceThresholdSpin ? m_widgets.differenceThresholdSpin->value() : 0.10;
     const double differenceSoftness = m_widgets.differenceSoftnessSpin ? m_widgets.differenceSoftnessSpin->value() : 0.05;
@@ -786,6 +864,13 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             clip.maskRepeatEnabled = maskRepeatEnabled;
             clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
             clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
+            clip.edgeFillEnabled = edgeFillEnabled;
+            clip.edgeFillProgressive = edgeFillProgressive;
+            clip.edgeFillPixels = qBound(1, edgeFillPixels, 512);
+            clip.edgeFillPower = qBound<qreal>(0.25, edgeFillPower, 8.0);
+            clip.edgeFillOpacity = qBound<qreal>(0.0, edgeFillOpacity, 1.0);
+            clip.edgeFillBrightness = qBound<qreal>(-1.0, edgeFillBrightness, 1.0);
+            clip.edgeFillSaturation = qBound<qreal>(0.0, edgeFillSaturation, 3.0);
             clip.effectPreset = preset;
             if (preset != previousPreset) {
                 restoreEffectParameters(clip, clip.effectParameterSets.value(presetParameterKey(preset)).toObject());

@@ -12,6 +12,8 @@ set(CMAKE_AUTOUIC ON)
 
 option(EDITOR_ASAN "Enable AddressSanitizer" OFF)
 option(EDITOR_BUILD_TESTS "Build editor tests" ON)
+set(JCUT_REQUIRED_QT_VERSION "6.8.3" CACHE STRING
+    "Exact Qt version used to build and distribute JCut.")
 option(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH
     "Use Rubber Band as the default pitch-preserving audio time-stretch backend when available."
     ON)
@@ -32,8 +34,14 @@ find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(X11 REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test
-             OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
+find_package(Qt6 ${JCUT_REQUIRED_QT_VERSION} EXACT REQUIRED
+             COMPONENTS Core Gui Widgets Network Concurrent Test)
+if(NOT TARGET Qt6::CorePrivate OR NOT TARGET Qt6::GuiPrivate)
+    message(FATAL_ERROR
+        "JCut uses Qt private QRhi APIs and requires the CorePrivate and GuiPrivate "
+        "targets from the exact Qt ${JCUT_REQUIRED_QT_VERSION} SDK. "
+        "Current Qt6_DIR: ${Qt6_DIR}")
+endif()
 get_target_property(JCUT_QT_NETWORK_DISABLED_FEATURES Qt6::Network QT_DISABLED_PUBLIC_FEATURES)
 if(JCUT_QT_NETWORK_DISABLED_FEATURES MATCHES "(^|;)ssl(;|$)")
     message(FATAL_ERROR

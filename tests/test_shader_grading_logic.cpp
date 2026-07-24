@@ -481,7 +481,20 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         maskDirectory, sourcePath, true, true));
-    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
+    const QImage initialMask = rawClipMaskImage(clip, 0);
+    QVERIFY(!initialMask.isNull());
+    QCOMPARE(initialMask.convertToFormat(QImage::Format_Grayscale8)
+                 .constScanLine(0)[0],
+             uchar{255});
+    QImage updatedMask(2, 1, QImage::Format_Grayscale8);
+    updatedMask.fill(0);
+    QVERIFY(updatedMask.save(QDir(maskDirectory).filePath(
+        QStringLiteral("frame_000001.png"))));
+    const QImage reloadedMask = rawClipMaskImage(clip, 0);
+    QVERIFY(!reloadedMask.isNull());
+    QCOMPARE(reloadedMask.convertToFormat(QImage::Format_Grayscale8)
+                 .constScanLine(0)[0],
+             uchar{0});
     QVERIFY(rawClipMaskImage(clip, 1).isNull());
 
     // Durable binding is content-based: a byte-identical copy at a different

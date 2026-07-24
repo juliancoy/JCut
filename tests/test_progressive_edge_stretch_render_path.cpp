@@ -183,9 +183,10 @@ TimelineClip makeProgressiveStretchClip(const QString& sourcePath)
     clip.baseRotation = 0.0;
     clip.baseScaleX = static_cast<qreal>(kSourceW) / kOutputW;
     clip.baseScaleY = static_cast<qreal>(kSourceH) / ((static_cast<qreal>(kOutputW) / kSourceW) * kSourceH);
-    clip.effectPreset = ClipEffectPreset::ProgressiveEdgeStretch;
-    clip.effectRows = kEdgePixels;
-    clip.effectScale = kPower;
+    clip.edgeFillEnabled = true;
+    clip.edgeFillProgressive = true;
+    clip.edgeFillPixels = kEdgePixels;
+    clip.edgeFillPower = kPower;
     return clip;
 }
 
@@ -255,7 +256,7 @@ private slots:
         request.outputFormat = QStringLiteral("preview");
         request.outputSize = QSize(kOutputW, kOutputH);
         request.correctionsEnabled = true;
-        request.backgroundFillEffect = BackgroundFillEffect::EdgeStretch;
+        request.backgroundFillEffect = BackgroundFillEffect::None;
         request.backgroundFillOpacity = 1.0;
         request.backgroundFillBrightness = 0.0;
         request.backgroundFillSaturation = 1.0;
@@ -266,9 +267,9 @@ private slots:
         request.exportEndFrame = 0;
         const render_detail::VulkanProgressiveEdgeStretchLayerPolicy policy =
             render_detail::vulkanProgressiveEdgeStretchLayerPolicy(request.clips.first(), request.tracks);
-        QVERIFY(policy.presetActive);
         QVERIFY(policy.sourceEligible);
-        QVERIFY(policy.drawBackground);
+        QVERIFY(!policy.presetActive);
+        QVERIFY(!policy.drawBackground);
 
         QVector<TimelineClip> orderedClips = request.clips;
         QHash<QString, editor::DecoderContext*> decoders;

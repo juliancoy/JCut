@@ -665,6 +665,13 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskRepeatEnabled")] = clip.maskRepeatEnabled;
         obj[QStringLiteral("maskRepeatDeltaX")] = clip.maskRepeatDeltaX;
         obj[QStringLiteral("maskRepeatDeltaY")] = clip.maskRepeatDeltaY;
+        obj[QStringLiteral("edgeFillEnabled")] = clip.edgeFillEnabled;
+        obj[QStringLiteral("edgeFillProgressive")] = clip.edgeFillProgressive;
+        obj[QStringLiteral("edgeFillPixels")] = clip.edgeFillPixels;
+        obj[QStringLiteral("edgeFillPower")] = clip.edgeFillPower;
+        obj[QStringLiteral("edgeFillOpacity")] = clip.edgeFillOpacity;
+        obj[QStringLiteral("edgeFillBrightness")] = clip.edgeFillBrightness;
+        obj[QStringLiteral("edgeFillSaturation")] = clip.edgeFillSaturation;
         obj[QStringLiteral("effectPreset")] = effectPresetToJson(clip.effectPreset);
         obj[QStringLiteral("effectRows")] = clip.effectRows;
         obj[QStringLiteral("effectSpeed")] = clip.effectSpeed;
@@ -1167,6 +1174,13 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaX")).toDouble(160.0), 100000.0);
         clip.maskRepeatDeltaY =
             qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaY")).toDouble(0.0), 100000.0);
+        clip.edgeFillEnabled = obj.value(QStringLiteral("edgeFillEnabled")).toBool(false);
+        clip.edgeFillProgressive = obj.value(QStringLiteral("edgeFillProgressive")).toBool(false);
+        clip.edgeFillPixels = qBound(1, obj.value(QStringLiteral("edgeFillPixels")).toInt(1), 512);
+        clip.edgeFillPower = qBound<qreal>(0.25, obj.value(QStringLiteral("edgeFillPower")).toDouble(2.0), 8.0);
+        clip.edgeFillOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("edgeFillOpacity")).toDouble(1.0), 1.0);
+        clip.edgeFillBrightness = qBound<qreal>(-1.0, obj.value(QStringLiteral("edgeFillBrightness")).toDouble(0.0), 1.0);
+        clip.edgeFillSaturation = qBound<qreal>(0.0, obj.value(QStringLiteral("edgeFillSaturation")).toDouble(1.0), 3.0);
         clip.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
         clip.effectRows = qBound(1,

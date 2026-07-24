@@ -10963,8 +10963,43 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 (effectMediaKind == "image" || effectMediaKind == "video");
             ImGui::BeginDisabled(!imagePresetCapable);
             bool effectChanged = false;
+            bool edgeFillEnabled = currentClip && currentClip->edgeFillEnabled;
+            bool edgeFillProgressive = currentClip && currentClip->edgeFillProgressive;
+            int edgeFillPixels = currentClip ? currentClip->edgeFillPixels : 1;
+            float edgeFillPower = currentClip
+                ? static_cast<float>(currentClip->edgeFillPower) : 2.0f;
+            float edgeFillOpacity = currentClip
+                ? static_cast<float>(currentClip->edgeFillOpacity) : 1.0f;
+            float edgeFillBrightness = currentClip
+                ? static_cast<float>(currentClip->edgeFillBrightness) : 0.0f;
+            float edgeFillSaturation = currentClip
+                ? static_cast<float>(currentClip->edgeFillSaturation) : 1.0f;
+            if (ImGui::CollapsingHeader(
+                    "Edge Fill", ImGuiTreeNodeFlags_DefaultOpen)) {
+                effectChanged |= ImGui::Checkbox(
+                    "Enable Edge Stretch", &edgeFillEnabled);
+                ImGui::BeginDisabled(!edgeFillEnabled);
+                effectChanged |= ImGui::Checkbox(
+                    "Progressive Stretch", &edgeFillProgressive);
+                ImGui::BeginDisabled(!edgeFillProgressive);
+                effectChanged |= ImGui::SliderInt(
+                    "Edge Width", &edgeFillPixels, 1, 512);
+                effectChanged |= ImGui::SliderFloat(
+                    "Curve Power", &edgeFillPower, 0.25f, 8.0f, "%.2f");
+                ImGui::EndDisabled();
+                effectChanged |= ImGui::SliderFloat(
+                    "Edge Opacity", &edgeFillOpacity, 0.0f, 1.0f, "%.2f");
+                effectChanged |= ImGui::SliderFloat(
+                    "Edge Brightness", &edgeFillBrightness, -1.0f, 1.0f, "%.2f");
+                effectChanged |= ImGui::SliderFloat(
+                    "Edge Saturation", &edgeFillSaturation, 0.0f, 3.0f, "%.2f");
+                ImGui::EndDisabled();
+            }
             if (ImGui::BeginCombo("Preset", presetLabel.c_str())) {
                 for (const std::string_view optionId : jcut::kEditorEffectPresetIds) {
+                    if (optionId == "progressive_edge_stretch") {
+                        continue;
+                    }
                     const bool selected = presetId == optionId;
                     const std::string optionLabel = effectPresetDisplayName(optionId);
                     if (ImGui::Selectable(optionLabel.c_str(), selected)) {
@@ -11140,6 +11175,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 command.repeatEnabled = currentClip->maskRepeatEnabled;
                 command.repeatDeltaX = currentClip->maskRepeatDeltaX;
                 command.repeatDeltaY = currentClip->maskRepeatDeltaY;
+                command.edgeFillEnabled = edgeFillEnabled;
+                command.edgeFillProgressive = edgeFillProgressive;
+                command.edgeFillPixels = edgeFillPixels;
+                command.edgeFillPower = edgeFillPower;
+                command.edgeFillOpacity = edgeFillOpacity;
+                command.edgeFillBrightness = edgeFillBrightness;
+                command.edgeFillSaturation = edgeFillSaturation;
                 command.effectPreset = presetId;
                 command.effectRows = rows;
                 command.effectSpeed = speed;

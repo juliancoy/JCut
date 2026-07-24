@@ -265,6 +265,13 @@ public:
     QCheckBox *maskRepeatEnabledCheck() const { return m_maskRepeatEnabledCheck; }
     QDoubleSpinBox *maskRepeatDeltaXSpin() const { return m_maskRepeatDeltaXSpin; }
     QDoubleSpinBox *maskRepeatDeltaYSpin() const { return m_maskRepeatDeltaYSpin; }
+    QCheckBox *edgeFillEnabledCheck() const { return m_edgeFillEnabledCheck; }
+    QCheckBox *edgeFillProgressiveCheck() const { return m_edgeFillProgressiveCheck; }
+    QSpinBox *edgeFillPixelsSpin() const { return m_edgeFillPixelsSpin; }
+    QDoubleSpinBox *edgeFillPowerSpin() const { return m_edgeFillPowerSpin; }
+    QDoubleSpinBox *edgeFillOpacitySpin() const { return m_edgeFillOpacitySpin; }
+    QDoubleSpinBox *edgeFillBrightnessSpin() const { return m_edgeFillBrightnessSpin; }
+    QDoubleSpinBox *edgeFillSaturationSpin() const { return m_edgeFillSaturationSpin; }
     QComboBox *effectPresetCombo() const { return m_effectPresetCombo; }
     QSpinBox *differenceReferenceFramesSpin() const { return m_differenceReferenceFramesSpin; }
     QDoubleSpinBox *differenceThresholdSpin() const { return m_differenceThresholdSpin; }
@@ -599,6 +606,13 @@ private:
     QCheckBox *m_maskRepeatEnabledCheck = nullptr;
     QDoubleSpinBox *m_maskRepeatDeltaXSpin = nullptr;
     QDoubleSpinBox *m_maskRepeatDeltaYSpin = nullptr;
+    QCheckBox *m_edgeFillEnabledCheck = nullptr;
+    QCheckBox *m_edgeFillProgressiveCheck = nullptr;
+    QSpinBox *m_edgeFillPixelsSpin = nullptr;
+    QDoubleSpinBox *m_edgeFillPowerSpin = nullptr;
+    QDoubleSpinBox *m_edgeFillOpacitySpin = nullptr;
+    QDoubleSpinBox *m_edgeFillBrightnessSpin = nullptr;
+    QDoubleSpinBox *m_edgeFillSaturationSpin = nullptr;
     QComboBox *m_effectPresetCombo = nullptr;
     QSpinBox *m_effectRowsSpin = nullptr;
     QDoubleSpinBox *m_effectSpeedSpin = nullptr;

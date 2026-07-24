@@ -346,10 +346,12 @@ struct EditorTrack {
     bool audioMuted = false;
     bool audioSolo = false;
     bool audioWaveformVisible = true;
-    // Generated Mask Matte lanes are derived presentation bindings. Their
+    // Generated child lanes are derived presentation bindings. Their
     // visibility, grading-preview state, and bounded height are persisted,
     // while their identity, order, label, audio state, and lifecycle follow
-    // the child clip relationship.
+    // the child clip relationship. A Mask Matte lane owns one child; a
+    // transcript speaker-title lane may own several generated clips and stores
+    // one representative child ID alongside the shared parent ID.
     bool generatedChildTrack = false;
     std::string parentClipId;
     std::string childClipId;
@@ -440,6 +442,13 @@ struct EditorClip {
     bool maskRepeatEnabled = false;
     double maskRepeatDeltaX = 160.0;
     double maskRepeatDeltaY = 0.0;
+    bool edgeFillEnabled = false;
+    bool edgeFillProgressive = false;
+    int edgeFillPixels = 1;
+    double edgeFillPower = 2.0;
+    double edgeFillOpacity = 1.0;
+    double edgeFillBrightness = 0.0;
+    double edgeFillSaturation = 1.0;
     std::string effectPreset = "none";
     int effectRows = 32;
     double effectSpeed = 1.0;
@@ -603,6 +612,17 @@ inline std::string editorClipRoleForStorage(std::string_view value)
     }
     // Do not collapse a role introduced by a newer Qt build into media.
     return rawRole;
+}
+
+inline bool isTranscriptGeneratedEditorTitle(const EditorClip& clip)
+{
+    return canonicalEditorClipRole(clip.clipRole) == "speaker_title";
+}
+
+inline bool isOwnedGeneratedEditorClip(const EditorClip& clip)
+{
+    const std::string role = canonicalEditorClipRole(clip.clipRole);
+    return role == "mask_matte" || role == "speaker_title";
 }
 
 // Qt assigns render-sync decisions made on a generated mask layer to the

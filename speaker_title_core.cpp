@@ -359,6 +359,7 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(
         titleClip.clipRole = "speaker_title";
         titleClip.linkedSourceClipId = sourceClip.persistentId;
         titleClip.syncLockedToSource = true;
+        titleClip.locked = true;
         EditorTitleKeyframe base;
         base.text = title;
         base.translationY = 0.68;

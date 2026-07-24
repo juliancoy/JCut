@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 #include <QFile>
 #include <QFileInfo>
+#include <QMenu>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,6 +14,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <limits>
 
 #include "../editor_shared.h"
@@ -192,6 +194,7 @@ private slots:
     void testFollowBridgesSmallGapsDuringFastReversePlayback();
     void testOutsideCutRowsAreNotAutoSelected();
     void testTranscriptTableUsesStableRowGeometryForMouseActivation();
+    void testContextMenuSkipPreservesExistingMultiSelection();
     void testOverlayTransformEditsUpdatePreviewImmediately();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
     void testSpeechFilterPassthroughModeDisablesSpeechFilter();
@@ -952,6 +955,155 @@ void TestTranscriptTabFollow::testTranscriptTableUsesStableRowGeometryForMouseAc
     const QTableWidgetItem* targetItem = table.item(targetRow, 0);
     QVERIFY(targetItem != nullptr);
     QCOMPARE(lastSeekFrame, targetItem->data(Qt::UserRole + 2).toLongLong());
+}
+
+void TestTranscriptTabFollow::testContextMenuSkipPreservesExistingMultiSelection()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    QJsonArray words;
+    words.push_back(word(QStringLiteral("first"), 0.0, 0.10));
+    words.push_back(word(QStringLiteral("second"), 0.10, 0.20));
+    words.push_back(word(QStringLiteral("third"), 0.20, 0.30));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
+
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-context-menu"), clipPath);
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    table.setColumnCount(kTranscriptTestColumnCount);
+    table.resize(640, 180);
+    QCheckBox follow;
+    follow.setChecked(false);
+    QSpinBox prependSpin;
+    prependSpin.setValue(0);
+    QSpinBox postpendSpin;
+    postpendSpin.setValue(0);
+    QCheckBox speechEnabled;
+    QSpinBox speechFade;
+
+    TranscriptTab tab(
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            []() { return false; }});
+    tab.wire();
+    tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
+
+    table.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&table));
+
+    QVector<int> wordRows;
+    for (int row = 0; row < table.rowCount(); ++row) {
+        const QTableWidgetItem* item = table.item(row, 0);
+        if (!item) {
+            continue;
+        }
+        const bool isGap = item->data(Qt::UserRole + 4).toBool();
+        const bool isOutsideCut = item->data(Qt::UserRole + 12).toBool();
+        const int wordId = item->data(Qt::UserRole + 16).toInt();
+        if (!isGap && !isOutsideCut && wordId >= 0) {
+            wordRows.push_back(row);
+        }
+    }
+    QCOMPARE(wordRows.size(), 3);
+
+    QItemSelectionModel* selectionModel = table.selectionModel();
+    QVERIFY(selectionModel != nullptr);
+    const QModelIndex firstRow = table.model()->index(wordRows.at(0), 0);
+    const QModelIndex secondRow = table.model()->index(wordRows.at(1), 0);
+    QVERIFY(firstRow.isValid());
+    QVERIFY(secondRow.isValid());
+    selectionModel->select(firstRow,
+                           QItemSelectionModel::ClearAndSelect |
+                               QItemSelectionModel::Rows);
+    selectionModel->select(secondRow,
+                           QItemSelectionModel::Select |
+                               QItemSelectionModel::Rows);
+    QCOMPARE(selectionModel->selectedRows().size(), 2);
+
+    bool triggeredSkipAction = false;
+    QTimer::singleShot(0, [&triggeredSkipAction]() {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu) {
+            return;
+        }
+        const auto actions = menu->actions();
+        for (QAction* action : actions) {
+            if (action && action->text() == QStringLiteral("Skip Word")) {
+                triggeredSkipAction = true;
+                action->trigger();
+                return;
+            }
+        }
+    });
+
+    const QModelIndex targetIndex =
+        table.model()->index(wordRows.at(1), kTranscriptTestTextColumn);
+    QVERIFY(targetIndex.isValid());
+    const QPoint menuPos = table.visualRect(targetIndex).center();
+    QVERIFY(QMetaObject::invokeMethod(&tab,
+                                      "onTranscriptCustomContextMenu",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QPoint, menuPos)));
+    QVERIFY(triggeredSkipAction);
+
+    QString snapshotClipPath;
+    QString snapshotTranscriptPath;
+    QJsonDocument snapshotDocument;
+    QVERIFY(tab.activeTranscriptDocumentSnapshot(
+        &snapshotClipPath,
+        &snapshotTranscriptPath,
+        &snapshotDocument));
+    QCOMPARE(snapshotClipPath, clipPath);
+    QCOMPARE(snapshotTranscriptPath,
+             transcriptEditablePathForClipFile(clipPath));
+    QVERIFY(snapshotDocument.isObject());
+    const QJsonArray snapshotWords =
+        snapshotDocument.object()
+            .value(QStringLiteral("segments"))
+            .toArray()
+            .at(0)
+            .toObject()
+            .value(QStringLiteral("words"))
+            .toArray();
+    bool foundFirst = false;
+    bool foundSecond = false;
+    bool foundThird = false;
+    for (const QJsonValue& value : snapshotWords) {
+        const QJsonObject wordObject = value.toObject();
+        const QString text =
+            wordObject.value(QStringLiteral("word")).toString(
+                wordObject.value(QStringLiteral("text")).toString());
+        const bool skipped =
+            wordObject.value(QStringLiteral("skipped")).toBool();
+        if (text == QStringLiteral("first")) {
+            foundFirst = true;
+            QVERIFY(skipped);
+        } else if (text == QStringLiteral("second")) {
+            foundSecond = true;
+            QVERIFY(skipped);
+        } else if (text == QStringLiteral("third")) {
+            foundThird = true;
+            QVERIFY(!skipped);
+        }
+    }
+    QVERIFY(foundFirst);
+    QVERIFY(foundSecond);
+    QVERIFY(foundThird);
 }
 
 void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately()

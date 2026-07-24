@@ -680,6 +680,47 @@ QWidget *InspectorPane::buildEffectsTab()
     maskLayerSection.body->addLayout(maskRepeatForm);
     layout->addWidget(maskLayerSection.container);
 
+    auto edgeSection = createDisclosureSection(page, QStringLiteral("Edge Fill"), true);
+    m_edgeFillEnabledCheck = new QCheckBox(QStringLiteral("Enable Edge Stretch for this clip"), page);
+    m_edgeFillEnabledCheck->setToolTip(
+        QStringLiteral("Fill the output outside this clip using pixels from its edges."));
+    edgeSection.body->addWidget(m_edgeFillEnabledCheck);
+    m_edgeFillProgressiveCheck = new QCheckBox(QStringLiteral("Progressive stretch"), page);
+    m_edgeFillProgressiveCheck->setToolTip(
+        QStringLiteral("Scan inward through an edge band toward the canvas boundary."));
+    edgeSection.body->addWidget(m_edgeFillProgressiveCheck);
+    auto* edgeForm = new QFormLayout;
+    edgeForm->setContentsMargins(0, 0, 0, 0);
+    edgeForm->setSpacing(6);
+    m_edgeFillPixelsSpin = new QSpinBox(page);
+    m_edgeFillPixelsSpin->setRange(1, 512);
+    m_edgeFillPixelsSpin->setValue(1);
+    m_edgeFillPixelsSpin->setSuffix(QStringLiteral(" px"));
+    edgeForm->addRow(QStringLiteral("Edge width"), m_edgeFillPixelsSpin);
+    m_edgeFillPowerSpin = new QDoubleSpinBox(page);
+    m_edgeFillPowerSpin->setRange(0.25, 8.0);
+    m_edgeFillPowerSpin->setDecimals(2);
+    m_edgeFillPowerSpin->setSingleStep(0.25);
+    m_edgeFillPowerSpin->setValue(2.0);
+    edgeForm->addRow(QStringLiteral("Curve power"), m_edgeFillPowerSpin);
+    auto makeEdgePercentSpin = [page](double minimum, double maximum, double value) {
+        auto* spin = new QDoubleSpinBox(page);
+        spin->setRange(minimum, maximum);
+        spin->setDecimals(0);
+        spin->setSingleStep(5.0);
+        spin->setSuffix(QStringLiteral("%"));
+        spin->setValue(value);
+        return spin;
+    };
+    m_edgeFillOpacitySpin = makeEdgePercentSpin(0.0, 100.0, 100.0);
+    edgeForm->addRow(QStringLiteral("Opacity"), m_edgeFillOpacitySpin);
+    m_edgeFillBrightnessSpin = makeEdgePercentSpin(-100.0, 100.0, 0.0);
+    edgeForm->addRow(QStringLiteral("Brightness"), m_edgeFillBrightnessSpin);
+    m_edgeFillSaturationSpin = makeEdgePercentSpin(0.0, 300.0, 100.0);
+    edgeForm->addRow(QStringLiteral("Saturation"), m_edgeFillSaturationSpin);
+    edgeSection.body->addLayout(edgeForm);
+    layout->addWidget(edgeSection.container);
+
     auto presetSection = createDisclosureSection(page, QStringLiteral("Synthesis Effects"), true);
     auto *presetForm = new QFormLayout();
     presetForm->setContentsMargins(0, 0, 0, 0);
@@ -687,6 +728,9 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectPresetCombo = new QComboBox(page);
     QString previousGroup;
     for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.preset == ClipEffectPreset::ProgressiveEdgeStretch) {
+            continue;
+        }
         if (option.group != previousGroup) {
             if (!previousGroup.isEmpty()) {
                 m_effectPresetCombo->insertSeparator(m_effectPresetCombo->count());

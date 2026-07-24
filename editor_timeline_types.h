@@ -401,6 +401,15 @@ struct TimelineClip {
     bool maskRepeatEnabled = false;
     qreal maskRepeatDeltaX = 160.0;
     qreal maskRepeatDeltaY = 0.0;
+    // Edge fill is owned by the clip and is independent of the synthesis
+    // preset so both effects can be composed.
+    bool edgeFillEnabled = false;
+    bool edgeFillProgressive = false;
+    int edgeFillPixels = 1;
+    qreal edgeFillPower = 2.0;
+    qreal edgeFillOpacity = 1.0;
+    qreal edgeFillBrightness = 0.0;
+    qreal edgeFillSaturation = 1.0;
     ClipEffectPreset effectPreset = ClipEffectPreset::None;
     int effectRows = 32;
     qreal effectSpeed = 1.0;
@@ -423,7 +432,9 @@ struct TimelineTrack {
     QString name;
     // A generated child track is a derived presentation binding. Visibility
     // and grading-preview state remain independently controllable, while its
-    // identity, position, lifecycle, and effects belong to the child clip.
+    // identity, position, lifecycle, and effects belong to its generated
+    // clips. Mask Matte tracks contain one child; transcript title tracks can
+    // contain several children owned by the same parent.
     bool generatedChildTrack = false;
     QString parentClipId;
     QString childClipId;

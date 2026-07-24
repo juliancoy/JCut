@@ -136,7 +136,6 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("Displacement map"), ClipEffectPreset::DisplacementMap, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Glass / refraction"), ClipEffectPreset::GlassRefraction, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Progressive edge stretch"), ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("Warp & Distort")},
-
         {QStringLiteral("Temporal echo"), ClipEffectPreset::TemporalEcho, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Slit scan"), ClipEffectPreset::SlitScan, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern, QStringLiteral("Time & Repeat")},
@@ -885,6 +884,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
             titleClip.clipRole = ClipRole::SpeakerTitle;
             titleClip.linkedSourceClipId = sourceClip.id.trimmed();
             titleClip.syncLockedToSource = true;
+            titleClip.locked = true;
             titleClip.sourceTransformLocked = false;
             titleClip.mediaType = ClipMediaType::Title;
             titleClip.label = QStringLiteral("Speaker: %1").arg(title);
@@ -1446,43 +1446,66 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
     const QString baseName = trackBaseName.trimmed().isEmpty()
                                  ? QStringLiteral("Generated")
                                  : trackBaseName.trimmed();
-    QSet<int> reusableChildTracks;
+    int sourceTrackIndex = -1;
+    for (const TimelineClip& clip : std::as_const(timelineClips)) {
+        if (clip.id.trimmed() == sourceId) {
+            sourceTrackIndex = clip.trackIndex;
+            break;
+        }
+    }
+    QSet<int> previousChildTracks;
 
+    for (const TimelineClip& clip : std::as_const(timelineClips)) {
+        if (clip.clipRole == generatedRole &&
+            clip.linkedSourceClipId.trimmed() == sourceId) {
+            previousChildTracks.insert(clip.trackIndex);
+        }
+    }
+    QList<int> reusableChildTracks;
+    for (const int trackIndex : std::as_const(previousChildTracks)) {
+        const bool dedicated =
+            trackIndex >= 0 &&
+            trackIndex < timelineTracks.size() &&
+            trackIndex != sourceTrackIndex &&
+            std::none_of(
+                timelineClips.cbegin(), timelineClips.cend(),
+                [&](const TimelineClip& clip) {
+                    return clip.trackIndex == trackIndex &&
+                        !(clip.clipRole == generatedRole &&
+                          clip.linkedSourceClipId.trimmed() ==
+                              sourceId);
+                });
+        if (dedicated) {
+            reusableChildTracks.push_back(trackIndex);
+        }
+    }
+    std::sort(reusableChildTracks.begin(),
+              reusableChildTracks.end());
     for (int i = timelineClips.size() - 1; i >= 0; --i) {
         if (timelineClips.at(i).clipRole == generatedRole &&
-            timelineClips.at(i).linkedSourceClipId == sourceId) {
-            reusableChildTracks.insert(timelineClips.at(i).trackIndex);
+            timelineClips.at(i).linkedSourceClipId.trimmed() == sourceId) {
             timelineClips.removeAt(i);
             ++result.removedCount;
         }
     }
 
+    int targetTrack =
+        generatedClips.isEmpty() ||
+            reusableChildTracks.isEmpty()
+        ? -1
+        : reusableChildTracks.constFirst();
+    if (!generatedClips.isEmpty() && targetTrack < 0) {
+        targetTrack = appendGeneratedTrack(
+            timelineTracks, baseName);
+    }
     for (TimelineClip clip : generatedClips) {
         if (clip.id.trimmed().isEmpty() || clipIdExists(timelineClips, clip.id)) {
             clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         }
         clip.clipRole = generatedRole;
         clip.linkedSourceClipId = sourceId;
-
-        int targetTrack = -1;
-        for (int trackIndex = 0; trackIndex < timelineTracks.size(); ++trackIndex) {
-            if (!trackNameStartsWith(timelineTracks, trackIndex, baseName) &&
-                !reusableChildTracks.contains(trackIndex)) {
-                continue;
-            }
-            clip.trackIndex = trackIndex;
-            if (!wouldClipConflictWithTrack(timelineClips, clip, trackIndex)) {
-                targetTrack = trackIndex;
-                if (reusableChildTracks.contains(trackIndex)) {
-                    timelineTracks[trackIndex].name = baseName;
-                }
-                break;
-            }
-        }
-        if (targetTrack < 0) {
-            targetTrack = appendGeneratedTrack(timelineTracks, baseName);
-        }
-
+        clip.syncLockedToSource = true;
+        clip.locked = true;
         clip.trackIndex = targetTrack;
         if (clip.durationFrames <= 0) {
             clip.durationFrames = 1;
@@ -1492,6 +1515,47 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
             result.firstInsertedClipId = clip.id;
         }
         ++result.insertedCount;
+    }
+
+    if (targetTrack >= 0 && targetTrack < timelineTracks.size() &&
+        result.insertedCount > 0) {
+        TimelineTrack& track = timelineTracks[targetTrack];
+        track.generatedChildTrack = true;
+        track.parentClipId = sourceId;
+        track.childClipId = result.firstInsertedClipId;
+        track.name = QStringLiteral("↳ %1").arg(baseName);
+        track.height = qBound(28, track.height, 56);
+        track.audioEnabled = false;
+        track.audioWaveformVisible = false;
+    }
+
+    // Collapse compatibility lanes that used to distribute overlapping
+    // introductions across multiple ordinary tracks.
+    for (int reusableIndex = reusableChildTracks.size() - 1;
+         reusableIndex >= 0; --reusableIndex) {
+        const int trackIndex =
+            reusableChildTracks.at(reusableIndex);
+        if (trackIndex == targetTrack) {
+            continue;
+        }
+        const bool occupied = std::any_of(
+            timelineClips.cbegin(), timelineClips.cend(),
+            [trackIndex](const TimelineClip& clip) {
+                return clip.trackIndex == trackIndex;
+            });
+        if (occupied || trackIndex < 0 ||
+            trackIndex >= timelineTracks.size()) {
+            continue;
+        }
+        timelineTracks.removeAt(trackIndex);
+        for (TimelineClip& clip : timelineClips) {
+            if (clip.trackIndex > trackIndex) {
+                --clip.trackIndex;
+            }
+        }
+        if (targetTrack > trackIndex) {
+            --targetTrack;
+        }
     }
 
     result.changed = result.removedCount > 0 || result.insertedCount > 0;

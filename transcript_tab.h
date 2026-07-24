@@ -21,6 +21,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "editor_shared.h"
+#include "transcript_document_core.h"
 #include "transcript_document_io.h"
 #include "transcript_document_session.h"
 #include "transcript_engine.h"
@@ -309,6 +310,13 @@ private:
     void configureTranscriptTableView();
     void onTranscriptRowClicked(int row);
     void scheduleSeekToTranscriptRow(int row);
+    void alignSelectionForContextMenuRow(int row);
+    std::vector<jcut::TranscriptWordRef> selectedMutableTranscriptWordReferences() const;
+    bool setTranscriptWordReferencesSkipped(
+        const std::vector<jcut::TranscriptWordRef>& references,
+        bool skipped);
+    bool deleteTranscriptWordReferences(
+        const std::vector<jcut::TranscriptWordRef>& references);
     bool hasActiveManualSelection() const;
     void persistSelectionIdentityFromRow(int row);
     bool eventFilter(QObject* watched, QEvent* event) override;

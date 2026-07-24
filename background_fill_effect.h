@@ -3,17 +3,20 @@
 #include <QString>
 
 enum class BackgroundFillEffect {
+    None,
     EdgeStretch,
     ProgressiveEdgeStretch,
     Mirror,
     BlurCover,
 };
 
-inline constexpr BackgroundFillEffect kDefaultBackgroundFillEffect = BackgroundFillEffect::EdgeStretch;
+inline constexpr BackgroundFillEffect kDefaultBackgroundFillEffect = BackgroundFillEffect::None;
 
 inline QString backgroundFillEffectToString(BackgroundFillEffect effect)
 {
     switch (effect) {
+    case BackgroundFillEffect::None:
+        return QStringLiteral("none");
     case BackgroundFillEffect::EdgeStretch:
         return QStringLiteral("edge_stretch");
     case BackgroundFillEffect::ProgressiveEdgeStretch:
@@ -23,12 +26,17 @@ inline QString backgroundFillEffectToString(BackgroundFillEffect effect)
     case BackgroundFillEffect::BlurCover:
         return QStringLiteral("blur_cover");
     }
-    return QStringLiteral("edge_stretch");
+    return QStringLiteral("none");
 }
 
 inline BackgroundFillEffect backgroundFillEffectFromString(const QString& value)
 {
     const QString normalized = value.trimmed().toLower().replace(QLatin1Char('-'), QLatin1Char('_'));
+    if (normalized == QStringLiteral("none") ||
+        normalized == QStringLiteral("off") ||
+        normalized == QStringLiteral("disabled")) {
+        return BackgroundFillEffect::None;
+    }
     if (normalized == QStringLiteral("blur") ||
         normalized == QStringLiteral("blur_cover") ||
         normalized == QStringLiteral("blurred_cover")) {
@@ -44,5 +52,5 @@ inline BackgroundFillEffect backgroundFillEffectFromString(const QString& value)
         normalized == QStringLiteral("mirrored_cover")) {
         return BackgroundFillEffect::Mirror;
     }
-    return BackgroundFillEffect::EdgeStretch;
+    return BackgroundFillEffect::None;
 }

@@ -37,6 +37,7 @@ RUBBERBAND_PKGCONFIG_DIR="${RUBBERBAND_INSTALL_DIR}/lib/pkgconfig"
 RUBBERBAND_PKGCONFIG_FILE="${RUBBERBAND_PKGCONFIG_DIR}/rubberband.pc"
 RUBBERBAND_VERSION_FILE="${RUBBERBAND_INSTALL_DIR}/.build-version"
 QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
+JCUT_REQUIRED_QT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/.qt-version")"
 CURL_DEV_DIR="${SCRIPT_DIR}/.deps/libcurl-dev"
 CURL_INCLUDE_DIR=""
 CURL_LIBRARY=""
@@ -396,7 +397,19 @@ ensure_qt_private_headers() {
     local qt_version=""
     local qt_package_version=""
     local qt_headers="/usr/include/x86_64-linux-gnu/qt6"
-    if command -v qmake6 >/dev/null 2>&1; then
+    local selected_qtpaths=""
+    if [[ -n "${JCUT_QT_PREFIX:-}" ]]; then
+        if [[ -x "${JCUT_QT_PREFIX}/bin/qtpaths" ]]; then
+            selected_qtpaths="${JCUT_QT_PREFIX}/bin/qtpaths"
+        elif [[ -x "${JCUT_QT_PREFIX}/bin/qtpaths6" ]]; then
+            selected_qtpaths="${JCUT_QT_PREFIX}/bin/qtpaths6"
+        else
+            echo "JCUT_QT_PREFIX does not contain qtpaths: ${JCUT_QT_PREFIX}" >&2
+            exit 1
+        fi
+        qt_version="$("${selected_qtpaths}" --qt-version)"
+        qt_headers="$("${selected_qtpaths}" --query QT_INSTALL_HEADERS)"
+    elif command -v qmake6 >/dev/null 2>&1; then
         qt_version="$(qmake6 -query QT_VERSION)"
         qt_headers="$(qmake6 -query QT_INSTALL_HEADERS)"
     elif command -v qtpaths6 >/dev/null 2>&1; then
@@ -420,6 +433,11 @@ Unable to determine the installed Qt development version.
 Install the public and private development packages from the same repository:
   sudo apt-get install qt6-base-dev qt6-base-private-dev
 EOF
+        exit 1
+    fi
+
+    if [[ "${qt_version}" != "${JCUT_REQUIRED_QT_VERSION}" ]]; then
+        echo "Qt version mismatch: JCut requires ${JCUT_REQUIRED_QT_VERSION}, got ${qt_version}." >&2
         exit 1
     fi
 
@@ -482,6 +500,17 @@ Install matching packages from the same repository:
   sudo apt-get install qt6-base-dev qt6-base-private-dev
 EOF
         exit 1
+    fi
+}
+
+select_qt_sdk() {
+    if [[ -z "${JCUT_QT_PREFIX:-}" && "${UNAME_S}" == "Linux" ]]; then
+        local pinned_prefix="${SCRIPT_DIR}/.deps/qt/${JCUT_REQUIRED_QT_VERSION}/gcc_64"
+        if [[ ! -x "${pinned_prefix}/bin/qtpaths" && ! -x "${pinned_prefix}/bin/qtpaths6" ]]; then
+            "${SCRIPT_DIR}/scripts/bootstrap_qt_linux.sh" >/dev/null
+        fi
+        JCUT_QT_PREFIX="${pinned_prefix}"
+        export JCUT_QT_PREFIX
     fi
 }
 
@@ -665,6 +694,7 @@ if [[ "${expect_build_target}" == "yes" ]]; then
 fi
 
 resolve_ffmpeg_profile
+select_qt_sdk
 
 ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}" "configure"
 ensure_submodule_checkout "${RTAUDIO_SUBMODULE_PATH}" "${RTAUDIO_SRC_DIR}" "CMakeLists.txt"
@@ -709,9 +739,11 @@ reset_stale_cmake_cache() {
     local cached_source_dir=""
     local cached_build_dir=""
     local cached_generator=""
+    local cached_qt_dir=""
     cached_source_dir="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cache_file}" | tail -n1)"
     cached_build_dir="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "${cache_file}" | tail -n1)"
     cached_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${cache_file}" | tail -n1)"
+    cached_qt_dir="$(sed -n 's/^Qt6_DIR:PATH=//p' "${cache_file}" | tail -n1)"
 
     if [[ "${cached_source_dir}" != "${SCRIPT_DIR}" ]] || \
        [[ "${cached_build_dir}" != "${build_dir}" ]] || \
@@ -719,6 +751,15 @@ reset_stale_cmake_cache() {
         echo "Detected stale CMake cache in ${build_dir}; recreating build directory..."
         rm -rf "${build_dir}"
         return 0
+    fi
+
+    if [[ -n "${JCUT_QT_PREFIX:-}" ]]; then
+        local expected_qt_dir="${JCUT_QT_PREFIX}/lib/cmake/Qt6"
+        if [[ "${cached_qt_dir}" != "${expected_qt_dir}" ]]; then
+            echo "Qt SDK changed for ${build_dir}; recreating the build directory..."
+            rm -rf "${build_dir}"
+            return 0
+        fi
     fi
 
     local cached_qt_network_dir=""
@@ -746,6 +787,7 @@ cmake_configure_args=(
     -G "${CMAKE_GENERATOR}"
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
     -DWITH_VULKAN=ON
+    -DJCUT_REQUIRED_QT_VERSION="${JCUT_REQUIRED_QT_VERSION}"
 )
 if command -v ccache >/dev/null 2>&1; then
     ccache_path="$(command -v ccache)"

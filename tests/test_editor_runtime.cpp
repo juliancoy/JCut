@@ -86,6 +86,7 @@ private slots:
     void testRenderSyncMarkerRemovalIsScopedAndUndoable();
     void testMaskMatteRenderSyncOwnershipIsCanonical();
     void testGeneratedChildTrackRoundTripsAcrossNeutralAndQtBridges();
+    void testTranscriptGeneratedTitlesUseImmutableChildTrack();
     void testGeneratedChildTrackReconciliationAndPoliciesAreUndoable();
     void testMaskMatteCloneAndSplitRelationshipsStayValid();
     void testExtendedClipStateRoundTripsIntoRenderTimeline();
@@ -4088,6 +4089,110 @@ void TestEditorRuntime::testGeneratedChildTrackRoundTripsAcrossNeutralAndQtBridg
              QStringLiteral("mask"));
 }
 
+void TestEditorRuntime::testTranscriptGeneratedTitlesUseImmutableChildTrack()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Transcript", true});
+    jcut::EditorClip source;
+    source.id = 1;
+    source.trackId = 1;
+    source.persistentId = "transcript-source";
+    source.label = "Interview";
+    source.mediaKind = "video";
+    source.startFrame = 100;
+    source.durationFrames = 300;
+    source.sourceDurationFrames = 300;
+    source.selected = true;
+    document.clips.push_back(source);
+
+    const auto generatedTitle = [](int startFrame,
+                                   const std::string& text) {
+        jcut::EditorClip title;
+        title.label = "Speaker: " + text;
+        title.mediaKind = "title";
+        title.startFrame = startFrame;
+        title.durationFrames = 90;
+        jcut::EditorTitleKeyframe keyframe;
+        keyframe.text = text;
+        title.titleKeyframes.push_back(std::move(keyframe));
+        return title;
+    };
+
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(std::move(document));
+    const jcut::CommandResult generated = runtime.execute(
+        jcut::EditorCommand{
+            jcut::ReplaceSpeakerTitleClipsCommand{
+                1,
+                {generatedTitle(120, "Alice"),
+                 generatedTitle(150, "Bob")}}});
+    QVERIFY2(generated.applied, generated.message.c_str());
+
+    jcut::EditorDocumentCore snapshot = runtime.snapshot();
+    QCOMPARE(snapshot.tracks.size(), std::size_t(2));
+    const jcut::EditorTrack& childTrack = snapshot.tracks.at(1);
+    QVERIFY(childTrack.generatedChildTrack);
+    QCOMPARE(QString::fromStdString(childTrack.parentClipId),
+             QStringLiteral("transcript-source"));
+    QCOMPARE(QString::fromStdString(childTrack.label),
+             QStringLiteral("↳ Transcript • Speaker Introductions"));
+
+    std::vector<const jcut::EditorClip*> titles;
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        if (jcut::isTranscriptGeneratedEditorTitle(clip)) {
+            titles.push_back(&clip);
+        }
+    }
+    QCOMPARE(titles.size(), std::size_t(2));
+    QCOMPARE(titles.at(0)->trackId, childTrack.id);
+    QCOMPARE(titles.at(1)->trackId, childTrack.id);
+    QVERIFY(titles.at(0)->locked);
+    QVERIFY(titles.at(1)->locked);
+    QCOMPARE(QString::fromStdString(childTrack.childClipId),
+             QString::fromStdString(titles.at(0)->persistentId));
+
+    jcut::EditorTitleKeyframe directEdit =
+        titles.at(0)->titleKeyframes.front();
+    directEdit.text = "Manual override";
+    const int generatedClipId = titles.at(0)->id;
+    QCOMPARE(runtime.execute(jcut::EditorCommand{
+                 jcut::UpsertTitleKeyframeCommand{
+                     generatedClipId, directEdit}})
+                 .applied,
+             false);
+    QCOMPARE(runtime.execute(jcut::EditorCommand{
+                 jcut::MoveClipCommand{
+                     generatedClipId, childTrack.id, 200}})
+                 .applied,
+             false);
+    QCOMPARE(runtime.execute(jcut::EditorCommand{
+                 jcut::DeleteClipCommand{generatedClipId}})
+                 .applied,
+             false);
+    QCOMPARE(runtime.execute(jcut::EditorCommand{
+                 jcut::SetClipLockedCommand{
+                     generatedClipId, false}})
+                 .applied,
+             false);
+
+    const jcut::CommandResult regenerated = runtime.execute(
+        jcut::EditorCommand{
+            jcut::ReplaceSpeakerTitleClipsCommand{
+                1, {generatedTitle(130, "Alice Updated")}}});
+    QVERIFY2(regenerated.applied, regenerated.message.c_str());
+    snapshot = runtime.snapshot();
+    QCOMPARE(std::count_if(
+                 snapshot.clips.cbegin(),
+                 snapshot.clips.cend(),
+                 [](const jcut::EditorClip& clip) {
+                     return jcut::isTranscriptGeneratedEditorTitle(
+                         clip);
+                 }),
+             1);
+    QCOMPARE(snapshot.tracks.size(), std::size_t(2));
+    QVERIFY(snapshot.tracks.at(1).generatedChildTrack);
+}
+
 void TestEditorRuntime::testGeneratedChildTrackReconciliationAndPoliciesAreUndoable()
 {
     const auto malformedDocument = [] {
@@ -5373,12 +5478,12 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.outputSize.height, original.exportRequest.outputSize.height);
     QCOMPARE(reparsed->exportRequest.playbackSpeed, original.exportRequest.playbackSpeed);
     QCOMPARE(QString::fromStdString(reparsed->exportRequest.backgroundFillEffect),
-             QStringLiteral("blur"));
+             QStringLiteral("none"));
     QCOMPARE(reparsed->exportRequest.backgroundFillOpacity, 0.42);
     QCOMPARE(reparsed->exportRequest.backgroundFillBrightness, -0.2);
     QCOMPARE(reparsed->exportRequest.backgroundFillSaturation, 1.4);
     QCOMPARE(reparsed->exportRequest.backgroundFillEdgePixels, 24);
-    QCOMPARE(reparsed->exportRequest.backgroundFillEdgeProgressive, true);
+    QCOMPARE(reparsed->exportRequest.backgroundFillEdgeProgressive, false);
     QCOMPARE(reparsed->exportRequest.backgroundFillEdgePower, 3.5);
     QCOMPARE(QString::fromStdString(
                  reparsed->exportRequest.backgroundFillStretchSourceClipId),
