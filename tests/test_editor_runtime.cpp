@@ -4197,10 +4197,22 @@ void TestEditorRuntime::testTranscriptGeneratedTitlesUseImmutableChildTrack()
     QCOMPARE(QString::fromStdString(childTrack.childClipId),
              QString::fromStdString(titles.at(0)->persistentId));
 
+    const int generatedClipId = titles.at(0)->id;
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::SetClipZLevelCommand{
+            generatedClipId, 75, false}})
+                .applied);
+    const jcut::EditorDocumentCore zSnapshot = runtime.snapshot();
+    for (const jcut::EditorClip& clip : zSnapshot.clips) {
+        if (jcut::isTranscriptGeneratedEditorTitle(clip)) {
+            QCOMPARE(clip.zLevel, 75);
+            QVERIFY(clip.zLevelUserSet);
+        }
+    }
+
     jcut::EditorTitleKeyframe directEdit =
         titles.at(0)->titleKeyframes.front();
     directEdit.text = "Manual override";
-    const int generatedClipId = titles.at(0)->id;
     QCOMPARE(runtime.execute(jcut::EditorCommand{
                  jcut::UpsertTitleKeyframeCommand{
                      generatedClipId, directEdit}})
@@ -4227,6 +4239,12 @@ void TestEditorRuntime::testTranscriptGeneratedTitlesUseImmutableChildTrack()
                 1, {generatedTitle(130, "Alice Updated")}}});
     QVERIFY2(regenerated.applied, regenerated.message.c_str());
     snapshot = runtime.snapshot();
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        if (jcut::isTranscriptGeneratedEditorTitle(clip)) {
+            QCOMPARE(clip.zLevel, 75);
+            QVERIFY(clip.zLevelUserSet);
+        }
+    }
     QCOMPARE(std::count_if(
                  snapshot.clips.cbegin(),
                  snapshot.clips.cend(),

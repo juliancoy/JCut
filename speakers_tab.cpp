@@ -1336,6 +1336,14 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     if (m_widgets.speakerOverlayFlyInDurationSpin) {
         flyInSettings.titleDurationFrames = secondsToFrames(m_widgets.speakerOverlayFlyInDurationSpin->value());
     }
+    flyInSettings.showAtSectionEnd =
+        m_widgets.speakerOverlayShowAtSectionEndCheckBox &&
+        m_widgets.speakerOverlayShowAtSectionEndCheckBox->isChecked();
+    if (m_widgets.speakerOverlayCadenceSpin) {
+        flyInSettings.cadenceFrames = qMax<int64_t>(
+            0,
+            qRound64(m_widgets.speakerOverlayCadenceSpin->value() * kTimelineFps));
+    }
     if (m_widgets.speakerOverlayFlyInTimeSpin) {
         const int64_t flyFrames = secondsToFrames(m_widgets.speakerOverlayFlyInTimeSpin->value());
         flyInSettings.flyInFrames = flyFrames;

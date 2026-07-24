@@ -453,6 +453,16 @@ QWidget *InspectorPane::buildClipTab()
         QStringLiteral("Adjust clip playback speed with fine precision. "
                        "Example: 0.9999 for a slight slow-down."));
     m_clipPlaybackRateSpin->setValue(1.0);
+    m_clipZLevelSpin = new QSpinBox(page);
+    m_clipZLevelSpin->setRange(-100000, 100000);
+    m_clipZLevelSpin->setKeyboardTracking(false);
+    m_clipZLevelSpin->setToolTip(
+        QStringLiteral("Explicit compositing order independent of timeline rows. "
+                       "Higher Z-levels draw in front. Generated speaker titles "
+                       "are updated as one immutable layer."));
+    m_clipAutomaticZCheckBox =
+        new QCheckBox(QStringLiteral("Automatic Z from timeline row"), page);
+    m_clipAutomaticZCheckBox->setChecked(true);
     auto *trackSectionLabel = new QLabel(QStringLiteral("Track"), page);
     trackSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     m_trackInspectorLabel = new QLabel(QStringLiteral("No track selected"), page);
@@ -492,6 +502,8 @@ QWidget *InspectorPane::buildClipTab()
     layout->addWidget(m_clipProxyUsageLabel);
     layout->addWidget(m_clipPlaybackSourceLabel);
     form->addRow(QStringLiteral("Playback Speed"), m_clipPlaybackRateSpin);
+    form->addRow(QStringLiteral("Z-Level"), m_clipZLevelSpin);
+    form->addRow(m_clipAutomaticZCheckBox);
     layout->addLayout(form);
     layout->addWidget(m_clipOriginalInfoLabel);
     layout->addWidget(m_clipProxyInfoLabel);

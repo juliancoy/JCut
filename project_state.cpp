@@ -780,26 +780,6 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("imageSequenceFormat")] =
         m_imageSequenceFormatCombo ? m_imageSequenceFormatCombo->currentData().toString()
                                    : QStringLiteral("jpeg");
-    root[QStringLiteral("backgroundFillEffect")] =
-        m_backgroundFillEffectCombo
-            ? m_backgroundFillEffectCombo->currentData().toString()
-            : backgroundFillEffectToString(kDefaultBackgroundFillEffect);
-    root[QStringLiteral("backgroundFillStretchSourceClipId")] = QString();
-    root[QStringLiteral("backgroundFillOpacity")] =
-        m_backgroundFillOpacitySpin
-            ? qBound(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)
-            : 1.0;
-    root[QStringLiteral("backgroundFillBrightness")] =
-        m_backgroundFillBrightnessSpin
-            ? qBound(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0)
-            : 0.0;
-    root[QStringLiteral("backgroundFillSaturation")] =
-        m_backgroundFillSaturationSpin
-            ? qBound(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
-            : 1.0;
-    root[QStringLiteral("backgroundFillEdgePixels")] = 1;
-    root[QStringLiteral("backgroundFillEdgeProgressive")] = false;
-    root[QStringLiteral("backgroundFillEdgePower")] = 2.0;
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
@@ -823,6 +803,12 @@ QJsonObject EditorWindow::buildStateJson() const
         settings[QStringLiteral("flyInStyle")] = combo(m_inspectorPane->speakerOverlayFlyInStyleCombo());
         settings[QStringLiteral("delaySeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInDelaySpin(), 0.35);
         settings[QStringLiteral("durationSeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInDurationSpin(), 3.0);
+        settings[QStringLiteral("showAtSectionEnd")] =
+            m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox()
+                ? m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox()->isChecked()
+                : false;
+        settings[QStringLiteral("cadenceSeconds")] =
+            decimal(m_inspectorPane->speakerOverlayCadenceSpin(), 0.0);
         settings[QStringLiteral("flyTimeSeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), 0.35);
         settings[QStringLiteral("wrapRadius")] = decimal(m_inspectorPane->speakerOverlayWrapRadiusSpin(), 1.05);
         settings[QStringLiteral("wrapDepth")] = decimal(m_inspectorPane->speakerOverlayWrapDepthSpin(), 0.70);

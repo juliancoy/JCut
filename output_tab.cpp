@@ -344,18 +344,10 @@ void OutputTab::renderFromInspector()
     if (request.outputFormat.empty()) {
         request.outputFormat = "mp4";
     }
-    request.backgroundFillEffect = (m_widgets.backgroundFillEffectCombo
-        ? m_widgets.backgroundFillEffectCombo->currentData().toString()
-        : QStringLiteral("none")).toStdString();
-    request.backgroundFillOpacity = m_widgets.backgroundFillOpacitySpin
-        ? qBound(0.0, m_widgets.backgroundFillOpacitySpin->value() / 100.0, 1.0)
-        : 1.0;
-    request.backgroundFillBrightness = m_widgets.backgroundFillBrightnessSpin
-        ? qBound(-1.0, m_widgets.backgroundFillBrightnessSpin->value() / 100.0, 1.0)
-        : 0.0;
-    request.backgroundFillSaturation = m_widgets.backgroundFillSaturationSpin
-        ? qBound(0.0, m_widgets.backgroundFillSaturationSpin->value() / 100.0, 3.0)
-        : 1.0;
+    request.backgroundFillEffect = "none";
+    request.backgroundFillOpacity = 1.0;
+    request.backgroundFillBrightness = 0.0;
+    request.backgroundFillSaturation = 1.0;
     request.backgroundFillEdgePixels = 1;
     request.backgroundFillEdgeProgressive = false;
     request.backgroundFillEdgePower = 2.0;

@@ -24,6 +24,8 @@ public:
         QLabel* clipOriginalInfoLabel = nullptr;
         QLabel* clipProxyInfoLabel = nullptr;
         QDoubleSpinBox* clipPlaybackRateSpin = nullptr;
+        QSpinBox* clipZLevelSpin = nullptr;
+        QCheckBox* clipAutomaticZCheckBox = nullptr;
         QLabel* trackInspectorLabel = nullptr;
         QLabel* trackInspectorDetailsLabel = nullptr;
         QLineEdit* trackNameEdit = nullptr;

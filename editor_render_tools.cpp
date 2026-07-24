@@ -576,19 +576,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         : 1.0;
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
-    request.backgroundFillEffect =
-        backgroundFillEffectFromString(m_backgroundFillEffectCombo
-                                           ? m_backgroundFillEffectCombo->currentData().toString()
-                                           : QString());
-    request.backgroundFillOpacity = m_backgroundFillOpacitySpin
-        ? qBound<qreal>(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0)
-        : 1.0;
-    request.backgroundFillBrightness = m_backgroundFillBrightnessSpin
-        ? qBound<qreal>(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0)
-        : 0.0;
-    request.backgroundFillSaturation = m_backgroundFillSaturationSpin
-        ? qBound<qreal>(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0)
-        : 1.0;
+    request.backgroundFillEffect = BackgroundFillEffect::None;
+    request.backgroundFillOpacity = 1.0;
+    request.backgroundFillBrightness = 0.0;
+    request.backgroundFillSaturation = 1.0;
     request.backgroundFillEdgePixels = 1;
     request.backgroundFillEdgeProgressive = false;
     request.backgroundFillEdgePower = 2.0;

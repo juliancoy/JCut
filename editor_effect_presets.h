@@ -48,6 +48,8 @@ struct SpeakerTitleFlyInSettings {
     SpeakerTitleFlyInStyle style = SpeakerTitleFlyInStyle::SlideFromLeft;
     int64_t titleDurationFrames = kTimelineFps * 3;
     int64_t titleStartDelayFrames = (kTimelineFps * 35 + 50) / 100;
+    bool showAtSectionEnd = false;
+    int64_t cadenceFrames = 0;
     int64_t flyInFrames = (kTimelineFps * 35 + 50) / 100;
     int64_t flyOutFrames = (kTimelineFps * 45 + 50) / 100;
     qreal wrapRadius = 1.05;

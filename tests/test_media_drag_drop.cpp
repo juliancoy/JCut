@@ -200,6 +200,21 @@ void TestMediaDragDrop::transcriptTitlesReconcileToImmutableGeneratedChildTrack(
     QVERIFY(storedTitleA->locked);
     QVERIFY(storedTitleB->locked);
 
+    QVERIFY(timeline.setClipZLevel(source.id, -25, false));
+    QVERIFY(timeline.setClipZLevel(titleA.id, 75, false));
+    QCOMPARE(clipById(timeline, source.id)->zLevel, -25);
+    QCOMPARE(clipById(timeline, titleA.id)->zLevel, 75);
+    QCOMPARE(clipById(timeline, titleB.id)->zLevel, 75);
+    QVERIFY(clipById(timeline, source.id)->zLevelUserSet);
+    QVERIFY(clipById(timeline, titleA.id)->zLevelUserSet);
+    QVERIFY(clipById(timeline, titleB.id)->zLevelUserSet);
+
+    QVERIFY(timeline.setClipZLevel(titleB.id, 0, true));
+    QVERIFY(!clipById(timeline, titleA.id)->zLevelUserSet);
+    QVERIFY(!clipById(timeline, titleB.id)->zLevelUserSet);
+    QCOMPARE(clipById(timeline, titleA.id)->zLevel,
+             clipById(timeline, titleB.id)->zLevel);
+
     QVERIFY(!timeline.updateClipById(
         titleA.id, [](TimelineClip& clip) {
             clip.label = QStringLiteral("Manual override");

@@ -766,13 +766,11 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
         settings);
 }
 
-QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
-    const TimelineClip& sourceClip,
-    const QString& transcriptPath,
-    const QVector<TranscriptSection>& sections,
-    int trackIndex,
-    const SpeakerTitleFlyInSettings& settings)
-{
+QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(const TimelineClip& sourceClip,
+                                                                      const QString& transcriptPath,
+                                                                      const QVector<TranscriptSection>& sections,
+                                                                      int trackIndex,
+                                                                      const SpeakerTitleFlyInSettings& settings) {
     QVector<TimelineClip> clips;
     if (sections.isEmpty() || sourceClip.durationFrames <= 0) {
         return clips;
@@ -782,189 +780,205 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(
     const int64_t startDelay = qMax<int64_t>(0, settings.titleStartDelayFrames);
     const int64_t sourceStart = sourceClip.sourceInFrame;
     const int64_t sourceEndExclusive =
-        sourceStart + qMax<int64_t>(1, qRound64(sourceClip.durationFrames * qMax<qreal>(0.001, sourceClip.playbackRate)));
+        sourceStart +
+        qMax<int64_t>(1, qRound64(sourceClip.durationFrames * qMax<qreal>(0.001, sourceClip.playbackRate)));
     const int64_t clipTimelineEnd = sourceClip.startFrame + sourceClip.durationFrames;
-    QVector<ExportRangeSegment> keptSourceRanges;
+    QJsonObject speakerProfiles;
+    QJsonDocument transcriptDocument;
+    if (loadTranscriptJsonCached(transcriptPath, &transcriptDocument) && transcriptDocument.isObject()) {
+        speakerProfiles = transcriptDocument.object().value(QStringLiteral("speaker_profiles")).toObject();
+    }
+    QVector<TranscriptWord> words;
     for (const TranscriptSection& transcriptSection : sections) {
         for (const TranscriptWord& transcriptWord : transcriptSection.words) {
-            if (!transcriptWord.skipped && !transcriptWord.text.trimmed().isEmpty()) {
-                keptSourceRanges.push_back({transcriptWord.startFrame, transcriptWord.endFrame});
+            if (!transcriptWord.skipped && !transcriptWord.text.trimmed().isEmpty() &&
+                !transcriptWord.speaker.trimmed().isEmpty() && transcriptWord.startFrame >= sourceStart &&
+                transcriptWord.startFrame < sourceEndExclusive) {
+                words.push_back(transcriptWord);
             }
         }
     }
-    std::sort(keptSourceRanges.begin(), keptSourceRanges.end(), [](const auto& a, const auto& b) {
-        return a.startFrame < b.startFrame;
+    std::sort(words.begin(), words.end(), [](const TranscriptWord& a, const TranscriptWord& b) {
+        return a.startFrame != b.startFrame ? a.startFrame < b.startFrame : a.endFrame < b.endFrame;
     });
-    QVector<ExportRangeSegment> mergedKeptSourceRanges;
-    for (const ExportRangeSegment& range : std::as_const(keptSourceRanges)) {
-        if (mergedKeptSourceRanges.isEmpty() ||
-            range.startFrame > mergedKeptSourceRanges.constLast().endFrame + 1) {
-            mergedKeptSourceRanges.push_back(range);
-        } else {
-            mergedKeptSourceRanges.last().endFrame =
-                qMax(mergedKeptSourceRanges.constLast().endFrame, range.endFrame);
+    if (words.isEmpty()) {
+        return clips;
+    }
+
+    const qreal playbackRate = qMax<qreal>(0.001, sourceClip.playbackRate);
+    const auto timelineFrameForSource = [&](int64_t sourceFrame) {
+        return qBound<int64_t>(sourceClip.startFrame,
+                               sourceClip.startFrame +
+                                   qRound64((sourceFrame - sourceClip.sourceInFrame) / playbackRate),
+                               qMax<int64_t>(sourceClip.startFrame, clipTimelineEnd - 1));
+    };
+    struct TitleEvent {
+        QString speakerId;
+        int64_t startFrame = 0;
+        int priority = 0;
+    };
+    QVector<TitleEvent> events;
+    int runStart = 0;
+    for (int index = 1; index <= words.size(); ++index) {
+        const bool runEnded =
+            index == words.size() || words.at(index).speaker.trimmed() != words.at(runStart).speaker.trimmed();
+        if (!runEnded) {
+            continue;
+        }
+        const QString speakerId = words.at(runStart).speaker.trimmed();
+        const int64_t runStartFrame = timelineFrameForSource(words.at(runStart).startFrame);
+        events.push_back({speakerId, runStartFrame, 2});
+        if (settings.showAtSectionEnd) {
+            int64_t runEndSourceFrame = words.at(runStart).endFrame;
+            for (int runIndex = runStart + 1; runIndex < index; ++runIndex) {
+                runEndSourceFrame = qMax(runEndSourceFrame, words.at(runIndex).endFrame);
+            }
+            const int64_t runEndExclusive = qBound<int64_t>(
+                sourceClip.startFrame + 1,
+                sourceClip.startFrame +
+                    qCeil((qMax(words.at(runStart).startFrame, runEndSourceFrame) - sourceClip.sourceInFrame + 1) /
+                          playbackRate),
+                clipTimelineEnd);
+            events.push_back({speakerId, qMax(runStartFrame, runEndExclusive - boundedDuration), 0});
+        }
+        runStart = index;
+    }
+
+    const int64_t cadence = qMax<int64_t>(0, settings.cadenceFrames);
+    if (cadence > 0) {
+        int wordIndex = -1;
+        for (int64_t cadenceFrame = sourceClip.startFrame + cadence; cadenceFrame < clipTimelineEnd;
+             cadenceFrame += cadence) {
+            const int64_t cadenceSourceFrame =
+                sourceStart + qRound64((cadenceFrame - sourceClip.startFrame) * playbackRate);
+            while (wordIndex + 1 < words.size() && words.at(wordIndex + 1).startFrame <= cadenceSourceFrame) {
+                ++wordIndex;
+            }
+            if (wordIndex < 0) {
+                continue;
+            }
+            const bool titleAlreadyScheduled =
+                std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
+                    return cadenceFrame >= event.startFrame && cadenceFrame < event.startFrame + boundedDuration;
+                });
+            if (!titleAlreadyScheduled) {
+                events.push_back({words.at(wordIndex).speaker.trimmed(), cadenceFrame, 1});
+            }
         }
     }
-    const auto rawEndForPlaybackFrames = [&](int64_t introductionSourceFrame,
-                                             int64_t playbackFrames) -> int64_t {
-        int64_t remaining = qMax<int64_t>(1, playbackFrames);
-        int64_t lastMappedEnd = qMin<int64_t>(clipTimelineEnd, sourceClip.startFrame + 1);
-        for (const ExportRangeSegment& range : std::as_const(mergedKeptSourceRanges)) {
-            const int64_t rangeStart = qMax(range.startFrame, introductionSourceFrame);
-            if (range.endFrame < rangeStart) continue;
-            lastMappedEnd = qMin<int64_t>(
-                clipTimelineEnd,
-                sourceClip.startFrame + qCeil(
-                    (range.endFrame - sourceClip.sourceInFrame + 1) /
-                    qMax<qreal>(0.001, sourceClip.playbackRate)));
-            const int64_t availableTimelineFrames = qMax<int64_t>(
-                1, qCeil((range.endFrame - rangeStart + 1) /
-                         qMax<qreal>(0.001, sourceClip.playbackRate)));
-            if (remaining <= availableTimelineFrames) {
-                return qMin<int64_t>(
-                    clipTimelineEnd,
-                    sourceClip.startFrame + qRound64(
-                        (rangeStart - sourceClip.sourceInFrame) /
-                        qMax<qreal>(0.001, sourceClip.playbackRate)) + remaining);
-            }
-            remaining -= availableTimelineFrames;
+    std::sort(events.begin(), events.end(), [](const TitleEvent& a, const TitleEvent& b) {
+        return a.startFrame != b.startFrame ? a.startFrame < b.startFrame : a.priority > b.priority;
+    });
+    events.erase(std::unique(events.begin(), events.end(),
+                             [](const TitleEvent& a, const TitleEvent& b) { return a.startFrame == b.startFrame; }),
+                 events.end());
+
+    for (int eventIndex = 0; eventIndex < events.size(); ++eventIndex) {
+        const TitleEvent& event = events.at(eventIndex);
+        const QString& speakerId = event.speakerId;
+        const int64_t startFrame = event.startFrame;
+        const int64_t nextEventFrame =
+            eventIndex + 1 < events.size() ? events.at(eventIndex + 1).startFrame : clipTimelineEnd;
+        const int64_t duration = qMax<int64_t>(1, std::min({boundedDuration, clipTimelineEnd - startFrame,
+                                                            qMax<int64_t>(1, nextEventFrame - startFrame)}));
+        const SpeakerProfile speakerProfile =
+            speakerProfileFromJson(speakerId, speakerProfiles.value(speakerId).toObject());
+        QStringList titleLines;
+        if (settings.showSpeakerName) {
+            const QString name = speakerProfile.name.trimmed();
+            titleLines.push_back(name.isEmpty() ? speakerId : name);
         }
-        return lastMappedEnd;
-    };
-    QString previousSpeaker;
-
-    for (const TranscriptSection& section : sections) {
-        for (const TranscriptWord& word : section.words) {
-            const QString speakerId = word.speaker.trimmed();
-            if (speakerId.isEmpty() || word.skipped) {
-                continue;
-            }
-            if (word.startFrame < sourceStart || word.startFrame >= sourceEndExclusive) {
-                continue;
-            }
-            if (speakerId == previousSpeaker) {
-                continue;
-            }
-            previousSpeaker = speakerId;
-
-            const qreal localTimelineFrames =
-                static_cast<qreal>(word.startFrame - sourceClip.sourceInFrame) /
-                qMax<qreal>(0.001, sourceClip.playbackRate);
-            const int64_t startFrame =
-                qBound<int64_t>(sourceClip.startFrame,
-                                sourceClip.startFrame + qRound64(localTimelineFrames),
-                                qMax<int64_t>(sourceClip.startFrame, clipTimelineEnd - 1));
-            const int64_t rawEndFrame = rawEndForPlaybackFrames(
-                word.startFrame, startDelay + boundedDuration);
-            const int64_t duration = qMax<int64_t>(1, rawEndFrame - startFrame);
-            const int64_t titleLookupFrame = qMax<int64_t>(
-                word.startFrame,
-                word.startFrame + ((qMax<int64_t>(word.startFrame, word.endFrame) - word.startFrame) / 2));
-            const SpeakerProfile speakerProfile = transcriptSpeakerProfileForSourceFrame(
-                transcriptPath,
-                sections,
-                titleLookupFrame,
-                TranscriptOverlayTiming{0, 0});
-            QStringList titleLines;
-            if (settings.showSpeakerName) {
-                const QString name = speakerProfile.name.trimmed();
-                titleLines.push_back(name.isEmpty() ? speakerId : name);
-            }
-            if (settings.showSpeakerOrganization &&
-                !speakerProfile.organization.trimmed().isEmpty()) {
-                titleLines.push_back(speakerProfile.organization.trimmed());
-            }
-            if (titleLines.isEmpty()) {
-                continue;
-            }
-            const QString title = titleLines.join(QLatin1Char('\n'));
-
-            TimelineClip titleClip;
-            titleClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            titleClip.clipRole = ClipRole::SpeakerTitle;
-            titleClip.linkedSourceClipId = sourceClip.id.trimmed();
-            titleClip.syncLockedToSource = true;
-            titleClip.locked = true;
-            titleClip.sourceTransformLocked = false;
-            titleClip.mediaType = ClipMediaType::Title;
-            titleClip.label = QStringLiteral("Speaker: %1").arg(title);
-            titleClip.startFrame = startFrame;
-            titleClip.durationFrames = duration;
-            titleClip.sourceDurationFrames = duration;
-            titleClip.trackIndex = qMax(0, trackIndex);
-            titleClip.videoEnabled = true;
-            titleClip.audioEnabled = false;
-            titleClip.hasAudio = false;
-            titleClip.color = QColor(QStringLiteral("#255f85"));
-
-            TimelineClip::TitleKeyframe base;
-            base.text = title.trimmed();
-            base.translationY = 0.68;
-            base.fontSize = qBound<qreal>(12.0, settings.titleFontSize, 220.0);
-            base.autoFitToOutput = settings.titleAutoFitToOutput;
-            base.color = QColor(QStringLiteral("#f7fbff"));
-            if (speakerProfile.primaryColor.isValid()) {
-                base.color = speakerProfile.primaryColor;
-            }
-            base.logoPath = speakerProfile.logoPath;
-            base.textMaterialStyle = settings.titleTextMaterialStyle;
-            base.textPatternImagePath = settings.titleTextPatternImagePath;
-            base.textPatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
-            base.windowEnabled = settings.titleBackgroundEnabled;
-            base.windowColor = QColor(QStringLiteral("#07111d"));
-            if (speakerProfile.secondaryColor.isValid()) {
-                base.windowColor = speakerProfile.secondaryColor;
-            }
-            base.windowOpacity = 0.72;
-            base.windowPadding = 24.0;
-            base.windowWidth = qMax<qreal>(0.0, settings.titleBoxWidth);
-            base.windowFrameEnabled = settings.titleBackgroundEnabled;
-            base.windowFrameColor = QColor(QStringLiteral("#56c7ff"));
-            if (speakerProfile.accentColor.isValid()) {
-                base.windowFrameColor = speakerProfile.accentColor;
-            }
-            base.windowFrameOpacity = 0.85;
-            base.windowFrameWidth = 2.0;
-            base.windowFrameMaterialStyle = settings.titleBorderMaterialStyle;
-            base.windowFramePatternImagePath = settings.titleBorderPatternImagePath;
-            base.windowFramePatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
-            base.dropShadowEnabled = true;
-            base.dropShadowOpacity = 0.82;
-            base.dropShadowOffsetX = 3.0;
-            base.dropShadowOffsetY = 5.0;
-            base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
-            base.textExtrudeMode = settings.titleExtrude3D
-                ? settings.titleExtrudeMode
-                : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
-            base.vulkan3DEnabled = settings.titleExtrude3D;
-            base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
-            base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
-            // The solid extrusion is the depth cue. Keeping a second offset
-            // shadow makes the title look duplicated rather than dimensional.
-            base.dropShadowEnabled = !settings.titleExtrude3D;
-            if (settings.titleExtrude3D) {
-                base.dropShadowOpacity = 0.0;
-            }
-            titleClip.titleKeyframes = {base};
-            TimelineClip animationClip = titleClip;
-            animationClip.durationFrames = qMin<int64_t>(
-                boundedDuration, qMax<int64_t>(1, duration - startDelay));
-            applyNewsLowerThirdFlyInPreset(animationClip, settings);
-            titleClip.titleKeyframes = animationClip.titleKeyframes;
-            if (startDelay > 0 && !titleClip.titleKeyframes.isEmpty()) {
-                TimelineClip::TitleKeyframe waiting = titleClip.titleKeyframes.constFirst();
-                waiting.frame = 0;
-                waiting.opacity = 0.0;
-                waiting.windowOpacity = 0.0;
-                waiting.windowFrameOpacity = 0.0;
-                waiting.dropShadowOpacity = 0.0;
-                for (TimelineClip::TitleKeyframe& keyframe : titleClip.titleKeyframes) {
-                    keyframe.frame = qMin<int64_t>(duration - 1, keyframe.frame + startDelay);
-                }
-                titleClip.titleKeyframes.prepend(waiting);
-            }
-            clips.push_back(titleClip);
+        if (settings.showSpeakerOrganization && !speakerProfile.organization.trimmed().isEmpty()) {
+            titleLines.push_back(speakerProfile.organization.trimmed());
         }
+        if (titleLines.isEmpty()) {
+            continue;
+        }
+        const QString title = titleLines.join(QLatin1Char('\n'));
+
+        TimelineClip titleClip;
+        titleClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        titleClip.clipRole = ClipRole::SpeakerTitle;
+        titleClip.linkedSourceClipId = sourceClip.id.trimmed();
+        titleClip.syncLockedToSource = true;
+        titleClip.locked = true;
+        titleClip.sourceTransformLocked = false;
+        titleClip.mediaType = ClipMediaType::Title;
+        titleClip.label = QStringLiteral("Speaker: %1").arg(title);
+        titleClip.startFrame = startFrame;
+        titleClip.durationFrames = duration;
+        titleClip.sourceDurationFrames = duration;
+        titleClip.trackIndex = qMax(0, trackIndex);
+        titleClip.videoEnabled = true;
+        titleClip.audioEnabled = false;
+        titleClip.hasAudio = false;
+        titleClip.color = QColor(QStringLiteral("#255f85"));
+
+        TimelineClip::TitleKeyframe base;
+        base.text = title.trimmed();
+        base.translationY = 0.68;
+        base.fontSize = qBound<qreal>(12.0, settings.titleFontSize, 220.0);
+        base.autoFitToOutput = settings.titleAutoFitToOutput;
+        base.color = QColor(QStringLiteral("#f7fbff"));
+        if (speakerProfile.primaryColor.isValid()) {
+            base.color = speakerProfile.primaryColor;
+        }
+        base.logoPath = speakerProfile.logoPath;
+        base.textMaterialStyle = settings.titleTextMaterialStyle;
+        base.textPatternImagePath = settings.titleTextPatternImagePath;
+        base.textPatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
+        base.windowEnabled = settings.titleBackgroundEnabled;
+        base.windowColor = QColor(QStringLiteral("#07111d"));
+        if (speakerProfile.secondaryColor.isValid()) {
+            base.windowColor = speakerProfile.secondaryColor;
+        }
+        base.windowOpacity = 0.72;
+        base.windowPadding = 24.0;
+        base.windowWidth = qMax<qreal>(0.0, settings.titleBoxWidth);
+        base.windowFrameEnabled = settings.titleBackgroundEnabled;
+        base.windowFrameColor = QColor(QStringLiteral("#56c7ff"));
+        if (speakerProfile.accentColor.isValid()) {
+            base.windowFrameColor = speakerProfile.accentColor;
+        }
+        base.windowFrameOpacity = 0.85;
+        base.windowFrameWidth = 2.0;
+        base.windowFrameMaterialStyle = settings.titleBorderMaterialStyle;
+        base.windowFramePatternImagePath = settings.titleBorderPatternImagePath;
+        base.windowFramePatternScale = qBound<qreal>(0.10, settings.titlePatternScale, 8.0);
+        base.dropShadowEnabled = true;
+        base.dropShadowOpacity = 0.82;
+        base.dropShadowOffsetX = 3.0;
+        base.dropShadowOffsetY = 5.0;
+        base.vulkan3DExtrudeEnabled = settings.titleExtrude3D;
+        base.textExtrudeMode =
+            settings.titleExtrude3D ? settings.titleExtrudeMode : TimelineClip::TitleKeyframe::TextExtrudeMode::None;
+        base.vulkan3DEnabled = settings.titleExtrude3D;
+        base.vulkan3DExtrudeDepth = qBound<qreal>(0.0, settings.titleExtrudeDepth, 2.0);
+        base.vulkan3DBevelScale = qBound<qreal>(0.0, settings.titleBevelScale, 2.0);
+        // The solid extrusion is the depth cue. Keeping a second offset
+        // shadow makes the title look duplicated rather than dimensional.
+        base.dropShadowEnabled = !settings.titleExtrude3D;
+        if (settings.titleExtrude3D) {
+            base.dropShadowOpacity = 0.0;
+        }
+        titleClip.titleKeyframes = {base};
+        TimelineClip animationClip = titleClip;
+        animationClip.durationFrames = qMin<int64_t>(boundedDuration, qMax<int64_t>(1, duration - startDelay));
+        applyNewsLowerThirdFlyInPreset(animationClip, settings);
+        titleClip.titleKeyframes = animationClip.titleKeyframes;
+        if (startDelay > 0 && !titleClip.titleKeyframes.isEmpty()) {
+            TimelineClip::TitleKeyframe waiting = titleClip.titleKeyframes.constFirst();
+            waiting.frame = 0;
+            waiting.opacity = 0.0;
+            waiting.windowOpacity = 0.0;
+            waiting.windowFrameOpacity = 0.0;
+            waiting.dropShadowOpacity = 0.0;
+            for (TimelineClip::TitleKeyframe& keyframe : titleClip.titleKeyframes) {
+                keyframe.frame = qMin<int64_t>(duration - 1, keyframe.frame + startDelay);
+            }
+            titleClip.titleKeyframes.prepend(waiting);
+        }
+        clips.push_back(titleClip);
     }
 
     return clips;
@@ -1454,11 +1468,19 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
         }
     }
     QSet<int> previousChildTracks;
+    int preservedZLevel = TimelineClip::kAutomaticZLevel;
+    bool preservedZLevelUserSet = false;
+    bool hasPreservedZLevel = false;
 
     for (const TimelineClip& clip : std::as_const(timelineClips)) {
         if (clip.clipRole == generatedRole &&
             clip.linkedSourceClipId.trimmed() == sourceId) {
             previousChildTracks.insert(clip.trackIndex);
+            if (!hasPreservedZLevel) {
+                preservedZLevel = clip.zLevel;
+                preservedZLevelUserSet = clip.zLevelUserSet;
+                hasPreservedZLevel = true;
+            }
         }
     }
     QList<int> reusableChildTracks;
@@ -1507,6 +1529,10 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
         clip.syncLockedToSource = true;
         clip.locked = true;
         clip.trackIndex = targetTrack;
+        if (hasPreservedZLevel) {
+            clip.zLevel = preservedZLevel;
+            clip.zLevelUserSet = preservedZLevelUserSet;
+        }
         if (clip.durationFrames <= 0) {
             clip.durationFrames = 1;
         }

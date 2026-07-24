@@ -1166,6 +1166,43 @@ bool TimelineWidget::updateClipById(const QString& clipId, const std::function<v
     return false;
 }
 
+bool TimelineWidget::setClipZLevel(const QString& clipId, int zLevel, bool automatic)
+{
+    const auto targetIt = std::find_if(
+        m_clips.cbegin(), m_clips.cend(),
+        [&clipId](const TimelineClip& clip) { return clip.id == clipId; });
+    if (targetIt == m_clips.cend() || !clipHasVisuals(*targetIt)) {
+        return false;
+    }
+
+    invalidateHoveredClipToolTipCache();
+    const int explicitZ = qBound(-100000, zLevel, 100000);
+    const auto applyZ = [automatic, explicitZ](TimelineClip& clip) {
+        clip.zLevel = automatic
+            ? -qMax(0, clip.trackIndex) * 100
+            : explicitZ;
+        clip.zLevelUserSet = !automatic;
+    };
+    if (targetIt->clipRole == ClipRole::SpeakerTitle) {
+        const QString sourceId = targetIt->linkedSourceClipId.trimmed();
+        if (sourceId.isEmpty()) {
+            return false;
+        }
+        for (TimelineClip& clip : m_clips) {
+            if (clip.clipRole == ClipRole::SpeakerTitle &&
+                clip.linkedSourceClipId.trimmed() == sourceId) {
+                applyZ(clip);
+            }
+        }
+    } else {
+        TimelineClip& clip = m_clips[
+            static_cast<int>(std::distance(m_clips.cbegin(), targetIt))];
+        applyZ(clip);
+    }
+    update();
+    return true;
+}
+
 QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
                                                bool includeAncestors) const
 {

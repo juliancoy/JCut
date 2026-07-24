@@ -69,6 +69,7 @@ public:
     void setSelectedTrackIndex(int trackIndex);
 
     bool updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater);
+    bool setClipZLevel(const QString& clipId, int zLevel, bool automatic);
     bool createOrReplaceMaskMatte(const QString& clipId, bool selectMatte = true);
     bool createOrReplaceMaskMatteForSidecar(const QString& clipId,
                                             const QString& sidecarDirectory,

@@ -1538,7 +1538,10 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     TranscriptSection section;
     section.startFrame = 110;
     section.endFrame = 172;
-    section.words.push_back(TranscriptWord{110, 112, QStringLiteral("S1"), QStringLiteral("hello"), false});
+    // Speaker identity must come from the introduction event itself. Transcript
+    // timing can overlap, so resolving the profile again at a frame can select
+    // the prior speaker and produce a stale title.
+    section.words.push_back(TranscriptWord{110, 150, QStringLiteral("S1"), QStringLiteral("hello"), false});
     section.words.push_back(TranscriptWord{120, 122, QStringLiteral("S1"), QStringLiteral("again"), false});
     section.words.push_back(TranscriptWord{140, 142, QStringLiteral("S2"), QStringLiteral("there"), false});
     section.words.push_back(TranscriptWord{170, 172, QStringLiteral("S1"), QStringLiteral("back"), false});
@@ -1631,6 +1634,41 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
         riseFly);
     QVERIFY(riseTitles.constFirst().titleKeyframes.constFirst().translationY >
             riseTitles.constFirst().titleKeyframes.at(1).translationY);
+
+    TimelineClip repeatedSource = source;
+    repeatedSource.sourceInFrame = 0;
+    repeatedSource.startFrame = 100;
+    repeatedSource.durationFrames = 400;
+    TranscriptSection repeatedSection;
+    repeatedSection.startFrame = 0;
+    repeatedSection.endFrame = 300;
+    repeatedSection.words = {
+        TranscriptWord{0, 10, QStringLiteral("S1"), QStringLiteral("start"), false},
+        TranscriptWord{100, 110, QStringLiteral("S1"), QStringLiteral("continue"), false},
+        TranscriptWord{200, 210, QStringLiteral("S2"), QStringLiteral("reply"), false},
+        TranscriptWord{290, 300, QStringLiteral("S2"), QStringLiteral("finish"), false},
+    };
+    SpeakerTitleFlyInSettings repeatedSettings;
+    repeatedSettings.titleStartDelayFrames = 0;
+    repeatedSettings.titleDurationFrames = 30;
+    repeatedSettings.showAtSectionEnd = true;
+    repeatedSettings.cadenceFrames = 120;
+    const QVector<TimelineClip> repeatedTitles =
+        makeSpeakerTitleClipsForTranscriptIntroductions(
+            repeatedSource,
+            transcriptPath,
+            QVector<TranscriptSection>{repeatedSection},
+            4,
+            repeatedSettings);
+    QCOMPARE(repeatedTitles.size(), 7);
+    QVector<int64_t> repeatedStarts;
+    for (const TimelineClip& titleClip : repeatedTitles) {
+        repeatedStarts.push_back(titleClip.startFrame);
+        QVERIFY(titleClip.durationFrames <= repeatedSettings.titleDurationFrames);
+    }
+    QCOMPARE(
+        repeatedStarts,
+        QVector<int64_t>({100, 181, 220, 300, 340, 371, 460}));
 }
 
 void TestEffectPresets::speakerTitleFlyInsApplyToSourceClipKeyframes()
@@ -2733,6 +2771,8 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
     stale.trackIndex = 1;
     stale.startFrame = 10;
     stale.durationFrames = 90;
+    stale.zLevel = 75;
+    stale.zLevelUserSet = true;
 
     TimelineClip unrelated = stale;
     unrelated.id = QStringLiteral("other-source-title");
@@ -2785,6 +2825,8 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
         }
         if (clip.clipRole == ClipRole::SpeakerTitle && clip.linkedSourceClipId == source.id) {
             ++sourceTitleCount;
+            QCOMPARE(clip.zLevel, 75);
+            QVERIFY(clip.zLevelUserSet);
             if (clip.id == QStringLiteral("title-a")) {
                 titleATrack = clip.trackIndex;
             } else if (clip.id == QStringLiteral("title-b")) {

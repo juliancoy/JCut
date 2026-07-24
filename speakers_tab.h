@@ -58,6 +58,8 @@ public:
         QComboBox* speakerOverlayFlyInStyleCombo = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInDelaySpin = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInDurationSpin = nullptr;
+        QCheckBox* speakerOverlayShowAtSectionEndCheckBox = nullptr;
+        QDoubleSpinBox* speakerOverlayCadenceSpin = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInTimeSpin = nullptr;
         QDoubleSpinBox* speakerOverlayWrapRadiusSpin = nullptr;
         QDoubleSpinBox* speakerOverlayWrapDepthSpin = nullptr;

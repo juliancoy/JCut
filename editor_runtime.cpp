@@ -879,7 +879,7 @@ jcut::CommandResult splitSingleClipAtFrame(
     int clipId,
     int frame,
     int* trailingClipId = nullptr,
-    bool ownedMaskMatte = false)
+    bool ownedChild = false)
 {
     if (!document) {
         return {false, "document unavailable"};
@@ -888,11 +888,10 @@ jcut::CommandResult splitSingleClipAtFrame(
     if (!clip) {
         return {false, "clip not found"};
     }
-    if (jcut::canonicalEditorClipRole(clip->clipRole) == "mask_matte" &&
-        !ownedMaskMatte) {
-        return {false, "mask matte must be split with its source"};
+    if (jcut::isOwnedGeneratedEditorClip(*clip) && !ownedChild) {
+        return {false, "generated child must be split with its source"};
     }
-    if (clip->locked && !ownedMaskMatte) {
+    if (clip->locked && !ownedChild) {
         return {false, "locked clip cannot be split"};
     }
     const int clipStart = clip->startFrame;
@@ -1000,24 +999,20 @@ jcut::CommandResult splitClipAtFrame(jcut::EditorDocumentCore* document,
     if (!source) {
         return {false, "clip not found"};
     }
-    if (jcut::canonicalEditorClipRole(source->clipRole) == "mask_matte") {
-        return {false, "mask matte must be split with its source"};
+    if (jcut::isOwnedGeneratedEditorClip(*source)) {
+        return {false, "generated child must be split with its source"};
     }
 
     const std::string sourcePersistentId =
         jcut::trimmedEditorClipId(source->persistentId);
-    std::vector<int> ownedMaskIds;
+    std::vector<int> ownedChildIds;
     for (const jcut::EditorClip& candidate : document->clips) {
-        if (jcut::canonicalEditorClipRole(candidate.clipRole) != "mask_matte" ||
+        if (!jcut::isOwnedGeneratedEditorClip(candidate) ||
             jcut::trimmedEditorClipId(candidate.linkedSourceClipId) !=
                 sourcePersistentId) {
             continue;
         }
-        if (frame <= candidate.startFrame ||
-            frame >= candidate.startFrame + candidate.durationFrames) {
-            return {false, "owned mask matte does not intersect split frame"};
-        }
-        ownedMaskIds.push_back(candidate.id);
+        ownedChildIds.push_back(candidate.id);
     }
 
     int trailingSourceId = 0;
@@ -1034,20 +1029,34 @@ jcut::CommandResult splitClipAtFrame(jcut::EditorDocumentCore* document,
     const std::string trailingSourcePersistentId =
         trailingSource->persistentId;
 
-    for (const int maskId : ownedMaskIds) {
-        int trailingMaskId = 0;
-        const jcut::CommandResult splitMask = splitSingleClipAtFrame(
-            document, maskId, frame, &trailingMaskId, true);
-        if (!splitMask.applied) {
-            return splitMask;
+    for (const int childId : ownedChildIds) {
+        jcut::EditorClip* child = findClip(&document->clips, childId);
+        if (!child) {
+            return {false, "owned child not found"};
         }
-        jcut::EditorClip* trailingMask =
-            findClip(&document->clips, trailingMaskId);
-        if (!trailingMask) {
-            return {false, "split mask result not found"};
+        const int childEnd = child->startFrame + child->durationFrames;
+        if (child->startFrame >= frame) {
+            child->linkedSourceClipId = trailingSourcePersistentId;
+            child->selected = false;
+            continue;
         }
-        trailingMask->linkedSourceClipId = trailingSourcePersistentId;
-        trailingMask->selected = false;
+        if (childEnd <= frame) {
+            continue;
+        }
+
+        int trailingChildId = 0;
+        const jcut::CommandResult splitChild = splitSingleClipAtFrame(
+            document, childId, frame, &trailingChildId, true);
+        if (!splitChild.applied) {
+            return splitChild;
+        }
+        jcut::EditorClip* trailingChild =
+            findClip(&document->clips, trailingChildId);
+        if (!trailingChild) {
+            return {false, "split child result not found"};
+        }
+        trailingChild->linkedSourceClipId = trailingSourcePersistentId;
+        trailingChild->selected = false;
     }
     if (trailingClipId) {
         *trailingClipId = trailingSourceId;
@@ -1617,6 +1626,20 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         return isGeneratedEditorChildTrack(track) &&
             trimmedEditorClipId(track.childClipId) == binding.childId;
     };
+    const auto trackContainsOnlyBoundChildren = [&](int trackId) {
+        const auto occupants = occupantsByTrackId.find(trackId);
+        if (occupants == occupantsByTrackId.end() ||
+            occupants->second.empty()) {
+            return false;
+        }
+        return std::all_of(
+            occupants->second.begin(), occupants->second.end(),
+            [&](std::size_t clipIndex) {
+                return boundChildIds.find(trimmedEditorClipId(
+                           document->clips[clipIndex].persistentId)) !=
+                    boundChildIds.end();
+            });
+    };
     for (ChildBinding& binding : bindings) {
         const EditorClip& child = document->clips[binding.childIndex];
         const EditorClip& parent = document->clips[binding.parentIndex];
@@ -1626,9 +1649,9 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         if (currentTrackIt != trackIndexById.end()) {
             const EditorTrack& currentTrack =
                 document->tracks[currentTrackIt->second];
-            if (generatedTrackMatches(currentTrack, binding) &&
-                claimedTrackIds.find(currentTrack.id) ==
-                    claimedTrackIds.end()) {
+            if ((generatedTrackMatches(currentTrack, binding) ||
+                 (isGeneratedEditorChildTrack(currentTrack) &&
+                  trackContainsOnlyBoundChildren(currentTrack.id)))) {
                 laneTrackId = currentTrack.id;
             }
         }
@@ -1650,8 +1673,7 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
                 !isGeneratedEditorChildTrack(currentTrack) &&
                 currentTrack.id != parent.trackId &&
                 occupants != occupantsByTrackId.end() &&
-                occupants->second.size() == 1 &&
-                occupants->second.front() == binding.childIndex &&
+                trackContainsOnlyBoundChildren(currentTrack.id) &&
                 claimedTrackIds.find(currentTrack.id) ==
                     claimedTrackIds.end();
             if (dedicatedExistingTrack) {
@@ -2859,7 +2881,8 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     std::is_same_v<
                         std::remove_cvref_t<decltype(typedCommand.clipId)>,
                         int> &&
-                    !std::is_same_v<T, SelectClipCommand>) {
+                    !std::is_same_v<T, SelectClipCommand> &&
+                    !std::is_same_v<T, SetClipZLevelCommand>) {
                     if (const EditorClip* target =
                             findClip(&m_document.clips, typedCommand.clipId);
                         target && isTranscriptGeneratedEditorTitle(*target)) {
@@ -3410,11 +3433,19 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     source->transcriptOverlay.showSpeakerTitle = false;
                 }
                 std::unordered_set<int> previousTitleTrackIds;
+                int preservedZLevel = std::numeric_limits<int>::min();
+                bool preservedZLevelUserSet = false;
+                bool hasPreservedZLevel = false;
                 for (const EditorClip& clip : m_document.clips) {
                     if (isTranscriptGeneratedEditorTitle(clip) &&
                         trimmedEditorClipId(clip.linkedSourceClipId) ==
                             trimmedEditorClipId(sourcePersistentId)) {
                         previousTitleTrackIds.insert(clip.trackId);
+                        if (!hasPreservedZLevel) {
+                            preservedZLevel = clip.zLevel;
+                            preservedZLevelUserSet = clip.zLevelUserSet;
+                            hasPreservedZLevel = true;
+                        }
                     }
                 }
                 std::vector<int> reusableTrackIds;
@@ -3481,6 +3512,10 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                         m_document.clips, generated.id);
                     generated.trackId = targetTrackId;
                     generated.selected = false;
+                    if (hasPreservedZLevel) {
+                        generated.zLevel = preservedZLevel;
+                        generated.zLevelUserSet = preservedZLevelUserSet;
+                    }
                     if (representativeChildId.empty()) {
                         representativeChildId =
                             generated.persistentId;
@@ -4723,10 +4758,28 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
             } else if constexpr (std::is_same_v<T, SetClipZLevelCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) return {false, "clip not found"};
-                clip->zLevel = typedCommand.automatic
+                const int zLevel = typedCommand.automatic
                     ? std::numeric_limits<int>::min()
                     : std::clamp(typedCommand.zLevel, -100000, 100000);
-                clip->zLevelUserSet = !typedCommand.automatic;
+                const bool userSet = !typedCommand.automatic;
+                if (isTranscriptGeneratedEditorTitle(*clip)) {
+                    const std::string sourceId =
+                        trimmedEditorClipId(clip->linkedSourceClipId);
+                    if (sourceId.empty()) {
+                        return {false, "generated title layer has no source"};
+                    }
+                    for (EditorClip& candidate : m_document.clips) {
+                        if (isTranscriptGeneratedEditorTitle(candidate) &&
+                            trimmedEditorClipId(candidate.linkedSourceClipId) ==
+                                sourceId) {
+                            candidate.zLevel = zLevel;
+                            candidate.zLevelUserSet = userSet;
+                        }
+                    }
+                    return {true, "generated title layer z level updated"};
+                }
+                clip->zLevel = zLevel;
+                clip->zLevelUserSet = userSet;
                 return {true, "clip z level updated"};
             } else if constexpr (std::is_same_v<T, SetClipTranscriptOverlayCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);

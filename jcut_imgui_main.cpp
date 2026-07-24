@@ -266,6 +266,8 @@ struct TranscriptInspectorCache {
     int speakerTitleStyle = 0;
     double speakerTitleDurationSeconds = 3.0;
     double speakerTitleDelaySeconds = 0.35;
+    bool speakerTitleShowAtSectionEnd = false;
+    double speakerTitleCadenceSeconds = 0.0;
     double speakerTitleFlySeconds = 0.35;
     bool speakerTitleShowOrganization = true;
     std::vector<jcut::TranscriptMiningProposal> miningProposals;
@@ -14537,6 +14539,16 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         0.05, 0.25, "%.2f");
                     cache.speakerTitleDelaySeconds = std::clamp(
                         cache.speakerTitleDelaySeconds, 0.0, 10.0);
+                    ImGui::Checkbox(
+                        "Also show near section end",
+                        &cache.speakerTitleShowAtSectionEnd);
+                    ImGui::SetNextItemWidth(120.0f);
+                    ImGui::InputDouble(
+                        "Repeat Cadence Seconds (0 = off)",
+                        &cache.speakerTitleCadenceSeconds,
+                        5.0, 60.0, "%.2f");
+                    cache.speakerTitleCadenceSeconds = std::clamp(
+                        cache.speakerTitleCadenceSeconds, 0.0, 3600.0);
                     ImGui::SetNextItemWidth(120.0f);
                     ImGui::InputDouble(
                         "Fly Seconds",
@@ -14560,6 +14572,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         settings.titleStartDelayFrames =
                             std::max<std::int64_t>(0, std::llround(
                                 cache.speakerTitleDelaySeconds * 30.0));
+                        settings.showAtSectionEnd =
+                            cache.speakerTitleShowAtSectionEnd;
+                        settings.cadenceFrames =
+                            std::max<std::int64_t>(0, std::llround(
+                                cache.speakerTitleCadenceSeconds * 30.0));
                         settings.flyInFrames =
                             std::max<std::int64_t>(1, std::llround(
                                 cache.speakerTitleFlySeconds * 30.0));
@@ -15260,6 +15277,40 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 "Properties", nullptr, inspectorTabFlags("Properties"))) {
             drawInspectorHeading("Properties", snapshot, currentClip);
             drawClipSummaryTable(snapshot, currentClip);
+            const bool visualClip = currentClip && currentClip->videoEnabled;
+            int zLevel = currentClip &&
+                    currentClip->zLevel != std::numeric_limits<int>::min()
+                ? currentClip->zLevel
+                : (currentClip
+                       ? -std::max(0, currentClip->trackId - 1) * 100
+                       : 0);
+            bool automaticZ = !currentClip || !currentClip->zLevelUserSet;
+            ImGui::SeparatorText("Compositing Order");
+            ImGui::BeginDisabled(!visualClip);
+            if (ImGui::Checkbox("Automatic Z from timeline row", &automaticZ) &&
+                currentClip) {
+                applyCommand(
+                    shellState,
+                    jcut::SetClipZLevelCommand{
+                        currentClip->id, zLevel, automaticZ});
+            }
+            ImGui::BeginDisabled(automaticZ);
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::InputInt("Z Level", &zLevel) && currentClip) {
+                applyCommand(
+                    shellState,
+                    jcut::SetClipZLevelCommand{
+                        currentClip->id, zLevel, false});
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::TextDisabled(
+                "Higher Z draws in front; timeline nesting is unchanged.");
+            if (currentClip &&
+                currentClip->clipRole == "speaker_title") {
+                ImGui::TextDisabled(
+                    "This changes the complete generated title layer.");
+            }
             if (currentTrack) {
                 ImGui::Separator();
                 ImGui::Text("Track %d", currentTrack->id);

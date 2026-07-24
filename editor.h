@@ -487,6 +487,8 @@ private:
     QLabel *m_clipOriginalInfoLabel = nullptr;
     QLabel *m_clipProxyInfoLabel = nullptr;
     QDoubleSpinBox *m_clipPlaybackRateSpin = nullptr;
+    QSpinBox *m_clipZLevelSpin = nullptr;
+    QCheckBox *m_clipAutomaticZCheckBox = nullptr;
     QLabel *m_trackInspectorLabel = nullptr;
     QLabel *m_trackInspectorDetailsLabel = nullptr;
     QLineEdit *m_trackNameEdit = nullptr;
@@ -594,10 +596,6 @@ private:
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;
     QComboBox *m_renderBackendCombo = nullptr;
-    QComboBox *m_backgroundFillEffectCombo = nullptr;
-    QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
-    QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
-    QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;

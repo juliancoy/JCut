@@ -1113,6 +1113,67 @@ void testNeutralSpeakerTitleGenerationAndReplacement()
                "neutral titles retain profile styling, ownership, timing, and fly-in keyframes");
     }
 
+    json repeatedRoot = {
+        {"speaker_profiles", {
+            {"S1", {{"name", "Alice"}}},
+            {"S2", {{"name", "Bob"}}}
+        }},
+        {"segments", json::array({
+            {{"words", json::array({
+                {{"word", "start"}, {"start", 0.0}, {"end", 0.2},
+                 {"speaker", "S1"}},
+                {{"word", "continue"}, {"start", 3.0}, {"end", 3.2},
+                 {"speaker", "S1"}},
+                {{"word", "reply"}, {"start", 6.0}, {"end", 6.2},
+                 {"speaker", "S2"}},
+                {{"word", "finish"}, {"start", 9.0}, {"end", 9.2},
+                 {"speaker", "S2"}}
+            })}}
+        })}
+    };
+    auto repeatedTranscript =
+        jcut::TranscriptDocumentCore::fromJson(repeatedRoot, &error);
+    expect(repeatedTranscript.has_value(),
+           "repeated speaker-title transcript fixture parses: " + error);
+    if (repeatedTranscript) {
+        jcut::EditorClip repeatedSource = source;
+        repeatedSource.durationFrames = 360;
+        repeatedSource.sourceDurationFrames = 360;
+        jcut::SpeakerTitleFlyInSettingsCore repeatedSettings;
+        repeatedSettings.titleDurationFrames = 30;
+        repeatedSettings.titleStartDelayFrames = 0;
+        repeatedSettings.showAtSectionEnd = true;
+        repeatedSettings.cadenceFrames = 120;
+        const auto repeatedTitles = jcut::makeSpeakerTitleClipsCore(
+            repeatedSource, *repeatedTranscript, 0, repeatedSettings);
+        std::vector<int> repeatedStarts;
+        std::transform(
+            repeatedTitles.begin(),
+            repeatedTitles.end(),
+            std::back_inserter(repeatedStarts),
+            [](const jcut::EditorClip& title) {
+                return title.startFrame;
+            });
+        std::string repeatedStartSummary;
+        for (const int frame : repeatedStarts) {
+            if (!repeatedStartSummary.empty()) repeatedStartSummary += ",";
+            repeatedStartSummary += std::to_string(frame);
+        }
+        expect(
+            repeatedStarts ==
+                std::vector<int>({100, 166, 220, 280, 340, 346}),
+            "neutral generation supports section-end titles and source-start cadence: " +
+                repeatedStartSummary);
+        expect(
+            std::all_of(
+                repeatedTitles.begin(),
+                repeatedTitles.end(),
+                [](const jcut::EditorClip& title) {
+                    return title.durationFrames <= 30;
+                }),
+            "neutral generated titles stop by the next generated occurrence");
+    }
+
     jcut::EditorDocumentCore document;
     document.projectName = "Speaker titles";
     document.tracks.push_back({1, "Video", true});

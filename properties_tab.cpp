@@ -75,6 +75,16 @@ void PropertiesTab::refresh()
             m_widgets.clipPlaybackRateSpin->setValue(1.0);
             m_widgets.clipPlaybackRateSpin->setEnabled(false);
         }
+        if (m_widgets.clipZLevelSpin) {
+            QSignalBlocker block(m_widgets.clipZLevelSpin);
+            m_widgets.clipZLevelSpin->setValue(0);
+            m_widgets.clipZLevelSpin->setEnabled(false);
+        }
+        if (m_widgets.clipAutomaticZCheckBox) {
+            QSignalBlocker block(m_widgets.clipAutomaticZCheckBox);
+            m_widgets.clipAutomaticZCheckBox->setChecked(true);
+            m_widgets.clipAutomaticZCheckBox->setEnabled(false);
+        }
     } else {
         const QString proxyPath = m_deps.playbackProxyPathForClip ? m_deps.playbackProxyPathForClip(*clip) : QString();
         const QString playbackPath = m_deps.playbackMediaPathForClip ? m_deps.playbackMediaPathForClip(*clip)
@@ -114,6 +124,22 @@ void PropertiesTab::refresh()
                 clip->hasAudio
                     ? QStringLiteral("Visual retime control. Audio playback is not time-stretched.")
                     : QStringLiteral("Playback speed multiplier for this clip."));
+        }
+        const bool visualClip = clipHasVisuals(*clip);
+        const bool automaticZ = !clip->zLevelUserSet;
+        if (m_widgets.clipZLevelSpin) {
+            QSignalBlocker block(m_widgets.clipZLevelSpin);
+            m_widgets.clipZLevelSpin->setValue(effectiveClipZLevel(*clip));
+            m_widgets.clipZLevelSpin->setEnabled(visualClip && !automaticZ);
+        }
+        if (m_widgets.clipAutomaticZCheckBox) {
+            QSignalBlocker block(m_widgets.clipAutomaticZCheckBox);
+            m_widgets.clipAutomaticZCheckBox->setChecked(automaticZ);
+            m_widgets.clipAutomaticZCheckBox->setEnabled(visualClip);
+            m_widgets.clipAutomaticZCheckBox->setToolTip(
+                clip->clipRole == ClipRole::SpeakerTitle
+                    ? QStringLiteral("Applies to every generated title occurrence owned by this transcript source.")
+                    : QStringLiteral("Use timeline row order until an explicit Z-level is set."));
         }
 
         if (m_widgets.clipOriginalInfoLabel) {

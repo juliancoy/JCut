@@ -134,6 +134,8 @@ public:
     QComboBox *speakerOverlayFlyInStyleCombo() const { return m_speakerOverlayFlyInStyleCombo; }
     QDoubleSpinBox *speakerOverlayFlyInDelaySpin() const { return m_speakerOverlayFlyInDelaySpin; }
     QDoubleSpinBox *speakerOverlayFlyInDurationSpin() const { return m_speakerOverlayFlyInDurationSpin; }
+    QCheckBox *speakerOverlayShowAtSectionEndCheckBox() const { return m_speakerOverlayShowAtSectionEndCheckBox; }
+    QDoubleSpinBox *speakerOverlayCadenceSpin() const { return m_speakerOverlayCadenceSpin; }
     QDoubleSpinBox *speakerOverlayFlyInTimeSpin() const { return m_speakerOverlayFlyInTimeSpin; }
     QDoubleSpinBox *speakerOverlayWrapRadiusSpin() const { return m_speakerOverlayWrapRadiusSpin; }
     QDoubleSpinBox *speakerOverlayWrapDepthSpin() const { return m_speakerOverlayWrapDepthSpin; }
@@ -382,6 +384,8 @@ public:
     QLabel *clipOriginalInfoLabel() const { return m_clipOriginalInfoLabel; }
     QLabel *clipProxyInfoLabel() const { return m_clipProxyInfoLabel; }
     QDoubleSpinBox *clipPlaybackRateSpin() const { return m_clipPlaybackRateSpin; }
+    QSpinBox *clipZLevelSpin() const { return m_clipZLevelSpin; }
+    QCheckBox *clipAutomaticZCheckBox() const { return m_clipAutomaticZCheckBox; }
     QLabel *trackInspectorLabel() const { return m_trackInspectorLabel; }
     QLabel *trackInspectorDetailsLabel() const { return m_trackInspectorDetailsLabel; }
     QLineEdit *trackNameEdit() const { return m_trackNameEdit; }
@@ -487,10 +491,6 @@ public:
     QSpinBox *historyMaxMegabytesSpin() const { return m_historyMaxMegabytesSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
-    QComboBox *backgroundFillEffectCombo() const { return m_backgroundFillEffectCombo; }
-    QDoubleSpinBox *backgroundFillOpacitySpin() const { return m_backgroundFillOpacitySpin; }
-    QDoubleSpinBox *backgroundFillBrightnessSpin() const { return m_backgroundFillBrightnessSpin; }
-    QDoubleSpinBox *backgroundFillSaturationSpin() const { return m_backgroundFillSaturationSpin; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
@@ -729,6 +729,8 @@ private:
     QLabel *m_clipOriginalInfoLabel = nullptr;
     QLabel *m_clipProxyInfoLabel = nullptr;
     QDoubleSpinBox *m_clipPlaybackRateSpin = nullptr;
+    QSpinBox *m_clipZLevelSpin = nullptr;
+    QCheckBox *m_clipAutomaticZCheckBox = nullptr;
     QLabel *m_trackInspectorLabel = nullptr;
     QLabel *m_trackInspectorDetailsLabel = nullptr;
     QLineEdit *m_trackNameEdit = nullptr;
@@ -871,6 +873,8 @@ private:
     QComboBox *m_speakerOverlayFlyInStyleCombo = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInDelaySpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInDurationSpin = nullptr;
+    QCheckBox *m_speakerOverlayShowAtSectionEndCheckBox = nullptr;
+    QDoubleSpinBox *m_speakerOverlayCadenceSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInTimeSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayWrapRadiusSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayWrapDepthSpin = nullptr;
@@ -1006,10 +1010,6 @@ private:
     QSpinBox *m_historyMaxMegabytesSpin = nullptr;
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
-    QComboBox *m_backgroundFillEffectCombo = nullptr;
-    QDoubleSpinBox *m_backgroundFillOpacitySpin = nullptr;
-    QDoubleSpinBox *m_backgroundFillBrightnessSpin = nullptr;
-    QDoubleSpinBox *m_backgroundFillSaturationSpin = nullptr;
 
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;

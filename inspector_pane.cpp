@@ -2136,6 +2136,17 @@ QWidget *InspectorPane::buildSpeakersTab()
         1.0,
         12.0,
         QStringLiteral("Total length of each speaker title fly-in."));
+    m_speakerOverlayShowAtSectionEndCheckBox =
+        new QCheckBox(QStringLiteral("Also show near section end"), page);
+    m_speakerOverlayShowAtSectionEndCheckBox->setToolTip(
+        QStringLiteral("Generate another title ending with each contiguous speaker section."));
+    m_speakerOverlayCadenceSpin = makeFlyInSecondsSpin(
+        0.0,
+        0.0,
+        3600.0,
+        QStringLiteral("Repeat at this cadence from the source clip start; set to Off to disable."));
+    m_speakerOverlayCadenceSpin->setSpecialValueText(QStringLiteral("Off"));
+    m_speakerOverlayCadenceSpin->setSingleStep(5.0);
     m_speakerOverlayFlyInTimeSpin = makeFlyInSecondsSpin(
         0.35,
         0.10,
@@ -2827,6 +2838,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerOverlayFlyInForm->addRow(QStringLiteral("Fly Option"), m_speakerOverlayFlyInStyleCombo);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Delay"), m_speakerOverlayFlyInDelaySpin);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Duration"), m_speakerOverlayFlyInDurationSpin);
+    speakerOverlayFlyInForm->addRow(m_speakerOverlayShowAtSectionEndCheckBox);
+    speakerOverlayFlyInForm->addRow(QStringLiteral("Repeat Cadence"), m_speakerOverlayCadenceSpin);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Fly Time"), m_speakerOverlayFlyInTimeSpin);
     auto *wrapRadiusLabel = new QLabel(QStringLiteral("Wrap Radius"), speakerOverlayFlyInGroup);
     auto *wrapDepthLabel = new QLabel(QStringLiteral("Wrap Depth"), speakerOverlayFlyInGroup);

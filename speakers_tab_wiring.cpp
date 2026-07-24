@@ -150,6 +150,7 @@ void SpeakersTab::wire()
         for (QDoubleSpinBox* spin : {
                  m_widgets.speakerOverlayFlyInDelaySpin,
                  m_widgets.speakerOverlayFlyInDurationSpin,
+                 m_widgets.speakerOverlayCadenceSpin,
                  m_widgets.speakerOverlayFlyInTimeSpin,
                  m_widgets.speakerOverlayWrapRadiusSpin,
                  m_widgets.speakerOverlayWrapDepthSpin,
@@ -205,6 +206,12 @@ void SpeakersTab::wire()
         if (m_widgets.speakerOverlayTitleBackgroundCheckBox) {
             connect(m_widgets.speakerOverlayTitleBackgroundCheckBox, &QCheckBox::toggled,
                     this, [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
+        }
+        if (m_widgets.speakerOverlayShowAtSectionEndCheckBox) {
+            connect(m_widgets.speakerOverlayShowAtSectionEndCheckBox,
+                    &QCheckBox::toggled,
+                    this,
+                    [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
         }
         if (m_widgets.speakerOverlayTitleAutoFitCheckBox) {
             connect(m_widgets.speakerOverlayTitleAutoFitCheckBox, &QCheckBox::toggled,

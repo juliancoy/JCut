@@ -610,10 +610,19 @@ private slots:
         QFile editor(QStringLiteral(JCUT_SOURCE_DIR "/editor.cpp"));
         QVERIFY2(editor.open(QIODevice::ReadOnly), "Unable to open editor source.");
         const QString editorSource = QString::fromUtf8(editor.readAll());
-        QVERIFY2(editorSource.contains(QStringLiteral("migrateLegacyBackgroundProgressiveStretchToClipEffect")) &&
-                     editorSource.contains(QStringLiteral("clip.edgeFillEffect = progressive")) &&
-                     editorSource.contains(QStringLiteral("backgroundFillEdgeProgressive = false")),
-                 "Legacy background progressive state must be normalized into clip-owned Edge Fill.");
+        QFile outputTab(QStringLiteral(JCUT_SOURCE_DIR "/output_tab.cpp"));
+        QVERIFY2(outputTab.open(QIODevice::ReadOnly), "Unable to open Output tab source.");
+        const QString outputTabSource = QString::fromUtf8(outputTab.readAll());
+        QFile projectState(QStringLiteral(JCUT_SOURCE_DIR "/project_state.cpp"));
+        QVERIFY2(projectState.open(QIODevice::ReadOnly), "Unable to open project state source.");
+        const QString projectStateSource = QString::fromUtf8(projectState.readAll());
+        QVERIFY2(
+            !editorSource.contains(
+                QStringLiteral("migrateLegacyBackgroundProgressiveStretchToClipEffect")) &&
+                !projectStateSource.contains(QStringLiteral("backgroundFillEffect")) &&
+                outputTabSource.contains(
+                    QStringLiteral("request.backgroundFillEffect = \"none\"")),
+            "Output must not own, persist, or migrate fill effects; Edge Fill is clip-owned.");
     }
 
     void vulkanShaderBuildDoesNotDependOnlyOnOutputTimestamps()

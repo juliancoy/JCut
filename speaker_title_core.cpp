@@ -230,14 +230,12 @@ bool applySpeakerTitleFlyInCore(
     return true;
 }
 
-std::vector<EditorClip> makeSpeakerTitleClipsCore(
-    const EditorClip& sourceClip,
-    const TranscriptDocumentCore& transcript,
-    int targetTrackId,
-    const SpeakerTitleFlyInSettingsCore& settings)
-{
+std::vector<EditorClip> makeSpeakerTitleClipsCore(const EditorClip& sourceClip,
+                                                  const TranscriptDocumentCore& transcript, int targetTrackId,
+                                                  const SpeakerTitleFlyInSettingsCore& settings) {
     std::vector<EditorClip> clips;
-    if (sourceClip.durationFrames <= 0) return clips;
+    if (sourceClip.durationFrames <= 0)
+        return clips;
     TranscriptRowBuildOptions options;
     options.timing = {30.0, 0, 0, 0};
     options.adjustOverlaps = false;
@@ -246,105 +244,113 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(
     std::vector<TranscriptRow> rows = transcript.rows(options);
     const auto profiles = transcript.speakerProfiles();
     const std::int64_t sourceStart = sourceClip.sourceInFrame;
-    const std::int64_t sourceDuration = sourceClip.sourceDurationFrames > 0
-        ? sourceClip.sourceDurationFrames
-        : static_cast<std::int64_t>(std::llround(
-            sourceClip.durationFrames *
-            std::max(0.001, sourceClip.playbackRate)));
-    const std::int64_t sourceEnd =
-        sourceStart + std::max<std::int64_t>(1, sourceDuration);
-    const std::int64_t timelineEnd =
-        sourceClip.startFrame + sourceClip.durationFrames;
+    const std::int64_t sourceDuration =
+        sourceClip.sourceDurationFrames > 0
+            ? sourceClip.sourceDurationFrames
+            : static_cast<std::int64_t>(
+                  std::llround(sourceClip.durationFrames * std::max(0.001, sourceClip.playbackRate)));
+    const std::int64_t sourceEnd = sourceStart + std::max<std::int64_t>(1, sourceDuration);
+    const std::int64_t timelineEnd = sourceClip.startFrame + sourceClip.durationFrames;
     const double rate = std::max(0.001, sourceClip.playbackRate);
-    const std::int64_t titleDuration =
-        std::max<std::int64_t>(30, settings.titleDurationFrames);
-    std::vector<std::pair<std::int64_t, std::int64_t>> keptRanges;
+    const std::int64_t titleDuration = std::max<std::int64_t>(30, settings.titleDurationFrames);
+    std::vector<TranscriptRow> keptRows;
     for (const TranscriptRow& row : rows) {
-        if (!row.gap && !row.skipped && !row.text.empty()) {
-            keptRanges.emplace_back(
-                row.sourceStartFrame, row.sourceEndFrame);
+        if (!row.gap && !row.skipped && !row.text.empty() && !row.speakerId.empty() &&
+            row.sourceStartFrame >= sourceStart && row.sourceStartFrame < sourceEnd) {
+            keptRows.push_back(row);
         }
     }
-    std::sort(keptRanges.begin(), keptRanges.end());
-    std::vector<std::pair<std::int64_t, std::int64_t>> mergedRanges;
-    for (const auto& range : keptRanges) {
-        if (mergedRanges.empty() ||
-            range.first > mergedRanges.back().second + 1) {
-            mergedRanges.push_back(range);
-        } else {
-            mergedRanges.back().second =
-                std::max(mergedRanges.back().second, range.second);
-        }
+    std::sort(keptRows.begin(), keptRows.end(), [](const TranscriptRow& a, const TranscriptRow& b) {
+        return a.sourceStartFrame != b.sourceStartFrame ? a.sourceStartFrame < b.sourceStartFrame
+                                                        : a.sourceEndFrame < b.sourceEndFrame;
+    });
+    if (keptRows.empty()) {
+        return clips;
     }
-    const auto rawEndForPlaybackFrames =
-        [&](std::int64_t introductionSourceFrame,
-            std::int64_t playbackFrames) {
-            std::int64_t remaining =
-                std::max<std::int64_t>(1, playbackFrames);
-            std::int64_t lastMappedEnd = std::min<std::int64_t>(
-                timelineEnd, sourceClip.startFrame + 1);
-            for (const auto& range : mergedRanges) {
-                const std::int64_t rangeStart =
-                    std::max(range.first, introductionSourceFrame);
-                if (range.second < rangeStart) continue;
-                lastMappedEnd = std::min<std::int64_t>(
-                    timelineEnd,
-                    sourceClip.startFrame +
-                        static_cast<std::int64_t>(std::ceil(
-                            (range.second - sourceStart + 1) / rate)));
-                const std::int64_t available =
-                    std::max<std::int64_t>(
-                        1, static_cast<std::int64_t>(std::ceil(
-                            (range.second - rangeStart + 1) / rate)));
-                if (remaining <= available) {
-                    return std::min<std::int64_t>(
-                        timelineEnd,
-                        sourceClip.startFrame +
-                            static_cast<std::int64_t>(std::llround(
-                                (rangeStart - sourceStart) / rate)) +
-                            remaining);
-                }
-                remaining -= available;
-            }
-            return lastMappedEnd;
-        };
-    std::string previousSpeaker;
-    for (const TranscriptRow& row : rows) {
-        if (row.gap || row.skipped || row.speakerId.empty() ||
-            row.text.empty() || row.sourceStartFrame < sourceStart ||
-            row.sourceStartFrame >= sourceEnd ||
-            row.speakerId == previousSpeaker) {
+    const auto timelineFrameForSource = [&](std::int64_t sourceFrame) {
+        return std::clamp<std::int64_t>(sourceClip.startFrame +
+                                            static_cast<std::int64_t>(std::llround((sourceFrame - sourceStart) / rate)),
+                                        sourceClip.startFrame, timelineEnd - 1);
+    };
+    struct TitleEvent {
+        std::string speakerId;
+        std::int64_t startFrame = 0;
+        int priority = 0;
+    };
+    std::vector<TitleEvent> events;
+    std::size_t runStart = 0;
+    for (std::size_t index = 1; index <= keptRows.size(); ++index) {
+        const bool runEnded = index == keptRows.size() || keptRows[index].speakerId != keptRows[runStart].speakerId;
+        if (!runEnded)
             continue;
+        const TranscriptRow& first = keptRows[runStart];
+        const std::int64_t runStartFrame = timelineFrameForSource(first.sourceStartFrame);
+        events.push_back({first.speakerId, runStartFrame, 2});
+        if (settings.showAtSectionEnd) {
+            std::int64_t runEndSourceFrame = first.sourceEndFrame;
+            for (std::size_t runIndex = runStart + 1; runIndex < index; ++runIndex) {
+                runEndSourceFrame = std::max(runEndSourceFrame, keptRows[runIndex].sourceEndFrame);
+            }
+            const std::int64_t runEndExclusive = std::clamp<std::int64_t>(
+                sourceClip.startFrame +
+                    static_cast<std::int64_t>(
+                        std::ceil((std::max(first.sourceStartFrame, runEndSourceFrame) - sourceStart + 1) / rate)),
+                sourceClip.startFrame + 1, timelineEnd);
+            events.push_back({first.speakerId, std::max(runStartFrame, runEndExclusive - titleDuration), 0});
         }
-        previousSpeaker = row.speakerId;
-        const auto profile = std::find_if(
-            profiles.begin(), profiles.end(),
-            [&](const auto& candidate) {
-                return candidate.id == row.speakerId;
-            });
+        runStart = index;
+    }
+    const std::int64_t cadence = std::max<std::int64_t>(0, settings.cadenceFrames);
+    if (cadence > 0) {
+        std::ptrdiff_t rowIndex = -1;
+        for (std::int64_t cadenceFrame = sourceClip.startFrame + cadence; cadenceFrame < timelineEnd;
+             cadenceFrame += cadence) {
+            const std::int64_t cadenceSourceFrame =
+                sourceStart + static_cast<std::int64_t>(std::llround((cadenceFrame - sourceClip.startFrame) * rate));
+            while (rowIndex + 1 < static_cast<std::ptrdiff_t>(keptRows.size()) &&
+                   keptRows[static_cast<std::size_t>(rowIndex + 1)].sourceStartFrame <= cadenceSourceFrame) {
+                ++rowIndex;
+            }
+            if (rowIndex < 0)
+                continue;
+            const bool titleAlreadyScheduled =
+                std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
+                    return cadenceFrame >= event.startFrame && cadenceFrame < event.startFrame + titleDuration;
+                });
+            if (!titleAlreadyScheduled) {
+                events.push_back({keptRows[static_cast<std::size_t>(rowIndex)].speakerId, cadenceFrame, 1});
+            }
+        }
+    }
+    std::sort(events.begin(), events.end(), [](const TitleEvent& a, const TitleEvent& b) {
+        return a.startFrame != b.startFrame ? a.startFrame < b.startFrame : a.priority > b.priority;
+    });
+    events.erase(std::unique(events.begin(), events.end(),
+                             [](const TitleEvent& a, const TitleEvent& b) { return a.startFrame == b.startFrame; }),
+                 events.end());
+
+    for (std::size_t eventIndex = 0; eventIndex < events.size(); ++eventIndex) {
+        const TitleEvent& event = events[eventIndex];
+        const auto profile = std::find_if(profiles.begin(), profiles.end(),
+                                          [&](const auto& candidate) { return candidate.id == event.speakerId; });
         std::vector<std::string> lines;
         if (settings.showSpeakerName) {
-            lines.push_back(profile != profiles.end() && !profile->name.empty()
-                ? profile->name : row.speakerId);
+            lines.push_back(profile != profiles.end() && !profile->name.empty() ? profile->name : event.speakerId);
         }
-        if (settings.showSpeakerOrganization &&
-            profile != profiles.end() && !profile->organization.empty()) {
+        if (settings.showSpeakerOrganization && profile != profiles.end() && !profile->organization.empty()) {
             lines.push_back(profile->organization);
         }
-        if (lines.empty()) continue;
+        if (lines.empty())
+            continue;
         std::string title = lines.front();
         for (std::size_t index = 1; index < lines.size(); ++index) {
             title += "\n" + lines[index];
         }
-        const std::int64_t start = std::clamp<std::int64_t>(
-            sourceClip.startFrame + static_cast<std::int64_t>(std::llround(
-                (row.sourceStartFrame - sourceStart) / rate)),
-            sourceClip.startFrame, timelineEnd - 1);
-        const std::int64_t rawEnd = rawEndForPlaybackFrames(
-            row.sourceStartFrame,
-            settings.titleStartDelayFrames + titleDuration);
-        const std::int64_t duration =
-            std::max<std::int64_t>(1, rawEnd - start);
+        const std::int64_t start = event.startFrame;
+        const std::int64_t nextEventFrame =
+            eventIndex + 1 < events.size() ? events[eventIndex + 1].startFrame : timelineEnd;
+        const std::int64_t duration = std::max<std::int64_t>(
+            1, std::min({titleDuration, timelineEnd - start, std::max<std::int64_t>(1, nextEventFrame - start)}));
         EditorClip titleClip;
         titleClip.trackId = targetTrackId;
         titleClip.label = "Speaker: " + title;
@@ -365,38 +371,33 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(
         base.translationY = 0.68;
         base.fontSize = std::clamp(settings.titleFontSize, 12.0, 220.0);
         base.autoFitToOutput = settings.titleAutoFitToOutput;
-        base.color = profileString(
-            transcript.root(), row.speakerId, "primary_color");
-        if (base.color.empty()) base.color = "#f7fbff";
-        base.logoPath = profileString(
-            transcript.root(), row.speakerId, "logo_path");
+        base.color = profileString(transcript.root(), event.speakerId, "primary_color");
+        if (base.color.empty())
+            base.color = "#f7fbff";
+        base.logoPath = profileString(transcript.root(), event.speakerId, "logo_path");
         if (base.logoPath.empty()) {
-            base.logoPath = profileString(
-                transcript.root(), row.speakerId, "logoPath");
+            base.logoPath = profileString(transcript.root(), event.speakerId, "logoPath");
         }
         base.windowEnabled = settings.titleBackgroundEnabled;
-        base.windowColor = profileString(
-            transcript.root(), row.speakerId, "secondary_color");
-        if (base.windowColor.empty()) base.windowColor = "#07111d";
+        base.windowColor = profileString(transcript.root(), event.speakerId, "secondary_color");
+        if (base.windowColor.empty())
+            base.windowColor = "#07111d";
         base.windowOpacity = 0.72;
         base.windowPadding = 24.0;
         base.windowWidth = std::max(0.0, settings.titleBoxWidth);
         base.windowFrameEnabled = settings.titleBackgroundEnabled;
-        base.windowFrameColor = profileString(
-            transcript.root(), row.speakerId, "accent_color");
-        if (base.windowFrameColor.empty()) base.windowFrameColor = "#56c7ff";
+        base.windowFrameColor = profileString(transcript.root(), event.speakerId, "accent_color");
+        if (base.windowFrameColor.empty())
+            base.windowFrameColor = "#56c7ff";
         base.windowFrameOpacity = 0.85;
         base.windowFrameWidth = 2.0;
         titleClip.titleKeyframes = {base};
         EditorClip animated = titleClip;
         animated.durationFrames = static_cast<int>(std::min<std::int64_t>(
-            titleDuration,
-            std::max<std::int64_t>(
-                1, duration - settings.titleStartDelayFrames)));
+            titleDuration, std::max<std::int64_t>(1, duration - settings.titleStartDelayFrames)));
         applySpeakerTitleFlyInCore(&animated, settings);
         titleClip.titleKeyframes = std::move(animated.titleKeyframes);
-        if (settings.titleStartDelayFrames > 0 &&
-            !titleClip.titleKeyframes.empty()) {
+        if (settings.titleStartDelayFrames > 0 && !titleClip.titleKeyframes.empty()) {
             EditorTitleKeyframe waiting = titleClip.titleKeyframes.front();
             waiting.frame = 0;
             waiting.opacity = 0.0;
@@ -404,12 +405,9 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(
             waiting.windowFrameOpacity = 0.0;
             waiting.dropShadowOpacity = 0.0;
             for (EditorTitleKeyframe& keyframe : titleClip.titleKeyframes) {
-                keyframe.frame = std::min<std::int64_t>(
-                    duration - 1,
-                    keyframe.frame + settings.titleStartDelayFrames);
+                keyframe.frame = std::min<std::int64_t>(duration - 1, keyframe.frame + settings.titleStartDelayFrames);
             }
-            titleClip.titleKeyframes.insert(
-                titleClip.titleKeyframes.begin(), std::move(waiting));
+            titleClip.titleKeyframes.insert(titleClip.titleKeyframes.begin(), std::move(waiting));
         }
         clips.push_back(std::move(titleClip));
     }

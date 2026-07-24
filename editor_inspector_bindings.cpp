@@ -52,6 +52,8 @@ void EditorWindow::bindInspectorWidgets()
     m_clipOriginalInfoLabel = m_inspectorPane->clipOriginalInfoLabel();
     m_clipProxyInfoLabel = m_inspectorPane->clipProxyInfoLabel();
     m_clipPlaybackRateSpin = m_inspectorPane->clipPlaybackRateSpin();
+    m_clipZLevelSpin = m_inspectorPane->clipZLevelSpin();
+    m_clipAutomaticZCheckBox = m_inspectorPane->clipAutomaticZCheckBox();
     m_trackInspectorLabel = m_inspectorPane->trackInspectorLabel();
     m_trackInspectorDetailsLabel = m_inspectorPane->trackInspectorDetailsLabel();
     m_trackNameEdit = m_inspectorPane->trackNameEdit();
@@ -219,10 +221,6 @@ void EditorWindow::bindInspectorWidgets()
     m_exportEndSpin = m_inspectorPane->exportEndSpin();
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
-    m_backgroundFillEffectCombo = m_inspectorPane->backgroundFillEffectCombo();
-    m_backgroundFillOpacitySpin = m_inspectorPane->backgroundFillOpacitySpin();
-    m_backgroundFillBrightnessSpin = m_inspectorPane->backgroundFillBrightnessSpin();
-    m_backgroundFillSaturationSpin = m_inspectorPane->backgroundFillSaturationSpin();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
@@ -533,6 +531,38 @@ void EditorWindow::setupSpeechFilterControls()
         scheduleSaveState();
         pushHistorySnapshot();
     });
+
+    const auto applySelectedClipZLevel = [this](bool automatic) {
+        if (!m_timeline || !m_clipZLevelSpin) {
+            return;
+        }
+        const TimelineClip* clip = m_timeline->selectedClip();
+        if (!clip || !clipHasVisuals(*clip)) {
+            return;
+        }
+        const int zLevel = qBound(-100000, m_clipZLevelSpin->value(), 100000);
+        if (!m_timeline->setClipZLevel(clip->id, zLevel, automatic)) {
+            return;
+        }
+        if (m_preview) {
+            m_preview->setTimelineClips(m_timeline->clips());
+        }
+        m_inspectorPane->refreshTab(QStringLiteral("Properties"));
+        scheduleSaveState();
+        pushHistorySnapshot();
+    };
+    if (m_clipZLevelSpin) {
+        connect(m_clipZLevelSpin, &QSpinBox::editingFinished,
+                this, [applySelectedClipZLevel]() {
+                    applySelectedClipZLevel(false);
+                });
+    }
+    if (m_clipAutomaticZCheckBox) {
+        connect(m_clipAutomaticZCheckBox, &QCheckBox::toggled,
+                this, [applySelectedClipZLevel](bool automatic) {
+                    applySelectedClipZLevel(automatic);
+                });
+    }
 }
 
 void EditorWindow::setupTrackInspectorControls()
@@ -1233,66 +1263,11 @@ void EditorWindow::setupPreviewControls()
         scheduleSaveState();
     });
 
-    if (m_backgroundFillEffectCombo) {
-        connect(m_backgroundFillEffectCombo, &QComboBox::currentIndexChanged, this, [this]() {
-            const BackgroundFillEffect effect =
-                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
-            if (m_preview) {
-                m_preview->setBackgroundFillEffect(effect);
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            const BackgroundFillEffect effect =
-                backgroundFillEffectFromString(m_backgroundFillEffectCombo->currentData().toString());
-            m_preview->setBackgroundFillEffect(effect);
-        }
-    }
-
-    if (m_backgroundFillOpacitySpin) {
-        connect(m_backgroundFillOpacitySpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-            if (m_preview) {
-                m_preview->setBackgroundFillOpacity(qBound<qreal>(0.0, value / 100.0, 1.0));
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillOpacity(
-                qBound<qreal>(0.0, m_backgroundFillOpacitySpin->value() / 100.0, 1.0));
-        }
-    }
-
-    if (m_backgroundFillBrightnessSpin) {
-        connect(m_backgroundFillBrightnessSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-            if (m_preview) {
-                m_preview->setBackgroundFillBrightness(qBound<qreal>(-1.0, value / 100.0, 1.0));
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillBrightness(
-                qBound<qreal>(-1.0, m_backgroundFillBrightnessSpin->value() / 100.0, 1.0));
-        }
-    }
-
-    if (m_backgroundFillSaturationSpin) {
-        connect(m_backgroundFillSaturationSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-            if (m_preview) {
-                m_preview->setBackgroundFillSaturation(qBound<qreal>(0.0, value / 100.0, 3.0));
-            }
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-        if (m_preview) {
-            m_preview->setBackgroundFillSaturation(
-                qBound<qreal>(0.0, m_backgroundFillSaturationSpin->value() / 100.0, 3.0));
-        }
-    }
-
     if (m_preview) {
+        m_preview->setBackgroundFillEffect(BackgroundFillEffect::None);
+        m_preview->setBackgroundFillOpacity(1.0);
+        m_preview->setBackgroundFillBrightness(0.0);
+        m_preview->setBackgroundFillSaturation(1.0);
         m_preview->setBackgroundFillEdgePixels(1);
         m_preview->setBackgroundFillEdgeProgressive(false);
         m_preview->setBackgroundFillEdgePower(2.0);

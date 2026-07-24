@@ -150,57 +150,6 @@ bool hasUsableConfiguredProxy(const QVector<TimelineClip>& clips)
     return false;
 }
 
-bool migrateLegacyBackgroundProgressiveStretchToClipEffect(
-    QVector<TimelineClip>* clips,
-    const QVector<TimelineTrack>& tracks,
-    const QString& requestedClipId,
-    const QString& selectedClipId,
-    bool progressive,
-    int edgePixels,
-    qreal edgePower,
-    qreal opacity,
-    qreal brightness,
-    qreal saturation,
-    QString* migratedClipId)
-{
-    Q_UNUSED(requestedClipId);
-    Q_UNUSED(selectedClipId);
-    if (migratedClipId) {
-        migratedClipId->clear();
-    }
-    if (!clips || clips->isEmpty()) {
-        return false;
-    }
-    bool migrated = false;
-    for (TimelineClip& clip : *clips) {
-        if (!clipSupportsProgressiveEdgeStretchMigration(clip, tracks)) {
-            continue;
-        }
-        if (clip.edgeFillEffect == BackgroundFillEffect::None) {
-            clip.edgeFillEffect = progressive
-                ? BackgroundFillEffect::ProgressiveEdgeStretch
-                : BackgroundFillEffect::EdgeStretch;
-            clip.edgeFillPixels = qBound(1, edgePixels, 512);
-            clip.edgeFillPower = qBound<qreal>(0.25, edgePower, 8.0);
-            clip.edgeFillOpacity = qBound<qreal>(0.0, opacity, 1.0);
-            clip.edgeFillBrightness = qBound<qreal>(-1.0, brightness, 1.0);
-            clip.edgeFillSaturation = qBound<qreal>(0.0, saturation, 3.0);
-            migrated = true;
-        }
-        if (clip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch) {
-            clip.edgeFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
-            clip.edgeFillPixels = qBound(1, clip.effectRows, 512);
-            clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
-            clip.effectPreset = ClipEffectPreset::None;
-            migrated = true;
-        }
-        if (migratedClipId && migratedClipId->isEmpty()) {
-            *migratedClipId = clip.id;
-        }
-    }
-    return migrated;
-}
-
 }
 
 bool EditorWindow::syncSpeakersPlayheadForAutomation()
@@ -1006,12 +955,16 @@ void EditorWindow::undoHistory()
         return;
     }
 
+    const bool resumePlayback = playbackActive();
     m_restoringHistory = true;
     m_historyIndex -= 1;
     const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
     restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
     applyStateJson(snapshot);
     m_restoringHistory = false;
+    if (resumePlayback) {
+        setPlaybackActive(true);
+    }
     saveHistoryNow();
     scheduleSaveState();
 }
@@ -1023,12 +976,16 @@ void EditorWindow::redoHistory()
         return;
     }
 
+    const bool resumePlayback = playbackActive();
     m_restoringHistory = true;
     m_historyIndex += 1;
     const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
     restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
     applyStateJson(snapshot);
     m_restoringHistory = false;
+    if (resumePlayback) {
+        setPlaybackActive(true);
+    }
     saveHistoryNow();
     scheduleSaveState();
 }
@@ -1040,12 +997,16 @@ void EditorWindow::restoreToHistoryIndex(int index)
         return;
     }
 
+    const bool resumePlayback = playbackActive();
     m_restoringHistory = true;
     m_historyIndex = index;
     const QJsonObject snapshot = m_historyEntries.at(m_historyIndex).toObject();
     restoreTranscriptDocumentsFromHistorySnapshot(snapshot);
     applyStateJson(snapshot);
     m_restoringHistory = false;
+    if (resumePlayback) {
+        setPlaybackActive(true);
+    }
     saveHistoryNow();
     scheduleSaveState();
 }
@@ -1121,36 +1082,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
-    const QString savedBackgroundFillEffect =
-        root.value(QStringLiteral("backgroundFillEffect"))
-            .toString(backgroundFillEffectToString(kDefaultBackgroundFillEffect));
-    // Fill effects are clip-owned. Retain the saved value only long enough to
-    // migrate legacy Edge Stretch projects below.
-    BackgroundFillEffect backgroundFillEffect = BackgroundFillEffect::None;
-    const QString backgroundFillStretchSourceClipId =
-        root.value(QStringLiteral("backgroundFillStretchSourceClipId")).toString().trimmed();
-    const qreal backgroundFillOpacity =
-        qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillOpacity")).toDouble(1.0), 1.0);
-    const qreal backgroundFillBrightness =
-        qBound<qreal>(-1.0, root.value(QStringLiteral("backgroundFillBrightness")).toDouble(0.0), 1.0);
-    const qreal backgroundFillSaturation =
-        qBound<qreal>(0.0, root.value(QStringLiteral("backgroundFillSaturation")).toDouble(1.0), 3.0);
-    bool backgroundFillEdgeProgressive =
-        root.value(QStringLiteral("backgroundFillEdgeProgressive")).toBool(false);
-    const int backgroundFillEdgePixels =
-        qBound(1, root.value(QStringLiteral("backgroundFillEdgePixels")).toInt(1), 512);
-    const qreal backgroundFillEdgePower =
-        qBound<qreal>(0.25, root.value(QStringLiteral("backgroundFillEdgePower")).toDouble(2.0), 8.0);
-    const QString normalizedSavedBackgroundFillEffect =
-        savedBackgroundFillEffect.trimmed().toLower().replace(QLatin1Char('-'), QLatin1Char('_'));
-    const bool legacyBackgroundProgressiveStretch =
-        backgroundFillEdgeProgressive ||
-        normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_edge_stretch") ||
-        normalizedSavedBackgroundFillEffect == QStringLiteral("progressive_stretch") ||
-        normalizedSavedBackgroundFillEffect == QStringLiteral("edge_stretch_progressive");
-    const bool legacyBackgroundEdgeStretch =
-        legacyBackgroundProgressiveStretch ||
-        normalizedSavedBackgroundFillEffect == QStringLiteral("edge_stretch");
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
@@ -1650,29 +1581,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
         clip.effectPreset = ClipEffectPreset::None;
     }
-    if (legacyBackgroundEdgeStretch) {
-        QString migratedClipId;
-        const bool migrated = migrateLegacyBackgroundProgressiveStretchToClipEffect(
-            &loadedClips,
-            loadedTracks,
-            backgroundFillStretchSourceClipId,
-            selectedClipId,
-            legacyBackgroundProgressiveStretch,
-            backgroundFillEdgePixels,
-            backgroundFillEdgePower,
-            backgroundFillOpacity,
-            backgroundFillBrightness,
-            backgroundFillSaturation,
-            &migratedClipId);
-        backgroundFillEffect = BackgroundFillEffect::None;
-        backgroundFillEdgeProgressive = false;
-        markStartup(QStringLiteral("apply_state.progressive_edge_stretch_migration"),
-                    QJsonObject{
-                        {QStringLiteral("migrated"), migrated},
-                        {QStringLiteral("clip_id"), migratedClipId},
-                        {QStringLiteral("source"), QStringLiteral("legacy_background_fill")}
-                    });
-    }
     markStartup(QStringLiteral("apply_state.render_sync_parse.begin"));
        const QJsonArray renderSyncMarkers = root.value(QStringLiteral("renderSyncMarkers")).toArray();
     loadedRenderSyncMarkers.reserve(renderSyncMarkers.size());
@@ -1750,24 +1658,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         const int formatIndex = m_imageSequenceFormatCombo->findData(imageSequenceFormat);
         m_imageSequenceFormatCombo->setCurrentIndex(qMax(0, formatIndex));
         m_imageSequenceFormatCombo->setEnabled(createImageSequence);
-    }
-    if (m_backgroundFillEffectCombo) {
-        QSignalBlocker block(m_backgroundFillEffectCombo);
-        const int effectIndex = m_backgroundFillEffectCombo->findData(
-            backgroundFillEffectToString(backgroundFillEffect));
-        m_backgroundFillEffectCombo->setCurrentIndex(qMax(0, effectIndex));
-    }
-    if (m_backgroundFillOpacitySpin) {
-        QSignalBlocker block(m_backgroundFillOpacitySpin);
-        m_backgroundFillOpacitySpin->setValue(backgroundFillOpacity * 100.0);
-    }
-    if (m_backgroundFillBrightnessSpin) {
-        QSignalBlocker block(m_backgroundFillBrightnessSpin);
-        m_backgroundFillBrightnessSpin->setValue(backgroundFillBrightness * 100.0);
-    }
-    if (m_backgroundFillSaturationSpin) {
-        QSignalBlocker block(m_backgroundFillSaturationSpin);
-        m_backgroundFillSaturationSpin->setValue(backgroundFillSaturation * 100.0);
     }
     if (m_preview) {
         m_preview->setUseProxyMedia(renderUseProxies);
@@ -1857,6 +1747,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         setCombo(m_inspectorPane->speakerOverlayFlyInStyleCombo(), QStringLiteral("flyInStyle"));
         setDecimal(m_inspectorPane->speakerOverlayFlyInDelaySpin(), QStringLiteral("delaySeconds"));
         setDecimal(m_inspectorPane->speakerOverlayFlyInDurationSpin(), QStringLiteral("durationSeconds"));
+        if (QCheckBox* showAtEnd =
+                m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox()) {
+            const QSignalBlocker blocker(showAtEnd);
+            showAtEnd->setChecked(
+                speakerTitleSettings.value(QStringLiteral("showAtSectionEnd"))
+                    .toBool(false));
+        }
+        setDecimal(m_inspectorPane->speakerOverlayCadenceSpin(), QStringLiteral("cadenceSeconds"));
         setDecimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), QStringLiteral("flyTimeSeconds"));
         setDecimal(m_inspectorPane->speakerOverlayWrapRadiusSpin(), QStringLiteral("wrapRadius"));
         setDecimal(m_inspectorPane->speakerOverlayWrapDepthSpin(), QStringLiteral("wrapDepth"));
@@ -2236,10 +2134,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
-        m_preview->setBackgroundFillEffect(backgroundFillEffect);
-        m_preview->setBackgroundFillOpacity(backgroundFillOpacity);
-        m_preview->setBackgroundFillBrightness(backgroundFillBrightness);
-        m_preview->setBackgroundFillSaturation(backgroundFillSaturation);
+        m_preview->setBackgroundFillEffect(BackgroundFillEffect::None);
+        m_preview->setBackgroundFillOpacity(1.0);
+        m_preview->setBackgroundFillBrightness(0.0);
+        m_preview->setBackgroundFillSaturation(1.0);
         m_preview->setBackgroundFillEdgePixels(1);
         m_preview->setBackgroundFillEdgeProgressive(false);
         m_preview->setBackgroundFillEdgePower(2.0);
