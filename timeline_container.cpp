@@ -131,8 +131,11 @@ void TimelineContainer::connectSignals()
             if (!m_timeline || !m_trackViewButton) return;
             m_trackViewButton->setText(precedenceView ? QStringLiteral("Z") : QStringLiteral("Tree"));
             m_trackViewButton->setToolTip(precedenceView
-                ? QStringLiteral("Tracks by Z-value precedence (click for parent-child view)")
+                ? QStringLiteral("Flat track Z order (click for parent-child view)")
                 : QStringLiteral("Parent-child track view (click for Z-value precedence view)"));
+            if (m_trackSidebar) {
+                m_trackSidebar->setFlatZView(precedenceView);
+            }
             m_timeline->setTrackViewMode(precedenceView
                 ? TimelineWidget::TrackViewMode::Precedence
                 : TimelineWidget::TrackViewMode::ParentChild);

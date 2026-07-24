@@ -102,17 +102,19 @@ void EditorWindow::advanceFrame()
             qBound<int64_t>(0,
                             static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
                             lastPlayableFrame());
-        if (!m_preview->preparePlaybackAdvance(nextFrame)) {
-            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
-                                          0,
-                                          0,
-                                          1,
-                                          QStringLiteral("source_unavailable"),
-                                          QStringLiteral("video_frame_not_ready"));
-            m_timelineAdvanceCarrySamples = 0.0;
-            updatePlaybackStatusOverlay();
-            return;
-        }
+        // Video is a follower of the monotonic transport clock. A decode miss
+        // must not abort the clock step or discard fractional carry; the
+        // presenter holds the last usable frame while the pipeline catches up.
+        const bool videoReady = m_preview->preparePlaybackAdvance(nextFrame);
+        editor::accumulatePlaybackStageMetric(
+            &m_playbackClockStageMetric,
+            videoReady ? 1 : 0,
+            videoReady ? 0 : 1,
+            videoReady ? 0 : 1,
+            videoReady ? QStringLiteral("video_ready")
+                       : QStringLiteral("video_follower_waiting"),
+            videoReady ? QStringLiteral("video_frame_ready")
+                       : QStringLiteral("transport_not_blocked"));
     }
     setCurrentPlaybackSample(nextSample, false, true);
     updateAudioDriftRetime();

@@ -5,6 +5,7 @@ project(editor LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -334,6 +335,8 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/imgui_preview_window\\.cpp$"
     ".*/imgui_audio_runtime\\.cpp$"
     ".*/imgui_vulkan_frame_importer\\.cpp$"
+    ".*/imgui_gpu_renderer_bridge\\.cpp$"
+    ".*/imgui_gpu_renderer_plugin\\.cpp$"
     ".*/jcut_imgui_main\\.cpp$"
     # Built once in the Qt-free external-frame import core and reused by both frontends.
     ".*/vulkan_external_frame_import_core\\.cpp$"
@@ -1116,6 +1119,7 @@ target_link_libraries(jcut_imgui_audio_runtime
 
 add_library(jcut_imgui_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/standalone_preview_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_gpu_renderer_bridge.cpp
 )
 set_target_properties(jcut_imgui_runtime PROPERTIES
     AUTOMOC OFF
@@ -1134,6 +1138,29 @@ target_link_libraries(jcut_imgui_runtime
         jcut_imgui_vulkan_import
         jcut_vulkan_hardware_frame_import_core
         Vulkan::Vulkan
+        ${CMAKE_DL_LIBS}
+)
+
+add_library(jcut_imgui_gpu_renderer SHARED
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_gpu_renderer_plugin.cpp
+)
+target_include_directories(jcut_imgui_gpu_renderer
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_imgui_gpu_renderer
+    PRIVATE
+        jcut_editor_runtime
+        Qt6::Core
+        Qt6::Gui
+)
+set_target_properties(jcut_imgui_gpu_renderer PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+    OUTPUT_NAME "jcut_imgui_gpu_renderer"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
 add_executable(editor
@@ -1203,6 +1230,7 @@ set_target_properties(jcut_imgui PROPERTIES
     AUTOUIC OFF
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+add_dependencies(jcut_imgui jcut_imgui_gpu_renderer)
 add_custom_command(TARGET jcut_imgui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:jcut_imgui>/assets/fonts"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

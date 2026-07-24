@@ -2371,6 +2371,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_timeline->renderSyncMarkersChanged = nullptr;
     m_timeline->exportRangeChanged = nullptr;
     m_timeline->setTracks(loadedTracks);
+    m_timeline->setDeferMaskSidecarReconciliation(startupMarking);
     m_timeline->setClips(loadedClips);
     m_timeline->setTimelineZoom(timelineZoom);
     m_timeline->setVerticalScrollOffset(timelineVerticalScroll);
@@ -2467,6 +2468,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                 scheduleSaveState();
             });
             QTimer::singleShot(0, this, [this, currentFrame, selectedClipId]() {
+                if (m_timeline) {
+                    m_timeline->reconcileMaskSidecarsNow();
+                }
                 const QVector<ExportRangeSegment> deferredPlaybackRanges = effectivePlaybackRanges();
                 bindTimelineMediaState(selectedClipId, deferredPlaybackRanges, currentFrame, true);
             });

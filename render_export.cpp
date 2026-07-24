@@ -1103,7 +1103,10 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 	                                                    &frameSkippedClips,
 	                                                    &skippedReasonCounts,
 	                                                    &frameExportFaceTransformDiagnostics,
-	                                                    timelineFramePosition);
+	                                                    timelineFramePosition,
+                                                    false,
+                                                    false,
+                                                    false);
             QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
             if (!frameExportFaceTransformDiagnostics.isEmpty()) {

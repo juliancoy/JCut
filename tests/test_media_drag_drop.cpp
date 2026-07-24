@@ -215,6 +215,18 @@ void TestMediaDragDrop::transcriptTitlesReconcileToImmutableGeneratedChildTrack(
     QCOMPARE(clipById(timeline, titleA.id)->zLevel,
              clipById(timeline, titleB.id)->zLevel);
 
+    QVERIFY(timeline.setClipZLevel(titleA.id, 75, false));
+    timeline.setTrackViewMode(TimelineWidget::TrackViewMode::Precedence);
+    QCOMPARE(clipById(timeline, titleA.id)->trackIndex, 0);
+    QVERIFY(timeline.moveTrackDown(0));
+    QCOMPARE(clipById(timeline, source.id)->trackIndex, 0);
+    QCOMPARE(clipById(timeline, titleA.id)->trackIndex, 1);
+    QCOMPARE(clipById(timeline, titleB.id)->trackIndex, 1);
+    QCOMPARE(clipById(timeline, titleA.id)->zLevel,
+             clipById(timeline, titleB.id)->zLevel);
+    QVERIFY(!timeline.renameTrack(1));
+    timeline.setTrackViewMode(TimelineWidget::TrackViewMode::ParentChild);
+
     QVERIFY(!timeline.updateClipById(
         titleA.id, [](TimelineClip& clip) {
             clip.label = QStringLiteral("Manual override");
@@ -880,6 +892,26 @@ void TestMediaDragDrop::generatedMaskTracksMoveOnlyWithTheirParentTrack()
     QCOMPARE(movedFirstChild->trackIndex, 3);
     QCOMPARE(timeline.tracks().at(1).parentClipId, secondSource.id);
     QCOMPARE(timeline.tracks().at(3).parentClipId, firstSource.id);
+
+    QVERIFY(timeline.setClipZLevel(firstChild.id, 400, false));
+    QVERIFY(timeline.setClipZLevel(firstSource.id, 300, false));
+    QVERIFY(timeline.setClipZLevel(secondChild.id, 200, false));
+    QVERIFY(timeline.setClipZLevel(secondSource.id, 100, false));
+    timeline.setTrackViewMode(TimelineWidget::TrackViewMode::Precedence);
+    const TimelineClip* zFirstChild = clipById(timeline, firstChild.id);
+    QVERIFY(zFirstChild);
+    QCOMPARE(zFirstChild->trackIndex, 0);
+    QVERIFY(timeline.moveTrackDown(zFirstChild->trackIndex));
+
+    zFirstChild = clipById(timeline, firstChild.id);
+    movedFirstSource = clipById(timeline, firstSource.id);
+    QVERIFY(zFirstChild && movedFirstSource);
+    QCOMPARE(zFirstChild->trackIndex, 1);
+    QCOMPARE(movedFirstSource->trackIndex, 0);
+    QVERIFY(zFirstChild->zLevelUserSet);
+    QVERIFY(movedFirstSource->zLevelUserSet);
+    QVERIFY(zFirstChild->zLevel < movedFirstSource->zLevel);
+    QVERIFY(timeline.tracks().at(zFirstChild->trackIndex).generatedChildTrack);
 }
 
 void TestMediaDragDrop::clipTitlesDescribeRoleRelationshipAndEffectiveState()

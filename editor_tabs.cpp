@@ -1031,9 +1031,6 @@ void EditorWindow::createPipelineTab()
             m_inspectorPane ? m_inspectorPane->pipelineStageList() : nullptr},
         PipelineTab::Dependencies{
             [this]() {
-                return m_preview && m_preview->backendName().contains(QStringLiteral("Vulkan"), Qt::CaseInsensitive);
-            },
-            [this]() {
                 return m_preview ? m_preview->livePipelineSnapshots()
                                  : QVector<PreviewSurface::PipelineStageSnapshot>{};
             }});

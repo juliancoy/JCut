@@ -58,6 +58,8 @@ public:
     void setTrackViewMode(TrackViewMode mode);
 
     void setClips(const QVector<TimelineClip>& clips);
+    void setDeferMaskSidecarReconciliation(bool defer);
+    void reconcileMaskSidecarsNow();
     void setTracks(const QVector<TimelineTrack>& tracks);
 
     QString selectedClipId() const;
@@ -169,6 +171,8 @@ protected:
     void paintEvent(QPaintEvent*) override;
 
 private:
+    void applyTrackOrderAsZLevels();
+
     void reorderTracksForView();
     struct ClipSelectionState {
         QSet<QString> ids;
@@ -346,4 +350,5 @@ private:
     TrackViewMode m_trackViewMode = TrackViewMode::ParentChild;
     int64_t m_razorHoverFrame = -1;
     bool m_audioTabWaveformsVisible = false;
+    bool m_deferMaskSidecarReconciliation = false;
 };

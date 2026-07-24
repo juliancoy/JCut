@@ -12,6 +12,7 @@
 #include "face_avatar_crop_core.h"
 #include "face_processing_job_core.h"
 #include "imgui_audio_runtime.h"
+#include "imgui_gpu_renderer_bridge.h"
 #include "image_sequence_directory.h"
 #include "mask_sidecar_core.h"
 #include "prompt_mask_job_core.h"
@@ -323,6 +324,7 @@ struct ShellState {
     std::string lastSavedSnapshotJson;
     std::string statusMessage;
     jcut::ImGuiAudioRuntime audioRuntime;
+    jcut::imgui_gpu::RendererBridge gpuRenderer;
     jcut::FaceProcessingJobController faceProcessingJob;
     jcut::masks::PromptMaskJobController promptMaskJob;
     jcut::ProxyGenerationJobController proxyGenerationJob;
@@ -2701,12 +2703,25 @@ jcut::RuntimeControlSnapshot runtimeControlSnapshot(ShellState* shellState)
         exportCompletedGeneration = shellState->exportCompletedGeneration;
     }
     const jcut::ImGuiAudioStatus audioStatus = shellState->audioRuntime.status();
+    const bool previewUsingGpu =
+        previewResult.vulkanFrame.valid &&
+        previewLastUsedZeroCopy;
+    const bool anyGpuRendering =
+        previewUsingGpu || exportResult.usedGpu;
 
     nlohmann::json renderStatus{
         {"ok", true},
-        {"backend", "standalone"},
-        {"path", exportResult.usedGpu ? "gpu" : "cpu_fallback"},
-        {"usingGpu", exportResult.usedGpu},
+        {"backend", shellState->gpuRenderer.available()
+            ? "shared_qt_vulkan"
+            : "standalone_fallback"},
+        {"sharedGpuRenderer", {
+            {"available", shellState->gpuRenderer.available()},
+            {"status", shellState->gpuRenderer.status()}
+        }},
+        {"path", previewUsingGpu
+            ? "gpu_preview"
+            : (exportResult.usedGpu ? "gpu_export" : "cpu_fallback")},
+        {"usingGpu", anyGpuRendering},
         {"usedHardwareEncode", exportResult.usedHardwareEncode},
         {"encoder", exportResult.encoderLabel},
         {"exportRunning", exportRunning},
@@ -3404,23 +3419,53 @@ void runPreviewWorker(ShellState* shellState)
             rootDirectory = shellState->previewRootDirectory;
             generation = shellState->previewRequestGeneration;
             decoderPolicy = shellState->previewDecoderPolicy;
-            preferVulkanFrame = !shellState->previewCpuFallbackPreferred &&
-                !document.panels.showScopes;
+            preferVulkanFrame =
+                !shellState->previewCpuFallbackPreferred;
             shellState->previewRenderRequested = false;
         }
 
-        const jcut::standalone_render::PreviewRenderResult result =
-            jcut::standalone_render::renderPreviewFrame(
-                jcut::standalone_render::PreviewRenderRequest{
-                    document,
-                    document.exportRequest.outputSize.valid()
-                        ? document.exportRequest.outputSize
-                        : jcut::core::SizeI{1080, 1920},
-                    document.transport.currentFrame,
-                    rootDirectory,
-                    preferVulkanFrame,
-                    true,
-                    decoderPolicy});
+        const jcut::core::SizeI outputSize =
+            document.exportRequest.outputSize.valid()
+            ? document.exportRequest.outputSize
+            : jcut::core::SizeI{1080, 1920};
+        jcut::standalone_render::PreviewRenderResult result;
+        std::string sharedGpuError;
+        if (preferVulkanFrame &&
+            shellState->gpuRenderer.renderPreview(
+                document,
+                rootDirectory,
+                outputSize,
+                document.transport.currentFrame,
+                document.panels.showScopes,
+                &result.vulkanFrame,
+                &result.image,
+                &sharedGpuError)) {
+            result.success = true;
+            result.message =
+                "shared Qt Vulkan composition completed";
+            result.hardwareDirectEligible = true;
+            result.hardwareDeviceLabel =
+                "shared Qt Vulkan renderer";
+        } else {
+            result =
+                jcut::standalone_render::renderPreviewFrame(
+                    jcut::standalone_render::PreviewRenderRequest{
+                        document,
+                        outputSize,
+                        document.transport.currentFrame,
+                        rootDirectory,
+                        false,
+                        true,
+                        decoderPolicy});
+            if (!sharedGpuError.empty()) {
+                result.hardwareDirectFallbackReason =
+                    "shared GPU renderer: " +
+                    sharedGpuError;
+                result.message =
+                    "CPU preview fallback: " +
+                    sharedGpuError;
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lock(shellState->previewMutex);
@@ -3438,7 +3483,6 @@ void runExportWorker(ShellState* shellState)
         std::vector<ShellState::QueuedExport> queue;
         std::string rootDirectory;
         std::uint64_t generation = 0;
-        jcut::DecoderPolicySettingsCore decoderPolicy;
         {
             std::unique_lock<std::mutex> lock(shellState->exportMutex);
             shellState->exportCondition.wait(lock, [shellState]() {
@@ -3458,7 +3502,6 @@ void runExportWorker(ShellState* shellState)
             shellState->exportQueueTotal = queue.size();
             rootDirectory = shellState->exportRootDirectory;
             generation = shellState->exportRequestGeneration;
-            decoderPolicy = shellState->exportDecoderPolicy;
             shellState->exportRequested = false;
             shellState->exportRunning = true;
             shellState->exportHasProgress = false;
@@ -3487,13 +3530,9 @@ void runExportWorker(ShellState* shellState)
                     queue[index].label;
             }
             const jcut::render::RenderResultCore result =
-                jcut::standalone_render::exportTimelineToFile(
-                    jcut::standalone_render::ExportRenderRequest{
-                        queue[index].document,
-                        rootDirectory,
-                        0,
-                        0,
-                        decoderPolicy},
+                shellState->gpuRenderer.exportTimeline(
+                    queue[index].document,
+                    rootDirectory,
                     [shellState](
                         const jcut::render::RenderProgressCore&
                             progress) {
@@ -3509,6 +3548,27 @@ void runExportWorker(ShellState* shellState)
                 result.framesRendered;
             summary.elapsedMs += result.elapsedMs;
             summary.encoderLabel = result.encoderLabel;
+            summary.exportPipeline = result.exportPipeline;
+            summary.gpuTransferLabel =
+                result.gpuTransferLabel;
+            summary.encoderPixelFormat =
+                result.encoderPixelFormat;
+            summary.encoderSoftwarePixelFormat =
+                result.encoderSoftwarePixelFormat;
+            summary.cudaExternalMemoryStatus =
+                result.cudaExternalMemoryStatus;
+            summary.exportPathFallbackReason =
+                result.exportPathFallbackReason;
+            summary.cudaExternalTransfer =
+                result.cudaExternalTransfer;
+            summary.cudaExternalMemorySupported =
+                result.cudaExternalMemorySupported;
+            summary.encoderHardwareFrames =
+                result.encoderHardwareFrames;
+            summary.effectiveRenderBackend =
+                result.effectiveRenderBackend;
+            summary.requestedRenderBackend =
+                result.requestedRenderBackend;
             summary.usedGpu =
                 summary.usedGpu || result.usedGpu;
             summary.usedHardwareEncode =
@@ -17662,6 +17722,15 @@ int main(int argc, char** argv)
     shellState.audioRuntime.refreshOutputDevices();
     shellState.layoutIniPath = pathString(
         fs::path(shellState.preferencesPath).parent_path() / "imgui_layout.ini");
+    std::string gpuRendererError;
+    if (shellState.gpuRenderer.initialize(
+            fs::absolute(argv[0]).string(),
+            &gpuRendererError)) {
+        shellState.statusMessage =
+            shellState.gpuRenderer.status();
+    } else {
+        shellState.statusMessage = gpuRendererError;
+    }
 
     X11Platform platform;
     std::string platformError;
@@ -17834,10 +17903,6 @@ int main(int argc, char** argv)
         std::error_code ignored;
         fs::remove(shellState.aiAvatarCachePath, ignored);
     }
-    vulkanShell.shutdown();
-    shellState.audioRuntime.shutdown();
-    ImGui::SaveIniSettingsToDisk(shellState.layoutIniPath.c_str());
-    ImGui::DestroyContext();
     {
         std::lock_guard<std::mutex> lock(shellState.previewMutex);
         shellState.previewStopRequested = true;
@@ -17855,7 +17920,12 @@ int main(int argc, char** argv)
     if (shellState.exportWorker.joinable()) {
         shellState.exportWorker.join();
     }
+    shellState.gpuRenderer.shutdown();
     shellState.controlServer.stop();
+    vulkanShell.shutdown();
+    shellState.audioRuntime.shutdown();
+    ImGui::SaveIniSettingsToDisk(shellState.layoutIniPath.c_str());
+    ImGui::DestroyContext();
     platform.shutdown();
     return 0;
 }

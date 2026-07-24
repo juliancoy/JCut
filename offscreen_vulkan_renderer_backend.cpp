@@ -439,6 +439,7 @@ public:
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                       VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1698,8 +1699,6 @@ public:
 	    if (!createPipeline(m_effectsVertModule, m_effectsFragModule,
 	                        m_effectsPipelineLayout, m_renderPass,
 	                        &m_effectsPipeline) ||
-        !createPipeline(m_maskVertModule, m_maskFragModule,
-                        m_maskPipelineLayout, m_renderPass, &m_maskPipeline) ||
         !createPipeline(m_nv12VertModule, m_nv12YFragModule,
                         m_nv12PipelineLayout, m_nv12YRenderPass,
                         &m_nv12YPipeline) ||
@@ -3525,6 +3524,12 @@ public:
     return true;
   }
 
+  bool hasPendingGpuFrame() const {
+    return m_initialized && m_commandBufferOpenForConversion &&
+        m_activeSlotIndex >= 0 &&
+        m_activeSlotIndex < m_frameSlots.size();
+  }
+
   bool convertLastFrameToNv12(AVFrame *frame, qint64 *nv12ConvertMs,
                               qint64 *readbackMs) {
     return beginLastFrameToNv12Readback(nv12ConvertMs, readbackMs) &&
@@ -3590,9 +3595,10 @@ public:
                       m_nv12YPipeline);
     vkCmdSetViewport(m_commandBuffer, 0, 1, &yViewport);
     vkCmdSetScissor(m_commandBuffer, 0, 1, &yScissor);
+    const uint32_t frameUniformOffset = 0;
     vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 0,
-                            nullptr);
+                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 1,
+                            &frameUniformOffset);
     vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
     vkCmdEndRenderPass(m_commandBuffer);
 
@@ -3624,8 +3630,8 @@ public:
     vkCmdSetViewport(m_commandBuffer, 0, 1, &uvViewport);
     vkCmdSetScissor(m_commandBuffer, 0, 1, &uvScissor);
     vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 0,
-                            nullptr);
+                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 1,
+                            &frameUniformOffset);
     vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
     vkCmdEndRenderPass(m_commandBuffer);
 
@@ -3664,7 +3670,10 @@ public:
     if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) {
       return false;
     }
-    if (!submitActiveSlot()) {
+    // The color and NV12 attachments are shared across frame slots. Finish
+    // this conversion before a later slot records another transition or
+    // render pass against those images.
+    if (!submitAndWait()) {
       return false;
     }
     m_commandBufferOpenForConversion = false;
@@ -4443,7 +4452,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   if (readbackMs) {
     *readbackMs = 0;
   }
-  const bool gpuOutputOnly = (readbackMs == nullptr);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
   layers.reserve((orderedClips.size() * 2) + 1);
   QVector<OffscreenVulkanRendererPrivate::LayerInput> foregroundMaskLayers;
@@ -4588,10 +4596,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
     layer.sourceSize = frame.size();
     layer.preferHardwareDirect = frame.hasHardwareFrame();
     if (!layer.preferHardwareDirect) {
-      if (gpuOutputOnly) {
-        ++decodeConvertFailCount;
-        continue;
-      }
       const QImage layerImage =
           frame.hasCpuImage() ? frame.cpuImage() : frameHandleToCpuImage(frame);
       if (layerImage.isNull()) {
@@ -5065,13 +5069,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
     return QImage();
   }
   if (layers.isEmpty()) {
-    if (gpuOutputOnly) {
-      qWarning().noquote()
-          << QStringLiteral(
-                 "[vulkan-compose] GPU-only render pipeline has no drawable GPU layers at frame=%1")
-                 .arg(timelineFrame);
-      return QImage();
-    }
     OffscreenVulkanRendererPrivate::LayerInput black;
     black.image = QImage(request.outputSize, QImage::Format_RGBA8888);
     black.image.fill(Qt::black);
@@ -5134,6 +5131,11 @@ bool OffscreenVulkanRenderer::renderFrameToOutput(
   OffscreenRenderContext frameContext = context;
   frameContext.readbackMs = readbackToCpuImage ? context.readbackMs : nullptr;
   output->cpuImage = renderFrame(frameContext);
+  if (!frameContext.externalVulkanOutput) {
+    return readbackToCpuImage
+        ? !output->cpuImage.isNull()
+        : d->hasPendingGpuFrame();
+  }
   QString error;
   if (!lastRenderedVulkanFrame(&output->vulkanFrame, &error)) {
     output->vulkanFrame.valid = false;

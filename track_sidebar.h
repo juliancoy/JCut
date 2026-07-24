@@ -27,6 +27,7 @@ public:
     void setSelectedTrack(int index);
     void setDraggedTrack(int index);
     void setDropTarget(int index, bool inGap);
+    void setFlatZView(bool enabled);
 
     int trackAt(const QPoint &pos) const;
     QRect trackRect(int index) const;
@@ -73,6 +74,7 @@ private:
     int m_draggedTrack = -1;
     int m_dropTarget = -1;
     bool m_dropInGap = false;
+    bool m_flatZView = false;
     QPoint m_dragStartPos;
     bool m_dragging = false;
     bool m_resizingWidth = false;

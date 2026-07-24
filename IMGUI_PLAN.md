@@ -19,13 +19,17 @@ preview, and standalone export are implemented. Advanced editor workflows and ri
 equivalence remain incomplete; strict Qt-free linkage of the final `jcut_imgui` executable is now
 complete and guarded by automated checks.
 
-The ImGui shell now talks to preview audio, preview rendering, and external Vulkan frames only
-through Qt-free public implementations. Preview audio uses RtAudio plus the standalone decoder,
-mixer, and shared Rubber Band core; it retains asynchronous warmup, source polling, sidecar
-discovery, mute/solo/gain/pan/fade policy, and neutral status reporting. The external Vulkan
-importer uses the shared Qt-free core used by both frontends. Preview currently uses the standalone
-CPU timeline renderer; restoring equivalent rich composition and a Qt-free Vulkan producer is now
-a functional/render-quality task rather than a binary-linkage task.
+The ImGui shell now talks to preview audio and external Vulkan frames through Qt-free public
+interfaces. Preview audio uses RtAudio plus the standalone decoder, mixer, and shared Rubber Band
+core; it retains asynchronous warmup, source polling, sidecar discovery, mute/solo/gain/pan/fade
+policy, and neutral status reporting. The external Vulkan importer uses the shared Qt-free core
+used by both frontends. Rich preview and export now load the existing higher-quality Qt Vulkan
+renderer through a versioned runtime plugin. The plugin feeds the same neutral document into the
+same compositor, effects, masks, titles, transcript, speaker-framing, export, and hardware-encoder
+code used by Qt, then returns the compositor's borrowed external Vulkan frame to ImGui's Qt-free
+importer. The final `jcut_imgui` executable retains no direct Qt linkage; the renderer plugin
+intentionally links Qt Core/Gui until the shared renderer internals themselves are made Qt-free.
+GPU failure remains explicit and diagnostic instead of being mislabeled as a successful GPU path.
 
 Automatic speaker framing now has a neutral durable contract rather than surviving only in opaque
 Qt legacy state. Enablement, baked target metadata, manual selectors, smoothing/gap settings, and
@@ -36,8 +40,9 @@ Standalone rendering applies baked framing and transcript-profile/manual/section
 continuity samples across the persisted frame domains, including gap hold and section-rotation
 fallback. ImGui's Transform inspector edits every scalar setting plus enabled, baked, and target
 keyframes through undoable shared commands. The durable automatic-framing runtime and authoring
-contract is therefore complete; remaining preview parity lies in rich-composition/GPU production
-rather than framing-state divergence. Transcript-derived primary/secondary/accent speaker palettes
+contract is therefore complete. Normal ImGui preview and export now use the same rich Vulkan
+production renderer as Qt; the remaining framing work is interaction and presentation polish,
+not renderer or durable-state divergence. Transcript-derived primary/secondary/accent speaker palettes
 also now drive standalone speaker-mask effects with the same Qt fallback colors.
 
 Prompt-mask creation is no longer a Qt-dialog-only workflow. Qt and ImGui share
@@ -91,10 +96,13 @@ the standalone media service, presents them on an independently owned rounded Vu
 the entitlement-colored ring, and falls back deterministically to initials. Temporary image bytes
 are never stored in project state and are removed at shutdown.
 
-The built `jcut_imgui` executable now passes the strict all-Qt linkage check. Its CMake chain uses
-the Qt-free editor core, standalone preview/export/audio services, Vulkan importer, RtAudio,
-FFmpeg, X11, and Vulkan; Qt6 Gui/Core/DBus as well as Widgets/Network/Concurrent are absent. This
-closes the binary-boundary milestone, but is not evidence of full UI or rich-render parity.
+The built `jcut_imgui` executable passes the strict all-Qt linkage check. Its directly linked CMake
+chain uses the Qt-free editor core, standalone fallback/audio services, Vulkan importer, RtAudio,
+FFmpeg, X11, and Vulkan; Qt6 Gui/Core/DBus as well as Widgets/Network/Concurrent are absent from
+the executable. The separately loaded `libjcut_imgui_gpu_renderer.so` intentionally links Qt
+Core/Gui and the shared editor renderer. This preserves the shell boundary while reusing the
+production GPU implementation; eliminating Qt from that module is a renderer-internal extraction
+task, not a reason to maintain a second lower-quality composition stack.
 
 The complete unfiltered repository build now passes with `./build.sh`. Two dependency regressions
 introduced while splitting the ImGui runtime boundary were corrected before accepting that
@@ -763,21 +771,21 @@ boundary. Qt remains in the separate legacy editor/runtime targets shown above f
 | Transport | Seek, play/pause, start/end, frame step, and Qt's exact 10/25/50/75/100/125/150/200/300% presets are bound. Qt and neutral runtime share export-range-aware forward/back stepping; neutral ticking skips disjoint range gaps, loops to the first playable range, stops at the final playable frame, and restarts from a valid range. Loop, video/audio view mode, master mute, and 0–100% volume are durable across neutral and legacy project JSON; ImGui's RtAudio callback applies mute/volume without rebuilding the timeline and publishes a lock-free post-gain live waveform for Audio view | Final native styling |
 | Timeline | Additive/toggle selection, parent-authoritative source/mask timing normalization, rejection of direct child timing edits, relationship-safe aggregate move/nudge/trim/resize/rate/split/copy/delete with marker movement, generated-child reconciliation/presentation/drop protection, visible snapping, batch delete/nudge, copy/cut/paste, duplicate, clip rate/lock, Scale-to-Fill, Qt-complete grading reset, visible/right-clickable counted render-sync markers, stable-ID source-track reorder with child grouping, media drag/drop with gap creation/conflict routing, export ranges, and core context actions. Context actions also copy clip/title text, perform undoable selected-clip source metadata/FPS/audio/duration refresh with Qt full-source-duration preservation, launch real WhisperX transcription, route BiRefNet/SAM3 into their functional Masks workflows, and reach grading, sync, speaker/face, proxy, Jobs, and properties | Group-drag and exact native menu styling polish |
 | Tracks | Neutral label/height editing, stable-ID reorder, tri-state visual mode, independent grading preview, audio enable/gain/mute/solo, and consecutive-clip crossfade duration/overlap controls are bound; generated rows preserve editable visual/grade/height state while derived identity/order/audio remain guarded. A shared legacy-compatible media-presence policy gives Qt and ImGui the same visual/audio capability decisions, and ImGui disables unavailable controls with an explicit reason. Timeline-row `V`/`A` affordances reproduce Qt's Enabled → Force Opaque → Hidden cycle and audio toggle without turning disabled or derived rows into mutable controls | Final native styling polish |
-| Preview | Qt-free asynchronous standalone preview with zoom/pan, source-in/playback-rate/render-sync frame mapping, ordered multi-track alpha composition, hidden/force-opaque track policy, neutral animated grading/opacity/transform evaluation, baked/profile/manual/section/identity-assigned automatic speaker/face framing through shared Qt math and the shared `JCUTBOX1` adapter, explicit continuity frame-domain mapping, gap hold, shared robust center/zoom smoothing, section-rotation fallback, and transcript-derived speaker-mask palettes, FreeType/Fontconfig advanced title rasterization, active-cut transcript overlays, fail-closed advanced masks, and standalone implementations for all 35 canonical effect presets. FFmpeg hardware decode is functional with capability-aware CPU transfer and runtime software fallback; the CUDA-to-Vulkan direct path keeps the lowest eligible video transformed, opacity-keyed or force-opaque, automatically speaker-framed, and fully tonal/RGB/luma-curve graded on GPU. Every upper visual track—including decoded videos, images, titles, effects, masks, and corrections—uses the same renderer on a transparent canvas and merges with subtitles into one alpha-bounds-cropped Vulkan overlay | Move base-layer effects/masks/corrections and upper-layer/title/subtitle rasterization onto the GPU, add non-CUDA hardware import, and reach exact GPU/CPU rich-composition parity without relinking the Qt renderer |
+| Preview | Asynchronous preview uses the same production Qt Vulkan compositor through the versioned renderer plugin, including ordered decoded layers, images, titles, all effects, masks/corrections, transcript/speaker overlays, framing, grading, transforms, and generated layers. Hardware frames remain GPU-resident; software-decoded/image sources stage once into the same Vulkan layer path. The compositor returns a borrowed external Vulkan frame that the Qt-free ImGui shell imports into its own device without CPU readback. The standalone renderer remains a diagnosed emergency fallback and comparison oracle rather than the normal rich-preview path | Extract Qt containers/image adapters out of the renderer plugin itself and add non-CUDA hardware import |
 | Grade | Base brightness/contrast/saturation and keyframe values use Qt's full `-10…10` domain; frame/opacity/interpolation and all nine Lift/Gamma/Gain RGB values are editable. Row load/seek, creation/removal, neutral full-grade evaluation for New At Playhead, direct click/add/drag/right-click-remove RGB/Luma curve canvases plus bounded numeric point editing, smoothing/three-point lock with shared bidirectional tone synchronization, shared Qt-compatible curve normalization, neutral storage of all Qt-known curve fields, atomic Qt-complete grade/opacity reset, and asynchronous decoded-source Auto Oppose with the same settings/detection core as Qt are bound | Final native styling polish |
 | Opacity | Value, fades, and full neutral keyframe frame/value/interpolation editing with row load/seek, creation, and removal are bound | Direct preview manipulation and exact Qt workflow polish |
-| Effects and masks | All 35 canonical presets and the Qt-known speech-sync, difference/echo, and tiling parameters are neutral, serialized, bridged, bound, and rendered by standalone preview/export. Speaker-mask colors resolve from the active transcript profile with Qt-compatible fallbacks. A shared Qt-free sidecar core gives Qt and ImGui the same stable identity, discovery, ordinal-map/source-identity validation, readiness, and fail-closed policy. Qt and ImGui share SAM3 and BiRefNet job plans. ImGui exposes SAM3 cache/performance/output controls and BiRefNet model/revision/cache/device/FP16/tolerance controls, with resume/restart/cancel, manifest/progress/log inspection, a 250-ms independently textured live preview, validated output, and atomic generated-child materialization with Qt ownership defaults. Treatment and automatic/explicit Z order remain child-owned | Exact GPU/CPU sampling/transform parity and final native-dialog polish |
+| Effects and masks | All 35 canonical presets and the Qt-known speech-sync, difference/echo, and tiling parameters are neutral, serialized, bridged, and bound. Normal ImGui preview/export now executes the same Vulkan effect/mask implementation as Qt; the standalone implementation remains covered as an emergency fallback. Speaker-mask colors resolve from the active transcript profile with Qt-compatible fallbacks. A shared Qt-free sidecar core gives Qt and ImGui the same stable identity, discovery, ordinal-map/source-identity validation, readiness, and fail-closed policy. Qt and ImGui share SAM3 and BiRefNet job plans. ImGui exposes SAM3 cache/performance/output controls and BiRefNet model/revision/cache/device/FP16/tolerance controls, with resume/restart/cancel, manifest/progress/log inspection, a 250-ms independently textured live preview, validated output, and atomic generated-child materialization with Qt ownership defaults. Treatment and automatic/explicit Z order remain child-owned | Final native-dialog polish and removal of Qt types from the shared renderer module |
 | Corrections | Global enablement plus undoable polygon creation, selection, enable/range editing, individual/all deletion, normalized vertex-table editing, and direct Program-monitor vertex dragging are bound. Drawing mode supports click-to-draft, live overlay, close, and cancel; active/inactive persisted polygons are visibly distinguished and standalone preview/export applies them | Exact Qt tool-mode/focus gestures and final overlay interaction polish |
-| Titles | All Qt-known title-keyframe fields are neutral, serialized, bridged, editable, and evaluated: text/font/placement/emphasis/opacity, auto-fit, logo, solid/neon/stripe/grid/image materials, text/frame patterns, shadow, window/frame, stacked/eroded extrusion, and 3D orientation/depth/scale. Standalone preview/export renders these treatments and decodes referenced pattern/logo assets; window, patterned frame, logo, shadow/extrusion, and glyphs all participate in the evaluated 3D transform. `title_3d_projection_core.h` reproduces Qt's Vulkan camera, perspective, rotation order, per-element layout, depth bounds, and scale bounds, with direct `QMatrix4x4` corner parity. Atomic creation, row load/seek/removal, and direct output-space dragging with coalesced undo are bound | Exact Vulkan projective texture sampling/occlusion and extrusion mesh-shader equivalence, plus final handle/selection interaction polish |
+| Titles | All Qt-known title-keyframe fields are neutral, serialized, bridged, editable, and evaluated: text/font/placement/emphasis/opacity, auto-fit, logo, solid/neon/stripe/grid/image materials, text/frame patterns, shadow, window/frame, stacked/eroded extrusion, and 3D orientation/depth/scale. Normal ImGui preview/export uses Qt's exact Vulkan title renderer. The standalone emergency fallback also renders these treatments and decodes referenced pattern/logo assets; `title_3d_projection_core.h` reproduces Qt's Vulkan camera, perspective, rotation order, per-element layout, depth bounds, and scale bounds with direct `QMatrix4x4` corner parity. Atomic creation, row load/seek/removal, and direct output-space dragging with coalesced undo are bound | Final handle/selection interaction polish |
 | Sync and transform | Sync add/clear/individual removal, row seeking, frame/count/action editing, canonical source ownership, and visible tooltip/right-click timeline markers are bound. Transform exposes full neutral frame/title/translation/rotation/scale/interpolation editing with row load/seek, creation/removal, Scale-to-Fill, undoable source-transform locking with cycle-safe standalone evaluation, and direct Program-monitor move/horizontal/vertical/uniform resize/rotation handles. Preview drags reuse shared anchored-resize and wrap-safe pointer-angle math, support Shift 15-degree snapping, and commit base-relative temporal keyframes with coalesced undo. The complete durable speaker-framing state is neutral, rendered, and authorable through scalar plus enabled/baked/target keyframe controls | Add source-geometry-perfect hit bounds for every generated effect and exact Qt interaction polish |
 | Transcript | Every neutral-backed overlay field is bound; ImGui uses the Qt-free cut-session/catalog core for cached path/version loading and a clipped editable table with gaps, edit flags, speaker labels, skipped/outside-cut rows, persisted cut selection, filters, and rich-preview propagation. Mutable cuts support Qt-compatible text/raw timing/skip, insert, expand, restore, reorder, confirmed word deletion, and cut lifecycle. Transcript/profile mutations share the globally ordered runtime undo/redo stack with project edits via transient non-serialized payloads; file restoration is atomic and external changes fail closed with runtime navigation rollback. Qt and ImGui now share word patch, batch skip/delete, insertion, expansion, original restore, arbitrary render reorder, and create/rename/delete cut services; Qt preserves unknown fields and stable projected word identity across structural mutations | Final native table/dialog styling polish |
 | Speakers/faces | ImGui shows a neutral transcript-derived roster with profile and word-only identities, editable name/organization/title location, and word counts. Qt and ImGui share contiguous-section projection and range skip/unskip; ImGui exposes the persisted minimum-word threshold, section rows, assignment/rotation diagnostics, seek, and transcript-history-backed edits. Section rotation, grading, mask options, and additive/clear continuity-track assignment use the same unknown-field-preserving schema in both shells; ImGui edits them directly and emits Qt-equivalent start/end grading keyframes. Individual and bulk section export map transcript frames through source FPS, trim, playback rate, and render-sync state into exact neutral export ranges; bulk jobs coalesce/name/skip like Qt and share the cancellable exporter. Assigned continuity tracks render as bounded asynchronous face-avatar strips directly in section rows, using the same neutral crop geometry as Qt without blocking playback or the UI. The shared artifact adapter reads Qt `JCUTBOX1` JSON/compressed-CBOR continuity and identity artifacts; ImGui reviews track coverage/geometry/detector diagnostics and existing owners, assigns/clears selected tracks with Qt-compatible anchors through global undo, seeks to a selected reference anchor, outlines its face box in Program, and asynchronously displays a bounded multi-selection crop strip using the same explicit-box/center-size geometry as Qt. ImGui launches/cancels the existing offscreen SCRFD/Vulkan generator with Qt-compatible sidecar/manifest/resume contracts and imports its Qt binary/indexed output into the shared transcript artifact. Its preflight exposes stride/threshold/topology/primary/small-face/tiling/zero-copy compatibility plus optional generator control window, live preview window, explicit checkpoint-clearing restart, source/proxy input selection while keeping sidecars anchored to the source clip, and selected-clip grading through the shared Qt-compatible clip JSON projection. The shared job core can run the generator's real pipeline benchmark before launch, persist `launch_control.json`, and reload/apply its saved worker/slot recommendation. Shared transcript-driven animated introductions produce durable, undoable `speaker_title` clips with all Qt fly-in styles. Shared reviewed local/cloud mining proposes/applies names, organizations, and spurious-label cleanup. The Qt generator currently scans one contiguous clip source range; its help text's mention of dialogue-only scanning is stale and is not treated as a Qt-parity requirement | Deeper identity-cluster decisions and remaining diagnostics |
 | Audio | Qt-free RtAudio preview/status plus standalone decode/mix; clip/track gain/pan/mute/solo/fades, sync mapping, sidecar refresh, async warmup, persisted output-device discovery/selection with safe stream restart, pitch-preserving clip/export speed, shared two-stage Harmonic Speech Isolation, transcript-aware per-word normalization, and shared persisted master amplification/normalization/peak-reduction/compressor/soft-clip/limiter/stereo-to-mono DSP in preview and export. Qt and neutral projects preserve clip/track `audioBusId`; the current Qt shell has no bus graph, mixer behavior, or routing control to reproduce | Define and implement a real shared bus-routing model in both shells, advanced backend/device capabilities, and streamed long-source processing |
-| Export | MP4/MOV/MKV video+audio or image sequence, explicit muxer routing, pitch-preserving speed, WebM selection with clear portable-codec requirements, settings, progress, cancel, and exact bounded/discontiguous range concatenation for video, image numbering, progress segments, and audio. Individual and queued bulk speaker-section exports use the same range-aware worker | Bundle/require portable VPx and Opus/Vorbis encoders for universal WebM output; bounded audio processing and remaining option/output-equivalence coverage |
+| Export | ImGui now invokes the same Vulkan offscreen compositor, GPU conversion/CUDA external-memory transfer, hardware-encoder selection, software-encoder fallback, audio pipeline, progress, cancellation, ranges, and output routing as Qt through the shared renderer plugin. MP4/MOV/MKV video+audio and image sequences, pitch-preserving speed, WebM routing, exact bounded/discontiguous concatenation, and queued speaker-section exports retain the neutral ImGui workflow | Bundle/require portable VPx and Opus/Vorbis encoders for universal WebM output and remove Qt types from the shared renderer module |
 | Jobs | Export, face detection, proxy generation, SAM3 prompt masks, WhisperX transcription, and BiRefNet alpha generation are functional. Jobs reports independent state/progress/cancellation, supports interactive transcription stdin, exposes output/manifest/status diagnostics, and provides bounded refreshable inspection of manifests, progress, and worker logs. Masks renders the evolving BiRefNet preview on an independent texture | Other general processing jobs and domain-specific result viewers |
-| Scopes/pipeline | Live normalized luma/R/G/B preview histograms exceed the Qt grading histogram's channel coverage. Pipeline now presents a selectable Timeline Map → Decode → GPU Import → Composite → Present graph with live state/exactness, per-stage facts, source/device/fallback diagnostics, explicit refresh, and zero-copy retry | Per-stage image thumbnails and final native graph styling |
+| Scopes/pipeline | Live normalized luma/R/G/B preview histograms exceed the Qt grading histogram's channel coverage. Opening Scopes now requests an analysis readback from the same Vulkan-composited frame while Program continues presenting the borrowed GPU frame; it no longer switches the whole preview to the standalone CPU renderer. Pipeline presents a selectable Timeline Map → Decode → GPU Import → Composite → Present graph with live state/exactness, per-stage facts, source/device/fallback diagnostics, explicit refresh, and zero-copy retry | Per-stage image thumbnails and final native graph styling |
 | AI/access | Reviewed deterministic speaker name/organization/spurious-label cleanup is functional in Speakers. A shared Qt-free libcurl gateway core gives ImGui functional asynchronous entitlement/usage/license refresh, populated access rows, model selection, budget/rate enforcement, ordered model fallback/retry, Supabase-direct fallback, stateful project-context chat, cancellable browser-PKCE login, refresh-token exchange, subscription checkout launch, and review-first cloud speaker name/organization proposals without persisting bearer tokens in projects. Qt and ImGui share the same credential implementation for Linux secret attributes and the private config fallback; Qt reuses the same gateway normalization and token-profile parser. ImGui presents the authenticated identity with basic/enabled/subscribed status, bounded time/phase/summary activity, and a bounded asynchronous remote avatar with rounded Vulkan presentation plus initials fallback | Exact native presentation polish |
-| Preferences/system | Persisted layout/font and panel defaults; Qt-compatible project autosave/history retention with atomic bounded backups; configurable RtAudio buffer size and persisted output-device selection with stream restart and requested/actual diagnostics; shared decode preference, explicit persisted hardware-device selection, H.264/H.265 threading, deterministic mode, lane preference, functional preview-decoder refresh, requested/effective hardware/software and device diagnostics, runtime fallback reasons, and an asynchronous source decode benchmark | Direct zero-copy decoded-frame composition, decoder prefetch/cache controls, startup/profile benchmark automation, applying lane count to concurrent decode scheduling, and remaining persistence |
+| Preferences/system | Persisted layout/font and panel defaults; Qt-compatible project autosave/history retention with atomic bounded backups; configurable RtAudio buffer size and persisted output-device selection with stream restart and requested/actual diagnostics; shared decode preference, explicit persisted hardware-device selection, H.264/H.265 threading, deterministic mode, lane preference, functional preview-decoder refresh, requested/effective hardware/software and device diagnostics, runtime fallback reasons, and an asynchronous source decode benchmark. Normal preview imports the production compositor's borrowed Vulkan frame without CPU readback | Non-CUDA hardware-frame import, decoder prefetch/cache controls, startup/profile benchmark automation, applying lane count to concurrent decode scheduling, and remaining persistence |
 
 ## Remaining Implementation Order
 
@@ -863,9 +871,24 @@ boundary. Qt remains in the separate legacy editor/runtime targets shown above f
    - Completed: project primary/secondary/accent colors through the neutral speaker profile and
      apply the active transcript speaker's palette to standalone speaker-mask effects with Qt's
      red/green/yellow fallbacks.
-   - Restore remaining rich preview composition and zero-copy Vulkan production behind the
-     Qt-free preview interface. Exact Vulkan
-     title/composition output and GPU production remain render-equivalence blockers.
+   - Completed: load the existing production Qt Vulkan renderer through the versioned
+     `libjcut_imgui_gpu_renderer.so` bridge, serialize the neutral document across that narrow
+     boundary, and use the exact Qt composition/effects/masks/titles/transcript/framing path for
+     normal ImGui preview.
+   - Completed: return the production compositor's borrowed external Vulkan frame through the
+     neutral `OffscreenVulkanFrame` contract and import it into the ImGui Vulkan device without a
+     CPU readback. Preview generation acknowledgement prevents producer reuse before import.
+   - Completed: make GPU-only offscreen rendering accept software-decoded video and still images
+     through the existing Vulkan staging path, and create the Vulkan canvas for title-only or
+     otherwise empty visual layers. GPU-only output no longer incorrectly requires a
+     hardware-decoded source frame.
+   - Completed: route ImGui export through the same Qt Vulkan offscreen compositor, GPU conversion,
+     CUDA external-memory transfer where supported, hardware-encoder selection, software-encoder
+     fallback, audio, progress, cancellation, and range handling as the Qt shell.
+   - Remaining architectural cleanup: replace Qt containers/image adapters inside the renderer
+     plugin with neutral types. This does not require maintaining a second lower-quality renderer;
+     `jcut_imgui` itself remains directly Qt-free while the runtime plugin intentionally carries
+     Qt Core/Gui.
 
 2. **Adopt the shared runtime from the Qt shell.**
    - Route equivalent Qt editing actions through `EditorRuntime` commands.
@@ -1220,6 +1243,7 @@ Builds must use the repository wrapper:
 ./build.sh --with-tests --target test_preview_geometry
 ./build.sh --with-tests --target test_media_color_passthrough
 ./build.sh --with-tests --target test_media_root_contract
+./build.sh --with-tests --target test_imgui_gpu_renderer_bridge
 ```
 
 The acceptance gate is the unfiltered wrapper command, not only selected targets:
@@ -1562,10 +1586,26 @@ python3 tests/check_imgui_binary_no_qt.py build/jcut_imgui
 ```
 
 It reports `jcut_imgui has no Qt linkage`; Qt6 Gui/Core/DBus are no longer in the executable's
-dependency closure.
+direct dependency closure. The separately loaded `libjcut_imgui_gpu_renderer.so` intentionally
+links Qt Core/Gui so the ImGui shell can reuse the production renderer rather than fork it.
 
-Qt-free linkage does not establish functional parity. Rich preview composition/Vulkan production
-and the incomplete workflows in the parity matrix remain exit blockers.
+The shared-renderer checkpoint adds `test_imgui_gpu_renderer_bridge`. At 320x180 on the current
+RTX 3060 system it validates a borrowed Vulkan preview frame and an MP4 export using
+`h264_nvenc`, CUDA hardware frames, Vulkan NV12 conversion, and direct external-memory transfer.
+The test passes with `VK_LAYER_KHRONOS_validation` enabled. That stronger fixture exposed and
+fixed missing transfer-destination usage on the offscreen color image, missing dynamic-uniform
+offsets in the NV12 graphics passes, and export's former attempt to finalize an external preview
+frame before NV12 conversion. A live `jcut_imgui testbench_state.json` smoke check reports
+`backend=shared_qt_vulkan`, `path=gpu_preview`, `usingGpu=true`, a valid 1080x1920 imported frame,
+zero import failures, and zero CPU preview bytes.
+The exact unfiltered acceptance command `./build.sh` passed after these changes, followed by the
+validation-layer bridge test (5 passed, including same-frame scopes readback), the Qt/ImGui
+render-and-audio parity test (9 passed), the
+strict no-Qt executable check, the CMake boundary check, and `git diff --check`.
+
+Qt-free linkage alone does not establish functional parity. Rich preview composition and Vulkan
+production now reuse the Qt implementation; the incomplete workflows and presentation items in the
+parity matrix remain exit blockers.
 
 ## Parity Exit Criteria
 

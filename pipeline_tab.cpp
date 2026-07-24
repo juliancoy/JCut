@@ -13,9 +13,6 @@
 #include <QScreen>
 #include <QScrollBar>
 #include <QVBoxLayout>
-#include <QVulkanFunctions>
-#include <QVulkanInstance>
-#include <QVulkanWindow>
 
 namespace {
 
@@ -154,49 +151,15 @@ QColor backgroundForState(const QString& state)
     return QColor(16, 22, 30);
 }
 
-VkClearValue clearColorFor(const QColor& color, float alpha = 1.0f)
-{
-    VkClearValue clear{};
-    clear.color.float32[0] = static_cast<float>(color.redF());
-    clear.color.float32[1] = static_cast<float>(color.greenF());
-    clear.color.float32[2] = static_cast<float>(color.blueF());
-    clear.color.float32[3] = alpha;
-    return clear;
-}
-
-class PipelineStageVulkanWindow;
-
-class PipelineStageVulkanRenderer final : public QVulkanWindowRenderer
+class PipelineStageVisualizationWidget final : public QWidget
 {
 public:
-    explicit PipelineStageVulkanRenderer(PipelineStageVulkanWindow* window)
-        : m_window(window) {}
-
-    void initResources() override;
-    void startNextFrame() override;
-    void logicalDeviceLost() override {}
-    void physicalDeviceLost() override {}
-
-private:
-    void clearRect(VkCommandBuffer cb, const QRect& rect, const VkClearValue& color) const;
-
-    PipelineStageVulkanWindow* m_window = nullptr;
-    QVulkanWindow* m_qwindow = nullptr;
-    QVulkanDeviceFunctions* m_devFuncs = nullptr;
-};
-
-class PipelineStageVulkanWindow final : public QVulkanWindow
-{
-public:
-    QVulkanWindowRenderer* createRenderer() override
-    {
-        return new PipelineStageVulkanRenderer(this);
-    }
+    using QWidget::QWidget;
 
     void setSnapshots(const QVector<PreviewSurface::PipelineStageSnapshot>& snapshots)
     {
         m_snapshots = snapshots;
-        requestUpdate();
+        update();
     }
 
     void setHighlightedIndex(int index)
@@ -206,107 +169,57 @@ public:
             return;
         }
         m_highlightedIndex = normalized;
-        requestUpdate();
+        update();
     }
 
-    const QVector<PreviewSurface::PipelineStageSnapshot>& snapshots() const { return m_snapshots; }
-    int highlightedIndex() const { return m_highlightedIndex; }
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor(5, 8, 12));
+
+        const int count = m_snapshots.size();
+        if (count <= 0) {
+            painter.fillRect(rect().adjusted(12, 12, -12, -12), QColor(16, 22, 30));
+            return;
+        }
+
+        const int outerMargin = 12;
+        const int spacing = 8;
+        const int availableWidth = std::max(1, width() - outerMargin * 2);
+        const int cardWidth = std::max(44, (availableWidth - spacing * std::max(0, count - 1)) / count);
+        const int baseTop = 28;
+        const int cardHeight = std::max(88, height() - baseTop - 42);
+        for (int i = 0; i < count; ++i) {
+            const PreviewSurface::PipelineStageSnapshot& snapshot = m_snapshots.at(i);
+            const QColor accent = colorForKind(snapshot.kind);
+            const QColor fill = backgroundForState(snapshot.state);
+            const int x = outerMargin + i * (cardWidth + spacing);
+            const bool active = i == m_highlightedIndex ||
+                                (m_highlightedIndex < 0 && snapshot.active);
+            const QRect bodyRect(x, active ? 18 : baseTop, cardWidth, active ? cardHeight + 10 : cardHeight);
+            painter.fillRect(bodyRect, fill);
+            painter.fillRect(QRect(bodyRect.x(), bodyRect.y(), bodyRect.width(), 4), accent);
+            QColor inner = active ? accent.lighter(135) : accent.darker(150);
+            inner.setAlphaF(active ? 0.22 : 0.12);
+            painter.fillRect(
+                QRect(bodyRect.x() + 4,
+                      bodyRect.y() + 10,
+                      std::max(12, bodyRect.width() - 8),
+                      bodyRect.height() - 18),
+                inner);
+            if (snapshot.exact) {
+                painter.fillRect(
+                    QRect(bodyRect.x() + 6, bodyRect.bottom() - 10, bodyRect.width() - 12, 4),
+                    QColor(111, 211, 125));
+            }
+        }
+    }
 
 private:
     QVector<PreviewSurface::PipelineStageSnapshot> m_snapshots;
     int m_highlightedIndex = -1;
 };
-
-void PipelineStageVulkanRenderer::initResources()
-{
-    m_qwindow = m_window;
-    m_devFuncs = m_qwindow && m_qwindow->vulkanInstance()
-        ? m_qwindow->vulkanInstance()->deviceFunctions(m_qwindow->device())
-        : nullptr;
-}
-
-void PipelineStageVulkanRenderer::clearRect(VkCommandBuffer cb, const QRect& rect, const VkClearValue& color) const
-{
-    if (!m_devFuncs || rect.isEmpty()) {
-        return;
-    }
-    VkClearAttachment attachment{};
-    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    attachment.colorAttachment = 0;
-    attachment.clearValue = color;
-
-    VkClearRect clear{};
-    clear.rect.offset = { rect.x(), rect.y() };
-    clear.rect.extent = {
-        static_cast<uint32_t>(std::max(1, rect.width())),
-        static_cast<uint32_t>(std::max(1, rect.height()))
-    };
-    clear.baseArrayLayer = 0;
-    clear.layerCount = 1;
-    m_devFuncs->vkCmdClearAttachments(cb, 1, &attachment, 1, &clear);
-}
-
-void PipelineStageVulkanRenderer::startNextFrame()
-{
-    if (!m_qwindow || !m_devFuncs) {
-        return;
-    }
-    const QSize size = m_qwindow->swapChainImageSize();
-    VkClearValue clears[2]{};
-    clears[0] = clearColorFor(QColor(5, 8, 12));
-    clears[1].depthStencil.depth = 1.0f;
-    clears[1].depthStencil.stencil = 0;
-
-    VkRenderPassBeginInfo rp{};
-    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_qwindow->defaultRenderPass();
-    rp.framebuffer = m_qwindow->currentFramebuffer();
-    rp.renderArea.offset = {0, 0};
-    rp.renderArea.extent = {
-        static_cast<uint32_t>(std::max(1, size.width())),
-        static_cast<uint32_t>(std::max(1, size.height()))
-    };
-    rp.clearValueCount = m_qwindow->depthStencilFormat() == VK_FORMAT_UNDEFINED ? 1u : 2u;
-    rp.pClearValues = clears;
-
-    VkCommandBuffer cb = m_qwindow->currentCommandBuffer();
-    m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
-
-    const QVector<PreviewSurface::PipelineStageSnapshot>& snapshots = m_window->snapshots();
-    const int count = snapshots.size();
-    if (count <= 0) {
-        clearRect(cb, QRect(12, 12, std::max(24, size.width() - 24), std::max(24, size.height() - 24)),
-                  clearColorFor(QColor(16, 22, 30)));
-    } else {
-        const int outerMargin = 12;
-        const int spacing = 8;
-        const int availableWidth = std::max(1, size.width() - outerMargin * 2);
-        const int cardWidth = std::max(44, (availableWidth - spacing * std::max(0, count - 1)) / count);
-        const int baseTop = 28;
-        const int cardHeight = std::max(88, size.height() - baseTop - 42);
-        const int highlighted = m_window->highlightedIndex();
-        for (int i = 0; i < count; ++i) {
-            const PreviewSurface::PipelineStageSnapshot& snapshot = snapshots.at(i);
-            const QColor accent = colorForKind(snapshot.kind);
-            const QColor fill = backgroundForState(snapshot.state);
-            const int x = outerMargin + i * (cardWidth + spacing);
-            const bool active = i == highlighted || (highlighted < 0 && snapshot.active);
-            const QRect bodyRect(x, active ? 18 : baseTop, cardWidth, active ? cardHeight + 10 : cardHeight);
-            clearRect(cb, bodyRect, clearColorFor(fill));
-            clearRect(cb, QRect(bodyRect.x(), bodyRect.y(), bodyRect.width(), 4), clearColorFor(accent));
-            clearRect(cb,
-                      QRect(bodyRect.x() + 4, bodyRect.y() + 10, std::max(12, bodyRect.width() - 8), bodyRect.height() - 18),
-                      clearColorFor(active ? accent.lighter(135) : accent.darker(150), active ? 0.22f : 0.12f));
-            if (snapshot.exact) {
-                clearRect(cb, QRect(bodyRect.x() + 6, bodyRect.bottom() - 10, bodyRect.width() - 12, 4),
-                          clearColorFor(QColor(111, 211, 125)));
-            }
-        }
-    }
-
-    m_devFuncs->vkCmdEndRenderPass(cb);
-    m_qwindow->frameReady();
-}
 
 } // namespace
 
@@ -315,23 +228,13 @@ PipelineTab::PipelineTab(const Widgets& widgets, const Dependencies& deps, QObje
     , m_widgets(widgets)
     , m_deps(deps)
 {
-    if (m_widgets.pipelinePreviewHost && m_deps.useVulkanVisualization && m_deps.useVulkanVisualization()) {
-        m_vulkanInstance = std::make_unique<QVulkanInstance>();
-        m_vulkanInstance->setApiVersion(QVersionNumber(1, 1));
-        if (m_vulkanInstance->create()) {
-            auto* window = new PipelineStageVulkanWindow;
-            window->setVulkanInstance(m_vulkanInstance.get());
-            m_vulkanWindow = window;
-            m_vulkanContainer = QWidget::createWindowContainer(window, m_widgets.pipelinePreviewHost);
-            if (m_vulkanContainer) {
-                auto* layout = new QVBoxLayout(m_widgets.pipelinePreviewHost);
-                layout->setContentsMargins(0, 0, 0, 0);
-                layout->setSpacing(0);
-                layout->addWidget(m_vulkanContainer);
-            }
-        } else {
-            m_vulkanInstance.reset();
-        }
+    if (m_widgets.pipelinePreviewHost) {
+        m_visualizationWidget =
+            new PipelineStageVisualizationWidget(m_widgets.pipelinePreviewHost);
+        auto* layout = new QVBoxLayout(m_widgets.pipelinePreviewHost);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        layout->addWidget(m_visualizationWidget);
     }
     if (m_widgets.pipelineStageList && m_widgets.pipelineStageList->viewport()) {
         m_widgets.pipelineStageList->setMouseTracking(true);
@@ -353,17 +256,18 @@ void PipelineTab::refresh()
     const int scrollValue = m_widgets.pipelineStageList->verticalScrollBar()
                                 ? m_widgets.pipelineStageList->verticalScrollBar()->value()
                                 : 0;
-    const bool useVulkanVisualization = m_vulkanWindow;
-    const int hoverRow = useVulkanVisualization
+    const bool useVisualization = m_visualizationWidget;
+    const int hoverRow = useVisualization
         ? m_hoverRow
         : (m_hoverPreview && m_hoverPreview->isVisible() ? m_hoverRow : -1);
 
     m_widgets.pipelineStageList->clear();
     m_snapshots =
         m_deps.liveSnapshots ? m_deps.liveSnapshots() : QVector<PreviewSurface::PipelineStageSnapshot>{};
-    if (auto* window = static_cast<PipelineStageVulkanWindow*>(m_vulkanWindow.data())) {
-        window->setSnapshots(m_snapshots);
-        window->setHighlightedIndex(hoverRow);
+    if (auto* visualization =
+            static_cast<PipelineStageVisualizationWidget*>(m_visualizationWidget)) {
+        visualization->setSnapshots(m_snapshots);
+        visualization->setHighlightedIndex(hoverRow);
     }
 
     if (m_snapshots.isEmpty()) {
@@ -387,7 +291,7 @@ void PipelineTab::refresh()
         QFont font = item->font();
         font.setPointSize(qMax(8, font.pointSize() - 1));
         item->setFont(font);
-        const QImage displayImage = useVulkanVisualization ? QImage() : displayImageForSnapshot(snapshot);
+        const QImage displayImage = useVisualization ? QImage() : displayImageForSnapshot(snapshot);
         if (!displayImage.isNull()) {
             const QPixmap pix = QPixmap::fromImage(displayImage);
             if (!pix.isNull()) {
@@ -439,9 +343,10 @@ void PipelineTab::showHoverPreview(int row)
         hideHoverPreview();
         return;
     }
-    if (auto* window = static_cast<PipelineStageVulkanWindow*>(m_vulkanWindow.data())) {
+    if (auto* visualization =
+            static_cast<PipelineStageVisualizationWidget*>(m_visualizationWidget)) {
         m_hoverRow = row;
-        window->setHighlightedIndex(row);
+        visualization->setHighlightedIndex(row);
         return;
     }
     if (m_hoverRow == row && m_hoverPreview && m_hoverPreview->isVisible()) {
@@ -543,8 +448,9 @@ void PipelineTab::showHoverPreview(int row)
 void PipelineTab::hideHoverPreview()
 {
     m_hoverRow = -1;
-    if (auto* window = static_cast<PipelineStageVulkanWindow*>(m_vulkanWindow.data())) {
-        window->setHighlightedIndex(-1);
+    if (auto* visualization =
+            static_cast<PipelineStageVisualizationWidget*>(m_visualizationWidget)) {
+        visualization->setHighlightedIndex(-1);
     }
     if (m_hoverPreview) {
         m_hoverPreview->hide();

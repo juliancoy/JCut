@@ -127,6 +127,14 @@ void TrackSidebar::setDropTarget(int index, bool inGap) {
     update();
 }
 
+void TrackSidebar::setFlatZView(bool enabled) {
+    if (m_flatZView == enabled) {
+        return;
+    }
+    m_flatZView = enabled;
+    update();
+}
+
 bool TrackSidebar::isInResizeHandle(const QPoint &pos) const {
     return pos.x() >= width() - kResizeHandleWidth;
 }
@@ -229,15 +237,21 @@ void TrackSidebar::paintEvent(QPaintEvent *) {
         painter.setFont(nameFont);
 
         const QRect audioRect = trackAudioToggleRect(track);
-        const int hierarchyIndent = m_tracks[track].generatedChildTrack ? 14 : 0;
+        const int hierarchyIndent =
+            !m_flatZView && m_tracks[track].generatedChildTrack ? 14 : 0;
         QRect nameRect(labelRect.left() + 10 + hierarchyIndent,
                        labelRect.top(),
                        qMax(24, audioRect.left() - labelRect.left() - 18 - hierarchyIndent),
                        labelRect.height());
 
-        const QString trackLabel = m_tracks[track].generatedChildTrack
-            ? m_tracks[track].name
-            : QStringLiteral("%1. %2").arg(track + 1).arg(m_tracks[track].name);
+        QString displayName = m_tracks[track].name;
+        if (m_flatZView && displayName.startsWith(QStringLiteral("↳ "))) {
+            displayName.remove(0, 2);
+        }
+        const QString trackLabel =
+            !m_flatZView && m_tracks[track].generatedChildTrack
+                ? displayName
+                : QStringLiteral("%1. %2").arg(track + 1).arg(displayName);
         painter.drawText(nameRect,
                          Qt::AlignLeft | Qt::AlignVCenter,
                          painter.fontMetrics().elidedText(trackLabel, Qt::ElideRight, nameRect.width()));
@@ -341,7 +355,8 @@ void TrackSidebar::mouseMoveEvent(QMouseEvent *event) {
     if (event->buttons() & Qt::LeftButton) {
         if (!m_dragging && (event->pos() - m_dragStartPos).manhattanLength() > 10) {
             const int track = trackAt(m_dragStartPos);
-            if (track >= 0 && !m_tracks[track].generatedChildTrack) {
+            if (track >= 0 &&
+                (m_flatZView || !m_tracks[track].generatedChildTrack)) {
                 m_dragging = true;
                 setDraggedTrack(track);
                 setDropTarget(track, false);
@@ -359,7 +374,8 @@ void TrackSidebar::mouseMoveEvent(QMouseEvent *event) {
 void TrackSidebar::mouseReleaseEvent(QMouseEvent *event) {
     if (event && event->button() == Qt::LeftButton && m_dragging &&
         m_draggedTrack >= 0 && m_draggedTrack < m_tracks.size() &&
-        !m_tracks[m_draggedTrack].generatedChildTrack && m_dropTarget >= 0) {
+        (m_flatZView || !m_tracks[m_draggedTrack].generatedChildTrack) &&
+        m_dropTarget >= 0) {
         emit trackDropped(m_draggedTrack, m_dropTarget);
     }
     m_resizingWidth = false;
@@ -414,8 +430,9 @@ void TrackSidebar::contextMenuEvent(QContextMenuEvent *event) {
     QAction *moveDownAction = menu.addAction(QStringLiteral("Move Track Down"));
 
     const bool mutableTrack = !m_tracks[track].generatedChildTrack;
-    moveUpAction->setEnabled(mutableTrack && track > 0);
-    moveDownAction->setEnabled(mutableTrack && track < m_tracks.size() - 1);
+    moveUpAction->setEnabled((m_flatZView || mutableTrack) && track > 0);
+    moveDownAction->setEnabled(
+        (m_flatZView || mutableTrack) && track < m_tracks.size() - 1);
 
     menu.addSeparator();
 

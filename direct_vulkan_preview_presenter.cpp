@@ -411,9 +411,8 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
             qWarning() << "[vulkan-preview] Vulkan validation requested but unavailable";
         }
     }
-    // Use Qt's platform-provided WSI extension list. On X11 this must include
-    // VK_KHR_surface plus the matching xcb/xlib surface extension before
-    // QVulkanWindow can create its embedded native surface.
+    // Qt automatically enables the surface extensions required by the active
+    // platform plugin. Only request application-specific additions here.
     const QVulkanInfoVector<QVulkanExtension> supportedExtensions = m_instance->supportedExtensions();
     auto extensionSupported = [&supportedExtensions](const QByteArray& name) {
         for (const QVulkanExtension& extension : supportedExtensions) {
@@ -429,16 +428,14 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
             requestedExtensions.append(name);
         }
     };
-    addExtension(QByteArrayLiteral("VK_KHR_surface"));
-    addExtension(QByteArrayLiteral("VK_KHR_xcb_surface"));
-    addExtension(QByteArrayLiteral("VK_KHR_xlib_surface"));
-    addExtension(QByteArrayLiteral("VK_KHR_wayland_surface"));
     if (qEnvironmentVariableIntValue("JCUT_VULKAN_VALIDATION") != 0) {
         addExtension(QByteArrayLiteral("VK_EXT_debug_utils"));
     }
-    m_instance->setExtensions(requestedExtensions);
-    qDebug().noquote() << QStringLiteral("[vulkan-preview] requested instance extensions=%1")
-                              .arg(QString::fromLatin1(requestedExtensions.join(',')));
+    if (!requestedExtensions.isEmpty()) {
+        m_instance->setExtensions(requestedExtensions);
+        qDebug().noquote() << QStringLiteral("[vulkan-preview] requested additional instance extensions=%1")
+                                  .arg(QString::fromLatin1(requestedExtensions.join(',')));
+    }
     if (!m_instance->create()) {
         m_failureReason = QStringLiteral("QVulkanInstance::create() failed for direct Vulkan preview presenter: VkResult %1.")
                               .arg(static_cast<int>(m_instance->errorCode()));

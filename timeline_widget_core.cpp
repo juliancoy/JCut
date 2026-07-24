@@ -616,7 +616,9 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
             clip.zLevel = effectiveClipZLevel(clip);
         }
     }
-    reconcileMaskMatteChildrenFromDisk(m_clips);
+    if (!m_deferMaskSidecarReconciliation) {
+        reconcileMaskMatteChildrenFromDisk(m_clips);
+    }
     normalizeSpeakerTitleParentBounds(&m_clips);
     normalizeRenderSyncMarkerOwnership();
 
@@ -1179,6 +1181,20 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     update();
 }
 
+void TimelineWidget::setDeferMaskSidecarReconciliation(bool defer)
+{
+    m_deferMaskSidecarReconciliation = defer;
+}
+
+void TimelineWidget::reconcileMaskSidecarsNow()
+{
+    if (!m_deferMaskSidecarReconciliation) {
+        return;
+    }
+    m_deferMaskSidecarReconciliation = false;
+    setClips(m_clips);
+}
+
 void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
     invalidateHoveredClipToolTipCache();
     m_tracks = tracks;
@@ -1489,8 +1505,13 @@ bool TimelineWidget::crossfadeTrack(int trackIndex, double seconds) {
 }
 
 bool TimelineWidget::moveTrackUp(int trackIndex) {
-    if (trackIndex <= 0 || trackIndex >= m_tracks.size() ||
-        m_tracks.at(trackIndex).generatedChildTrack) {
+    if (trackIndex <= 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+    if (m_trackViewMode == TrackViewMode::Precedence) {
+        return moveTrack(trackIndex, trackIndex - 1);
+    }
+    if (m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
     for (int target = trackIndex - 1; target >= 0; --target) {
@@ -1502,8 +1523,13 @@ bool TimelineWidget::moveTrackUp(int trackIndex) {
 }
 
 bool TimelineWidget::moveTrackDown(int trackIndex) {
-    if (trackIndex < 0 || trackIndex >= m_tracks.size() - 1 ||
-        m_tracks.at(trackIndex).generatedChildTrack) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() - 1) {
+        return false;
+    }
+    if (m_trackViewMode == TrackViewMode::Precedence) {
+        return moveTrack(trackIndex, trackIndex + 1);
+    }
+    if (m_tracks.at(trackIndex).generatedChildTrack) {
         return false;
     }
     for (int target = trackIndex + 1; target < m_tracks.size(); ++target) {
@@ -1521,9 +1547,9 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
     if (fromTrack == toTrack) {
         return false;
     }
-    // Generated rows are derived presentation state. Reorder only source
-    // tracks; reorderTracksForView() carries every child row with its owner.
-    if (m_tracks.at(fromTrack).generatedChildTrack || m_tracks.at(toTrack).generatedChildTrack) {
+    if (m_trackViewMode != TrackViewMode::Precedence &&
+        (m_tracks.at(fromTrack).generatedChildTrack ||
+         m_tracks.at(toTrack).generatedChildTrack)) {
         return false;
     }
 
@@ -1541,6 +1567,9 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
 
     TimelineTrack movedTrack = m_tracks.takeAt(fromTrack);
     m_tracks.insert(toTrack, movedTrack);
+    if (m_trackViewMode == TrackViewMode::Precedence) {
+        applyTrackOrderAsZLevels();
+    }
 
     if (m_selectedTrackIndex == fromTrack) {
         m_selectedTrackIndex = toTrack;
@@ -1566,6 +1595,20 @@ bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
     }
     update();
     return true;
+}
+
+void TimelineWidget::applyTrackOrderAsZLevels()
+{
+    const int trackCount = m_tracks.size();
+    for (TimelineClip& clip : m_clips) {
+        if (!clipHasVisuals(clip) ||
+            clip.trackIndex < 0 || clip.trackIndex >= trackCount) {
+            continue;
+        }
+        clip.zLevel = qBound(
+            -100000, (trackCount - clip.trackIndex) * 100, 100000);
+        clip.zLevelUserSet = true;
+    }
 }
 
 bool TimelineWidget::deleteClipById(const QString& clipId) {

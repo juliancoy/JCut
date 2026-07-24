@@ -1764,7 +1764,10 @@ void VulkanPreviewSurface::queueFrameStatusRefresh(bool requestVisibleFrames)
             if (m_frameStatusRefreshInProgress) {
                 m_frameStatusRefreshNeedsVisibleRequest =
                     m_frameStatusRefreshNeedsVisibleRequest || requestVisibleFrames;
-                queueFrameStatusRefresh(requestVisibleFrames);
+                // The in-flight refresh will publish its status and request a
+                // native update when it completes. Do not recursively enqueue
+                // refreshes from decoder callbacks; that can starve the
+                // swapchain presenter while transport continues advancing.
                 return;
             }
             m_frameStatusRefreshInProgress = true;

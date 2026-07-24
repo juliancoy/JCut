@@ -634,7 +634,9 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                 return;
             }
             setSelectedTrackIndex(trackHit);
-            if (trackHit >= m_tracks.size() || !m_tracks[trackHit].generatedChildTrack) {
+            if (trackHit >= m_tracks.size() ||
+                m_trackViewMode == TrackViewMode::Precedence ||
+                !m_tracks[trackHit].generatedChildTrack) {
                 m_draggedTrackIndex = trackHit;
                 m_trackDropIndex = trackHit;
             } else {

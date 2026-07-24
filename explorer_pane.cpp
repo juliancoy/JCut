@@ -334,7 +334,9 @@ ExplorerPane::ExplorerPane(QWidget *parent)
     layout->setSpacing(0);
     layout->addWidget(buildUi());
 
-    setExplorerRootPath(QDir::currentPath(), false);
+    // Do not scan the process working directory during construction. The
+    // project media root is loaded asynchronously and will be applied through
+    // setInitialRootPath() once the saved state is available.
 }
 
 ExplorerPane::~ExplorerPane()

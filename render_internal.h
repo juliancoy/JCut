@@ -236,6 +236,7 @@ struct OffscreenRenderContext {
     qreal generatedEffectClockTimelineFrame = -1.0;
     bool forceSoftwareDecode = false;
     bool preferHardwareFrames = false;
+    bool externalVulkanOutput = false;
 };
 
 class OffscreenRenderer {
@@ -305,7 +306,8 @@ public:
                              QJsonObject* exportFaceTransformDiagnostics = nullptr,
                              qreal generatedEffectClockTimelineFrame = -1.0,
                              bool forceSoftwareDecode = false,
-                             bool preferHardwareFrames = false)
+                             bool preferHardwareFrames = false,
+                             bool externalVulkanOutput = true)
     {
         return renderFrameToOutput(OffscreenRenderContext{request,
                                                           timelineFrame,
@@ -325,7 +327,8 @@ public:
                                                               ? generatedEffectClockTimelineFrame
                                                               : timelineFrame,
                                                           forceSoftwareDecode,
-                                                          preferHardwareFrames},
+                                                          preferHardwareFrames,
+                                                          externalVulkanOutput},
                                    output,
                                    readbackToCpuImage);
     }
