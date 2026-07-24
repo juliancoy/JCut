@@ -90,6 +90,7 @@ private slots:
     void testAllSkippedWordsYieldNoSpeechRanges();
     void testAudibleTimelineClipsExcludeDisabledOverlappingTrack();
     void testSpeechFilterIgnoresMalformedWordTiming();
+    void testSpeechFilterUsesCanonicalWordTimingWithStaleSegmentBounds();
     void testSpeechFilterRangesHonorPlaybackRateWithoutMarkers();
     void testEmptyBaseRangesUseInclusiveClipEnd();
     void testRuntimeSidecarPathPrefersEditableLegacyArtifact();
@@ -249,7 +250,7 @@ void TestTranscriptLogic::testSpeechFilterIgnoresMalformedWordTiming() {
 
     QJsonArray words;
     words.push_back(wordObj(10.0, 10.2, false));
-    QJsonObject malformed = wordObj(1.0, 20.0, false);
+    QJsonObject malformed = wordObj(1.0, 40.0, false);
     malformed[QStringLiteral("word")] = QStringLiteral("bad-timing");
     words.push_back(malformed);
     words.push_back(wordObj(20.0, 20.2, false));
@@ -277,6 +278,42 @@ void TestTranscriptLogic::testSpeechFilterIgnoresMalformedWordTiming() {
     QCOMPARE(ranges.at(0).endFrame, int64_t(305));
     QCOMPARE(ranges.at(1).startFrame, int64_t(600));
     QCOMPARE(ranges.at(1).endFrame, int64_t(605));
+}
+
+void TestTranscriptLogic::testSpeechFilterUsesCanonicalWordTimingWithStaleSegmentBounds() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    QJsonArray words;
+    QJsonObject word = wordObj(10.0, 20.0, false);
+    word[QStringLiteral("word")] = QStringLiteral("[Applause]");
+    words.push_back(word);
+
+    QJsonObject segment;
+    segment[QStringLiteral("start")] = 18.0;
+    segment[QStringLiteral("end")] = 18.1;
+    segment[QStringLiteral("text")] = QStringLiteral("stale");
+    segment[QStringLiteral("words")] = words;
+    QJsonObject root;
+    root[QStringLiteral("segments")] = QJsonArray{segment};
+
+    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+    QVERIFY(writeTranscriptDocument(editablePath, root));
+    setActiveTranscriptPathForClipFile(clipPath, editablePath);
+
+    TranscriptEngine engine;
+    const TimelineClip clip =
+        makeAudioClip(QStringLiteral("clip-stale-segment"), clipPath, 0, 700);
+    const QVector<ExportRangeSegment> ranges =
+        engine.transcriptWordExportRanges(
+            {ExportRangeSegment{0, 699}}, {clip}, {}, 0, 0);
+
+    QCOMPARE(ranges.size(), 1);
+    QCOMPARE(ranges.constFirst().startFrame, int64_t(300));
+    QCOMPARE(ranges.constFirst().endFrame, int64_t(599));
 }
 
 void TestTranscriptLogic::testSpeechFilterRangesHonorPlaybackRateWithoutMarkers() {

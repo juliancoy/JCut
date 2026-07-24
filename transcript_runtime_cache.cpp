@@ -10,7 +10,7 @@ namespace editor {
 namespace {
 
 constexpr quint32 kTranscriptRuntimeMagic = 0x4a435452; // JCTR
-constexpr quint32 kTranscriptRuntimeVersion = 2;
+constexpr quint32 kTranscriptRuntimeVersion = 3;
 constexpr qsizetype kMaxRuntimeSections = 2'000'000;
 constexpr qsizetype kMaxRuntimeWords = 5'000'000;
 constexpr qsizetype kMaxRuntimeSentenceRuns = 2'000'000;

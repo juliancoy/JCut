@@ -69,9 +69,9 @@ struct AsyncDecoder::LaneState {
     bool running = false;
     int activeRequests = 0;
 
-    // Increased from 4 to 12 to handle projects with many clips from few source files
-    // This reduces decoder recreation when switching between clips from the same file
-    static constexpr int kMaxContexts = 12;
+    // Keep decoder state bounded per lane. Retaining a dozen FFmpeg/CUDA
+    // contexts on every lane lets a large undo-restored timeline consume
+    // gigabytes before the memory budget can reclaim anything.
 };
 
 AsyncDecoder::AsyncDecoder(QObject* parent)
@@ -795,7 +795,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
             std::unique_lock<std::mutex> lock(lane->mutex);
             lane->activeRequests = qMax(0, lane->activeRequests - 1);
 
-            if (lane->fileStates.size() > LaneState::kMaxContexts) {
+            if (lane->fileStates.size() > debugDecoderContextLimit()) {
                 qint64 oldestTime = std::numeric_limits<qint64>::max();
                 QString oldestPath;
 

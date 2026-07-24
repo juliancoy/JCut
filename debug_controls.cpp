@@ -23,6 +23,7 @@ constexpr int kDefaultPrefetchSkipVisiblePendingThreshold = 2;
 constexpr int kDefaultVisibleQueueReserve = 24;
 constexpr int kDefaultPlaybackWindowAhead = 16;
 constexpr int kDefaultDecoderLaneCount = 0; // 0 => auto lane count
+constexpr int kDefaultDecoderContextLimit = 2;
 constexpr int kDefaultSupersedeSlackFrames = 12;
 constexpr int kDefaultVisibleDecodeKeepWindow = 16;
 constexpr int kDefaultObsoleteVisibleFrameSlack = 4;
@@ -67,6 +68,10 @@ std::atomic<int> g_debugPrefetchSkipVisiblePendingThreshold{kDefaultPrefetchSkip
 std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
 std::atomic<int> g_debugDecoderLaneCount{kDefaultDecoderLaneCount};
+std::atomic<int> g_debugDecoderContextLimit{
+    qEnvironmentVariableIsSet("JCUT_DECODER_CONTEXT_LIMIT")
+        ? qBound(1, qEnvironmentVariableIntValue("JCUT_DECODER_CONTEXT_LIMIT"), 12)
+        : kDefaultDecoderContextLimit};
 std::atomic<int> g_debugSupersedeSlackFrames{kDefaultSupersedeSlackFrames};
 std::atomic<int> g_debugVisibleDecodeKeepWindow{kDefaultVisibleDecodeKeepWindow};
 std::atomic<int> g_debugObsoleteVisibleFrameSlack{kDefaultObsoleteVisibleFrameSlack};
@@ -370,6 +375,11 @@ int debugDecoderLaneCount() {
     return g_debugDecoderLaneCount.load();
 }
 
+int debugDecoderContextLimit() {
+    const int configured = g_debugDecoderContextLimit.load();
+    return configured > 0 ? configured : kDefaultDecoderContextLimit;
+}
+
 int debugSupersedeSlackFrames() {
     return g_debugSupersedeSlackFrames.load();
 }
@@ -547,6 +557,10 @@ void setDebugDecoderLaneCount(int count) {
     }
 }
 
+void setDebugDecoderContextLimit(int limit) {
+    g_debugDecoderContextLimit.store(qBound(1, limit, 12));
+}
+
 void setDebugSupersedeSlackFrames(int slack) {
     g_debugSupersedeSlackFrames.store(qBound(1, slack, 64));
 }
@@ -707,6 +721,7 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("visible_queue_reserve"), debugVisibleQueueReserve()},
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
         {QStringLiteral("decoder_lane_count"), debugDecoderLaneCount()},
+        {QStringLiteral("decoder_context_limit"), debugDecoderContextLimit()},
         {QStringLiteral("supersede_slack_frames"), debugSupersedeSlackFrames()},
         {QStringLiteral("visible_decode_keep_window"), debugVisibleDecodeKeepWindow()},
         {QStringLiteral("obsolete_visible_frame_slack"), debugObsoleteVisibleFrameSlack()},

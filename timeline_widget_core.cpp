@@ -174,6 +174,122 @@ void splitOpacityKeyframes(const TimelineClip& source,
     }
 }
 
+template <typename Keyframe>
+void splitSimpleKeyframes(const QVector<Keyframe>& source,
+                          int64_t splitLocalFrame,
+                          QVector<Keyframe>* left,
+                          QVector<Keyframe>* right) {
+    left->clear();
+    right->clear();
+    for (const Keyframe& keyframe : source) {
+        if (keyframe.frame < splitLocalFrame) {
+            left->push_back(keyframe);
+        } else {
+            Keyframe shifted = keyframe;
+            shifted.frame -= splitLocalFrame;
+            right->push_back(std::move(shifted));
+        }
+    }
+}
+
+template <typename Keyframe>
+void trimSimpleKeyframesFromStart(
+    QVector<Keyframe>* keyframes, int64_t trimFrames) {
+    QVector<Keyframe> shifted;
+    shifted.reserve(keyframes->size());
+    for (const Keyframe& keyframe : std::as_const(*keyframes)) {
+        if (keyframe.frame < trimFrames) {
+            continue;
+        }
+        Keyframe value = keyframe;
+        value.frame -= trimFrames;
+        shifted.push_back(std::move(value));
+    }
+    *keyframes = std::move(shifted);
+}
+
+void normalizeSpeakerTitleParentBounds(
+    QVector<TimelineClip>* clips) {
+    if (!clips) {
+        return;
+    }
+    struct ParentRange {
+        int64_t startFrame = 0;
+        int64_t endFrame = 0;
+    };
+    QHash<QString, ParentRange> parentRanges;
+    for (const TimelineClip& clip : std::as_const(*clips)) {
+        if (clip.clipRole == ClipRole::MaskMatte ||
+            clip.clipRole == ClipRole::SpeakerTitle) {
+            continue;
+        }
+        const QString clipId = clip.id.trimmed();
+        if (!clipId.isEmpty()) {
+            parentRanges.insert(
+                clipId,
+                {clip.startFrame,
+                 clip.startFrame +
+                     qMax<int64_t>(1, clip.durationFrames)});
+        }
+    }
+
+    clips->erase(
+        std::remove_if(
+            clips->begin(), clips->end(),
+            [&](TimelineClip& title) {
+                if (title.clipRole !=
+                    ClipRole::SpeakerTitle) {
+                    return false;
+                }
+                const auto parent = parentRanges.constFind(
+                    title.linkedSourceClipId.trimmed());
+                if (parent == parentRanges.cend()) {
+                    return true;
+                }
+                const int64_t titleStart = title.startFrame;
+                const int64_t titleEnd =
+                    title.startFrame +
+                    qMax<int64_t>(
+                        1, title.durationFrames);
+                const int64_t boundedStart = qMax(
+                    titleStart, parent->startFrame);
+                const int64_t boundedEnd = qMin(
+                    titleEnd, parent->endFrame);
+                if (boundedEnd <= boundedStart) {
+                    return true;
+                }
+
+                const int64_t trimmedFrames =
+                    boundedStart - titleStart;
+                if (trimmedFrames > 0) {
+                    trimSimpleKeyframesFromStart(
+                        &title.transformKeyframes,
+                        trimmedFrames);
+                    trimSimpleKeyframesFromStart(
+                        &title.gradingKeyframes,
+                        trimmedFrames);
+                    trimSimpleKeyframesFromStart(
+                        &title.opacityKeyframes,
+                        trimmedFrames);
+                    trimSimpleKeyframesFromStart(
+                        &title.titleKeyframes,
+                        trimmedFrames);
+                }
+                title.startFrame = boundedStart;
+                title.durationFrames =
+                    boundedEnd - boundedStart;
+                title.sourceDurationFrames =
+                    title.durationFrames;
+                normalizeClipTransformKeyframes(title);
+                normalizeClipGradingKeyframes(title);
+                normalizeClipOpacityKeyframes(title);
+                normalizeClipTitleKeyframes(title);
+                normalizeClipTiming(title);
+                return false;
+            }),
+        clips->end());
+}
+
 void splitCorrectionPolygons(const QVector<TimelineClip::CorrectionPolygon>& source,
                              int64_t splitLocalFrame,
                              QVector<TimelineClip::CorrectionPolygon>* left,
@@ -501,6 +617,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         }
     }
     reconcileMaskMatteChildrenFromDisk(m_clips);
+    normalizeSpeakerTitleParentBounds(&m_clips);
     normalizeRenderSyncMarkerOwnership();
 
     // A persisted/generated child track is identified by its child clip, not
@@ -536,8 +653,26 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
             continue;
         }
         const QString childId = track.childClipId.trimmed();
-        const bool keep = maskMatteIds.contains(childId) &&
-                          preferredChildTrackById.value(childId, -1) == trackIndex;
+        bool hasOwnedOccupant = false;
+        bool containsOnlyOwnedChildren = true;
+        for (const TimelineClip& clip : std::as_const(m_clips)) {
+            if (clip.trackIndex != trackIndex) {
+                continue;
+            }
+            hasOwnedOccupant = true;
+            if (clip.clipRole != ClipRole::MaskMatte &&
+                clip.clipRole != ClipRole::SpeakerTitle) {
+                containsOnlyOwnedChildren = false;
+                break;
+            }
+        }
+        const bool keepSharedChildLane =
+            hasOwnedOccupant && containsOnlyOwnedChildren;
+        const bool keep =
+            keepSharedChildLane ||
+            (maskMatteIds.contains(childId) &&
+             preferredChildTrackById.value(childId, -1) ==
+                 trackIndex);
         if (keep) {
             continue;
         }
@@ -599,7 +734,8 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         int recoveredTrackIndex = -1;
         for (TimelineClip& clip : m_clips) {
             if (clip.trackIndex != trackIndex || clip.id.trimmed() == designatedChildId ||
-                clip.clipRole == ClipRole::MaskMatte) {
+                clip.clipRole == ClipRole::MaskMatte ||
+                clip.clipRole == ClipRole::SpeakerTitle) {
                 continue;
             }
             if (recoveredTrackIndex < 0) {
@@ -631,7 +767,8 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         const bool dedicatedExistingTrack =
             child.trackIndex >= 0 && child.trackIndex < m_tracks.size() &&
             child.trackIndex != sourceTrack &&
-            clipCountByTrack.value(child.trackIndex) == 1;
+            (m_tracks.at(child.trackIndex).generatedChildTrack ||
+             clipCountByTrack.value(child.trackIndex) == 1);
         if (!dedicatedExistingTrack) {
             TimelineTrack childTrack;
             childTrack.height = 44;
@@ -792,14 +929,46 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
             }
         }
 
-        for (int trackIndex = 0; trackIndex < m_tracks.size();
-             ++trackIndex) {
-            const TimelineTrack& track = m_tracks.at(trackIndex);
-            if (track.generatedChildTrack &&
-                track.parentClipId.trimmed() == group.parentId &&
-                !claimedSpeakerTitleTracks.contains(trackIndex)) {
-                group.childTrackIndex = trackIndex;
-                break;
+        const int currentSharedTrack =
+            m_clips.at(group.childClipIndices.constFirst())
+                .trackIndex;
+        const bool groupAlreadySharesGeneratedTrack =
+            currentSharedTrack >= 0 &&
+            currentSharedTrack < m_tracks.size() &&
+            currentSharedTrack != group.parentTrackIndex &&
+            m_tracks.at(currentSharedTrack)
+                .generatedChildTrack &&
+            std::all_of(
+                group.childClipIndices.cbegin(),
+                group.childClipIndices.cend(),
+                [&](int childIndex) {
+                    return m_clips.at(childIndex).trackIndex ==
+                        currentSharedTrack;
+                }) &&
+            std::all_of(
+                m_clips.cbegin(), m_clips.cend(),
+                [&](const TimelineClip& occupant) {
+                    return occupant.trackIndex !=
+                            currentSharedTrack ||
+                        occupant.clipRole ==
+                            ClipRole::SpeakerTitle;
+                });
+        if (groupAlreadySharesGeneratedTrack) {
+            group.childTrackIndex = currentSharedTrack;
+        } else {
+            for (int trackIndex = 0;
+                 trackIndex < m_tracks.size();
+                 ++trackIndex) {
+                const TimelineTrack& track =
+                    m_tracks.at(trackIndex);
+                if (track.generatedChildTrack &&
+                    track.parentClipId.trimmed() ==
+                        group.parentId &&
+                    !claimedSpeakerTitleTracks.contains(
+                        trackIndex)) {
+                    group.childTrackIndex = trackIndex;
+                    break;
+                }
             }
         }
         if (group.childTrackIndex < 0) {
@@ -1159,6 +1328,7 @@ bool TimelineWidget::updateClipById(const QString& clipId, const std::function<v
             // by Properties and inspector tabs.  Followers must be coherent
             // before callers snapshot the model for preview, save, or export.
             normalizeMaskMatteClips(m_clips);
+            normalizeSpeakerTitleParentBounds(&m_clips);
             update();
             return true;
         }
@@ -1545,16 +1715,16 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                 break;
             }
 
-            // A Mask Matte is an owned layer, so splitting its source must
-            // split the complete aggregate.  Capture child-owned state before
-            // inserting anything into m_clips (which would invalidate clip).
-            QVector<TimelineClip> ownedMaskMattes;
-            if (clip.clipRole != ClipRole::MaskMatte) {
-                for (const TimelineClip& candidate : std::as_const(m_clips)) {
-                    if (candidate.clipRole == ClipRole::MaskMatte &&
-                        candidate.linkedSourceClipId.trimmed() == clip.id.trimmed()) {
-                        ownedMaskMattes.push_back(candidate);
-                    }
+            // Generated layers are owned by their source, so razor the whole
+            // aggregate. Capture them before inserting into m_clips, which
+            // would invalidate clip references.
+            QVector<TimelineClip> ownedChildren;
+            for (const TimelineClip& candidate : std::as_const(m_clips)) {
+                if ((candidate.clipRole == ClipRole::MaskMatte ||
+                     candidate.clipRole == ClipRole::SpeakerTitle) &&
+                    candidate.linkedSourceClipId.trimmed() ==
+                        clip.id.trimmed()) {
+                    ownedChildren.push_back(candidate);
                 }
             }
             const int64_t splitTimelineSample = frameToSamples(frame) + clip.startSubframeSamples;
@@ -1619,30 +1789,98 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                 }
             }
 
-            QVector<TimelineClip> rightMaskMattes;
-            rightMaskMattes.reserve(ownedMaskMattes.size());
-            for (const TimelineClip& originalChild : std::as_const(ownedMaskMattes)) {
+            QVector<TimelineClip> rightChildren;
+            rightChildren.reserve(ownedChildren.size());
+            for (const TimelineClip& originalChild :
+                 std::as_const(ownedChildren)) {
+                if (originalChild.startFrame >= frame) {
+                    for (TimelineClip& candidate : m_clips) {
+                        if (candidate.id == originalChild.id) {
+                            candidate.linkedSourceClipId =
+                                rightClip.id;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if (originalChild.startFrame +
+                        originalChild.durationFrames <=
+                    frame) {
+                    continue;
+                }
+
+                const int64_t childLeftDuration =
+                    frame - originalChild.startFrame;
+                const int64_t childRightDuration =
+                    originalChild.durationFrames -
+                    childLeftDuration;
                 TimelineClip leftChild = originalChild;
                 TimelineClip rightChild = originalChild;
                 rightChild.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
                 rightChild.linkedSourceClipId = rightClip.id;
+                rightChild.startFrame = frame;
+                rightChild.durationFrames = childRightDuration;
+                leftChild.durationFrames = childLeftDuration;
+                leftChild.durationSubframeSamples = 0;
 
+                const bool childIsStill =
+                    originalChild.mediaType ==
+                        ClipMediaType::Image ||
+                    originalChild.mediaType ==
+                        ClipMediaType::Title;
+                if (childIsStill) {
+                    leftChild.sourceInFrame = 0;
+                    leftChild.sourceInSubframeSamples = 0;
+                    leftChild.sourceDurationFrames =
+                        childLeftDuration;
+                    rightChild.sourceInFrame = 0;
+                    rightChild.sourceInSubframeSamples = 0;
+                    rightChild.sourceDurationFrames =
+                        childRightDuration;
+                } else {
+                    const int64_t childSplitTimelineSample =
+                        frameToSamples(frame) +
+                        originalChild.startSubframeSamples;
+                    setClipSourceInSamples(
+                        rightChild,
+                        sourceSampleForClipAtTimelineSample(
+                            originalChild,
+                            childSplitTimelineSample,
+                            m_renderSyncMarkers));
+                }
+
+                splitTransformKeyframes(
+                    originalChild,
+                    childLeftDuration,
+                    &leftChild.transformKeyframes,
+                    &rightChild.transformKeyframes);
                 splitGradingKeyframes(originalChild,
-                                      leftDuration,
+                                      childLeftDuration,
                                       &leftChild.gradingKeyframes,
                                       &rightChild.gradingKeyframes);
                 splitOpacityKeyframes(originalChild,
-                                      leftDuration,
+                                      childLeftDuration,
                                       &leftChild.opacityKeyframes,
                                       &rightChild.opacityKeyframes);
+                splitSimpleKeyframes(
+                    originalChild.titleKeyframes,
+                    childLeftDuration,
+                    &leftChild.titleKeyframes,
+                    &rightChild.titleKeyframes);
                 splitCorrectionPolygons(originalChild.correctionPolygons,
-                                        leftDuration,
+                                        childLeftDuration,
                                         &leftChild.correctionPolygons,
                                         &rightChild.correctionPolygons);
+                normalizeClipTransformKeyframes(leftChild);
+                normalizeClipTransformKeyframes(rightChild);
                 normalizeClipGradingKeyframes(leftChild);
                 normalizeClipGradingKeyframes(rightChild);
                 normalizeClipOpacityKeyframes(leftChild);
                 normalizeClipOpacityKeyframes(rightChild);
+                normalizeClipTitleKeyframes(leftChild);
+                normalizeClipTitleKeyframes(rightChild);
+                normalizeClipTiming(leftChild);
+                normalizeClipTiming(rightChild);
 
                 for (TimelineClip& candidate : m_clips) {
                     if (candidate.id == originalChild.id) {
@@ -1650,11 +1888,11 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                         break;
                     }
                 }
-                rightMaskMattes.push_back(std::move(rightChild));
+                rightChildren.push_back(std::move(rightChild));
             }
 
             m_clips.insert(i + 1, rightClip);
-            for (TimelineClip& rightChild : rightMaskMattes) {
+            for (TimelineClip& rightChild : rightChildren) {
                 m_clips.push_back(std::move(rightChild));
             }
             newSelection.insert(rightClip.id);
@@ -1719,6 +1957,7 @@ void TimelineWidget::sortClips() {
     // this at the common mutation boundary covers moves, trims, rate changes,
     // splits, nudges, pastes, and programmatic edits that finish by sorting.
     normalizeMaskMatteClips(m_clips);
+    normalizeSpeakerTitleParentBounds(&m_clips);
     std::sort(m_clips.begin(), m_clips.end(), [](const TimelineClip& a, const TimelineClip& b) {
         if (a.trackIndex == b.trackIndex) {
             const int64_t aStartSamples = clipTimelineStartSamples(a);

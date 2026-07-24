@@ -812,6 +812,94 @@ void trimKeyframesFromStart(std::vector<Keyframe>* keyframes, std::int64_t trimF
     *keyframes = std::move(shifted);
 }
 
+void normalizeSpeakerTitleParentBounds(
+    jcut::EditorDocumentCore* document)
+{
+    if (!document) {
+        return;
+    }
+    struct ParentRange {
+        int startFrame = 0;
+        int endFrame = 0;
+    };
+    std::unordered_map<std::string, ParentRange> parentRanges;
+    parentRanges.reserve(document->clips.size());
+    for (const jcut::EditorClip& clip : document->clips) {
+        if (jcut::isOwnedGeneratedEditorClip(clip)) {
+            continue;
+        }
+        const std::string clipId =
+            jcut::trimmedEditorClipId(clip.persistentId);
+        if (!clipId.empty()) {
+            parentRanges.emplace(
+                clipId,
+                ParentRange{
+                    clip.startFrame,
+                    clip.startFrame +
+                        std::max(1, clip.durationFrames)});
+        }
+    }
+
+    document->clips.erase(
+        std::remove_if(
+            document->clips.begin(),
+            document->clips.end(),
+            [&](jcut::EditorClip& title) {
+                if (!jcut::isTranscriptGeneratedEditorTitle(
+                        title)) {
+                    return false;
+                }
+                const auto parent = parentRanges.find(
+                    jcut::trimmedEditorClipId(
+                        title.linkedSourceClipId));
+                if (parent == parentRanges.end()) {
+                    return true;
+                }
+                const int titleStart = title.startFrame;
+                const int titleEnd =
+                    title.startFrame +
+                    std::max(1, title.durationFrames);
+                const int boundedStart = std::max(
+                    titleStart, parent->second.startFrame);
+                const int boundedEnd = std::min(
+                    titleEnd, parent->second.endFrame);
+                if (boundedEnd <= boundedStart) {
+                    return true;
+                }
+
+                const int trimmedFrames =
+                    boundedStart - titleStart;
+                if (trimmedFrames > 0) {
+                    trimKeyframesFromStart(
+                        &title.transformKeyframes,
+                        trimmedFrames);
+                    trimKeyframesFromStart(
+                        &title.gradingKeyframes,
+                        trimmedFrames);
+                    trimKeyframesFromStart(
+                        &title.opacityKeyframes,
+                        trimmedFrames);
+                    trimKeyframesFromStart(
+                        &title.titleKeyframes,
+                        trimmedFrames);
+                }
+                title.startFrame = boundedStart;
+                title.durationFrames =
+                    boundedEnd - boundedStart;
+                title.sourceDurationFrames =
+                    title.durationFrames;
+                const std::int64_t lastFrame =
+                    title.durationFrames - 1;
+                for (jcut::EditorTitleKeyframe& keyframe :
+                     title.titleKeyframes) {
+                    keyframe.frame = std::clamp<std::int64_t>(
+                        keyframe.frame, 0, lastFrame);
+                }
+                return false;
+            }),
+        document->clips.end());
+}
+
 void advanceClipSourceIn(jcut::EditorClip* clip, std::int64_t timelineFrames)
 {
     if (!clip || timelineFrames == 0 || clip->mediaKind == "image" ||
@@ -1537,8 +1625,12 @@ bool reconcilesGeneratedTrackTopology(const jcut::EditorCommand& command)
                 std::is_same_v<T, jcut::DeleteSelectedClipsCommand> ||
                 std::is_same_v<T, jcut::SplitClipCommand> ||
                 std::is_same_v<T, jcut::SplitSelectedClipsCommand> ||
+                std::is_same_v<T, jcut::TrimClipStartCommand> ||
+                std::is_same_v<T, jcut::TrimClipEndCommand> ||
                 std::is_same_v<T, jcut::MoveClipCommand> ||
                 std::is_same_v<T, jcut::MoveSelectedClipsCommand> ||
+                std::is_same_v<T, jcut::ResizeClipCommand> ||
+                std::is_same_v<T, jcut::RefreshClipMetadataCommand> ||
                 std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
                 std::is_same_v<T, jcut::ReplaceSpeakerTitleClipsCommand> ||
                 std::is_same_v<T, jcut::SetClipLabelCommand>;
@@ -1555,6 +1647,7 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
     if (!document) {
         return;
     }
+    normalizeSpeakerTitleParentBounds(document);
 
     struct ChildBinding {
         std::size_t childIndex = 0;
@@ -1787,6 +1880,15 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
             removedTrackIds.insert(track.id);
             continue;
         }
+        const bool speakerTitleLane = std::all_of(
+            occupants.begin(), occupants.end(),
+            [&](std::size_t clipIndex) {
+                return isTranscriptGeneratedEditorTitle(
+                    document->clips[clipIndex]);
+            });
+        if (speakerTitleLane) {
+            continue;
+        }
 
         // Preserve the row and all playback state when deletion would discard
         // a malformed/future occupant. Only the stale derived relationship is
@@ -1956,14 +2058,42 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         std::sort(dedicatedTrackIds.begin(),
                   dedicatedTrackIds.end());
 
-        for (const EditorTrack& track : document->tracks) {
-            if (isGeneratedEditorChildTrack(track) &&
-                trimmedEditorClipId(track.parentClipId) ==
-                    group.parentId &&
-                claimedSpeakerTrackIds.find(track.id) ==
-                    claimedSpeakerTrackIds.end()) {
-                group.laneTrackId = track.id;
-                break;
+        const int currentLaneTrackId =
+            document->clips[group.childIndices.front()].trackId;
+        const auto currentLane =
+            currentTrackIndexByTrackId.find(currentLaneTrackId);
+        const auto currentOccupants =
+            currentOccupantsByTrackId.find(currentLaneTrackId);
+        const bool groupAlreadySharesGeneratedLane =
+            currentLane != currentTrackIndexByTrackId.end() &&
+            currentOccupants != currentOccupantsByTrackId.end() &&
+            isGeneratedEditorChildTrack(
+                document->tracks[currentLane->second]) &&
+            std::all_of(
+                group.childIndices.begin(), group.childIndices.end(),
+                [&](std::size_t childIndex) {
+                    return document->clips[childIndex].trackId ==
+                        currentLaneTrackId;
+                }) &&
+            std::all_of(
+                currentOccupants->second.begin(),
+                currentOccupants->second.end(),
+                [&](std::size_t occupantIndex) {
+                    return isTranscriptGeneratedEditorTitle(
+                        document->clips[occupantIndex]);
+                });
+        if (groupAlreadySharesGeneratedLane) {
+            group.laneTrackId = currentLaneTrackId;
+        } else {
+            for (const EditorTrack& track : document->tracks) {
+                if (isGeneratedEditorChildTrack(track) &&
+                    trimmedEditorClipId(track.parentClipId) ==
+                        group.parentId &&
+                    claimedSpeakerTrackIds.find(track.id) ==
+                        claimedSpeakerTrackIds.end()) {
+                    group.laneTrackId = track.id;
+                    break;
+                }
             }
         }
         if (group.laneTrackId == 0) {
@@ -3450,16 +3580,26 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 }
                 std::vector<int> reusableTrackIds;
                 for (const int trackId : previousTitleTrackIds) {
+                    const EditorTrack* previousTrack =
+                        findTrack(&m_document.tracks, trackId);
+                    const bool sharedGeneratedLane =
+                        previousTrack &&
+                        previousTrack->generatedChildTrack;
                     const bool dedicated = std::none_of(
                         m_document.clips.begin(),
                         m_document.clips.end(),
                         [&](const EditorClip& clip) {
-                            return clip.trackId == trackId &&
-                                !(isTranscriptGeneratedEditorTitle(clip) &&
-                                  trimmedEditorClipId(
-                                      clip.linkedSourceClipId) ==
-                                      trimmedEditorClipId(
-                                          sourcePersistentId));
+                            if (clip.trackId != trackId ||
+                                (isTranscriptGeneratedEditorTitle(clip) &&
+                                 trimmedEditorClipId(
+                                     clip.linkedSourceClipId) ==
+                                     trimmedEditorClipId(
+                                         sourcePersistentId))) {
+                                return false;
+                            }
+                            return !sharedGeneratedLane ||
+                                !isTranscriptGeneratedEditorTitle(
+                                    clip);
                         });
                     if (dedicated && trackId != source->trackId) {
                         reusableTrackIds.push_back(trackId);

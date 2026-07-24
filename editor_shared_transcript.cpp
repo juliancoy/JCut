@@ -403,28 +403,15 @@ QHash<QString, TranscriptRuntimeCacheEntry>& transcriptRuntimeCacheByPath() {
     return cache;
 }
 
-bool transcriptWordTimingLooksUsable(const QJsonObject& segmentObj,
-                                     double startSeconds,
+bool transcriptWordTimingLooksUsable(double startSeconds,
                                      double endSeconds)
 {
     constexpr double kMaxSingleWordSeconds = 30.0;
-    constexpr double kSegmentBoundaryToleranceSeconds = 5.0;
     if (!std::isfinite(startSeconds) ||
         !std::isfinite(endSeconds) ||
         startSeconds < 0.0 ||
         endSeconds < startSeconds ||
         (endSeconds - startSeconds) > kMaxSingleWordSeconds) {
-        return false;
-    }
-
-    const double segmentStart = segmentObj.value(QStringLiteral("start")).toDouble(-1.0);
-    const double segmentEnd = segmentObj.value(QStringLiteral("end")).toDouble(-1.0);
-    if (std::isfinite(segmentStart) &&
-        std::isfinite(segmentEnd) &&
-        segmentStart >= 0.0 &&
-        segmentEnd >= segmentStart &&
-        (startSeconds < segmentStart - kSegmentBoundaryToleranceSeconds ||
-         endSeconds > segmentEnd + kSegmentBoundaryToleranceSeconds)) {
         return false;
     }
     return true;
@@ -446,7 +433,7 @@ QVector<TranscriptSection> buildTranscriptSectionsFromDocument(const QJsonDocume
             }
             const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
             const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-            if (!transcriptWordTimingLooksUsable(segmentObj, startSeconds, endSeconds)) {
+            if (!transcriptWordTimingLooksUsable(startSeconds, endSeconds)) {
                 continue;
             }
             const int64_t startFrame =
@@ -538,7 +525,7 @@ QHash<QString, QVector<TranscriptSentenceRun>> buildSpeakerSentenceRunsFromDocum
             const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
             if (wordSpeaker.isEmpty() ||
                 wordText.isEmpty() ||
-                !transcriptWordTimingLooksUsable(segmentObj, startSeconds, endSeconds)) {
+                !transcriptWordTimingLooksUsable(startSeconds, endSeconds)) {
                 flushRun();
                 continue;
             }

@@ -494,6 +494,11 @@ void testNeutralWordMutationPreservesUnknownFieldsAndSavesAtomically()
     expect(word.value("future_word_field", std::string{}) == "keep" &&
                root["future_root_field"].value("preserved", false),
            "unknown root and word fields survive mutation");
+    const json& segment = root["segments"][0];
+    expect(segment.value("start", -1.0) == 0.05 &&
+               segment.value("end", -1.0) == 0.4 &&
+               segment.value("text", std::string{}) == "edited outside",
+           "word mutation synchronizes enclosing segment metadata");
     expect(jcut::saveTranscriptDocumentAtomic(path.string(), root, &error),
            "mutated transcript saves atomically");
     expect(!fs::exists(path.string() + ".jcut.tmp"),

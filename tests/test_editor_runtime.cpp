@@ -4255,6 +4255,99 @@ void TestEditorRuntime::testTranscriptGeneratedTitlesUseImmutableChildTrack()
              1);
     QCOMPARE(snapshot.tracks.size(), std::size_t(2));
     QVERIFY(snapshot.tracks.at(1).generatedChildTrack);
+
+    const auto regeneratedTitle = std::find_if(
+        snapshot.clips.cbegin(), snapshot.clips.cend(),
+        [](const jcut::EditorClip& clip) {
+            return jcut::isTranscriptGeneratedEditorTitle(
+                clip);
+        });
+    QVERIFY(regeneratedTitle != snapshot.clips.cend());
+    const int regeneratedTitleId = regeneratedTitle->id;
+    QCOMPARE(runtime.execute(jcut::EditorCommand{
+                 jcut::SplitClipCommand{
+                     regeneratedTitleId, 160}})
+                 .applied,
+             false);
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::SplitClipCommand{1, 160}})
+                .applied);
+    snapshot = runtime.snapshot();
+    QCOMPARE(snapshot.tracks.size(), std::size_t(2));
+    std::vector<const jcut::EditorClip*> splitSources;
+    std::vector<const jcut::EditorClip*> splitTitles;
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        (jcut::isTranscriptGeneratedEditorTitle(clip)
+             ? splitTitles
+             : splitSources)
+            .push_back(&clip);
+    }
+    QCOMPARE(splitSources.size(), std::size_t(2));
+    QCOMPARE(splitTitles.size(), std::size_t(2));
+    QCOMPARE(splitTitles.at(0)->trackId,
+             splitTitles.at(1)->trackId);
+    QCOMPARE(splitTitles.at(0)->trackId,
+             snapshot.tracks.at(1).id);
+    QCOMPARE(splitTitles.at(0)->durationFrames, 30);
+    QCOMPARE(splitTitles.at(1)->startFrame, 160);
+    QCOMPARE(splitTitles.at(1)->durationFrames, 60);
+    QCOMPARE(
+        splitTitles.at(0)->linkedSourceClipId,
+        std::string("transcript-source"));
+    const auto trailingSource = std::find_if(
+        splitSources.cbegin(), splitSources.cend(),
+        [](const jcut::EditorClip* clip) {
+            return clip->persistentId !=
+                "transcript-source";
+        });
+    QVERIFY(trailingSource != splitSources.cend());
+    QCOMPARE(splitTitles.at(1)->linkedSourceClipId,
+             (*trailingSource)->persistentId);
+
+    jcut::EditorClip regeneratedAfterSplit =
+        generatedTitle(110, "Alice After Cut");
+    regeneratedAfterSplit.durationFrames = 20;
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::ReplaceSpeakerTitleClipsCommand{
+            1, {regeneratedAfterSplit}}})
+                .applied);
+    snapshot = runtime.snapshot();
+    QCOMPARE(snapshot.tracks.size(), std::size_t(2));
+    int splitTitleTrackId = 0;
+    int splitTitleCount = 0;
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        if (!jcut::isTranscriptGeneratedEditorTitle(
+                clip)) {
+            continue;
+        }
+        if (splitTitleCount == 0) {
+            splitTitleTrackId = clip.trackId;
+        }
+        QCOMPARE(clip.trackId, splitTitleTrackId);
+        ++splitTitleCount;
+    }
+    QCOMPARE(splitTitleCount, 2);
+    QCOMPARE(splitTitleTrackId, snapshot.tracks.at(1).id);
+
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::TrimClipEndCommand{1, 120}})
+                .applied);
+    snapshot = runtime.snapshot();
+    const auto boundedTitle = std::find_if(
+        snapshot.clips.cbegin(), snapshot.clips.cend(),
+        [](const jcut::EditorClip& clip) {
+            return jcut::isTranscriptGeneratedEditorTitle(
+                       clip) &&
+                clip.linkedSourceClipId ==
+                    "transcript-source";
+        });
+    QVERIFY(boundedTitle != snapshot.clips.cend());
+    QCOMPARE(boundedTitle->startFrame, 110);
+    QCOMPARE(boundedTitle->durationFrames, 10);
+    QCOMPARE(
+        boundedTitle->startFrame +
+            boundedTitle->durationFrames,
+        120);
 }
 
 void TestEditorRuntime::testGeneratedChildTrackReconciliationAndPoliciesAreUndoable()
@@ -4747,6 +4840,16 @@ void TestEditorRuntime::testMaskMatteCloneAndSplitRelationshipsStayValid()
     QVERIFY(trailingMask != split.clips.end());
     QCOMPARE(QString::fromStdString(trailingMask->linkedSourceClipId),
              QString::fromStdString(trailingSource->persistentId));
+    const auto leadingMask = std::find_if(
+        split.clips.begin(), split.clips.end(),
+        [](const jcut::EditorClip& clip) {
+            return clip.startFrame == 0 &&
+                jcut::canonicalEditorClipRole(
+                    clip.clipRole) == "mask_matte";
+        });
+    QVERIFY(leadingMask != split.clips.end());
+    QCOMPARE(leadingMask->trackId, trailingMask->trackId);
+    QCOMPARE(split.tracks.size(), std::size_t(2));
     QCOMPARE(QString::fromStdString(split.renderSyncMarkers.front().clipId),
              QString::fromStdString(trailingSource->persistentId));
     QCOMPARE(split.renderSyncMarkers.front().frame, std::int64_t(60));

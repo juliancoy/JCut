@@ -222,6 +222,59 @@ void TestMediaDragDrop::transcriptTitlesReconcileToImmutableGeneratedChildTrack(
     QVERIFY(!timeline.deleteClipById(titleA.id));
     QCOMPARE(clipById(timeline, titleA.id)->label,
              QStringLiteral("Speaker: Alice"));
+
+    QVERIFY(timeline.splitClipAtFrame(source.id, 60));
+    QVector<const TimelineClip*> splitParents;
+    QVector<const TimelineClip*> splitTitles;
+    for (const TimelineClip& clip : timeline.clips()) {
+        (clip.clipRole == ClipRole::SpeakerTitle
+             ? splitTitles
+             : splitParents)
+            .push_back(&clip);
+    }
+    QCOMPARE(splitParents.size(), 2);
+    QCOMPARE(splitTitles.size(), 4);
+    QCOMPARE(timeline.tracks().size(), 2);
+    for (const TimelineClip* title : splitTitles) {
+        QCOMPARE(title->trackIndex, 1);
+    }
+    const auto trailingParentIt = std::find_if(
+        splitParents.cbegin(), splitParents.cend(),
+        [&](const TimelineClip* clip) {
+            return clip->id != source.id;
+        });
+    QVERIFY(trailingParentIt != splitParents.cend());
+    const TimelineClip* trailingParent = *trailingParentIt;
+    const QString trailingParentId = trailingParent->id;
+    QCOMPARE(std::count_if(
+                 splitTitles.cbegin(), splitTitles.cend(),
+                 [&](const TimelineClip* title) {
+                     return title->linkedSourceClipId ==
+                         source.id;
+                 }),
+             2);
+    QCOMPARE(std::count_if(
+                 splitTitles.cbegin(), splitTitles.cend(),
+                 [&](const TimelineClip* title) {
+                     return title->linkedSourceClipId ==
+                         trailingParentId;
+                 }),
+             2);
+
+    QVERIFY(timeline.updateClipById(
+        trailingParentId,
+        [](TimelineClip& clip) {
+            clip.durationFrames = 20;
+        }));
+    for (const TimelineClip& clip : timeline.clips()) {
+        if (clip.clipRole == ClipRole::SpeakerTitle &&
+            clip.linkedSourceClipId ==
+                trailingParentId) {
+            QCOMPARE(
+                clip.startFrame + clip.durationFrames,
+                int64_t{80});
+        }
+    }
 }
 
 void TestMediaDragDrop::loadingTimelineRemovesDuplicateGeneratedMaskTracks()
@@ -629,6 +682,10 @@ void TestMediaDragDrop::splittingParentCreatesPairedMaskChildAndPartitionsOwnedS
     QVERIFY(leftChild);
     QVERIFY(rightChild);
     QVERIFY(leftChild->id != rightChild->id);
+    QCOMPARE(leftChild->trackIndex, rightChild->trackIndex);
+    QCOMPARE(timeline.tracks().size(), 2);
+    QVERIFY(timeline.tracks().at(leftChild->trackIndex)
+                .generatedChildTrack);
 
     QCOMPARE(leftParent->startFrame, int64_t{10});
     QCOMPARE(leftParent->durationFrames, int64_t{50});

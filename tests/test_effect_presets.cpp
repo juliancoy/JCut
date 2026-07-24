@@ -2838,6 +2838,35 @@ void TestEffectPresets::generatedSpeakerTitlePlacementReplacesAndAvoidsTrackConf
     QVERIFY(keptUnrelated);
     QCOMPARE(titleATrack, 2);
     QCOMPARE(titleBTrack, 2);
+
+    QVector<TimelineTrack> splitTracks;
+    splitTracks.push_back(mediaTrack);
+    TimelineTrack sharedTitleTrack = titleTrack;
+    sharedTitleTrack.generatedChildTrack = true;
+    sharedTitleTrack.parentClipId = source.id;
+    sharedTitleTrack.childClipId = stale.id;
+    splitTracks.push_back(sharedTitleTrack);
+    QVector<TimelineClip> splitClips{
+        source, stale, unrelated};
+    TimelineClip regeneratedTitle = titleA;
+    regeneratedTitle.id =
+        QStringLiteral("title-after-split");
+    const GeneratedClipPlacementResult splitResult =
+        replaceGeneratedClipsForSource(
+            splitClips,
+            splitTracks,
+            source.id,
+            ClipRole::SpeakerTitle,
+            QVector<TimelineClip>{regeneratedTitle},
+            QStringLiteral(
+                "Transcript • Speaker Introductions"));
+    QVERIFY(splitResult.changed);
+    QCOMPARE(splitTracks.size(), 2);
+    for (const TimelineClip& clip : splitClips) {
+        if (clip.clipRole == ClipRole::SpeakerTitle) {
+            QCOMPARE(clip.trackIndex, 1);
+        }
+    }
 }
 
 void TestEffectPresets::generatedSpeakerTitleResolvesToTranscriptParent()

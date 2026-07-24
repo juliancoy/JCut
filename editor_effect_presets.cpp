@@ -1485,6 +1485,11 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
     }
     QList<int> reusableChildTracks;
     for (const int trackIndex : std::as_const(previousChildTracks)) {
+        const bool sharedGeneratedLane =
+            trackIndex >= 0 &&
+            trackIndex < timelineTracks.size() &&
+            timelineTracks.at(trackIndex)
+                .generatedChildTrack;
         const bool dedicated =
             trackIndex >= 0 &&
             trackIndex < timelineTracks.size() &&
@@ -1492,10 +1497,14 @@ GeneratedClipPlacementResult replaceGeneratedClipsForSource(
             std::none_of(
                 timelineClips.cbegin(), timelineClips.cend(),
                 [&](const TimelineClip& clip) {
-                    return clip.trackIndex == trackIndex &&
-                        !(clip.clipRole == generatedRole &&
-                          clip.linkedSourceClipId.trimmed() ==
-                              sourceId);
+                    if (clip.trackIndex != trackIndex ||
+                        (clip.clipRole == generatedRole &&
+                         clip.linkedSourceClipId.trimmed() ==
+                             sourceId)) {
+                        return false;
+                    }
+                    return !sharedGeneratedLane ||
+                        clip.clipRole != generatedRole;
                 });
         if (dedicated) {
             reusableChildTracks.push_back(trackIndex);

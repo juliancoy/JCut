@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <vector>
 
@@ -45,6 +46,55 @@ void addEditTag(json& word, const char* tag)
     json& edits = word["transcript_edits"];
     if (!edits.is_array()) edits = json::array();
     if (std::find(edits.begin(), edits.end(), tag) == edits.end()) edits.push_back(tag);
+}
+
+std::string trimmedWordText(const json& word)
+{
+    std::string text = word.value("word", word.value("text", std::string{}));
+    const std::size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const std::size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+void synchronizeSegmentMetadata(json* root, int segmentIndex)
+{
+    if (!root || !root->is_object() || segmentIndex < 0) return;
+    auto segmentsIt = root->find("segments");
+    if (segmentsIt == root->end() || !segmentsIt->is_array() ||
+        segmentIndex >= static_cast<int>(segmentsIt->size())) {
+        return;
+    }
+    json& segment = (*segmentsIt)[static_cast<std::size_t>(segmentIndex)];
+    if (!segment.is_object()) return;
+    auto wordsIt = segment.find("words");
+    if (wordsIt == segment.end() || !wordsIt->is_array()) return;
+
+    double segmentStart = std::numeric_limits<double>::infinity();
+    double segmentEnd = -std::numeric_limits<double>::infinity();
+    std::string segmentText;
+    for (const json& word : *wordsIt) {
+        if (!word.is_object()) continue;
+        const std::string text = trimmedWordText(word);
+        if (!text.empty()) {
+            if (!segmentText.empty()) segmentText.push_back(' ');
+            segmentText += text;
+        }
+        const double start = word.value("start", -1.0);
+        const double end = word.value("end", -1.0);
+        if (!std::isfinite(start) || !std::isfinite(end) ||
+            start < 0.0 || end < start) {
+            continue;
+        }
+        segmentStart = std::min(segmentStart, start);
+        segmentEnd = std::max(segmentEnd, end);
+    }
+
+    segment["text"] = std::move(segmentText);
+    if (std::isfinite(segmentStart) && std::isfinite(segmentEnd)) {
+        segment["start"] = segmentStart;
+        segment["end"] = segmentEnd;
+    }
 }
 
 struct LocatedWord {
@@ -153,6 +203,9 @@ bool patchTranscriptWord(json* root,
         addEditTag(*word, "skip");
         changed = true;
     }
+    if (changed && (patch.startSeconds || patch.endSeconds || patch.text)) {
+        synchronizeSegmentMetadata(root, reference.segmentIndex);
+    }
     return changed;
 }
 
@@ -164,6 +217,7 @@ bool deleteTranscriptWord(json* root,
     if (!wordAt(root, reference, errorOut)) return false;
     json& words = (*root)["segments"][static_cast<std::size_t>(reference.segmentIndex)]["words"];
     words.erase(words.begin() + reference.wordIndex);
+    synchronizeSegmentMetadata(root, reference.segmentIndex);
     (*root)["transcript_deleted_edits"] = root->value("transcript_deleted_edits", 0) + 1;
     return true;
 }
@@ -203,6 +257,12 @@ bool deleteTranscriptWords(
                    [static_cast<std::size_t>(
                        reference.segmentIndex)]["words"];
         words.erase(words.begin() + reference.wordIndex);
+    }
+    int priorSegmentIndex = -1;
+    for (const TranscriptWordRef& reference : ordered) {
+        if (reference.segmentIndex == priorSegmentIndex) continue;
+        synchronizeSegmentMetadata(root, reference.segmentIndex);
+        priorSegmentIndex = reference.segmentIndex;
     }
     (*root)["transcript_deleted_edits"] =
         root->value("transcript_deleted_edits", 0) +
@@ -278,6 +338,7 @@ std::optional<TranscriptWordRef> insertTranscriptWord(
     const int physicalIndex = std::clamp(
         anchor.wordIndex + (above ? 0 : 1), 0, static_cast<int>(words.size()));
     words.insert(words.begin() + physicalIndex, std::move(inserted));
+    synchronizeSegmentMetadata(root, anchor.segmentIndex);
     TranscriptWordRef result;
     result.segmentIndex = anchor.segmentIndex;
     result.wordIndex = physicalIndex;
@@ -310,6 +371,7 @@ bool expandTranscriptWordTiming(json* root,
     (*target->word)["start"] = std::max(0.0, std::min(start, end));
     (*target->word)["end"] = std::max((*target->word)["start"].get<double>(), end);
     addEditTag(*target->word, "timing");
+    synchronizeSegmentMetadata(root, reference.segmentIndex);
     return true;
 }
 
@@ -356,6 +418,7 @@ bool restoreTranscriptWord(json* root,
     if (skipped) (*current)["skipped"] = true;
     else current->erase("skipped");
     current->erase("transcript_edits");
+    synchronizeSegmentMetadata(root, reference.segmentIndex);
     return true;
 }
 
