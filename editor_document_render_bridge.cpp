@@ -236,8 +236,8 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         timelineClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
         timelineClip.maskRepeatDeltaY = clip.maskRepeatDeltaY;
-        timelineClip.edgeFillEnabled = clip.edgeFillEnabled;
-        timelineClip.edgeFillProgressive = clip.edgeFillProgressive;
+        timelineClip.edgeFillEffect =
+            backgroundFillEffectFromString(QString::fromStdString(clip.edgeFillEffect));
         timelineClip.edgeFillPixels = clip.edgeFillPixels;
         timelineClip.edgeFillPower = clip.edgeFillPower;
         timelineClip.edgeFillOpacity = clip.edgeFillOpacity;

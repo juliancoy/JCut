@@ -36,6 +36,10 @@ public:
         QCheckBox* invertCheck = nullptr;
         QCheckBox* showOnlyCheck = nullptr;
         QDoubleSpinBox* opacitySpin = nullptr;
+        QCheckBox* foregroundLayerCheck = nullptr;
+        QCheckBox* repeatEnabledCheck = nullptr;
+        QDoubleSpinBox* repeatDeltaXSpin = nullptr;
+        QDoubleSpinBox* repeatDeltaYSpin = nullptr;
         QCheckBox* shadowEnabledCheck = nullptr;
         QDoubleSpinBox* shadowRadiusSpin = nullptr;
         QDoubleSpinBox* shadowOffsetXSpin = nullptr;

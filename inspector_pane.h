@@ -257,16 +257,11 @@ public:
     QCheckBox *gradingCurveSmoothingCheckBox() const { return m_gradingCurveSmoothingCheckBox; }
     
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
-    QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
-    QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
-    QComboBox *maskFeatherFalloffCombo() const { return m_maskFeatherFalloffCombo; }
-    QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
     QCheckBox *maskForegroundLayerCheck() const { return m_maskForegroundLayerCheck; }
     QCheckBox *maskRepeatEnabledCheck() const { return m_maskRepeatEnabledCheck; }
     QDoubleSpinBox *maskRepeatDeltaXSpin() const { return m_maskRepeatDeltaXSpin; }
     QDoubleSpinBox *maskRepeatDeltaYSpin() const { return m_maskRepeatDeltaYSpin; }
-    QCheckBox *edgeFillEnabledCheck() const { return m_edgeFillEnabledCheck; }
-    QCheckBox *edgeFillProgressiveCheck() const { return m_edgeFillProgressiveCheck; }
+    QComboBox *edgeFillEffectCombo() const { return m_edgeFillEffectCombo; }
     QSpinBox *edgeFillPixelsSpin() const { return m_edgeFillPixelsSpin; }
     QDoubleSpinBox *edgeFillPowerSpin() const { return m_edgeFillPowerSpin; }
     QDoubleSpinBox *edgeFillOpacitySpin() const { return m_edgeFillOpacitySpin; }
@@ -598,16 +593,11 @@ private:
     QDoubleSpinBox *m_opacityFadeDurationSpin = nullptr;
 
     QLabel *m_effectsPathLabel = nullptr;
-    QDoubleSpinBox *m_maskFeatherSpin = nullptr;
-    QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
-    QComboBox *m_maskFeatherFalloffCombo = nullptr;
-    QCheckBox *m_maskFeatherEnabledCheck = nullptr;
     QCheckBox *m_maskForegroundLayerCheck = nullptr;
     QCheckBox *m_maskRepeatEnabledCheck = nullptr;
     QDoubleSpinBox *m_maskRepeatDeltaXSpin = nullptr;
     QDoubleSpinBox *m_maskRepeatDeltaYSpin = nullptr;
-    QCheckBox *m_edgeFillEnabledCheck = nullptr;
-    QCheckBox *m_edgeFillProgressiveCheck = nullptr;
+    QComboBox *m_edgeFillEffectCombo = nullptr;
     QSpinBox *m_edgeFillPixelsSpin = nullptr;
     QDoubleSpinBox *m_edgeFillPowerSpin = nullptr;
     QDoubleSpinBox *m_edgeFillOpacitySpin = nullptr;

@@ -276,8 +276,7 @@ struct SetClipMaskEffectCommand {
     std::string tilingPattern = "grid";
     double tilingSpacing = 1.0;
     bool tilingWrap = true;
-    bool edgeFillEnabled = false;
-    bool edgeFillProgressive = false;
+    std::string edgeFillEffect = "none";
     int edgeFillPixels = 1;
     double edgeFillPower = 2.0;
     double edgeFillOpacity = 1.0;

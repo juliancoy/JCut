@@ -4497,8 +4497,8 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->maskRepeatEnabled = typedCommand.repeatEnabled;
                 clip->maskRepeatDeltaX = typedCommand.repeatDeltaX;
                 clip->maskRepeatDeltaY = typedCommand.repeatDeltaY;
-                clip->edgeFillEnabled = typedCommand.edgeFillEnabled;
-                clip->edgeFillProgressive = typedCommand.edgeFillProgressive;
+                clip->edgeFillEffect =
+                    typedCommand.edgeFillEffect.empty() ? "none" : typedCommand.edgeFillEffect;
                 clip->edgeFillPixels = std::clamp(typedCommand.edgeFillPixels, 1, 512);
                 clip->edgeFillPower = std::clamp(typedCommand.edgeFillPower, 0.25, 8.0);
                 clip->edgeFillOpacity = std::clamp(typedCommand.edgeFillOpacity, 0.0, 1.0);

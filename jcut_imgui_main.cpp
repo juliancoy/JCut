@@ -10963,8 +10963,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 (effectMediaKind == "image" || effectMediaKind == "video");
             ImGui::BeginDisabled(!imagePresetCapable);
             bool effectChanged = false;
-            bool edgeFillEnabled = currentClip && currentClip->edgeFillEnabled;
-            bool edgeFillProgressive = currentClip && currentClip->edgeFillProgressive;
+            std::string edgeFillEffect =
+                currentClip ? currentClip->edgeFillEffect : "none";
             int edgeFillPixels = currentClip ? currentClip->edgeFillPixels : 1;
             float edgeFillPower = currentClip
                 ? static_cast<float>(currentClip->edgeFillPower) : 2.0f;
@@ -10976,12 +10976,44 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 ? static_cast<float>(currentClip->edgeFillSaturation) : 1.0f;
             if (ImGui::CollapsingHeader(
                     "Edge Fill", ImGuiTreeNodeFlags_DefaultOpen)) {
-                effectChanged |= ImGui::Checkbox(
-                    "Enable Edge Stretch", &edgeFillEnabled);
+                static constexpr std::array<std::pair<std::string_view, std::string_view>, 7>
+                    edgeFillOptions{{
+                        {"none", "None"},
+                        {"edge_stretch", "Edge Stretch"},
+                        {"progressive_edge_stretch", "Progressive Edge Stretch"},
+                        {"progressive_bidirectional_edge_stretch",
+                         "Progressive Bidirectional Edge Stretch"},
+                        {"tile", "Tile"},
+                        {"mirror", "Mirror"},
+                        {"blur_cover", "Blur Cover"},
+                    }};
+                std::string_view edgeFillLabel = "None";
+                for (const auto& [id, label] : edgeFillOptions) {
+                    if (edgeFillEffect == id) {
+                        edgeFillLabel = label;
+                        break;
+                    }
+                }
+                if (ImGui::BeginCombo("Effect", edgeFillLabel.data())) {
+                    for (const auto& [id, label] : edgeFillOptions) {
+                        const bool selected = edgeFillEffect == id;
+                        if (ImGui::Selectable(label.data(), selected)) {
+                            edgeFillEffect = id;
+                            effectChanged = true;
+                        }
+                        if (selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                const bool edgeFillEnabled = edgeFillEffect != "none";
+                const bool progressiveEdgeFill =
+                    edgeFillEffect == "progressive_edge_stretch" ||
+                    edgeFillEffect == "progressive_bidirectional_edge_stretch";
                 ImGui::BeginDisabled(!edgeFillEnabled);
-                effectChanged |= ImGui::Checkbox(
-                    "Progressive Stretch", &edgeFillProgressive);
-                ImGui::BeginDisabled(!edgeFillProgressive);
+                ImGui::BeginDisabled(
+                    !progressiveEdgeFill);
                 effectChanged |= ImGui::SliderInt(
                     "Edge Width", &edgeFillPixels, 1, 512);
                 effectChanged |= ImGui::SliderFloat(
@@ -11175,8 +11207,7 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 command.repeatEnabled = currentClip->maskRepeatEnabled;
                 command.repeatDeltaX = currentClip->maskRepeatDeltaX;
                 command.repeatDeltaY = currentClip->maskRepeatDeltaY;
-                command.edgeFillEnabled = edgeFillEnabled;
-                command.edgeFillProgressive = edgeFillProgressive;
+                command.edgeFillEffect = edgeFillEffect;
                 command.edgeFillPixels = edgeFillPixels;
                 command.edgeFillPower = edgeFillPower;
                 command.edgeFillOpacity = edgeFillOpacity;

@@ -84,6 +84,37 @@ vec2 safeClampRange(vec2 value, vec2 low, vec2 high) {
     return clamp(value, safeLow, safeHigh);
 }
 
+vec2 rotatedDirection(vec2 direction, float angle) {
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    return vec2(cosine * direction.x - sine * direction.y,
+                sine * direction.x + cosine * direction.y);
+}
+
+vec2 superellipseDirection(vec2 polarDirection) {
+    vec2 squared = polarDirection * polarDirection;
+    float norm = sqrt(sqrt(
+        squared.x * squared.x +
+        squared.y * squared.y));
+    return polarDirection / max(0.000001, norm);
+}
+
+vec4 sampleBidirectionalRing(vec2 polarDirection,
+                             float sampleRadius,
+                             vec2 sampleMin,
+                             vec2 sampleMax,
+                             vec2 sampleSpan,
+                             vec2 sampleHalfTexel) {
+    vec2 sourceUv =
+        vec2(0.5) + superellipseDirection(polarDirection) * sampleRadius * 0.5;
+    vec2 mappedUv = sampleMin + sourceUv * sampleSpan;
+    return texture(
+        u_texture,
+        safeClampRange(mappedUv,
+                       sampleMin + sampleHalfTexel,
+                       sampleMax - sampleHalfTexel));
+}
+
 vec4 blurredFillSample(vec2 uv) {
     vec2 texelSize = 1.0 / vec2(textureSize(u_texture, 0));
     float radius = abs(pc.u_midtones.a);
@@ -239,6 +270,131 @@ vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
                    safeClampRange(mappedUv, sampleMin + sampleHalfTexel, sampleMax - sampleHalfTexel));
 }
 
+vec4 progressiveBidirectionalEdgeStretchSample(vec2 uv) {
+    vec2 center = pc.u_shadows.xy;
+    float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001
+        ? 0.0001
+        : pc.u_shadows.w;
+    vec2 texSize = vec2(textureSize(u_texture, 0));
+    vec2 halfTexel = 0.5 / max(vec2(1.0), texSize);
+    vec2 rawValidMin = pc.u_highlights.xy;
+    vec2 rawValidMax = vec2(pc.u_highlights.z, pc.u_midtones.w);
+    vec2 sampleMin = clamp(min(rawValidMin, rawValidMax), vec2(0.0), vec2(1.0));
+    vec2 sampleMax = clamp(max(rawValidMin, rawValidMax), sampleMin, vec2(1.0));
+    vec2 sampleSpan = max(sampleMax - sampleMin,
+                          vec2(1.0) / max(vec2(1.0), texSize));
+    vec2 validTexturePixels = max(vec2(1.0), texSize * sampleSpan);
+    vec2 frameOutputSize = frame.outputSizeAndInverse.xy;
+    float outputAspect = frameOutputSize.x / max(1.0, frameOutputSize.y);
+    vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
+    float angle = pc.u_midtones.y;
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
+                          -sine * delta.x + cosine * delta.y);
+
+    // Use a fourth-order superellipse: it follows a rectangular frame closely
+    // while rounding the corner transitions that cause radial wedge seams.
+    // The clip's outer source band and the surrounding canvas share this one
+    // continuous radial map.
+    vec2 normalizedSource = 2.0 *
+        vec2(unrotated.x * inverseWidth,
+             unrotated.y * signedInverseHeight);
+    vec2 squaredSource = normalizedSource * normalizedSource;
+    float radius = sqrt(sqrt(
+        squaredSource.x * squaredSource.x +
+        squaredSource.y * squaredSource.y));
+    if (radius <= 0.000001) {
+        return vec4(0.0);
+    }
+    vec2 polarDirection = normalize(normalizedSource);
+    vec2 direction = superellipseDirection(polarDirection);
+    float boundaryPixelRadius = length(direction * validTexturePixels * 0.5);
+    float edgePixels = clamp(pc.u_midtones.x, 1.0, 512.0);
+    float coreRadius = clamp(
+        1.0 - edgePixels / max(1.0, boundaryPixelRadius),
+        0.05,
+        0.995);
+
+    float rayX = delta.x;
+    float rayY = delta.y;
+    float canvasScaleX = rayX > 0.0
+        ? ((1.0 - center.x) * outputAspect) / max(0.0001, rayX)
+        : (-center.x * outputAspect) / min(-0.0001, rayX);
+    float canvasScaleY = rayY > 0.0
+        ? (1.0 - center.y) / max(0.0001, rayY)
+        : (-center.y) / min(-0.0001, rayY);
+    float canvasScale = min(canvasScaleX, canvasScaleY);
+    float canvasRadius = max(radius, radius * canvasScale);
+    float stretchT = clamp(
+        (radius - coreRadius) / max(0.0001, canvasRadius - coreRadius),
+        0.0,
+        1.0);
+    float sampleRadius = mix(
+        coreRadius,
+        1.0,
+        pow(stretchT, max(0.25, pc.u_midtones.z)));
+    vec2 sampleHalfTexel = min(halfTexel, sampleSpan * 0.5);
+    vec4 result = sampleBidirectionalRing(
+        polarDirection,
+        sampleRadius,
+        sampleMin,
+        sampleMax,
+        sampleSpan,
+        sampleHalfTexel);
+    float clipWidthPixels = frameOutputSize.y / inverseWidth;
+    float clipHeightPixels = frameOutputSize.y / abs(signedInverseHeight);
+    float minClipPixels = min(clipWidthPixels, clipHeightPixels);
+    if (minClipPixels < 128.0) {
+        float angularStep = clamp(2.0 / max(1.0, minClipPixels), 0.0, 0.18);
+        result *= 0.4;
+        result += sampleBidirectionalRing(
+            rotatedDirection(polarDirection, angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel) * 0.2;
+        result += sampleBidirectionalRing(
+            rotatedDirection(polarDirection, -angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel) * 0.2;
+        result += sampleBidirectionalRing(
+            rotatedDirection(polarDirection, 2.0 * angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel) * 0.1;
+        result += sampleBidirectionalRing(
+            rotatedDirection(polarDirection, -2.0 * angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel) * 0.1;
+    }
+
+    // Feather the overlay in from the protected core.  At the clip boundary
+    // it is fully opaque, so the same warped sample continues outside without
+    // exposing a hard foreground/background join.
+    float featherWidth = max(0.002, (1.0 - coreRadius) * 0.25);
+    float overlayAlpha = smoothstep(
+        coreRadius,
+        min(1.0, coreRadius + featherWidth),
+        radius);
+    if (result.a <= 0.0001 &&
+        max(max(result.r, result.g), result.b) > 0.0001) {
+        result.a = 1.0;
+    }
+    result.a *= overlayAlpha;
+    return result;
+}
+
 float mirroredCoord(float t) {
     float wrapped = mod(abs(t), 2.0);
     return wrapped <= 1.0 ? wrapped : 2.0 - wrapped;
@@ -265,23 +421,56 @@ vec4 mirrorFillSample(vec2 uv) {
     return texture(u_texture, textureInteriorClamp(validUv));
 }
 
+vec4 tileFillSample(vec2 uv) {
+    vec2 center = pc.u_shadows.xy;
+    float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
+    float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001 ? 0.0001 : pc.u_shadows.w;
+    vec2 frameOutputSize = frame.outputSizeAndInverse.xy;
+    float outputAspect = frameOutputSize.x / max(1.0, frameOutputSize.y);
+    vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
+    float angle = pc.u_midtones.y;
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    vec2 unrotated = vec2(cosine * delta.x + sine * delta.y,
+                          -sine * delta.x + cosine * delta.y);
+    vec2 sourceUv = vec2(unrotated.x * inverseWidth + 0.5,
+                         unrotated.y * signedInverseHeight + 0.5);
+    vec2 validMin = clamp(pc.u_highlights.xy, vec2(0.0), vec2(1.0));
+    vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
+    vec2 validUv = validMin + fract(sourceUv) *
+                                      max(validMax - validMin, vec2(0.0001));
+    return texture(u_texture, textureInteriorClamp(validUv));
+}
+
 void main() {
-    bool finalCompositeProgressiveEdgeStretchFill = pc.u_highlights.a < -4.5;
-    bool mirrorFill = pc.u_highlights.a < -3.5 && !finalCompositeProgressiveEdgeStretchFill;
+    bool tileFill = pc.u_highlights.a < -6.5;
+    bool progressiveBidirectionalEdgeStretchFill =
+        pc.u_highlights.a < -5.5 && !tileFill;
+    bool finalCompositeProgressiveEdgeStretchFill =
+        pc.u_highlights.a < -4.5 && !progressiveBidirectionalEdgeStretchFill;
+    bool mirrorFill = pc.u_highlights.a < -3.5 &&
+        !finalCompositeProgressiveEdgeStretchFill &&
+        !progressiveBidirectionalEdgeStretchFill &&
+        !tileFill;
     bool progressiveEdgeStretchFill = pc.u_highlights.a < -2.5 &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill;
+        !finalCompositeProgressiveEdgeStretchFill &&
+        !tileFill;
     bool edgeStretchFill = pc.u_highlights.a < -1.5 &&
         !progressiveEdgeStretchFill &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill;
+        !finalCompositeProgressiveEdgeStretchFill &&
+        !tileFill;
     bool blurredFill = pc.u_highlights.a < -0.5 &&
         !edgeStretchFill &&
         !progressiveEdgeStretchFill &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill;
+        !finalCompositeProgressiveEdgeStretchFill &&
+        !tileFill;
     bool backgroundFill = mirrorFill ||
         progressiveEdgeStretchFill ||
+        progressiveBidirectionalEdgeStretchFill ||
+        tileFill ||
         edgeStretchFill ||
         blurredFill ||
         finalCompositeProgressiveEdgeStretchFill;
@@ -362,7 +551,11 @@ void main() {
         float hash = fract(sin(dot(cell, vec2(41.7, 289.1))) * 43758.5);
         effectUv = v_texCoord + normalize(local + vec2(0.001)) * (hash - 0.5) * 0.035;
     }
-    vec4 c = mirrorFill
+    vec4 c = tileFill
+        ? tileFillSample(v_texCoord)
+        : progressiveBidirectionalEdgeStretchFill
+        ? progressiveBidirectionalEdgeStretchSample(v_texCoord)
+        : mirrorFill
         ? mirrorFillSample(v_texCoord)
         : (progressiveEdgeStretchFill || edgeStretchFill || finalCompositeProgressiveEdgeStretchFill
             ? edgeStretchFillSample(v_texCoord, finalCompositeProgressiveEdgeStretchFill)

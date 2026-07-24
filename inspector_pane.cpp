@@ -601,97 +601,36 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectsPathLabel->setWordWrap(true);
     layout->addWidget(m_effectsPathLabel);
 
-    // Mask feathering section
-    auto *featherGroup = new QVBoxLayout;
-    
-    m_maskFeatherEnabledCheck = new QCheckBox(QStringLiteral("Enable Mask Feathering"), page);
-    featherGroup->addWidget(m_maskFeatherEnabledCheck);
-    
-    auto *featherRow = new QHBoxLayout;
-    featherRow->addWidget(new QLabel(QStringLiteral("Radius:"), page));
-    m_maskFeatherSpin = new QDoubleSpinBox(page);
-    m_maskFeatherSpin->setRange(0.0, 100.0);
-    m_maskFeatherSpin->setDecimals(1);
-    m_maskFeatherSpin->setSingleStep(0.5);
-    m_maskFeatherSpin->setValue(0.0);
-    m_maskFeatherSpin->setSuffix(QStringLiteral(" px"));
-    m_maskFeatherSpin->setToolTip(QStringLiteral("Amount of feathering to apply to the alpha channel"));
-    featherRow->addWidget(m_maskFeatherSpin);
-    featherRow->addStretch();
-    featherGroup->addLayout(featherRow);
-
-    auto *falloffRow = new QHBoxLayout;
-    falloffRow->addWidget(new QLabel(QStringLiteral("Falloff:"), page));
-    m_maskFeatherFalloffCombo = new QComboBox(page);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Power"), 0);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Linear"), 1);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Smoothstep"), 2);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Smootherstep"), 3);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Cosine"), 4);
-    m_maskFeatherFalloffCombo->addItem(QStringLiteral("Gaussian"), 5);
-    m_maskFeatherFalloffCombo->setToolTip(
-        QStringLiteral("Choose the edge-opacity falloff. Smoothstep and Smootherstep are motion-friendly; Cosine is natural; Gaussian is soft and photographic."));
-    falloffRow->addWidget(m_maskFeatherFalloffCombo);
-    falloffRow->addStretch();
-    featherGroup->addLayout(falloffRow);
-    
-    auto *gammaRow = new QHBoxLayout;
-    gammaRow->addWidget(new QLabel(QStringLiteral("Power:"), page));
-    m_maskFeatherGammaSpin = new QDoubleSpinBox(page);
-    m_maskFeatherGammaSpin->setRange(0.1, 5.0);
-    m_maskFeatherGammaSpin->setDecimals(2);
-    m_maskFeatherGammaSpin->setSingleStep(0.1);
-    m_maskFeatherGammaSpin->setValue(2.0);
-    m_maskFeatherGammaSpin->setToolTip(QStringLiteral("Power-law exponent. Available when Falloff is Power; 1.0 is linear, higher values retain a more opaque edge."));
-    gammaRow->addWidget(m_maskFeatherGammaSpin);
-    gammaRow->addStretch();
-    featherGroup->addLayout(gammaRow);
-    
-    layout->addLayout(featherGroup);
-    
-    auto maskLayerSection = createDisclosureSection(page, QStringLiteral("Person Layer"), true);
-    m_maskForegroundLayerCheck = new QCheckBox(QStringLiteral("Mask is foreground layer"), page);
-    m_maskForegroundLayerCheck->setToolTip(QStringLiteral("Draw masked person pixels as a later Vulkan pass."));
-    maskLayerSection.body->addWidget(m_maskForegroundLayerCheck);
-    m_maskRepeatEnabledCheck = new QCheckBox(QStringLiteral("Repeat masked source"), page);
-    m_maskRepeatEnabledCheck->setToolTip(
-        QStringLiteral("Repeat the source image through the processed mask channel."));
-    maskLayerSection.body->addWidget(m_maskRepeatEnabledCheck);
-    auto *maskRepeatForm = new QFormLayout;
-    maskRepeatForm->setContentsMargins(0, 0, 0, 0);
-    maskRepeatForm->setSpacing(6);
-    auto makeRepeatDeltaSpin = [page]() {
-        auto *spin = new QDoubleSpinBox(page);
-        spin->setRange(-100000.0, 100000.0);
-        spin->setDecimals(2);
-        spin->setSingleStep(10.0);
-        spin->setSuffix(QStringLiteral(" px"));
-        spin->setKeyboardTracking(false);
-        return spin;
-    };
-    m_maskRepeatDeltaXSpin = makeRepeatDeltaSpin();
-    m_maskRepeatDeltaXSpin->setValue(160.0);
-    m_maskRepeatDeltaXSpin->setToolTip(QStringLiteral("Screen-space X offset between masked repeats."));
-    m_maskRepeatDeltaYSpin = makeRepeatDeltaSpin();
-    m_maskRepeatDeltaYSpin->setValue(0.0);
-    m_maskRepeatDeltaYSpin->setToolTip(QStringLiteral("Screen-space Y offset between masked repeats."));
-    maskRepeatForm->addRow(QStringLiteral("Repeat X"), m_maskRepeatDeltaXSpin);
-    maskRepeatForm->addRow(QStringLiteral("Repeat Y"), m_maskRepeatDeltaYSpin);
-    maskLayerSection.body->addLayout(maskRepeatForm);
-    layout->addWidget(maskLayerSection.container);
-
     auto edgeSection = createDisclosureSection(page, QStringLiteral("Edge Fill"), true);
-    m_edgeFillEnabledCheck = new QCheckBox(QStringLiteral("Enable Edge Stretch for this clip"), page);
-    m_edgeFillEnabledCheck->setToolTip(
-        QStringLiteral("Fill the output outside this clip using pixels from its edges."));
-    edgeSection.body->addWidget(m_edgeFillEnabledCheck);
-    m_edgeFillProgressiveCheck = new QCheckBox(QStringLiteral("Progressive stretch"), page);
-    m_edgeFillProgressiveCheck->setToolTip(
-        QStringLiteral("Scan inward through an edge band toward the canvas boundary."));
-    edgeSection.body->addWidget(m_edgeFillProgressiveCheck);
     auto* edgeForm = new QFormLayout;
     edgeForm->setContentsMargins(0, 0, 0, 0);
     edgeForm->setSpacing(6);
+    m_edgeFillEffectCombo = new QComboBox(page);
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("None"),
+        backgroundFillEffectToString(BackgroundFillEffect::None));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Edge Stretch"),
+        backgroundFillEffectToString(BackgroundFillEffect::EdgeStretch));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Progressive Edge Stretch"),
+        backgroundFillEffectToString(BackgroundFillEffect::ProgressiveEdgeStretch));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Progressive Bidirectional Edge Stretch"),
+        backgroundFillEffectToString(
+            BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Tile"),
+        backgroundFillEffectToString(BackgroundFillEffect::Tile));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Mirror"),
+        backgroundFillEffectToString(BackgroundFillEffect::Mirror));
+    m_edgeFillEffectCombo->addItem(
+        QStringLiteral("Blur Cover"),
+        backgroundFillEffectToString(BackgroundFillEffect::BlurCover));
+    m_edgeFillEffectCombo->setToolTip(
+        QStringLiteral("Choose how this clip fills the surrounding canvas."));
+    edgeForm->addRow(QStringLiteral("Effect"), m_edgeFillEffectCombo);
     m_edgeFillPixelsSpin = new QSpinBox(page);
     m_edgeFillPixelsSpin->setRange(1, 512);
     m_edgeFillPixelsSpin->setValue(1);
@@ -1024,6 +963,37 @@ QWidget *InspectorPane::buildMasksTab()
     shapeForm->addRow(QStringLiteral("View"), m_maskShowOnlyCheck);
     shapeForm->addRow(QStringLiteral("Opacity"), m_maskOpacitySpin);
     layout->addLayout(shapeForm);
+
+    auto *compositingForm = new QFormLayout;
+    m_maskForegroundLayerCheck =
+        new QCheckBox(QStringLiteral("Draw as foreground layer"), page);
+    m_maskForegroundLayerCheck->setToolTip(
+        QStringLiteral("Draw the masked subject again as a later Vulkan pass."));
+    m_maskRepeatEnabledCheck =
+        new QCheckBox(QStringLiteral("Repeat masked source"), page);
+    m_maskRepeatEnabledCheck->setToolTip(
+        QStringLiteral("Repeat source pixels through this processed mask."));
+    auto makeRepeatDeltaSpin = [page]() {
+        auto *spin = new QDoubleSpinBox(page);
+        spin->setRange(-100000.0, 100000.0);
+        spin->setDecimals(2);
+        spin->setSingleStep(10.0);
+        spin->setSuffix(QStringLiteral(" px"));
+        spin->setKeyboardTracking(false);
+        return spin;
+    };
+    m_maskRepeatDeltaXSpin = makeRepeatDeltaSpin();
+    m_maskRepeatDeltaXSpin->setValue(160.0);
+    m_maskRepeatDeltaXSpin->setToolTip(
+        QStringLiteral("Screen-space X offset between masked repeats."));
+    m_maskRepeatDeltaYSpin = makeRepeatDeltaSpin();
+    m_maskRepeatDeltaYSpin->setToolTip(
+        QStringLiteral("Screen-space Y offset between masked repeats."));
+    compositingForm->addRow(QStringLiteral("Foreground"), m_maskForegroundLayerCheck);
+    compositingForm->addRow(QStringLiteral("Repeat"), m_maskRepeatEnabledCheck);
+    compositingForm->addRow(QStringLiteral("Repeat X"), m_maskRepeatDeltaXSpin);
+    compositingForm->addRow(QStringLiteral("Repeat Y"), m_maskRepeatDeltaYSpin);
+    layout->addLayout(compositingForm);
 
     auto *shadowForm = new QFormLayout;
     m_maskShadowEnabledCheck = new QCheckBox(QStringLiteral("Drop shadow"), page);

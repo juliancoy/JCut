@@ -122,6 +122,18 @@ void TestEffectPresets::cleanup()
 
 void TestEffectPresets::clipSerializationPersistsEffectPresetState()
 {
+    for (const BackgroundFillEffect effect : {
+             BackgroundFillEffect::None,
+             BackgroundFillEffect::EdgeStretch,
+             BackgroundFillEffect::ProgressiveEdgeStretch,
+             BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch,
+             BackgroundFillEffect::Tile,
+             BackgroundFillEffect::Mirror,
+             BackgroundFillEffect::BlurCover}) {
+        QCOMPARE(
+            backgroundFillEffectFromString(backgroundFillEffectToString(effect)),
+            effect);
+    }
     TimelineClip clip;
     clip.id = QStringLiteral("logo");
     clip.filePath = QStringLiteral("logo.png");
@@ -133,8 +145,8 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskRepeatEnabled = true;
     clip.maskRepeatDeltaX = 120.0;
     clip.maskRepeatDeltaY = -15.0;
-    clip.edgeFillEnabled = true;
-    clip.edgeFillProgressive = true;
+    clip.edgeFillEffect =
+        BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
     clip.edgeFillPixels = 24;
     clip.edgeFillPower = 3.25;
     clip.edgeFillOpacity = 0.72;
@@ -168,8 +180,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskFeatherFalloff")).toInt(), 3);
-    QCOMPARE(json.value(QStringLiteral("edgeFillEnabled")).toBool(), true);
-    QCOMPARE(json.value(QStringLiteral("edgeFillProgressive")).toBool(), true);
+    QCOMPARE(
+        json.value(QStringLiteral("edgeFillEffect")).toString(),
+        QStringLiteral("progressive_bidirectional_edge_stretch"));
     QCOMPARE(json.value(QStringLiteral("edgeFillPixels")).toInt(), 24);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaX")).toDouble() - 120.0) < 0.000001);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaY")).toDouble() + 15.0) < 0.000001);
@@ -190,8 +203,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(loaded.maskFeatherGamma - 2.4) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);
-    QCOMPARE(loaded.edgeFillEnabled, true);
-    QCOMPARE(loaded.edgeFillProgressive, true);
+    QCOMPARE(
+        loaded.edgeFillEffect,
+        BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch);
     QCOMPARE(loaded.edgeFillPixels, 24);
     QVERIFY(std::abs(loaded.edgeFillPower - 3.25) < 0.000001);
     QVERIFY(std::abs(loaded.edgeFillOpacity - 0.72) < 0.000001);

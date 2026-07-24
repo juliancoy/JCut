@@ -222,8 +222,7 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.maskRepeatEnabled = clip.maskRepeatEnabled;
         coreClip.maskRepeatDeltaX = clip.maskRepeatDeltaX;
         coreClip.maskRepeatDeltaY = clip.maskRepeatDeltaY;
-        coreClip.edgeFillEnabled = clip.edgeFillEnabled;
-        coreClip.edgeFillProgressive = clip.edgeFillProgressive;
+        coreClip.edgeFillEffect = backgroundFillEffectToString(clip.edgeFillEffect).toStdString();
         coreClip.edgeFillPixels = clip.edgeFillPixels;
         coreClip.edgeFillPower = clip.edgeFillPower;
         coreClip.edgeFillOpacity = clip.edgeFillOpacity;

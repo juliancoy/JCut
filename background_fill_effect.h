@@ -6,6 +6,8 @@ enum class BackgroundFillEffect {
     None,
     EdgeStretch,
     ProgressiveEdgeStretch,
+    ProgressiveBidirectionalEdgeStretch,
+    Tile,
     Mirror,
     BlurCover,
 };
@@ -21,6 +23,10 @@ inline QString backgroundFillEffectToString(BackgroundFillEffect effect)
         return QStringLiteral("edge_stretch");
     case BackgroundFillEffect::ProgressiveEdgeStretch:
         return QStringLiteral("progressive_edge_stretch");
+    case BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch:
+        return QStringLiteral("progressive_bidirectional_edge_stretch");
+    case BackgroundFillEffect::Tile:
+        return QStringLiteral("tile");
     case BackgroundFillEffect::Mirror:
         return QStringLiteral("mirror");
     case BackgroundFillEffect::BlurCover:
@@ -42,10 +48,24 @@ inline BackgroundFillEffect backgroundFillEffectFromString(const QString& value)
         normalized == QStringLiteral("blurred_cover")) {
         return BackgroundFillEffect::BlurCover;
     }
+    if (normalized == QStringLiteral("edge_stretch") ||
+        normalized == QStringLiteral("stretch")) {
+        return BackgroundFillEffect::EdgeStretch;
+    }
     if (normalized == QStringLiteral("progressive_edge_stretch") ||
         normalized == QStringLiteral("progressive_stretch") ||
         normalized == QStringLiteral("edge_stretch_progressive")) {
-        return BackgroundFillEffect::EdgeStretch;
+        return BackgroundFillEffect::ProgressiveEdgeStretch;
+    }
+    if (normalized == QStringLiteral("progressive_bidirectional_edge_stretch") ||
+        normalized == QStringLiteral("progressive_bidirectional_stretch") ||
+        normalized == QStringLiteral("bidirectional_edge_stretch")) {
+        return BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
+    }
+    if (normalized == QStringLiteral("tile") ||
+        normalized == QStringLiteral("tiled") ||
+        normalized == QStringLiteral("repeat")) {
+        return BackgroundFillEffect::Tile;
     }
     if (normalized == QStringLiteral("mirror") ||
         normalized == QStringLiteral("mirror_cover") ||

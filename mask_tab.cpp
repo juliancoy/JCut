@@ -133,6 +133,8 @@ void MaskTab::wire()
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
+                             m_widgets.foregroundLayerCheck,
+                             m_widgets.repeatEnabledCheck,
                              m_widgets.shadowEnabledCheck}) {
         if (check) {
             connect(check, &QCheckBox::toggled, this, [this](bool) { apply(true); });
@@ -155,6 +157,8 @@ void MaskTab::wire()
     connectApply(m_widgets.erodeSpin);
     connectApply(m_widgets.blurSpin);
     connectApply(m_widgets.opacitySpin);
+    connectApply(m_widgets.repeatDeltaXSpin);
+    connectApply(m_widgets.repeatDeltaYSpin);
     connectApply(m_widgets.shadowRadiusSpin);
     connectApply(m_widgets.shadowOffsetXSpin);
     connectApply(m_widgets.shadowOffsetYSpin);
@@ -325,6 +329,10 @@ void MaskTab::refresh()
             m_widgets.showOnlyCheck->setEnabled(showOnlyAvailable);
         }
         setSpin(m_widgets.opacitySpin, clip->maskOpacity);
+        setCheck(m_widgets.foregroundLayerCheck, clip->maskForegroundLayerEnabled);
+        setCheck(m_widgets.repeatEnabledCheck, clip->maskRepeatEnabled);
+        setSpin(m_widgets.repeatDeltaXSpin, clip->maskRepeatDeltaX);
+        setSpin(m_widgets.repeatDeltaYSpin, clip->maskRepeatDeltaY);
         setCheck(m_widgets.shadowEnabledCheck, clip->maskDropShadowEnabled);
         setSpin(m_widgets.shadowRadiusSpin, clip->maskDropShadowRadius);
         setSpin(m_widgets.shadowOffsetXSpin, clip->maskDropShadowOffsetX);
@@ -456,6 +464,19 @@ void MaskTab::apply(bool pushHistory, bool zLevelEdited)
             m_widgets.showOnlyCheck &&
             m_widgets.showOnlyCheck->isChecked();
         clip.maskOpacity = m_widgets.opacitySpin ? m_widgets.opacitySpin->value() : 1.0;
+        clip.maskForegroundLayerEnabled =
+            m_widgets.foregroundLayerCheck &&
+            m_widgets.foregroundLayerCheck->isChecked();
+        clip.maskRepeatEnabled =
+            m_widgets.repeatEnabledCheck &&
+            m_widgets.repeatEnabledCheck->isChecked();
+        clip.maskRepeatDeltaX =
+            m_widgets.repeatDeltaXSpin ? m_widgets.repeatDeltaXSpin->value() : 160.0;
+        clip.maskRepeatDeltaY =
+            m_widgets.repeatDeltaYSpin ? m_widgets.repeatDeltaYSpin->value() : 0.0;
+        if (clip.maskForegroundLayerEnabled) {
+            clip.maskShowOnly = false;
+        }
         clip.maskDropShadowEnabled = m_widgets.shadowEnabledCheck && m_widgets.shadowEnabledCheck->isChecked();
         clip.maskDropShadowRadius = m_widgets.shadowRadiusSpin ? m_widgets.shadowRadiusSpin->value() : 12.0;
         clip.maskDropShadowOffsetX = m_widgets.shadowOffsetXSpin ? m_widgets.shadowOffsetXSpin->value() : 0.0;
@@ -485,6 +506,10 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.invertCheck),
                             static_cast<QWidget*>(m_widgets.showOnlyCheck),
                             static_cast<QWidget*>(m_widgets.opacitySpin),
+                            static_cast<QWidget*>(m_widgets.foregroundLayerCheck),
+                            static_cast<QWidget*>(m_widgets.repeatEnabledCheck),
+                            static_cast<QWidget*>(m_widgets.repeatDeltaXSpin),
+                            static_cast<QWidget*>(m_widgets.repeatDeltaYSpin),
                             static_cast<QWidget*>(m_widgets.shadowEnabledCheck),
                             static_cast<QWidget*>(m_widgets.shadowRadiusSpin),
                             static_cast<QWidget*>(m_widgets.shadowOffsetXSpin),
@@ -512,6 +537,10 @@ void MaskTab::setTreatmentControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.invertCheck),
                             static_cast<QWidget*>(m_widgets.showOnlyCheck),
                             static_cast<QWidget*>(m_widgets.opacitySpin),
+                            static_cast<QWidget*>(m_widgets.foregroundLayerCheck),
+                            static_cast<QWidget*>(m_widgets.repeatEnabledCheck),
+                            static_cast<QWidget*>(m_widgets.repeatDeltaXSpin),
+                            static_cast<QWidget*>(m_widgets.repeatDeltaYSpin),
                             static_cast<QWidget*>(m_widgets.shadowEnabledCheck),
                             static_cast<QWidget*>(m_widgets.shadowRadiusSpin),
                             static_cast<QWidget*>(m_widgets.shadowOffsetXSpin),
@@ -528,5 +557,15 @@ void MaskTab::setTreatmentControlsEnabled(bool enabled)
     if (enabled && m_widgets.showOnlyCheck) {
         const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
         m_widgets.showOnlyCheck->setEnabled(clip && !clip->maskForegroundLayerEnabled);
+    }
+    if (enabled) {
+        const bool repeatEnabled =
+            m_widgets.repeatEnabledCheck && m_widgets.repeatEnabledCheck->isChecked();
+        if (m_widgets.repeatDeltaXSpin) {
+            m_widgets.repeatDeltaXSpin->setEnabled(repeatEnabled);
+        }
+        if (m_widgets.repeatDeltaYSpin) {
+            m_widgets.repeatDeltaYSpin->setEnabled(repeatEnabled);
+        }
     }
 }

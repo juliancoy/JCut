@@ -442,8 +442,7 @@ struct EditorClip {
     bool maskRepeatEnabled = false;
     double maskRepeatDeltaX = 160.0;
     double maskRepeatDeltaY = 0.0;
-    bool edgeFillEnabled = false;
-    bool edgeFillProgressive = false;
+    std::string edgeFillEffect = "none";
     int edgeFillPixels = 1;
     double edgeFillPower = 2.0;
     double edgeFillOpacity = 1.0;

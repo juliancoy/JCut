@@ -129,6 +129,36 @@ private slots:
                      progressiveEdgeState.highlights[3] > -3.5f,
                  "Progressive edge stretch must have its own background fill mode signal.");
 
+        const render_detail::VulkanDrawEffectState bidirectionalEdgeState =
+            render_detail::vulkanBackgroundFillEffectState(
+                BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch,
+                baseState,
+                0.8f,
+                -0.02f,
+                1.5f,
+                24,
+                false,
+                2.5f,
+                QRectF(0.0, 0.0, 1.0, 1.0));
+        QCOMPARE(
+            bidirectionalEdgeState.highlights[3],
+            render_detail::kVulkanEffectModeBackgroundProgressiveBidirectionalEdgeStretch);
+
+        const render_detail::VulkanDrawEffectState tileState =
+            render_detail::vulkanBackgroundFillEffectState(
+                BackgroundFillEffect::Tile,
+                baseState,
+                0.8f,
+                -0.02f,
+                1.5f,
+                24,
+                false,
+                2.5f,
+                QRectF(0.0, 0.0, 1.0, 1.0));
+        QCOMPARE(
+            tileState.highlights[3],
+            render_detail::kVulkanEffectModeBackgroundTile);
+
         const render_detail::VulkanDrawEffectState mirrorState =
             render_detail::vulkanBackgroundFillEffectState(
                 BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f);
@@ -302,6 +332,23 @@ private slots:
         QVERIFY(source.contains("sourceAlpha = 1.0"));
         QVERIFY(!source.contains("textureInteriorClamp(compositeUv)"));
         QCOMPARE(render_detail::kVulkanEffectModeFinalCompositeProgressiveEdgeStretch, -5.0f);
+    }
+
+    void bidirectionalStretchUsesContinuousRoundedPerimeter()
+    {
+        QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+        QVERIFY(shader.open(QIODevice::ReadOnly));
+        const QByteArray source = shader.readAll();
+        QVERIFY(source.contains("progressiveBidirectionalEdgeStretchSample"));
+        QVERIFY(source.contains("superellipseDirection"));
+        QVERIFY(source.contains("float coreRadius"));
+        QVERIFY(source.contains("float canvasRadius"));
+        QVERIFY(source.contains("float overlayAlpha = smoothstep"));
+        QVERIFY(source.contains("float angularStep"));
+        QVERIFY(source.contains("sampleBidirectionalRing"));
+        QCOMPARE(
+            render_detail::kVulkanEffectModeBackgroundProgressiveBidirectionalEdgeStretch,
+            -6.0f);
     }
 
     void pushConstantLayoutKeepsParityFlagsInPadding()
@@ -506,6 +553,13 @@ private slots:
                  "Direct Vulkan presenter must draw mirror fill across the full canvas.");
         QVERIFY2(source.contains(QStringLiteral("backgroundPush.highlights[3] = backgroundEffects.highlights[3]")),
                  "Direct Vulkan presenter must pass the background fill mode signal into the draw.");
+        QVERIFY2(
+            source.contains(QStringLiteral("effectClip.edgeFillEffect")) &&
+                source.contains(QStringLiteral(
+                    "BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch")) &&
+                source.contains(QStringLiteral("bidirectionalEdgeDrawPending")),
+            "Direct Vulkan preview must expose the bidirectional mode and draw its "
+            "in-clip border overlay after the ordinary clip.");
 
         QFile previewSurface(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"));
         QVERIFY2(previewSurface.open(QIODevice::ReadOnly), "Unable to open Vulkan preview surface.");
@@ -545,13 +599,19 @@ private slots:
         QVERIFY2(offscreenSource.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")) &&
                      offscreenSource.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
                  "Offscreen renderer must source progressive edge parameters from the selected clip effect.");
+        QVERIFY2(
+            offscreenSource.contains(QStringLiteral("effectClip.edgeFillEffect")) &&
+                offscreenSource.contains(QStringLiteral("bidirectionalEdgeLayerPending")) &&
+                offscreenSource.contains(QStringLiteral(
+                    "layers.push_back(bidirectionalEdgeLayer)")),
+            "Offscreen rendering must composite the bidirectional border warp after "
+            "the source layer so it affects the clip edge as well as blank space.");
 
         QFile editor(QStringLiteral(JCUT_SOURCE_DIR "/editor.cpp"));
         QVERIFY2(editor.open(QIODevice::ReadOnly), "Unable to open editor source.");
         const QString editorSource = QString::fromUtf8(editor.readAll());
         QVERIFY2(editorSource.contains(QStringLiteral("migrateLegacyBackgroundProgressiveStretchToClipEffect")) &&
-                     editorSource.contains(QStringLiteral("clip.edgeFillEnabled = true")) &&
-                     editorSource.contains(QStringLiteral("clip.edgeFillProgressive = progressive")) &&
+                     editorSource.contains(QStringLiteral("clip.edgeFillEffect = progressive")) &&
                      editorSource.contains(QStringLiteral("backgroundFillEdgeProgressive = false")),
                  "Legacy background progressive state must be normalized into clip-owned Edge Fill.");
     }

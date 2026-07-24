@@ -665,8 +665,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskRepeatEnabled")] = clip.maskRepeatEnabled;
         obj[QStringLiteral("maskRepeatDeltaX")] = clip.maskRepeatDeltaX;
         obj[QStringLiteral("maskRepeatDeltaY")] = clip.maskRepeatDeltaY;
-        obj[QStringLiteral("edgeFillEnabled")] = clip.edgeFillEnabled;
-        obj[QStringLiteral("edgeFillProgressive")] = clip.edgeFillProgressive;
+        obj[QStringLiteral("edgeFillEffect")] =
+            backgroundFillEffectToString(clip.edgeFillEffect);
         obj[QStringLiteral("edgeFillPixels")] = clip.edgeFillPixels;
         obj[QStringLiteral("edgeFillPower")] = clip.edgeFillPower;
         obj[QStringLiteral("edgeFillOpacity")] = clip.edgeFillOpacity;
@@ -1174,8 +1174,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaX")).toDouble(160.0), 100000.0);
         clip.maskRepeatDeltaY =
             qBound<qreal>(-100000.0, obj.value(QStringLiteral("maskRepeatDeltaY")).toDouble(0.0), 100000.0);
-        clip.edgeFillEnabled = obj.value(QStringLiteral("edgeFillEnabled")).toBool(false);
-        clip.edgeFillProgressive = obj.value(QStringLiteral("edgeFillProgressive")).toBool(false);
+        clip.edgeFillEffect = backgroundFillEffectFromString(
+            obj.value(QStringLiteral("edgeFillEffect")).toString(QStringLiteral("none")));
         clip.edgeFillPixels = qBound(1, obj.value(QStringLiteral("edgeFillPixels")).toInt(1), 512);
         clip.edgeFillPower = qBound<qreal>(0.25, obj.value(QStringLiteral("edgeFillPower")).toDouble(2.0), 8.0);
         clip.edgeFillOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("edgeFillOpacity")).toDouble(1.0), 1.0);

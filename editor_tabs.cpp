@@ -1673,16 +1673,7 @@ void EditorWindow::createEffectsTab()
     m_effectsTab = std::make_unique<EffectsTab>(
         EffectsTab::Widgets{
             m_inspectorPane->effectsPathLabel(),
-            m_inspectorPane->maskFeatherSpin(),
-            m_inspectorPane->maskFeatherGammaSpin(),
-            m_inspectorPane->maskFeatherFalloffCombo(),
-            m_inspectorPane->maskFeatherEnabledCheck(),
-            m_inspectorPane->maskForegroundLayerCheck(),
-            m_inspectorPane->maskRepeatEnabledCheck(),
-            m_inspectorPane->maskRepeatDeltaXSpin(),
-            m_inspectorPane->maskRepeatDeltaYSpin(),
-            m_inspectorPane->edgeFillEnabledCheck(),
-            m_inspectorPane->edgeFillProgressiveCheck(),
+            m_inspectorPane->edgeFillEffectCombo(),
             m_inspectorPane->edgeFillPixelsSpin(),
             m_inspectorPane->edgeFillPowerSpin(),
             m_inspectorPane->edgeFillOpacitySpin(),
@@ -1724,8 +1715,7 @@ void EditorWindow::createEffectsTab()
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Effects")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
-            [this](const TimelineClip& clip) { return clipHasAlpha(clip); }});
+            [this](const TimelineClip& clip) { return clipHasVisuals(clip); }});
     m_effectsTab->wire();
 }
 
@@ -1749,6 +1739,10 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskInvertCheck(),
             m_inspectorPane->maskShowOnlyCheck(),
             m_inspectorPane->maskOpacitySpin(),
+            m_inspectorPane->maskForegroundLayerCheck(),
+            m_inspectorPane->maskRepeatEnabledCheck(),
+            m_inspectorPane->maskRepeatDeltaXSpin(),
+            m_inspectorPane->maskRepeatDeltaYSpin(),
             m_inspectorPane->maskShadowEnabledCheck(),
             m_inspectorPane->maskShadowRadiusSpin(),
             m_inspectorPane->maskShadowOffsetXSpin(),

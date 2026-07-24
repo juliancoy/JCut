@@ -3225,11 +3225,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     progressiveStretchPolicy.drawBackground &&
                     !(status && status->maskClipSource);
                 const bool clipEdgeFillEffect =
-                    effectClip.edgeFillEnabled &&
+                    effectClip.edgeFillEffect != BackgroundFillEffect::None &&
                     progressiveStretchPolicy.sourceEligible &&
                     !(status && status->maskClipSource);
                 const bool clipOwnedEdgeFill =
                     progressiveEdgeStretchEffect || clipEdgeFillEffect;
+                PendingMaskForegroundDraw bidirectionalEdgeDraw;
+                bool bidirectionalEdgeDrawPending = false;
                 const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
                 const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
                 const bool globalProgressiveFillSelected =
@@ -3247,13 +3249,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         progressiveEdgeStretchEffect
                             ? BackgroundFillEffect::ProgressiveEdgeStretch
                             : clipEdgeFillEffect
-                            ? (effectClip.edgeFillProgressive
-                                   ? BackgroundFillEffect::ProgressiveEdgeStretch
-                                   : BackgroundFillEffect::EdgeStretch)
+                            ? effectClip.edgeFillEffect
                             : fillEffect;
                     const bool fullCanvasFill =
                         effectiveFillEffect == BackgroundFillEffect::EdgeStretch ||
                         effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+                        effectiveFillEffect ==
+                            BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch ||
+                        effectiveFillEffect == BackgroundFillEffect::Tile ||
                         effectiveFillEffect == BackgroundFillEffect::Mirror;
                     PreviewClipGeometry backgroundGeometry =
                         fullCanvasFill ? PreviewViewTransform::clipGeometry(
@@ -3263,7 +3266,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                              0.0,
                                              QPointF(1.0, 1.0))
                                        : effectiveClipGeometry;
-                    if (fillEffect == BackgroundFillEffect::BlurCover) {
+                    if (effectiveFillEffect == BackgroundFillEffect::BlurCover) {
                         const qreal coverScale = std::max<qreal>(
                             1.0,
                             std::max(
@@ -3274,7 +3277,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             backgroundGeometry.clipToScreen.mapRect(backgroundGeometry.localRect);
                     }
                     const bool progressiveRenderSpaceFill =
-                        effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
+                        effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+                        effectiveFillEffect ==
+                            BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
                     const QSize renderOutputSize =
                         state->outputSize.isValid() ? state->outputSize : compositeRect.size().toSize();
                     const QSize renderSourceSize =
@@ -3386,12 +3391,22 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         backgroundScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                                                     static_cast<uint32_t>(std::max(1, swapSize.height()))};
                     }
-                    m_pipeline->bindAndDraw(cb,
-                                            viewport,
-                                            backgroundScissor,
-                                            handoffResult.descriptorSet,
-                                            backgroundPush,
-                                            backgroundFrameUniformOffset);
+                    if (effectiveFillEffect ==
+                        BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch) {
+                        bidirectionalEdgeDraw = PendingMaskForegroundDraw{
+                            handoffResult.descriptorSet,
+                            backgroundPush,
+                            backgroundScissor,
+                            backgroundFrameUniformOffset};
+                        bidirectionalEdgeDrawPending = true;
+                    } else {
+                        m_pipeline->bindAndDraw(cb,
+                                                viewport,
+                                                backgroundScissor,
+                                                handoffResult.descriptorSet,
+                                                backgroundPush,
+                                                backgroundFrameUniformOffset);
+                    }
                     if (!clipOwnedEdgeFill) {
                         backgroundFilled = true;
                     }
@@ -3753,6 +3768,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 scissor,
                                 sampledResources ? sampledResources->frameUniformDynamicOffset() : 0});
                     }
+                }
+                if (bidirectionalEdgeDrawPending &&
+                    bidirectionalEdgeDraw.descriptorSet != VK_NULL_HANDLE) {
+                    m_pipeline->bindAndDraw(
+                        cb,
+                        viewport,
+                        bidirectionalEdgeDraw.scissor,
+                        bidirectionalEdgeDraw.descriptorSet,
+                        bidirectionalEdgeDraw.push,
+                        bidirectionalEdgeDraw.frameUniformDynamicOffset);
                 }
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {

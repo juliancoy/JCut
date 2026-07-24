@@ -176,9 +176,10 @@ bool migrateLegacyBackgroundProgressiveStretchToClipEffect(
         if (!clipSupportsProgressiveEdgeStretchMigration(clip, tracks)) {
             continue;
         }
-        if (!clip.edgeFillEnabled) {
-            clip.edgeFillEnabled = true;
-            clip.edgeFillProgressive = progressive;
+        if (clip.edgeFillEffect == BackgroundFillEffect::None) {
+            clip.edgeFillEffect = progressive
+                ? BackgroundFillEffect::ProgressiveEdgeStretch
+                : BackgroundFillEffect::EdgeStretch;
             clip.edgeFillPixels = qBound(1, edgePixels, 512);
             clip.edgeFillPower = qBound<qreal>(0.25, edgePower, 8.0);
             clip.edgeFillOpacity = qBound<qreal>(0.0, opacity, 1.0);
@@ -187,8 +188,7 @@ bool migrateLegacyBackgroundProgressiveStretchToClipEffect(
             migrated = true;
         }
         if (clip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch) {
-            clip.edgeFillEnabled = true;
-            clip.edgeFillProgressive = true;
+            clip.edgeFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
             clip.edgeFillPixels = qBound(1, clip.effectRows, 512);
             clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
             clip.effectPreset = ClipEffectPreset::None;
@@ -1645,8 +1645,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             !clipSupportsProgressiveEdgeStretchMigration(clip, loadedTracks)) {
             continue;
         }
-        clip.edgeFillEnabled = true;
-        clip.edgeFillProgressive = true;
+        clip.edgeFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
         clip.edgeFillPixels = qBound(1, clip.effectRows, 512);
         clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
         clip.effectPreset = ClipEffectPreset::None;

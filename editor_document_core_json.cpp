@@ -468,8 +468,7 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskRepeatEnabled = valueOr(value, "maskRepeatEnabled", false);
     clip->maskRepeatDeltaX = valueOr(value, "maskRepeatDeltaX", 160.0);
     clip->maskRepeatDeltaY = valueOr(value, "maskRepeatDeltaY", 0.0);
-    clip->edgeFillEnabled = valueOr(value, "edgeFillEnabled", false);
-    clip->edgeFillProgressive = valueOr(value, "edgeFillProgressive", false);
+    clip->edgeFillEffect = stringOr(value, "edgeFillEffect", "none");
     clip->edgeFillPixels = std::clamp(valueOr(value, "edgeFillPixels", 1), 1, 512);
     clip->edgeFillPower = std::clamp(valueOr(value, "edgeFillPower", 2.0), 0.25, 8.0);
     clip->edgeFillOpacity = std::clamp(valueOr(value, "edgeFillOpacity", 1.0), 0.0, 1.0);
@@ -1522,8 +1521,7 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["maskRepeatEnabled"] = clip.maskRepeatEnabled;
     (*out)["maskRepeatDeltaX"] = clip.maskRepeatDeltaX;
     (*out)["maskRepeatDeltaY"] = clip.maskRepeatDeltaY;
-    (*out)["edgeFillEnabled"] = clip.edgeFillEnabled;
-    (*out)["edgeFillProgressive"] = clip.edgeFillProgressive;
+    (*out)["edgeFillEffect"] = clip.edgeFillEffect;
     (*out)["edgeFillPixels"] = clip.edgeFillPixels;
     (*out)["edgeFillPower"] = clip.edgeFillPower;
     (*out)["edgeFillOpacity"] = clip.edgeFillOpacity;
@@ -1956,15 +1954,15 @@ std::optional<EditorDocumentCore> editorDocumentCoreFromJson(
             (clip.mediaKind == "image" || clip.mediaKind == "video") &&
             clip.clipRole == "media" && clip.videoEnabled;
         if (clip.effectPreset == "progressive_edge_stretch" && visualMedia) {
-            clip.edgeFillEnabled = true;
-            clip.edgeFillProgressive = true;
+            clip.edgeFillEffect = "progressive_edge_stretch";
             clip.edgeFillPixels = std::clamp(clip.effectRows, 1, 512);
             clip.edgeFillPower = std::clamp(clip.effectScale, 0.25, 8.0);
             clip.effectPreset = "none";
         }
-        if (legacyEdgeFill && visualMedia && !clip.edgeFillEnabled) {
-            clip.edgeFillEnabled = true;
-            clip.edgeFillProgressive = progressiveLegacyFill;
+        if (legacyEdgeFill && visualMedia && clip.edgeFillEffect == "none") {
+            clip.edgeFillEffect = progressiveLegacyFill
+                ? "progressive_edge_stretch"
+                : "edge_stretch";
             clip.edgeFillPixels = std::clamp(
                 document.exportRequest.backgroundFillEdgePixels, 1, 512);
             clip.edgeFillPower = std::clamp(

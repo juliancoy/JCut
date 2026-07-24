@@ -1,5 +1,6 @@
 #pragma once
 
+#include "background_fill_effect.h"
 #include "timeline_fps.h"
 
 #include <QColor>
@@ -403,8 +404,7 @@ struct TimelineClip {
     qreal maskRepeatDeltaY = 0.0;
     // Edge fill is owned by the clip and is independent of the synthesis
     // preset so both effects can be composed.
-    bool edgeFillEnabled = false;
-    bool edgeFillProgressive = false;
+    BackgroundFillEffect edgeFillEffect = BackgroundFillEffect::None;
     int edgeFillPixels = 1;
     qreal edgeFillPower = 2.0;
     qreal edgeFillOpacity = 1.0;

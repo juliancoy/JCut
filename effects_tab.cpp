@@ -228,58 +228,15 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets, ClipEff
 
 void EffectsTab::wire()
 {
-    if (m_widgets.maskFeatherSpin) {
-        connect(m_widgets.maskFeatherSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                this, &EffectsTab::onMaskFeatherChanged);
-        connect(m_widgets.maskFeatherSpin, &QDoubleSpinBox::editingFinished,
-                this, &EffectsTab::onEditingFinished);
-    }
-    if (m_widgets.maskFeatherGammaSpin) {
-        connect(m_widgets.maskFeatherGammaSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                this, &EffectsTab::onMaskFeatherGammaChanged);
-        connect(m_widgets.maskFeatherGammaSpin, &QDoubleSpinBox::editingFinished,
-                this, &EffectsTab::onEditingFinished);
-    }
-    if (m_widgets.maskFeatherFalloffCombo) {
-        connect(m_widgets.maskFeatherFalloffCombo,
-                qOverload<int>(&QComboBox::currentIndexChanged),
-                this, &EffectsTab::onMaskFeatherFalloffChanged);
-    }
-    if (m_widgets.maskFeatherEnabledCheck) {
-        connect(m_widgets.maskFeatherEnabledCheck, &QCheckBox::toggled,
-                this, &EffectsTab::onMaskFeatherEnabledChanged);
-    }
     if (m_widgets.applyButton) {
         connect(m_widgets.applyButton, &QPushButton::clicked,
                 this, &EffectsTab::onApplyClicked);
     }
-    if (m_widgets.maskForegroundLayerCheck) {
-        connect(m_widgets.maskForegroundLayerCheck, &QCheckBox::toggled,
-                this, &EffectsTab::onEffectControlChanged);
-    }
-    if (m_widgets.maskRepeatEnabledCheck) {
-        connect(m_widgets.maskRepeatEnabledCheck, &QCheckBox::toggled,
-                this, &EffectsTab::onEffectControlChanged);
-    }
-    if (m_widgets.maskRepeatDeltaXSpin) {
-        connect(m_widgets.maskRepeatDeltaXSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                this, &EffectsTab::onEffectControlChanged);
-        connect(m_widgets.maskRepeatDeltaXSpin, &QDoubleSpinBox::editingFinished,
-                this, &EffectsTab::onEditingFinished);
-    }
-    if (m_widgets.maskRepeatDeltaYSpin) {
-        connect(m_widgets.maskRepeatDeltaYSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                this, &EffectsTab::onEffectControlChanged);
-        connect(m_widgets.maskRepeatDeltaYSpin, &QDoubleSpinBox::editingFinished,
-                this, &EffectsTab::onEditingFinished);
-    }
-    if (m_widgets.edgeFillEnabledCheck) {
-        connect(m_widgets.edgeFillEnabledCheck, &QCheckBox::toggled,
-                this, &EffectsTab::onEffectControlChanged);
-    }
-    if (m_widgets.edgeFillProgressiveCheck) {
-        connect(m_widgets.edgeFillProgressiveCheck, &QCheckBox::toggled,
-                this, &EffectsTab::onEffectControlChanged);
+    if (m_widgets.edgeFillEffectCombo) {
+        connect(m_widgets.edgeFillEffectCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this,
+                &EffectsTab::onEffectControlChanged);
     }
     if (m_widgets.edgeFillPixelsSpin) {
         connect(m_widgets.edgeFillPixelsSpin, qOverload<int>(&QSpinBox::valueChanged),
@@ -355,7 +312,7 @@ void EffectsTab::wire()
 
 void EffectsTab::refresh()
 {
-    if (!m_widgets.effectsPathLabel || !m_widgets.maskFeatherSpin) {
+    if (!m_widgets.effectsPathLabel) {
         return;
     }
 
@@ -370,28 +327,6 @@ void EffectsTab::refresh()
     setMaskMattePresetAvailability(m_widgets.effectPresetCombo, maskMatteTarget);
     m_updating = true;
 
-    QSignalBlocker featherBlock(m_widgets.maskFeatherSpin);
-    QSignalBlocker enabledBlock(m_widgets.maskFeatherEnabledCheck);
-    const std::unique_ptr<QSignalBlocker> falloffBlock =
-        m_widgets.maskFeatherFalloffCombo
-            ? std::make_unique<QSignalBlocker>(m_widgets.maskFeatherFalloffCombo)
-            : nullptr;
-    const std::unique_ptr<QSignalBlocker> foregroundBlock =
-        m_widgets.maskForegroundLayerCheck
-            ? std::make_unique<QSignalBlocker>(m_widgets.maskForegroundLayerCheck)
-            : nullptr;
-    const std::unique_ptr<QSignalBlocker> repeatEnabledBlock =
-        m_widgets.maskRepeatEnabledCheck
-            ? std::make_unique<QSignalBlocker>(m_widgets.maskRepeatEnabledCheck)
-            : nullptr;
-    const std::unique_ptr<QSignalBlocker> repeatXBlock =
-        m_widgets.maskRepeatDeltaXSpin
-            ? std::make_unique<QSignalBlocker>(m_widgets.maskRepeatDeltaXSpin)
-            : nullptr;
-    const std::unique_ptr<QSignalBlocker> repeatYBlock =
-        m_widgets.maskRepeatDeltaYSpin
-            ? std::make_unique<QSignalBlocker>(m_widgets.maskRepeatDeltaYSpin)
-            : nullptr;
     const std::unique_ptr<QSignalBlocker> presetBlock =
         m_widgets.effectPresetCombo
             ? std::make_unique<QSignalBlocker>(m_widgets.effectPresetCombo)
@@ -429,29 +364,8 @@ void EffectsTab::refresh()
                 ? QStringLiteral("Track effects\n%1").arg(selectedTrack->name)
                 : QStringLiteral("No visual clip selected"));
         m_widgets.effectsPathLabel->setToolTip(QString());
-        m_widgets.maskFeatherSpin->setValue(0.0);
-        if (m_widgets.maskFeatherEnabledCheck) {
-            m_widgets.maskFeatherEnabledCheck->setChecked(false);
-        }
-        if (m_widgets.maskForegroundLayerCheck) {
-            m_widgets.maskForegroundLayerCheck->setChecked(false);
-            m_widgets.maskForegroundLayerCheck->setEnabled(false);
-        }
-        if (m_widgets.maskRepeatEnabledCheck) {
-            m_widgets.maskRepeatEnabledCheck->setChecked(false);
-            m_widgets.maskRepeatEnabledCheck->setEnabled(false);
-        }
-        if (m_widgets.maskRepeatDeltaXSpin) {
-            m_widgets.maskRepeatDeltaXSpin->setValue(160.0);
-            m_widgets.maskRepeatDeltaXSpin->setEnabled(false);
-        }
-        if (m_widgets.maskRepeatDeltaYSpin) {
-            m_widgets.maskRepeatDeltaYSpin->setValue(0.0);
-            m_widgets.maskRepeatDeltaYSpin->setEnabled(false);
-        }
         for (QWidget* widget : {
-                 static_cast<QWidget*>(m_widgets.edgeFillEnabledCheck),
-                 static_cast<QWidget*>(m_widgets.edgeFillProgressiveCheck),
+                 static_cast<QWidget*>(m_widgets.edgeFillEffectCombo),
                  static_cast<QWidget*>(m_widgets.edgeFillPixelsSpin),
                  static_cast<QWidget*>(m_widgets.edgeFillPowerSpin),
                  static_cast<QWidget*>(m_widgets.edgeFillOpacitySpin),
@@ -459,8 +373,11 @@ void EffectsTab::refresh()
                  static_cast<QWidget*>(m_widgets.edgeFillSaturationSpin)}) {
             if (widget) widget->setEnabled(false);
         }
-        if (m_widgets.edgeFillEnabledCheck) m_widgets.edgeFillEnabledCheck->setChecked(false);
-        if (m_widgets.edgeFillProgressiveCheck) m_widgets.edgeFillProgressiveCheck->setChecked(false);
+        if (m_widgets.edgeFillEffectCombo) {
+            m_widgets.edgeFillEffectCombo->setCurrentIndex(
+                m_widgets.edgeFillEffectCombo->findData(
+                    backgroundFillEffectToString(BackgroundFillEffect::None)));
+        }
         if (m_widgets.effectPresetCombo) {
             m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
                 m_widgets.effectPresetCombo,
@@ -544,67 +461,46 @@ void EffectsTab::refresh()
         return;
     }
 
-    const bool hasAlpha = m_deps.clipHasAlpha(*clip);
     const QString nativePath = QDir::toNativeSeparators(m_deps.getClipFilePath(*clip));
-    const QString sourceLabel = QStringLiteral("%1 | %2%3")
+    const QString sourceLabel = QStringLiteral("%1 | %2")
                                     .arg(clipMediaTypeLabel(clip->mediaType),
-                                         mediaSourceKindLabel(clip->sourceKind),
-                                         hasAlpha ? QStringLiteral(" | Alpha") : QStringLiteral(""));
+                                         mediaSourceKindLabel(clip->sourceKind));
     m_widgets.effectsPathLabel->setText(QStringLiteral("%1\n%2").arg(clip->label, sourceLabel));
     m_widgets.effectsPathLabel->setToolTip(nativePath);
 
-    m_widgets.maskFeatherSpin->setValue(clip->maskFeather);
-    if (m_widgets.maskFeatherGammaSpin) {
-        m_widgets.maskFeatherGammaSpin->setValue(clip->maskFeatherGamma);
+    if (m_widgets.edgeFillEffectCombo) {
+        const int index = m_widgets.edgeFillEffectCombo->findData(
+            backgroundFillEffectToString(clip->edgeFillEffect));
+        m_widgets.edgeFillEffectCombo->setCurrentIndex(qMax(0, index));
+        m_widgets.edgeFillEffectCombo->setEnabled(true);
     }
-    if (m_widgets.maskFeatherFalloffCombo) {
-        const int index = m_widgets.maskFeatherFalloffCombo->findData(clip->maskFeatherFalloff);
-        m_widgets.maskFeatherFalloffCombo->setCurrentIndex(index >= 0 ? index : 0);
-    }
-    if (m_widgets.maskFeatherEnabledCheck) {
-        m_widgets.maskFeatherEnabledCheck->setChecked(clip->maskFeather > 0.0);
-    }
-    if (m_widgets.maskForegroundLayerCheck) {
-        m_widgets.maskForegroundLayerCheck->setChecked(clip->maskForegroundLayerEnabled);
-    }
-    if (m_widgets.maskRepeatEnabledCheck) {
-        m_widgets.maskRepeatEnabledCheck->setChecked(clip->maskRepeatEnabled);
-    }
-    if (m_widgets.maskRepeatDeltaXSpin) {
-        m_widgets.maskRepeatDeltaXSpin->setValue(clip->maskRepeatDeltaX);
-    }
-    if (m_widgets.maskRepeatDeltaYSpin) {
-        m_widgets.maskRepeatDeltaYSpin->setValue(clip->maskRepeatDeltaY);
-    }
-    if (m_widgets.edgeFillEnabledCheck) {
-        m_widgets.edgeFillEnabledCheck->setChecked(clip->edgeFillEnabled);
-        m_widgets.edgeFillEnabledCheck->setEnabled(true);
-    }
-    if (m_widgets.edgeFillProgressiveCheck) {
-        m_widgets.edgeFillProgressiveCheck->setChecked(clip->edgeFillProgressive);
-        m_widgets.edgeFillProgressiveCheck->setEnabled(clip->edgeFillEnabled);
-    }
+    const bool progressiveEdgeFill =
+        clip->edgeFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+        clip->edgeFillEffect ==
+            BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
+    const bool edgeFillEnabled =
+        clip->edgeFillEffect != BackgroundFillEffect::None;
     if (m_widgets.edgeFillPixelsSpin) {
         m_widgets.edgeFillPixelsSpin->setValue(clip->edgeFillPixels);
         m_widgets.edgeFillPixelsSpin->setEnabled(
-            clip->edgeFillEnabled && clip->edgeFillProgressive);
+            edgeFillEnabled && progressiveEdgeFill);
     }
     if (m_widgets.edgeFillPowerSpin) {
         m_widgets.edgeFillPowerSpin->setValue(clip->edgeFillPower);
         m_widgets.edgeFillPowerSpin->setEnabled(
-            clip->edgeFillEnabled && clip->edgeFillProgressive);
+            edgeFillEnabled && progressiveEdgeFill);
     }
     if (m_widgets.edgeFillOpacitySpin) {
         m_widgets.edgeFillOpacitySpin->setValue(clip->edgeFillOpacity * 100.0);
-        m_widgets.edgeFillOpacitySpin->setEnabled(clip->edgeFillEnabled);
+        m_widgets.edgeFillOpacitySpin->setEnabled(edgeFillEnabled);
     }
     if (m_widgets.edgeFillBrightnessSpin) {
         m_widgets.edgeFillBrightnessSpin->setValue(clip->edgeFillBrightness * 100.0);
-        m_widgets.edgeFillBrightnessSpin->setEnabled(clip->edgeFillEnabled);
+        m_widgets.edgeFillBrightnessSpin->setEnabled(edgeFillEnabled);
     }
     if (m_widgets.edgeFillSaturationSpin) {
         m_widgets.edgeFillSaturationSpin->setValue(clip->edgeFillSaturation * 100.0);
-        m_widgets.edgeFillSaturationSpin->setEnabled(clip->edgeFillEnabled);
+        m_widgets.edgeFillSaturationSpin->setEnabled(edgeFillEnabled);
     }
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
@@ -645,70 +541,6 @@ void EffectsTab::refresh()
         m_widgets.tilingWrapCheck->setChecked(clip->tilingWrap);
     }
 
-    // Disable mask feather controls if clip doesn't have alpha
-    if (m_widgets.maskFeatherEnabledCheck) {
-        m_widgets.maskFeatherEnabledCheck->setEnabled(hasAlpha);
-        if (!hasAlpha) {
-            m_widgets.maskFeatherEnabledCheck->setToolTip(
-                QStringLiteral("Mask feathering requires an alpha channel.\n\n"
-                               "To use this feature:\n"
-                               "• Use PNG, TGA, TIFF, or EXR formats\n"
-                               "• Ensure your source images have transparency\n"
-                               "• For video, use ProRes 4444 or similar alpha-capable codecs\n\n"
-                               "Current clip format does not support alpha."));
-        } else {
-            m_widgets.maskFeatherEnabledCheck->setToolTip(
-                QStringLiteral("Enable mask feathering for this alpha-capable clip."));
-        }
-    }
-    m_widgets.maskFeatherSpin->setEnabled(hasAlpha && (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
-    if (m_widgets.maskFeatherSpin && !hasAlpha) {
-        m_widgets.maskFeatherSpin->setToolTip(
-            QStringLiteral("Disabled: Selected clip does not have an alpha channel."));
-    } else if (m_widgets.maskFeatherSpin) {
-        m_widgets.maskFeatherSpin->setToolTip(
-            QStringLiteral("Feather radius in pixels for the mask edge."));
-    }
-    if (m_widgets.maskFeatherGammaSpin) {
-        const bool powerFalloff = !m_widgets.maskFeatherFalloffCombo ||
-            m_widgets.maskFeatherFalloffCombo->currentData().toInt() == 0;
-        m_widgets.maskFeatherGammaSpin->setEnabled(hasAlpha && powerFalloff &&
-            (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
-        if (!hasAlpha) {
-            m_widgets.maskFeatherGammaSpin->setToolTip(
-                QStringLiteral("Disabled: Selected clip does not have an alpha channel."));
-        } else {
-            m_widgets.maskFeatherGammaSpin->setToolTip(
-                QStringLiteral("Power-law exponent. 1.0 is linear; higher values retain a more opaque edge."));
-        }
-    }
-    if (m_widgets.maskFeatherFalloffCombo) {
-        m_widgets.maskFeatherFalloffCombo->setEnabled(
-            hasAlpha && (!m_widgets.maskFeatherEnabledCheck ||
-                         m_widgets.maskFeatherEnabledCheck->isChecked()));
-    }
-    const bool hasMask = clip->maskEnabled && !clip->maskFramesDir.trimmed().isEmpty();
-    if (m_widgets.maskForegroundLayerCheck) {
-        m_widgets.maskForegroundLayerCheck->setEnabled(hasMask);
-        m_widgets.maskForegroundLayerCheck->setToolTip(
-            hasMask
-                ? QStringLiteral("Draw the rotoscoped subject again as a Vulkan foreground layer.")
-                : QStringLiteral("Requires an enabled mask in the Masks tab."));
-    }
-    const bool maskRepeatActive = hasMask && clip->maskRepeatEnabled;
-    if (m_widgets.maskRepeatEnabledCheck) {
-        m_widgets.maskRepeatEnabledCheck->setEnabled(hasMask);
-        m_widgets.maskRepeatEnabledCheck->setToolTip(
-            hasMask
-                ? QStringLiteral("Repeat source pixels through the processed mask channel.")
-                : QStringLiteral("Requires an enabled mask in the Masks tab."));
-    }
-    if (m_widgets.maskRepeatDeltaXSpin) {
-        m_widgets.maskRepeatDeltaXSpin->setEnabled(maskRepeatActive);
-    }
-    if (m_widgets.maskRepeatDeltaYSpin) {
-        m_widgets.maskRepeatDeltaYSpin->setEnabled(maskRepeatActive);
-    }
     const bool imagePresetCapable = clip->mediaType == ClipMediaType::Image ||
                                     clip->mediaType == ClipMediaType::Video;
     const ClipEffectPreset clipPreset = clip->effectPreset;
@@ -718,7 +550,7 @@ void EffectsTab::refresh()
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
     }
     if (m_widgets.effectRowsSpin) {
-        m_widgets.effectRowsSpin->setEnabled((imagePresetCapable && imagePresetActive) || maskRepeatActive);
+        m_widgets.effectRowsSpin->setEnabled(imagePresetCapable && imagePresetActive);
         m_widgets.effectRowsSpin->setSuffix(progressiveEdgePreset ? QStringLiteral(" px") : QString());
         m_widgets.effectRowsSpin->setToolTip(
             progressiveEdgePreset
@@ -762,36 +594,6 @@ void EffectsTab::refresh()
     m_updating = false;
 }
 
-void EffectsTab::applyMaskFeather(bool pushHistory)
-{
-    if (m_updating) return;
-
-    const TimelineClip* selectedClip = m_deps.getSelectedClip();
-    if (!selectedClip ||
-        selectedClip->clipRole == ClipRole::MaskMatte ||
-        selectedClip->clipRole == ClipRole::EffectSynth ||
-        !m_deps.clipHasVisuals(*selectedClip)) return;
-
-    const double featherValue = m_widgets.maskFeatherEnabledCheck && m_widgets.maskFeatherEnabledCheck->isChecked()
-                                    ? m_widgets.maskFeatherSpin->value()
-                                    : 0.0;
-    const double featherGamma = m_widgets.maskFeatherGammaSpin ? m_widgets.maskFeatherGammaSpin->value() : 2.0;
-    const int featherFalloff = m_widgets.maskFeatherFalloffCombo
-        ? m_widgets.maskFeatherFalloffCombo->currentData().toInt() : 0;
-
-    const bool updated = m_deps.updateClipById(selectedClip->id, [featherValue, featherGamma, featherFalloff](TimelineClip& clip) {
-        clip.maskFeather = featherValue;
-        clip.maskFeatherGamma = featherGamma;
-        clip.maskFeatherFalloff = qBound(0, featherFalloff, 5);
-    });
-
-    if (!updated) return;
-
-    applyTabEditEffects(effectsEditCallbacks(m_deps),
-                        TabEditEffects{.pushHistory = pushHistory});
-    emit effectsApplied();
-}
-
 void EffectsTab::applyEffectPreset(bool pushHistory)
 {
     if (m_updating) return;
@@ -824,18 +626,10 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         preset != ClipEffectPreset::None &&
         m_widgets.effectSpeechSyncCheck &&
         m_widgets.effectSpeechSyncCheck->isChecked();
-    const bool foreground =
-        m_widgets.maskForegroundLayerCheck && m_widgets.maskForegroundLayerCheck->isChecked();
-    const bool maskRepeatEnabled =
-        m_widgets.maskRepeatEnabledCheck && m_widgets.maskRepeatEnabledCheck->isChecked();
-    const double maskRepeatDeltaX =
-        m_widgets.maskRepeatDeltaXSpin ? m_widgets.maskRepeatDeltaXSpin->value() : 160.0;
-    const double maskRepeatDeltaY =
-        m_widgets.maskRepeatDeltaYSpin ? m_widgets.maskRepeatDeltaYSpin->value() : 0.0;
-    const bool edgeFillEnabled =
-        m_widgets.edgeFillEnabledCheck && m_widgets.edgeFillEnabledCheck->isChecked();
-    const bool edgeFillProgressive =
-        m_widgets.edgeFillProgressiveCheck && m_widgets.edgeFillProgressiveCheck->isChecked();
+    const BackgroundFillEffect edgeFillEffect = backgroundFillEffectFromString(
+        m_widgets.edgeFillEffectCombo
+            ? m_widgets.edgeFillEffectCombo->currentData().toString()
+            : QStringLiteral("none"));
     const int edgeFillPixels =
         m_widgets.edgeFillPixelsSpin ? m_widgets.edgeFillPixelsSpin->value() : 1;
     const double edgeFillPower =
@@ -860,12 +654,7 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
             const ClipEffectPreset previousPreset = clip.effectPreset;
             clip.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(clip);
-            clip.maskForegroundLayerEnabled = foreground;
-            clip.maskRepeatEnabled = maskRepeatEnabled;
-            clip.maskRepeatDeltaX = qBound<qreal>(-100000.0, maskRepeatDeltaX, 100000.0);
-            clip.maskRepeatDeltaY = qBound<qreal>(-100000.0, maskRepeatDeltaY, 100000.0);
-            clip.edgeFillEnabled = edgeFillEnabled;
-            clip.edgeFillProgressive = edgeFillProgressive;
+            clip.edgeFillEffect = edgeFillEffect;
             clip.edgeFillPixels = qBound(1, edgeFillPixels, 512);
             clip.edgeFillPower = qBound<qreal>(0.25, edgeFillPower, 8.0);
             clip.edgeFillOpacity = qBound<qreal>(0.0, edgeFillOpacity, 1.0);
@@ -925,67 +714,14 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     emit effectsApplied();
 }
 
-void EffectsTab::onMaskFeatherChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyMaskFeather(false);
-}
-
-void EffectsTab::onMaskFeatherGammaChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyMaskFeather(false);
-}
-
-void EffectsTab::onMaskFeatherFalloffChanged(int index)
-{
-    Q_UNUSED(index);
-    if (m_updating) return;
-    if (m_widgets.maskFeatherGammaSpin && m_widgets.maskFeatherFalloffCombo) {
-        m_widgets.maskFeatherGammaSpin->setEnabled(
-            m_widgets.maskFeatherFalloffCombo->currentData().toInt() == 0 &&
-            (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
-    }
-    applyMaskFeather(true);
-}
-
-void EffectsTab::onMaskFeatherEnabledChanged(bool enabled)
-{
-    if (m_updating) return;
-    
-    if (m_widgets.maskFeatherSpin) {
-        m_widgets.maskFeatherSpin->setEnabled(enabled);
-        // Set default value if enabling and current value is 0
-        if (enabled && qFuzzyIsNull(m_widgets.maskFeatherSpin->value())) {
-            m_widgets.maskFeatherSpin->setValue(5.0);  // Default 5px feather
-        }
-    }
-    if (m_widgets.maskFeatherGammaSpin) {
-        m_widgets.maskFeatherGammaSpin->setEnabled(enabled);
-        // Set default gamma if enabling and current value is at minimum
-        if (enabled && qFuzzyCompare(m_widgets.maskFeatherGammaSpin->value(), m_widgets.maskFeatherGammaSpin->minimum())) {
-            m_widgets.maskFeatherGammaSpin->setValue(2.0);  // Default gamma 2.0
-        }
-    }
-    if (m_widgets.maskFeatherFalloffCombo) {
-        m_widgets.maskFeatherFalloffCombo->setEnabled(enabled);
-    }
-    
-    applyMaskFeather(true);
-}
-
 void EffectsTab::onApplyClicked()
 {
-    applyMaskFeather(true);
     applyEffectPreset(true);
 }
 
 void EffectsTab::onEditingFinished()
 {
     if (m_updating) return;
-    applyMaskFeather(true);
     applyEffectPreset(true);
 }
 

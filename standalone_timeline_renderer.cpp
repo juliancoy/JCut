@@ -1649,7 +1649,13 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
     const bool legacyProgressivePreset =
         clip.effectPreset == "progressive_edge_stretch";
     const bool progressive =
-        legacyProgressivePreset || clip.edgeFillProgressive;
+        legacyProgressivePreset ||
+        clip.edgeFillEffect == "progressive_edge_stretch";
+    const bool bidirectional =
+        !legacyProgressivePreset &&
+        clip.edgeFillEffect == "progressive_bidirectional_edge_stretch";
+    const bool tile = !legacyProgressivePreset && clip.edgeFillEffect == "tile";
+    const bool mirror = !legacyProgressivePreset && clip.edgeFillEffect == "mirror";
     const double bandPixels = std::clamp(
         static_cast<double>(legacyProgressivePreset
                                 ? clip.effectRows
@@ -1667,17 +1673,26 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
     const double fillSaturation = legacyProgressivePreset
         ? 1.0
         : std::clamp(clip.edgeFillSaturation, 0.0, 3.0);
+    if (bidirectional) {
+        blitImage(source, &result,
+                  static_cast<int>(std::lround(left)),
+                  static_cast<int>(std::lround(top)));
+    }
     for (int y = 0; y < outputSize.height; ++y) {
         for (int x = 0; x < outputSize.width; ++x) {
             if (x + 0.5 >= left && x + 0.5 <= left + source.size.width &&
-                y + 0.5 >= top && y + 0.5 <= top + source.size.height) {
+                y + 0.5 >= top && y + 0.5 <= top + source.size.height &&
+                !bidirectional) {
                 continue;
             }
             const double dx = x + 0.5 - centerX;
             const double dy = y + 0.5 - centerY;
             const double ratioX = std::abs(dx) / std::max(0.5, halfWidth);
             const double ratioY = std::abs(dy) / std::max(0.5, halfHeight);
-            const double outsideScale = std::max({1.0, ratioX, ratioY});
+            const double radialScale = bidirectional
+                ? std::pow(std::pow(ratioX, 4.0) + std::pow(ratioY, 4.0), 0.25)
+                : std::max(ratioX, ratioY);
+            const double outsideScale = std::max(1.0, radialScale);
             const double mediaScale = 1.0 / outsideScale;
             const double edgeX = centerX + dx * mediaScale;
             const double edgeY = centerY + dy * mediaScale;
@@ -1695,7 +1710,64 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
             const double scan = progressive ? std::pow(fill, power) : 0.0;
             double sourceX = edgeX - left;
             double sourceY = edgeY - top;
-            if (ratioX >= ratioY) {
+            double overlayAlpha = 1.0;
+            double bidirectionalPolarX = 0.0;
+            double bidirectionalPolarY = 0.0;
+            double bidirectionalSampleRadius = 0.0;
+            if (tile || mirror) {
+                const auto wrap = [](double value) {
+                    return value - std::floor(value);
+                };
+                const auto mirrorWrap = [&](double value) {
+                    const double wrapped = wrap(std::abs(value) * 0.5) * 2.0;
+                    return wrapped <= 1.0 ? wrapped : 2.0 - wrapped;
+                };
+                const double u = (x + 0.5 - left) / source.size.width;
+                const double v = (y + 0.5 - top) / source.size.height;
+                sourceX = (tile ? wrap(u) : mirrorWrap(u)) * source.size.width - 0.5;
+                sourceY = (tile ? wrap(v) : mirrorWrap(v)) * source.size.height - 0.5;
+            } else if (bidirectional && radialScale > 0.000001) {
+                const double normalizedX = dx / std::max(0.5, halfWidth);
+                const double normalizedY = dy / std::max(0.5, halfHeight);
+                const double polarLength =
+                    std::max(0.000001, std::hypot(normalizedX, normalizedY));
+                bidirectionalPolarX = normalizedX / polarLength;
+                bidirectionalPolarY = normalizedY / polarLength;
+                const double directionX = normalizedX / radialScale;
+                const double directionY = normalizedY / radialScale;
+                const double boundaryPixelRadius = std::hypot(
+                    directionX * halfWidth,
+                    directionY * halfHeight);
+                const double coreRadius = std::clamp(
+                    1.0 - bandPixels / std::max(1.0, boundaryPixelRadius),
+                    0.05,
+                    0.995);
+                if (radialScale <= coreRadius) {
+                    continue;
+                }
+                const double canvasRadius = std::max(
+                    radialScale,
+                    radialScale * canvasScale);
+                const double stretch = std::clamp(
+                    (radialScale - coreRadius) /
+                        std::max(0.0001, canvasRadius - coreRadius),
+                    0.0,
+                    1.0);
+                const double sampleRadius =
+                    coreRadius + (1.0 - coreRadius) * std::pow(stretch, power);
+                bidirectionalSampleRadius = sampleRadius;
+                sourceX =
+                    (0.5 + directionX * sampleRadius * 0.5) * source.size.width - 0.5;
+                sourceY =
+                    (0.5 + directionY * sampleRadius * 0.5) * source.size.height - 0.5;
+                const double featherWidth =
+                    std::max(0.002, (1.0 - coreRadius) * 0.25);
+                const double featherT = std::clamp(
+                    (radialScale - coreRadius) / featherWidth,
+                    0.0,
+                    1.0);
+                overlayAlpha = featherT * featherT * (3.0 - 2.0 * featherT);
+            } else if (ratioX >= ratioY) {
                 sourceX = dx < 0.0
                     ? scan * bandPixels
                     : source.size.width - 1.0 - scan * bandPixels;
@@ -1704,28 +1776,83 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
                     ? scan * bandPixels
                     : source.size.height - 1.0 - scan * bandPixels;
             }
-            const auto color = sampleImageBilinear(
+            std::array<double, 4> color = sampleImageBilinear(
                 source,
                 (sourceX + 0.5) / source.size.width,
                 (sourceY + 0.5) / source.size.height);
-            const std::size_t offset = static_cast<std::size_t>(
-                y * result.strideBytes + x * 4);
+            const double minClipPixels =
+                std::min(source.size.width, source.size.height);
+            if (bidirectional && minClipPixels < 128.0) {
+                const double angularStep = std::clamp(
+                    2.0 / std::max(1.0, minClipPixels),
+                    0.0,
+                    0.18);
+                const auto sampleRing = [&](double angle) {
+                    const double cosine = std::cos(angle);
+                    const double sine = std::sin(angle);
+                    const double polarX =
+                        cosine * bidirectionalPolarX - sine * bidirectionalPolarY;
+                    const double polarY =
+                        sine * bidirectionalPolarX + cosine * bidirectionalPolarY;
+                    const double norm = std::pow(
+                        std::pow(std::abs(polarX), 4.0) +
+                            std::pow(std::abs(polarY), 4.0),
+                        0.25);
+                    return sampleImageBilinear(
+                        source,
+                        0.5 + (polarX / norm) * bidirectionalSampleRadius * 0.5,
+                        0.5 + (polarY / norm) * bidirectionalSampleRadius * 0.5);
+                };
+                const auto positive = sampleRing(angularStep);
+                const auto negative = sampleRing(-angularStep);
+                const auto positiveWide = sampleRing(2.0 * angularStep);
+                const auto negativeWide = sampleRing(-2.0 * angularStep);
+                for (int channel = 0; channel < 4; ++channel) {
+                    color[channel] =
+                        color[channel] * 0.4 +
+                        (positive[channel] + negative[channel]) * 0.2 +
+                        (positiveWide[channel] + negativeWide[channel]) * 0.1;
+                }
+            }
             const double luma =
                 color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+            std::uint8_t adjustedColor[3]{};
             for (int channel = 0; channel < 3; ++channel) {
                 const double adjusted =
                     (luma + (color[channel] - luma) * fillSaturation) +
                     fillBrightness;
-                result.bytes[offset + channel] = static_cast<std::uint8_t>(
+                adjustedColor[channel] = static_cast<std::uint8_t>(
                     std::clamp(std::lround(adjusted * 255.0), 0L, 255L));
             }
-            result.bytes[offset + 3] = static_cast<std::uint8_t>(
-                std::clamp(std::lround(fillOpacity * 255.0), 0L, 255L));
+            const std::uint8_t alpha = static_cast<std::uint8_t>(
+                std::clamp(
+                    std::lround(color[3] * fillOpacity * overlayAlpha * 255.0),
+                    0L,
+                    255L));
+            if (bidirectional) {
+                blendRgbaPixel(
+                    &result,
+                    x,
+                    y,
+                    adjustedColor[0],
+                    adjustedColor[1],
+                    adjustedColor[2],
+                    alpha);
+            } else {
+                const std::size_t offset = static_cast<std::size_t>(
+                    y * result.strideBytes + x * 4);
+                result.bytes[offset] = adjustedColor[0];
+                result.bytes[offset + 1] = adjustedColor[1];
+                result.bytes[offset + 2] = adjustedColor[2];
+                result.bytes[offset + 3] = alpha;
+            }
         }
     }
-    blitImage(source, &result,
-              static_cast<int>(std::lround(left)),
-              static_cast<int>(std::lround(top)));
+    if (!bidirectional) {
+        blitImage(source, &result,
+                  static_cast<int>(std::lround(left)),
+                  static_cast<int>(std::lround(top)));
+    }
     return result;
 }
 
@@ -3663,7 +3790,7 @@ public:
                     decoded, clip, effectFrame, request.outputSize);
             }
             if (clip.mediaKind != "title" &&
-                (clip.edgeFillEnabled ||
+                (clip.edgeFillEffect != "none" ||
                  clip.effectPreset == "progressive_edge_stretch")) {
                 decoded = renderEdgeStretchEffect(
                     decoded, clip, request.outputSize);

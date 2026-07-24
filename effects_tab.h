@@ -19,16 +19,7 @@ public:
     struct Widgets
     {
         QLabel* effectsPathLabel = nullptr;
-        QDoubleSpinBox* maskFeatherSpin = nullptr;
-        QDoubleSpinBox* maskFeatherGammaSpin = nullptr;
-        QComboBox* maskFeatherFalloffCombo = nullptr;
-        QCheckBox* maskFeatherEnabledCheck = nullptr;
-        QCheckBox* maskForegroundLayerCheck = nullptr;
-        QCheckBox* maskRepeatEnabledCheck = nullptr;
-        QDoubleSpinBox* maskRepeatDeltaXSpin = nullptr;
-        QDoubleSpinBox* maskRepeatDeltaYSpin = nullptr;
-        QCheckBox* edgeFillEnabledCheck = nullptr;
-        QCheckBox* edgeFillProgressiveCheck = nullptr;
+        QComboBox* edgeFillEffectCombo = nullptr;
         QSpinBox* edgeFillPixelsSpin = nullptr;
         QDoubleSpinBox* edgeFillPowerSpin = nullptr;
         QDoubleSpinBox* edgeFillOpacitySpin = nullptr;
@@ -65,7 +56,6 @@ public:
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;
         std::function<bool(const TimelineClip&)> clipHasVisuals;
-        std::function<bool(const TimelineClip&)> clipHasAlpha;
     };
 
     explicit EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -73,17 +63,12 @@ public:
 
     void wire();
     void refresh();
-    void applyMaskFeather(bool pushHistory = false);
     void applyEffectPreset(bool pushHistory = false);
 
 signals:
     void effectsApplied();
 
 private slots:
-    void onMaskFeatherChanged(double value);
-    void onMaskFeatherGammaChanged(double value);
-    void onMaskFeatherFalloffChanged(int index);
-    void onMaskFeatherEnabledChanged(bool enabled);
     void onApplyClicked();
     void onEditingFinished();
     void onEffectPresetChanged(int index);

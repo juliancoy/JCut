@@ -2887,6 +2887,21 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
     QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(35));
+    QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane.cpp"));
+    QVERIFY(inspector.open(QIODevice::ReadOnly));
+    const QString inspectorSource = QString::fromUtf8(inspector.readAll());
+    for (const QString& label : {
+             QStringLiteral("\"None\""),
+             QStringLiteral("\"Edge Stretch\""),
+             QStringLiteral("\"Progressive Edge Stretch\""),
+             QStringLiteral("\"Progressive Bidirectional Edge Stretch\""),
+             QStringLiteral("\"Tile\""),
+             QStringLiteral("\"Mirror\""),
+             QStringLiteral("\"Blur Cover\"")}) {
+        QVERIFY2(inspectorSource.contains(label), qPrintable(label));
+    }
+    QVERIFY(inspectorSource.contains(QStringLiteral("m_edgeFillEffectCombo")));
+    QVERIFY(!inspectorSource.contains(QStringLiteral("m_edgeFillEnabledCheck")));
 
     std::vector<std::string> neutralPresetIds;
     neutralPresetIds.reserve(jcut::kEditorEffectPresetIds.size());
@@ -2927,6 +2942,37 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QCOMPARE(stationaryClip.effectRows, jcut::kEditorEffectDefaultMaxRows);
     QCOMPARE(stationaryClip.effectSpeed, 0.0);
     QCOMPARE(stationaryClip.effectScale, jcut::kEditorEffectMaxScale);
+
+    jcut::SetClipMaskEffectCommand bidirectionalCommand;
+    bidirectionalCommand.clipId = 1;
+    bidirectionalCommand.edgeFillEffect =
+        "progressive_bidirectional_edge_stretch";
+    bidirectionalCommand.edgeFillPixels = 36;
+    bidirectionalCommand.edgeFillPower = 1.75;
+    const jcut::CommandResult bidirectionalResult =
+        runtime.execute(jcut::EditorCommand{bidirectionalCommand});
+    QVERIFY2(bidirectionalResult.applied, bidirectionalResult.message.c_str());
+    const jcut::EditorClip bidirectionalClip = runtime.snapshot().clips.front();
+    QCOMPARE(
+        bidirectionalClip.edgeFillEffect,
+        std::string("progressive_bidirectional_edge_stretch"));
+    QCOMPARE(bidirectionalClip.edgeFillPixels, 36);
+    QCOMPARE(bidirectionalClip.edgeFillPower, 1.75);
+    std::string roundTripError;
+    const std::optional<jcut::EditorDocumentCore> roundTripped =
+        jcut::editorDocumentCoreFromJson(
+            jcut::toJson(runtime.snapshot()),
+            &roundTripError);
+    QVERIFY2(roundTripped.has_value(), roundTripError.c_str());
+    QCOMPARE(
+        roundTripped->clips.front().edgeFillEffect,
+        std::string("progressive_bidirectional_edge_stretch"));
+    QCOMPARE(
+        jcut::editorDocumentCoreFromJson(
+            jcut::toJson(runtime.snapshot()), &roundTripError)
+            ->clips.front()
+            .edgeFillEffect,
+        std::string("progressive_bidirectional_edge_stretch"));
 
     // A mask-only edit must not normalize fields belonging to an unknown
     // future effect preset.

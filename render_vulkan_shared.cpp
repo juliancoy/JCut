@@ -656,9 +656,13 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
     state.saturation = std::clamp(baseEffects.saturation * saturation, 0.0f, 3.0f);
     if (effect == BackgroundFillEffect::EdgeStretch ||
         effect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+        effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch ||
+        effect == BackgroundFillEffect::Tile ||
         effect == BackgroundFillEffect::Mirror) {
         Q_UNUSED(progressiveEdge);
         const bool progressive = effect == BackgroundFillEffect::ProgressiveEdgeStretch;
+        const bool bidirectional =
+            effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
         state.shadows[0] = mapping.centerXNorm;
         state.shadows[1] = mapping.centerYNorm;
         state.shadows[2] = mapping.outputHeightOverSourceWidth;
@@ -671,9 +675,13 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
         state.highlights[1] = static_cast<float>(validRect.top());
         state.highlights[2] = static_cast<float>(validRect.right());
         state.midtones[3] = static_cast<float>(validRect.bottom());
-        state.highlights[3] = effect == BackgroundFillEffect::Mirror
+        state.highlights[3] = effect == BackgroundFillEffect::Tile
+            ? kVulkanEffectModeBackgroundTile
+            : effect == BackgroundFillEffect::Mirror
             ? kVulkanEffectModeBackgroundMirror
-            : (progressive
+            : (bidirectional
+                ? kVulkanEffectModeBackgroundProgressiveBidirectionalEdgeStretch
+                : progressive
                 ? kVulkanEffectModeBackgroundProgressiveEdgeStretch
                 : kVulkanEffectModeBackgroundEdgeStretch);
         return state;

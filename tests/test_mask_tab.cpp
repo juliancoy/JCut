@@ -48,6 +48,16 @@ struct MaskWidgets {
     QPushButton prompt;
     QSpinBox zLevel;
     QDoubleSpinBox feather;
+    QCheckBox foreground;
+    QCheckBox repeat;
+    QDoubleSpinBox repeatX;
+    QDoubleSpinBox repeatY;
+
+    MaskWidgets()
+    {
+        repeatX.setRange(-1000.0, 1000.0);
+        repeatY.setRange(-1000.0, 1000.0);
+    }
 
     MaskTab::Widgets dependencies()
     {
@@ -60,6 +70,10 @@ struct MaskWidgets {
         widgets.newPromptButton = &prompt;
         widgets.zLevelSpin = &zLevel;
         widgets.featherSpin = &feather;
+        widgets.foregroundLayerCheck = &foreground;
+        widgets.repeatEnabledCheck = &repeat;
+        widgets.repeatDeltaXSpin = &repeatX;
+        widgets.repeatDeltaYSpin = &repeatY;
         return widgets;
     }
 };
@@ -76,6 +90,7 @@ private slots:
     void failedMaterializationLeavesOnlyDiscoveryControlsEnabled();
     void unavailableChildPreservesEnabledIntentAndReportsAvailability();
     void onlyExplicitZEditsFreezeAutomaticOrdering();
+    void treatmentEditsApplyOnlyToSelectedMaskChild();
 };
 
 void TestMaskTab::inactiveRefreshNeverMaterializesOrSelects()
@@ -255,6 +270,62 @@ void TestMaskTab::onlyExplicitZEditsFreezeAutomaticOrdering()
     controls.zLevel.setValue(12);
     QCOMPARE(selected.zLevel, 12);
     QVERIFY(selected.zLevelUserSet);
+}
+
+void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
+{
+    TimelineClip source = makeSourceClip();
+    source.maskFeather = 91.0;
+    source.maskForegroundLayerEnabled = false;
+    source.maskRepeatEnabled = false;
+    source.maskRepeatDeltaX = 7.0;
+    source.maskRepeatDeltaY = 8.0;
+
+    TimelineClip selected = makeMaskChild(
+        source, QStringLiteral("/missing/source_alpha_masks"));
+    selected.generatedFromMaskId = editor::masks::stableMaskSidecarId(
+        selected.maskFramesDir);
+    selected.maskFeather = 2.0;
+    selected.maskRepeatDeltaX = 160.0;
+    selected.maskRepeatDeltaY = 0.0;
+    MaskWidgets controls;
+
+    MaskTab::Dependencies deps;
+    deps.getSelectedClip = [&selected]() { return &selected; };
+    deps.updateClipById = [&selected](
+                              const QString& id,
+                              const std::function<void(TimelineClip&)>& update) {
+        if (id != selected.id) return false;
+        update(selected);
+        return true;
+    };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.isMaskInspectorActive = []() { return true; };
+
+    MaskTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    QCOMPARE(controls.feather.value(), 2.0);
+    QCOMPARE(controls.repeatX.value(), 160.0);
+
+    controls.feather.setValue(12.5);
+    controls.foreground.setChecked(true);
+    controls.repeat.setChecked(true);
+    controls.repeatX.setValue(42.0);
+    controls.repeatY.setValue(-12.0);
+
+    QCOMPARE(selected.maskFeather, 12.5);
+    QVERIFY(selected.maskForegroundLayerEnabled);
+    QVERIFY(selected.maskRepeatEnabled);
+    QCOMPARE(selected.maskRepeatDeltaX, 42.0);
+    QCOMPARE(selected.maskRepeatDeltaY, -12.0);
+
+    QCOMPARE(source.maskFeather, 91.0);
+    QVERIFY(!source.maskForegroundLayerEnabled);
+    QVERIFY(!source.maskRepeatEnabled);
+    QCOMPARE(source.maskRepeatDeltaX, 7.0);
+    QCOMPARE(source.maskRepeatDeltaY, 8.0);
 }
 
 QTEST_MAIN(TestMaskTab)

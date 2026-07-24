@@ -4743,9 +4743,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
         vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks);
     const bool progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground;
     const bool clipEdgeFillEffect =
-        effectClip.edgeFillEnabled && progressiveStretchPolicy.sourceEligible;
+        effectClip.edgeFillEffect != BackgroundFillEffect::None &&
+        progressiveStretchPolicy.sourceEligible;
     const bool clipOwnedEdgeFill =
         progressiveEdgeStretchEffect || clipEdgeFillEffect;
+    OffscreenVulkanRendererPrivate::LayerInput bidirectionalEdgeLayer;
+    bool bidirectionalEdgeLayerPending = false;
     const bool globalProgressiveFillSelected =
         request.backgroundFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
     const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
@@ -4829,9 +4832,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
           progressiveEdgeStretchEffect
               ? BackgroundFillEffect::ProgressiveEdgeStretch
               : clipEdgeFillEffect
-              ? (effectClip.edgeFillProgressive
-                     ? BackgroundFillEffect::ProgressiveEdgeStretch
-                     : BackgroundFillEffect::EdgeStretch)
+              ? effectClip.edgeFillEffect
               : request.backgroundFillEffect;
       const int edgePixels =
           progressiveEdgeStretchEffect
@@ -4903,6 +4904,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
       const bool fullCanvasFill =
           fillEffect == BackgroundFillEffect::EdgeStretch ||
           fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+          fillEffect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch ||
+          fillEffect == BackgroundFillEffect::Tile ||
           fillEffect == BackgroundFillEffect::Mirror;
       PreviewClipGeometry backgroundGeometry =
           fullCanvasFill ? PreviewViewTransform::clipGeometry(outputRect,
@@ -4924,7 +4927,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
                                    backgroundLayer.mvp);
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {
-        layers.push_back(backgroundLayer);
+        if (fillEffect ==
+            BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch) {
+          bidirectionalEdgeLayer = backgroundLayer;
+          bidirectionalEdgeLayerPending = true;
+        } else {
+          layers.push_back(backgroundLayer);
+        }
         if (!clipOwnedEdgeFill) {
           backgroundFilled = true;
         }
@@ -4957,6 +4966,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
           layers.push_back(echoLayer);
         }
       }
+    }
+    if (bidirectionalEdgeLayerPending) {
+      layers.push_back(bidirectionalEdgeLayer);
     }
     if (layer.maskTextureEnabled &&
         layer.maskForegroundLayerEnabled) {
