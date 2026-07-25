@@ -361,6 +361,15 @@ target_sources(test_facedetections_flow
 
 find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
 
+add_test(
+    NAME test_apply_media_alignment
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_apply_media_alignment.py
+)
+set_tests_properties(test_apply_media_alignment PROPERTIES
+    LABELS "temporal;logic"
+)
+
 set(JCUT_IMGUI_RUNTIME_BOUNDARY_TARGETS
     jcut_ai_gateway_core
     jcut_frame_payload_core
@@ -600,6 +609,15 @@ add_test(
 set_tests_properties(test_live_playback_lag_probe PROPERTIES
     LABELS "temporal;live;gpu-hw"
     SKIP_RETURN_CODE 77
+)
+
+add_test(
+    NAME test_live_playback_lag_probe_logic
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_live_playback_lag_probe.py
+)
+set_tests_properties(test_live_playback_lag_probe_logic PROPERTIES
+    LABELS "temporal;logic"
 )
 
 add_test(

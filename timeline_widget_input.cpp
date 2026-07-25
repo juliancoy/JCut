@@ -677,7 +677,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             const bool proxyAudioAvailable = playbackUsesAlternateAudioSource(hoveredClip);
             const QString transcriptPath = transcriptWorkingPathForClip(hoveredClip);
             const bool transcriptAvailable =
-                !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+                transcriptPathExistsWithBoundedRefresh(transcriptPath);
             const bool facedetectionsSidecarAvailable = facedetectionsSidecarExistsForClip(hoveredClip);
             const std::optional<int64_t> sourceFrame =
                 timelineClipSourceFrameAtTimelinePosition(

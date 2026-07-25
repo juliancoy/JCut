@@ -128,10 +128,11 @@ inline bool writeSingleFrameMapMetadata(const QString& directory,
     return writeJson(
         QDir(directory).filePath(QStringLiteral("jcut_frame_map.json")),
         QJsonObject{
-            {QStringLiteral("schema"), QStringLiteral("jcut_frame_index_map_v2")},
+            {QStringLiteral("schema"), QStringLiteral("jcut_frame_index_map_v3")},
             {QStringLiteral("status"), QStringLiteral("ready")},
             {QStringLiteral("frame_domain"),
-             QStringLiteral("source_timestamp_to_generated_ordinal")},
+             QStringLiteral(
+                 "source_best_effort_timestamp_to_generated_ordinal")},
             {QStringLiteral("source_identity"), sourceIdentity(sourcePath)},
             {QStringLiteral("output_fps"), QJsonValue::Null},
             {QStringLiteral("map_file"), QStringLiteral("jcut_frame_map.tsv")},
@@ -139,6 +140,8 @@ inline bool writeSingleFrameMapMetadata(const QString& directory,
             {QStringLiteral("mapped_frame_count"), 1},
             {QStringLiteral("min_source_frame"), 0},
             {QStringLiteral("max_source_frame"), 0},
+            {QStringLiteral("min_source_presentation_timestamp"), 0},
+            {QStringLiteral("max_source_presentation_timestamp"), 0},
             {QStringLiteral("max_mask_frame"), 0},
             {QStringLiteral("expected_output_frame_count"), 1},
         });

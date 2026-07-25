@@ -94,6 +94,7 @@ private slots:
     void testSpeechFilterRangesHonorPlaybackRateWithoutMarkers();
     void testEmptyBaseRangesUseInclusiveClipEnd();
     void testRuntimeSidecarPathPrefersEditableLegacyArtifact();
+    void testRuntimeSidecarPathDiscoversNewArtifactAfterBoundedRefresh();
     void testTranscriptPathsAreIndependentPerAudioStream();
     void testTranscriptSourceRootResolvesRelativeClipPaths();
     void testSpeakerTrackingInterpolatesOverlayLocation();
@@ -105,6 +106,7 @@ private slots:
     void testSpeakerFramingRotatesAroundDetectedFaceBox();
     void testSpeakerFramingSectionRotationWithoutFaceBoxUsesClipCenter();
     void testTimelineSectionRotationAppliesToVideoFromAudioTranscript();
+    void testSpeakerFramingSectionRotationAppliesAcrossClipBucketsForProfileTracking();
     void testTranscriptFrameMappingUsesSourceSeconds();
     void testTranscriptFrameMappingFromPresentedSourceFrame();
     void testAudioVideoCaptionMappingStaysSampleAccurateAtOnePointFiveX();
@@ -385,6 +387,37 @@ void TestTranscriptLogic::testRuntimeSidecarPathPrefersEditableLegacyArtifact() 
 
     QCOMPARE(transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath), editablePath);
     QVERIFY(facedetectionsSidecarExistsForClipFile(clipPath));
+}
+
+void TestTranscriptLogic::testRuntimeSidecarPathDiscoversNewArtifactAfterBoundedRefresh() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString originalPath = transcriptPathForClipFile(clipPath);
+    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+    QVERIFY(writeTranscriptJson(originalPath, QJsonArray{}));
+    QVERIFY(writeTranscriptJson(editablePath, QJsonArray{}));
+
+    QCOMPARE(transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath), originalPath);
+
+    const QFileInfo editableInfo(editablePath);
+    QFile artifact(editableInfo.dir().filePath(
+        editableInfo.completeBaseName() + QStringLiteral("_facestream.bin")));
+    QVERIFY(artifact.open(QIODevice::WriteOnly));
+    artifact.write("appeared");
+    artifact.close();
+
+    QCOMPARE(transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath), originalPath);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath),
+        editablePath,
+        2000);
+
+    const TranscriptSourceKey invalidSource;
+    QVERIFY(transcriptPathForSource(invalidSource).isEmpty());
+    QVERIFY(transcriptEditablePathForSource(invalidSource).isEmpty());
 }
 
 void TestTranscriptLogic::testTranscriptPathsAreIndependentPerAudioStream() {
@@ -884,6 +917,92 @@ void TestTranscriptLogic::testTimelineSectionRotationAppliesToVideoFromAudioTran
     QCOMPARE(transform.scaleY, 1.0);
     QCOMPARE(diagnostics.value(QStringLiteral("timeline_section_rotation_source_clip_id")).toString(),
              QStringLiteral("audio"));
+}
+
+void TestTranscriptLogic::testSpeakerFramingSectionRotationAppliesAcrossClipBucketsForProfileTracking() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString audioPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(audioPath).open(QIODevice::WriteOnly));
+    const QString videoPath = dir.filePath(QStringLiteral("clip.mp4"));
+    QVERIFY(QFile(videoPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath = dir.filePath(QStringLiteral("clip_editable.json"));
+
+    QJsonObject word;
+    word[QStringLiteral("word")] = QStringLiteral("hello");
+    word[QStringLiteral("start")] = 0.0;
+    word[QStringLiteral("end")] = 1.0;
+    word[QStringLiteral("speaker")] = QStringLiteral("S1");
+    QJsonObject segment;
+    segment[QStringLiteral("words")] = QJsonArray{word};
+
+    QJsonObject sectionRow;
+    sectionRow[QStringLiteral("speaker_id")] = QStringLiteral("S1");
+    sectionRow[QStringLiteral("start_frame")] = 0;
+    sectionRow[QStringLiteral("end_frame")] = 30;
+    sectionRow[QStringLiteral("rotation")] = 12.0;
+    sectionRow[QStringLiteral("tracks")] = QJsonArray{};
+
+    QJsonObject trackingKeyframe;
+    trackingKeyframe[QStringLiteral("frame")] = 0;
+    trackingKeyframe[QStringLiteral("x")] = 0.25;
+    trackingKeyframe[QStringLiteral("y")] = 0.50;
+    trackingKeyframe[QStringLiteral("box_size")] = 0.20;
+    trackingKeyframe[QStringLiteral("confidence")] = 1.0;
+    QJsonObject framing;
+    framing[QStringLiteral("enabled")] = true;
+    framing[QStringLiteral("mode")] = QStringLiteral("AutoTrackLinear");
+    framing[QStringLiteral("keyframes")] = QJsonArray{trackingKeyframe};
+    QJsonObject profile;
+    profile[QStringLiteral("framing")] = framing;
+    QJsonObject profiles;
+    profiles[QStringLiteral("S1")] = profile;
+
+    QJsonObject resolvedCurrent;
+    resolvedCurrent[QStringLiteral("section_track_map")] = QJsonArray{sectionRow};
+    QJsonObject audioClipFlow;
+    audioClipFlow[QStringLiteral("resolved_current")] = resolvedCurrent;
+    QJsonObject flowClips;
+    flowClips[QStringLiteral("audio")] = audioClipFlow;
+    QJsonObject speakerFlow;
+    speakerFlow[QStringLiteral("clips")] = flowClips;
+
+    QJsonObject root;
+    root[QStringLiteral("segments")] = QJsonArray{segment};
+    root[QStringLiteral("speaker_profiles")] = profiles;
+    root[QStringLiteral("speaker_flow")] = speakerFlow;
+    QVERIFY(writeTranscriptDocument(transcriptPath, root));
+
+    TimelineClip video;
+    video.id = QStringLiteral("video");
+    video.filePath = videoPath;
+    video.mediaType = ClipMediaType::Video;
+    video.startFrame = 0;
+    video.durationFrames = 30;
+    video.sourceDurationFrames = 30;
+    video.sourceFrameSize = QSize(1000, 1000);
+    video.speakerFramingEnabled = true;
+    video.speakerSectionMinimumWords = 0;
+    video.speakerFramingMinConfidence = 0.08;
+    video.speakerFramingTargetKeyframes.push_back(
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
+    normalizeClipTransformKeyframes(video);
+
+    setActiveTranscriptPathForClipFile(videoPath, transcriptPath);
+    invalidateTranscriptJsonCache(transcriptPath);
+    invalidateTranscriptSpeakerProfileCache(transcriptPath);
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(video);
+
+    QJsonObject diagnostics;
+    const TimelineClip::TransformKeyframe transform =
+        evaluateClipSpeakerFramingAtPosition(video, 15.0, {}, QSize(1000, 1000), &diagnostics);
+
+    QCOMPARE(transform.rotation, 12.0);
+    QCOMPARE(diagnostics.value(QStringLiteral("sample_source")).toString(),
+             QStringLiteral("speaker_profile_tracking"));
+    QCOMPARE(diagnostics.value(QStringLiteral("applied_rotation_degrees")).toDouble(), 12.0);
+    QCOMPARE(diagnostics.value(QStringLiteral("section_mapping_active")).toBool(), true);
 }
 
 void TestTranscriptLogic::testTranscriptFrameMappingUsesSourceSeconds() {

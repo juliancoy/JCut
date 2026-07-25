@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Attach to a running JCut instance and classify live playback lag.
 
-This is intentionally not a synthetic unit test. It samples the real
-`/playback/diagnostics` endpoint while the editor is playing and reports the
-first observed failure mode from the actual preview/decode/presenter pipeline.
+This is intentionally not a synthetic unit test. During the measured interval
+it samples only JCut's lock-free `/playback/telemetry` endpoint, so the probe
+does not steal time from the UI/presentation thread. One compact pipeline
+diagnostic is collected after the interval to classify any observed failure.
 
 Run with:
 
@@ -46,7 +47,53 @@ def number(value: Any, default: float = 0.0) -> float:
     return default
 
 
-def classify(sample: dict[str, Any]) -> ClassifiedLag:
+def nonnegative_counter_delta(current: float, previous: float) -> float:
+    """Return an interval delta without carrying a counter reset forward."""
+    return current - previous if current >= previous else 0.0
+
+
+def measurement_urls(host: str, port: int) -> tuple[str, str, str]:
+    base = f"http://{host}:{port}"
+    return (
+        f"{base}/playback/telemetry",
+        f"{base}/playback/diagnostics",
+        f"{base}/screenshot?include_steps=1",
+    )
+
+
+def classify_fast_telemetry(sample: dict[str, Any]) -> ClassifiedLag | None:
+    playback_active = bool(sample.get("playback_active", False))
+    heartbeat_age_ms = number(sample.get("main_thread_heartbeat_age_ms"), -1.0)
+    playhead_advance_age_ms = number(
+        sample.get("last_playhead_advance_age_ms"), -1.0
+    )
+    details = {
+        "playback_active": playback_active,
+        "current_frame": sample.get("current_frame"),
+        "active_presented_source_frame":
+            sample.get("active_presented_source_frame"),
+        "main_thread_heartbeat_age_ms": heartbeat_age_ms,
+        "last_playhead_advance_age_ms": playhead_advance_age_ms,
+    }
+    if playback_active and heartbeat_age_ms > 500:
+        return ClassifiedLag(
+            "ui_thread_heartbeat_stale_during_playback", details
+        )
+    if playback_active and playhead_advance_age_ms > 500:
+        return ClassifiedLag("playback_clock_not_advancing", details)
+    return None
+
+
+def classify(
+    sample: dict[str, Any],
+    *,
+    presentation_miss_delta: float = 0.0,
+    presentation_misses_since_baseline: float = 0.0,
+    observed_presented_fps: float | None = None,
+    expected_presented_fps: float = 30.0,
+    minimum_presented_fps_ratio: float = 0.90,
+    allow_smoothness_cadence_fallback: bool = True,
+) -> ClassifiedLag:
     diagnostics = sample.get("diagnostics", {})
     smoothness = diagnostics.get("playback_smoothness", {})
     playback_decode = diagnostics.get("playback_decode", {})
@@ -64,7 +111,9 @@ def classify(sample: dict[str, Any]) -> ClassifiedLag:
 
     playback_pending = number(diagnostics.get("playback_pending_visible_requests"))
     cache_pending = number(diagnostics.get("cache_pending_visible_requests"))
-    dropped_presentation = number(diagnostics.get("playback_dropped_presentation_frames"))
+    unique_presentation_misses = number(
+        diagnostics.get("unique_presentation_misses")
+    )
     frame_status_last_ms = number(diagnostics.get("frame_status_last_refresh_ms"))
     frame_status_max_ms = number(diagnostics.get("frame_status_max_refresh_ms"))
 
@@ -88,6 +137,28 @@ def classify(sample: dict[str, Any]) -> ClassifiedLag:
     ))
     playhead_advance_age_ms = number(diagnostics.get("last_playhead_advance_age_ms"), -1.0)
     heartbeat_age_ms = number(diagnostics.get("main_thread_heartbeat_age_ms"), -1.0)
+    if (
+        observed_presented_fps is None
+        and allow_smoothness_cadence_fallback
+        and "presented_fps_estimate" in smoothness
+    ):
+        observed_presented_fps = presented_fps
+        presented_fps_source = "playback_smoothness_window"
+    elif observed_presented_fps is not None:
+        presented_fps_source = "probe_counter_wall_delta"
+    else:
+        presented_fps_source = "unavailable"
+    minimum_presented_fps_ratio = max(
+        0.0, min(1.0, minimum_presented_fps_ratio)
+    )
+    minimum_presented_fps = (
+        expected_presented_fps * minimum_presented_fps_ratio
+    )
+    presented_fps_ratio = (
+        observed_presented_fps / expected_presented_fps
+        if observed_presented_fps is not None and expected_presented_fps > 0
+        else None
+    )
 
     details = {
         "playing": playing,
@@ -107,7 +178,16 @@ def classify(sample: dict[str, Any]) -> ClassifiedLag:
         "visible_request_dispatch_rate": visible_dispatch_rate,
         "playback_pending_visible_requests": playback_pending,
         "cache_pending_visible_requests": cache_pending,
-        "playback_dropped_presentation_frames": dropped_presentation,
+        "unique_presentation_misses": unique_presentation_misses,
+        "unique_presentation_misses_interval_delta": presentation_miss_delta,
+        "unique_presentation_misses_since_baseline":
+            presentation_misses_since_baseline,
+        "observed_presented_fps": observed_presented_fps,
+        "observed_presented_fps_source": presented_fps_source,
+        "expected_presented_fps": expected_presented_fps,
+        "minimum_presented_fps": minimum_presented_fps,
+        "minimum_presented_fps_ratio": minimum_presented_fps_ratio,
+        "observed_presented_fps_ratio": presented_fps_ratio,
         "last_visible_wait_ms": visible_wait_ms,
         "max_visible_wait_ms": max_visible_wait_ms,
         "last_visible_outcome": visible_outcome,
@@ -131,15 +211,24 @@ def classify(sample: dict[str, Any]) -> ClassifiedLag:
         return ClassifiedLag("ui_thread_heartbeat_stale_during_playback", details)
     if playback_active and playhead_advance_age_ms > 500:
         return ClassifiedLag("playback_clock_not_advancing", details)
+    if (
+        playback_active
+        and observed_presented_fps is not None
+        and expected_presented_fps > 0
+        and observed_presented_fps < minimum_presented_fps
+    ):
+        return ClassifiedLag(
+            "preview_presentation_cadence_below_target", details
+        )
     if missing_rate > 0.02:
         return ClassifiedLag("missing_visible_frames", details)
+    if presentation_miss_delta > 0:
+        return ClassifiedLag("presenter_recorded_unique_misses", details)
     if failure_rate > 0.10 or late_rate > 0.10 or max_frame_lag > 2:
         if max_visible_wait_ms > 33 or visible_wait_ms > 33:
             return ClassifiedLag("decoder_visible_wait_over_frame_budget", details)
         if visible_block_fraction > 0.20 or last_block_reason:
             return ClassifiedLag("visible_requests_blocked_or_backlogged", details)
-        if dropped_presentation > 0:
-            return ClassifiedLag("playback_buffer_presenting_old_frames", details)
         if p95_upload_ms > 8:
             return ClassifiedLag("presenter_handoff_upload_slow", details)
         if frame_status_max_ms > 8:
@@ -189,7 +278,15 @@ def main() -> int:
     parser.add_argument("--host", default=os.environ.get("JCUT_CONTROL_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("JCUT_CONTROL_PORT", "0") or "0"))
     parser.add_argument("--seconds", type=float, default=8.0)
+    parser.add_argument("--warmup-seconds", type=float, default=1.0)
     parser.add_argument("--interval", type=float, default=0.25)
+    parser.add_argument("--expected-fps", type=float, default=30.0)
+    parser.add_argument(
+        "--minimum-presented-fps-ratio",
+        type=float,
+        default=0.90,
+        help="Classify preview cadence below expected-fps times this ratio.",
+    )
     parser.add_argument(
         "--screenshot-interval",
         type=float,
@@ -199,23 +296,81 @@ def main() -> int:
     parser.add_argument("--allow-not-playing", action="store_true")
     args = parser.parse_args()
 
+    if args.expected_fps <= 0:
+        parser.error("--expected-fps must be greater than zero")
+    if not 0 < args.minimum_presented_fps_ratio <= 1:
+        parser.error(
+            "--minimum-presented-fps-ratio must be greater than zero and "
+            "no greater than one"
+        )
+
     if args.port <= 0:
         print("SKIP: set JCUT_CONTROL_PORT to a running JCut control-server port", file=sys.stderr)
         return 77
 
-    diagnostics_url = f"http://{args.host}:{args.port}/playback/diagnostics?verbose=1"
-    screenshot_url = f"http://{args.host}:{args.port}/screenshot?include_steps=1"
-    samples: list[dict[str, Any]] = []
+    telemetry_url, diagnostics_url, screenshot_url = measurement_urls(
+        args.host, args.port
+    )
+    telemetry_samples: list[dict[str, Any]] = []
+    diagnostic_samples: list[dict[str, Any]] = []
     screenshot_samples: list[dict[str, Any]] = []
     classifications: list[ClassifiedLag] = []
-    deadline = time.monotonic() + max(args.seconds, args.interval)
-    next_screenshot_at = time.monotonic()
+    presentation_miss_baseline = 0.0
+    presented_frames_baseline: float | None = None
+    presented_frames_latest: float | None = None
+    cadence_baseline_at = 0.0
+    cadence_latest_at = 0.0
+    observed_presented_fps: float | None = None
+    presentation_misses_since_baseline = 0.0
     try:
-        while time.monotonic() < deadline:
-            payload = get_json(diagnostics_url)
-            samples.append(payload)
-            classifications.append(classify(payload))
-            if args.screenshot_interval > 0 and time.monotonic() >= next_screenshot_at:
+        if args.warmup_seconds > 0:
+            time.sleep(args.warmup_seconds)
+
+        baseline_telemetry = get_json(telemetry_url)
+        required_counters = (
+            "presented_frames",
+            "unique_presentation_misses",
+        )
+        missing_counters = [
+            field for field in required_counters
+            if field not in baseline_telemetry
+        ]
+        if missing_counters:
+            raise ValueError(
+                "playback telemetry is missing required counters: "
+                + ", ".join(missing_counters)
+            )
+        telemetry_samples.append(baseline_telemetry)
+        baseline_classification = classify_fast_telemetry(
+            baseline_telemetry
+        )
+        if baseline_classification:
+            classifications.append(baseline_classification)
+        presentation_miss_baseline = number(
+            baseline_telemetry.get("unique_presentation_misses")
+        )
+        presented_frames_baseline = number(
+            baseline_telemetry.get("presented_frames")
+        )
+        presented_frames_latest = presented_frames_baseline
+        cadence_baseline_at = time.monotonic()
+        cadence_latest_at = cadence_baseline_at
+        deadline = cadence_baseline_at + max(args.seconds, args.interval)
+        sampling_interval = max(0.05, args.interval)
+        next_sample_at = cadence_baseline_at + sampling_interval
+        next_screenshot_at = cadence_baseline_at
+
+        while next_sample_at < deadline:
+            time.sleep(max(0.0, next_sample_at - time.monotonic()))
+            telemetry = get_json(telemetry_url)
+            telemetry_samples.append(telemetry)
+            fast_classification = classify_fast_telemetry(telemetry)
+            if fast_classification:
+                classifications.append(fast_classification)
+            if (
+                args.screenshot_interval > 0
+                and time.monotonic() >= next_screenshot_at
+            ):
                 try:
                     screenshot = get_json(screenshot_url, timeout=5.0)
                     png_base64 = screenshot.get("png_base64", "")
@@ -228,18 +383,82 @@ def main() -> int:
                 except urllib.error.URLError as exc:
                     screenshot_samples.append({"error": str(exc)})
                 next_screenshot_at = time.monotonic() + max(0.25, args.screenshot_interval)
-            time.sleep(max(0.05, args.interval))
-    except urllib.error.URLError as exc:
-        print(f"FAIL: could not reach {diagnostics_url}: {exc}", file=sys.stderr)
+            next_sample_at += sampling_interval
+
+        time.sleep(max(0.0, deadline - time.monotonic()))
+        final_telemetry = get_json(telemetry_url)
+        cadence_latest_at = time.monotonic()
+        telemetry_samples.append(final_telemetry)
+        final_fast_classification = classify_fast_telemetry(final_telemetry)
+        if final_fast_classification:
+            classifications.append(final_fast_classification)
+
+        presented_frames_latest = number(
+            final_telemetry.get("presented_frames")
+        )
+        final_presentation_misses = number(
+            final_telemetry.get("unique_presentation_misses")
+        )
+        if (
+            presented_frames_baseline is not None
+            and presented_frames_latest < presented_frames_baseline
+        ):
+            raise ValueError(
+                "presented_frames reset during the measurement interval"
+            )
+        if final_presentation_misses < presentation_miss_baseline:
+            raise ValueError(
+                "unique_presentation_misses reset during the measurement "
+                "interval"
+            )
+        presentation_misses_since_baseline = nonnegative_counter_delta(
+            final_presentation_misses,
+            presentation_miss_baseline,
+        )
+        cadence_elapsed_seconds = cadence_latest_at - cadence_baseline_at
+        if (
+            presented_frames_baseline is not None
+            and cadence_elapsed_seconds > 0
+        ):
+            observed_presented_fps = (
+                nonnegative_counter_delta(
+                    presented_frames_latest,
+                    presented_frames_baseline,
+                )
+                / cadence_elapsed_seconds
+            )
+
+        final_diagnostics = get_json(diagnostics_url)
+        diagnostic_samples.append(final_diagnostics)
+        classifications.append(
+            classify(
+                final_diagnostics,
+                presentation_miss_delta=
+                    presentation_misses_since_baseline,
+                presentation_misses_since_baseline=
+                    presentation_misses_since_baseline,
+                observed_presented_fps=observed_presented_fps,
+                expected_presented_fps=args.expected_fps,
+                minimum_presented_fps_ratio=
+                    args.minimum_presented_fps_ratio,
+                allow_smoothness_cadence_fallback=False,
+            )
+        )
+    except (urllib.error.URLError, ValueError) as exc:
+        print(
+            f"FAIL: live playback measurement failed via {telemetry_url}: "
+            f"{exc}",
+            file=sys.stderr,
+        )
         return 2
 
-    if not samples:
-        print("FAIL: no diagnostics samples collected", file=sys.stderr)
+    if not telemetry_samples or not diagnostic_samples:
+        print("FAIL: no live playback samples collected", file=sys.stderr)
         return 2
 
     playing_samples = [
-        item for item in samples
-        if item.get("diagnostics", {}).get("playing", False)
+        item for item in telemetry_samples
+        if item.get("playback_active", False)
     ]
     if not playing_samples and not args.allow_not_playing:
         print("SKIP: JCut is not playing; start playback and rerun, or pass --allow-not-playing", file=sys.stderr)
@@ -250,10 +469,11 @@ def main() -> int:
         "diagnostics_disagree_playback_state",
         "ui_thread_heartbeat_stale_during_playback",
         "playback_clock_not_advancing",
+        "preview_presentation_cadence_below_target",
         "missing_visible_frames",
         "decoder_visible_wait_over_frame_budget",
         "visible_requests_blocked_or_backlogged",
-        "playback_buffer_presenting_old_frames",
+        "presenter_recorded_unique_misses",
         "presenter_handoff_upload_slow",
         "frame_status_refresh_slow_on_ui_thread",
         "decoder_returned_null_visible_frames",
@@ -264,7 +484,18 @@ def main() -> int:
         "display_screenshot_capture_slow",
         "display_framebuffer_changing",
     ]
-    display_classification = classify_display(samples, screenshot_samples)
+    display_samples = [
+        {
+            "diagnostics": {
+                "current_frame": item.get("current_frame"),
+                "playing": item.get("playback_active", False),
+            }
+        }
+        for item in telemetry_samples
+    ]
+    display_classification = classify_display(
+        display_samples, screenshot_samples
+    )
     if display_classification:
         classifications.append(display_classification)
     selected = min(
@@ -273,12 +504,45 @@ def main() -> int:
         if item.reason in priority
         else priority.index("late_or_inexact_frames_unclassified"),
     )
+    cadence_elapsed_seconds = max(
+        0.0, cadence_latest_at - cadence_baseline_at
+    )
+    presented_frames_delta = (
+        nonnegative_counter_delta(
+            presented_frames_latest,
+            presented_frames_baseline,
+        )
+        if presented_frames_latest is not None
+        and presented_frames_baseline is not None
+        else None
+    )
+    cadence_report = {
+        "warmup_seconds": max(0.0, args.warmup_seconds),
+        "counter_available": presented_frames_delta is not None,
+        "presented_frames_delta": presented_frames_delta,
+        "elapsed_seconds": cadence_elapsed_seconds,
+        "observed_presented_fps": (
+            presented_frames_delta / cadence_elapsed_seconds
+            if presented_frames_delta is not None
+            and cadence_elapsed_seconds > 0
+            else selected.details.get("observed_presented_fps")
+        ),
+        "expected_presented_fps": args.expected_fps,
+        "minimum_presented_fps_ratio":
+            args.minimum_presented_fps_ratio,
+        "minimum_presented_fps":
+            args.expected_fps * args.minimum_presented_fps_ratio,
+    }
     report = {
         "ok": True,
-        "sample_count": len(samples),
+        "sample_count": len(telemetry_samples),
+        "telemetry_sample_count": len(telemetry_samples),
+        "diagnostic_sample_count": len(diagnostic_samples),
         "playing_sample_count": len(playing_samples),
+        "measurement_path": "lock_free_playback_telemetry",
         "classification": selected.reason,
         "details": selected.details,
+        "presentation_cadence": cadence_report,
         "all_reasons": sorted({item.reason for item in classifications}),
         "display_probe": display_classification.details if display_classification else None,
     }

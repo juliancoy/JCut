@@ -231,8 +231,8 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
            QStringLiteral("%1%").arg(cacheProfile.value(QStringLiteral("hit_rate")).toDouble() * 100.0, 0, 'f', 1));
     addRow(QStringLiteral("Playback Buffered Frames"),
            QString::number(playbackPipelineProfile.value(QStringLiteral("buffered_frames")).toInt()));
-    addRow(QStringLiteral("Dropped Presentation Frames"),
-           QString::number(playbackPipelineProfile.value(QStringLiteral("dropped_presentation_frames")).toInt()));
+    addRow(QStringLiteral("Unique Presentation Misses"),
+           QString::number(previewProfile.value(QStringLiteral("unique_presentation_misses")).toInt()));
     addRow(QStringLiteral("CPU Memory Usage"),
            QStringLiteral("%1 / %2").arg(memoryBudgetProfile.value(QStringLiteral("cpu_usage")).toVariant().toLongLong())
                                     .arg(memoryBudgetProfile.value(QStringLiteral("cpu_max")).toVariant().toLongLong()));

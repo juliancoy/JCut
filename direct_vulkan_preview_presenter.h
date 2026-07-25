@@ -11,6 +11,7 @@
 #include <QRectF>
 #include <QVulkanInstance>
 
+#include <atomic>
 #include <memory>
 
 class QWidget;
@@ -59,8 +60,8 @@ struct DirectVulkanPreviewStats {
     int64_t diagnosticReadbackRequests = 0;
     int64_t diagnosticReadbackCopies = 0;
     int64_t decoderDiagnosticReadbackCopies = 0;
-    int64_t previewUpdateRequests = 0;
-    int64_t previewUpdatesDelivered = 0;
+    int64_t previewUpdatesDeferredWhileNotExposed = 0;
+    int64_t previewUpdatesDiscardedWhileNotExposed = 0;
     int64_t stalePreviewUpdateRecoveries = 0;
     int64_t previewSurfaceRestarts = 0;
     double lastStalePreviewUpdateAgeMs = 0.0;
@@ -101,6 +102,16 @@ struct DirectVulkanPreviewStats {
     editor::PlaybackStageMetric presentationStageMetric;
 };
 
+struct DirectVulkanPresentationTelemetry {
+    std::atomic<int64_t> presentedFrames{0};
+    std::atomic<int64_t> uniquePresentationMisses{0};
+    std::atomic<int64_t> previewUpdateRequests{0};
+    std::atomic<int64_t> previewUpdateEventsDelivered{0};
+    std::atomic<int64_t> previewUpdatesDelivered{0};
+    std::atomic<int64_t> activeRequestedSourceFrame{-1};
+    std::atomic<int64_t> activePresentedSourceFrame{-1};
+};
+
 class DirectVulkanPreviewPresenter final {
 public:
     explicit DirectVulkanPreviewPresenter(PreviewInteractionState* state, QWidget* parent = nullptr);
@@ -113,7 +124,7 @@ public:
     bool isActive() const;
     bool hasFailed() const;
     bool updatePending() const;
-    int64_t presentedFrames() const;
+    PreviewSurface::PresentationTelemetrySnapshot presentationTelemetrySnapshot() const;
     int64_t lastPresentedSourceFrame() const;
     QString failureReason() const;
     QString backendName() const;
@@ -171,7 +182,6 @@ private:
     QRect m_lastDiagnosticChromeGeometry;
     bool m_lastDiagnosticChromeLabelVisible = false;
     bool m_active = false;
-    int64_t m_presentedFrames = 0;
-    int64_t m_lastPresentedSourceFrame = -1;
+    DirectVulkanPresentationTelemetry m_presentationTelemetry;
     DirectVulkanPreviewStats m_stats;
 };

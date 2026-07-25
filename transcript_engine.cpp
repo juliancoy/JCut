@@ -18,6 +18,7 @@
 #include <QtEndian>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace editor
@@ -26,11 +27,21 @@ namespace {
 struct FacestreamDocCacheEntry {
     qint64 modifiedMs = 0;
     qint64 fileSize = 0;
+    qint64 nextValidationMs = 0;
     QJsonDocument doc;
 };
 
 QMutex g_facedetectionsDocCacheMutex;
 QHash<QString, FacestreamDocCacheEntry> g_facedetectionsDocCache;
+
+constexpr qint64 kArtifactMetadataRefreshMs = 1000;
+
+qint64 monotonicNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 QString originalTranscriptPathForEditableTranscriptPath(const QString& transcriptPath)
 {
@@ -60,13 +71,8 @@ QStringList transcriptSidecarCandidatePaths(const QString& transcriptPath)
     const QString original = QFileInfo(originalTranscriptPathForEditableTranscriptPath(exact)).absoluteFilePath();
     const QString editable = QFileInfo(editableTranscriptPathForTranscriptPath(exact)).absoluteFilePath();
     paths << exact << original << editable;
+    paths.removeAll(QString());
     paths.removeDuplicates();
-    paths.erase(std::remove_if(paths.begin(),
-                               paths.end(),
-                               [](const QString& path) {
-                                   return path.trimmed().isEmpty() || !QFileInfo::exists(path);
-                               }),
-                paths.end());
     return paths;
 }
 
@@ -296,22 +302,44 @@ bool parseFacestreamCborDocument(const QByteArray& cborBytes, QJsonDocument* out
 
 bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
 {
-    if (!outDoc) {
+    if (!outDoc || path.trimmed().isEmpty()) {
         return false;
     }
+    const qint64 nowMs = monotonicNowMs();
+    {
+        QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+        const auto cached = g_facedetectionsDocCache.constFind(path);
+        if (cached != g_facedetectionsDocCache.constEnd() &&
+            nowMs < cached->nextValidationMs) {
+            if (cached->doc.isObject()) {
+                *outDoc = cached->doc;
+                return true;
+            }
+            return false;
+        }
+    }
+
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
+        QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+        g_facedetectionsDocCache.insert(
+            path,
+            FacestreamDocCacheEntry{-1,
+                                    -1,
+                                    nowMs + kArtifactMetadataRefreshMs,
+                                    QJsonDocument{}});
         return false;
     }
     const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
     {
         QMutexLocker locker(&g_facedetectionsDocCacheMutex);
-        const auto cached = g_facedetectionsDocCache.constFind(path);
-        if (cached != g_facedetectionsDocCache.constEnd() &&
+        auto cached = g_facedetectionsDocCache.find(path);
+        if (cached != g_facedetectionsDocCache.end() &&
             cached->modifiedMs == modifiedMs &&
             cached->fileSize == fileSize &&
             cached->doc.isObject()) {
+            cached->nextValidationMs = nowMs + kArtifactMetadataRefreshMs;
             *outDoc = cached->doc;
             return true;
         }
@@ -370,7 +398,12 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     }
     {
         QMutexLocker locker(&g_facedetectionsDocCacheMutex);
-        g_facedetectionsDocCache.insert(path, FacestreamDocCacheEntry{modifiedMs, fileSize, doc});
+        g_facedetectionsDocCache.insert(
+            path,
+            FacestreamDocCacheEntry{modifiedMs,
+                                    fileSize,
+                                    nowMs + kArtifactMetadataRefreshMs,
+                                    doc});
     }
     *outDoc = doc;
     return true;
@@ -413,6 +446,7 @@ bool saveFacestreamDocToFile(const QString& path, const QJsonDocument& doc)
     g_facedetectionsDocCache.insert(path, FacestreamDocCacheEntry{
         info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0,
         info.exists() ? info.size() : 0,
+        monotonicNowMs() + kArtifactMetadataRefreshMs,
         doc});
     return true;
 }
@@ -536,7 +570,7 @@ QString TranscriptEngine::transcriptPathForClip(const TimelineClip &clip) const
             return registeredCutPath;
         }
         const QString explicitCutPath = clip.transcriptActiveCutPath.trimmed();
-        if (!explicitCutPath.isEmpty() && QFileInfo::exists(explicitCutPath)) {
+        if (!explicitCutPath.isEmpty()) {
             return QFileInfo(explicitCutPath).absoluteFilePath();
         }
         return activeTranscriptPathForClip(clip);

@@ -147,7 +147,8 @@ private:
     QJsonObject profilingSnapshot() const;
     QJsonObject speakerUiPerformanceSnapshot() const;
     QJsonObject pipelineSnapshot(bool verbose = false) const;
-    QJsonObject playbackStageMetricsSnapshot() const;
+    QJsonObject playbackStageMetricsSnapshot(
+        const QJsonObject& previewSnapshot) const;
     QJsonObject streamTimingSnapshot() const;
     QJsonObject startupProfileSnapshot() const;
     QJsonObject startupReadinessSnapshot() const;
@@ -322,6 +323,7 @@ private:
     void applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig);
     qreal effectiveAudioWarpRate() const;
     bool needsPitchPreservingPlaybackAudio() const;
+    void publishFastPlaybackSyncTelemetry();
     void updateAudioDriftRetime(bool reset = false);
     void reconcileActivePlaybackAudioState(bool alignRunningAudioToPlayhead = false);
     void requestPlaybackAudioWarmup();
@@ -748,6 +750,7 @@ private:
     int64_t m_filteredPlaybackSample = 0;
     int64_t m_playbackAudioFeedbackAnchorTimelineSample = 0;
     int64_t m_playbackAudioFeedbackAnchorFeedbackSample = 0;
+    uint64_t m_lastAudioOutputStartRevision = 0;
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
@@ -833,6 +836,17 @@ private:
     mutable QVector<ExportRangeSegment> m_effectiveTranscriptNormalizeRangesCache;
 
     std::atomic<qint64> m_fastCurrentFrame{0};
+    // Cross-thread, sample-domain telemetry mirrors. The UI transport remains
+    // the canonical clock; the revision brackets each published playback tick.
+    std::atomic<quint64> m_fastPlaybackSyncTelemetryRevision{0};
+    std::atomic<qint64> m_fastTransportTimelineSample{0};
+    std::atomic<qint64> m_fastProjectedAudioFeedbackTimelineSample{-1};
+    std::atomic<bool> m_fastAudioClockAvailable{false};
+    std::atomic<bool> m_fastHasPlayableAudio{false};
+    std::atomic<bool> m_fastAudioPlaybackBlocked{false};
+    std::atomic<bool> m_fastPitchPreservingAudioBlocked{false};
+    std::atomic<qint64> m_fastTimeStretchCacheMissCount{0};
+    std::atomic<int> m_fastAudioUnderrunCount{0};
     std::atomic<qint64> m_stateRevision{0};
     std::atomic<bool> m_fastPlaybackActive{false};
     std::atomic<qint64> m_lastMainThreadHeartbeatMs{0};

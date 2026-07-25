@@ -30,6 +30,7 @@ constexpr int kMinBaseWindowSamples = 64;
 constexpr int kMaxBaseWindowSamples = 8192;
 constexpr int kTargetCoarsestBins = 512;
 constexpr int kMaxWaveformLevels = 32;
+constexpr qint64 kFileValidationIntervalMs = 1000;
 
 inline float dbToAmp(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -56,14 +57,28 @@ WaveformService::Entry* WaveformService::prepareEntryLocked(const QString& media
         return nullptr;
     }
 
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    Entry& entry = m_entries[path];
+    if (entry.nextFileValidationMs > nowMs) {
+        if (!entry.fileAvailable) {
+            return nullptr;
+        }
+        entry.lastAccessMs = nowMs;
+        if (canonicalPathOut) {
+            *canonicalPathOut = path;
+        }
+        return &entry;
+    }
+
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
+        entry.fileAvailable = false;
+        entry.nextFileValidationMs = nowMs + kFileValidationIntervalMs;
         return nullptr;
     }
 
     const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
-    Entry& entry = m_entries[path];
     const bool fingerprintChanged =
         entry.fileMtimeMs != mtimeMs || entry.fileSize != fileSize;
     if (fingerprintChanged) {
@@ -71,7 +86,9 @@ WaveformService::Entry* WaveformService::prepareEntryLocked(const QString& media
         entry.fileMtimeMs = mtimeMs;
         entry.fileSize = fileSize;
     }
-    entry.lastAccessMs = QDateTime::currentMSecsSinceEpoch();
+    entry.fileAvailable = true;
+    entry.nextFileValidationMs = nowMs + kFileValidationIntervalMs;
+    entry.lastAccessMs = nowMs;
 
     const int desiredBaseWindow =
         qBound(kMinBaseWindowSamples,

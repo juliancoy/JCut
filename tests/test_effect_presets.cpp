@@ -67,7 +67,7 @@ private slots:
     void neutralMaskFrameMapCacheReusesValidationAndInvalidatesChanges();
     void genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels();
     void birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata();
-    void incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized();
+    void authenticatedPartialBiRefNetPrefixEnablesOnlyPersistedChild();
     void completedOrdinalSidecarWithInteriorHoleFailsClosed();
     void birefnetUxExposesExplicitContextActionsAndPreview();
     void clipSerializationMigratesLegacyEffectSpeechSync();
@@ -464,7 +464,9 @@ void TestEffectPresets::neutralMaskFrameMapValidatesOrdinalSidecarsAndSourceIden
     QVERIFY(QDir().mkpath(sidecarDir));
     QFile map(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(map.open(QIODevice::WriteOnly));
-    QVERIFY(map.write("# source_frame\tmask_frame\n0\t0\n") > 0);
+    QVERIFY(map.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n") > 0);
     map.close();
     QImage frame(2, 2, QImage::Format_Grayscale8);
     frame.fill(255);
@@ -479,21 +481,50 @@ void TestEffectPresets::neutralMaskFrameMapValidatesOrdinalSidecarsAndSourceIden
     QVERIFY2(validated.metadataVerified, validated.error.c_str());
     QVERIFY2(validated.renderReady, validated.error.c_str());
     QCOMPARE(validated.mappedFrameCount, std::int64_t{1});
-    QCOMPARE(jcut::masks::mappedMaskFrameForSourceFrameCore(
-        sidecarDir.toStdString(), sourcePath.toStdString(), 0),
+    QCOMPARE(jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), sourcePath.toStdString(), 0, 0),
         std::optional<std::int64_t>{0});
+    QCOMPARE(jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), sourcePath.toStdString(), 99, 0),
+        std::optional<std::int64_t>{0});
+    QVERIFY(!jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(),
+        sourcePath.toStdString(),
+        0,
+        jcut::core::kUnknownSourcePresentationTimestamp));
+    QVERIFY(!jcut::masks::mappedMaskFrameForSourceFrameCore(
+        sidecarDir.toStdString(), sourcePath.toStdString(), 0));
     QVERIFY(!jcut::masks::mappedMaskFrameForSourceFrameCore(
         sidecarDir.toStdString(), sourcePath.toStdString(), 1));
+
+    const QString oversizedFramePath = QDir(sidecarDir).filePath(
+        QStringLiteral("frame_999999999999999999999999999999.png"));
+    QFile oversizedFrame(oversizedFramePath);
+    QVERIFY(oversizedFrame.open(QIODevice::WriteOnly));
+    QCOMPARE(oversizedFrame.write("png"), qint64{3});
+    oversizedFrame.close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !jcut::masks::loadMaskFrameMapCore(
+             sidecarDir.toStdString(), sourcePath.toStdString()).renderReady,
+        2000);
+    QVERIFY(QFile::remove(oversizedFramePath));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        jcut::masks::loadMaskFrameMapCore(
+            sidecarDir.toStdString(), sourcePath.toStdString()).renderReady,
+        2000);
 
     QVERIFY(source.open(QIODevice::Append));
     QCOMPARE(source.write("-changed"), qint64{8});
     source.close();
-    const auto stale = jcut::masks::loadMaskFrameMapCore(
-        sidecarDir.toStdString(), sourcePath.toStdString());
+    jcut::masks::MaskFrameMapCore stale;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(stale = jcut::masks::loadMaskFrameMapCore(
+              sidecarDir.toStdString(), sourcePath.toStdString())).renderReady,
+        2000);
     QVERIFY(!stale.metadataVerified);
     QVERIFY(!stale.renderReady);
-    QVERIFY(!jcut::masks::mappedMaskFrameForSourceFrameCore(
-        sidecarDir.toStdString(), sourcePath.toStdString(), 0));
+    QVERIFY(!jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), sourcePath.toStdString(), 0, 0));
 
     const QString manualDir = temp.filePath(QStringLiteral("manual_mask"));
     QVERIFY(QDir().mkpath(manualDir));
@@ -520,7 +551,9 @@ void TestEffectPresets::neutralMaskFrameMapCacheReusesValidationAndInvalidatesCh
     QVERIFY(QDir().mkpath(sidecarDir));
     QFile map(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(map.open(QIODevice::WriteOnly));
-    QVERIFY(map.write("# source_frame\tmask_frame\n0\t0\n") > 0);
+    QVERIFY(map.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n") > 0);
     map.close();
     const QString framePath =
         QDir(sidecarDir).filePath(QStringLiteral("frame_000001.png"));
@@ -534,8 +567,8 @@ void TestEffectPresets::neutralMaskFrameMapCacheReusesValidationAndInvalidatesCh
 
     jcut::masks::clearMaskFrameMapCoreCache();
     const auto mappedFrame = [&]() {
-        return jcut::masks::mappedMaskFrameForSourceFrameCore(
-            sidecarDir.toStdString(), sourcePath.toStdString(), 0);
+        return jcut::masks::mappedMaskFrameForDecodedSampleCore(
+            sidecarDir.toStdString(), sourcePath.toStdString(), 0, 0);
     };
     QCOMPARE(mappedFrame(), std::optional<std::int64_t>{0});
     auto stats = jcut::masks::maskFrameMapCoreCacheStats();
@@ -550,25 +583,26 @@ void TestEffectPresets::neutralMaskFrameMapCacheReusesValidationAndInvalidatesCh
     QCOMPARE(stats.validationCount, std::uint64_t{1});
 
     QVERIFY(QFile::remove(framePath));
-    QVERIFY(!mappedFrame());
+    QTRY_VERIFY_WITH_TIMEOUT(!mappedFrame(), 2000);
     stats = jcut::masks::maskFrameMapCoreCacheStats();
     QCOMPARE(stats.validationCount, std::uint64_t{2});
 
     QVERIFY(frame.save(framePath));
-    QCOMPARE(mappedFrame(), std::optional<std::int64_t>{0});
+    QTRY_COMPARE_WITH_TIMEOUT(
+        mappedFrame(), std::optional<std::int64_t>{0}, 2000);
     stats = jcut::masks::maskFrameMapCoreCacheStats();
     QCOMPARE(stats.validationCount, std::uint64_t{3});
 
     QFile emptyFrame(framePath);
     QVERIFY(emptyFrame.open(QIODevice::WriteOnly | QIODevice::Truncate));
     emptyFrame.close();
-    QVERIFY(!jcut::masks::maskFramePathForSourceFrameCore(
-        sidecarDir.toStdString(), sourcePath.toStdString(), 0));
+    QVERIFY(!jcut::masks::maskFramePathForDecodedSampleCore(
+        sidecarDir.toStdString(), sourcePath.toStdString(), 0, 0));
     QVERIFY(frame.save(framePath));
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         sidecarDir, sourcePath, false, false));
-    QVERIFY(!mappedFrame());
+    QTRY_VERIFY_WITH_TIMEOUT(!mappedFrame(), 2000);
     stats = jcut::masks::maskFrameMapCoreCacheStats();
     const std::uint64_t incompleteValidationCount = stats.validationCount;
 
@@ -582,7 +616,8 @@ void TestEffectPresets::neutralMaskFrameMapCacheReusesValidationAndInvalidatesCh
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         sidecarDir, sourcePath, false, true));
-    QCOMPARE(mappedFrame(), std::optional<std::int64_t>{0});
+    QTRY_COMPARE_WITH_TIMEOUT(
+        mappedFrame(), std::optional<std::int64_t>{0}, 2000);
     stats = jcut::masks::maskFrameMapCoreCacheStats();
     QCOMPARE(stats.validationCount, incompleteValidationCount + 1);
 }
@@ -606,7 +641,9 @@ void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependent
     }
     QFile samMap(QDir(samDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(samMap.open(QIODevice::WriteOnly));
-    samMap.write("# source_frame\tmask_frame\n0\t0\n");
+    samMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n");
     samMap.close();
     QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(samDir, mediaPath));
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
@@ -666,7 +703,9 @@ void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata
     frame.close();
     QFile frameMap(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(frameMap.open(QIODevice::WriteOnly));
-    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n");
     frameMap.close();
     QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(sidecarDir, mediaPath));
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
@@ -689,7 +728,8 @@ void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata
     QVERIFY(sidecars.constFirst().readinessIssue.isEmpty());
 }
 
-void TestEffectPresets::incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized()
+void TestEffectPresets::
+    authenticatedPartialBiRefNetPrefixEnablesOnlyPersistedChild()
 {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -706,19 +746,52 @@ void TestEffectPresets::incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized(
     frame.close();
     QFile frameMap(QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(frameMap.open(QIODevice::WriteOnly));
-    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n"
+        "1\t10\t1\n");
     frameMap.close();
-    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(sidecarDir, mediaPath));
+    const QJsonObject identity = mask_sidecar_test::sourceIdentity(mediaPath);
+    QVERIFY(!identity.isEmpty());
+    const QString mapHash = mask_sidecar_test::fileSha256(
+        QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(mask_sidecar_test::writeJson(
+        QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.json")),
+        QJsonObject{
+            {QStringLiteral("schema"),
+             QStringLiteral("jcut_frame_index_map_v3")},
+            {QStringLiteral("status"), QStringLiteral("ready")},
+            {QStringLiteral("frame_domain"),
+             QStringLiteral(
+                 "source_best_effort_timestamp_to_generated_ordinal")},
+            {QStringLiteral("source_identity"), identity},
+            {QStringLiteral("output_fps"), QJsonValue::Null},
+            {QStringLiteral("map_file"),
+             QStringLiteral("jcut_frame_map.tsv")},
+            {QStringLiteral("map_sha256"), mapHash},
+            {QStringLiteral("mapped_frame_count"), 2},
+            {QStringLiteral("min_source_frame"), 0},
+            {QStringLiteral("max_source_frame"), 1},
+            {QStringLiteral("min_source_presentation_timestamp"), 0},
+            {QStringLiteral("max_source_presentation_timestamp"), 10},
+            {QStringLiteral("max_mask_frame"), 1},
+            {QStringLiteral("expected_output_frame_count"), 2},
+        }));
 
-    const editor::masks::MaskSidecar sidecar =
+    const editor::masks::MaskSidecar unproven =
         editor::masks::inspectMaskSidecar(sidecarDir, QStringLiteral("portrait"));
-    QVERIFY(sidecar.isValid());
-    QVERIFY(sidecar.decodeOrdinalFrames);
-    QVERIFY(sidecar.frameIndexMapAvailable);
-    QVERIFY(sidecar.frameIndexMetadataAvailable);
-    QVERIFY(!sidecar.completionConfirmed);
-    QVERIFY(!sidecar.isReadyForTimeline());
-    QCOMPARE(sidecar.readinessIssue, QStringLiteral("Generation incomplete"));
+    QVERIFY(unproven.isValid());
+    QVERIFY(unproven.decodeOrdinalFrames);
+    QVERIFY(unproven.frameIndexMapAvailable);
+    QVERIFY(unproven.frameIndexMetadataAvailable);
+    QVERIFY(!unproven.frameCoverageComplete);
+    QVERIFY(!unproven.completionConfirmed);
+    QVERIFY(!unproven.authenticatedPartialRun);
+    QVERIFY(!unproven.isReadyForTimeline());
+    QVERIFY(!unproven.isAvailableForPersistedTimeline());
+    QCOMPARE(
+        unproven.readinessIssue,
+        QStringLiteral("Frame coverage incomplete"));
 
     TimelineClip source;
     source.id = QStringLiteral("portrait");
@@ -733,7 +806,7 @@ void TestEffectPresets::incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized(
     TimelineClip persisted = makeMaskMatteClip(source);
     persisted.id = QStringLiteral("persisted-incomplete-alpha");
     persisted.maskFramesDir = sidecarDir;
-    persisted.generatedFromMaskId = sidecar.id;
+    persisted.generatedFromMaskId = unproven.id;
     persisted.maskEnabled = true;
     clips.push_back(persisted);
     bool availabilityChanged = false;
@@ -743,14 +816,112 @@ void TestEffectPresets::incompleteBiRefNetSidecarsStayDisabledAndUnmaterialized(
     QVERIFY(clips.constLast().maskEnabled);
     QVERIFY(!clips.constLast().maskSidecarAvailable);
     QCOMPARE(clips.constLast().maskSidecarAvailabilityIssue,
-             QStringLiteral("Generation incomplete"));
+             QStringLiteral("Frame coverage incomplete"));
 
-    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
-        sidecarDir, mediaPath, true));
+    const QString runPath =
+        QDir(sidecarDir).filePath(QStringLiteral("jcut_alpha_run.json"));
+    QJsonObject run{
+        {QStringLiteral("schema"),
+         QStringLiteral("jcut_birefnet_alpha_run_v1")},
+        {QStringLiteral("source_identity"), identity},
+        {QStringLiteral("frame_map_sha256"), QString(64, QLatin1Char('0'))},
+        {QStringLiteral("expected_frame_count"), 2},
+    };
+    QVERIFY(mask_sidecar_test::writeJson(runPath, run));
+    const auto unauthenticated =
+        editor::masks::inspectMaskSidecar(
+            sidecarDir, QStringLiteral("portrait"), mediaPath);
+    QVERIFY(!unauthenticated.authenticatedPartialRun);
+    QVERIFY(!unauthenticated.isAvailableForPersistedTimeline());
+
+    run.insert(QStringLiteral("frame_map_sha256"), mapHash);
+    QVERIFY(mask_sidecar_test::writeJson(runPath, run));
+    const auto partial = editor::masks::inspectMaskSidecar(
+        sidecarDir, QStringLiteral("portrait"), mediaPath);
+    QVERIFY(partial.authenticatedPartialRun);
+    QVERIFY(!partial.frameCoverageComplete);
+    QVERIFY(!partial.completionConfirmed);
+    QVERIFY(!partial.isReadyForTimeline());
+    QVERIFY(partial.isAvailableForPersistedTimeline());
+    QCOMPARE(
+        partial.readinessIssue,
+        QStringLiteral("Generation incomplete"));
+    QVERIFY(!editor::masks::hasReadyMaskSidecar(source));
+
     availabilityChanged = false;
-    QVERIFY(reconcileMaskMatteChildrenFromDisk(clips, &availabilityChanged));
+    QVERIFY(!reconcileMaskMatteChildrenFromDisk(
+        clips, &availabilityChanged));
     QVERIFY(availabilityChanged);
+    QCOMPARE(clips.size(), 2);
     QVERIFY(clips.constLast().maskEnabled);
+    QVERIFY(clips.constLast().maskSidecarAvailable);
+    QCOMPARE(
+        clips.constLast().maskSidecarAvailabilityIssue,
+        QStringLiteral("Generation incomplete"));
+
+    jcut::masks::clearMaskFrameMapCoreCache();
+    auto core = jcut::masks::loadMaskFrameMapCore(
+        sidecarDir.toStdString(), mediaPath.toStdString());
+    QVERIFY(core.metadataVerified);
+    QVERIFY(core.authenticatedPartialRun);
+    QVERIFY(core.renderReady);
+    QCOMPARE(jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 99, 0),
+        std::optional<std::int64_t>{0});
+    QCOMPARE(jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 1, 10),
+        std::optional<std::int64_t>{1});
+    QVERIFY(jcut::masks::maskFramePathForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 0, 0));
+    QVERIFY(!jcut::masks::maskFramePathForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 1, 10));
+    const std::uint64_t partialValidationCount =
+        jcut::masks::maskFrameMapCoreCacheStats().validationCount;
+
+    QFile secondFrame(
+        QDir(sidecarDir).filePath(QStringLiteral("frame_000002.png")));
+    QVERIFY(secondFrame.open(QIODevice::WriteOnly));
+    QCOMPARE(secondFrame.write("png"), qint64{3});
+    secondFrame.close();
+    QCOMPARE(jcut::masks::mappedMaskFrameForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 1, 10),
+        std::optional<std::int64_t>{1});
+    QVERIFY(jcut::masks::maskFramePathForDecodedSampleCore(
+        sidecarDir.toStdString(), mediaPath.toStdString(), 1, 10));
+    core = jcut::masks::loadMaskFrameMapCore(
+        sidecarDir.toStdString(), mediaPath.toStdString());
+    QVERIFY(core.authenticatedPartialRun);
+    QCOMPARE(
+        jcut::masks::maskFrameMapCoreCacheStats().validationCount,
+        partialValidationCount);
+
+    QVERIFY(mask_sidecar_test::writeJson(
+        QDir(sidecarDir).filePath(QStringLiteral("jcut_alpha.json")),
+        QJsonObject{
+            {QStringLiteral("schema"),
+             QStringLiteral("jcut_alpha_sidecar_v1")},
+            {QStringLiteral("complete"), true},
+            {QStringLiteral("source_type"),
+             QStringLiteral("birefnet_continuous_alpha")},
+            {QStringLiteral("frame_domain"),
+             QStringLiteral("decode_ordinal")},
+            {QStringLiteral("frame_index_map"),
+             QStringLiteral("jcut_frame_map.tsv")},
+            {QStringLiteral("frame_index_metadata"),
+             QStringLiteral("jcut_frame_map.json")},
+            {QStringLiteral("frame_map_sha256"), mapHash},
+            {QStringLiteral("expected_frame_count"), 2},
+            {QStringLiteral("source_identity"), identity},
+        }));
+    const auto completed = editor::masks::inspectMaskSidecar(
+        sidecarDir, QStringLiteral("portrait"), mediaPath);
+    QVERIFY(completed.isReadyForTimeline());
+    QVERIFY(completed.completionConfirmed);
+    QVERIFY(!completed.authenticatedPartialRun);
+    availabilityChanged = false;
+    QVERIFY(reconcileMaskMatteChildrenFromDisk(
+        clips, &availabilityChanged));
+    QVERIFY(availabilityChanged);
     QVERIFY(clips.constLast().maskSidecarAvailable);
     QVERIFY(clips.constLast().maskSidecarAvailabilityIssue.isEmpty());
 }
@@ -779,17 +950,20 @@ void TestEffectPresets::completedOrdinalSidecarWithInteriorHoleFailsClosed()
         QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.tsv"));
     QFile frameMap(mapPath);
     QVERIFY(frameMap.open(QIODevice::WriteOnly));
-    frameMap.write("# source_frame\tmask_frame\n0\t0\n1\t1\n2\t2\n");
+    frameMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n1\t1\t1\n2\t2\t2\n");
     frameMap.close();
     const QJsonObject identity = mask_sidecar_test::sourceIdentity(mediaPath);
     QVERIFY(!identity.isEmpty());
     QVERIFY(mask_sidecar_test::writeJson(
         QDir(sidecarDir).filePath(QStringLiteral("jcut_frame_map.json")),
         QJsonObject{
-            {QStringLiteral("schema"), QStringLiteral("jcut_frame_index_map_v2")},
+            {QStringLiteral("schema"), QStringLiteral("jcut_frame_index_map_v3")},
             {QStringLiteral("status"), QStringLiteral("ready")},
             {QStringLiteral("frame_domain"),
-             QStringLiteral("source_timestamp_to_generated_ordinal")},
+             QStringLiteral(
+                 "source_best_effort_timestamp_to_generated_ordinal")},
             {QStringLiteral("source_identity"), identity},
             {QStringLiteral("output_fps"), QJsonValue::Null},
             {QStringLiteral("map_file"), QStringLiteral("jcut_frame_map.tsv")},
@@ -797,6 +971,8 @@ void TestEffectPresets::completedOrdinalSidecarWithInteriorHoleFailsClosed()
             {QStringLiteral("mapped_frame_count"), 3},
             {QStringLiteral("min_source_frame"), 0},
             {QStringLiteral("max_source_frame"), 2},
+            {QStringLiteral("min_source_presentation_timestamp"), 0},
+            {QStringLiteral("max_source_presentation_timestamp"), 2},
             {QStringLiteral("max_mask_frame"), 2},
             {QStringLiteral("expected_output_frame_count"), 3},
         }));
@@ -863,7 +1039,7 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  editor.contains(QStringLiteral("Composite Check")) &&
                  editor.contains(QStringLiteral("preview_source.png")) &&
                  editor.contains(QStringLiteral("Live result")) &&
-                 editor.contains(QStringLiteral("jcut_live_preview.png")),
+                 runner.contains(QStringLiteral("jcut_live_preview.png")),
              "BiRefNet preflight must provide a visual source/alpha/composite preview.");
     QVERIFY2(runner.contains(QStringLiteral("--frame-index")) &&
                  runner.contains(QStringLiteral("preview_source.png")) &&
@@ -871,7 +1047,10 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  runner.contains(QStringLiteral("live_preview_strip")),
              "BiRefNet runner must support bounded and live source/alpha/composite previews.");
     QVERIFY2(shell.contains(QStringLiteral("jcut_frame_index_map.py")) &&
-                 shell.contains(QStringLiteral("--source-frame")) &&
+                 shell.contains(QStringLiteral(
+                     "--source-presentation-timestamp")) &&
+                 editor.contains(QStringLiteral(
+                     "presentedFrame.sourcePresentationTimestamp()")) &&
                  shell.contains(QStringLiteral("PREVIEW_ONLY")) &&
                  runner.contains(QStringLiteral("\"frame_domain\": \"decode_ordinal\"")) &&
                  runner.contains(QStringLiteral("\"frame_index_map\": \"jcut_frame_map.tsv\"")) &&
@@ -880,7 +1059,7 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  samRunner.contains(QStringLiteral("from jcut_frame_index_map import")) &&
                  samRunner.contains(QStringLiteral("jcut_mask.json")) &&
                  samRunner.contains(QStringLiteral("verify_contiguous_mask_frames")) &&
-                 frameMapHelper.contains(QStringLiteral("jcut_frame_index_map_v2")) &&
+                 frameMapHelper.contains(QStringLiteral("jcut_frame_index_map_v3")) &&
                  frameMapHelper.contains(QStringLiteral("source_identity")) &&
                  frameMapHelper.contains(QStringLiteral("map_sha256")) &&
                  frameMapHelper.contains(QStringLiteral("-show_frames")) &&

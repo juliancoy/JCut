@@ -6,6 +6,10 @@
 
 #include <memory>
 
+namespace editor {
+class FrameHandle;
+}
+
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
 QImage applyClipMaskEffectsToImage(const QImage& source,
@@ -16,9 +20,15 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
                                    int64_t sourceFrame,
                                    const TimelineClip::GradingKeyframe& clipGrade);
 QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame);
+QImage rawClipMaskImage(const TimelineClip& clip,
+                        const editor::FrameHandle& presentedFrame);
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
     int64_t sourceFrame);
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
+    const TimelineClip& clip,
+    const editor::FrameHandle& presentedFrame);
+void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame);
 // Applies correction polygons that have already been filtered for the current
 // timeline position. The result is a grayscale mask with corrected regions
 // erased to zero, ready for either preview or export upload.

@@ -19,8 +19,7 @@ QWidget* createDirectVulkanPreviewWindowContainer(DirectVulkanPreviewWindow* win
                                                   QWidget* parent);
 DirectVulkanPreviewWindow* createDirectVulkanPreviewWindow(
     PreviewInteractionState* state,
-    int64_t* presentedFrames,
-    int64_t* lastPresentedSourceFrame,
+    DirectVulkanPresentationTelemetry* presentationTelemetry,
     DirectVulkanPreviewStats* stats,
     bool* active,
     QString* failureReason,
@@ -48,6 +47,8 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
 bool directVulkanPreviewWindowUpdatePending(DirectVulkanPreviewWindow* window);
 bool directVulkanPreviewWindowIsValid(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* window);
+void directVulkanPreviewWindowResetProfilingAnchors(
+    DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowRequestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window);
 QImage directVulkanPreviewWindowLatestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window);
 bool directVulkanPreviewWindowPipelineThumbnailReadbackPending(DirectVulkanPreviewWindow* window);

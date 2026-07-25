@@ -155,6 +155,11 @@ void NullPreviewSurface::setPlaybackTuning(const PlaybackTuning& tuning) { m_pla
 PreviewSurface::PlaybackTuning NullPreviewSurface::playbackTuning() const { return m_playbackTuning; }
 QImage NullPreviewSurface::latestPresentedFrameImageForClip(const QString&) const { return {}; }
 QVector<PreviewSurface::PipelineStageSnapshot> NullPreviewSurface::livePipelineSnapshots() const { return {}; }
+PreviewSurface::PresentationTelemetrySnapshot
+NullPreviewSurface::presentationTelemetrySnapshot() const
+{
+    return {};
+}
 QJsonObject NullPreviewSurface::pipelineHealthSnapshot() const
 {
     return QJsonObject{

@@ -19,10 +19,69 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
 namespace {
+
+constexpr qint64 kTranscriptFilesystemRefreshMs = 1000;
+
+qint64 monotonicNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+struct PathExistenceCacheEntry {
+    bool exists = false;
+    qint64 nextValidationMs = 0;
+};
+
+QMutex& pathExistenceCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, PathExistenceCacheEntry>& pathExistenceCache()
+{
+    static QHash<QString, PathExistenceCacheEntry> cache;
+    return cache;
+}
+
+bool pathExistsWithBoundedRefresh(const QString& path)
+{
+    const QString trimmedPath = path.trimmed();
+    if (trimmedPath.isEmpty()) {
+        return false;
+    }
+    const qint64 nowMs = monotonicNowMs();
+    {
+        QMutexLocker locker(&pathExistenceCacheMutex());
+        const auto cached = pathExistenceCache().constFind(trimmedPath);
+        if (cached != pathExistenceCache().cend() &&
+            nowMs < cached->nextValidationMs) {
+            return cached->exists;
+        }
+    }
+
+    const bool exists = QFileInfo::exists(trimmedPath);
+    {
+        QMutexLocker locker(&pathExistenceCacheMutex());
+        pathExistenceCache().insert(
+            trimmedPath,
+            PathExistenceCacheEntry{exists, nowMs + kTranscriptFilesystemRefreshMs});
+    }
+    return exists;
+}
+
+void clearTranscriptPathDiscoveryCache()
+{
+    QMutexLocker locker(&pathExistenceCacheMutex());
+    pathExistenceCache().clear();
+}
 
 QMutex& transcriptSourceRootMutex()
 {
@@ -67,10 +126,13 @@ QString transcriptSourcePathForClip(const TimelineClip& clip)
 
 void setTranscriptSourceRootPath(const QString& rootPath)
 {
-    QMutexLocker locker(&transcriptSourceRootMutex());
-    transcriptSourceRootStorage() = rootPath.trimmed().isEmpty()
-        ? QString()
-        : QFileInfo(rootPath).absoluteFilePath();
+    {
+        QMutexLocker locker(&transcriptSourceRootMutex());
+        transcriptSourceRootStorage() = rootPath.trimmed().isEmpty()
+            ? QString()
+            : QFileInfo(rootPath).absoluteFilePath();
+    }
+    clearTranscriptPathDiscoveryCache();
 }
 
 QString transcriptSourceRootPath()
@@ -99,6 +161,9 @@ QString TranscriptSourceKey::canonicalKey() const
 
 QString TranscriptSourceKey::fileStem() const
 {
+    if (!isValid()) {
+        return QString();
+    }
     const QString canonical = canonicalKey();
     const QFileInfo info(editor::audio::pathFromSourceKey(canonical));
     QString stem = info.completeBaseName();
@@ -153,6 +218,9 @@ QString transcriptSourceKeyForClip(const TimelineClip& clip)
 
 QString transcriptPathForSource(const TranscriptSourceKey& source)
 {
+    if (!source.isValid()) {
+        return QString();
+    }
     const QFileInfo info(editor::audio::pathFromSourceKey(source.canonicalKey()));
     return info.dir().filePath(source.fileStem() + QStringLiteral(".json"));
 }
@@ -249,7 +317,7 @@ bool transcriptSidecarExistsForTranscriptPath(const QString& transcriptPath) {
         info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),
     };
     for (const QString& candidatePath : candidates) {
-        if (QFileInfo::exists(candidatePath)) {
+        if (pathExistsWithBoundedRefresh(candidatePath)) {
             return true;
         }
     }
@@ -266,9 +334,27 @@ bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcrip
     // Runtime transform evaluation can resolve this path several times per frame.
     // Parsing multi-megabyte continuity artifacts just to choose a path is both
     // redundant and particularly harmful on the GUI thread. Cache the answer by
-    // artifact metadata so a completed or atomically replaced artifact invalidates
-    // the entry immediately without requiring a timer or manual invalidation.
+    // artifact metadata, with bounded revalidation so playback never polls the
+    // filesystem at frame rate.
     const QFileInfo transcriptInfo(trimmedPath);
+    const QString cacheKey = transcriptInfo.absoluteFilePath();
+    const qint64 nowMs = monotonicNowMs();
+    struct PayloadCacheEntry {
+        QString metadataSignature;
+        bool hasUsablePayload = false;
+        qint64 nextValidationMs = 0;
+    };
+    static QMutex payloadCacheMutex;
+    static QHash<QString, PayloadCacheEntry> payloadCache;
+    {
+        QMutexLocker locker(&payloadCacheMutex);
+        const auto cached = payloadCache.constFind(cacheKey);
+        if (cached != payloadCache.cend() &&
+            nowMs < cached->nextValidationMs) {
+            return cached->hasUsablePayload;
+        }
+    }
+
     const QString artifactBase = transcriptInfo.dir().filePath(transcriptInfo.completeBaseName());
     const QStringList artifactPaths{
         artifactBase + QStringLiteral("_facestream.bin"),
@@ -280,25 +366,21 @@ bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcrip
     metadataSignature.reserve(192);
     for (const QString& artifactPath : artifactPaths) {
         const QFileInfo artifactInfo(artifactPath);
+        const bool exists = artifactInfo.exists();
         metadataSignature += QStringLiteral("%1:%2:%3|")
-                                 .arg(artifactInfo.exists() ? 1 : 0)
-                                 .arg(artifactInfo.exists() ? artifactInfo.size() : -1)
-                                 .arg(artifactInfo.exists()
+                                 .arg(exists ? 1 : 0)
+                                 .arg(exists ? artifactInfo.size() : -1)
+                                 .arg(exists
                                           ? artifactInfo.lastModified().toMSecsSinceEpoch()
                                           : -1);
     }
 
-    struct PayloadCacheEntry {
-        QString metadataSignature;
-        bool hasUsablePayload = false;
-    };
-    static QMutex payloadCacheMutex;
-    static QHash<QString, PayloadCacheEntry> payloadCache;
     {
         QMutexLocker locker(&payloadCacheMutex);
-        const auto cached = payloadCache.constFind(transcriptInfo.absoluteFilePath());
-        if (cached != payloadCache.cend() &&
+        auto cached = payloadCache.find(cacheKey);
+        if (cached != payloadCache.end() &&
             cached->metadataSignature == metadataSignature) {
+            cached->nextValidationMs = nowMs + kTranscriptFilesystemRefreshMs;
             return cached->hasUsablePayload;
         }
     }
@@ -325,8 +407,11 @@ bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcrip
     }
     {
         QMutexLocker locker(&payloadCacheMutex);
-        payloadCache.insert(transcriptInfo.absoluteFilePath(),
-                            PayloadCacheEntry{metadataSignature, hasUsablePayload});
+        payloadCache.insert(
+            cacheKey,
+            PayloadCacheEntry{metadataSignature,
+                              hasUsablePayload,
+                              nowMs + kTranscriptFilesystemRefreshMs});
     }
     return hasUsablePayload;
 }
@@ -359,12 +444,14 @@ struct SpeakerIdentityCacheEntry {
 struct TranscriptJsonCacheEntry {
     qint64 mtimeMs = -1;
     qint64 fileSize = -1;
+    qint64 nextValidationMs = 0;
     QJsonDocument document;
 };
 
 struct TranscriptRuntimeCacheEntry {
     qint64 mtimeMs = -1;
     qint64 fileSize = -1;
+    qint64 nextValidationMs = 0;
     std::shared_ptr<const TranscriptRuntimeDocument> document;
 };
 
@@ -558,19 +645,41 @@ bool loadTranscriptJsonWithCache(const QString& transcriptPath, QJsonDocument* d
     if (!documentOut || transcriptPath.trimmed().isEmpty()) {
         return false;
     }
+    const qint64 nowMs = monotonicNowMs();
+    {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        const auto cached = transcriptJsonCacheByPath().constFind(transcriptPath);
+        if (cached != transcriptJsonCacheByPath().cend() &&
+            nowMs < cached->nextValidationMs) {
+            if (cached->document.isObject()) {
+                *documentOut = cached->document;
+                return true;
+            }
+            return false;
+        }
+    }
+
     const QFileInfo info(transcriptPath);
     if (!info.exists() || !info.isFile()) {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        transcriptJsonCacheByPath().insert(
+            transcriptPath,
+            TranscriptJsonCacheEntry{-1,
+                                     -1,
+                                     nowMs + kTranscriptFilesystemRefreshMs,
+                                     QJsonDocument{}});
         return false;
     }
     const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
     {
         QMutexLocker locker(&transcriptJsonCacheMutex());
-        const auto it = transcriptJsonCacheByPath().constFind(transcriptPath);
-        if (it != transcriptJsonCacheByPath().cend() &&
+        auto it = transcriptJsonCacheByPath().find(transcriptPath);
+        if (it != transcriptJsonCacheByPath().end() &&
             it->mtimeMs == mtimeMs &&
             it->fileSize == fileSize &&
             it->document.isObject()) {
+            it->nextValidationMs = nowMs + kTranscriptFilesystemRefreshMs;
             *documentOut = it->document;
             return true;
         }
@@ -579,6 +688,13 @@ bool loadTranscriptJsonWithCache(const QString& transcriptPath, QJsonDocument* d
     editor::TranscriptEngine engine;
     QJsonDocument transcriptDoc;
     if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        transcriptJsonCacheByPath().insert(
+            transcriptPath,
+            TranscriptJsonCacheEntry{mtimeMs,
+                                     fileSize,
+                                     nowMs + kTranscriptFilesystemRefreshMs,
+                                     QJsonDocument{}});
         return false;
     }
 
@@ -587,10 +703,22 @@ bool loadTranscriptJsonWithCache(const QString& transcriptPath, QJsonDocument* d
         TranscriptJsonCacheEntry& entry = transcriptJsonCacheByPath()[transcriptPath];
         entry.mtimeMs = mtimeMs;
         entry.fileSize = fileSize;
+        entry.nextValidationMs = nowMs + kTranscriptFilesystemRefreshMs;
         entry.document = transcriptDoc;
     }
     *documentOut = transcriptDoc;
     return true;
+}
+
+qint64 transcriptJsonRevisionWithBoundedRefresh(const QString& transcriptPath)
+{
+    QJsonDocument document;
+    if (!loadTranscriptJsonWithCache(transcriptPath, &document)) {
+        return -1;
+    }
+    QMutexLocker locker(&transcriptJsonCacheMutex());
+    const auto cached = transcriptJsonCacheByPath().constFind(transcriptPath);
+    return cached == transcriptJsonCacheByPath().cend() ? -1 : cached->mtimeMs;
 }
 
 std::atomic<qint64>& speakerTrackingLookupCount() {
@@ -952,6 +1080,9 @@ QString transcriptEditablePathForClipFile(const QString& filePath) {
 }
 
 QString transcriptEditablePathForSource(const TranscriptSourceKey& source) {
+    if (!source.isValid()) {
+        return QString();
+    }
     const QFileInfo info(editor::audio::pathFromSourceKey(source.canonicalKey()));
     return info.dir().filePath(source.fileStem() + QStringLiteral("_editable.json"));
 }
@@ -966,7 +1097,7 @@ QString transcriptWorkingPathForClipFile(const QString& filePath) {
 
 QString transcriptWorkingPathForSource(const TranscriptSourceKey& source) {
     const QString editablePath = transcriptEditablePathForSource(source);
-    if (QFileInfo::exists(editablePath)) {
+    if (pathExistsWithBoundedRefresh(editablePath)) {
         return editablePath;
     }
     return transcriptPathForSource(source);
@@ -974,6 +1105,10 @@ QString transcriptWorkingPathForSource(const TranscriptSourceKey& source) {
 
 QString transcriptWorkingPathForClip(const TimelineClip& clip) {
     return transcriptWorkingPathForSource(transcriptSourceKeyFromClip(clip));
+}
+
+bool transcriptPathExistsWithBoundedRefresh(const QString& transcriptPath) {
+    return pathExistsWithBoundedRefresh(transcriptPath);
 }
 
 QStringList transcriptCutPathsForClipFile(const QString& filePath) {
@@ -1034,7 +1169,7 @@ QString registeredActiveTranscriptPathForSource(const TranscriptSourceKey& sourc
     QMutexLocker locker(&activeTranscriptPathMutex());
     const auto it = activeTranscriptPathByClipFile().constFind(sourceKey);
     if (it != activeTranscriptPathByClipFile().cend() &&
-        !it.value().isEmpty() && QFileInfo::exists(it.value())) {
+        !it.value().isEmpty()) {
         return it.value();
     }
     return QString();
@@ -1060,13 +1195,15 @@ QString transcriptPathForRuntimeSidecarForSource(const TranscriptSourceKey& sour
     const QString editablePath = transcriptEditablePathForSource(source);
     const QString workingPath = transcriptWorkingPathForSource(source);
     const QString originalPath = transcriptPathForSource(source);
-    const QStringList candidates{
+    QStringList candidates{
         preferredTranscriptPath,
         activePath,
         editablePath,
         workingPath,
         originalPath,
     };
+    candidates.removeAll(QString());
+    candidates.removeDuplicates();
     for (const QString& candidatePath : candidates) {
         if (continuitySidecarHasUsablePayloadForTranscriptPath(candidatePath)) {
             return candidatePath;
@@ -1078,7 +1215,7 @@ QString transcriptPathForRuntimeSidecarForSource(const TranscriptSourceKey& sour
         }
     }
     for (const QString& candidatePath : candidates) {
-        if (!candidatePath.trimmed().isEmpty() && QFileInfo::exists(candidatePath)) {
+        if (pathExistsWithBoundedRefresh(candidatePath)) {
             return candidatePath;
         }
     }
@@ -1120,12 +1257,15 @@ void setActiveTranscriptPathForSource(const TranscriptSourceKey& source, const Q
     if (sourceKey.isEmpty()) {
         return;
     }
-    QMutexLocker locker(&activeTranscriptPathMutex());
-    if (transcriptPath.isEmpty()) {
-        activeTranscriptPathByClipFile().remove(sourceKey);
-        return;
+    {
+        QMutexLocker locker(&activeTranscriptPathMutex());
+        if (transcriptPath.isEmpty()) {
+            activeTranscriptPathByClipFile().remove(sourceKey);
+        } else {
+            activeTranscriptPathByClipFile().insert(sourceKey, transcriptPath);
+        }
     }
-    activeTranscriptPathByClipFile().insert(sourceKey, transcriptPath);
+    clearTranscriptPathDiscoveryCache();
 }
 
 void setActiveTranscriptPathForClip(const TimelineClip& clip, const QString& transcriptPath) {
@@ -1141,8 +1281,11 @@ void clearActiveTranscriptPathForSource(const TranscriptSourceKey& source) {
     if (sourceKey.isEmpty()) {
         return;
     }
-    QMutexLocker locker(&activeTranscriptPathMutex());
-    activeTranscriptPathByClipFile().remove(sourceKey);
+    {
+        QMutexLocker locker(&activeTranscriptPathMutex());
+        activeTranscriptPathByClipFile().remove(sourceKey);
+    }
+    clearTranscriptPathDiscoveryCache();
 }
 
 void clearActiveTranscriptPathForClip(const TimelineClip& clip) {
@@ -1150,8 +1293,11 @@ void clearActiveTranscriptPathForClip(const TimelineClip& clip) {
 }
 
 void clearAllActiveTranscriptPaths() {
-    QMutexLocker locker(&activeTranscriptPathMutex());
-    activeTranscriptPathByClipFile().clear();
+    {
+        QMutexLocker locker(&activeTranscriptPathMutex());
+        activeTranscriptPathByClipFile().clear();
+    }
+    clearTranscriptPathDiscoveryCache();
 }
 
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut) {
@@ -1191,19 +1337,37 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
         return {};
     }
 
+    const qint64 nowMs = monotonicNowMs();
+    {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        const auto cached = transcriptRuntimeCacheByPath().constFind(transcriptPath);
+        if (cached != transcriptRuntimeCacheByPath().cend() &&
+            nowMs < cached->nextValidationMs) {
+            return cached->document;
+        }
+    }
+
     const QFileInfo info(transcriptPath);
     if (!info.exists() || !info.isFile()) {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        transcriptRuntimeCacheByPath().insert(
+            transcriptPath,
+            TranscriptRuntimeCacheEntry{-1,
+                                        -1,
+                                        nowMs + kTranscriptFilesystemRefreshMs,
+                                        {}});
         return {};
     }
     const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
     {
         QMutexLocker locker(&transcriptRuntimeCacheMutex());
-        const auto it = transcriptRuntimeCacheByPath().constFind(transcriptPath);
-        if (it != transcriptRuntimeCacheByPath().cend() &&
+        auto it = transcriptRuntimeCacheByPath().find(transcriptPath);
+        if (it != transcriptRuntimeCacheByPath().end() &&
             it->mtimeMs == mtimeMs &&
             it->fileSize == fileSize &&
             it->document) {
+            it->nextValidationMs = nowMs + kTranscriptFilesystemRefreshMs;
             return it->document;
         }
     }
@@ -1212,6 +1376,13 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
     if (!editor::loadTranscriptRuntimeSidecar(transcriptPath, mtimeMs, fileSize, runtimeDocument.get())) {
         QJsonDocument transcriptDoc;
         if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+            QMutexLocker locker(&transcriptRuntimeCacheMutex());
+            transcriptRuntimeCacheByPath().insert(
+                transcriptPath,
+                TranscriptRuntimeCacheEntry{mtimeMs,
+                                            fileSize,
+                                            nowMs + kTranscriptFilesystemRefreshMs,
+                                            {}});
             return {};
         }
 
@@ -1227,6 +1398,7 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
         TranscriptRuntimeCacheEntry& entry = transcriptRuntimeCacheByPath()[transcriptPath];
         entry.mtimeMs = mtimeMs;
         entry.fileSize = fileSize;
+        entry.nextValidationMs = nowMs + kTranscriptFilesystemRefreshMs;
         entry.document = runtimeDocument;
     }
     return runtimeDocument;
@@ -1282,8 +1454,7 @@ QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
         return {};
     }
 
-    const QFileInfo info(transcriptPath);
-    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 mtimeMs = transcriptJsonRevisionWithBoundedRefresh(transcriptPath);
     SpeakerProfileRuntime runtime;
     bool found = false;
     {
@@ -1340,8 +1511,7 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
     if (transcriptPath.isEmpty()) {
         return false;
     }
-    const QFileInfo info(transcriptPath);
-    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 mtimeMs = transcriptJsonRevisionWithBoundedRefresh(transcriptPath);
     SpeakerProfileRuntime runtime;
     bool found = false;
     {
@@ -1528,6 +1698,7 @@ void invalidateTranscriptJsonCache(const QString& transcriptPath)
             transcriptRuntimeCacheByPath().remove(transcriptPath);
         }
     }
+    clearTranscriptPathDiscoveryCache();
 }
 
 QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
@@ -1539,8 +1710,7 @@ QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
         return QString();
     }
 
-    const QFileInfo info(transcriptPath);
-    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 mtimeMs = transcriptJsonRevisionWithBoundedRefresh(transcriptPath);
     QMutexLocker locker(&speakerProfileCacheMutex());
     SpeakerIdentityCacheEntry& entry = speakerIdentityCacheByPath()[transcriptPath];
     if (entry.mtimeMs != mtimeMs) {

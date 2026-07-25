@@ -77,6 +77,31 @@ struct PlaybackFrameCrossfade {
     float secondaryOpacity = 0.0f;
 };
 
+inline int64_t upcomingNoncontiguousPlaybackRangeStart(
+    qreal timelineFramePosition,
+    const PlaybackTimingContext& timing,
+    int leadFrames)
+{
+    if (timing.playbackRanges.size() < 2 || leadFrames < 0) {
+        return -1;
+    }
+
+    const int64_t frame =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFramePosition)));
+    for (int i = 0; i + 1 < timing.playbackRanges.size(); ++i) {
+        const ExportRangeSegment& current = timing.playbackRanges.at(i);
+        const ExportRangeSegment& next = timing.playbackRanges.at(i + 1);
+        if (frame < current.startFrame || frame > current.endFrame) {
+            continue;
+        }
+        if (next.startFrame <= current.endFrame + 1) {
+            return -1;
+        }
+        return current.endFrame - frame <= leadFrames ? next.startFrame : -1;
+    }
+    return -1;
+}
+
 inline PlaybackFrameCrossfade playbackFrameCrossfadeAtTimelineFrame(
     qreal timelineFramePosition,
     const PlaybackTimingContext& timing)

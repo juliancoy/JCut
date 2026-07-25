@@ -28,6 +28,7 @@ void TestFrameHandle::testDefaultConstruction() {
     QVERIFY(!frame);
     QCOMPARE(frame.frameNumber(), -1);
     QVERIFY(frame.sourcePath().isEmpty());
+    QVERIFY(!frame.hasSourcePresentationTimestamp());
 }
 
 void TestFrameHandle::testNullFrame() {
@@ -65,12 +66,15 @@ void TestFrameHandle::testCpuFrameCreation() {
     QImage testImage(100, 100, QImage::Format_RGB32);
     testImage.fill(Qt::red);
     
-    FrameHandle frame = FrameHandle::createCpuFrame(testImage, 42, "/path/to/video.mp4");
+    FrameHandle frame = FrameHandle::createCpuFrame(
+        testImage, 42, "/path/to/video.mp4", 1234);
     
     QVERIFY(!frame.isNull());
     QVERIFY(frame.hasCpuImage());
     QVERIFY(!frame.hasGpuTexture());
     QCOMPARE(frame.frameNumber(), 42);
+    QVERIFY(frame.hasSourcePresentationTimestamp());
+    QCOMPARE(frame.sourcePresentationTimestamp(), int64_t(1234));
     QCOMPARE(frame.sourcePath(), QString("/path/to/video.mp4"));
     QCOMPARE(frame.size(), QSize(100, 100));
     QCOMPARE(frame.cpuMemoryUsage(), static_cast<size_t>(testImage.sizeInBytes()));
@@ -82,15 +86,22 @@ void TestFrameHandle::testFrameComparison() {
     QImage testImage(100, 100, QImage::Format_RGB32);
     testImage.fill(Qt::red);
     
-    FrameHandle frame1 = FrameHandle::createCpuFrame(testImage, 42, "/path/to/video.mp4");
-    FrameHandle frame2 = FrameHandle::createCpuFrame(testImage, 42, "/path/to/video.mp4");
-    FrameHandle frame3 = FrameHandle::createCpuFrame(testImage, 43, "/path/to/video.mp4");
+    FrameHandle frame1 = FrameHandle::createCpuFrame(
+        testImage, 42, "/path/to/video.mp4", 100);
+    FrameHandle frame2 = FrameHandle::createCpuFrame(
+        testImage, 42, "/path/to/video.mp4", 100);
+    FrameHandle frame3 = FrameHandle::createCpuFrame(
+        testImage, 43, "/path/to/video.mp4", 200);
+    FrameHandle sameRoundedKeyDifferentPresentation =
+        FrameHandle::createCpuFrame(
+            testImage, 42, "/path/to/video.mp4", 101);
     
     // Same frame number and path should be equal
     QVERIFY(frame1 == frame2);
     
     // Different frame number should not be equal
     QVERIFY(frame1 != frame3);
+    QVERIFY(frame1 != sameRoundedKeyDifferentPresentation);
 }
 
 void TestFrameHandle::testMemoryUsage() {
@@ -121,6 +132,7 @@ void TestFrameHandle::testHardwareFramePreservesValidCropRect() {
     avFrame->width = 1920;
     avFrame->height = 1088;
     avFrame->format = AV_PIX_FMT_NV12;
+    avFrame->best_effort_timestamp = 777;
     QVERIFY(av_frame_get_buffer(avFrame, 32) >= 0);
     avFrame->crop_left = 8;
     avFrame->crop_right = 12;
@@ -132,6 +144,8 @@ void TestFrameHandle::testHardwareFramePreservesValidCropRect() {
     av_frame_free(&avFrame);
 
     QVERIFY(frame.hasHardwareFrame());
+    QVERIFY(frame.hasSourcePresentationTimestamp());
+    QCOMPARE(frame.sourcePresentationTimestamp(), int64_t(777));
     QCOMPARE(frame.hardwarePixelFormat(), static_cast<int>(AV_PIX_FMT_NV12));
     QCOMPARE(frame.hardwareSwPixelFormat(), static_cast<int>(AV_PIX_FMT_NV12));
     QCOMPARE(frame.cpuMemoryUsage(), static_cast<size_t>(0));

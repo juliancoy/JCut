@@ -26,6 +26,7 @@ struct MaskSidecar {
     int64_t lastMappedMaskFrame = -1;
     bool frameCoverageComplete = true;
     bool completionConfirmed = true;
+    bool authenticatedPartialRun = false;
     bool decodeOrdinalFrames = false;
     QString readinessIssue;
 
@@ -36,6 +37,13 @@ struct MaskSidecar {
                (!decodeOrdinalFrames ||
                 (frameIndexMapAvailable && frameIndexMetadataAvailable &&
                  frameCoverageComplete && completionConfirmed));
+    }
+    bool isAvailableForPersistedTimeline() const
+    {
+        return isReadyForTimeline() ||
+               (isValid() && decodeOrdinalFrames &&
+                frameIndexMapAvailable && frameIndexMetadataAvailable &&
+                authenticatedPartialRun);
     }
 };
 

@@ -1841,11 +1841,13 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             return true;
         }
 
-        if (offscreenPlatformActive() &&
-            (id == QStringLiteral("transport.play") || id == QStringLiteral("transport.pause"))) {
+        const bool transportControlRequest =
+            id == QStringLiteral("transport.play") ||
+            id == QStringLiteral("transport.pause");
+        if (transportControlRequest) {
             QJsonObject response;
-            const int offscreenTransportTimeoutMs = qMax(m_uiInvokeTimeoutMs, 20000);
-            if (!invokeOnUiThread(m_window, offscreenTransportTimeoutMs, &response, [this, id]() {
+            const int transportTimeoutMs = qMax(m_uiInvokeTimeoutMs, 20000);
+            if (!invokeOnUiThread(m_window, transportTimeoutMs, &response, [this, id]() {
                     const QString effectiveId =
                         id == QStringLiteral("transport.pause")
                             ? QStringLiteral("transport.play")
@@ -1866,11 +1868,23 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                             {QStringLiteral("id"), id}
                         };
                     }
+                    if (id == QStringLiteral("transport.pause") &&
+                        !fastSnapshot()
+                             .value(QStringLiteral("playback_timer_active"))
+                             .toBool()) {
+                        return QJsonObject{
+                            {QStringLiteral("ok"), true},
+                            {QStringLiteral("id"), id},
+                            {QStringLiteral("confirmed"), true},
+                            {QStringLiteral("state_changed"), false}
+                        };
+                    }
                     button->click();
                     return QJsonObject{
                         {QStringLiteral("ok"), true},
                         {QStringLiteral("id"), id},
-                        {QStringLiteral("confirmed"), true}
+                        {QStringLiteral("confirmed"), true},
+                        {QStringLiteral("state_changed"), true}
                     };
                 })) {
                 writeError(socket, 503, QStringLiteral("timed out waiting for click-item"));
@@ -1895,13 +1909,8 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 }
 
                 const QJsonObject before = widgetSnapshot(widget);
-                const bool lightweightOffscreenTransportClick =
-                    offscreenPlatformActive() &&
-                    (id == QStringLiteral("transport.play") || id == QStringLiteral("transport.pause"));
                 const QJsonObject profileBefore =
-                    (!lightweightOffscreenTransportClick && m_profilingCallback)
-                        ? m_profilingCallback()
-                        : QJsonObject{};
+                    m_profilingCallback ? m_profilingCallback() : QJsonObject{};
 
                 bool clicked = false;
                 if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
@@ -1915,9 +1924,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
                 const QJsonObject after = widgetSnapshot(widget);
                 const QJsonObject profileAfter =
-                    (!lightweightOffscreenTransportClick && m_profilingCallback)
-                        ? m_profilingCallback()
-                        : QJsonObject{};
+                    m_profilingCallback ? m_profilingCallback() : QJsonObject{};
                 const bool confirmed = clicked && (before != after || profileBefore != profileAfter);
                 QString error;
                 if (auto* button = qobject_cast<QAbstractButton*>(widget)) {

@@ -37,10 +37,12 @@ private slots:
     void testSystemClockDecisionCarriesTransportSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
     void testPlaybackSampleClampUsesExclusivePlayableEnd();
+    void testDiscontinuousRangePrefetchStartsBeforeCrossfade();
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
     void testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeEnd();
+    void testPlaybackSyncDiagnosticsUseAudioFollowerDomain();
 };
 
 void TestPlaybackPolicy::testClockSourceRoundTrip() {
@@ -150,6 +152,27 @@ void TestPlaybackPolicy::testFrameCrossfadeMapsOutgoingTailToIncomingHead()
 
     PlaybackFrameCrossfade after = playbackFrameCrossfadeAtTimelineFrame(44.0, timing);
     QVERIFY(!after.active);
+}
+
+void TestPlaybackPolicy::testDiscontinuousRangePrefetchStartsBeforeCrossfade()
+{
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{10, 19},
+        ExportRangeSegment{40, 49},
+        ExportRangeSegment{50, 59},
+    };
+
+    QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(14.0, timing, 4),
+             int64_t(-1));
+    QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(15.0, timing, 4),
+             int64_t(40));
+    QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(19.0, timing, 4),
+             int64_t(40));
+    QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(40.0, timing, 4),
+             int64_t(-1));
+    QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(55.0, timing, 4),
+             int64_t(-1));
 }
 
 void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap()
@@ -401,21 +424,24 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
     QVERIFY2(playback.contains(QStringLiteral(
                  "reconcileActivePlaybackAudioState(activePlaybackReconfigured)")),
              "active runtime changes must request stream realignment");
-    QVERIFY2(playback.contains(QStringLiteral("m_audioEngine->seek(currentFrame)")),
-             "already-running audio must seek to the transport playhead when "
-             "runtime playback policy changes");
+    QVERIFY2(playback.contains(QStringLiteral(
+                 "m_audioEngine->seekToTimelineSample(m_transportTimelineSample)")),
+             "already-running audio must seek to the exact transport sample "
+             "when runtime playback policy changes");
     QVERIFY2(playback.contains(QStringLiteral("int64_t playbackStartFrame")) &&
-                 playback.contains(QStringLiteral("m_audioEngine->start(playbackStartFrame)")) &&
+                 playback.contains(QStringLiteral(
+                     "m_audioEngine->startAtTimelineSample(playbackStartSample)")) &&
                  playback.contains(QStringLiteral("requestPlaybackAudioWarmup()")),
-             "playback start must use one transport-derived start frame for audio "
-             "follower startup or asynchronous warmup");
+             "playback start must use the exact transport-derived sample for "
+             "audio follower startup or asynchronous warmup");
     QVERIFY2(playback.contains(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) &&
                  playback.indexOf(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) <
                      playback.indexOf(QStringLiteral("int64_t playbackStartFrame")) &&
                  playback.indexOf(QStringLiteral("int64_t playbackStartFrame")) <
-                     playback.indexOf(QStringLiteral("m_audioEngine->start(playbackStartFrame)")),
+                     playback.indexOf(QStringLiteral(
+                         "m_audioEngine->startAtTimelineSample(playbackStartSample)")),
              "playback start must resolve export/speech ranges before deriving "
-             "the shared audio/video start frame");
+             "the shared audio/video start position");
     const QString removedSelectableClockHook =
         QStringLiteral("shouldUse") + QStringLiteral("Audio") +
         QStringLiteral("Master") + QStringLiteral("Clock");
@@ -499,15 +525,72 @@ void TestPlaybackPolicy::testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeE
     QVERIFY2(playback.contains(QStringLiteral("playing == playbackActive() && (playing || !m_playbackTimer.isActive())")),
              "stopping playback must still stop an active timer even if the "
              "fast playback flag is already false");
-    QVERIFY2(playback.contains(QStringLiteral("!m_preview->preparePlaybackAdvance(nextFrame)")) &&
-                 playback.contains(QStringLiteral("video_frame_not_ready")) &&
-                 playback.contains(QStringLiteral("m_timelineAdvanceCarrySamples = 0.0")),
-             "playback must hold the transport when the preview cannot prepare "
-             "the next video frame instead of advancing into a missing-frame state");
+    QVERIFY2(playback.contains(QStringLiteral(
+                 "const bool videoReady = m_preview->preparePlaybackAdvance(nextFrame)")) &&
+                 playback.contains(QStringLiteral("video_follower_waiting")) &&
+                 playback.contains(QStringLiteral("transport_not_blocked")) &&
+                 !playback.contains(QStringLiteral(
+                     "if (!m_preview->preparePlaybackAdvance(nextFrame)")),
+             "video readiness is follower telemetry and must not hold or "
+             "redefine the monotonic transport clock");
     const QString setup = readSourceFile(QStringLiteral("editor_setup.cpp"));
-    QVERIFY2(setup.contains(QStringLiteral("const bool playbackTimerActive = m_playbackTimer.isActive()")),
-             "REST /health must report the actual playback QTimer state, not "
-             "the fast playback flag");
+    QVERIFY2(
+        setup.contains(
+            QStringLiteral("\"playback_timer_active\"), playbackIsActive")) &&
+            !setup.contains(QStringLiteral(
+                "const bool playbackTimerActive = m_playbackTimer.isActive()")),
+        "worker-thread health telemetry must use the canonical atomic playback "
+        "state and must not read a GUI-thread QTimer");
+}
+
+void TestPlaybackPolicy::testPlaybackSyncDiagnosticsUseAudioFollowerDomain()
+{
+    const QString routes =
+        readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+    const QString probe =
+        readSourceFile(QStringLiteral("tests/live_playback_sync_probe.py"));
+    QVERIFY2(!routes.isEmpty() && !probe.isEmpty(),
+             "playback sync diagnostic sources must be readable");
+    QVERIFY2(
+        routes.contains(QStringLiteral(
+            "\"projected_audio_feedback_timeline_frame\"")) &&
+            routes.contains(QStringLiteral(
+                "\"projected_audio_feedback_timeline_sample\"")) &&
+            routes.contains(QStringLiteral("\"transport_timeline_sample\"")) &&
+            routes.contains(QStringLiteral("\"audio_clock_available\"")) &&
+            routes.contains(QStringLiteral("\"has_playable_audio\"")) &&
+            !routes.contains(QStringLiteral(
+                "\"projected_audio_clock_absolute_frame\"")),
+        "playback sync must expose the audio follower projected into the "
+        "canonical timeline domain, not read nonexistent audio-clock fields");
+    QVERIFY2(
+        probe.contains(QStringLiteral(
+            "projected_audio_feedback_timeline_frame")) &&
+            probe.contains(QStringLiteral(
+                "projected_audio_feedback_timeline_sample")) &&
+            probe.contains(QStringLiteral(
+                "transport_timeline_sample")) &&
+            probe.contains(QStringLiteral(
+                "TIMELINE_FPS\n                / TIMELINE_SAMPLE_RATE")) &&
+            probe.contains(QStringLiteral(
+                "/playback/telemetry")) &&
+            !probe.contains(QStringLiteral(
+                "/playback/sync")) &&
+            probe.count(QStringLiteral(
+                "{\"id\": \"transport.play\"}")) >= 2 &&
+            !probe.contains(QStringLiteral(
+                "{\"id\": \"transport.pause\"}")) &&
+            probe.contains(QStringLiteral(
+                "not clip.get(\"linkedSourceClipId\")")) &&
+            !probe.contains(QStringLiteral(
+                "expected_source_frame_for_clip")) &&
+            !probe.contains(QStringLiteral(
+                "video_source_drift")),
+        "the live sync probe must measure canonical sample-domain follower "
+        "feedback through UI-free telemetry, compare the renderer's canonical "
+        "requested/presented handoff instead of reimplementing temporal "
+        "mapping, toggle the real Wayland transport widget, and select the "
+        "media parent rather than a generated mask child");
 }
 
 QTEST_MAIN(TestPlaybackPolicy)

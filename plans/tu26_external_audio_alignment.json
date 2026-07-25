@@ -1,0 +1,43 @@
+{
+    "clipId": "94fa929d-de00-465e-9cb3-6b01570e3aa0",
+    "expectedOriginal": {
+        "startFrame": 3700,
+        "startSubframeSamples": 1376,
+        "sourceInFrame": 10088,
+        "sourceInSubframeSamples": 0,
+        "durationFrames": 81475,
+        "durationSubframeSamples": 0,
+        "playbackRate": 1
+    },
+    "preserveOriginalTimelineEnd": false,
+    "segments": [
+        {
+            "id": "94fa929d-de00-465e-9cb3-6b01570e3aa0",
+            "label": "20260620_techunity.wav · sync 1/4 · camera segment 1",
+            "timelineStartSample": 5921376,
+            "sourceStartSample": 16145693,
+            "durationSamples": 24436942
+        },
+        {
+            "id": "88edb299-fa71-4908-a204-1d2d68e05ec8",
+            "label": "20260620_techunity.wav · sync 2/4 · camera segment 2",
+            "timelineStartSample": 30366400,
+            "sourceStartSample": 40582635,
+            "durationSamples": 19774400
+        },
+        {
+            "id": "d70d90ff-3a06-4d45-9c6c-c8658aa059ea",
+            "label": "20260620_techunity.wav · sync 3/4 · before recorder dropout",
+            "timelineStartSample": 50140800,
+            "sourceStartSample": 60361008,
+            "durationSamples": 2125761
+        },
+        {
+            "id": "4ec2e6b4-1e3e-4ecd-9b48-74801a5ed7f0",
+            "label": "20260620_techunity.wav · sync 4/4 · after recorder dropout",
+            "timelineStartSample": 52273599,
+            "sourceStartSample": 62486769,
+            "durationSamples": 84014031
+        }
+    ]
+}

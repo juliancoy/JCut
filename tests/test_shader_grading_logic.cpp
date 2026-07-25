@@ -1,7 +1,9 @@
 #include <QtTest/QtTest>
 
 #include "../editor_shared_effects.h"
+#include "../frame_handle.h"
 #include "../visual_effects_shader.h"
+#include "../vulkan_staging_flush_range.h"
 #include "mask_sidecar_test_utils.h"
 
 #include <QRegularExpression>
@@ -26,6 +28,7 @@ private slots:
     void testVulkanMaskBlurShaderIsSeparable();
     void testVulkanRenderersLoadRawMasksForGpuPreprocess();
     void testVulkanMaskComputeUsesDescriptorRings();
+    void testVulkanStagingFlushRangeUsesNonCoherentAtomAlignment();
     void testVulkanShaderRecomputesLuminanceBeforeSaturation();
     void testNv12HandoffShaderStoresCanonicalRgba();
     void testCpuLumaCurvePreservesChroma();
@@ -161,25 +164,40 @@ void TestShaderGradingLogic::testVulkanMaskBlurShaderIsSeparable()
 
 void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
 {
-    for (const QString& sourcePath : {
-             QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"),
-             QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"),
-         }) {
-        QFile sourceFile(sourcePath);
-        QVERIFY2(sourceFile.open(QIODevice::ReadOnly),
-                 qPrintable(QStringLiteral("Unable to open %1").arg(sourcePath)));
-        const QString source = QString::fromUtf8(sourceFile.readAll());
-        QVERIFY2(source.contains(QStringLiteral("rawClipMaskImage")),
-                 qPrintable(QStringLiteral("%1 must load raw masks for GPU preprocessing.").arg(sourcePath)));
-        QVERIFY2(!source.contains(QStringLiteral("preparedClipMaskImage(clip")),
-                 qPrintable(QStringLiteral("%1 must not CPU-prepare Vulkan masks.").arg(sourcePath)));
-    }
+    QFile previewSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"));
+    QVERIFY2(previewSource.open(QIODevice::ReadOnly), "Unable to open Vulkan preview renderer.");
+    const QString previewText = QString::fromUtf8(previewSource.readAll());
+    QVERIFY2(previewText.contains(QStringLiteral("rawClipMaskBuffer(clip, status.frame)")) &&
+                 previewText.contains(QStringLiteral("clip, markerStatus.frame)")),
+             "Vulkan preview must resolve masks from the actual presented FrameHandle.");
+    QVERIFY2(!previewText.contains(QStringLiteral("preparedClipMaskImage(clip")),
+             "Vulkan preview must not CPU-prepare Vulkan masks.");
 
     QFile exportSource(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
     QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
     const QString exportText = QString::fromUtf8(exportSource.readAll());
+    QVERIFY2(exportText.contains(QStringLiteral("rawClipMaskImage(matteOwner, frame)")),
+             "Vulkan export must resolve masks from the actual rendered FrameHandle.");
+    QVERIFY2(!exportText.contains(QStringLiteral("preparedClipMaskImage(clip")),
+             "Vulkan export must not CPU-prepare Vulkan masks.");
     QVERIFY2(!exportText.contains(QStringLiteral("maskUpload = maskUpload.scaled")),
              "Vulkan export must not CPU-scale masks before GPU preprocessing.");
+    QVERIFY2(
+        exportText.contains(QStringLiteral("maxAuxiliaryImageBytes")) &&
+            exportText.contains(
+                QStringLiteral("ensureActiveStagingCapacity(")) &&
+            exportText.contains(
+                QStringLiteral("activeStagingRangeAvailable(")),
+        "Vulkan export must grow its active frame-slot staging allocation "
+        "for raw auxiliary images and bounds-check host writes.");
+    QVERIFY2(
+        exportText.contains(
+            QStringLiteral("ensureMaskRawImage(slot, reference.size())")) &&
+            exportText.contains(
+                QStringLiteral(
+                    "preparedLayers[i].auxiliaryView = slot.maskRawView")),
+        "CPU-backed difference references must retain source resolution in "
+        "the raw GPU auxiliary image.");
 }
 
 void TestShaderGradingLogic::testVulkanMaskComputeUsesDescriptorRings()
@@ -234,6 +252,40 @@ void TestShaderGradingLogic::testVulkanMaskComputeUsesDescriptorRings()
     QVERIFY2(exportText.contains(QStringLiteral("vkCmdBindDescriptorSets(m_commandBuffer")) &&
                  exportText.contains(QStringLiteral("&computeDescriptorSet")),
              "Vulkan export must bind the per-dispatch mask compute descriptor set.");
+}
+
+void TestShaderGradingLogic::
+    testVulkanStagingFlushRangeUsesNonCoherentAtomAlignment()
+{
+    const auto middle = render_detail::alignedVulkanStagingFlushRange(
+        300, 100, 1024, 256);
+    QVERIFY(middle.has_value());
+    QCOMPARE(middle->offset, std::uint64_t{256});
+    QCOMPARE(middle->size, std::uint64_t{256});
+
+    const auto allocationTail =
+        render_detail::alignedVulkanStagingFlushRange(
+            900, 100, 1000, 256);
+    QVERIFY(allocationTail.has_value());
+    QCOMPARE(allocationTail->offset, std::uint64_t{768});
+    QCOMPARE(allocationTail->size, std::uint64_t{232});
+    QCOMPARE(
+        allocationTail->offset + allocationTail->size,
+        std::uint64_t{1000});
+
+    const auto coherentGranularity =
+        render_detail::alignedVulkanStagingFlushRange(
+            17, 23, 128, 1);
+    QVERIFY(coherentGranularity.has_value());
+    QCOMPARE(coherentGranularity->offset, std::uint64_t{17});
+    QCOMPARE(coherentGranularity->size, std::uint64_t{23});
+
+    QVERIFY(!render_detail::alignedVulkanStagingFlushRange(
+                 120, 16, 128, 64)
+                 .has_value());
+    QVERIFY(!render_detail::alignedVulkanStagingFlushRange(
+                 0, 16, 128, 0)
+                 .has_value());
 }
 
 void TestShaderGradingLogic::testVulkanShaderRecomputesLuminanceBeforeSaturation()
@@ -462,27 +514,40 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     clip.filePath = sourcePath;
     clip.maskEnabled = true;
     clip.maskFramesDir = maskDirectory;
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    const auto presentedFrame = [&clip](int64_t sourceFrame,
+                                         int64_t sourceTimestamp) {
+        return editor::FrameHandle::createCpuFrame(
+            QImage(),
+            sourceFrame,
+            clip.filePath,
+            sourceTimestamp);
+    };
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QFile frameMap(QDir(maskDirectory).filePath(
         QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(frameMap.open(QIODevice::WriteOnly));
-    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
+    frameMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n");
     frameMap.close();
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
         maskDirectory, sourcePath));
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         maskDirectory, sourcePath, true, false));
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         maskDirectory, sourcePath, true, true));
-    const QImage initialMask = rawClipMaskImage(clip, 0);
-    QVERIFY(!initialMask.isNull());
+    QImage initialMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(initialMask =
+              rawClipMaskImage(clip, presentedFrame(0, 0))).isNull(),
+        3000);
     QCOMPARE(initialMask.convertToFormat(QImage::Format_Grayscale8)
                  .constScanLine(0)[0],
              uchar{255});
@@ -490,12 +555,15 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     updatedMask.fill(0);
     QVERIFY(updatedMask.save(QDir(maskDirectory).filePath(
         QStringLiteral("frame_000001.png"))));
-    const QImage reloadedMask = rawClipMaskImage(clip, 0);
-    QVERIFY(!reloadedMask.isNull());
+    QImage reloadedMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(reloadedMask =
+              rawClipMaskImage(clip, presentedFrame(0, 0))).isNull(),
+        3000);
     QCOMPARE(reloadedMask.convertToFormat(QImage::Format_Grayscale8)
                  .constScanLine(0)[0],
              uchar{0});
-    QVERIFY(rawClipMaskImage(clip, 1).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(1, 1)).isNull());
 
     // Durable binding is content-based: a byte-identical copy at a different
     // path/inode remains the same source after its full digest is verified.
@@ -505,7 +573,7 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     copiedSource.write("source-a");
     copiedSource.close();
     clip.filePath = copiedSourcePath;
-    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(!rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     const QString otherSourcePath = root.filePath(QStringLiteral("other.mp4"));
     QFile otherSource(otherSourcePath);
@@ -513,7 +581,7 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     otherSource.write("source-b"); // Same size, different content.
     otherSource.close();
     clip.filePath = otherSourcePath;
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     // A map makes the sidecar ordinal regardless of its directory name. It
     // must not bypass completion gating, and schema-less legacy completion is
@@ -526,13 +594,15 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     QFile customMap(QDir(customDirectory).filePath(
         QStringLiteral("jcut_frame_map.tsv")));
     QVERIFY(customMap.open(QIODevice::WriteOnly));
-    customMap.write("# source_frame\tmask_frame\n0\t0\n");
+    customMap.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n");
     customMap.close();
     QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
         customDirectory, sourcePath));
     clip.filePath = sourcePath;
     clip.maskFramesDir = customDirectory;
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QVERIFY(mask_sidecar_test::writeJson(
         QDir(customDirectory).filePath(QStringLiteral("jcut_alpha.json")),
@@ -541,11 +611,15 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
              QStringLiteral("birefnet_continuous_alpha")},
             {QStringLiteral("frame_domain"), QStringLiteral("decode_ordinal")},
         }));
-    QVERIFY(rawClipMaskImage(clip, 0).isNull());
+    QVERIFY(rawClipMaskImage(clip, presentedFrame(0, 0)).isNull());
 
     QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
         customDirectory, sourcePath, true, true));
-    QVERIFY(!rawClipMaskImage(clip, 0).isNull());
+    QImage customMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(customMask =
+              rawClipMaskImage(clip, presentedFrame(0, 0))).isNull(),
+        3000);
 }
 
 QTEST_MAIN(TestShaderGradingLogic)

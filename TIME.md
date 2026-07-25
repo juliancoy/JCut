@@ -160,8 +160,13 @@ The supported modes are:
 - Source parent timeline time -> Mask Matte sample:
   - Resolve the source parent's timeline-to-source mapping once, including trim,
     rate, source FPS, and render-sync markers.
-  - Use that exact resolved or presented source frame for every linked Mask Matte
-    child and select the sidecar sample in the same source-media domain.
+  - Use the parent's actual presented `FrameHandle` for every linked Mask Matte
+    child. Its exact sample identity is the raw FFmpeg
+    `best_effort_timestamp` in the source stream time base; the rounded source
+    frame remains timing/display metadata and is not unique for VFR media.
+  - Decode-ordinal sidecars map that exact presentation timestamp to their mask
+    ordinal. They fail closed when the timestamp is unavailable or absent from
+    the authenticated map.
   - Never map a Mask Matte independently by its child ID or cached timing fields.
 - Facestream stored frame -> source media frame:
   - `mapFacestreamFrameToSourceFrame(...)`
@@ -288,9 +293,11 @@ At each preview presentation or export step:
 
 1. Resolve timeline time through the source parent's marker-aware mapping.
 2. Decode or select the parent's source frame.
-3. Give every linked Mask Matte the exact same resolved frame identity and media
-   payload.
-4. Select its mask-sidecar sample in that same source-media frame domain.
+3. Give every linked Mask Matte the exact same presented `FrameHandle` and media
+   payload, including its raw source `best_effort_timestamp`.
+4. Select its mask-sidecar sample by that exact presentation identity. Never
+   choose an ordinal sidecar sample from the rounded source-frame key alone:
+   distinct VFR presentations may share that key.
 5. Evaluate only the child's visual state (mask processing, opacity, grading,
    correction polygons, and effects) independently.
 
@@ -299,6 +306,15 @@ that presented frame too; combining a newer requested mask with an older present
 image is forbidden. If the parent frame or the matching sidecar sample is
 unavailable, the child fails closed and contributes no masked foreground. Export
 uses the same resolver and must not perform an independent child-ID marker lookup.
+An ordinal sidecar map uses `jcut_frame_index_map_v3`; each row retains the
+rounded source frame for diagnostics, the raw source best-effort timestamp for
+identity, and the generated mask ordinal.
+
+For a persisted BiRefNet child, authenticated in-progress run provenance may
+expose only the contiguous mask prefix already on disk. Exact presented
+timestamps mapping inside that prefix are renderable; timestamps mapping to
+absent/future ordinals fail closed. This does not make the sidecar complete and
+does not authorize automatic child discovery.
 
 Move, trim, slip/source-in, rate, marker, and transform mutations operate on the
 parent-child aggregate at one model boundary. Split, copy/paste, cut, delete, and

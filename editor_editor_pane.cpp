@@ -129,6 +129,7 @@ void EditorWindow::connectTimelineSignals()
 {
     m_timeline->seekRequested = [this](int64_t frame) { setCurrentFrame(frame); };
     m_timeline->clipsChanged = [this]() {
+        invalidatePlaybackRangeCaches();
         syncSliderRange();
         m_preview->beginBulkUpdate();
         m_preview->setClipCount(m_timeline->clips().size());
@@ -159,6 +160,7 @@ void EditorWindow::connectTimelineSignals()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
+        scheduleTranscriptNormalizeRangeRefresh();
         refreshClipInspector();
         refreshTimelineStructureInspectorViews();
         scheduleSaveState();
@@ -172,16 +174,30 @@ void EditorWindow::connectTimelineSignals()
         refreshTimelineSelectionInspectorViews();
     };
     m_timeline->renderSyncMarkersChanged = [this]() {
+        invalidatePlaybackRangeCaches();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+        m_preview->setExportRanges(ranges);
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         if (m_audioEngine) {
+            m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         }
+        scheduleTranscriptNormalizeRangeRefresh();
         refreshSyncInspector();
         m_inspectorPane->refreshTab(QStringLiteral("Sync"));
         scheduleSaveState();
         pushHistorySnapshot();
     };
     m_timeline->exportRangeChanged = [this]() {
+        invalidatePlaybackRangeCaches();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+        m_preview->setExportRanges(ranges);
+        if (m_audioEngine) {
+            m_audioEngine->setExportRanges(ranges);
+        }
+        scheduleTranscriptNormalizeRangeRefresh();
         m_outputTab->refresh();
         m_inspectorPane->refreshTab(QStringLiteral("Output"));
         scheduleSaveState();

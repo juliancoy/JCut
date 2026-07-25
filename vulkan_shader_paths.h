@@ -12,25 +12,35 @@
 
 inline QString jcutVulkanShaderDirectory()
 {
-    const QString overridePath = qEnvironmentVariable("JCUT_VULKAN_SHADER_DIR").trimmed();
-    if (!overridePath.isEmpty()) {
-        return QDir::cleanPath(overridePath);
-    }
+    static const QString directory = []() {
+        const QString overridePath =
+            qEnvironmentVariable("JCUT_VULKAN_SHADER_DIR").trimmed();
+        if (!overridePath.isEmpty()) {
+            return QDir::cleanPath(overridePath);
+        }
 
-    const QString applicationDir = QCoreApplication::applicationDirPath();
-    if (!applicationDir.isEmpty()) {
-        const QStringList packagedCandidates = {
-            QDir(applicationDir).absoluteFilePath(QStringLiteral("../share/jcut/shaders")),
-            QDir(applicationDir).absoluteFilePath(QStringLiteral("generated/vulkan_shaders")),
-            QDir(applicationDir).absoluteFilePath(QStringLiteral("../generated/vulkan_shaders")),
-            QDir(applicationDir).absoluteFilePath(QStringLiteral("shaders")),
-        };
-        for (const QString& candidate : packagedCandidates) {
-            if (QFileInfo::exists(QDir(candidate).filePath(QStringLiteral("effects.vert.spv")))) {
-                return QDir::cleanPath(candidate);
+        const QString applicationDir = QCoreApplication::applicationDirPath();
+        if (!applicationDir.isEmpty()) {
+            const QStringList packagedCandidates = {
+                QDir(applicationDir).absoluteFilePath(
+                    QStringLiteral("../share/jcut/shaders")),
+                QDir(applicationDir).absoluteFilePath(
+                    QStringLiteral("generated/vulkan_shaders")),
+                QDir(applicationDir).absoluteFilePath(
+                    QStringLiteral("../generated/vulkan_shaders")),
+                QDir(applicationDir).absoluteFilePath(
+                    QStringLiteral("shaders")),
+            };
+            for (const QString& candidate : packagedCandidates) {
+                if (QFileInfo::exists(
+                        QDir(candidate).filePath(
+                            QStringLiteral("effects.vert.spv")))) {
+                    return QDir::cleanPath(candidate);
+                }
             }
         }
-    }
 
-    return QDir::cleanPath(QStringLiteral(JCUT_VULKAN_SHADER_DIR));
+        return QDir::cleanPath(QStringLiteral(JCUT_VULKAN_SHADER_DIR));
+    }();
+    return directory;
 }

@@ -56,13 +56,12 @@ FacestreamOverlayCacheIdentity facestreamOverlayCacheIdentity(
     identity.querySourceFrame = identity.bucket * kFacestreamOverlayInteractiveWindowFrames;
     identity.clipPath = QFileInfo(clip.filePath).absoluteFilePath();
     identity.transcriptPath = activeTranscriptPathForClip(clip);
-    const QFileInfo transcriptInfo(identity.transcriptPath);
-    identity.transcriptExists = transcriptInfo.exists() && transcriptInfo.isFile();
-    identity.transcriptPath = transcriptInfo.absoluteFilePath();
-    identity.transcriptModifiedMs =
-        identity.transcriptExists ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0;
-    identity.artifactRevisionMs =
-        facedetectionsArtifactRevisionMsForTranscript(identity.transcriptPath);
+    identity.transcriptPath = QFileInfo(identity.transcriptPath).absoluteFilePath();
+    const FacedetectionsArtifactMetadataSnapshot artifactMetadata =
+        facedetectionsArtifactMetadataForTranscript(identity.transcriptPath);
+    identity.transcriptExists = artifactMetadata.transcriptExists;
+    identity.transcriptModifiedMs = artifactMetadata.transcriptModifiedMs;
+    identity.artifactRevisionMs = artifactMetadata.artifactRevisionMs;
     identity.renderSyncSignature = renderSyncMarkerOverlaySignature(renderSyncMarkers);
     identity.signature = QStringLiteral("%1|%2|%3|%4|%5|bucket:%6|sync:%7")
                              .arg(clip.id)

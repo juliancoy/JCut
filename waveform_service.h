@@ -76,6 +76,8 @@ private:
         bool decoding = false;
         bool ready = false;
         bool failed = false;
+        bool fileAvailable = false;
+        qint64 nextFileValidationMs = 0;
         qint64 lastAccessMs = 0;
         QVector<WaveformLevel> levels;
         QHash<QString, ProcessedVariant> processedVariants;

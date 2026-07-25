@@ -54,7 +54,8 @@ FramePayloadCore::FramePayloadCore(FramePayloadCore&& other) noexcept
       m_sourcePath(std::move(other.m_sourcePath)),
       m_size(other.m_size),
       m_validTextureRectNormalized(other.m_validTextureRectNormalized),
-      m_decodeTimestampMs(other.m_decodeTimestampMs)
+      m_decodeTimestampMs(other.m_decodeTimestampMs),
+      m_sourcePresentationTimestamp(other.m_sourcePresentationTimestamp)
 {
     other.m_cpuByteCount = 0;
     other.m_gpuTexture = nullptr;
@@ -67,6 +68,8 @@ FramePayloadCore::FramePayloadCore(FramePayloadCore&& other) noexcept
     other.m_size = {};
     other.m_validTextureRectNormalized = {0.0, 0.0, 1.0, 1.0};
     other.m_decodeTimestampMs = 0;
+    other.m_sourcePresentationTimestamp =
+        kUnknownSourcePresentationTimestamp;
 }
 
 FramePayloadCore& FramePayloadCore::operator=(FramePayloadCore&& other) noexcept
@@ -89,6 +92,7 @@ FramePayloadCore& FramePayloadCore::operator=(FramePayloadCore&& other) noexcept
     m_size = other.m_size;
     m_validTextureRectNormalized = other.m_validTextureRectNormalized;
     m_decodeTimestampMs = other.m_decodeTimestampMs;
+    m_sourcePresentationTimestamp = other.m_sourcePresentationTimestamp;
 
     other.m_cpuByteCount = 0;
     other.m_gpuTexture = nullptr;
@@ -101,16 +105,20 @@ FramePayloadCore& FramePayloadCore::operator=(FramePayloadCore&& other) noexcept
     other.m_size = {};
     other.m_validTextureRectNormalized = {0.0, 0.0, 1.0, 1.0};
     other.m_decodeTimestampMs = 0;
+    other.m_sourcePresentationTimestamp =
+        kUnknownSourcePresentationTimestamp;
     return *this;
 }
 
 void FramePayloadCore::setIdentity(std::int64_t frameNumber,
                                    std::string sourcePath,
-                                   std::int64_t decodeTimestampMs)
+                                   std::int64_t decodeTimestampMs,
+                                   std::int64_t sourcePresentationTimestamp)
 {
     m_frameNumber = frameNumber;
     m_sourcePath = std::move(sourcePath);
     m_decodeTimestampMs = decodeTimestampMs;
+    m_sourcePresentationTimestamp = sourcePresentationTimestamp;
 }
 
 void FramePayloadCore::setSize(SizeI size)
@@ -197,6 +205,17 @@ const std::string& FramePayloadCore::sourcePath() const
 std::int64_t FramePayloadCore::decodeTimestampMs() const
 {
     return m_decodeTimestampMs;
+}
+
+std::int64_t FramePayloadCore::sourcePresentationTimestamp() const
+{
+    return m_sourcePresentationTimestamp;
+}
+
+bool FramePayloadCore::hasSourcePresentationTimestamp() const
+{
+    return m_sourcePresentationTimestamp !=
+        kUnknownSourcePresentationTimestamp;
 }
 
 SizeI FramePayloadCore::size() const

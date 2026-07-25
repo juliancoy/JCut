@@ -2,6 +2,7 @@
 #include "mask_sidecar_core.h"
 
 #include "editor_timeline_types.h"
+#include "frame_payload_core.h"
 
 #include <QCryptographicHash>
 #include <QBitArray>
@@ -34,6 +35,10 @@ struct FrameIndexMapInspection {
     int64_t mappedFrameCount = 0;
     int64_t firstSourceFrame = -1;
     int64_t lastSourceFrame = -1;
+    int64_t firstSourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
+    int64_t lastSourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
     int64_t lastMaskFrame = -1;
     QString mapSha256;
 };
@@ -407,6 +412,8 @@ FrameIndexMapInspection inspectFrameIndexMap(const QDir& directory)
     }
     QTextStream stream(&mapFile);
     int64_t previousSourceFrame = -1;
+    int64_t previousSourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
     int64_t previousMaskFrame = -1;
     while (!stream.atEnd()) {
         const QString line = stream.readLine().trimmed();
@@ -416,21 +423,40 @@ FrameIndexMapInspection inspectFrameIndexMap(const QDir& directory)
         const QStringList fields = line.split(
             QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
         bool sourceOk = false;
+        bool sourcePresentationTimestampOk = false;
         bool maskOk = false;
         const int64_t sourceFrame = fields.value(0).toLongLong(&sourceOk);
-        const int64_t maskFrame = fields.value(1).toLongLong(&maskOk);
-        if (!sourceOk || !maskOk || sourceFrame < 0 || maskFrame < 0 ||
+        const int64_t sourcePresentationTimestamp =
+            fields.value(1).toLongLong(&sourcePresentationTimestampOk);
+        const int64_t maskFrame = fields.value(2).toLongLong(&maskOk);
+        if (fields.size() != 3 ||
+            !sourceOk ||
+            !sourcePresentationTimestampOk ||
+            !maskOk ||
+            sourceFrame < 0 ||
+            sourcePresentationTimestamp ==
+                jcut::core::kUnknownSourcePresentationTimestamp ||
+            maskFrame < 0 ||
             maskFrame != result.mappedFrameCount ||
             (result.mappedFrameCount > 0 &&
-             (sourceFrame < previousSourceFrame || maskFrame < previousMaskFrame))) {
+             (sourceFrame < previousSourceFrame ||
+              sourcePresentationTimestamp <=
+                  previousSourcePresentationTimestamp ||
+              maskFrame < previousMaskFrame))) {
             return {};
         }
         if (result.firstSourceFrame < 0) {
             result.firstSourceFrame = sourceFrame;
+            result.firstSourcePresentationTimestamp =
+                sourcePresentationTimestamp;
         }
         result.lastSourceFrame = sourceFrame;
+        result.lastSourcePresentationTimestamp =
+            sourcePresentationTimestamp;
         result.lastMaskFrame = qMax(result.lastMaskFrame, maskFrame);
         previousSourceFrame = sourceFrame;
+        previousSourcePresentationTimestamp =
+            sourcePresentationTimestamp;
         previousMaskFrame = maskFrame;
         ++result.mappedFrameCount;
     }
@@ -449,11 +475,11 @@ bool frameIndexMetadataMatches(const QDir& directory,
     const QJsonObject metadata = readJsonObject(
         directory.filePath(QStringLiteral("jcut_frame_map.json")));
     const bool matches = metadata.value(QStringLiteral("schema")).toString() ==
-               QStringLiteral("jcut_frame_index_map_v2") &&
+               QStringLiteral("jcut_frame_index_map_v3") &&
            metadata.value(QStringLiteral("status")).toString() ==
                QStringLiteral("ready") &&
            metadata.value(QStringLiteral("frame_domain")).toString() ==
-               QStringLiteral("source_timestamp_to_generated_ordinal") &&
+               QStringLiteral("source_best_effort_timestamp_to_generated_ordinal") &&
            metadata.value(QStringLiteral("map_file")).toString() ==
                QStringLiteral("jcut_frame_map.tsv") &&
            metadata.contains(QStringLiteral("output_fps")) &&
@@ -464,6 +490,16 @@ bool frameIndexMetadataMatches(const QDir& directory,
                map.firstSourceFrame &&
            metadata.value(QStringLiteral("max_source_frame")).toInteger(-1) ==
                map.lastSourceFrame &&
+           metadata.value(
+               QStringLiteral("min_source_presentation_timestamp"))
+                   .toInteger(
+                       jcut::core::kUnknownSourcePresentationTimestamp) ==
+               map.firstSourcePresentationTimestamp &&
+           metadata.value(
+               QStringLiteral("max_source_presentation_timestamp"))
+                   .toInteger(
+                       jcut::core::kUnknownSourcePresentationTimestamp) ==
+               map.lastSourcePresentationTimestamp &&
            metadata.value(QStringLiteral("max_mask_frame")).toInteger(-1) ==
                map.lastMaskFrame &&
            metadata.value(QStringLiteral("expected_output_frame_count")).toInteger(-1) ==
@@ -517,6 +553,34 @@ bool completionMetadataConfirms(const QDir& directory,
     return identityObjectsMatch(
         metadata.value(QStringLiteral("source_identity")).toObject(),
         frameIndexMetadata.value(QStringLiteral("source_identity")).toObject());
+}
+
+bool authenticatedPartialRunMetadataConfirms(
+    const QDir& directory,
+    int64_t lastMappedMaskFrame,
+    const QJsonObject& frameIndexMetadata)
+{
+    if (QFileInfo::exists(
+            directory.filePath(QStringLiteral("jcut_alpha.json")))) {
+        return false;
+    }
+    const QJsonObject run = readJsonObject(
+        directory.filePath(QStringLiteral("jcut_alpha_run.json")));
+    const QString mapHash =
+        run.value(QStringLiteral("frame_map_sha256")).toString().trimmed();
+    return run.value(QStringLiteral("schema")).toString() ==
+            QStringLiteral("jcut_birefnet_alpha_run_v1") &&
+        run.value(QStringLiteral("expected_frame_count")).toInteger(-1) ==
+            lastMappedMaskFrame + 1 &&
+        isSha256(mapHash) &&
+        mapHash.compare(
+            frameIndexMetadata.value(
+                QStringLiteral("map_sha256")).toString(),
+            Qt::CaseInsensitive) == 0 &&
+        identityObjectsMatch(
+            run.value(QStringLiteral("source_identity")).toObject(),
+            frameIndexMetadata.value(
+                QStringLiteral("source_identity")).toObject());
 }
 
 bool looksLikeGeneratedMaskDirectory(const QFileInfo& directory, const QString& mediaStem)
@@ -650,7 +714,7 @@ bool maskSidecarUsesDecodeOrdinalFrames(const QString& directory)
         dir.filePath(QStringLiteral("jcut_frame_map.json")));
     if (QFileInfo::exists(dir.filePath(QStringLiteral("jcut_frame_map.tsv"))) ||
         frameIndexMetadata.value(QStringLiteral("schema")).toString() ==
-            QStringLiteral("jcut_frame_index_map_v2")) {
+            QStringLiteral("jcut_frame_index_map_v3")) {
         return true;
     }
     const QString frameDomain =
@@ -673,11 +737,12 @@ bool maskSidecarCompletionConfirmedForRender(const QString& directory,
     const QJsonObject frameIndexMetadata = readJsonObject(
         dir.filePath(QStringLiteral("jcut_frame_map.json")));
     if (frameIndexMetadata.value(QStringLiteral("schema")).toString() !=
-            QStringLiteral("jcut_frame_index_map_v2") ||
+            QStringLiteral("jcut_frame_index_map_v3") ||
         frameIndexMetadata.value(QStringLiteral("status")).toString() !=
             QStringLiteral("ready") ||
         frameIndexMetadata.value(QStringLiteral("frame_domain")).toString() !=
-            QStringLiteral("source_timestamp_to_generated_ordinal") ||
+            QStringLiteral(
+                "source_best_effort_timestamp_to_generated_ordinal") ||
         frameIndexMetadata.value(QStringLiteral("map_file")).toString() !=
             QStringLiteral("jcut_frame_map.tsv") ||
         !frameIndexMetadata.contains(QStringLiteral("output_fps")) ||
@@ -724,7 +789,13 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
         if (!match.hasMatch()) {
             continue;
         }
-        const int64_t frame = match.captured(1).toLongLong();
+        bool frameOk = false;
+        const int64_t frame = match.captured(1).toLongLong(&frameOk);
+        if (!frameOk) {
+            ordinalCoverageValid = false;
+            ++sidecar.frameCount;
+            continue;
+        }
         sidecar.firstFrame = sidecar.firstFrame < 0
             ? frame
             : qMin(sidecar.firstFrame, frame);
@@ -744,6 +815,14 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
                 ++seenOrdinalFrameCount;
             }
         }
+    }
+    bool contiguousOrdinalPrefix =
+        ordinalCoverageValid && seenOrdinalFrameCount > 0;
+    for (int64_t frame = 0;
+         contiguousOrdinalPrefix && frame < seenOrdinalFrameCount;
+         ++frame) {
+        contiguousOrdinalPrefix =
+            seenOrdinalFrames.testBit(static_cast<int>(frame));
     }
     if (sidecar.frameCount <= 0) {
         return {};
@@ -769,7 +848,7 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     const bool mappedOrdinalSidecar = map.populated ||
         QFileInfo::exists(dir.filePath(QStringLiteral("jcut_frame_map.tsv"))) ||
         rawFrameIndexMetadata.value(QStringLiteral("schema")).toString() ==
-            QStringLiteral("jcut_frame_index_map_v2");
+            QStringLiteral("jcut_frame_index_map_v3");
     sidecar.decodeOrdinalFrames = mappedOrdinalSidecar ||
         (!sidecar.frameDomain.isEmpty()
              ? frameDomainUsesOrdinals(sidecar.frameDomain)
@@ -790,11 +869,21 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     sidecar.completionConfirmed = !sidecar.decodeOrdinalFrames ||
         completionMetadataConfirms(
             dir, sidecar.sourceType, map.lastMaskFrame, frameIndexMetadata);
+    sidecar.authenticatedPartialRun =
+        sidecar.decodeOrdinalFrames &&
+        isBiRefNet &&
+        sidecar.frameIndexMetadataAvailable &&
+        !sidecar.completionConfirmed &&
+        contiguousOrdinalPrefix &&
+        authenticatedPartialRunMetadataConfirms(
+            dir, map.lastMaskFrame, frameIndexMetadata);
 
     if (sidecar.decodeOrdinalFrames && !sidecar.frameIndexMapAvailable) {
         sidecar.readinessIssue = QStringLiteral("Frame map missing");
     } else if (sidecar.decodeOrdinalFrames && !sidecar.frameIndexMetadataAvailable) {
         sidecar.readinessIssue = QStringLiteral("Frame map unverified");
+    } else if (sidecar.authenticatedPartialRun) {
+        sidecar.readinessIssue = QStringLiteral("Generation incomplete");
     } else if (sidecar.decodeOrdinalFrames && !sidecar.frameCoverageComplete) {
         sidecar.readinessIssue = QStringLiteral("Frame coverage incomplete");
     } else if (sidecar.decodeOrdinalFrames && !sidecar.completionConfirmed) {

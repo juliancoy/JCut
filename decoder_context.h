@@ -65,7 +65,9 @@ private:
 
     QVector<FrameHandle> decodeForwardUntil(int64_t targetFrame, bool forceSeek);
     bool seekToKeyframe(int64_t targetFrame);
-    FrameHandle convertToFrame(AVFrame* avFrame, int64_t frameNumber);
+    FrameHandle convertToFrame(AVFrame* avFrame,
+                               int64_t frameNumber,
+                               int64_t sourcePresentationTimestamp);
     QImage convertAVFrameToImage(AVFrame* frame);
     void updateAccessTime();
 

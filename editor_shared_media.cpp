@@ -61,6 +61,7 @@ bool zeroCopyInteropEnvironmentDetected()
 #include <QSet>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 
@@ -176,8 +177,6 @@ struct ProxyResolutionInput {
     QString filePath;
     QString proxyPath;
     QString sourceAbsPath;
-    qint64 sourceMtimeMs = -1;
-    qint64 sourceDirMtimeMs = -1;
 };
 
 ProxyResolutionInput proxyResolutionInputForClip(const TimelineClip& clip) {
@@ -189,23 +188,14 @@ ProxyResolutionInput proxyResolutionInputForClip(const TimelineClip& clip) {
 
     const QFileInfo sourceInfo(clip.filePath);
     input.sourceAbsPath = sourceInfo.absoluteFilePath();
-    const QFileInfo sourceDirInfo(sourceInfo.absolutePath());
-    if (sourceDirInfo.exists()) {
-        input.sourceDirMtimeMs = sourceDirInfo.lastModified().toMSecsSinceEpoch();
-    }
-    if (sourceInfo.exists()) {
-        input.sourceMtimeMs = sourceInfo.lastModified().toMSecsSinceEpoch();
-    }
     return input;
 }
 
 QString proxyResolutionKey(const ProxyResolutionInput& input) {
-    return QStringLiteral("use=%1|vis=%2|src=%3|srcm=%4|dirm=%5|stored=%6")
+    return QStringLiteral("use=%1|vis=%2|src=%3|stored=%4")
         .arg(input.useProxy ? 1 : 0)
         .arg(input.hasVisuals ? 1 : 0)
         .arg(input.sourceAbsPath)
-        .arg(input.sourceMtimeMs)
-        .arg(input.sourceDirMtimeMs)
         .arg(input.proxyPath);
 }
 
@@ -218,24 +208,43 @@ bool interactivePreviewPathAllowedCachedImpl(const QString& path, int durationFr
     }
 
     static QMutex cacheMutex;
-    static QHash<QString, bool> cachedResultByKey;
+    struct CacheEntry {
+        bool allowed = false;
+        bool pathExists = false;
+        qint64 pathMtime = -1;
+        qint64 parentMtime = -1;
+        std::chrono::steady_clock::time_point nextValidation;
+    };
+    static QHash<QString, CacheEntry> cachedResultByKey;
+    constexpr auto kValidationInterval = std::chrono::seconds(1);
 
+    const QString stableKey =
+        QFileInfo(path).absoluteFilePath() + QLatin1Char('|') +
+        QString::number(durationFrames);
+    const auto now = std::chrono::steady_clock::now();
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto it = cachedResultByKey.constFind(stableKey);
+        if (it != cachedResultByKey.cend() && now < it->nextValidation) {
+            return it->allowed;
+        }
+    }
     const QFileInfo info(path);
     const QFileInfo parentInfo(info.absolutePath());
-    const qint64 pathMtime =
-        (info.exists() && info.isFile()) ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const bool pathExists = info.exists() && info.isFile();
+    const qint64 pathMtime = pathExists ? info.lastModified().toMSecsSinceEpoch() : -1;
     const qint64 parentMtime =
         parentInfo.exists() ? parentInfo.lastModified().toMSecsSinceEpoch() : -1;
-    const QString key = info.absoluteFilePath() + QLatin1Char('|') +
-                        QString::number(pathMtime) + QLatin1Char('|') +
-                        QString::number(parentMtime) + QLatin1Char('|') +
-                        QString::number(durationFrames);
 
     {
         QMutexLocker locker(&cacheMutex);
-        const auto it = cachedResultByKey.constFind(key);
-        if (it != cachedResultByKey.cend()) {
-            return it.value();
+        auto it = cachedResultByKey.find(stableKey);
+        if (it != cachedResultByKey.end() &&
+            it->pathExists == pathExists &&
+            it->pathMtime == pathMtime &&
+            it->parentMtime == parentMtime) {
+            it->nextValidation = now + kValidationInterval;
+            return it->allowed;
         }
     }
 
@@ -250,7 +259,15 @@ bool interactivePreviewPathAllowedCachedImpl(const QString& path, int durationFr
 
     {
         QMutexLocker locker(&cacheMutex);
-        cachedResultByKey.insert(key, allowed);
+        cachedResultByKey.insert(
+            stableKey,
+            CacheEntry{
+                allowed,
+                pathExists,
+                pathMtime,
+                parentMtime,
+                now + kValidationInterval,
+            });
     }
     return allowed;
 }
@@ -1040,15 +1057,21 @@ qreal effectiveFpsForClip(const TimelineClip& clip) {
 
 QString playbackProxyPathForClip(const TimelineClip& clip) {
     static QMutex cacheMutex;
-    static QHash<QString, QString> cachedProxyPathByKey;
+    struct CacheEntry {
+        QString path;
+        std::chrono::steady_clock::time_point nextValidation;
+    };
+    static QHash<QString, CacheEntry> cachedProxyPathByKey;
+    constexpr auto kValidationInterval = std::chrono::seconds(1);
 
     const ProxyResolutionInput input = proxyResolutionInputForClip(clip);
     const QString cacheKey = proxyResolutionKey(input);
+    const auto now = std::chrono::steady_clock::now();
     {
         QMutexLocker locker(&cacheMutex);
         const auto it = cachedProxyPathByKey.constFind(cacheKey);
-        if (it != cachedProxyPathByKey.cend()) {
-            return it.value();
+        if (it != cachedProxyPathByKey.cend() && now < it->nextValidation) {
+            return it->path;
         }
     }
 
@@ -1131,7 +1154,9 @@ QString playbackProxyPathForClip(const TimelineClip& clip) {
 
     {
         QMutexLocker locker(&cacheMutex);
-        cachedProxyPathByKey.insert(cacheKey, resolvedProxyPath);
+        cachedProxyPathByKey.insert(
+            cacheKey,
+            CacheEntry{resolvedProxyPath, now + kValidationInterval});
     }
     return resolvedProxyPath;
 }
@@ -1211,10 +1236,10 @@ QString playbackAudioPathForClip(const TimelineClip& clip) {
 
     if (!clip.audioSourcePath.trimmed().isEmpty() &&
         clip.audioSourceStatus == QStringLiteral("ok")) {
-        const QFileInfo trackedInfo(clip.audioSourcePath);
-        if (trackedInfo.exists() && trackedInfo.isFile()) {
-            return trackedInfo.absoluteFilePath();
-        }
+        // refreshClipAudioSource() owns filesystem validation. Playback and
+        // timeline paint trust that canonical resolution instead of restatting
+        // the same media file on every frame.
+        return QFileInfo(clip.audioSourcePath).absoluteFilePath();
     }
 
     const QFileInfo sourceInfo(clip.filePath);

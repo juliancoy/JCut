@@ -11,4 +11,9 @@ namespace jcut::core {
 ImageBuffer decodeImageFileRgba(const std::string& path,
                                 std::string* errorOut = nullptr);
 
+// Masks are single-channel data. Keeping them Gray8 avoids expanding every
+// full-resolution mask to four channels before its Vulkan upload.
+ImageBuffer decodeImageFileGray(const std::string& path,
+                                std::string* errorOut = nullptr);
+
 } // namespace jcut::core

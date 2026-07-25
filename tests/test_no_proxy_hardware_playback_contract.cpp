@@ -1,8 +1,10 @@
 #include <QtTest/QtTest>
 
+#include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 
 #include "../async_decoder.h"
 #include "../debug_controls.h"
@@ -24,6 +26,7 @@ class TestNoProxyHardwarePlaybackContract : public QObject {
 
 private slots:
     void noProxyPreviewKeepsOriginalMediaPath();
+    void proxyDiscoveryUsesBoundedFilesystemRefresh();
     void staleHardwareFrameIsPresentedNotBlack();
     void optionalFixtureDecodesHardwareWithoutProxy();
 };
@@ -94,6 +97,30 @@ void TestNoProxyHardwarePlaybackContract::noProxyPreviewKeepsOriginalMediaPath()
     const TimelineClip clip = makeSixtyFpsClip(QStringLiteral("/tmp/original-source.mp4"));
     QCOMPARE(playbackProxyPathForClip(clip), QString());
     QCOMPARE(interactivePreviewMediaPathForClip(clip), clip.filePath);
+}
+
+void TestNoProxyHardwarePlaybackContract::proxyDiscoveryUsesBoundedFilesystemRefresh()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sourcePath = directory.filePath(QStringLiteral("camera.mp4"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write("source");
+    source.close();
+
+    TimelineClip clip = makeSixtyFpsClip(sourcePath);
+    clip.useProxy = true;
+    clip.proxyPath.clear();
+    QCOMPARE(playbackProxyPathForClip(clip), QString());
+
+    const QString proxyPath = directory.filePath(QStringLiteral("camera.proxy.mp4"));
+    QFile proxy(proxyPath);
+    QVERIFY(proxy.open(QIODevice::WriteOnly));
+    proxy.write("proxy");
+    proxy.close();
+
+    QTRY_COMPARE_WITH_TIMEOUT(playbackProxyPathForClip(clip), proxyPath, 2500);
 }
 
 void TestNoProxyHardwarePlaybackContract::staleHardwareFrameIsPresentedNotBlack()

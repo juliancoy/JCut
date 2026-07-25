@@ -493,6 +493,12 @@ def run(args: argparse.Namespace, state: RunState) -> None:
     if args.resume and args.frame_index is None:
         first_missing = first_missing_frame(output_dir, total)
         state.completed_frame = first_missing - 1
+        print(
+            "[birefnet] resume: verified contiguous frames "
+            f"1-{first_missing - 1}; decoding from frame 1 and rendering "
+            f"from frame {first_missing}",
+            flush=True,
+        )
         # Decode from the beginning even on resume. Positional OpenCV seeks can
         # land on an adjacent decoded frame while reporting the requested
         # ordinal, which would permanently shift every resumed matte.

@@ -1871,6 +1871,14 @@ bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request
 }
 
 bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/playback/telemetry")) {
+        QJsonObject telemetry = fastSnapshot();
+        telemetry[QStringLiteral("ok")] = true;
+        writeJson(socket, 200, telemetry);
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/sync")) {
         QJsonObject sync;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &sync, [this]() {
@@ -1894,12 +1902,18 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                      audio.value(QStringLiteral("editor_playback_active")).toBool()},
                     {QStringLiteral("editor_current_frame"),
                      audio.value(QStringLiteral("editor_current_frame")).toInteger()},
-                    {QStringLiteral("absolute_playback_sample"),
-                     audio.value(QStringLiteral("absolute_playback_sample")).toInteger()},
-                    {QStringLiteral("projected_audio_clock_absolute_frame"),
-                     audio.value(QStringLiteral("projected_audio_clock_absolute_frame")).toInteger()},
-                    {QStringLiteral("projected_audio_clock_absolute_sample"),
-                     audio.value(QStringLiteral("projected_audio_clock_absolute_sample")).toInteger()},
+                    {QStringLiteral("transport_timeline_sample"),
+                     audio.value(QStringLiteral("transport_timeline_sample")).toInteger(-1)},
+                    {QStringLiteral("projected_audio_feedback_timeline_frame"),
+                     audio.value(QStringLiteral(
+                         "projected_audio_feedback_timeline_frame")).toInteger(-1)},
+                    {QStringLiteral("projected_audio_feedback_timeline_sample"),
+                     audio.value(QStringLiteral(
+                         "projected_audio_feedback_timeline_sample")).toInteger(-1)},
+                    {QStringLiteral("audio_clock_available"),
+                     audio.value(QStringLiteral("audio_clock_available")).toBool()},
+                    {QStringLiteral("has_playable_audio"),
+                     audio.value(QStringLiteral("has_playable_audio")).toBool()},
                     {QStringLiteral("audio_video_drift_frames"),
                      audio.value(QStringLiteral("audio_video_drift_frames")).toInteger()},
                     {QStringLiteral("audio_video_drift_samples"),
@@ -1918,6 +1932,18 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                      preview.value(QStringLiteral("active_requested_source_frame")).toInteger(-1)},
                     {QStringLiteral("active_presented_source_frame"),
                      preview.value(QStringLiteral("active_presented_source_frame")).toInteger(-1)},
+                    {QStringLiteral(
+                         "active_presented_source_video_stream_best_effort_timestamp"),
+                     preview
+                         .value(QStringLiteral(
+                             "active_presented_source_video_stream_best_effort_timestamp"))
+                         .toInteger(std::numeric_limits<qint64>::min())},
+                    {QStringLiteral(
+                         "active_presented_source_video_stream_best_effort_timestamp_available"),
+                     preview
+                         .value(QStringLiteral(
+                             "active_presented_source_video_stream_best_effort_timestamp_available"))
+                         .toBool()},
                     {QStringLiteral("active_frame_exact"),
                      preview.value(QStringLiteral("active_frame_exact")).toBool()},
                     {QStringLiteral("active_frame_up_to_date"),
@@ -1980,8 +2006,21 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                            preview.value(QStringLiteral("playback_pending_visible_requests")).toDouble());
         diagnostics.insert(QStringLiteral("playback_buffered_frames"),
                            preview.value(QStringLiteral("playback_buffered_frames")).toDouble());
-        diagnostics.insert(QStringLiteral("playback_dropped_presentation_frames"),
-                           preview.value(QStringLiteral("playback_dropped_presentation_frames")).toDouble());
+        diagnostics.insert(QStringLiteral("unique_presentation_misses"),
+                           preview.value(QStringLiteral("unique_presentation_misses")).toDouble());
+        diagnostics.insert(QStringLiteral("presented_frames"),
+                           preview.value(QStringLiteral("presented_frames")).toDouble());
+        diagnostics.insert(QStringLiteral("preview_update_requests"),
+                           preview.value(QStringLiteral("preview_update_requests")).toDouble());
+        diagnostics.insert(
+            QStringLiteral("preview_update_events_delivered"),
+            preview.value(
+                       QStringLiteral("preview_update_events_delivered"))
+                .toDouble());
+        diagnostics.insert(QStringLiteral("preview_updates_delivered"),
+                           preview.value(
+                                      QStringLiteral("preview_updates_delivered"))
+                               .toDouble());
         diagnostics.insert(QStringLiteral("playback_decode"),
                            preview.value(QStringLiteral("playback_decode")).toObject());
         diagnostics.insert(QStringLiteral("playback_smoothness"),
@@ -2008,6 +2047,20 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                            preview.value(QStringLiteral("active_requested_source_frame")).toDouble());
         diagnostics.insert(QStringLiteral("active_presented_source_frame"),
                            preview.value(QStringLiteral("active_presented_source_frame")).toDouble());
+        diagnostics.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp"),
+            preview
+                .value(QStringLiteral(
+                    "active_presented_source_video_stream_best_effort_timestamp"))
+                .toInteger(std::numeric_limits<qint64>::min()));
+        diagnostics.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp_available"),
+            preview
+                .value(QStringLiteral(
+                    "active_presented_source_video_stream_best_effort_timestamp_available"))
+                .toBool());
         diagnostics.insert(QStringLiteral("active_frame_exact"),
                            preview.value(QStringLiteral("active_frame_exact")).toBool());
         diagnostics.insert(QStringLiteral("active_frame_up_to_date"),

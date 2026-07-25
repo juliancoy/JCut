@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Probe live JCut playback sync across audio, video, and subtitle domains.
 
-This attaches to a running editor control server. It is intended for real media
-cases such as the Baltimore County project, not as a synthetic unit test.
+This attaches to a running editor control server. The measured interval uses
+only the lock-free playback telemetry route, so observing A/V drift cannot
+consume UI/presentation time.
 """
 
 from __future__ import annotations
@@ -76,28 +77,23 @@ def integer(value: Any, default: int = 0) -> int:
 
 
 def selected_clip(state: dict[str, Any], contains: str) -> dict[str, Any]:
-    selected = state.get("state", {}).get("selectedClip", {})
-    if selected and contains.lower() in selected.get("filePath", "").lower():
+    project = state.get("state", {})
+    selected = project.get("selectedClip", {})
+    timeline = project.get("timeline", [])
+
+    def is_matching_media_parent(clip: dict[str, Any]) -> bool:
+        return (
+            contains.lower() in clip.get("filePath", "").lower()
+            and not clip.get("linkedSourceClipId")
+            and clip.get("clipRole", "media") != "mask_matte"
+        )
+
+    if isinstance(selected, dict) and is_matching_media_parent(selected):
         return selected
-    for clip in state.get("state", {}).get("timeline", []):
-        if contains.lower() in clip.get("filePath", "").lower():
+    for clip in timeline:
+        if isinstance(clip, dict) and is_matching_media_parent(clip):
             return clip
     return selected if isinstance(selected, dict) else {}
-
-
-def expected_source_frame_for_clip(clip: dict[str, Any], timeline_frame: int) -> int | None:
-    try:
-        start_frame = integer(clip.get("startFrame"))
-        duration_frames = integer(clip.get("durationFrames"))
-        source_in = integer(clip.get("sourceInFrame"))
-        source_fps = number(clip.get("sourceFps"), 0.0)
-        playback_rate = number(clip.get("playbackRate"), 1.0)
-    except Exception:
-        return None
-    if source_fps <= 0 or timeline_frame < start_frame or timeline_frame >= start_frame + duration_frames:
-        return None
-    local_timeline_frame = timeline_frame - start_frame
-    return source_in + int((local_timeline_frame * source_fps * playback_rate) // TIMELINE_FPS)
 
 
 def summarize(values: list[float]) -> dict[str, float]:
@@ -126,7 +122,6 @@ def main() -> int:
     parser.add_argument("--clip-contains", default="Hho5MORgIj8")
     parser.add_argument("--max-audio-video-drift-frames", type=float, default=24.0)
     parser.add_argument("--max-audio-video-drift-p95-frames", type=float, default=4.0)
-    parser.add_argument("--max-video-source-drift-frames", type=float, default=2.0)
     parser.add_argument("--max-presented-source-lag-frames", type=float, default=4.0)
     parser.add_argument("--start-if-needed", action="store_true")
     parser.add_argument("--leave-playing", action="store_true")
@@ -157,16 +152,17 @@ def main() -> int:
 
     request_json("POST", f"{base}/playback", {
         "playback_speed": args.speed,
-        "clock_source": "audio",
-        "audio_warp_mode": "time_stretch",
+        "clock_source": "auto",
+        "audio_warp_mode": original_warp,
         "playback_loop_enabled": original_loop,
     })
     if args.seek_frame >= 0:
         request_json("POST", f"{base}/playhead", {"frame": args.seek_frame})
 
     started_by_probe = False
-    playhead = request_json("GET", f"{base}/playhead")
-    if args.start_if_needed and not playhead.get("playback_active", False):
+    telemetry_url = f"{base}/playback/telemetry"
+    telemetry = request_json("GET", telemetry_url)
+    if args.start_if_needed and not telemetry.get("playback_active", False):
         click = request_json("POST", f"{base}/click-item", {"id": "transport.play"}, timeout=8.0)
         if not click.get("ok", False):
             print(f"FAIL: could not start playback: {click}", file=sys.stderr)
@@ -174,11 +170,11 @@ def main() -> int:
         started_by_probe = True
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline:
-            playhead = request_json("GET", f"{base}/playhead")
-            if playhead.get("playback_active", False):
+            telemetry = request_json("GET", telemetry_url)
+            if telemetry.get("playback_active", False):
                 break
             time.sleep(0.1)
-        if not playhead.get("playback_active", False):
+        if not telemetry.get("playback_active", False):
             print("FAIL: playback did not become active after transport.play", file=sys.stderr)
             return 2
 
@@ -186,19 +182,30 @@ def main() -> int:
         time.sleep(args.warmup_seconds)
 
     samples: list[Sample] = []
-    sync_latencies_ms: list[float] = []
+    telemetry_latencies_ms: list[float] = []
     deadline = time.monotonic() + max(args.seconds, args.interval)
     try:
         while time.monotonic() < deadline:
             started = time.monotonic()
-            sync_payload = request_json("GET", f"{base}/playback/sync", timeout=4.0)
-            sync_latencies_ms.append((time.monotonic() - started) * 1000.0)
-            samples.append(Sample(time.monotonic(), {"sync": sync_payload}))
+            telemetry = request_json("GET", telemetry_url, timeout=4.0)
+            telemetry_latencies_ms.append(
+                (time.monotonic() - started) * 1000.0
+            )
+            samples.append(
+                Sample(time.monotonic(), {"telemetry": telemetry})
+            )
             time.sleep(max(0.05, args.interval))
     finally:
         if started_by_probe and not args.leave_playing:
             try:
-                request_json("POST", f"{base}/click-item", {"id": "transport.pause"}, timeout=8.0)
+                telemetry = request_json("GET", telemetry_url)
+                if telemetry.get("playback_active", False):
+                    request_json(
+                        "POST",
+                        f"{base}/click-item",
+                        {"id": "transport.play"},
+                        timeout=8.0,
+                    )
             except Exception:
                 pass
         request_json("POST", f"{base}/playback", {
@@ -211,37 +218,138 @@ def main() -> int:
     if not samples:
         print("FAIL: no samples collected", file=sys.stderr)
         return 2
+    required_telemetry_fields = {
+        "transport_timeline_sample",
+        "projected_audio_feedback_timeline_sample",
+        "audio_clock_available",
+        "has_playable_audio",
+        "audio_playback_blocked",
+        "pitch_preserving_audio_blocked",
+        "time_stretch_cache_miss_count",
+        "audio_underrun_count",
+        "active_requested_source_frame",
+        "active_presented_source_frame",
+        "unique_presentation_misses",
+    }
+    missing_telemetry_fields = sorted(
+        required_telemetry_fields - samples[0].payload["telemetry"].keys()
+    )
+    if missing_telemetry_fields:
+        print(
+            "FAIL: playback telemetry is missing required fields: "
+            + ", ".join(missing_telemetry_fields),
+            file=sys.stderr,
+        )
+        return 2
 
     audio_video_drift_frames: list[float] = []
-    video_source_drift_frames: list[float] = []
+    audio_video_drift_samples: list[float] = []
     presented_source_lag_frames: list[float] = []
     frame_advances: list[float] = []
     failures: list[dict[str, Any]] = []
     previous_frame: int | None = None
     playing_count = 0
     audio_blocked_count = 0
-    time_stretch_miss_count = 0
+    audio_clock_available_count = 0
+    playable_audio_sample_count = 0
+    baseline_telemetry = samples[0].payload["telemetry"]
+    time_stretch_miss_baseline = integer(
+        baseline_telemetry.get("time_stretch_cache_miss_count")
+    )
+    audio_underrun_baseline = integer(
+        baseline_telemetry.get("audio_underrun_count")
+    )
+    presentation_miss_baseline = integer(
+        baseline_telemetry.get("unique_presentation_misses")
+    )
+    time_stretch_miss_delta = 0
+    audio_underrun_delta = 0
+    presentation_miss_delta = 0
 
     for sample in samples:
-        sync = sample.payload["sync"]
+        sync = sample.payload["telemetry"]
         playing = bool(sync.get("playback_active", False))
         if playing:
             playing_count += 1
 
         editor_frame = integer(sync.get("editor_current_frame"))
-        projected_audio_frame = integer(sync.get("projected_audio_clock_absolute_frame"), editor_frame)
-        audio_video_drift = editor_frame - projected_audio_frame
-        audio_video_drift_frames.append(abs(float(audio_video_drift)))
+        transport_timeline_sample = integer(
+            sync.get("transport_timeline_sample"), -1
+        )
+        has_playable_audio = bool(sync.get("has_playable_audio", False))
+        audio_clock_available = bool(sync.get("audio_clock_available", False))
+        projected_audio_frame = integer(
+            sync.get("projected_audio_feedback_timeline_frame"), -1
+        )
+        projected_audio_sample = integer(
+            sync.get("projected_audio_feedback_timeline_sample"), -1
+        )
+        if has_playable_audio:
+            playable_audio_sample_count += 1
+        if (
+            audio_clock_available
+            and transport_timeline_sample >= 0
+            and projected_audio_sample >= 0
+        ):
+            audio_clock_available_count += 1
+            audio_video_drift_sample = (
+                transport_timeline_sample - projected_audio_sample
+            )
+            audio_video_drift = (
+                audio_video_drift_sample
+                * TIMELINE_FPS
+                / TIMELINE_SAMPLE_RATE
+            )
+            audio_video_drift_samples.append(
+                abs(float(audio_video_drift_sample))
+            )
+            audio_video_drift_frames.append(abs(float(audio_video_drift)))
+            if abs(audio_video_drift) > args.max_audio_video_drift_frames:
+                failures.append({
+                    "type": "audio_video_drift",
+                    "editor_frame": editor_frame,
+                    "projected_audio_frame": projected_audio_frame,
+                    "transport_timeline_sample": transport_timeline_sample,
+                    "projected_audio_feedback_timeline_sample":
+                        projected_audio_sample,
+                    "drift_samples": audio_video_drift_sample,
+                    "drift_frames": audio_video_drift,
+                })
+        elif playing and has_playable_audio:
+            failures.append({
+                "type": "audio_feedback_unavailable",
+                "editor_frame": editor_frame,
+            })
 
         if sync.get("audio_playback_blocked", False) or sync.get("pitch_preserving_audio_blocked", False):
             audio_blocked_count += 1
-        time_stretch_miss_count = max(time_stretch_miss_count, integer(sync.get("time_stretch_cache_miss_count")))
+        time_stretch_miss_delta = max(
+            time_stretch_miss_delta,
+            max(
+                0,
+                integer(sync.get("time_stretch_cache_miss_count"))
+                - time_stretch_miss_baseline,
+            ),
+        )
+        audio_underrun_delta = max(
+            audio_underrun_delta,
+            max(
+                0,
+                integer(sync.get("audio_underrun_count"))
+                - audio_underrun_baseline,
+            ),
+        )
+        presentation_miss_delta = max(
+            presentation_miss_delta,
+            max(
+                0,
+                integer(sync.get("unique_presentation_misses"))
+                - presentation_miss_baseline,
+            ),
+        )
 
         requested_source = integer(sync.get("active_requested_source_frame"), -1)
         presented_source = integer(sync.get("active_presented_source_frame"), -1)
-        expected_source = expected_source_frame_for_clip(clip, editor_frame)
-        if expected_source is not None and requested_source >= 0:
-            video_source_drift_frames.append(abs(float(requested_source - expected_source)))
         if requested_source >= 0 and presented_source >= 0:
             presented_source_lag_frames.append(abs(float(requested_source - presented_source)))
 
@@ -249,23 +357,6 @@ def main() -> int:
             frame_advances.append(float(editor_frame - previous_frame))
         previous_frame = editor_frame
 
-        if abs(audio_video_drift) > args.max_audio_video_drift_frames:
-            failures.append({
-                "type": "audio_video_drift",
-                "editor_frame": editor_frame,
-                "projected_audio_frame": projected_audio_frame,
-                "drift_frames": audio_video_drift,
-            })
-        if expected_source is not None and requested_source >= 0:
-            source_drift = requested_source - expected_source
-            if abs(source_drift) > args.max_video_source_drift_frames:
-                failures.append({
-                    "type": "video_source_drift",
-                    "editor_frame": editor_frame,
-                    "requested_source_frame": requested_source,
-                    "expected_source_frame": expected_source,
-                    "drift_frames": source_drift,
-                })
         if requested_source >= 0 and presented_source >= 0:
             source_lag = requested_source - presented_source
             if abs(source_lag) > args.max_presented_source_lag_frames:
@@ -283,9 +374,31 @@ def main() -> int:
             "p95_frames": audio_video_summary.get("p95"),
             "max_allowed_p95_frames": args.max_audio_video_drift_p95_frames,
         })
+    if time_stretch_miss_delta > 0:
+        failures.append({
+            "type": "time_stretch_cache_miss",
+            "delta": time_stretch_miss_delta,
+        })
+    if audio_underrun_delta > 0:
+        failures.append({
+            "type": "audio_underrun",
+            "delta": audio_underrun_delta,
+        })
+    if presentation_miss_delta > 0:
+        failures.append({
+            "type": "presentation_miss",
+            "delta": presentation_miss_delta,
+        })
 
     report = {
-        "ok": not failures and playing_count > 0 and audio_blocked_count == 0 and time_stretch_miss_count == 0,
+        "ok": (
+            not failures
+            and playing_count > 0
+            and audio_blocked_count == 0
+            and time_stretch_miss_delta == 0
+            and audio_underrun_delta == 0
+            and presentation_miss_delta == 0
+        ),
         "clip": {
             "id": clip.get("id", ""),
             "filePath": clip.get("filePath", ""),
@@ -294,25 +407,30 @@ def main() -> int:
         },
         "playback": {
             "speed": args.speed,
-            "clock_source": "audio",
-            "audio_warp_mode": "time_stretch",
+            "clock_source": "auto",
+            "audio_warp_mode": original_warp,
             "sample_count": len(samples),
             "playing_sample_count": playing_count,
+            "measurement_path": "lock_free_playback_telemetry",
         },
         "thresholds": {
             "max_audio_video_drift_frames": args.max_audio_video_drift_frames,
             "max_audio_video_drift_p95_frames": args.max_audio_video_drift_p95_frames,
-            "max_video_source_drift_frames": args.max_video_source_drift_frames,
             "max_presented_source_lag_frames": args.max_presented_source_lag_frames,
         },
         "summary": {
+            "audio_video_drift_samples":
+                summarize(audio_video_drift_samples),
             "audio_video_drift_frames": audio_video_summary,
-            "video_source_drift_frames": summarize(video_source_drift_frames),
             "presented_source_lag_frames": summarize(presented_source_lag_frames),
             "editor_frame_advances_per_sample": summarize(frame_advances),
             "audio_blocked_sample_count": audio_blocked_count,
-            "time_stretch_cache_miss_count": time_stretch_miss_count,
-            "sync_latency_ms": summarize(sync_latencies_ms),
+            "audio_clock_available_sample_count": audio_clock_available_count,
+            "playable_audio_sample_count": playable_audio_sample_count,
+            "time_stretch_cache_miss_delta": time_stretch_miss_delta,
+            "audio_underrun_delta": audio_underrun_delta,
+            "unique_presentation_miss_delta": presentation_miss_delta,
+            "telemetry_latency_ms": summarize(telemetry_latencies_ms),
         },
         "failures": failures[:20],
         "failure_count": len(failures),

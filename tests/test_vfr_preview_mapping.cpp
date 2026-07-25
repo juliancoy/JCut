@@ -23,6 +23,8 @@ namespace {
 
 struct FrameMapEntry {
     int64_t sourceFrame = -1;
+    int64_t sourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
     int64_t decodedOrdinal = -1;
 };
 
@@ -87,19 +89,24 @@ QVector<FrameMapEntry> readFrameMap(const QString& path, QString* errorOut)
         const QString line = stream.readLine().trimmed();
         if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
         const QStringList columns = line.split(QLatin1Char('\t'));
-        if (columns.size() != 2) {
+        if (columns.size() != 3) {
             if (errorOut) *errorOut = QStringLiteral("Malformed map row: %1").arg(line);
             return {};
         }
         bool sourceOk = false;
+        bool sourcePresentationTimestampOk = false;
         bool ordinalOk = false;
         const int64_t sourceFrame = columns.at(0).toLongLong(&sourceOk);
-        const int64_t ordinal = columns.at(1).toLongLong(&ordinalOk);
-        if (!sourceOk || !ordinalOk || ordinal != entries.size()) {
+        const int64_t sourcePresentationTimestamp =
+            columns.at(1).toLongLong(&sourcePresentationTimestampOk);
+        const int64_t ordinal = columns.at(2).toLongLong(&ordinalOk);
+        if (!sourceOk || !sourcePresentationTimestampOk ||
+            !ordinalOk || ordinal != entries.size()) {
             if (errorOut) *errorOut = QStringLiteral("Invalid map row: %1").arg(line);
             return {};
         }
-        entries.push_back({sourceFrame, ordinal});
+        entries.push_back(
+            {sourceFrame, sourcePresentationTimestamp, ordinal});
     }
     return entries;
 }
@@ -107,7 +114,7 @@ QVector<FrameMapEntry> readFrameMap(const QString& path, QString* errorOut)
 int64_t previewDecodedOrdinal(const QString& python,
                               const QString& helperPath,
                               const QString& sourcePath,
-                              int64_t requestedSourceFrame,
+                              int64_t sourcePresentationTimestamp,
                               QString* errorOut)
 {
     QByteArray output;
@@ -115,8 +122,8 @@ int64_t previewDecodedOrdinal(const QString& python,
             python,
             {helperPath,
              QStringLiteral("--input"), sourcePath,
-             QStringLiteral("--lookup-source-frame"),
-             QString::number(requestedSourceFrame)},
+             QStringLiteral("--lookup-source-presentation-timestamp"),
+             QString::number(sourcePresentationTimestamp)},
             &output,
             errorOut)) {
         return -1;
@@ -161,7 +168,7 @@ class TestVfrPreviewMapping : public QObject {
 
 private slots:
     void syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers();
-    void roundedSourceKeyDuplicatesUseFirstPresentation();
+    void roundedSourceKeyDuplicatesUseExactPresentationIdentity();
 };
 
 void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
@@ -228,7 +235,7 @@ void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
     const QJsonObject metadata =
         QJsonDocument::fromJson(metadataFile.readAll()).object();
     QCOMPARE(metadata.value(QStringLiteral("schema")).toString(),
-             QStringLiteral("jcut_frame_index_map_v2"));
+             QStringLiteral("jcut_frame_index_map_v3"));
     QCOMPARE(metadata.value(QStringLiteral("mapped_frame_count")).toInteger(),
              qint64(frameMap.size()));
 
@@ -286,20 +293,26 @@ void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
                 scenario.markers);
         QCOMPARE(requestedSourceFrame, scenario.expectedRequestedFrame);
 
-        const int64_t ordinal = previewDecodedOrdinal(
-            python, helperPath, scenario.clip.filePath, requestedSourceFrame, &error);
-        const QByteArray lookupFailure = context + ": " + error.toUtf8();
-        QVERIFY2(ordinal >= 0, lookupFailure.constData());
-        QCOMPARE(ordinal, scenario.expectedDecodedOrdinal);
-        QVERIFY(ordinal < frameMap.size());
-        QCOMPARE(frameMap.at(ordinal).sourceFrame, scenario.expectedPresentedFrame);
-
         editor::DecoderContext decoder(scenario.clip.filePath, nullptr, true);
         QVERIFY2(decoder.initialize(), context.constData());
         const editor::FrameHandle decoded = decoder.decodeFrame(requestedSourceFrame);
         QVERIFY2(!decoded.isNull(), context.constData());
+        QVERIFY2(decoded.hasSourcePresentationTimestamp(), context.constData());
         QCOMPARE(decoded.frameNumber(), scenario.expectedPresentedFrame);
+
+        const int64_t ordinal = previewDecodedOrdinal(
+            python,
+            helperPath,
+            scenario.clip.filePath,
+            decoded.sourcePresentationTimestamp(),
+            &error);
+        const QByteArray lookupFailure = context + ": " + error.toUtf8();
+        QVERIFY2(ordinal >= 0, lookupFailure.constData());
+        QCOMPARE(ordinal, scenario.expectedDecodedOrdinal);
+        QVERIFY(ordinal < frameMap.size());
         QCOMPARE(decoded.frameNumber(), frameMap.at(ordinal).sourceFrame);
+        QCOMPARE(decoded.sourcePresentationTimestamp(),
+                 frameMap.at(ordinal).sourcePresentationTimestamp);
     }
 
     // The preview resolver must ignore stale generated-child timing caches and
@@ -319,7 +332,8 @@ void TestVfrPreviewMapping::syntheticVfrStaysAlignedAcrossCutsRatesAndMarkers()
              int64_t(5));
 }
 
-void TestVfrPreviewMapping::roundedSourceKeyDuplicatesUseFirstPresentation()
+void TestVfrPreviewMapping::
+    roundedSourceKeyDuplicatesUseExactPresentationIdentity()
 {
     const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
     const QString python = QStandardPaths::findExecutable(QStringLiteral("python3"));
@@ -380,23 +394,28 @@ void TestVfrPreviewMapping::roundedSourceKeyDuplicatesUseFirstPresentation()
     QCOMPARE(frameMap.at(1).decodedOrdinal, int64_t(1));
     const int64_t duplicateSourceKey = frameMap.at(0).sourceFrame;
 
-    QByteArray lookupOutput;
-    QVERIFY2(runExternalTool(
-                  python,
-                  {helperPath,
-                   QStringLiteral("--input"), sourcePath,
-                   QStringLiteral("--lookup-source-frame"),
-                   QString::number(duplicateSourceKey)},
-                  &lookupOutput,
-                  &error),
-              qPrintable(error));
-    QCOMPARE(QString::fromUtf8(lookupOutput).trimmed(), QStringLiteral("1"));
+    QCOMPARE(previewDecodedOrdinal(
+                 python,
+                 helperPath,
+                 sourcePath,
+                 frameMap.at(0).sourcePresentationTimestamp,
+                 &error),
+             int64_t(0));
+    QCOMPARE(previewDecodedOrdinal(
+                 python,
+                 helperPath,
+                 sourcePath,
+                 frameMap.at(1).sourcePresentationTimestamp,
+                 &error),
+             int64_t(1));
 
     editor::DecoderContext decoder(sourcePath, nullptr, true);
     QVERIFY(decoder.initialize());
     const editor::FrameHandle decoded = decoder.decodeFrame(duplicateSourceKey);
     QVERIFY(!decoded.isNull());
     QCOMPARE(decoded.frameNumber(), duplicateSourceKey);
+    QCOMPARE(decoded.sourcePresentationTimestamp(),
+             frameMap.at(0).sourcePresentationTimestamp);
     const QColor decodedCenter(decoded.cpuImage().pixel(16, 12));
     QVERIFY2(decodedCenter.red() > 200 && decodedCenter.blue() < 40,
              "DecoderContext must return the first (red) presentation for a duplicate rounded key");
@@ -445,25 +464,78 @@ void TestVfrPreviewMapping::roundedSourceKeyDuplicatesUseFirstPresentation()
     clip.filePath = sourcePath;
     clip.maskFramesDir = temporary.path();
     clip.maskEnabled = true;
-    const QImage resolvedMask = rawClipMaskImage(clip, duplicateSourceKey);
-    QVERIFY(!resolvedMask.isNull());
+    QVERIFY2(rawClipMaskImage(clip, duplicateSourceKey).isNull(),
+             "Rounded source keys are ambiguous for decode-ordinal sidecars");
+    prefetchClipMaskBuffers(clip, duplicateSourceKey);
+    QImage resolvedMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(resolvedMask = rawClipMaskImage(clip, decoded)).isNull(),
+        3000);
+    QCOMPARE(resolvedMask.format(), QImage::Format_Grayscale8);
     QCOMPARE(qGray(resolvedMask.pixel(0, 0)), 32);
+    const auto resolvedBuffer = rawClipMaskBuffer(clip, decoded);
+    QVERIFY(resolvedBuffer);
+    QCOMPARE(resolvedBuffer->format, jcut::core::PixelFormat::Gray8);
+    QCOMPARE(resolvedBuffer->strideBytes, 2);
+    QCOMPARE(resolvedBuffer->bytes.size(), std::size_t(4));
+    const editor::FrameHandle diagnosticallyDifferentRoundedKey =
+        editor::FrameHandle::createCpuFrame(
+            decoded.cpuImage(),
+            duplicateSourceKey + 1,
+            sourcePath,
+            frameMap.at(0).sourcePresentationTimestamp);
+    QImage canonicalIdentityMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(canonicalIdentityMask =
+              rawClipMaskImage(clip, diagnosticallyDifferentRoundedKey))
+             .isNull(),
+        3000);
+    QCOMPARE(qGray(canonicalIdentityMask.pixel(0, 0)), 32);
+
+    const editor::FrameHandle secondPresentation =
+        editor::FrameHandle::createCpuFrame(
+            decoded.cpuImage(),
+            duplicateSourceKey,
+            sourcePath,
+            frameMap.at(1).sourcePresentationTimestamp);
+    QImage secondMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(secondMask = rawClipMaskImage(clip, secondPresentation)).isNull(),
+        3000);
+    QCOMPARE(qGray(secondMask.pixel(0, 0)), 64);
 
     // Prime the runtime cache above, then publish a different, still-valid
-    // mapping with the same byte sizes and restore each file's millisecond
-    // modification timestamp. Nanosecond/ctime versioning must still reload it.
+    // exact-PTS mapping with the same byte sizes and restore each file's
+    // millisecond modification timestamp. Nanosecond/ctime versioning must
+    // still reload it.
     const QFileInfo originalMapInfo(mapPath);
     const QFileInfo originalMetadataInfo(mapMetadataPath);
     const QFileInfo originalCompletionInfo(completionPath);
-    const QByteArray remappedContents(
-        "# source_frame\tmask_frame\n1\t0\n1\t1\n3\t2\n4\t3\n");
+    QByteArray remappedContents(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n");
+    for (const FrameMapEntry& entry : frameMap) {
+        remappedContents += QByteArray::number(entry.sourceFrame) + '\t' +
+            QByteArray::number(entry.sourcePresentationTimestamp + 1) + '\t' +
+            QByteArray::number(entry.decodedOrdinal) + '\n';
+    }
     QFile remappedFile(mapPath);
     QVERIFY(remappedFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
     QCOMPARE(remappedFile.write(remappedContents), qint64(remappedContents.size()));
     remappedFile.close();
 
     QJsonObject remappedMetadata = mapMetadata;
-    remappedMetadata.insert(QStringLiteral("min_source_frame"), 1);
+    remappedMetadata.insert(
+        QStringLiteral("min_source_presentation_timestamp"),
+        mapMetadata
+                .value(QStringLiteral("min_source_presentation_timestamp"))
+                .toInteger() +
+            1);
+    remappedMetadata.insert(
+        QStringLiteral("max_source_presentation_timestamp"),
+        mapMetadata
+                .value(QStringLiteral("max_source_presentation_timestamp"))
+                .toInteger() +
+            1);
     remappedMetadata.insert(QStringLiteral("map_sha256"),
                             mask_sidecar_test::fileSha256(mapPath));
     completionMetadata.insert(
@@ -492,8 +564,9 @@ void TestVfrPreviewMapping::roundedSourceKeyDuplicatesUseFirstPresentation()
              originalMetadataInfo.lastModified().toMSecsSinceEpoch());
     QCOMPARE(QFileInfo(completionPath).lastModified().toMSecsSinceEpoch(),
              originalCompletionInfo.lastModified().toMSecsSinceEpoch());
-    QVERIFY2(rawClipMaskImage(clip, duplicateSourceKey).isNull(),
-             "A same-ms, same-size authenticated map rewrite must invalidate the cache");
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rawClipMaskImage(clip, decoded).isNull(),
+        2000);
 }
 
 QTEST_GUILESS_MAIN(TestVfrPreviewMapping)

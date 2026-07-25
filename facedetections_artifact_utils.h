@@ -4,16 +4,59 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QString>
 #include <QStringList>
 
-inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& transcriptPath)
+#include <chrono>
+
+struct FacedetectionsArtifactMetadataSnapshot
 {
-    const QFileInfo info(transcriptPath);
-    if (!info.exists() || !info.isFile()) {
-        return -1;
+    bool transcriptExists = false;
+    qint64 transcriptModifiedMs = 0;
+    qint64 artifactRevisionMs = -1;
+};
+
+inline FacedetectionsArtifactMetadataSnapshot
+facedetectionsArtifactMetadataForTranscript(const QString& transcriptPath)
+{
+    constexpr qint64 kFilesystemRefreshMs = 1000;
+    struct CacheEntry
+    {
+        FacedetectionsArtifactMetadataSnapshot snapshot;
+        qint64 nextValidationMs = 0;
+    };
+    static QMutex cacheMutex;
+    static QHash<QString, CacheEntry> cache;
+
+    const QString absolutePath = QFileInfo(transcriptPath.trimmed()).absoluteFilePath();
+    if (absolutePath.isEmpty()) {
+        return {};
     }
+    const qint64 nowMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto cached = cache.constFind(absolutePath);
+        if (cached != cache.cend() && nowMs < cached->nextValidationMs) {
+            return cached->snapshot;
+        }
+    }
+
+    FacedetectionsArtifactMetadataSnapshot snapshot;
+    const QFileInfo info(absolutePath);
+    if (!info.exists() || !info.isFile()) {
+        QMutexLocker locker(&cacheMutex);
+        cache.insert(absolutePath, CacheEntry{snapshot, nowMs + kFilesystemRefreshMs});
+        return snapshot;
+    }
+    snapshot.transcriptExists = true;
+    snapshot.transcriptModifiedMs = info.lastModified().toMSecsSinceEpoch();
     const QDir dir = info.dir();
     const QString base = info.completeBaseName();
     const QStringList candidates{
@@ -24,14 +67,24 @@ inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& trans
         dir.filePath(QStringLiteral("facedetections_artifact/detections.idx")),
         dir.filePath(QStringLiteral("facedetections_artifact/detections.dat")),
     };
-    qint64 revisionMs = -1;
     for (const QString& path : candidates) {
         const QFileInfo candidate(path);
         if (candidate.exists() && candidate.isFile()) {
-            revisionMs = qMax<qint64>(revisionMs, candidate.lastModified().toMSecsSinceEpoch());
+            snapshot.artifactRevisionMs =
+                qMax<qint64>(snapshot.artifactRevisionMs,
+                             candidate.lastModified().toMSecsSinceEpoch());
         }
     }
-    return revisionMs;
+    {
+        QMutexLocker locker(&cacheMutex);
+        cache.insert(absolutePath, CacheEntry{snapshot, nowMs + kFilesystemRefreshMs});
+    }
+    return snapshot;
+}
+
+inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& transcriptPath)
+{
+    return facedetectionsArtifactMetadataForTranscript(transcriptPath).artifactRevisionMs;
 }
 
 inline QString facedetectionsSidecarToken(const QString& raw)

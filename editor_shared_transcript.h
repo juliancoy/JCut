@@ -36,6 +36,7 @@ QString transcriptEditablePathForClip(const TimelineClip& clip);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
 QString transcriptWorkingPathForSource(const TranscriptSourceKey& source);
 QString transcriptWorkingPathForClip(const TimelineClip& clip);
+bool transcriptPathExistsWithBoundedRefresh(const QString& transcriptPath);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
 QStringList transcriptCutPathsForSource(const TranscriptSourceKey& source);
 QStringList transcriptCutPathsForClip(const TimelineClip& clip);

@@ -29,6 +29,9 @@ private slots:
   void testStaleTimeStretchStateRejectedAfterSourceInvalidation();
   void testWarmupPermanentFailureIsSourceGenerationScoped();
   void testRingBufferClearWaitsForReaderAndRejectsReadsDuringReset();
+  void testOutputStreamStartWaitsForPrimeBuffer();
+  void testPendingOutputRebasePreservesExactSampleAndIsOneShot();
+  void testAudioFollowerSnapshotIsCoherent();
 
 private:
   static TimelineClip makeAudioClip(const QString &id, const QString &path,
@@ -83,6 +86,136 @@ void TestAudioMixPolicy::testPolicyHelpers() {
   QVERIFY(spliceSecondaryTapWithinClip(199, 100, 200));
   QVERIFY(!spliceSecondaryTapWithinClip(99, 100, 200));
   QVERIFY(!spliceSecondaryTapWithinClip(200, 100, 200));
+}
+
+void TestAudioMixPolicy::testOutputStreamStartWaitsForPrimeBuffer() {
+  constexpr int periodFrames = 1024;
+  constexpr int64_t streamLatencyFrames = 6141;
+  const size_t primeSamples =
+      AudioEngine::outputPrimeTargetSamples(
+          periodFrames, streamLatencyFrames);
+  QCOMPARE(
+      primeSamples,
+      static_cast<size_t>(8192 * 2));
+  QVERIFY(AudioEngine::outputPrimeCapacitySufficient(
+      periodFrames, streamLatencyFrames));
+  QVERIFY(!AudioEngine::outputStreamCanStart(
+      false, true, primeSamples, primeSamples));
+  QVERIFY(!AudioEngine::outputStreamCanStart(
+      true, false, primeSamples, primeSamples));
+  QVERIFY(!AudioEngine::outputStreamCanStart(
+      true, true, primeSamples - 1, primeSamples));
+  QVERIFY(AudioEngine::outputStreamCanStart(
+      true, true, primeSamples, primeSamples));
+  QVERIFY(!AudioEngine::outputPrimeNeedsRebase(1000, 1240, 240));
+  QVERIFY(AudioEngine::outputPrimeNeedsRebase(1000, 1241, 240));
+  QVERIFY(!AudioEngine::outputPrimeNeedsRebase(1000, 760, 240));
+  QVERIFY(AudioEngine::outputPrimeNeedsRebase(1000, 759, 240));
+
+  AudioEngine engine;
+  QVector<int16_t> primed(
+      static_cast<qsizetype>(primeSamples), 0);
+  QCOMPARE(
+      engine.m_ringBuffer.write(
+          primed.constData(), primeSamples),
+      primeSamples);
+  QVector<int16_t> callbackOutput(periodFrames * 2);
+  const int startupCallbacks =
+      static_cast<int>(
+          (streamLatencyFrames + periodFrames - 1) /
+          periodFrames) +
+      2;
+  for (int callback = 0; callback < startupCallbacks; ++callback) {
+    QCOMPARE(
+        AudioEngine::rtAudioCallback(
+            callbackOutput.data(),
+            nullptr,
+            periodFrames,
+            0.0,
+            0,
+            &engine),
+        0);
+  }
+  QCOMPARE(engine.m_underrunCount.load(), 0);
+  QCOMPARE(engine.m_ringBuffer.available(), size_t(0));
+}
+
+void TestAudioMixPolicy::
+testPendingOutputRebasePreservesExactSampleAndIsOneShot() {
+  AudioEngine engine;
+  constexpr int64_t exactSample = 12345;
+  engine.m_playing.store(true);
+  QVector<int16_t> staleSamples(2048, 1);
+  QCOMPARE(
+      engine.m_ringBuffer.write(
+          staleSamples.constData(),
+          static_cast<size_t>(staleSamples.size())),
+      static_cast<size_t>(staleSamples.size()));
+
+  engine.seekToTimelineSample(exactSample);
+  QCOMPARE(engine.m_timelineSampleCursor, exactSample);
+  QCOMPARE(engine.m_audioClockSample.load(), exactSample);
+  QCOMPARE(engine.m_ringBufferEndSample.load(), exactSample);
+  QCOMPARE(engine.m_authoritativeTransportSample.load(), exactSample);
+  QCOMPARE(engine.m_ringBuffer.available(), size_t(0));
+  QVERIFY(engine.m_outputStartPending.load());
+  QVERIFY(engine.m_outputPrimeCanRebase);
+
+  const uint64_t generationBeforeRebase = engine.m_mixGeneration;
+  const int64_t rebasedSample =
+      exactSample +
+      AudioEngine::kOutputPrimeRebaseDeadbandSamples + 1;
+  engine.setAuthoritativeTransportSample(rebasedSample);
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    QVERIFY(engine.rebasePendingOutputToAuthoritativeLocked());
+  }
+  QCOMPARE(engine.m_mixGeneration, generationBeforeRebase + 1);
+  QCOMPARE(engine.m_timelineSampleCursor, rebasedSample);
+  QCOMPARE(engine.m_audioClockSample.load(), rebasedSample);
+  QCOMPARE(engine.m_ringBufferEndSample.load(), rebasedSample);
+  QCOMPARE(engine.m_ringBuffer.available(), size_t(0));
+  QCOMPARE(engine.m_outputPrimeRebaseCount.load(), qint64(1));
+  QVERIFY(!engine.m_outputPrimeCanRebase);
+
+  engine.setAuthoritativeTransportSample(rebasedSample + 48000);
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    QVERIFY(!engine.rebasePendingOutputToAuthoritativeLocked());
+  }
+  QCOMPARE(engine.m_mixGeneration, generationBeforeRebase + 1);
+}
+
+void TestAudioMixPolicy::testAudioFollowerSnapshotIsCoherent() {
+  AudioEngine engine;
+  std::atomic<bool> writerFinished{false};
+  std::atomic<bool> mismatch{false};
+  std::thread writer([&]() {
+    for (uint64_t revision = 1; revision <= 10000; ++revision) {
+      std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+      engine.m_lastOutputStartTimelineSample.store(
+          static_cast<int64_t>(revision * 10));
+      engine.m_lastOutputStartFeedbackSample.store(
+          static_cast<int64_t>(revision * 10 + 1));
+      engine.m_outputStartRevision.store(revision);
+    }
+    writerFinished.store(true);
+  });
+
+  while (!writerFinished.load()) {
+    const AudioEngine::AudioFollowerSnapshot snapshot =
+        engine.audioFollowerSnapshot();
+    if (snapshot.outputStartRevision > 0 &&
+        (snapshot.outputStartTimelineSample !=
+             static_cast<int64_t>(snapshot.outputStartRevision * 10) ||
+         snapshot.outputStartFeedbackSample !=
+             static_cast<int64_t>(snapshot.outputStartRevision * 10 + 1))) {
+      mismatch.store(true);
+      break;
+    }
+  }
+  writer.join();
+  QVERIFY(!mismatch.load());
 }
 
 void TestAudioMixPolicy::testStarvedClipDoesNotBlockReadyClip() {
@@ -369,7 +502,7 @@ void TestAudioMixPolicy::testTimelineStateAtFrameRejectsStaleMixerGeneration() {
   QCOMPARE(engine.m_ringBuffer.available(),
            static_cast<size_t>(stalePcm.size()));
 
-  engine.seek(10);
+  engine.seekToTimelineSample(frameToSamples(10));
   QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
   QVERIFY(!engine.commitMixedChunk(currentGeneration, stalePcm.constData(),
                                    static_cast<size_t>(stalePcm.size()),

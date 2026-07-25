@@ -524,9 +524,18 @@ void EditorWindow::setupSpeechFilterControls()
             })) {
             return;
         }
+        invalidatePlaybackRangeCaches();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (m_preview) {
             m_preview->setTimelineClips(m_timeline->clips());
+            m_preview->setPlaybackTimingContext(speechFilterPlaybackTimingContext(ranges));
+            m_preview->setExportRanges(ranges);
         }
+        if (m_audioEngine) {
+            m_audioEngine->setTimelineClips(m_timeline->clips());
+            m_audioEngine->setExportRanges(ranges);
+        }
+        scheduleTranscriptNormalizeRangeRefresh();
         m_inspectorPane->refreshTab(QStringLiteral("Properties"));
         scheduleSaveState();
         pushHistorySnapshot();

@@ -33,7 +33,8 @@ class FrameIndexMapTest(unittest.TestCase):
         self.source_b.write_bytes(b"source-b")
         self.map_path = self.root / "jcut_frame_map.tsv"
         self.map_path.write_text(
-            "# source_frame\tmask_frame\n0\t0\n1\t1\n2\t2\n",
+            "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+            "0\t0\t0\n1\t100\t1\n2\t200\t2\n",
             encoding="utf-8",
         )
 
@@ -46,6 +47,48 @@ class FrameIndexMapTest(unittest.TestCase):
             return frame_map.adopt_existing_frame_index_map(
                 self.source_a, self.map_path
             )
+
+    def write_completed_v2_sidecar(self) -> tuple[Path, dict, dict]:
+        self.map_path.write_text(
+            "# source_frame\tmask_frame\n0\t0\n0\t1\n2\t2\n",
+            encoding="utf-8",
+        )
+        identity = frame_map.source_identity(self.source_a)
+        metadata = {
+            "schema": "jcut_frame_index_map_v2",
+            "status": "ready",
+            "frame_domain": "source_timestamp_to_generated_ordinal",
+            "source_identity": identity,
+            "output_fps": None,
+            "map_file": self.map_path.name,
+            "map_sha256": frame_map._file_sha256(self.map_path),
+            "mapped_frame_count": 3,
+            "min_source_frame": 0,
+            "max_source_frame": 2,
+            "max_mask_frame": 2,
+            "expected_output_frame_count": 3,
+        }
+        frame_map._atomic_write_json(
+            frame_map.frame_index_map_metadata_path(self.map_path),
+            metadata,
+        )
+        completion_path = self.root / "jcut_mask.json"
+        completion = {
+            "schema": "jcut_mask_sidecar_v1",
+            "complete": True,
+            "source_type": "sam3_binary_frames",
+            "frame_domain": "decode_ordinal",
+            "frame_index_map": self.map_path.name,
+            "frame_index_metadata":
+                frame_map.frame_index_map_metadata_path(self.map_path).name,
+            "frame_map_sha256": metadata["map_sha256"],
+            "expected_frame_count": 3,
+            "source_identity": identity,
+        }
+        frame_map._atomic_write_json(completion_path, completion)
+        for one_based in range(1, 4):
+            (self.root / f"frame_{one_based:06d}.png").write_bytes(b"png")
+        return completion_path, metadata, completion
 
     def test_adopted_map_is_bound_to_content_identity_and_digest(self) -> None:
         metadata = self.adopt()
@@ -73,7 +116,8 @@ class FrameIndexMapTest(unittest.TestCase):
 
         # Preserve all structural counts/ranges while substituting content.
         self.map_path.write_text(
-            "# source_frame\tmask_frame\n0\t0\n1\t0\n2\t2\n",
+            "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+            "0\t0\t0\n1\t100\t0\n2\t200\t2\n",
             encoding="utf-8",
         )
         self.assertIsNone(
@@ -171,7 +215,10 @@ class FrameIndexMapTest(unittest.TestCase):
         self.assertTrue(frame_map.source_identities_match(left, right))
 
     def test_corrupt_and_non_monotonic_maps_are_rejected(self) -> None:
-        self.map_path.write_text("0\t0\n2\t2\n1\t3\n", encoding="utf-8")
+        self.map_path.write_text(
+            "0\t0\t0\n2\t100\t1\n1\t200\t2\n",
+            encoding="utf-8",
+        )
         self.assertIsNone(frame_map.inspect_frame_index_map(self.map_path))
         with mock.patch.object(frame_map, "probe_source_stream", return_value=STREAM):
             with self.assertRaises(RuntimeError):
@@ -181,8 +228,8 @@ class FrameIndexMapTest(unittest.TestCase):
 
     def test_duplicate_and_gapped_mask_ordinals_are_rejected(self) -> None:
         for contents in (
-            "0\t0\n1\t0\n2\t2\n",
-            "0\t0\n1\t2\n2\t3\n",
+            "0\t0\t0\n1\t100\t0\n2\t200\t2\n",
+            "0\t0\t0\n1\t100\t2\n2\t200\t3\n",
         ):
             with self.subTest(contents=contents):
                 self.map_path.write_text(contents, encoding="utf-8")
@@ -190,7 +237,8 @@ class FrameIndexMapTest(unittest.TestCase):
 
     def test_duplicate_rounded_source_keys_preserve_every_ordinal(self) -> None:
         self.map_path.write_text(
-            "# source_frame\tmask_frame\n0\t0\n0\t1\n2\t2\n",
+            "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+            "0\t0\t0\n0\t100\t1\n2\t200\t2\n",
             encoding="utf-8",
         )
         self.assertEqual(
@@ -199,10 +247,134 @@ class FrameIndexMapTest(unittest.TestCase):
                 "mapped_frame_count": 3,
                 "min_source_frame": 0,
                 "max_source_frame": 2,
+                "min_source_presentation_timestamp": 0,
+                "max_source_presentation_timestamp": 200,
                 "max_mask_frame": 2,
                 "expected_output_frame_count": 3,
             },
         )
+
+    def test_duplicate_exact_presentation_timestamps_are_rejected(self) -> None:
+        self.map_path.write_text(
+            "0\t100\t0\n0\t100\t1\n2\t200\t2\n",
+            encoding="utf-8",
+        )
+        self.assertIsNone(frame_map.inspect_frame_index_map(self.map_path))
+
+    def test_map_only_upgrade_rejects_authentication_and_coverage_mismatch(
+        self,
+    ) -> None:
+        completion_path, _, completion = self.write_completed_v2_sidecar()
+        completion["frame_map_sha256"] = "0" * 64
+        frame_map._atomic_write_json(completion_path, completion)
+        with mock.patch.object(frame_map, "write_jcut_frame_index_map") as write:
+            with self.assertRaisesRegex(RuntimeError, "authenticated"):
+                frame_map.upgrade_completed_sidecar_frame_map(
+                    self.source_a, self.map_path
+                )
+            write.assert_not_called()
+
+        _, _, completion = self.write_completed_v2_sidecar()
+        (self.root / "frame_000002.png").unlink()
+        with mock.patch.object(frame_map, "write_jcut_frame_index_map") as write:
+            with self.assertRaisesRegex(RuntimeError, "coverage"):
+                frame_map.upgrade_completed_sidecar_frame_map(
+                    self.source_a, self.map_path
+                )
+            write.assert_not_called()
+
+    def test_map_only_upgrade_publishes_completion_digest_last(self) -> None:
+        completion_path, _, completion = self.write_completed_v2_sidecar()
+        old_digest = completion["frame_map_sha256"]
+
+        def publish_v3(input_path: Path, map_path: Path, _fps=None) -> None:
+            still_old = json.loads(completion_path.read_text(encoding="utf-8"))
+            self.assertEqual(still_old["frame_map_sha256"], old_digest)
+            map_path.write_text(
+                "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+                "0\t0\t0\n0\t10\t1\n2\t20\t2\n",
+                encoding="utf-8",
+            )
+            metadata = frame_map._base_metadata(
+                input_path, None, "ready"
+            )
+            metadata.update(frame_map.inspect_frame_index_map(map_path) or {})
+            metadata["map_sha256"] = frame_map._file_sha256(map_path)
+            frame_map._atomic_write_json(
+                frame_map.frame_index_map_metadata_path(map_path),
+                metadata,
+            )
+
+        with mock.patch.object(
+            frame_map, "probe_source_stream", return_value=STREAM
+        ), mock.patch.object(
+            frame_map, "write_jcut_frame_index_map", side_effect=publish_v3
+        ):
+            upgraded = frame_map.upgrade_completed_sidecar_frame_map(
+                self.source_a, self.map_path
+            )
+
+        refreshed = json.loads(completion_path.read_text(encoding="utf-8"))
+        self.assertEqual(refreshed["frame_map_sha256"], upgraded["map_sha256"])
+        self.assertNotEqual(refreshed["frame_map_sha256"], old_digest)
+        self.assertEqual(refreshed["source_identity"], upgraded["source_identity"])
+
+    def test_map_only_upgrade_refreshes_suspended_birefnet_resume_last(
+        self,
+    ) -> None:
+        completion_path, metadata, completion = self.write_completed_v2_sidecar()
+        completion_path.unlink()
+        (self.root / "frame_000003.png").unlink()
+        run_path = self.root / "jcut_alpha_run.json"
+        run_manifest = {
+            "schema": "jcut_birefnet_alpha_run_v1",
+            "source_identity": metadata["source_identity"],
+            "frame_map_sha256": metadata["map_sha256"],
+            "expected_frame_count": 3,
+            "model": "test/model",
+            "revision": "pinned",
+            "device": "cuda",
+            "fp16": True,
+        }
+        frame_map._atomic_write_json(run_path, run_manifest)
+
+        def publish_v3(input_path: Path, map_path: Path, _fps=None) -> None:
+            still_old = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                still_old["frame_map_sha256"],
+                completion["frame_map_sha256"],
+            )
+            map_path.write_text(
+                "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+                "0\t0\t0\n0\t10\t1\n2\t20\t2\n",
+                encoding="utf-8",
+            )
+            upgraded_metadata = frame_map._base_metadata(
+                input_path, None, "ready"
+            )
+            upgraded_metadata.update(
+                frame_map.inspect_frame_index_map(map_path) or {}
+            )
+            upgraded_metadata["map_sha256"] = frame_map._file_sha256(map_path)
+            frame_map._atomic_write_json(
+                frame_map.frame_index_map_metadata_path(map_path),
+                upgraded_metadata,
+            )
+
+        with mock.patch.object(
+            frame_map, "probe_source_stream", return_value=STREAM
+        ), mock.patch.object(
+            frame_map, "write_jcut_frame_index_map", side_effect=publish_v3
+        ):
+            upgraded = frame_map.upgrade_completed_sidecar_frame_map(
+                self.source_a, self.map_path
+            )
+
+        refreshed = json.loads(run_path.read_text(encoding="utf-8"))
+        self.assertEqual(refreshed["frame_map_sha256"], upgraded["map_sha256"])
+        self.assertEqual(refreshed["source_identity"], upgraded["source_identity"])
+        self.assertEqual(frame_map._contiguous_mask_frame_count(self.root), 2)
+        self.assertFalse((self.root / "jcut_alpha.json").exists())
 
     def test_adoption_rejects_downsampled_or_source_mismatched_maps(self) -> None:
         with self.assertRaisesRegex(ValueError, "full-rate"):
@@ -220,7 +392,8 @@ class FrameIndexMapTest(unittest.TestCase):
     def test_adoption_verification_compares_every_generated_pair(self) -> None:
         def write_expected(_input: Path, output: Path, _fps=None) -> None:
             output.write_text(
-                "# source_frame\tmask_frame\n0\t0\n1\t1\n2\t2\n",
+                "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+                "0\t0\t0\n1\t100\t1\n2\t200\t2\n",
                 encoding="utf-8",
             )
 
@@ -233,7 +406,8 @@ class FrameIndexMapTest(unittest.TestCase):
                 )
             )
             self.map_path.write_text(
-                "0\t0\n9\t1\n2\t2\n", encoding="utf-8"
+                "0\t0\t0\n9\t100\t1\n2\t200\t2\n",
+                encoding="utf-8",
             )
             self.assertFalse(
                 frame_map._frame_index_map_matches_source(

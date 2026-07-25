@@ -910,7 +910,10 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
 
             m_lastDecodedFrame = currentFrame;
             finishHardwareProbe(m_path, true, ownsHardwareProbe);
-            FrameHandle decodedFrame = convertToFrame(frame, currentFrame);
+            FrameHandle decodedFrame = convertToFrame(
+                frame,
+                currentFrame,
+                frame->best_effort_timestamp);
             if (decodedFrames.size() >= kMaxReturnedVideoBatchFrames) {
                 decodedFrames.removeFirst();
             }
@@ -1015,7 +1018,10 @@ bool DecoderContext::seekToKeyframe(int64_t targetFrame) {
     return true;
 }
 
-FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber) {
+FrameHandle DecoderContext::convertToFrame(
+    AVFrame* avFrame,
+    int64_t frameNumber,
+    int64_t sourcePresentationTimestamp) {
     const DecodePreference decodePreference = debugDecodePreference();
     if (avFrame->format == m_hwPixFmt &&
         m_hwPixFmt != AV_PIX_FMT_NONE &&
@@ -1083,7 +1089,11 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
     if (image.isNull()) {
         return FrameHandle();
     }
-    return FrameHandle::createCpuFrame(image, frameNumber, m_path);
+    return FrameHandle::createCpuFrame(
+        image,
+        frameNumber,
+        m_path,
+        sourcePresentationTimestamp);
 }
 
 QImage DecoderContext::convertAVFrameToImage(AVFrame* frame) {

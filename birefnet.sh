@@ -10,7 +10,7 @@ CONTAINER_NAME="${BIREFNET_CONTAINER_NAME:-}"
 JOB_ROOT="${BIREFNET_JOB_ROOT:-}"
 LOG_PATH="${BIREFNET_LOG_PATH:-}"
 PREVIEW_ONLY=0
-SOURCE_FRAME=""
+SOURCE_PRESENTATION_TIMESTAMP=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -22,7 +22,8 @@ Options:
   --cpu                          Run on CPU instead of CUDA
   --fp32                         Disable FP16 inference
   --alpha-tolerance <0..0.99>    Remove low-confidence foreground (default: 0)
-  --source-frame <frame-key>     Preview the exact DecoderContext source-frame key
+  --source-presentation-timestamp <pts>
+                                Preview the frame with this exact raw best-effort timestamp
   --no-resume                    Re-render existing alpha frames
 EOF
 }
@@ -47,13 +48,13 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
-    --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--source-frame|--live-preview-every)
+    --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--source-presentation-timestamp|--live-preview-every)
       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }
       if [[ "$1" == "--frame-index" ]]; then
         PREVIEW_ONLY=1
-      elif [[ "$1" == "--source-frame" ]]; then
+      elif [[ "$1" == "--source-presentation-timestamp" ]]; then
         PREVIEW_ONLY=1
-        SOURCE_FRAME="$2"
+        SOURCE_PRESENTATION_TIMESTAMP="$2"
         shift 2
         continue
       fi
@@ -108,21 +109,21 @@ if [[ -n "$LOG_PATH" ]]; then
   echo "[birefnet] launch: $(date --iso-8601=seconds)"
 fi
 
-if [[ -n "$SOURCE_FRAME" ]]; then
+if [[ -n "$SOURCE_PRESENTATION_TIMESTAMP" ]]; then
   DECODED_FRAME="$(python3 "$ROOT_DIR/jcut_frame_index_map.py" \
     --input "$INPUT_ABS" \
-    --lookup-source-frame "$SOURCE_FRAME")"
+    --lookup-source-presentation-timestamp "$SOURCE_PRESENTATION_TIMESTAMP")"
   [[ "$DECODED_FRAME" =~ ^[1-9][0-9]*$ ]] || {
-    echo "ERROR: unable to resolve source frame $SOURCE_FRAME" >&2
+    echo "ERROR: unable to resolve source presentation timestamp $SOURCE_PRESENTATION_TIMESTAMP" >&2
     exit 1
   }
   FORWARD_ARGS+=("--frame-index" "$DECODED_FRAME")
-  echo "[birefnet] source frame $SOURCE_FRAME -> decoded ordinal $DECODED_FRAME" >&2
+  echo "[birefnet] source presentation timestamp $SOURCE_PRESENTATION_TIMESTAMP -> decoded ordinal $DECODED_FRAME" >&2
 fi
 
-# BiRefNet numbers masks by decoded presentation order, while JCut addresses
-# source frames by timestamp.  Generate the durable conversion before any
-# resumable inference so partial and completed runs use the same frame domain.
+# BiRefNet numbers masks by decoded presentation order. JCut retains each
+# presented frame's exact best-effort timestamp, so generate that durable
+# identity map before resumable inference begins.
 if [[ "$PREVIEW_ONLY" != "1" ]]; then
   python3 "$ROOT_DIR/jcut_frame_index_map.py" \
     --input "$INPUT_ABS" \

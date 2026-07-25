@@ -72,6 +72,7 @@ private slots:
     void testClipPlaybackFramePositionUsesGlobalTimelineRanges();
     void testVisualEffectKeyframesUsePlaybackTime();
     void testFallsBackToTranscriptRangesWhenGlobalRangesEmpty();
+    void testTranscriptRangeMetadataValidationIsBounded();
     void testDisabledSkipAwareReturnsBaseInterpolation();
 };
 
@@ -171,6 +172,54 @@ void TestTransformSkipAwareTiming::testFallsBackToTranscriptRangesWhenGlobalRang
     // local 25 has effective 15 -> 0.75
     const qreal tLate = interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0);
     QVERIFY(std::abs(tLate - 0.75) < 0.001);
+}
+
+void TestTransformSkipAwareTiming::testTranscriptRangeMetadataValidationIsBounded() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("bounded-cache.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    TimelineClip clip = makeClip(QStringLiteral("bounded-cache"), clipPath);
+    clip.startFrame = 0;
+    clip.durationFrames = 40;
+    clip.sourceDurationFrames = 40;
+    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+
+    // A missing transcript is cached too, so generated clips cannot stat the
+    // same absent sidecar on every transform evaluation.
+    const qreal baseT = interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0);
+    QVERIFY(std::abs(baseT - (25.0 / 30.0)) < 0.001);
+
+    QJsonArray gappedWords;
+    gappedWords.push_back(wordObj(0.0, 10.0 / 30.0, false));
+    gappedWords.push_back(wordObj(20.0 / 30.0, 30.0 / 30.0, false));
+    QVERIFY(writeTranscriptJson(editablePath, gappedWords));
+
+    const qreal negativeCacheT =
+        interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0);
+    QVERIFY(std::abs(negativeCacheT - baseT) < 0.001);
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::abs(interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0) - 0.75) <
+            0.001,
+        2000);
+
+    // Once populated, the positive cache is also memory-first until its
+    // bounded validation window expires.
+    QJsonArray continuousWords;
+    continuousWords.push_back(wordObj(0.0, 30.0 / 30.0, false));
+    QVERIFY(writeTranscriptJson(editablePath, continuousWords));
+    const qreal positiveCacheT =
+        interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0);
+    QVERIFY(std::abs(positiveCacheT - 0.75) < 0.001);
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::abs(interpolationFactorForTransformFrames(clip, 0.0, 30.0, 25.0) -
+                 (25.0 / 30.0)) <
+            0.001,
+        2000);
 }
 
 void TestTransformSkipAwareTiming::testDisabledSkipAwareReturnsBaseInterpolation() {

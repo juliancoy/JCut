@@ -268,8 +268,10 @@ void AudioEngine::setTimelineStateAtFrame(
     std::lock_guard<std::mutex> stateLock(m_stateMutex);
     std::lock_guard<std::mutex> rangesLock(m_exportRangesMutex);
     ++m_mixGeneration;
+    pauseOutputStreamForRefillLocked();
     const int64_t sample = timelineFrameToSamples(frame);
     m_timelineSampleCursor = sample;
+    m_authoritativeTransportSample.store(sample, std::memory_order_release);
     installTimelineStateLocked(tracks, clips, ranges, markers);
     m_audioClockSample.store(sample, std::memory_order_release);
     m_lastReportedCurrentSample.store(sample, std::memory_order_release);
@@ -550,6 +552,18 @@ bool AudioEngine::initialize() {
     return false;
   }
 
+  m_periodFrames = qMax(1, static_cast<int>(bufferFrames));
+  const int64_t streamLatencyFrames =
+      qMax<int64_t>(0, m_rtaudio->getStreamLatency());
+  m_outputStreamLatencyFramesAtOpen.store(
+      streamLatencyFrames, std::memory_order_release);
+  m_outputPrimeTargetSamples.store(
+      outputPrimeTargetSamples(m_periodFrames, streamLatencyFrames),
+      std::memory_order_release);
+  m_outputPrimeCapacitySufficient.store(
+      outputPrimeCapacitySufficient(m_periodFrames, streamLatencyFrames),
+      std::memory_order_release);
+
   m_running = true;
   m_decodeWorker = std::thread([this]() { decodeLoop(); });
   m_mixWorker = std::thread([this]() { mixLoop(); });
@@ -566,6 +580,7 @@ void AudioEngine::shutdown() {
     ++m_mixGeneration;
     m_running = false;
     m_playing = false;
+    m_outputStartPending.store(false, std::memory_order_release);
   }
   m_stateCondition.notify_all();
   m_decodeCondition.notify_all();
@@ -616,25 +631,30 @@ int AudioEngine::volumePercent() const {
   return qRound(m_volume * 100.0);
 }
 
-void AudioEngine::start(int64_t startFrame) {
+void AudioEngine::startAtTimelineSample(int64_t startSample) {
   if (!initialize()) {
     return;
   }
   if (m_playing.load(std::memory_order_acquire)) {
     m_redundantStartCount.fetch_add(1, std::memory_order_relaxed);
     if (m_rtaudio && !m_rtaudio->isStreamRunning()) {
-      m_rtaudio->startStream();
+      m_outputStartPending.store(true, std::memory_order_release);
     }
     m_stateCondition.notify_all();
     m_mixCondition.notify_all();
+    startOutputStreamIfPrimed();
     return;
   }
   m_startCount.fetch_add(1, std::memory_order_relaxed);
-  m_lastStartFrame.store(startFrame, std::memory_order_release);
+  const int64_t boundedStartSample = qMax<int64_t>(0, startSample);
+  m_lastStartFrame.store(samplesToTimelineFrame(boundedStartSample),
+                         std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     ++m_mixGeneration;
-    m_timelineSampleCursor = timelineFrameToSamples(startFrame);
+    m_timelineSampleCursor = boundedStartSample;
+    m_authoritativeTransportSample.store(m_timelineSampleCursor,
+                                         std::memory_order_release);
     m_audioClockSample.store(m_timelineSampleCursor, std::memory_order_release);
     m_lastReportedCurrentSample.store(m_timelineSampleCursor,
                                       std::memory_order_release);
@@ -642,15 +662,16 @@ void AudioEngine::start(int64_t startFrame) {
                                 std::memory_order_release);
     m_ringBuffer.clear();
     m_playing = true;
+    m_outputStartPending.store(true, std::memory_order_release);
+    m_outputPrimeCanRebase = true;
+    m_outputPrimeStartedMs.store(QDateTime::currentMSecsSinceEpoch(),
+                                 std::memory_order_release);
     scheduleDecodesLocked(m_timelineClips);
     prioritizeDecodesNearSampleLocked(m_timelineSampleCursor);
   }
   m_stateCondition.notify_all();
   m_decodeCondition.notify_one();
   m_mixCondition.notify_all();
-  if (m_rtaudio && !m_rtaudio->isStreamRunning()) {
-    m_rtaudio->startStream();
-  }
 }
 
 void AudioEngine::stop() {
@@ -658,6 +679,9 @@ void AudioEngine::stop() {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     ++m_mixGeneration;
     m_playing = false;
+    m_outputStartPending.store(false, std::memory_order_release);
+    m_outputPrimeCanRebase = false;
+    m_outputPrimeStartedMs.store(0, std::memory_order_release);
   }
   if (m_rtaudio && m_rtaudio->isStreamRunning()) {
     // Fade to zero from the last rendered sample to avoid click/pop on stop.
@@ -693,20 +717,25 @@ void AudioEngine::stop() {
   m_mixCondition.notify_all();
 }
 
-void AudioEngine::seek(int64_t frame) {
+void AudioEngine::seekToTimelineSample(int64_t sample) {
+  const int64_t boundedSample = qMax<int64_t>(0, sample);
   m_seekCount.fetch_add(1, std::memory_order_relaxed);
-  m_lastSeekFrame.store(frame, std::memory_order_release);
+  m_lastSeekFrame.store(samplesToTimelineFrame(boundedSample),
+                        std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     ++m_mixGeneration;
-    const int64_t sample = timelineFrameToSamples(frame);
-    m_timelineSampleCursor = sample;
-    m_audioClockSample.store(sample, std::memory_order_release);
-    m_lastReportedCurrentSample.store(sample, std::memory_order_release);
-    m_ringBufferEndSample.store(sample, std::memory_order_release);
+    pauseOutputStreamForRefillLocked();
+    m_timelineSampleCursor = boundedSample;
+    m_authoritativeTransportSample.store(boundedSample,
+                                         std::memory_order_release);
+    m_audioClockSample.store(boundedSample, std::memory_order_release);
+    m_lastReportedCurrentSample.store(boundedSample,
+                                      std::memory_order_release);
+    m_ringBufferEndSample.store(boundedSample, std::memory_order_release);
     m_ringBuffer.clear();
     scheduleDecodesLocked(m_timelineClips);
-    prioritizeDecodesNearSampleLocked(sample);
+    prioritizeDecodesNearSampleLocked(boundedSample);
   }
   m_stateCondition.notify_all();
   m_decodeCondition.notify_one();
@@ -780,6 +809,7 @@ void AudioEngine::invalidateAudioSourceCaches() {
     // cursor here prevents that rejected chunk from creating an audible gap.
     const int64_t resumeSample =
         m_audioClockSample.load(std::memory_order_acquire);
+    pauseOutputStreamForRefillLocked();
     m_timelineSampleCursor = resumeSample;
     m_ringBufferEndSample.store(resumeSample, std::memory_order_release);
     m_ringBuffer.clear();
@@ -893,6 +923,18 @@ bool AudioEngine::playbackAudioBlocked() const {
   return m_audioPlaybackBlocked.load(std::memory_order_acquire);
 }
 
+bool AudioEngine::pitchPreservingAudioBlocked() const {
+  return m_pitchPreservingAudioBlocked.load(std::memory_order_acquire);
+}
+
+qint64 AudioEngine::timeStretchCacheMissCount() const {
+  return m_timeStretchCacheMissCount.load(std::memory_order_acquire);
+}
+
+int AudioEngine::underrunCount() const {
+  return m_underrunCount.load(std::memory_order_acquire);
+}
+
 bool AudioEngine::playbackAudioNeedsRetimingForFrame(int64_t startFrame) const {
   const int64_t timelineSample = timelineFrameToSamples(startFrame);
   QString audioPath;
@@ -957,7 +999,9 @@ bool AudioEngine::audioOutputUnavailableForPlayback() const {
   if (!initialized || !m_rtaudio || !m_rtaudio->isStreamOpen()) {
     return true;
   }
-  return playing && !m_rtaudio->isStreamRunning();
+  return playing &&
+         !m_outputStartPending.load(std::memory_order_acquire) &&
+         !m_rtaudio->isStreamRunning();
 }
 
 QString AudioEngine::audioOutputStatusText() const {
@@ -997,7 +1041,9 @@ QString AudioEngine::audioOutputStatusText() const {
   if (!m_rtaudio->isStreamOpen()) {
     return QStringLiteral("Audio output unavailable: stream is not open");
   }
-  if (playing && !m_rtaudio->isStreamRunning()) {
+  if (playing &&
+      !m_outputStartPending.load(std::memory_order_acquire) &&
+      !m_rtaudio->isStreamRunning()) {
     if (!deviceInfoError.isEmpty()) {
       return QStringLiteral("Audio output unavailable: %1")
           .arg(deviceInfoError);
@@ -1060,6 +1106,46 @@ QJsonObject AudioEngine::profilingSnapshot() const {
       m_running.load(std::memory_order_acquire);
   snapshot[QStringLiteral("playing")] =
       m_playing.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("output_start_pending")] =
+      m_outputStartPending.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("output_prime_target_frames")] =
+      static_cast<qint64>(
+          m_outputPrimeTargetSamples.load(std::memory_order_acquire) /
+          qMax(1, m_channelCount));
+  snapshot[QStringLiteral("output_prime_capacity_sufficient")] =
+      m_outputPrimeCapacitySufficient.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("output_stream_latency_frames_at_open")] =
+      static_cast<qint64>(
+          m_outputStreamLatencyFramesAtOpen.load(std::memory_order_acquire));
+  snapshot[QStringLiteral("authoritative_transport_sample")] =
+      static_cast<qint64>(
+          m_authoritativeTransportSample.load(std::memory_order_acquire));
+  snapshot[QStringLiteral("output_start_revision")] =
+      static_cast<qint64>(
+          m_outputStartRevision.load(std::memory_order_acquire));
+  snapshot[QStringLiteral("last_output_start_timeline_sample")] =
+      static_cast<qint64>(
+          m_lastOutputStartTimelineSample.load(std::memory_order_acquire));
+  snapshot[QStringLiteral("last_output_start_feedback_sample")] =
+      static_cast<qint64>(
+          m_lastOutputStartFeedbackSample.load(std::memory_order_acquire));
+  const qint64 outputPrimeStartedMs =
+      m_outputPrimeStartedMs.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("output_prime_elapsed_ms")] =
+      m_outputStartPending.load(std::memory_order_acquire) &&
+              outputPrimeStartedMs > 0
+          ? qMax<qint64>(
+                0,
+                QDateTime::currentMSecsSinceEpoch() -
+                    outputPrimeStartedMs)
+          : 0;
+  snapshot[QStringLiteral("last_output_prime_duration_ms")] =
+      m_lastOutputPrimeDurationMs.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("output_prime_rebase_count")] =
+      m_outputPrimeRebaseCount.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("last_output_prime_rebase_lag_samples")] =
+      static_cast<qint64>(
+          m_lastOutputPrimeRebaseLagSamples.load(std::memory_order_acquire));
   snapshot[QStringLiteral("has_playable_audio")] = hasPlayableAudio();
   snapshot[QStringLiteral("audio_clock_available")] = audioClockAvailable();
   snapshot[QStringLiteral("current_sample")] =
@@ -1266,7 +1352,7 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   AudioTimeStretchSidecarMetadata timeStretchSidecarMetadata;
   const bool timeStretchSidecarMetadataReadable =
       !timeStretchGenerationPath.isEmpty() &&
-      timeStretchGenerationSpeedKey > 1 &&
+      timeStretchGenerationSpeedKey > 1000 &&
       readAudioTimeStretchSidecarMetadata(timeStretchGenerationPath,
                                           timeStretchGenerationSpeedKey,
                                           &timeStretchSidecarMetadata);
@@ -1450,6 +1536,39 @@ int64_t AudioEngine::playbackClockSample() const {
 
 int64_t AudioEngine::currentFrame() const {
   return samplesToTimelineFrame(currentSample());
+}
+
+void AudioEngine::setAuthoritativeTransportSample(int64_t sample) {
+  m_authoritativeTransportSample.store(qMax<int64_t>(0, sample),
+                                       std::memory_order_release);
+}
+
+AudioEngine::AudioFollowerSnapshot AudioEngine::audioFollowerSnapshot() const {
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  AudioFollowerSnapshot snapshot;
+  snapshot.available =
+      m_initialized && m_rtaudio && m_rtaudio->isStreamRunning();
+  const int64_t submittedSample =
+      m_audioClockSample.load(std::memory_order_acquire);
+  const qreal playbackRate =
+      qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
+  long latencyFrames = 0;
+  if (snapshot.available && m_rtaudio->isStreamOpen()) {
+    latencyFrames = m_rtaudio->getStreamLatency();
+  }
+  const int64_t latencyTimelineSamples = qMax<int64_t>(
+      0, static_cast<int64_t>(std::llround(
+             static_cast<long double>(qMax<long>(0, latencyFrames)) *
+             static_cast<long double>(playbackRate))));
+  snapshot.feedbackSample =
+      qMax<int64_t>(0, submittedSample - latencyTimelineSamples);
+  snapshot.outputStartRevision =
+      m_outputStartRevision.load(std::memory_order_acquire);
+  snapshot.outputStartTimelineSample =
+      m_lastOutputStartTimelineSample.load(std::memory_order_acquire);
+  snapshot.outputStartFeedbackSample =
+      m_lastOutputStartFeedbackSample.load(std::memory_order_acquire);
+  return snapshot;
 }
 
 qreal AudioEngine::timeStretchGenerationProgress() const {
@@ -4462,6 +4581,183 @@ bool AudioEngine::commitMixedChunk(uint64_t generation,
   return true;
 }
 
+bool AudioEngine::outputStreamCanStart(bool playing,
+                                       bool outputStartPending,
+                                       size_t availableSamples,
+                                       size_t primeTargetSamples) {
+  return playing &&
+         outputStartPending &&
+         primeTargetSamples > 0 &&
+         availableSamples >= primeTargetSamples;
+}
+
+size_t AudioEngine::outputPrimeTargetSamples(
+    int periodFrames,
+    int64_t streamLatencyFrames) {
+  const size_t safePeriodFrames =
+      static_cast<size_t>(qMax(1, periodFrames));
+  const size_t safeLatencyFrames =
+      static_cast<size_t>(qMax<int64_t>(0, streamLatencyFrames));
+  const size_t steadyLowWaterFrames =
+      static_cast<size_t>(m_mixLowWaterSamples / qMax(1, m_channelCount));
+  const size_t requestedFrames = qMax(
+      steadyLowWaterFrames,
+      safeLatencyFrames + (2 * safePeriodFrames));
+  const size_t capacityFrames =
+      AudioRingBuffer::kCapacity / static_cast<size_t>(m_channelCount);
+  const size_t maximumPrimeFrames =
+      capacityFrames > safePeriodFrames
+          ? capacityFrames - safePeriodFrames
+          : safePeriodFrames;
+  const size_t targetFrames = qBound(
+      safePeriodFrames,
+      requestedFrames,
+      maximumPrimeFrames);
+  return targetFrames * static_cast<size_t>(m_channelCount);
+}
+
+bool AudioEngine::outputPrimeCapacitySufficient(
+    int periodFrames,
+    int64_t streamLatencyFrames) {
+  const size_t safePeriodFrames =
+      static_cast<size_t>(qMax(1, periodFrames));
+  const size_t safeLatencyFrames =
+      static_cast<size_t>(qMax<int64_t>(0, streamLatencyFrames));
+  const size_t steadyLowWaterFrames =
+      static_cast<size_t>(m_mixLowWaterSamples / qMax(1, m_channelCount));
+  const size_t requestedFrames = qMax(
+      steadyLowWaterFrames,
+      safeLatencyFrames + (2 * safePeriodFrames));
+  const size_t capacityFrames =
+      AudioRingBuffer::kCapacity / static_cast<size_t>(m_channelCount);
+  return requestedFrames + safePeriodFrames <= capacityFrames;
+}
+
+bool AudioEngine::outputPrimeNeedsRebase(
+    int64_t queuedTimelineSample,
+    int64_t authoritativeTimelineSample,
+    int64_t deadbandSamples) {
+  const int64_t safeDeadband = qMax<int64_t>(0, deadbandSamples);
+  const int64_t delta =
+      authoritativeTimelineSample - queuedTimelineSample;
+  return delta > safeDeadband || delta < -safeDeadband;
+}
+
+bool AudioEngine::rebasePendingOutputToAuthoritativeLocked() {
+  const int64_t queuedTimelineSample =
+      m_audioClockSample.load(std::memory_order_acquire);
+  const int64_t authoritativeTimelineSample =
+      m_authoritativeTransportSample.load(std::memory_order_acquire);
+  if (!m_outputPrimeCanRebase ||
+      !outputPrimeNeedsRebase(
+          queuedTimelineSample,
+          authoritativeTimelineSample,
+          kOutputPrimeRebaseDeadbandSamples)) {
+    return false;
+  }
+
+  // Priming can wait on source decode while the system-clock transport keeps
+  // advancing. Discard that stale prime exactly once; the decoded source is
+  // now warm, so the replacement prime is bounded and cannot livelock.
+  m_outputPrimeCanRebase = false;
+  ++m_mixGeneration;
+  m_timelineSampleCursor = authoritativeTimelineSample;
+  m_audioClockSample.store(authoritativeTimelineSample,
+                           std::memory_order_release);
+  m_lastReportedCurrentSample.store(authoritativeTimelineSample,
+                                    std::memory_order_release);
+  m_ringBufferEndSample.store(authoritativeTimelineSample,
+                              std::memory_order_release);
+  m_ringBuffer.clear();
+  scheduleDecodesLocked(m_timelineClips);
+  prioritizeDecodesNearSampleLocked(authoritativeTimelineSample);
+  m_outputPrimeRebaseCount.fetch_add(1, std::memory_order_relaxed);
+  m_lastOutputPrimeRebaseLagSamples.store(
+      authoritativeTimelineSample - queuedTimelineSample,
+      std::memory_order_release);
+  return true;
+}
+
+void AudioEngine::startOutputStreamIfPrimed() {
+  const size_t primeTargetSamples =
+      m_outputPrimeTargetSamples.load(std::memory_order_acquire);
+  if (!outputStreamCanStart(
+          m_playing.load(std::memory_order_acquire),
+          m_outputStartPending.load(std::memory_order_acquire),
+          m_ringBuffer.available(),
+          primeTargetSamples)) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(m_stateMutex);
+  if (!outputStreamCanStart(
+          m_playing.load(std::memory_order_acquire),
+          m_outputStartPending.load(std::memory_order_acquire),
+          m_ringBuffer.available(),
+          primeTargetSamples) ||
+      !m_rtaudio ||
+      !m_rtaudio->isStreamOpen()) {
+    return;
+  }
+  if (m_rtaudio->isStreamRunning()) {
+    m_outputStartPending.store(false, std::memory_order_release);
+    m_outputPrimeCanRebase = false;
+    return;
+  }
+
+  const int64_t outputStartSample =
+      m_audioClockSample.load(std::memory_order_acquire);
+  if (rebasePendingOutputToAuthoritativeLocked()) {
+    m_stateCondition.notify_all();
+    m_decodeCondition.notify_one();
+    m_mixCondition.notify_all();
+    return;
+  }
+
+  const auto error = m_rtaudio->startStream();
+  m_outputStartPending.store(false, std::memory_order_release);
+  m_outputPrimeCanRebase = false;
+  const qint64 primeStartedMs =
+      m_outputPrimeStartedMs.exchange(0, std::memory_order_acq_rel);
+  if (primeStartedMs > 0) {
+    m_lastOutputPrimeDurationMs.store(
+        qMax<qint64>(
+            0, QDateTime::currentMSecsSinceEpoch() - primeStartedMs),
+        std::memory_order_release);
+  }
+  if (error != rt::audio::RTAUDIO_NO_ERROR) {
+    m_lastDeviceInfoError =
+        QString::fromStdString(m_rtaudio->getErrorText());
+    return;
+  }
+  m_lastOutputStartTimelineSample.store(outputStartSample,
+                                        std::memory_order_release);
+  m_lastOutputStartFeedbackSample.store(outputStartSample,
+                                        std::memory_order_release);
+  m_outputStartRevision.fetch_add(1, std::memory_order_release);
+}
+
+void AudioEngine::pauseOutputStreamForRefillLocked() {
+  m_outputStartPending.store(false, std::memory_order_release);
+  if (m_rtaudio && m_rtaudio->isStreamRunning()) {
+    const auto error = m_rtaudio->abortStream();
+    if (error != rt::audio::RTAUDIO_NO_ERROR) {
+      m_lastDeviceInfoError =
+          QString::fromStdString(m_rtaudio->getErrorText());
+    }
+  }
+  m_outputStartPending.store(
+      m_playing.load(std::memory_order_acquire),
+      std::memory_order_release);
+  m_outputPrimeCanRebase =
+      m_playing.load(std::memory_order_acquire);
+  m_outputPrimeStartedMs.store(
+      m_outputPrimeCanRebase
+          ? QDateTime::currentMSecsSinceEpoch()
+          : 0,
+      std::memory_order_release);
+}
+
 void AudioEngine::mixLoop() {
   QVector<float> mixBuffer(m_periodFrames * m_channelCount);
   QVector<int16_t> pcmBuffer(m_periodFrames * m_channelCount);
@@ -4480,9 +4776,12 @@ void AudioEngine::mixLoop() {
     {
       std::unique_lock<std::mutex> lock(m_mixMutex);
       m_mixCondition.wait_for(lock, std::chrono::milliseconds(5), [this]() {
+        const size_t fillTargetSamples =
+            m_outputStartPending.load(std::memory_order_acquire)
+                ? m_outputPrimeTargetSamples.load(std::memory_order_acquire)
+                : static_cast<size_t>(m_mixLowWaterSamples);
         return !m_running || !m_playing ||
-               m_ringBuffer.available() <
-                   static_cast<size_t>(m_mixLowWaterSamples);
+               m_ringBuffer.available() < fillTargetSamples;
       });
       if (!m_running) {
         break;
@@ -4490,8 +4789,11 @@ void AudioEngine::mixLoop() {
       if (!m_playing) {
         continue;
       }
-      if (m_ringBuffer.available() >=
-          static_cast<size_t>(m_mixLowWaterSamples)) {
+      const size_t fillTargetSamples =
+          m_outputStartPending.load(std::memory_order_acquire)
+              ? m_outputPrimeTargetSamples.load(std::memory_order_acquire)
+              : static_cast<size_t>(m_mixLowWaterSamples);
+      if (m_ringBuffer.available() >= fillTargetSamples) {
         continue;
       }
     }
@@ -4556,8 +4858,10 @@ void AudioEngine::mixLoop() {
         timelineRate * static_cast<qreal>(m_periodFrames);
     const int64_t timelineStep = qMax<int64_t>(
         1, static_cast<int64_t>(std::llround(chunkTimelineDuration)));
-    commitMixedChunk(generation, pcmBuffer.constData(),
-                     static_cast<size_t>(pcmBuffer.size()),
-                     chunkStartSample + timelineStep);
+    if (commitMixedChunk(generation, pcmBuffer.constData(),
+                         static_cast<size_t>(pcmBuffer.size()),
+                         chunkStartSample + timelineStep)) {
+      startOutputStreamIfPrimed();
+    }
   }
 }

@@ -2962,8 +2962,14 @@ public:
                     m_decoderPolicy);
                 m_sequenceFrameSourceIndex = sequenceFrameIndex;
             }
-            return m_sequenceFrameSource->decodeScaledFrame(
+            const bool decoded = m_sequenceFrameSource->decodeScaledFrame(
                 0, outputSize, imageOut, errorOut);
+            if (decoded) {
+                m_lastDecodedFrameIndex = sequenceFrameIndex;
+                m_lastDecodedPts = AV_NOPTS_VALUE;
+                m_lastDecodedBestEffortTimestamp = AV_NOPTS_VALUE;
+            }
+            return decoded;
         }
         if (!ensureDecodedFrame(frameIndex, errorOut)) {
             return false;
@@ -3024,9 +3030,10 @@ public:
         auto payload = std::make_shared<jcut::core::FramePayloadCore>();
         const auto now = std::chrono::system_clock::now().time_since_epoch();
         payload->setIdentity(
-            frameIndex,
+            m_lastDecodedFrameIndex,
             m_path,
-            std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+            std::chrono::duration_cast<std::chrono::milliseconds>(now).count(),
+            m_lastDecodedBestEffortTimestamp);
         if (!payload->cloneHardwareFrame(
                 m_bestFrame.get(), softwarePixelFormat)) {
             if (errorOut) {
@@ -3055,6 +3062,16 @@ public:
     const std::string& hardwareFallbackReason() const noexcept
     {
         return m_hardwareFallbackReason;
+    }
+
+    std::int64_t sourcePresentationTimestamp() const noexcept
+    {
+        return m_lastDecodedBestEffortTimestamp;
+    }
+
+    int presentedSourceFrame() const noexcept
+    {
+        return m_lastDecodedFrameIndex;
     }
 
     std::string codecName() const
@@ -3106,6 +3123,7 @@ private:
                 m_lastDecodedFrameIndex =
                     std::max(-1, frameIndex - 1);
                 m_lastDecodedPts = AV_NOPTS_VALUE;
+                m_lastDecodedBestEffortTimestamp = AV_NOPTS_VALUE;
                 av_frame_unref(m_bestFrame.get());
                 m_haveBestFrame = false;
             } else if (initialRequest || backwardRequest) {
@@ -3161,6 +3179,7 @@ private:
         m_videoStreamIndex = -1;
         m_lastDecodedFrameIndex = -1;
         m_lastDecodedPts = AV_NOPTS_VALUE;
+        m_lastDecodedBestEffortTimestamp = AV_NOPTS_VALUE;
         m_haveBestFrame = false;
         m_opened = false;
         return open(errorOut);
@@ -3212,6 +3231,8 @@ private:
                             AV_NOPTS_VALUE
                         ? m_frame->best_effort_timestamp
                         : m_frame->pts;
+                m_lastDecodedBestEffortTimestamp =
+                    m_frame->best_effort_timestamp;
                 const int timestampFrameIndex =
                     frameIndexForPts(decodedPts, m_stream);
                 if (timestampFrameIndex >= 0) {
@@ -3319,6 +3340,7 @@ private:
     int m_videoStreamIndex = -1;
     int m_lastDecodedFrameIndex = -1;
     std::int64_t m_lastDecodedPts = AV_NOPTS_VALUE;
+    std::int64_t m_lastDecodedBestEffortTimestamp = AV_NOPTS_VALUE;
     bool m_haveBestFrame = false;
     AVStream* m_stream = nullptr;
     std::unique_ptr<AVFormatContext, AvFormatContextDeleter> m_formatContext;
@@ -3801,6 +3823,9 @@ public:
             const int localFrame = rawLocalFrame;
             ImageBuffer decoded;
             int sourceFrame = localFrame;
+            int presentedSourceFrame = sourceFrame;
+            std::int64_t sourcePresentationTimestamp =
+                jcut::core::kUnknownSourcePresentationTimestamp;
             const int effectFrame = effectFrameForClip(
                 request.document, clip, localFrame);
             if (clip.mediaKind == "title") {
@@ -3832,6 +3857,10 @@ public:
                     result.image = std::move(canvas);
                     return result;
                 }
+                sourcePresentationTimestamp =
+                    mediaSource.sourcePresentationTimestamp();
+                presentedSourceFrame =
+                    mediaSource.presentedSourceFrame();
                 applyDecodeStatus(mediaSource, &result);
             }
 
@@ -3871,10 +3900,11 @@ public:
                     maskDirectory = std::filesystem::path(request.rootDirectory) / maskDirectory;
                 }
                 const auto maskPath = clip.maskEnabled && !clip.maskFramesDir.empty()
-                    ? jcut::masks::maskFramePathForSourceFrameCore(
+                    ? jcut::masks::maskFramePathForDecodedSampleCore(
                           maskDirectory.lexically_normal(),
                           std::filesystem::path(result.sourcePath),
-                          sourceFrame)
+                          presentedSourceFrame,
+                          sourcePresentationTimestamp)
                     : std::nullopt;
                 ImageBuffer maskImage;
                 bool maskReady = false;

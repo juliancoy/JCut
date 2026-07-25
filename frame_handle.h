@@ -46,7 +46,12 @@ public:
     FrameData* data() const { return d.data(); }
     
     // Creation helpers
-    static FrameHandle createCpuFrame(const QImage& image, int64_t frameNum, const QString& path);
+    static FrameHandle createCpuFrame(
+        const QImage& image,
+        int64_t frameNum,
+        const QString& path,
+        int64_t sourcePresentationTimestamp =
+            jcut::core::kUnknownSourcePresentationTimestamp);
     // Legacy Qt-editor compatibility. Implemented in the Qt-only QRhi adapter
     // translation unit and intentionally absent from the ImGui runtime target.
     static FrameHandle createGpuFrame(QRhiTexture* texture, int64_t frameNum, const QString& path);
@@ -61,6 +66,14 @@ public:
     
     // Accessors
     int64_t frameNumber() const { return d ? d->payload.frameNumber() : -1; }
+    int64_t sourcePresentationTimestamp() const {
+        return d
+            ? d->payload.sourcePresentationTimestamp()
+            : jcut::core::kUnknownSourcePresentationTimestamp;
+    }
+    bool hasSourcePresentationTimestamp() const {
+        return d && d->payload.hasSourcePresentationTimestamp();
+    }
     QString sourcePath() const {
         return d ? QString::fromStdString(d->payload.sourcePath()) : QString();
     }
@@ -122,9 +135,14 @@ private:
 struct FrameCacheKey {
     QString path;
     int64_t frameNumber;
+    int64_t sourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
     
     bool operator==(const FrameCacheKey& other) const {
-        return frameNumber == other.frameNumber && path == other.path;
+        return frameNumber == other.frameNumber &&
+            sourcePresentationTimestamp ==
+                other.sourcePresentationTimestamp &&
+            path == other.path;
     }
 };
 
@@ -135,7 +153,13 @@ namespace std {
 template<>
 struct hash<editor::FrameCacheKey> {
     size_t operator()(const editor::FrameCacheKey& key) const {
-        return qHash(key.path) ^ std::hash<int64_t>{}(key.frameNumber);
+        const size_t pathAndFrame =
+            qHash(key.path) ^ std::hash<int64_t>{}(key.frameNumber);
+        return pathAndFrame ^
+            (std::hash<int64_t>{}(key.sourcePresentationTimestamp) +
+             0x9e3779b97f4a7c15ULL +
+             (pathAndFrame << 6) +
+             (pathAndFrame >> 2));
     }
 };
 } // namespace std

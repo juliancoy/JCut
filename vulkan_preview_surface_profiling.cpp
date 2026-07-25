@@ -189,8 +189,6 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
                         m_playbackPipeline->pendingVisibleRequestCount());
         snapshot.insert(QStringLiteral("playback_buffered_frames"),
                         m_playbackPipeline->bufferedFrameCount());
-        snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
-                        m_playbackPipeline->droppedPresentationFrameCount());
         snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
         const bool includeFrameTrace =
             !m_interaction.playing || editor::debugTemporalDebugOverlayEnabled();
@@ -230,6 +228,14 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
+        snapshot.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp"),
+            static_cast<qint64>(status.frame.sourcePresentationTimestamp()));
+        snapshot.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp_available"),
+            status.frame.hasSourcePresentationTimestamp());
         snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
         snapshot.insert(QStringLiteral("active_frame_up_to_date"), status.upToDate);
         snapshot.insert(QStringLiteral("active_frame_not_up_to_date_failure"), status.currentFrameFailure);
@@ -375,8 +381,6 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
                         m_playbackPipeline->pendingVisibleRequestCount());
         snapshot.insert(QStringLiteral("playback_buffered_frames"),
                         m_playbackPipeline->bufferedFrameCount());
-        snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
-                        m_playbackPipeline->droppedPresentationFrameCount());
         snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
         const bool includeFrameTrace =
             !m_interaction.playing || editor::debugTemporalDebugOverlayEnabled();
@@ -409,6 +413,14 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
         snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
+        snapshot.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp"),
+            static_cast<qint64>(status.frame.sourcePresentationTimestamp()));
+        snapshot.insert(
+            QStringLiteral(
+                "active_presented_source_video_stream_best_effort_timestamp_available"),
+            status.frame.hasSourcePresentationTimestamp());
         snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
         snapshot.insert(QStringLiteral("active_frame_up_to_date"), status.upToDate);
         snapshot.insert(QStringLiteral("active_frame_not_up_to_date_failure"), status.currentFrameFailure);
@@ -464,6 +476,13 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     }
     snapshot.insert(QStringLiteral("pipeline_stages"), pipelineStageHealthJson(livePipelineSnapshots()));
     return snapshot;
+}
+
+PreviewSurface::PresentationTelemetrySnapshot
+VulkanPreviewSurface::presentationTelemetrySnapshot() const
+{
+    return m_presenter ? m_presenter->presentationTelemetrySnapshot()
+                       : PresentationTelemetrySnapshot{};
 }
 
 void VulkanPreviewSurface::resetProfilingStats()

@@ -6,6 +6,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,6 +14,7 @@
 #include <QMutexLocker>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace {
@@ -20,6 +22,34 @@ struct TranscriptSpeechRange {
     qreal startFrame = 0.0;
     qreal endFrameExclusive = 0.0;
 };
+
+struct TranscriptSpeechRangeCacheEntry {
+    qint64 modifiedMs = -1;
+    qint64 fileSize = -1;
+    qint64 nextValidationMs = 0;
+    QVector<TranscriptSpeechRange> ranges;
+};
+
+constexpr qint64 kTranscriptSpeechRangeMetadataRefreshMs = 1000;
+
+qint64 monotonicNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+QMutex& transcriptSpeechRangeCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, TranscriptSpeechRangeCacheEntry>& transcriptSpeechRangeCache()
+{
+    static QHash<QString, TranscriptSpeechRangeCacheEntry> cache;
+    return cache;
+}
 
 QMutex& transformTimelineRangesMutex() {
     static QMutex mutex;
@@ -32,32 +62,71 @@ QVector<ExportRangeSegment>& transformTimelineRangesStorage() {
 }
 
 QVector<TranscriptSpeechRange> loadTranscriptSpeechRanges(const QString& transcriptPath) {
-    static QMutex cacheMutex;
-    static QHash<QString, QVector<TranscriptSpeechRange>> cachedRangesByKey;
-
-    const QFileInfo info(transcriptPath);
-    if (!info.exists() || !info.isFile()) {
+    const QString trimmedPath = transcriptPath.trimmed();
+    if (trimmedPath.isEmpty()) {
         return {};
     }
-
-    const QString cacheKey = info.absoluteFilePath() + QLatin1Char('|') +
-                             QString::number(info.lastModified().toMSecsSinceEpoch());
+    const QString absolutePath = QFileInfo(trimmedPath).absoluteFilePath();
+    const qint64 nowMs = monotonicNowMs();
     {
-        QMutexLocker locker(&cacheMutex);
-        const auto it = cachedRangesByKey.constFind(cacheKey);
-        if (it != cachedRangesByKey.cend()) {
-            return it.value();
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        const auto cached = transcriptSpeechRangeCache().constFind(absolutePath);
+        if (cached != transcriptSpeechRangeCache().cend() &&
+            nowMs < cached->nextValidationMs) {
+            return cached->ranges;
         }
     }
 
-    QFile transcriptFile(info.absoluteFilePath());
+    const QFileInfo info(absolutePath);
+    if (!info.exists() || !info.isFile()) {
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        transcriptSpeechRangeCache().insert(
+            absolutePath,
+            TranscriptSpeechRangeCacheEntry{
+                -1,
+                -1,
+                nowMs + kTranscriptSpeechRangeMetadataRefreshMs,
+                {}});
+        return {};
+    }
+
+    const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+    {
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        auto cached = transcriptSpeechRangeCache().find(absolutePath);
+        if (cached != transcriptSpeechRangeCache().end() &&
+            cached->modifiedMs == modifiedMs &&
+            cached->fileSize == fileSize) {
+            cached->nextValidationMs = nowMs + kTranscriptSpeechRangeMetadataRefreshMs;
+            return cached->ranges;
+        }
+    }
+
+    QFile transcriptFile(absolutePath);
     if (!transcriptFile.open(QIODevice::ReadOnly)) {
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        transcriptSpeechRangeCache().insert(
+            absolutePath,
+            TranscriptSpeechRangeCacheEntry{
+                -1,
+                -1,
+                nowMs + kTranscriptSpeechRangeMetadataRefreshMs,
+                {}});
         return {};
     }
 
     QJsonParseError parseError;
     const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        transcriptSpeechRangeCache().insert(
+            absolutePath,
+            TranscriptSpeechRangeCacheEntry{
+                modifiedMs,
+                fileSize,
+                nowMs + kTranscriptSpeechRangeMetadataRefreshMs,
+                {}});
         return {};
     }
 
@@ -101,8 +170,14 @@ QVector<TranscriptSpeechRange> loadTranscriptSpeechRanges(const QString& transcr
     }
 
     {
-        QMutexLocker locker(&cacheMutex);
-        cachedRangesByKey.insert(cacheKey, merged);
+        QMutexLocker locker(&transcriptSpeechRangeCacheMutex());
+        transcriptSpeechRangeCache().insert(
+            absolutePath,
+            TranscriptSpeechRangeCacheEntry{
+                modifiedMs,
+                fileSize,
+                nowMs + kTranscriptSpeechRangeMetadataRefreshMs,
+                merged});
     }
     return merged;
 }

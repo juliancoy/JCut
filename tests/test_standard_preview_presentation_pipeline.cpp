@@ -7,6 +7,7 @@
 
 #include "../async_decoder.h"
 #include "../memory_budget.h"
+#include "../presentation_miss_tracker.h"
 #include "../preview_frame_selection.h"
 #include "../timeline_cache.h"
 
@@ -81,6 +82,9 @@ private slots:
     void staleApproximateSelectionFallsBackToHeldFrame();
     void heldFrameBeatsOlderApproximatePlaybackFallback();
     void stalePlaybackFramePredicateBoundsApproximatePresentation();
+    void presentationMissesAreCountedOncePerVisibleTarget();
+    void missingPresentedFramesCountAsPresentationMisses();
+    void presentationMissesUseActualDrawOutcomes();
 };
 
 void TestStandardPreviewPresentationPipeline::visibleRequestDecisionKeepsCurrentRequestsMoving()
@@ -112,6 +116,105 @@ void TestStandardPreviewPresentationPipeline::visibleRequestDecisionKeepsCurrent
     QVERIFY2(decision.dispatch,
              "an approximate/displayable frame must not suppress the exact current visible request");
     QCOMPARE(decision.decision, QStringLiteral("dispatch_current_over_backlog"));
+}
+
+void TestStandardPreviewPresentationPipeline::
+    presentationMissesAreCountedOncePerVisibleTarget()
+{
+    PresentationMissTracker tracker;
+    const QVector<PresentationFrameSample> duplicatedLayerSamples{
+        {QStringLiteral("media-owner"), 101, 100},
+        {QStringLiteral("media-owner"), 101, 100},
+    };
+
+    QCOMPARE(tracker.recordPresentedFrame(duplicatedLayerSamples), static_cast<int64_t>(1));
+    QCOMPARE(tracker.recordPresentedFrame(duplicatedLayerSamples), static_cast<int64_t>(0));
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"), 102, 101}}),
+        static_cast<int64_t>(1));
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"), 102, 102}}),
+        static_cast<int64_t>(0));
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"), 102, 101}}),
+        static_cast<int64_t>(1));
+
+    tracker.endPresentationRun();
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"), 102, 101}}),
+        static_cast<int64_t>(1));
+}
+
+void TestStandardPreviewPresentationPipeline::
+    missingPresentedFramesCountAsPresentationMisses()
+{
+    PresentationMissTracker tracker;
+    const QVector<PresentationFrameSample> missingSamples{
+        {QStringLiteral("media-owner"), 240, -1},
+        {QStringLiteral("media-owner"), 240, -1},
+    };
+
+    QCOMPARE(tracker.recordPresentedFrame(missingSamples), static_cast<int64_t>(1));
+    QCOMPARE(tracker.recordPresentedFrame(missingSamples), static_cast<int64_t>(0));
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"), 241, -1}}),
+        static_cast<int64_t>(1));
+}
+
+void TestStandardPreviewPresentationPipeline::
+    presentationMissesUseActualDrawOutcomes()
+{
+    QVERIFY(!presentationStatusRequiresDraw(
+        false, false, QString()));
+    QVERIFY(!presentationStatusRequiresDraw(
+        true, true, QString()));
+    QVERIFY(!presentationStatusRequiresDraw(
+        true, true, QStringLiteral("skipped_zero_opacity")));
+    QVERIFY(!presentationStatusRequiresDraw(
+        true, true, QStringLiteral("media_owner_frame_is_pregraded")));
+    QVERIFY(presentationStatusRequiresDraw(
+        true, false, QStringLiteral("handoff_attempted_not_sampled")));
+    QVERIFY(presentationStatusRequiresDraw(
+        true, true, QStringLiteral("mask_texture_unavailable")));
+
+    QCOMPARE(
+        presentationStreamId(
+            QStringLiteral("ordinary-layer"),
+            QStringLiteral("media-owner"),
+            false),
+        QStringLiteral("media-owner"));
+    QCOMPARE(
+        presentationStreamId(
+            QStringLiteral("mask-layer"),
+            QStringLiteral("media-owner"),
+            true),
+        QStringLiteral("mask-layer"));
+
+    PresentationMissTracker tracker;
+    const int64_t decodedFrame = 240;
+    QCOMPARE(
+        presentedFrameForDrawOutcome(false, decodedFrame),
+        static_cast<int64_t>(-1));
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"),
+              decodedFrame,
+              presentedFrameForDrawOutcome(false, decodedFrame)}}),
+        static_cast<int64_t>(1));
+    QCOMPARE(
+        presentedFrameForDrawOutcome(true, decodedFrame),
+        decodedFrame);
+    QCOMPARE(
+        tracker.recordPresentedFrame(
+            {{QStringLiteral("media-owner"),
+              decodedFrame,
+              presentedFrameForDrawOutcome(true, decodedFrame)}}),
+        static_cast<int64_t>(0));
 }
 
 void TestStandardPreviewPresentationPipeline::pendingVisibleRequestDeduplicatesCallbacks()

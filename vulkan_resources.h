@@ -84,6 +84,7 @@ private:
     bool ensureRawMaskImage(const QSize& size);
     bool ensureMaskImages(const QSize& size);
     bool createMaskImage(const QSize& size,
+                         VkFormat format,
                          VkImage* image,
                          VkDeviceMemory* memory,
                          VkImageView* view);

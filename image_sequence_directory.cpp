@@ -1,6 +1,7 @@
 #include "image_sequence_directory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <map>
 #include <memory>
@@ -109,8 +110,12 @@ bool naturalFileNameLessCaseInsensitive(const fs::path& lhsPath,
 
 struct CacheEntry {
     fs::file_time_type modified;
+    bool versionAvailable = false;
+    std::chrono::steady_clock::time_point nextValidation;
     std::shared_ptr<const jcut::ImageSequenceDirectoryInfo> info;
 };
+
+constexpr auto kFilesystemValidationInterval = std::chrono::seconds(1);
 
 jcut::ImageSequenceDirectoryInfo probeUncached(const fs::path& directory)
 {
@@ -188,27 +193,44 @@ std::shared_ptr<const jcut::ImageSequenceDirectoryInfo> cachedProbe(
     if (error) {
         return std::make_shared<const jcut::ImageSequenceDirectoryInfo>();
     }
-    const fs::file_time_type modified = fs::last_write_time(absolutePath, error);
-    if (error) {
-        return std::make_shared<const jcut::ImageSequenceDirectoryInfo>();
-    }
 
     static std::mutex cacheMutex;
     static std::unordered_map<std::string, CacheEntry> cache;
     const std::string cacheKey = absolutePath.string();
+    const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
         const auto cached = cache.find(cacheKey);
-        if (cached != cache.end() && cached->second.modified == modified) {
+        if (cached != cache.end() && now < cached->second.nextValidation) {
+            return cached->second.info;
+        }
+    }
+
+    error.clear();
+    const fs::file_time_type modified = fs::last_write_time(absolutePath, error);
+    const bool versionAvailable = !error;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        const auto cached = cache.find(cacheKey);
+        if (cached != cache.end() &&
+            cached->second.versionAvailable == versionAvailable &&
+            (!versionAvailable || cached->second.modified == modified)) {
+            cached->second.nextValidation = now + kFilesystemValidationInterval;
             return cached->second.info;
         }
     }
 
     auto result = std::make_shared<const jcut::ImageSequenceDirectoryInfo>(
-        probeUncached(absolutePath));
+        versionAvailable ? probeUncached(absolutePath)
+                         : jcut::ImageSequenceDirectoryInfo{});
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
-        cache[cacheKey] = {modified, result};
+        cache[cacheKey] = {
+            modified,
+            versionAvailable,
+            now + kFilesystemValidationInterval,
+            result,
+        };
     }
     return result;
 }

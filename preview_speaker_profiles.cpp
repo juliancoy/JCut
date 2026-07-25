@@ -14,13 +14,25 @@
 #include <QSet>
 
 #include <algorithm>
+#include <chrono>
 
 namespace {
 
 struct HoverSpeakerProfileCacheEntry {
     qint64 mtimeMs = -1;
+    qint64 nextValidationMs = 0;
+    bool loaded = false;
     QHash<QString, HoverSpeakerProfile> profilesBySpeaker;
 };
+
+constexpr qint64 kHoverSpeakerProfileRefreshMs = 1000;
+
+qint64 monotonicNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 struct CurrentSpeakerRangeCacheEntry {
     QString clipId;
@@ -245,13 +257,24 @@ const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath,
     if (transcriptPath.isEmpty() || speakerId.trimmed().isEmpty()) {
         return nullptr;
     }
+    const qint64 nowMs = monotonicNowMs();
+    HoverSpeakerProfileCacheEntry& entry = hoverSpeakerProfileCache()[transcriptPath];
+    if (entry.loaded && nowMs < entry.nextValidationMs) {
+        const auto cachedProfile = entry.profilesBySpeaker.constFind(speakerId);
+        return cachedProfile == entry.profilesBySpeaker.cend()
+            ? nullptr
+            : &cachedProfile.value();
+    }
+
     const QFileInfo info(transcriptPath);
     if (!info.exists() || !info.isFile()) {
+        entry = HoverSpeakerProfileCacheEntry{};
+        entry.loaded = true;
+        entry.nextValidationMs = nowMs + kHoverSpeakerProfileRefreshMs;
         return nullptr;
     }
     const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
-    HoverSpeakerProfileCacheEntry& entry = hoverSpeakerProfileCache()[transcriptPath];
-    if (entry.mtimeMs != mtimeMs || entry.profilesBySpeaker.isEmpty()) {
+    if (!entry.loaded || entry.mtimeMs != mtimeMs) {
         entry = HoverSpeakerProfileCacheEntry{};
         entry.mtimeMs = mtimeMs;
         QJsonDocument doc;
@@ -301,6 +324,8 @@ const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath,
             }
         }
     }
+    entry.loaded = true;
+    entry.nextValidationMs = nowMs + kHoverSpeakerProfileRefreshMs;
     auto it = entry.profilesBySpeaker.constFind(speakerId);
     if (it == entry.profilesBySpeaker.constEnd()) {
         return nullptr;
@@ -409,16 +434,19 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
 
     QList<TimelineClip> candidates;
     for (const TimelineClip& clip : state->clips) {
-        if (clip.speakerTitleEngineActive) {
-            continue;
-        }
-        const QString transcriptPath = activeTranscriptPathForClip(clip);
-        if (transcriptPath.isEmpty()) {
+        if (clip.speakerTitleEngineActive ||
+            !(clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
         const int64_t clipEndSample = clipTimelineEndSamples(clip);
-        if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
+        if (state->currentSample < clipStartSample || state->currentSample >= clipEndSample) {
+            continue;
+        }
+        if (clip.filePath.trimmed().isEmpty() && clip.audioSourcePath.trimmed().isEmpty()) {
+            continue;
+        }
+        if (!activeTranscriptPathForClip(clip).isEmpty()) {
             candidates.push_back(clip);
         }
     }
@@ -495,23 +523,48 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
             });
             continue;
         }
-        const QString transcriptPath = activeTranscriptPathForClip(clip);
-        if (transcriptPath.isEmpty()) {
+        if (!(clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
+            if (skippedClips.size() < 8) {
+                skippedClips.push_back(QJsonObject{
+                    {QStringLiteral("clip_id"), clip.id},
+                    {QStringLiteral("reason"), QStringLiteral("clip_has_no_audio")}
+                });
+            }
             continue;
         }
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
         const int64_t clipEndSample = clipTimelineEndSamples(clip);
-        if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
-            candidates.push_back(clip);
-        } else if (skippedClips.size() < 8) {
+        if (state->currentSample < clipStartSample || state->currentSample >= clipEndSample) {
+            if (skippedClips.size() < 8) {
+                skippedClips.push_back(QJsonObject{
+                    {QStringLiteral("clip_id"), clip.id},
+                    {QStringLiteral("file_path"), clip.filePath},
+                    {QStringLiteral("clip_start_sample"), static_cast<qint64>(clipStartSample)},
+                    {QStringLiteral("clip_end_sample"), static_cast<qint64>(clipEndSample)},
+                    {QStringLiteral("reason"), QStringLiteral("inactive")}
+                });
+            }
+            continue;
+        }
+        if (clip.filePath.trimmed().isEmpty() && clip.audioSourcePath.trimmed().isEmpty()) {
+            if (skippedClips.size() < 8) {
+                skippedClips.push_back(QJsonObject{
+                    {QStringLiteral("clip_id"), clip.id},
+                    {QStringLiteral("reason"), QStringLiteral("missing_media_source")}
+                });
+            }
+            continue;
+        }
+        const QString transcriptPath = activeTranscriptPathForClip(clip);
+        if (transcriptPath.isEmpty()) {
             skippedClips.push_back(QJsonObject{
                 {QStringLiteral("clip_id"), clip.id},
                 {QStringLiteral("file_path"), clip.filePath},
-                {QStringLiteral("transcript_path"), transcriptPath},
-                {QStringLiteral("clip_start_sample"), static_cast<qint64>(clipStartSample)},
-                {QStringLiteral("clip_end_sample"), static_cast<qint64>(clipEndSample)}
+                {QStringLiteral("reason"), QStringLiteral("missing_transcript")}
             });
+            continue;
         }
+        candidates.push_back(clip);
     }
     debug.insert(QStringLiteral("candidate_clip_count"), candidates.size());
     if (!skippedClips.isEmpty()) {

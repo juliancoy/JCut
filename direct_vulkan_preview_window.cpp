@@ -13,6 +13,7 @@
 #include "direct_vulkan_preview_audio.h"
 #include "cpu_overlay_render_backend.h"
 #include "preview_speaker_profiles.h"
+#include "presentation_miss_tracker.h"
 #include "preview_view_transform.h"
 #include "render_vulkan_shared.h"
 #include "editor_shared.h"
@@ -45,7 +46,7 @@
 #include <QWheelEvent>
 #include <QTransform>
 #include <QVulkanFunctions>
-#include <QVulkanWindow>
+#include <QWindow>
 
 namespace {
 
@@ -145,17 +146,18 @@ bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& 
     return true;
 }
 
-class DirectVulkanPreviewRenderer final : public QVulkanWindowRenderer {
+class DirectVulkanPreviewRenderer final {
 public:
-    DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner, QVulkanWindow* window)
+    DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner,
+                                DirectVulkanPreviewWindow* window)
         : m_owner(owner), m_window(window) {}
-    ~DirectVulkanPreviewRenderer() override;
+    ~DirectVulkanPreviewRenderer();
 
-    void initResources() override;
-    void releaseResources() override;
-    void startNextFrame() override;
-    void physicalDeviceLost() override;
-    void logicalDeviceLost() override;
+    void initResources();
+    void releaseResources();
+    void startNextFrame();
+    void physicalDeviceLost();
+    void logicalDeviceLost();
     void clearGpuExportPreview();
 
 private:
@@ -218,7 +220,7 @@ private:
     };
 
     DirectVulkanPreviewWindow* m_owner = nullptr;
-    QVulkanWindow* m_window = nullptr;
+    DirectVulkanPreviewWindow* m_window = nullptr;
     QVulkanDeviceFunctions* m_devFuncs = nullptr;
     std::unique_ptr<VulkanResources> m_resources;
     std::unique_ptr<VulkanResources> m_playbackStatusOverlayResources;
@@ -254,18 +256,16 @@ private:
 
 } // namespace
 
-class DirectVulkanPreviewWindow final : public QVulkanWindow {
+class DirectVulkanPreviewWindow final : public QWindow {
 public:
     DirectVulkanPreviewWindow(PreviewInteractionState* state,
-                              int64_t* presentedFrames,
-                              int64_t* lastPresentedSourceFrame,
+                              DirectVulkanPresentationTelemetry* presentationTelemetry,
                               DirectVulkanPreviewStats* stats,
                               bool* active,
                               QString* failureReason,
                               std::function<void(const QString&)> failureCallback = {})
         : m_state(state),
-          m_presentedFrames(presentedFrames),
-          m_lastPresentedSourceFrame(lastPresentedSourceFrame),
+          m_presentationTelemetry(presentationTelemetry),
           m_stats(stats),
           m_active(active),
           m_failureReason(failureReason),
@@ -273,8 +273,57 @@ public:
     {
         setSurfaceType(QSurface::VulkanSurface);
         setTitle(QStringLiteral("JCut Direct Vulkan Preview"));
-        setFlags(QVulkanWindow::PersistentResources);
     }
+
+    ~DirectVulkanPreviewWindow() override;
+
+    void setPreferredPhysicalDeviceIndex(int index)
+    {
+        m_preferredPhysicalDeviceIndex = index;
+    }
+
+    QVulkanInfoVector<QVulkanExtension> supportedDeviceExtensions() const;
+
+    void setDeviceExtensions(const QByteArrayList& extensions)
+    {
+        m_requestedDeviceExtensions = extensions;
+    }
+
+    bool isValid() const
+    {
+        return !m_failureLatched &&
+               m_device != VK_NULL_HANDLE &&
+               m_swapchain != VK_NULL_HANDLE;
+    }
+
+    VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }
+    VkDevice device() const { return m_device; }
+    const VkPhysicalDeviceProperties* physicalDeviceProperties() const
+    {
+        return m_hasPhysicalDeviceProperties ? &m_physicalDeviceProperties : nullptr;
+    }
+    VkRenderPass defaultRenderPass() const { return m_defaultRenderPass; }
+    VkQueue graphicsQueue() const { return m_graphicsQueue; }
+    uint32_t graphicsQueueFamilyIndex() const { return m_graphicsQueueFamilyIndex; }
+    int concurrentFrameCount() const
+    {
+        return static_cast<int>(m_frames.size());
+    }
+    int currentFrame() const { return m_currentFrameSlot; }
+    int currentSwapChainImageIndex() const { return m_currentSwapchainImageIndex; }
+    VkImage swapChainImage(int index) const
+    {
+        return index >= 0 &&
+                       index < static_cast<int>(m_swapchainImages.size())
+                   ? m_swapchainImages[static_cast<size_t>(index)]
+                   : VK_NULL_HANDLE;
+    }
+    QSize swapChainImageSize() const { return m_swapchainPixelSize; }
+    VkFramebuffer currentFramebuffer() const { return m_currentFramebuffer; }
+    VkCommandBuffer currentCommandBuffer() const { return m_currentCommandBuffer; }
+    VkFormat depthStencilFormat() const { return m_depthStencilFormat; }
+    VkFormat colorFormat() const { return m_colorFormat; }
+    void frameReady();
 
     void setInteractionCallbacks(std::function<void(const QString&)> selectionRequested,
                                  std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
@@ -299,12 +348,6 @@ public:
         m_faceStreamBoxFocusClearRequested = std::move(faceStreamBoxFocusClearRequested);
         m_faceStreamBoxClickStatus = std::move(faceStreamBoxClickStatus);
         m_createKeyframeRequested = std::move(createKeyframeRequested);
-    }
-
-    QVulkanWindowRenderer* createRenderer() override
-    {
-        m_renderer = new DirectVulkanPreviewRenderer(this, this);
-        return m_renderer;
     }
 
     void setGpuExportPreviewFrame(
@@ -358,13 +401,25 @@ public:
 
     void schedulePreviewUpdate()
     {
-        if (m_updatePending) {
+        m_updateDirty = true;
+        if (!isExposed()) {
+            if (!m_updateDeferredWhileNotExposed && m_stats) {
+                ++m_stats->previewUpdatesDeferredWhileNotExposed;
+            }
+            m_updateDeferredWhileNotExposed = true;
             return;
         }
-        m_updatePending = true;
+        m_updateDeferredWhileNotExposed = false;
+        if (m_frameInProgress) {
+            return;
+        }
+        m_updateDirty = false;
         m_updateRequestMs = QDateTime::currentMSecsSinceEpoch();
-        if (m_stats) {
-            ++m_stats->previewUpdateRequests;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewUpdateRequests.fetch_add(
+                1, std::memory_order_relaxed);
+            m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
+                1, std::memory_order_relaxed);
         }
         // Diagnostic: JCUT_DEBUG_UPDATE_STORM=1 dumps who keeps re-arming
         // preview updates (first 40 requests). Off by default.
@@ -384,48 +439,81 @@ public:
                 }
             }
         }
-        // Let Qt coordinate the update with the compositor's frame callback.
-        // Posting UpdateRequest directly bypasses Wayland's pacing contract and
-        // can block QVulkanWindow::endFrame() inside wl_display_dispatch_queue.
-        requestUpdate();
+        renderNow();
     }
 
     bool updatePending() const
     {
-        return m_updatePending;
+        return m_updateRequestMs >= 0 ||
+               m_frameInProgress ||
+               m_updateDirty ||
+               m_swapchainDirty;
     }
+
+    bool ensureVulkanReady();
+    bool ensureSwapchain();
+    void cleanupSwapchain();
+    void cleanupDevice();
+    void renderNow();
+    void markSwapchainDirty();
+    QSize swapchainPixelSizeForWindow() const;
+    int selectGraphicsPresentQueueFamily(VkPhysicalDevice device);
+    void refreshPhysicalDeviceList();
 
 protected:
     void exposeEvent(QExposeEvent* event) override
     {
-        QVulkanWindow::exposeEvent(event);
+        QWindow::exposeEvent(event);
         if (!isExposed()) {
             m_scheduledWhileExposed = false;
+            const bool hadOutstandingUpdate =
+                m_updateRequestMs >= 0 ||
+                m_frameInProgress ||
+                m_updateDirty;
+            if (hadOutstandingUpdate && m_stats) {
+                ++m_stats->previewUpdatesDiscardedWhileNotExposed;
+            }
+            m_updateDirty = hadOutstandingUpdate;
+            m_updateRequestMs = -1;
+            m_updateDeferredWhileNotExposed = hadOutstandingUpdate;
+            cleanupSwapchain();
             return;
         }
-        if (!isValid()) {
-            markFailure(QStringLiteral("QVulkanWindow exposed but invalid; Vulkan surface or swapchain creation failed."));
-        } else if (m_active) {
+        if (m_active) {
             *m_active = true;
-            // Schedule a render only on the not-exposed -> exposed
-            // transition or when the surface size changed. On macOS every
-            // vkQueuePresentKHR re-dirties the CAMetalLayer, AppKit asks the
-            // layer to display, and Qt synthesizes another ExposeEvent —
-            // unconditionally scheduling here turns each presented frame
-            // into the trigger for the next one (idle present storm that
-            // starves the UI thread and the control-server bridge).
             if (!m_scheduledWhileExposed || size() != m_lastExposeScheduledSize) {
                 m_scheduledWhileExposed = true;
                 m_lastExposeScheduledSize = size();
+                markSwapchainDirty();
                 schedulePreviewUpdate();
             }
         }
     }
 
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWindow::resizeEvent(event);
+        markSwapchainDirty();
+        schedulePreviewUpdate();
+    }
+
+    void showEvent(QShowEvent* event) override
+    {
+        QWindow::showEvent(event);
+        markSwapchainDirty();
+        schedulePreviewUpdate();
+    }
+
+    void hideEvent(QHideEvent* event) override
+    {
+        QWindow::hideEvent(event);
+        cleanupSwapchain();
+    }
+
     void wheelEvent(QWheelEvent* event) override
     {
         if (!event || !m_state || event->angleDelta().y() == 0) {
-            QVulkanWindow::wheelEvent(event);
+            QWindow::wheelEvent(event);
             return;
         }
         const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
@@ -438,11 +526,11 @@ protected:
                 event->accept();
                 return;
             }
-            QVulkanWindow::wheelEvent(event);
+            QWindow::wheelEvent(event);
             return;
         }
         if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
-            QVulkanWindow::wheelEvent(event);
+            QWindow::wheelEvent(event);
             return;
         }
         if (applyVideoPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
@@ -450,13 +538,13 @@ protected:
             event->accept();
             return;
         }
-        QVulkanWindow::wheelEvent(event);
+        QWindow::wheelEvent(event);
     }
 
     void mousePressEvent(QMouseEvent* event) override
     {
         if (!event || !m_state) {
-            QVulkanWindow::mousePressEvent(event);
+            QWindow::mousePressEvent(event);
             return;
         }
         const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
@@ -479,7 +567,7 @@ protected:
             }
         }
         if (event->button() != Qt::LeftButton) {
-            QVulkanWindow::mousePressEvent(event);
+            QWindow::mousePressEvent(event);
             return;
         }
         if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
@@ -491,7 +579,7 @@ protected:
                     return;
                 }
             }
-            QVulkanWindow::mousePressEvent(event);
+            QWindow::mousePressEvent(event);
             return;
         }
         const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
@@ -668,13 +756,13 @@ protected:
 
         transient.dragMode = PreviewDragMode::None;
         transient.dragOriginBounds = QRectF();
-        QVulkanWindow::mousePressEvent(event);
+        QWindow::mousePressEvent(event);
     }
 
     void mouseMoveEvent(QMouseEvent* event) override
     {
         if (!event || !m_state) {
-            QVulkanWindow::mouseMoveEvent(event);
+            QWindow::mouseMoveEvent(event);
             return;
         }
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
@@ -684,7 +772,7 @@ protected:
             m_state->selectedClipId.isEmpty()) {
             updatePreviewCursor(surfacePosition);
             schedulePreviewUpdate();
-            QVulkanWindow::mouseMoveEvent(event);
+            QWindow::mouseMoveEvent(event);
             return;
         }
 
@@ -702,7 +790,7 @@ protected:
         if (clipId.isEmpty() || !lookupVulkanInteractionInfo(infos, clipId, &activeInfo) ||
             activeInfo.bounds.width() <= 1.0 ||
             activeInfo.bounds.height() <= 1.0) {
-            QVulkanWindow::mouseMoveEvent(event);
+            QWindow::mouseMoveEvent(event);
             return;
         }
 
@@ -715,7 +803,7 @@ protected:
         if (m_state->transient.dragMode == PreviewDragMode::Move) {
             if (m_state->titleOverlayInteractionOnly && !clipIdIsTitleForVulkan(m_state, clipId)) {
                 m_state->transient.dragMode = PreviewDragMode::None;
-                QVulkanWindow::mouseMoveEvent(event);
+                QWindow::mouseMoveEvent(event);
                 return;
             }
             if (activeInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
@@ -828,7 +916,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override
     {
         if (!event || event->button() != Qt::LeftButton || !m_state) {
-            QVulkanWindow::mouseReleaseEvent(event);
+            QWindow::mouseReleaseEvent(event);
             return;
         }
 
@@ -987,7 +1075,7 @@ protected:
             return;
         }
 
-        QVulkanWindow::mouseReleaseEvent(event);
+        QWindow::mouseReleaseEvent(event);
     }
 
     void keyPressEvent(QKeyEvent* event) override
@@ -999,7 +1087,7 @@ protected:
             updatePreviewCursor(cursorPos);
             schedulePreviewUpdate();
         }
-        QVulkanWindow::keyPressEvent(event);
+        QWindow::keyPressEvent(event);
     }
 
     void keyReleaseEvent(QKeyEvent* event) override
@@ -1010,23 +1098,22 @@ protected:
             updatePreviewCursor(cursorPos);
             schedulePreviewUpdate();
         }
-        QVulkanWindow::keyReleaseEvent(event);
+        QWindow::keyReleaseEvent(event);
     }
 
     bool event(QEvent* event) override
     {
         if (!event) {
-            return QVulkanWindow::event(event);
+            return QWindow::event(event);
         }
 
         if (event->type() == QEvent::UpdateRequest) {
-            // Platform layers can deliver unsolicited UpdateRequests. Only
-            // consume requests explicitly latched by schedulePreviewUpdate().
-            // Playback already schedules one from each timeline tick; letting
-            // the renderer bypass this latch creates a tight present loop that
-            // can starve the rest of the Qt event queue.
-            if (!m_updatePending) {
-                return true;
+            // Native preview presentation no longer depends on Qt delivering a
+            // frame callback. Keep the counter for diagnostics if the platform
+            // routes an update event through the host window anyway.
+            if (m_presentationTelemetry) {
+                m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
+                    1, std::memory_order_relaxed);
             }
         }
 
@@ -1042,13 +1129,13 @@ protected:
                     schedulePreviewUpdate();
                 }
             }
-            return QVulkanWindow::event(event);
+            return QWindow::event(event);
         }
 
         if (event->type() == QEvent::ContextMenu) {
             auto* contextMenu = static_cast<QContextMenuEvent*>(event);
             if (!contextMenu || !m_state) {
-                return QVulkanWindow::event(event);
+                return QWindow::event(event);
             }
             const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
                 this, PreviewSurfaceCoordinateSpace::DeviceSurface);
@@ -1076,7 +1163,7 @@ protected:
                 hitClipId.clear();
             }
             if (hitClipId.isEmpty()) {
-                return QVulkanWindow::event(event);
+                return QWindow::event(event);
             }
             if (m_state->selectedClipId != hitClipId) {
                 m_state->selectedClipId = hitClipId;
@@ -1092,10 +1179,10 @@ protected:
                 m_createKeyframeRequested(hitClipId);
                 return true;
             }
-            return QVulkanWindow::event(event);
+            return QWindow::event(event);
         }
 
-        return QVulkanWindow::event(event);
+        return QWindow::event(event);
     }
 
 private:
@@ -1188,8 +1275,65 @@ private:
 public:
     PreviewInteractionState* state() const { return m_state; }
     DirectVulkanPreviewStats* stats() const { return m_stats; }
-    void markPresented()
+    void beginPreviewFrame()
     {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        m_frameInProgress = true;
+        m_updateDirty = false;
+        m_frameRequestMs =
+            m_updateRequestMs >= 0 ? m_updateRequestMs : nowMs;
+        m_updateRequestMs = -1;
+    }
+    void markPresented(
+        const PreviewInteractionState* presentedState = nullptr,
+        const QSet<QString>* submittedClipIds = nullptr,
+        const QSet<QString>* submittedCrossfadeClipIds = nullptr)
+    {
+        if (presentedState &&
+            (!presentedState->playing ||
+             presentedState->viewMode != PreviewSurface::ViewMode::Video)) {
+            m_presentationMissTracker.endPresentationRun();
+        } else if (presentedState && submittedClipIds) {
+            QVector<editor::PresentationFrameSample> samples;
+            samples.reserve(presentedState->vulkanFrameStatuses.size() * 2);
+            for (const VulkanPreviewClipFrameStatus& status :
+                 presentedState->vulkanFrameStatuses) {
+                if (!editor::presentationStatusRequiresDraw(
+                        status.active,
+                        status.drawSuppressed,
+                        status.missingReason)) {
+                    continue;
+                }
+                const QString streamId = editor::presentationStreamId(
+                    status.clipId,
+                    status.mediaOwnerClipId,
+                    status.maskClipSource);
+                samples.push_back(editor::PresentationFrameSample{
+                    streamId,
+                    status.requestedSourceFrame,
+                    editor::presentedFrameForDrawOutcome(
+                        submittedClipIds->contains(status.clipId),
+                        status.presentedSourceFrame),
+                });
+                if (status.frameCrossfadeActive) {
+                    samples.push_back(editor::PresentationFrameSample{
+                        streamId + QStringLiteral("#frame_crossfade"),
+                        status.frameCrossfadeRequestedSourceFrame,
+                        editor::presentedFrameForDrawOutcome(
+                            submittedCrossfadeClipIds &&
+                                submittedCrossfadeClipIds->contains(status.clipId),
+                            status.frameCrossfadePresentedSourceFrame),
+                    });
+                }
+            }
+            const int64_t presentationMisses =
+                m_presentationMissTracker.recordPresentedFrame(samples);
+            if (m_presentationTelemetry && presentationMisses > 0) {
+                m_presentationTelemetry->uniquePresentationMisses.fetch_add(
+                    presentationMisses, std::memory_order_relaxed);
+            }
+        }
+
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (m_lastPresentMs > 0 && m_stats) {
             const double intervalMs = static_cast<double>(nowMs - m_lastPresentMs);
@@ -1197,8 +1341,9 @@ public:
             m_stats->maxPresentIntervalMs = std::max(m_stats->maxPresentIntervalMs, intervalMs);
         }
         m_lastPresentMs = nowMs;
-        if (m_presentedFrames) {
-            ++(*m_presentedFrames);
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->presentedFrames.fetch_add(
+                1, std::memory_order_relaxed);
         }
         if (m_stats) {
             editor::accumulatePlaybackStageMetric(&m_stats->presentationStageMetric,
@@ -1209,24 +1354,45 @@ public:
                                           QStringLiteral("frame_ready"));
         }
     }
-    void markPresentedSourceFrame(int64_t frame)
+    void markPresentedSourceFrames(int64_t requestedFrame, int64_t presentedFrame)
     {
-        if (m_lastPresentedSourceFrame) {
-            *m_lastPresentedSourceFrame = frame;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->activeRequestedSourceFrame.store(
+                requestedFrame, std::memory_order_relaxed);
+            m_presentationTelemetry->activePresentedSourceFrame.store(
+                presentedFrame, std::memory_order_relaxed);
         }
     }
     void markPreviewUpdateDelivered()
     {
-        if (m_updatePending && m_updateRequestMs >= 0 && m_stats) {
+        if (m_frameRequestMs >= 0 && m_stats) {
             const double latencyMs =
-                static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_updateRequestMs);
-            ++m_stats->previewUpdatesDelivered;
+                static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_frameRequestMs);
             m_stats->lastPreviewUpdateLatencyMs = latencyMs;
             m_stats->maxPreviewUpdateLatencyMs =
                 std::max(m_stats->maxPreviewUpdateLatencyMs, latencyMs);
         }
-        m_updatePending = false;
-        m_updateRequestMs = -1;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewUpdatesDelivered.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+        m_frameInProgress = false;
+        m_frameRequestMs = -1;
+        if (m_updateDirty && isExposed()) {
+            schedulePreviewUpdate();
+        }
+    }
+    void resetProfilingAnchors()
+    {
+        m_presentationMissTracker.reset();
+        m_lastPresentMs = 0;
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_updateRequestMs >= 0) {
+            m_updateRequestMs = nowMs;
+        }
+        if (m_frameRequestMs >= 0) {
+            m_frameRequestMs = nowMs;
+        }
     }
     void setLatestVulkanReadbackImage(const QImage& image)
     {
@@ -1280,6 +1446,7 @@ public:
     }
     void markFailure(const QString& reason)
     {
+        m_failureLatched = true;
         if (m_active) {
             *m_active = false;
         }
@@ -1297,9 +1464,16 @@ public:
     }
 
 private:
+    struct FrameResources {
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        VkFence inFlightFence = VK_NULL_HANDLE;
+        VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
+        VkSemaphore renderCompleteSemaphore = VK_NULL_HANDLE;
+    };
+
     PreviewInteractionState* m_state = nullptr;
-    int64_t* m_presentedFrames = nullptr;
-    int64_t* m_lastPresentedSourceFrame = nullptr;
+    DirectVulkanPresentationTelemetry* m_presentationTelemetry = nullptr;
     DirectVulkanPreviewStats* m_stats = nullptr;
     bool* m_active = nullptr;
     QString* m_failureReason = nullptr;
@@ -1320,14 +1494,813 @@ private:
     QImage m_latestDecoderDiagnosticImage;
     bool m_pipelineThumbnailReadbackPending = false;
     qint64 m_lastPipelineThumbnailReadbackMs = 0;
-    bool m_updatePending = false;
+    bool m_updateDirty = false;
+    bool m_frameInProgress = false;
+    bool m_updateDeferredWhileNotExposed = false;
     bool m_scheduledWhileExposed = false;
     QSize m_lastExposeScheduledSize;
     qint64 m_updateRequestMs = -1;
+    qint64 m_frameRequestMs = -1;
     qint64 m_lastPresentMs = 0;
+    bool m_failureLatched = false;
+    bool m_rendererInitialized = false;
+    bool m_swapchainDirty = true;
+    bool m_frameSubmitted = false;
+    int m_preferredPhysicalDeviceIndex = -1;
+    int m_currentFrameSlot = 0;
+    int m_currentSwapchainImageIndex = -1;
+    bool m_hasPhysicalDeviceProperties = false;
+    QByteArrayList m_requestedDeviceExtensions;
+    QVector<VkPhysicalDevice> m_availablePhysicalDevices;
+    QVector<VkPhysicalDeviceProperties> m_availablePhysicalDeviceProperties;
+    VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties m_physicalDeviceProperties{};
+    VkDevice m_device = VK_NULL_HANDLE;
+    VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+    uint32_t m_graphicsQueueFamilyIndex = UINT32_MAX;
+    VkSurfaceKHR m_surface = VK_NULL_HANDLE;
+    VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
+    QSize m_swapchainPixelSize;
+    VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
+    VkFormat m_depthStencilFormat = VK_FORMAT_UNDEFINED;
+    VkRenderPass m_defaultRenderPass = VK_NULL_HANDLE;
+    std::vector<VkImage> m_swapchainImages;
+    std::vector<VkImageView> m_swapchainImageViews;
+    std::vector<VkFramebuffer> m_swapchainFramebuffers;
+    std::vector<FrameResources> m_frames;
+    VkFramebuffer m_currentFramebuffer = VK_NULL_HANDLE;
+    VkCommandBuffer m_currentCommandBuffer = VK_NULL_HANDLE;
+    editor::PresentationMissTracker m_presentationMissTracker;
     DirectVulkanPreviewRenderer* m_renderer = nullptr;
     QVector<render_detail::OffscreenVulkanFrame> m_gpuExportPreviewFrames;
 };
+
+DirectVulkanPreviewWindow::~DirectVulkanPreviewWindow()
+{
+    cleanupDevice();
+    delete m_renderer;
+    m_renderer = nullptr;
+}
+
+void DirectVulkanPreviewWindow::refreshPhysicalDeviceList()
+{
+    m_availablePhysicalDevices.clear();
+    m_availablePhysicalDeviceProperties.clear();
+    QVulkanInstance* instance = vulkanInstance();
+    if (!instance || instance->vkInstance() == VK_NULL_HANDLE) {
+        return;
+    }
+    uint32_t count = 0;
+    if (vkEnumeratePhysicalDevices(instance->vkInstance(), &count, nullptr) != VK_SUCCESS ||
+        count == 0) {
+        return;
+    }
+    m_availablePhysicalDevices.resize(static_cast<qsizetype>(count));
+    if (vkEnumeratePhysicalDevices(instance->vkInstance(),
+                                   &count,
+                                   m_availablePhysicalDevices.data()) != VK_SUCCESS) {
+        m_availablePhysicalDevices.clear();
+        return;
+    }
+    m_availablePhysicalDeviceProperties.reserve(static_cast<qsizetype>(count));
+    for (VkPhysicalDevice device : m_availablePhysicalDevices) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device, &properties);
+        m_availablePhysicalDeviceProperties.push_back(properties);
+    }
+}
+
+QVulkanInfoVector<QVulkanExtension>
+DirectVulkanPreviewWindow::supportedDeviceExtensions() const
+{
+    auto* self = const_cast<DirectVulkanPreviewWindow*>(this);
+    if (self->m_availablePhysicalDevices.isEmpty()) {
+        self->refreshPhysicalDeviceList();
+    }
+    const int preferredIndex =
+        self->m_preferredPhysicalDeviceIndex >= 0 &&
+                self->m_preferredPhysicalDeviceIndex <
+                    self->m_availablePhysicalDevices.size()
+            ? self->m_preferredPhysicalDeviceIndex
+            : editor::gpu::chooseVulkanDevice(self->m_availablePhysicalDeviceProperties);
+    if (preferredIndex < 0 ||
+        preferredIndex >= self->m_availablePhysicalDevices.size()) {
+        return {};
+    }
+    uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(
+        self->m_availablePhysicalDevices.at(preferredIndex),
+        nullptr,
+        &count,
+        nullptr);
+    std::vector<VkExtensionProperties> properties(count);
+    if (count > 0 &&
+        vkEnumerateDeviceExtensionProperties(
+            self->m_availablePhysicalDevices.at(preferredIndex),
+            nullptr,
+            &count,
+            properties.data()) != VK_SUCCESS) {
+        return {};
+    }
+    QVulkanInfoVector<QVulkanExtension> result;
+    for (const VkExtensionProperties& property : properties) {
+        result.push_back(
+            QVulkanExtension{QByteArray(property.extensionName),
+                             property.specVersion});
+    }
+    return result;
+}
+
+int DirectVulkanPreviewWindow::selectGraphicsPresentQueueFamily(
+    VkPhysicalDevice device)
+{
+    QVulkanInstance* instance = vulkanInstance();
+    if (!instance || device == VK_NULL_HANDLE) {
+        return -1;
+    }
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, nullptr);
+    if (familyCount == 0) {
+        return -1;
+    }
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        device, &familyCount, families.data());
+    for (uint32_t i = 0; i < familyCount; ++i) {
+        if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+            instance->supportsPresent(device, i, this)) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+QSize DirectVulkanPreviewWindow::swapchainPixelSizeForWindow() const
+{
+    const QSize logicalSize = size();
+    if (!logicalSize.isValid() || logicalSize.isEmpty()) {
+        return QSize();
+    }
+    const qreal dpr = qMax<qreal>(1.0, devicePixelRatio());
+    return QSize(qMax(1, qRound(static_cast<qreal>(logicalSize.width()) * dpr)),
+                 qMax(1, qRound(static_cast<qreal>(logicalSize.height()) * dpr)));
+}
+
+void DirectVulkanPreviewWindow::cleanupSwapchain()
+{
+    if (m_rendererInitialized && m_renderer) {
+        m_renderer->releaseResources();
+        m_rendererInitialized = false;
+    }
+    if (m_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(m_device);
+    }
+    for (VkFramebuffer framebuffer : m_swapchainFramebuffers) {
+        if (framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(m_device, framebuffer, nullptr);
+        }
+    }
+    m_swapchainFramebuffers.clear();
+    for (VkImageView imageView : m_swapchainImageViews) {
+        if (imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_device, imageView, nullptr);
+        }
+    }
+    m_swapchainImageViews.clear();
+    m_swapchainImages.clear();
+    if (m_defaultRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(m_device, m_defaultRenderPass, nullptr);
+        m_defaultRenderPass = VK_NULL_HANDLE;
+    }
+    if (m_swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+        m_swapchain = VK_NULL_HANDLE;
+    }
+    m_swapchainPixelSize = QSize();
+    m_colorFormat = VK_FORMAT_UNDEFINED;
+    m_depthStencilFormat = VK_FORMAT_UNDEFINED;
+    m_currentFramebuffer = VK_NULL_HANDLE;
+    m_currentCommandBuffer = VK_NULL_HANDLE;
+    m_currentSwapchainImageIndex = -1;
+    m_swapchainDirty = true;
+}
+
+void DirectVulkanPreviewWindow::cleanupDevice()
+{
+    cleanupSwapchain();
+    QVulkanInstance* instance = vulkanInstance();
+    if (instance && m_device != VK_NULL_HANDLE) {
+        instance->resetDeviceFunctions(m_device);
+    }
+    for (FrameResources& frame : m_frames) {
+        if (frame.imageAcquiredSemaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(m_device, frame.imageAcquiredSemaphore, nullptr);
+            frame.imageAcquiredSemaphore = VK_NULL_HANDLE;
+        }
+        if (frame.renderCompleteSemaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(m_device, frame.renderCompleteSemaphore, nullptr);
+            frame.renderCompleteSemaphore = VK_NULL_HANDLE;
+        }
+        if (frame.inFlightFence != VK_NULL_HANDLE) {
+            vkDestroyFence(m_device, frame.inFlightFence, nullptr);
+            frame.inFlightFence = VK_NULL_HANDLE;
+        }
+        if (frame.commandPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(m_device, frame.commandPool, nullptr);
+            frame.commandPool = VK_NULL_HANDLE;
+            frame.commandBuffer = VK_NULL_HANDLE;
+        }
+    }
+    m_frames.clear();
+    if (m_device != VK_NULL_HANDLE) {
+        vkDestroyDevice(m_device, nullptr);
+        m_device = VK_NULL_HANDLE;
+    }
+    m_graphicsQueue = VK_NULL_HANDLE;
+    m_graphicsQueueFamilyIndex = UINT32_MAX;
+    m_physicalDevice = VK_NULL_HANDLE;
+    m_hasPhysicalDeviceProperties = false;
+    m_frameSubmitted = false;
+    m_surface = VK_NULL_HANDLE;
+}
+
+bool DirectVulkanPreviewWindow::ensureVulkanReady()
+{
+    if (m_failureLatched) {
+        return false;
+    }
+    QVulkanInstance* instance = vulkanInstance();
+    if (!instance || !instance->isValid()) {
+        markFailure(QStringLiteral(
+            "Direct Vulkan preview requires a valid QVulkanInstance."));
+        return false;
+    }
+    if (!handle()) {
+        create();
+    }
+    if (m_surface == VK_NULL_HANDLE) {
+        m_surface = QVulkanInstance::surfaceForWindow(this);
+    }
+    if (m_surface == VK_NULL_HANDLE) {
+        return false;
+    }
+    if (m_device != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (m_availablePhysicalDevices.isEmpty()) {
+        refreshPhysicalDeviceList();
+    }
+    if (m_availablePhysicalDevices.isEmpty()) {
+        markFailure(QStringLiteral(
+            "No Vulkan physical devices are available for direct preview."));
+        return false;
+    }
+
+    QVector<int> candidateIndices;
+    if (m_preferredPhysicalDeviceIndex >= 0 &&
+        m_preferredPhysicalDeviceIndex < m_availablePhysicalDevices.size()) {
+        candidateIndices.push_back(m_preferredPhysicalDeviceIndex);
+    }
+    const int automaticIndex =
+        editor::gpu::chooseVulkanDevice(m_availablePhysicalDeviceProperties);
+    if (automaticIndex >= 0 && !candidateIndices.contains(automaticIndex)) {
+        candidateIndices.push_back(automaticIndex);
+    }
+    for (int i = 0; i < m_availablePhysicalDevices.size(); ++i) {
+        if (!candidateIndices.contains(i)) {
+            candidateIndices.push_back(i);
+        }
+    }
+
+    QByteArrayList enabledDeviceExtensions;
+    for (int candidateIndex : candidateIndices) {
+        if (candidateIndex < 0 ||
+            candidateIndex >= m_availablePhysicalDevices.size()) {
+            continue;
+        }
+        const VkPhysicalDevice candidateDevice =
+            m_availablePhysicalDevices.at(candidateIndex);
+        const int queueFamily =
+            selectGraphicsPresentQueueFamily(candidateDevice);
+        if (queueFamily < 0) {
+            continue;
+        }
+
+        uint32_t extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(candidateDevice,
+                                             nullptr,
+                                             &extensionCount,
+                                             nullptr);
+        std::vector<VkExtensionProperties> extensionProperties(extensionCount);
+        if (extensionCount > 0 &&
+            vkEnumerateDeviceExtensionProperties(candidateDevice,
+                                                 nullptr,
+                                                 &extensionCount,
+                                                 extensionProperties.data()) !=
+                VK_SUCCESS) {
+            continue;
+        }
+        auto hasExtension = [&extensionProperties](const QByteArray& name) {
+            return std::any_of(
+                extensionProperties.cbegin(),
+                extensionProperties.cend(),
+                [&name](const VkExtensionProperties& property) {
+                    return QByteArray(property.extensionName) == name;
+                });
+        };
+        if (!hasExtension(
+                QByteArrayLiteral(VK_KHR_SWAPCHAIN_EXTENSION_NAME))) {
+            continue;
+        }
+        enabledDeviceExtensions.clear();
+        enabledDeviceExtensions.push_back(
+            QByteArrayLiteral(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
+        for (const QByteArray& extension : m_requestedDeviceExtensions) {
+            if (extension != QByteArrayLiteral(VK_KHR_SWAPCHAIN_EXTENSION_NAME) &&
+                hasExtension(extension) &&
+                !enabledDeviceExtensions.contains(extension)) {
+                enabledDeviceExtensions.push_back(extension);
+            }
+        }
+
+        std::vector<const char*> extensionNames;
+        extensionNames.reserve(
+            static_cast<size_t>(enabledDeviceExtensions.size()));
+        for (const QByteArray& extension : enabledDeviceExtensions) {
+            extensionNames.push_back(extension.constData());
+        }
+
+        const float queuePriority = 1.0f;
+        VkDeviceQueueCreateInfo queueInfo{};
+        queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueInfo.queueFamilyIndex = static_cast<uint32_t>(queueFamily);
+        queueInfo.queueCount = 1;
+        queueInfo.pQueuePriorities = &queuePriority;
+
+        VkDeviceCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.queueCreateInfoCount = 1;
+        createInfo.pQueueCreateInfos = &queueInfo;
+        createInfo.enabledExtensionCount =
+            static_cast<uint32_t>(extensionNames.size());
+        createInfo.ppEnabledExtensionNames = extensionNames.data();
+
+        VkDevice device = VK_NULL_HANDLE;
+        if (vkCreateDevice(candidateDevice, &createInfo, nullptr, &device) !=
+            VK_SUCCESS) {
+            continue;
+        }
+
+        m_physicalDevice = candidateDevice;
+        m_physicalDeviceProperties =
+            m_availablePhysicalDeviceProperties.at(candidateIndex);
+        m_hasPhysicalDeviceProperties = true;
+        m_device = device;
+        m_graphicsQueueFamilyIndex = static_cast<uint32_t>(queueFamily);
+        vkGetDeviceQueue(
+            m_device, m_graphicsQueueFamilyIndex, 0, &m_graphicsQueue);
+        qInfo() << "[vulkan-preview] selected physical GPU" << candidateIndex
+                << m_physicalDeviceProperties.deviceName
+                << "preference=" << editor::gpu::preference();
+        break;
+    }
+
+    if (m_device == VK_NULL_HANDLE) {
+        markFailure(QStringLiteral(
+            "No Vulkan graphics/present queue supports the direct preview surface."));
+        return false;
+    }
+
+    constexpr int kFramesInFlight = 2;
+    m_frames.resize(kFramesInFlight);
+    for (FrameResources& frame : m_frames) {
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        poolInfo.queueFamilyIndex = m_graphicsQueueFamilyIndex;
+        if (vkCreateCommandPool(m_device, &poolInfo, nullptr, &frame.commandPool) !=
+            VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to create Vulkan command pool for direct preview."));
+            cleanupDevice();
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = frame.commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(
+                m_device, &allocInfo, &frame.commandBuffer) != VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to allocate Vulkan command buffer for direct preview."));
+            cleanupDevice();
+            return false;
+        }
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        if (vkCreateFence(m_device, &fenceInfo, nullptr, &frame.inFlightFence) !=
+            VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to create Vulkan fence for direct preview."));
+            cleanupDevice();
+            return false;
+        }
+
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(m_device,
+                              &semaphoreInfo,
+                              nullptr,
+                              &frame.imageAcquiredSemaphore) != VK_SUCCESS ||
+            vkCreateSemaphore(m_device,
+                              &semaphoreInfo,
+                              nullptr,
+                              &frame.renderCompleteSemaphore) != VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to create Vulkan semaphores for direct preview."));
+            cleanupDevice();
+            return false;
+        }
+    }
+
+    if (!m_renderer) {
+        m_renderer = new DirectVulkanPreviewRenderer(this, this);
+    }
+    m_currentFrameSlot = 0;
+    return true;
+}
+
+bool DirectVulkanPreviewWindow::ensureSwapchain()
+{
+    if (!ensureVulkanReady()) {
+        return false;
+    }
+    const QSize targetPixelSize = swapchainPixelSizeForWindow();
+    if (!targetPixelSize.isValid() || targetPixelSize.isEmpty()) {
+        return false;
+    }
+    if (!m_swapchainDirty && m_swapchain != VK_NULL_HANDLE &&
+        m_swapchainPixelSize == targetPixelSize) {
+        return true;
+    }
+
+    cleanupSwapchain();
+
+    VkSurfaceCapabilitiesKHR capabilities{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            m_physicalDevice, m_surface, &capabilities) != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to query Vulkan surface capabilities for direct preview."));
+        return false;
+    }
+
+    uint32_t formatCount = 0;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(
+            m_physicalDevice, m_surface, &formatCount, nullptr) != VK_SUCCESS ||
+        formatCount == 0) {
+        markFailure(QStringLiteral(
+            "No Vulkan surface formats are available for direct preview."));
+        return false;
+    }
+    std::vector<VkSurfaceFormatKHR> surfaceFormats(formatCount);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice,
+                                             m_surface,
+                                             &formatCount,
+                                             surfaceFormats.data()) !=
+        VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to enumerate Vulkan surface formats for direct preview."));
+        return false;
+    }
+
+    VkSurfaceFormatKHR surfaceFormat = surfaceFormats.front();
+    for (const VkSurfaceFormatKHR& candidate : surfaceFormats) {
+        if ((candidate.format == VK_FORMAT_B8G8R8A8_UNORM ||
+             candidate.format == VK_FORMAT_R8G8B8A8_UNORM) &&
+            candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            surfaceFormat = candidate;
+            break;
+        }
+    }
+
+    uint32_t presentModeCount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(
+        m_physicalDevice, m_surface, &presentModeCount, nullptr);
+    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+    if (presentModeCount > 0) {
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice,
+                                                  m_surface,
+                                                  &presentModeCount,
+                                                  presentModes.data());
+    }
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    for (VkPresentModeKHR candidate : presentModes) {
+        if (candidate == VK_PRESENT_MODE_MAILBOX_KHR) {
+            presentMode = candidate;
+            break;
+        }
+    }
+
+    VkExtent2D extent{};
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        extent = capabilities.currentExtent;
+    } else {
+        extent.width = static_cast<uint32_t>(qBound(
+            1,
+            targetPixelSize.width(),
+            static_cast<int>(capabilities.maxImageExtent.width)));
+        extent.height = static_cast<uint32_t>(qBound(
+            1,
+            targetPixelSize.height(),
+            static_cast<int>(capabilities.maxImageExtent.height)));
+    }
+
+    uint32_t imageCount = std::max<uint32_t>(2u, capabilities.minImageCount);
+    if (capabilities.maxImageCount > 0) {
+        imageCount = std::min(imageCount, capabilities.maxImageCount);
+    }
+
+    VkSwapchainCreateInfoKHR swapchainInfo{};
+    swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchainInfo.surface = m_surface;
+    swapchainInfo.minImageCount = imageCount;
+    swapchainInfo.imageFormat = surfaceFormat.format;
+    swapchainInfo.imageColorSpace = surfaceFormat.colorSpace;
+    swapchainInfo.imageExtent = extent;
+    swapchainInfo.imageArrayLayers = 1;
+    swapchainInfo.imageUsage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    swapchainInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapchainInfo.preTransform = capabilities.currentTransform;
+    swapchainInfo.compositeAlpha =
+        (capabilities.supportedCompositeAlpha &
+         VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+            ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+            : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    swapchainInfo.presentMode = presentMode;
+    swapchainInfo.clipped = VK_TRUE;
+    if (vkCreateSwapchainKHR(m_device, &swapchainInfo, nullptr, &m_swapchain) !=
+        VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to create Vulkan swapchain for direct preview."));
+        return false;
+    }
+
+    uint32_t swapchainImageCount = 0;
+    if (vkGetSwapchainImagesKHR(
+            m_device, m_swapchain, &swapchainImageCount, nullptr) != VK_SUCCESS ||
+        swapchainImageCount == 0) {
+        markFailure(QStringLiteral(
+            "Failed to query Vulkan swapchain images for direct preview."));
+        cleanupSwapchain();
+        return false;
+    }
+    m_swapchainImages.resize(swapchainImageCount);
+    if (vkGetSwapchainImagesKHR(m_device,
+                                m_swapchain,
+                                &swapchainImageCount,
+                                m_swapchainImages.data()) != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to load Vulkan swapchain images for direct preview."));
+        cleanupSwapchain();
+        return false;
+    }
+
+    m_colorFormat = surfaceFormat.format;
+    m_swapchainPixelSize = QSize(static_cast<int>(extent.width),
+                                 static_cast<int>(extent.height));
+    m_swapchainImageViews.resize(m_swapchainImages.size(), VK_NULL_HANDLE);
+    for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
+        VkImageViewCreateInfo imageViewInfo{};
+        imageViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        imageViewInfo.image = m_swapchainImages[i];
+        imageViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        imageViewInfo.format = m_colorFormat;
+        imageViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageViewInfo.subresourceRange.levelCount = 1;
+        imageViewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(m_device,
+                              &imageViewInfo,
+                              nullptr,
+                              &m_swapchainImageViews[i]) != VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to create Vulkan swapchain image view for direct preview."));
+            cleanupSwapchain();
+            return false;
+        }
+    }
+
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = m_colorFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+    if (vkCreateRenderPass(
+            m_device, &renderPassInfo, nullptr, &m_defaultRenderPass) !=
+        VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to create Vulkan render pass for direct preview."));
+        cleanupSwapchain();
+        return false;
+    }
+
+    m_swapchainFramebuffers.resize(m_swapchainImageViews.size(), VK_NULL_HANDLE);
+    for (size_t i = 0; i < m_swapchainImageViews.size(); ++i) {
+        VkImageView attachments[] = {m_swapchainImageViews[i]};
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = m_defaultRenderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = extent.width;
+        framebufferInfo.height = extent.height;
+        framebufferInfo.layers = 1;
+        if (vkCreateFramebuffer(m_device,
+                                &framebufferInfo,
+                                nullptr,
+                                &m_swapchainFramebuffers[i]) != VK_SUCCESS) {
+            markFailure(QStringLiteral(
+                "Failed to create Vulkan framebuffer for direct preview."));
+            cleanupSwapchain();
+            return false;
+        }
+    }
+
+    m_swapchainDirty = false;
+    if (m_renderer && !m_rendererInitialized) {
+        m_renderer->initResources();
+        m_rendererInitialized = !m_failureLatched;
+    }
+    return isValid();
+}
+
+void DirectVulkanPreviewWindow::markSwapchainDirty()
+{
+    m_swapchainDirty = true;
+}
+
+void DirectVulkanPreviewWindow::renderNow()
+{
+    if (m_frameInProgress || !isExposed()) {
+        return;
+    }
+    if (!ensureSwapchain()) {
+        return;
+    }
+    if (!m_renderer || m_frames.empty()) {
+        return;
+    }
+
+    FrameResources& frame =
+        m_frames[static_cast<size_t>(
+            m_currentFrameSlot % static_cast<int>(m_frames.size()))];
+    vkWaitForFences(m_device, 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(m_device, 1, &frame.inFlightFence);
+
+    VkResult acquireResult = vkAcquireNextImageKHR(
+        m_device,
+        m_swapchain,
+        UINT64_MAX,
+        frame.imageAcquiredSemaphore,
+        VK_NULL_HANDLE,
+        reinterpret_cast<uint32_t*>(&m_currentSwapchainImageIndex));
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR ||
+        acquireResult == VK_SUBOPTIMAL_KHR ||
+        acquireResult == VK_ERROR_SURFACE_LOST_KHR) {
+        markSwapchainDirty();
+        m_updateDirty = true;
+        return;
+    }
+    if (acquireResult != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to acquire a Vulkan swapchain image for direct preview."));
+        return;
+    }
+
+    vkResetCommandPool(m_device, frame.commandPool, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(frame.commandBuffer, &beginInfo) != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to begin Vulkan command buffer for direct preview."));
+        return;
+    }
+
+    m_currentFramebuffer =
+        m_swapchainFramebuffers[static_cast<size_t>(m_currentSwapchainImageIndex)];
+    m_currentCommandBuffer = frame.commandBuffer;
+    m_frameSubmitted = false;
+    m_renderer->startNextFrame();
+    if (!m_frameSubmitted && !m_failureLatched) {
+        markFailure(QStringLiteral(
+            "Direct preview renderer returned without presenting the current frame."));
+    }
+    m_currentCommandBuffer = VK_NULL_HANDLE;
+    m_currentFramebuffer = VK_NULL_HANDLE;
+    m_currentFrameSlot =
+        (m_currentFrameSlot + 1) % std::max(1, static_cast<int>(m_frames.size()));
+}
+
+void DirectVulkanPreviewWindow::frameReady()
+{
+    if (m_frameSubmitted ||
+        m_device == VK_NULL_HANDLE ||
+        m_currentCommandBuffer == VK_NULL_HANDLE ||
+        m_frames.empty()) {
+        return;
+    }
+    FrameResources& frame =
+        m_frames[static_cast<size_t>(
+            m_currentFrameSlot % static_cast<int>(m_frames.size()))];
+    if (vkEndCommandBuffer(m_currentCommandBuffer) != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to finalize Vulkan command buffer for direct preview."));
+        return;
+    }
+
+    VkPipelineStageFlags waitStage =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &frame.imageAcquiredSemaphore;
+    submitInfo.pWaitDstStageMask = &waitStage;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &m_currentCommandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &frame.renderCompleteSemaphore;
+    if (QVulkanInstance* instance = vulkanInstance()) {
+        instance->presentAboutToBeQueued(this);
+    }
+    if (vkQueueSubmit(
+            m_graphicsQueue, 1, &submitInfo, frame.inFlightFence) != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to submit a Vulkan frame for direct preview."));
+        return;
+    }
+
+    uint32_t imageIndex =
+        static_cast<uint32_t>(std::max(0, m_currentSwapchainImageIndex));
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &frame.renderCompleteSemaphore;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &m_swapchain;
+    presentInfo.pImageIndices = &imageIndex;
+    const VkResult presentResult =
+        vkQueuePresentKHR(m_graphicsQueue, &presentInfo);
+    if (QVulkanInstance* instance = vulkanInstance()) {
+        instance->presentQueued(this);
+    }
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+        presentResult == VK_SUBOPTIMAL_KHR ||
+        presentResult == VK_ERROR_SURFACE_LOST_KHR) {
+        markSwapchainDirty();
+        m_updateDirty = true;
+    } else if (presentResult != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to present a Vulkan frame for direct preview."));
+        return;
+    }
+    m_frameSubmitted = true;
+}
 
 void DirectVulkanPreviewRenderer::initResources()
 {
@@ -2351,6 +3324,9 @@ void DirectVulkanPreviewRenderer::clearGpuExportPreview()
 
 void DirectVulkanPreviewRenderer::startNextFrame()
 {
+    if (m_owner) {
+        m_owner->beginPreviewFrame();
+    }
     if (!m_owner || !m_window || !m_devFuncs) {
         if (m_owner && m_owner->stats()) {
             editor::accumulatePlaybackStageMetric(&m_owner->stats()->commandRecordingStageMetric,
@@ -2359,6 +3335,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           1,
                                           QStringLiteral("source_unavailable"),
                                           QStringLiteral("renderer_or_device_unavailable"));
+        }
+        // The native presenter requires exactly one frameReady() for every
+        // startNextFrame() invocation, including an unavailable renderer path.
+        // Failing to complete this callback permanently stalls preview
+        // presentation.
+        if (m_window) {
+            m_window->frameReady();
+        }
+        if (m_owner) {
+            m_owner->markPreviewUpdateDelivered();
         }
         return;
     }
@@ -3351,7 +4337,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           QStringLiteral("recorded"),
                                           QStringLiteral("audio_view_frame"));
         }
-        m_owner->markPresented();
+        m_owner->markPresentedSourceFrames(-1, -1);
+        m_owner->markPresented(state);
         m_window->frameReady();
         m_owner->markPreviewUpdateDelivered();
         if (audioWaitingForWaveform && !state->playing) {
@@ -3360,6 +4347,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         return;
     }
     beginRenderPass();
+    int64_t requestedSourceFrame = -1;
     int64_t presentedSourceFrame = -1;
     qint64 handoffAttemptCount = mediaOwnerHandoffAttemptCount;
     qint64 handoffSuccessCount = mediaOwnerHandoffSuccessCount;
@@ -3375,6 +4363,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             ? QStringLiteral("not_prepared")
             : QStringLiteral("disabled");
     }
+    QSet<QString> submittedClipIds;
+    QSet<QString> submittedCrossfadeClipIds;
     if (state) {
         VkViewport viewport{};
         viewport.x = 0.0f;
@@ -3436,6 +4426,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
             if (!status || !status->active || status->drawSuppressed) {
                 continue;
+            }
+            if (requestedSourceFrame < 0) {
+                requestedSourceFrame = status->requestedSourceFrame;
             }
             if (status->maskClipSource) {
                 const bool ownerMappingValid =
@@ -4002,6 +4995,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                  secondaryHandoffResult.descriptorSet,
                                                  crossfadePush,
                                                  secondaryFrameUniformOffset);
+                        submittedCrossfadeClipIds.insert(status->clipId);
                     }
                     if (maskReady && status->maskGradeEnabled &&
                         !status->maskForegroundLayerEnabled &&
@@ -4086,6 +5080,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         bidirectionalEdgeDraw.push,
                         bidirectionalEdgeDraw.frameUniformDynamicOffset);
                 }
+                submittedClipIds.insert(status->clipId);
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->explicitFailureDraws;
@@ -4140,8 +5135,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                selectionThickness);
             }
             activeClipGeometry.insert(clip.id, effectiveClipGeometry);
-            if (status && status->hasFrame && canDrawTexture && sampledFrameReady) {
-                presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
+            if (status && status->hasFrame && canDrawTexture && sampledFrameReady &&
+                status->presentedSourceFrame >= presentedSourceFrame) {
+                requestedSourceFrame = status->requestedSourceFrame;
+                presentedSourceFrame = status->presentedSourceFrame;
             }
         }
         for (const PendingMaskForegroundDraw& draw : std::as_const(pendingMaskForegroundDraws)) {
@@ -4373,8 +5370,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                       QStringLiteral("video_frame"));
     }
 
-    m_owner->markPresentedSourceFrame(presentedSourceFrame);
-    m_owner->markPresented();
+    m_owner->markPresentedSourceFrames(requestedSourceFrame, presentedSourceFrame);
+    m_owner->markPresented(
+        state, &submittedClipIds, &submittedCrossfadeClipIds);
     m_window->frameReady();
     m_owner->markPreviewUpdateDelivered();
 }
@@ -4409,16 +5407,14 @@ QWidget* createDirectVulkanPreviewWindowContainer(DirectVulkanPreviewWindow* win
 
 DirectVulkanPreviewWindow* createDirectVulkanPreviewWindow(
     PreviewInteractionState* state,
-    int64_t* presentedFrames,
-    int64_t* lastPresentedSourceFrame,
+    DirectVulkanPresentationTelemetry* presentationTelemetry,
     DirectVulkanPreviewStats* stats,
     bool* active,
     QString* failureReason,
     std::function<void(const QString&)> failureCallback)
 {
     return new DirectVulkanPreviewWindow(state,
-                                         presentedFrames,
-                                         lastPresentedSourceFrame,
+                                         presentationTelemetry,
                                          stats,
                                          active,
                                          failureReason,
@@ -4430,16 +5426,28 @@ void directVulkanPreviewWindowSetVulkanInstance(DirectVulkanPreviewWindow* windo
 {
     if (window) {
         window->setVulkanInstance(instance);
-        const auto devices = window->availablePhysicalDevices();
-        const QString preference = editor::gpu::preference();
+        QVector<VkPhysicalDeviceProperties> devices;
+        if (instance && instance->vkInstance() != VK_NULL_HANDLE) {
+            uint32_t deviceCount = 0;
+            if (vkEnumeratePhysicalDevices(
+                    instance->vkInstance(), &deviceCount, nullptr) == VK_SUCCESS &&
+                deviceCount > 0) {
+                std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
+                if (vkEnumeratePhysicalDevices(instance->vkInstance(),
+                                               &deviceCount,
+                                               physicalDevices.data()) == VK_SUCCESS) {
+                    devices.reserve(static_cast<qsizetype>(deviceCount));
+                    for (VkPhysicalDevice device : physicalDevices) {
+                        VkPhysicalDeviceProperties properties{};
+                        vkGetPhysicalDeviceProperties(device, &properties);
+                        devices.push_back(properties);
+                    }
+                }
+            }
+        }
         const int selectedIndex = editor::gpu::chooseVulkanDevice(devices);
         if (selectedIndex >= 0) {
-            window->setPhysicalDeviceIndex(selectedIndex);
-            qInfo() << "[vulkan-preview] selected physical GPU" << selectedIndex
-                    << devices[selectedIndex].deviceName << "preference=" << preference;
-        } else {
-            qWarning() << "[vulkan-preview] requested GPU class unavailable; using Qt default. preference="
-                       << preference;
+            window->setPreferredPhysicalDeviceIndex(selectedIndex);
         }
     }
 }
@@ -4509,6 +5517,14 @@ void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* w
 {
     if (window) {
         window->schedulePreviewUpdate();
+    }
+}
+
+void directVulkanPreviewWindowResetProfilingAnchors(
+    DirectVulkanPreviewWindow* window)
+{
+    if (window) {
+        window->resetProfilingAnchors();
     }
 }
 

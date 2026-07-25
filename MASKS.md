@@ -99,6 +99,14 @@ sidecar as unavailable, and resumes using the same association if the artifact
 returns. Reconciliation must never substitute a different sidecar merely because
 its name or coverage looks similar.
 
+An authenticated in-progress BiRefNet run is a narrow exception to whole-sidecar
+availability, not to completion. If `jcut_alpha_run.json` matches the validated
+v3 map's source identity, expected count, and digest, an already-persisted child
+may render the run's contiguous existing PNG prefix. Missing or future samples
+still fail closed. Discovery and the Masks UI continue to report generation as
+incomplete and must not materialize a new child until `jcut_alpha.json` confirms
+full coverage.
+
 ## Timeline hierarchy and compositing
 
 Each materialized sidecar is shown on its own compact generated child track
@@ -237,7 +245,12 @@ Legacy fields remain readable solely so old projects can migrate. They are not p
 Mask Matte children avoid redundant decoding by reusing their source parent's
 resolved frame. The parent timeline-to-source mapping, including render-sync
 markers, is evaluated once; preview and export apply the sidecar sample for that
-exact source frame. The handoff copies only media payload state. It then evaluates
+exact presented `FrameHandle`. For VFR media, the canonical sample identity is
+the frame's raw FFmpeg `best_effort_timestamp` in the authenticated source
+stream time base, not its rounded source-frame key. Decode-ordinal sidecars store
+that timestamp in `jcut_frame_index_map_v3`, so two presentations with the same
+rounded key remain independently addressable. Missing timestamps and ambiguous
+source-key-only lookups fail closed. The handoff copies only media payload state. It then evaluates
 and attaches the child's own grade, curve LUT, feathering, correction polygons,
 and effect state. Correction polygons erase the corresponding region from the
 matte itself in both preview and export; they never mutate the source parent's
@@ -256,6 +269,9 @@ The REST profile endpoint reports both owners and the effective grading values i
 ## Invariants
 
 - Source-parent and Mask Matte grades are independent.
+- Every child selects its matte from the exact presentation identity carried by
+  the parent's actual presented frame; rounded VFR source keys never select
+  ordinal sidecars.
 - Each materialized parent-sidecar association has a separate Mask Matte child and
   mask parameter set.
 - Parent timing, media mapping, render-sync markers, decoded frame, and transforms

@@ -17,7 +17,7 @@ import tempfile
 from typing import Any
 
 
-MAP_SCHEMA = "jcut_frame_index_map_v2"
+MAP_SCHEMA = "jcut_frame_index_map_v3"
 SOURCE_IDENTITY_SCHEMA = "jcut_source_content_identity_v1"
 SOURCE_VERSION_TOKEN_SCHEMA = "jcut_source_version_token_v1"
 IDENTITY_HASH_BYTES = 1024 * 1024
@@ -321,8 +321,11 @@ def inspect_frame_index_map(map_path: Path) -> dict[str, int] | None:
     mapped_frames = 0
     min_source_frame: int | None = None
     max_source_frame: int | None = None
+    min_source_presentation_timestamp: int | None = None
+    max_source_presentation_timestamp: int | None = None
     max_mask_frame = -1
     previous_source_frame = -1
+    previous_source_presentation_timestamp: int | None = None
     previous_mask_frame = -1
     try:
         with map_path.open("r", encoding="utf-8") as source:
@@ -331,17 +334,21 @@ def inspect_frame_index_map(map_path: Path) -> dict[str, int] | None:
                 if not stripped or stripped.startswith("#"):
                     continue
                 fields = stripped.split()
-                if len(fields) < 2:
+                if len(fields) != 3:
                     return None
                 try:
                     source_frame = int(fields[0])
-                    mask_frame = int(fields[1])
+                    source_presentation_timestamp = int(fields[1])
+                    mask_frame = int(fields[2])
                 except ValueError:
                     return None
                 if source_frame < 0 or mask_frame != mapped_frames:
                     return None
                 if mapped_frames > 0 and (
-                    source_frame < previous_source_frame or mask_frame < previous_mask_frame
+                    source_frame < previous_source_frame
+                    or source_presentation_timestamp
+                    <= previous_source_presentation_timestamp
+                    or mask_frame < previous_mask_frame
                 ):
                     return None
                 min_source_frame = (
@@ -350,33 +357,159 @@ def inspect_frame_index_map(map_path: Path) -> dict[str, int] | None:
                 max_source_frame = (
                     source_frame if max_source_frame is None else max(max_source_frame, source_frame)
                 )
+                min_source_presentation_timestamp = (
+                    source_presentation_timestamp
+                    if min_source_presentation_timestamp is None
+                    else min(
+                        min_source_presentation_timestamp,
+                        source_presentation_timestamp,
+                    )
+                )
+                max_source_presentation_timestamp = (
+                    source_presentation_timestamp
+                    if max_source_presentation_timestamp is None
+                    else max(
+                        max_source_presentation_timestamp,
+                        source_presentation_timestamp,
+                    )
+                )
                 max_mask_frame = max(max_mask_frame, mask_frame)
                 previous_source_frame = source_frame
+                previous_source_presentation_timestamp = (
+                    source_presentation_timestamp
+                )
                 previous_mask_frame = mask_frame
                 mapped_frames += 1
     except OSError:
         return None
-    if mapped_frames == 0 or min_source_frame is None or max_source_frame is None:
+    if (
+        mapped_frames == 0
+        or min_source_frame is None
+        or max_source_frame is None
+        or min_source_presentation_timestamp is None
+        or max_source_presentation_timestamp is None
+    ):
         return None
     return {
         "mapped_frame_count": mapped_frames,
         "min_source_frame": min_source_frame,
         "max_source_frame": max_source_frame,
+        "min_source_presentation_timestamp": min_source_presentation_timestamp,
+        "max_source_presentation_timestamp": max_source_presentation_timestamp,
         "max_mask_frame": max_mask_frame,
         "expected_output_frame_count": max_mask_frame + 1,
     }
 
 
-def _frame_index_pairs(map_path: Path):
+def _inspect_v2_frame_index_map(map_path: Path) -> dict[str, int] | None:
+    """Read the retired two-column format only for explicit map-only upgrades."""
+    mapped_frames = 0
+    min_source_frame: int | None = None
+    max_source_frame: int | None = None
+    previous_source_frame = -1
+    try:
+        with map_path.open("r", encoding="utf-8") as source:
+            for line in source:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                fields = stripped.split()
+                if len(fields) != 2:
+                    return None
+                try:
+                    source_frame = int(fields[0])
+                    mask_frame = int(fields[1])
+                except ValueError:
+                    return None
+                if (
+                    source_frame < 0
+                    or mask_frame != mapped_frames
+                    or (
+                        mapped_frames > 0
+                        and source_frame < previous_source_frame
+                    )
+                ):
+                    return None
+                min_source_frame = (
+                    source_frame
+                    if min_source_frame is None
+                    else min(min_source_frame, source_frame)
+                )
+                max_source_frame = (
+                    source_frame
+                    if max_source_frame is None
+                    else max(max_source_frame, source_frame)
+                )
+                previous_source_frame = source_frame
+                mapped_frames += 1
+    except OSError:
+        return None
+    if (
+        mapped_frames <= 0
+        or min_source_frame is None
+        or max_source_frame is None
+    ):
+        return None
+    return {
+        "mapped_frame_count": mapped_frames,
+        "min_source_frame": min_source_frame,
+        "max_source_frame": max_source_frame,
+        "max_mask_frame": mapped_frames - 1,
+        "expected_output_frame_count": mapped_frames,
+    }
+
+
+def _contiguous_mask_frame_count(sidecar_directory: Path) -> int | None:
+    indexed_paths: list[tuple[int, Path]] = []
+    for path in sidecar_directory.glob("frame_*.png"):
+        name = path.name
+        digits = name[6:-4]
+        if (
+            not name.startswith("frame_")
+            or not name.endswith(".png")
+            or len(digits) < 6
+            or not digits.isdigit()
+        ):
+            return None
+        one_based = int(digits)
+        zero_based = one_based - 1
+        if (
+            zero_based < 0
+            or name != f"frame_{one_based:06d}.png"
+            or not path.is_file()
+            or path.stat().st_size <= 0
+        ):
+            return None
+        indexed_paths.append((zero_based, path))
+    indexed_paths.sort(key=lambda entry: entry[0])
+    if not all(
+        zero_based == expected
+        for expected, (zero_based, _) in enumerate(indexed_paths)
+    ):
+        return None
+    return len(indexed_paths)
+
+
+def _exact_mask_frame_coverage(
+    sidecar_directory: Path, expected_frame_count: int
+) -> bool:
+    return (
+        expected_frame_count > 0
+        and _contiguous_mask_frame_count(sidecar_directory)
+        == expected_frame_count
+    )
+
+
+def _frame_index_entries(map_path: Path):
     with map_path.open("r", encoding="utf-8") as source:
         for line in source:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
             fields = stripped.split()
-            if len(fields) < 2:
+            if len(fields) != 3:
                 raise RuntimeError(f"Invalid frame map row in: {map_path}")
-            yield int(fields[0]), int(fields[1])
+            yield int(fields[0]), int(fields[1]), int(fields[2])
 
 
 def _frame_index_map_matches_source(input_path: Path, map_path: Path) -> bool:
@@ -390,8 +523,8 @@ def _frame_index_map_matches_source(input_path: Path, map_path: Path) -> bool:
         return all(
             existing == expected
             for existing, expected in zip_longest(
-                _frame_index_pairs(map_path),
-                _frame_index_pairs(expected_path),
+                _frame_index_entries(map_path),
+                _frame_index_entries(expected_path),
                 fillvalue=sentinel,
             )
         )
@@ -445,7 +578,8 @@ def validated_frame_index_map_metadata(
     if metadata.get("schema") != MAP_SCHEMA or metadata.get("status") != "ready":
         return None
     if (
-        metadata.get("frame_domain") != "source_timestamp_to_generated_ordinal"
+        metadata.get("frame_domain")
+        != "source_best_effort_timestamp_to_generated_ordinal"
         or metadata.get("map_file") != "jcut_frame_map.tsv"
     ):
         return None
@@ -503,7 +637,7 @@ def _base_metadata(
     return {
         "schema": MAP_SCHEMA,
         "status": status,
-        "frame_domain": "source_timestamp_to_generated_ordinal",
+        "frame_domain": "source_best_effort_timestamp_to_generated_ordinal",
         "source_identity": source_identity(input_path),
         "source_stream": stream,
         "source_frame_rate": source_fps,
@@ -604,11 +738,11 @@ def write_jcut_frame_index_map(
     map_path: Path,
     output_fps: float | None = None,
 ) -> None:
-    """Atomically map DecoderContext frame IDs to generated mask ordinals.
+    """Atomically map exact decoded presentation samples to mask ordinals.
 
     Timeline mask sidecars contain every presentation-order decoded frame.
     Downsampled mask artifacts are deliberately unsupported: TIME.md requires
-    an exact sidecar sample for the parent's presented source frame.
+    an exact sidecar sample for the parent's presented decoded identity.
     """
     if output_fps is not None:
         raise ValueError(
@@ -677,8 +811,11 @@ def write_jcut_frame_index_map(
     decoded_ordinal = 0
     min_source_frame: int | None = None
     max_source_frame: int | None = None
+    min_source_presentation_timestamp: int | None = None
+    max_source_presentation_timestamp: int | None = None
     max_mask_frame = -1
     previous_source_frame: int | None = None
+    previous_source_presentation_timestamp: int | None = None
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{map_path.name}.",
@@ -689,14 +826,17 @@ def write_jcut_frame_index_map(
             delete=False,
         ) as output:
             temporary_path = Path(output.name)
-            output.write("# source_frame\tmask_frame\n")
+            output.write(
+                "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+            )
             if probe.stdout is not None:
                 for line in probe.stdout:
                     value = line.strip().split(",", 1)[0]
                     if not value:
                         continue
                     try:
-                        timestamp = int(value) * time_base
+                        source_presentation_timestamp = int(value)
+                        timestamp = source_presentation_timestamp * time_base
                     except ValueError as error:
                         raise RuntimeError(
                             f"ffprobe returned an invalid frame PTS: {value!r}"
@@ -717,8 +857,22 @@ def write_jcut_frame_index_map(
                             "Decoded source-frame keys are not nondecreasing: "
                             f"{source_frame} follows {previous_source_frame}."
                         )
+                    if (
+                        previous_source_presentation_timestamp is not None
+                        and source_presentation_timestamp
+                        <= previous_source_presentation_timestamp
+                    ):
+                        raise RuntimeError(
+                            "Decoded best-effort timestamps are not strictly "
+                            "increasing: "
+                            f"{source_presentation_timestamp} follows "
+                            f"{previous_source_presentation_timestamp}."
+                        )
                     mask_frame = decoded_ordinal
-                    output.write(f"{source_frame}\t{mask_frame}\n")
+                    output.write(
+                        f"{source_frame}\t{source_presentation_timestamp}"
+                        f"\t{mask_frame}\n"
+                    )
                     min_source_frame = (
                         source_frame
                         if min_source_frame is None
@@ -729,15 +883,40 @@ def write_jcut_frame_index_map(
                         if max_source_frame is None
                         else max(max_source_frame, source_frame)
                     )
+                    min_source_presentation_timestamp = (
+                        source_presentation_timestamp
+                        if min_source_presentation_timestamp is None
+                        else min(
+                            min_source_presentation_timestamp,
+                            source_presentation_timestamp,
+                        )
+                    )
+                    max_source_presentation_timestamp = (
+                        source_presentation_timestamp
+                        if max_source_presentation_timestamp is None
+                        else max(
+                            max_source_presentation_timestamp,
+                            source_presentation_timestamp,
+                        )
+                    )
                     max_mask_frame = max(max_mask_frame, mask_frame)
                     previous_source_frame = source_frame
+                    previous_source_presentation_timestamp = (
+                        source_presentation_timestamp
+                    )
                     decoded_ordinal += 1
             output.flush()
             os.fsync(output.fileno())
         _, stderr = probe.communicate()
         if probe.returncode != 0:
             raise RuntimeError(f"ffprobe frame index map failed: {stderr.strip()}")
-        if decoded_ordinal == 0 or min_source_frame is None or max_source_frame is None:
+        if (
+            decoded_ordinal == 0
+            or min_source_frame is None
+            or max_source_frame is None
+            or min_source_presentation_timestamp is None
+            or max_source_presentation_timestamp is None
+        ):
             raise RuntimeError(f"ffprobe returned no decoded video frames for: {input_path}")
         os.replace(temporary_path, map_path)
         temporary_path = None
@@ -748,6 +927,10 @@ def write_jcut_frame_index_map(
                 "mapped_frame_count": decoded_ordinal,
                 "min_source_frame": min_source_frame,
                 "max_source_frame": max_source_frame,
+                "min_source_presentation_timestamp":
+                    min_source_presentation_timestamp,
+                "max_source_presentation_timestamp":
+                    max_source_presentation_timestamp,
                 "max_mask_frame": max_mask_frame,
                 "expected_output_frame_count": max_mask_frame + 1,
             }
@@ -762,17 +945,136 @@ def write_jcut_frame_index_map(
             temporary_path.unlink(missing_ok=True)
 
 
-def decoded_ordinal_for_source_frame(
-    input_path: Path, requested_source_frame: int
-) -> tuple[int, int]:
-    """Resolve DecoderContext's requested frame key to its first decoded ordinal."""
-    if requested_source_frame < 0:
-        raise ValueError("requested_source_frame must be non-negative")
-    source_fps = source_frame_rate_for_index_map(input_path)
-    stream = probe_source_stream(input_path)
-    time_base = _rational_float(stream.get("time_base"))
-    if source_fps is None or time_base is None:
-        raise RuntimeError(f"Unable to determine source timing for: {input_path}")
+def upgrade_completed_sidecar_frame_map(
+    input_path: Path,
+    map_path: Path,
+) -> dict[str, Any]:
+    """Regenerate only frame-map metadata for an authenticated ordinal sidecar.
+
+    Existing mask PNGs are retained. Completed artifacts require exact PNG
+    coverage; a suspended BiRefNet run requires a contiguous PNG prefix.
+    Publishing the v3 map happens before refreshing completion or resume
+    provenance, so an interruption leaves the sidecar fail-closed.
+    """
+    sidecar_directory = map_path.parent
+    completion_candidates = [
+        (sidecar_directory / "jcut_mask.json", "jcut_mask_sidecar_v1"),
+        (sidecar_directory / "jcut_alpha.json", "jcut_alpha_sidecar_v1"),
+    ]
+    completions = [
+        (path, schema)
+        for path, schema in completion_candidates
+        if path.is_file()
+    ]
+    if len(completions) > 1:
+        raise RuntimeError(
+            "A map-only upgrade requires at most one completion manifest."
+        )
+    completed_artifact = bool(completions)
+    if completed_artifact:
+        manifest_path, completion_schema = completions[0]
+        manifest = _read_json_object(manifest_path)
+        if (
+            manifest.get("schema") != completion_schema
+            or manifest.get("complete") is not True
+            or manifest.get("frame_domain") != "decode_ordinal"
+            or manifest.get("frame_index_map") != map_path.name
+            or manifest.get("frame_index_metadata")
+            != frame_index_map_metadata_path(map_path).name
+        ):
+            raise RuntimeError(
+                "The sidecar completion manifest is not a completed ordinal artifact."
+            )
+    else:
+        manifest_path = sidecar_directory / "jcut_alpha_run.json"
+        manifest = _read_json_object(manifest_path)
+        if manifest.get("schema") != "jcut_birefnet_alpha_run_v1":
+            raise RuntimeError(
+                "A map-only upgrade requires one completion manifest or "
+                "authenticated BiRefNet resume provenance."
+            )
+
+    old_metadata = _read_json_object(frame_index_map_metadata_path(map_path))
+    old_summary: dict[str, int] | None
+    if old_metadata.get("schema") == MAP_SCHEMA:
+        old_summary = inspect_frame_index_map(map_path)
+    elif (
+        old_metadata.get("schema") == "jcut_frame_index_map_v2"
+        and old_metadata.get("frame_domain")
+        == "source_timestamp_to_generated_ordinal"
+    ):
+        old_summary = _inspect_v2_frame_index_map(map_path)
+    else:
+        old_summary = None
+    if old_summary is None or old_metadata.get("status") != "ready":
+        raise RuntimeError("The existing frame map is not a verified upgrade source.")
+    if any(
+        int(old_metadata.get(key, -1)) != value
+        for key, value in old_summary.items()
+    ):
+        raise RuntimeError("The existing frame-map metadata does not match its map.")
+    old_map_hash = _file_sha256(map_path)
+    if (
+        str(old_metadata.get("map_sha256") or "").lower()
+        != old_map_hash.lower()
+        or str(manifest.get("frame_map_sha256") or "").lower()
+        != old_map_hash.lower()
+    ):
+        raise RuntimeError("The existing map digest is not authenticated end to end.")
+    expected_frame_count = int(manifest.get("expected_frame_count", -1))
+    prefix_frame_count = _contiguous_mask_frame_count(sidecar_directory)
+    if (
+        expected_frame_count != old_summary["mapped_frame_count"]
+        or expected_frame_count
+        != old_summary["expected_output_frame_count"]
+        or prefix_frame_count is None
+        or prefix_frame_count > expected_frame_count
+        or (
+            completed_artifact
+            and prefix_frame_count != expected_frame_count
+        )
+    ):
+        raise RuntimeError(
+            "Mask PNG coverage does not match the authenticated ordinal map."
+        )
+    current_identity = source_identity(
+        input_path, old_metadata.get("source_identity") or {}
+    )
+    if not _identity_matches(
+        old_metadata.get("source_identity") or {}, current_identity
+    ) or not _identity_matches(
+        manifest.get("source_identity") or {},
+        old_metadata.get("source_identity") or {},
+    ):
+        raise RuntimeError("The sidecar does not belong to this source.")
+
+    if old_metadata.get("schema") != MAP_SCHEMA:
+        write_jcut_frame_index_map(input_path, map_path)
+    upgraded = validated_frame_index_map_metadata(input_path, map_path)
+    if (
+        upgraded is None
+        or int(upgraded.get("mapped_frame_count", -1))
+        != expected_frame_count
+        or int(upgraded.get("expected_output_frame_count", -1))
+        != expected_frame_count
+        or _contiguous_mask_frame_count(sidecar_directory)
+        != prefix_frame_count
+    ):
+        raise RuntimeError(
+            "The regenerated exact-timestamp map does not match mask coverage."
+        )
+
+    refreshed_manifest = dict(manifest)
+    refreshed_manifest["frame_map_sha256"] = upgraded["map_sha256"]
+    refreshed_manifest["source_identity"] = upgraded["source_identity"]
+    _atomic_write_json(manifest_path, refreshed_manifest)
+    return upgraded
+
+
+def decoded_ordinal_for_source_presentation_timestamp(
+    input_path: Path, requested_source_presentation_timestamp: int
+) -> int:
+    """Resolve one exact best-effort timestamp to its decoded ordinal."""
     probe = subprocess.Popen(
         [
             "ffprobe", "-hide_banner", "-loglevel", "error", "-threads", "0",
@@ -785,42 +1087,47 @@ def decoded_ordinal_for_source_frame(
         text=True,
     )
     try:
-        previous_source_frame: int | None = None
+        previous_source_presentation_timestamp: int | None = None
         if probe.stdout is not None:
             for decoded_ordinal, line in enumerate(probe.stdout):
                 value = line.strip().split(",", 1)[0]
                 try:
-                    pts = int(value)
+                    source_presentation_timestamp = int(value)
                 except ValueError as error:
                     raise RuntimeError(
                         f"ffprobe returned an invalid frame PTS: {value!r}"
                     ) from error
-                source_frame = int((pts * time_base) * source_fps + 0.5)
-                if source_frame < 0:
-                    raise RuntimeError(
-                        "A decoded frame maps to a negative DecoderContext "
-                        f"source-frame key ({source_frame}); refusing an ambiguous lookup."
-                    )
                 if (
-                    previous_source_frame is not None
-                    and source_frame < previous_source_frame
+                    previous_source_presentation_timestamp is not None
+                    and source_presentation_timestamp
+                    <= previous_source_presentation_timestamp
                 ):
                     raise RuntimeError(
-                        "Decoded source-frame keys are not nondecreasing: "
-                        f"{source_frame} follows {previous_source_frame}."
+                        "Decoded best-effort timestamps are not strictly "
+                        "increasing."
                     )
-                previous_source_frame = source_frame
-                if source_frame >= requested_source_frame:
-                    # DecoderContext stops at the first presentation-order
-                    # frame whose rounded PTS key reaches the request. Equal
-                    # rounded keys are valid for VFR media, so first-match is
-                    # the deterministic contract shared with runtime lookup.
-                    return decoded_ordinal, source_frame
+                previous_source_presentation_timestamp = (
+                    source_presentation_timestamp
+                )
+                if (
+                    source_presentation_timestamp
+                    == requested_source_presentation_timestamp
+                ):
+                    return decoded_ordinal
+                if (
+                    source_presentation_timestamp
+                    > requested_source_presentation_timestamp
+                ):
+                    break
         _, stderr = probe.communicate()
         if probe.returncode != 0:
-            raise RuntimeError(f"ffprobe source-frame lookup failed: {stderr.strip()}")
+            raise RuntimeError(
+                "ffprobe presentation-timestamp lookup failed: "
+                f"{stderr.strip()}"
+            )
         raise RuntimeError(
-            f"Source frame {requested_source_frame} is outside the decoded video range."
+            "No decoded video frame has best-effort timestamp "
+            f"{requested_source_presentation_timestamp}."
         )
     finally:
         if probe.poll() is None:
@@ -845,20 +1152,40 @@ def main() -> int:
         help="Bind an already verified legacy map to this source without rebuilding it.",
     )
     parser.add_argument(
-        "--lookup-source-frame",
+        "--upgrade-sidecar-map",
+        action="store_true",
+        help=(
+            "Regenerate a completed or suspended BiRefNet v2 sidecar map as "
+            "exact-timestamp v3 without rerendering mask PNGs."
+        ),
+    )
+    parser.add_argument(
+        "--lookup-source-presentation-timestamp",
         type=int,
-        help="Print the 1-based decoded ordinal used for a DecoderContext source-frame key.",
+        help=(
+            "Print the 1-based decoded ordinal for one exact raw "
+            "best_effort_timestamp."
+        ),
     )
     args = parser.parse_args()
-    if args.lookup_source_frame is not None:
-        ordinal, _ = decoded_ordinal_for_source_frame(
-            args.input, args.lookup_source_frame
+    if args.lookup_source_presentation_timestamp is not None:
+        ordinal = decoded_ordinal_for_source_presentation_timestamp(
+            args.input, args.lookup_source_presentation_timestamp
         )
         print(ordinal + 1)
         return 0
     if args.output is None:
-        parser.error("--output is required unless --lookup-source-frame is used")
-    if args.adopt_existing:
+        parser.error(
+            "--output is required unless "
+            "--lookup-source-presentation-timestamp is used"
+        )
+    if args.upgrade_sidecar_map:
+        if args.adopt_existing:
+            parser.error(
+                "--upgrade-sidecar-map and --adopt-existing are mutually exclusive"
+            )
+        upgrade_completed_sidecar_frame_map(args.input, args.output)
+    elif args.adopt_existing:
         adopt_existing_frame_index_map(args.input, args.output, args.output_fps)
     else:
         write_jcut_frame_index_map(args.input, args.output, args.output_fps)

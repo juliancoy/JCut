@@ -135,11 +135,11 @@ public:
 
   int volumePercent() const;
 
-  void start(int64_t startFrame);
+  void startAtTimelineSample(int64_t startSample);
 
   void stop();
 
-  void seek(int64_t frame);
+  void seekToTimelineSample(int64_t sample);
 
   bool hasPlayableAudio() const;
 
@@ -161,6 +161,12 @@ public:
 
   bool playbackAudioBlocked() const;
 
+  bool pitchPreservingAudioBlocked() const;
+
+  qint64 timeStretchCacheMissCount() const;
+
+  int underrunCount() const;
+
   bool playbackAudioNeedsRetimingForFrame(int64_t startFrame) const;
 
   bool audioClockAvailable() const;
@@ -178,6 +184,21 @@ public:
   int64_t playbackClockSample() const;
 
   int64_t currentFrame() const;
+
+  // The Editor-owned monotonic transport remains authoritative while the
+  // output device is stopped for priming. Audio rebases once to this sample
+  // before attaching the device, so decode latency cannot become A/V offset.
+  void setAuthoritativeTransportSample(int64_t sample);
+
+  struct AudioFollowerSnapshot {
+    bool available = false;
+    int64_t feedbackSample = 0;
+    uint64_t outputStartRevision = 0;
+    int64_t outputStartTimelineSample = 0;
+    int64_t outputStartFeedbackSample = 0;
+  };
+
+  AudioFollowerSnapshot audioFollowerSnapshot() const;
 
   qreal timeStretchGenerationProgress() const;
 
@@ -495,6 +516,27 @@ private:
 
   void mixLoop();
 
+  static bool outputStreamCanStart(bool playing,
+                                   bool outputStartPending,
+                                   size_t availableSamples,
+                                   size_t primeTargetSamples);
+
+  static size_t outputPrimeTargetSamples(int periodFrames,
+                                         int64_t streamLatencyFrames);
+
+  static bool outputPrimeCapacitySufficient(int periodFrames,
+                                            int64_t streamLatencyFrames);
+
+  static bool outputPrimeNeedsRebase(int64_t queuedTimelineSample,
+                                     int64_t authoritativeTimelineSample,
+                                     int64_t deadbandSamples);
+
+  bool rebasePendingOutputToAuthoritativeLocked();
+
+  void startOutputStreamIfPrimed();
+
+  void pauseOutputStreamForRefillLocked();
+
   // --- Member variables ---
 
   mutable std::mutex m_stateMutex;
@@ -537,6 +579,20 @@ private:
   bool m_initialized = false;
   std::atomic<bool> m_running{false};
   std::atomic<bool> m_playing{false};
+  std::atomic<bool> m_outputStartPending{false};
+  std::atomic<size_t> m_outputPrimeTargetSamples{
+      static_cast<size_t>(m_mixLowWaterSamples)};
+  std::atomic<bool> m_outputPrimeCapacitySufficient{true};
+  std::atomic<int64_t> m_outputStreamLatencyFramesAtOpen{0};
+  std::atomic<int64_t> m_authoritativeTransportSample{0};
+  std::atomic<uint64_t> m_outputStartRevision{0};
+  std::atomic<int64_t> m_lastOutputStartTimelineSample{0};
+  std::atomic<int64_t> m_lastOutputStartFeedbackSample{0};
+  std::atomic<qint64> m_outputPrimeStartedMs{0};
+  std::atomic<qint64> m_lastOutputPrimeDurationMs{0};
+  std::atomic<qint64> m_outputPrimeRebaseCount{0};
+  std::atomic<int64_t> m_lastOutputPrimeRebaseLagSamples{0};
+  bool m_outputPrimeCanRebase = false; // guarded by m_stateMutex
   bool m_backgroundDecodeSuppressed = false;
   bool m_muted = false;
   qreal m_volume = 0.8;
@@ -639,6 +695,8 @@ private:
   static constexpr int64_t kPlaybackWarmupFrames =
       static_cast<int64_t>(m_sampleRate) * 2;
   static constexpr int m_mixLowWaterSamples = 8192 * m_channelCount;
+  static constexpr int64_t kOutputPrimeRebaseDeadbandSamples =
+      m_sampleRate / 200; // 5 ms
   static constexpr int m_defaultFadeSamples = 250;
   static constexpr int kShutdownFadeFrames = 1024;
   static constexpr qint64 kAudioInitBackoffMs = 10000;

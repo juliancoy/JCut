@@ -454,8 +454,7 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
 
     m_window = createDirectVulkanPreviewWindow(
         m_state,
-        &m_presentedFrames,
-        &m_lastPresentedSourceFrame,
+        &m_presentationTelemetry,
         &m_stats,
         &m_active,
         &m_failureReason,
@@ -646,14 +645,29 @@ bool DirectVulkanPreviewPresenter::updatePending() const
     return directVulkanPreviewWindowUpdatePending(m_window);
 }
 
-int64_t DirectVulkanPreviewPresenter::presentedFrames() const
+PreviewSurface::PresentationTelemetrySnapshot
+DirectVulkanPreviewPresenter::presentationTelemetrySnapshot() const
 {
-    return m_presentedFrames;
+    return PreviewSurface::PresentationTelemetrySnapshot{
+        m_presentationTelemetry.presentedFrames.load(std::memory_order_relaxed),
+        m_presentationTelemetry.uniquePresentationMisses.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewUpdateRequests.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewUpdateEventsDelivered.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewUpdatesDelivered.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.activeRequestedSourceFrame.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.activePresentedSourceFrame.load(
+            std::memory_order_relaxed)};
 }
 
 int64_t DirectVulkanPreviewPresenter::lastPresentedSourceFrame() const
 {
-    return m_lastPresentedSourceFrame;
+    return m_presentationTelemetry.activePresentedSourceFrame.load(
+        std::memory_order_relaxed);
 }
 
 QString DirectVulkanPreviewPresenter::failureReason() const
@@ -885,6 +899,8 @@ void DirectVulkanPreviewPresenter::updateAudioOverlay()
 
 QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
 {
+    const PreviewSurface::PresentationTelemetrySnapshot presentationTelemetry =
+        presentationTelemetrySnapshot();
     auto rectToJson = [](const QRectF& rect) {
         return QJsonObject{
             {QStringLiteral("x"), rect.x()},
@@ -1024,6 +1040,15 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                 {QStringLiteral("decode_path"), status.decodePath},
                 {QStringLiteral("requested_source_frame"), static_cast<double>(status.requestedSourceFrame)},
                 {QStringLiteral("presented_source_frame"), static_cast<double>(status.presentedSourceFrame)},
+                {QStringLiteral("presented_source_video_stream_best_effort_timestamp"),
+                 static_cast<qint64>(status.frame.sourcePresentationTimestamp())},
+                {QStringLiteral("presented_source_video_stream_best_effort_timestamp_available"),
+                 status.frame.hasSourcePresentationTimestamp()},
+                {QStringLiteral("frame_crossfade_presented_source_video_stream_best_effort_timestamp"),
+                 static_cast<qint64>(
+                     status.frameCrossfadeFrame.sourcePresentationTimestamp())},
+                {QStringLiteral("frame_crossfade_presented_source_video_stream_best_effort_timestamp_available"),
+                 status.frameCrossfadeFrame.hasSourcePresentationTimestamp()},
                 {QStringLiteral("active"), status.active},
                 {QStringLiteral("has_frame"), status.hasFrame},
                 {QStringLiteral("exact"), status.exact},
@@ -1191,9 +1216,15 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                    .arg(m_stats.lastFittedRect.width())
                    .arg(m_stats.lastFittedRect.height())
              : QString()},
-        {QStringLiteral("presented_frames"), static_cast<double>(m_presentedFrames)},
-        {QStringLiteral("preview_update_requests"), static_cast<double>(m_stats.previewUpdateRequests)},
-        {QStringLiteral("preview_updates_delivered"), static_cast<double>(m_stats.previewUpdatesDelivered)},
+        {QStringLiteral("presented_frames"), static_cast<double>(presentationTelemetry.presentedFrames)},
+        {QStringLiteral("preview_update_requests"), static_cast<double>(presentationTelemetry.previewUpdateRequests)},
+        {QStringLiteral("preview_update_events_delivered"),
+         static_cast<double>(presentationTelemetry.previewUpdateEventsDelivered)},
+        {QStringLiteral("preview_updates_delivered"), static_cast<double>(presentationTelemetry.previewUpdatesDelivered)},
+        {QStringLiteral("preview_updates_deferred_not_exposed"),
+         static_cast<double>(m_stats.previewUpdatesDeferredWhileNotExposed)},
+        {QStringLiteral("preview_updates_discarded_not_exposed"),
+         static_cast<double>(m_stats.previewUpdatesDiscardedWhileNotExposed)},
         {QStringLiteral("stale_preview_update_recoveries"),
          static_cast<double>(m_stats.stalePreviewUpdateRecoveries)},
         {QStringLiteral("preview_surface_restarts"),
@@ -1203,6 +1234,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("max_preview_update_latency_ms"), m_stats.maxPreviewUpdateLatencyMs},
         {QStringLiteral("last_present_interval_ms"), m_stats.lastPresentIntervalMs},
         {QStringLiteral("max_present_interval_ms"), m_stats.maxPresentIntervalMs},
+        {QStringLiteral("unique_presentation_misses"),
+         static_cast<double>(presentationTelemetry.uniquePresentationMisses)},
         {QStringLiteral("handoff_attempts"), static_cast<double>(m_stats.handoffAttempts)},
         {QStringLiteral("handoff_successes"), static_cast<double>(m_stats.handoffSuccesses)},
         {QStringLiteral("handoff_failures"), static_cast<double>(m_stats.handoffFailures)},
@@ -1260,6 +1293,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
 
 QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
 {
+    const PreviewSurface::PresentationTelemetrySnapshot presentationTelemetry =
+        presentationTelemetrySnapshot();
     int activeStatuses = 0;
     int readyStatuses = 0;
     int exactStatuses = 0;
@@ -1331,9 +1366,15 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("missing_reason"), missingReason},
         {QStringLiteral("timeline_texture_draw_pipeline"), m_active && m_window != nullptr},
         {QStringLiteral("vulkan_curve_lut_applied"), m_stats.lastCurveLutApplied},
-        {QStringLiteral("presented_frames"), static_cast<double>(m_presentedFrames)},
-        {QStringLiteral("preview_update_requests"), static_cast<double>(m_stats.previewUpdateRequests)},
-        {QStringLiteral("preview_updates_delivered"), static_cast<double>(m_stats.previewUpdatesDelivered)},
+        {QStringLiteral("presented_frames"), static_cast<double>(presentationTelemetry.presentedFrames)},
+        {QStringLiteral("preview_update_requests"), static_cast<double>(presentationTelemetry.previewUpdateRequests)},
+        {QStringLiteral("preview_update_events_delivered"),
+         static_cast<double>(presentationTelemetry.previewUpdateEventsDelivered)},
+        {QStringLiteral("preview_updates_delivered"), static_cast<double>(presentationTelemetry.previewUpdatesDelivered)},
+        {QStringLiteral("preview_updates_deferred_not_exposed"),
+         static_cast<double>(m_stats.previewUpdatesDeferredWhileNotExposed)},
+        {QStringLiteral("preview_updates_discarded_not_exposed"),
+         static_cast<double>(m_stats.previewUpdatesDiscardedWhileNotExposed)},
         {QStringLiteral("stale_preview_update_recoveries"),
          static_cast<double>(m_stats.stalePreviewUpdateRecoveries)},
         {QStringLiteral("preview_surface_restarts"),
@@ -1343,6 +1384,8 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("max_preview_update_latency_ms"), m_stats.maxPreviewUpdateLatencyMs},
         {QStringLiteral("last_present_interval_ms"), m_stats.lastPresentIntervalMs},
         {QStringLiteral("max_present_interval_ms"), m_stats.maxPresentIntervalMs},
+        {QStringLiteral("unique_presentation_misses"),
+         static_cast<double>(presentationTelemetry.uniquePresentationMisses)},
         {QStringLiteral("handoff_attempts"), static_cast<double>(m_stats.handoffAttempts)},
         {QStringLiteral("handoff_successes"), static_cast<double>(m_stats.handoffSuccesses)},
         {QStringLiteral("handoff_failures"), static_cast<double>(m_stats.handoffFailures)},
@@ -1395,8 +1438,21 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
 
 void DirectVulkanPreviewPresenter::resetProfilingStats()
 {
-    m_presentedFrames = 0;
+    m_presentationTelemetry.presentedFrames.store(0, std::memory_order_relaxed);
+    m_presentationTelemetry.uniquePresentationMisses.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.previewUpdateRequests.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.previewUpdateEventsDelivered.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.previewUpdatesDelivered.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.activeRequestedSourceFrame.store(
+        -1, std::memory_order_relaxed);
+    m_presentationTelemetry.activePresentedSourceFrame.store(
+        -1, std::memory_order_relaxed);
     m_stats = DirectVulkanPreviewStats{};
+    directVulkanPreviewWindowResetProfilingAnchors(m_window);
 }
 
 void DirectVulkanPreviewPresenter::setGpuExportPreviewFrame(

@@ -47,9 +47,15 @@ QString writableUserCacheDir()
 
 QStringList candidateSidecarPaths(const QString& sourcePath, int speedKey)
 {
+    if (speedKey <= 1000) {
+        return {};
+    }
     const QString mediaPath = editor::audio::pathFromSourceKey(sourcePath);
+    if (mediaPath.trimmed().isEmpty()) {
+        return {};
+    }
     const QFileInfo info(mediaPath);
-    if (!info.exists() || !info.isFile() || speedKey <= 1000) {
+    if (!info.exists() || !info.isFile()) {
         return {};
     }
     const QString sourceIdentity =

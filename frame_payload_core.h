@@ -4,12 +4,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
 struct AVFrame;
 
 namespace jcut::core {
+
+// Raw AVFrame::best_effort_timestamp in the source video stream's time base.
+// The source path/content identity supplies the stream context, so no rescaling
+// is needed to use this as the exact presentation-sample identity.
+inline constexpr std::int64_t kUnknownSourcePresentationTimestamp =
+    std::numeric_limits<std::int64_t>::min();
 
 // Qt-free storage and accounting for a decoded frame. UI/render adapters may
 // attach framework-specific CPU or GPU objects as opaque payloads while this
@@ -28,7 +35,9 @@ public:
 
     void setIdentity(std::int64_t frameNumber,
                      std::string sourcePath,
-                     std::int64_t decodeTimestampMs);
+                     std::int64_t decodeTimestampMs,
+                     std::int64_t sourcePresentationTimestamp =
+                         kUnknownSourcePresentationTimestamp);
     void setSize(SizeI size);
     void setCpuPayload(OpaqueCpuPayload payload, std::size_t byteCount);
 
@@ -49,6 +58,8 @@ public:
     [[nodiscard]] std::int64_t frameNumber() const;
     [[nodiscard]] const std::string& sourcePath() const;
     [[nodiscard]] std::int64_t decodeTimestampMs() const;
+    [[nodiscard]] std::int64_t sourcePresentationTimestamp() const;
+    [[nodiscard]] bool hasSourcePresentationTimestamp() const;
     [[nodiscard]] SizeI size() const;
     [[nodiscard]] RectF validTextureRectNormalized() const;
 
@@ -88,6 +99,8 @@ private:
     SizeI m_size;
     RectF m_validTextureRectNormalized{0.0, 0.0, 1.0, 1.0};
     std::int64_t m_decodeTimestampMs = 0;
+    std::int64_t m_sourcePresentationTimestamp =
+        kUnknownSourcePresentationTimestamp;
 };
 
 } // namespace jcut::core

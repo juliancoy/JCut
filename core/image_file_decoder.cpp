@@ -11,10 +11,15 @@
 
 namespace jcut::core {
 
-ImageBuffer decodeImageFileRgba(const std::string& path,
-                                std::string* errorOut)
+namespace {
+
+ImageBuffer decodeImageFile(const std::string& path,
+                            int requestedChannels,
+                            PixelFormat format,
+                            std::string* errorOut)
 {
     ImageBuffer result;
+    result.format = format;
     if (path.empty()) {
         if (errorOut) {
             *errorOut = "image path is empty";
@@ -26,7 +31,11 @@ ImageBuffer decodeImageFileRgba(const std::string& path,
     int height = 0;
     int sourceChannels = 0;
     stbi_uc* pixels =
-        stbi_load(path.c_str(), &width, &height, &sourceChannels, STBI_rgb_alpha);
+        stbi_load(path.c_str(),
+                  &width,
+                  &height,
+                  &sourceChannels,
+                  requestedChannels);
     if (!pixels) {
         if (errorOut) {
             const char* reason = stbi_failure_reason();
@@ -40,7 +49,8 @@ ImageBuffer decodeImageFileRgba(const std::string& path,
         width > 0 && height > 0 &&
         width <= kMaximumDimension && height <= kMaximumDimension;
     const std::size_t stride = dimensionsValid
-        ? static_cast<std::size_t>(width) * 4u
+        ? static_cast<std::size_t>(width) *
+              static_cast<std::size_t>(requestedChannels)
         : 0u;
     const bool sizeValid =
         dimensionsValid &&
@@ -62,6 +72,22 @@ ImageBuffer decodeImageFileRgba(const std::string& path,
     std::memcpy(result.bytes.data(), pixels, byteCount);
     stbi_image_free(pixels);
     return result;
+}
+
+} // namespace
+
+ImageBuffer decodeImageFileRgba(const std::string& path,
+                                std::string* errorOut)
+{
+    return decodeImageFile(
+        path, STBI_rgb_alpha, PixelFormat::Rgba8, errorOut);
+}
+
+ImageBuffer decodeImageFileGray(const std::string& path,
+                                std::string* errorOut)
+{
+    return decodeImageFile(
+        path, STBI_grey, PixelFormat::Gray8, errorOut);
 }
 
 } // namespace jcut::core

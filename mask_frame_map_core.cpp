@@ -9,6 +9,8 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <chrono>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -31,6 +33,7 @@ constexpr std::size_t kSourceHashChunkBytes = 4 * 1024 * 1024;
 constexpr std::string_view kSourceIdentitySchema =
     "jcut_source_content_identity_v1";
 constexpr std::size_t kMaxCachedSidecars = 16;
+constexpr auto kFilesystemValidationInterval = std::chrono::seconds(1);
 
 struct FileVersion {
     bool exists = false;
@@ -82,12 +85,19 @@ FileVersion fileVersion(const std::filesystem::path& path)
     return result;
 }
 
+bool regularNonemptyFile(const std::filesystem::path& path)
+{
+    const FileVersion version = fileVersion(path);
+    return version.exists && version.type == S_IFREG && version.size > 0;
+}
+
 struct CacheFingerprint {
     FileVersion directory;
     FileVersion map;
     FileVersion metadata;
     FileVersion maskCompletion;
     FileVersion alphaCompletion;
+    FileVersion alphaRun;
     FileVersion source;
 
     bool stableFilesMatch(const CacheFingerprint& other) const
@@ -96,6 +106,7 @@ struct CacheFingerprint {
             metadata == other.metadata &&
             maskCompletion == other.maskCompletion &&
             alphaCompletion == other.alphaCompletion &&
+            alphaRun == other.alphaRun &&
             source == other.source;
     }
 };
@@ -109,6 +120,7 @@ CacheFingerprint cacheFingerprint(const std::filesystem::path& directory,
         fileVersion(directory / "jcut_frame_map.json"),
         fileVersion(directory / "jcut_mask.json"),
         fileVersion(directory / "jcut_alpha.json"),
+        fileVersion(directory / "jcut_alpha_run.json"),
         fileVersion(sourceMediaPath),
     };
 }
@@ -156,6 +168,7 @@ CacheKey cacheKey(const std::filesystem::path& directory,
 struct CacheEntry {
     CacheFingerprint fingerprint;
     std::shared_ptr<const MaskFrameMapCore> map;
+    std::chrono::steady_clock::time_point nextValidation{};
     bool directoryVersionRelevant = false;
     bool loading = false;
     std::uint64_t lastAccess = 0;
@@ -457,7 +470,7 @@ bool sidecarUsesOrdinals(const std::filesystem::path& directory)
     const Json generator = generatorMetadata(directory);
     const Json frameMap = readJson(directory / "jcut_frame_map.json");
     if (std::filesystem::is_regular_file(directory / "jcut_frame_map.tsv") ||
-        stringValue(frameMap, "schema") == "jcut_frame_index_map_v2") return true;
+        stringValue(frameMap, "schema") == "jcut_frame_index_map_v3") return true;
     const std::string domain = lower(stringValue(generator, "frame_domain"));
     if (!domain.empty()) return domain == "ordinal" || domain.ends_with("_ordinal");
     const std::string material = directory.filename().string() + " " +
@@ -467,26 +480,60 @@ bool sidecarUsesOrdinals(const std::filesystem::path& directory)
         containsInsensitive(material, "birefnet");
 }
 
-bool exactFrameCoverage(const std::filesystem::path& directory, std::int64_t lastMaskFrame)
+std::optional<std::int64_t> contiguousFramePrefixCount(
+    const std::filesystem::path& directory,
+    std::int64_t lastMaskFrame)
 {
-    if (lastMaskFrame < 0 || lastMaskFrame >= std::numeric_limits<int>::max()) return false;
+    if (lastMaskFrame < 0 ||
+        lastMaskFrame >= std::numeric_limits<int>::max()) {
+        return std::nullopt;
+    }
     std::vector<bool> seen(static_cast<std::size_t>(lastMaskFrame + 1), false);
     std::int64_t count = 0;
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
-        if (error) return false;
+        if (error) return std::nullopt;
         const std::string name = entry.path().filename().string();
         if (!name.starts_with("frame_") || !name.ends_with(".png")) continue;
-        if (entry.is_symlink(error) || !entry.is_regular_file(error) || entry.file_size(error) == 0) return false;
-        if (name.size() != 16) return false;
-        const std::string digits = name.substr(6, 6);
-        if (!std::all_of(digits.begin(), digits.end(), ::isdigit)) return false;
-        const std::int64_t frame = std::stoll(digits) - 1;
-        if (frame < 0 || frame > lastMaskFrame || seen[static_cast<std::size_t>(frame)]) return false;
+        if (entry.is_symlink(error) || !entry.is_regular_file(error) ||
+            entry.file_size(error) == 0) {
+            return std::nullopt;
+        }
+        const std::string digits = name.substr(6, name.size() - 10);
+        if (digits.size() < 6 ||
+            !std::all_of(
+                digits.begin(), digits.end(),
+                [](unsigned char character) {
+                    return std::isdigit(character) != 0;
+                })) {
+            return std::nullopt;
+        }
+        std::int64_t oneBasedFrame = -1;
+        const auto parsed = std::from_chars(
+            digits.data(), digits.data() + digits.size(), oneBasedFrame);
+        if (parsed.ec != std::errc{} ||
+            parsed.ptr != digits.data() + digits.size()) {
+            return std::nullopt;
+        }
+        std::ostringstream canonicalName;
+        canonicalName << "frame_" << std::setw(6) << std::setfill('0')
+                      << oneBasedFrame << ".png";
+        if (canonicalName.str() != name) return std::nullopt;
+        const std::int64_t frame = oneBasedFrame - 1;
+        if (frame < 0 || frame > lastMaskFrame ||
+            seen[static_cast<std::size_t>(frame)]) {
+            return std::nullopt;
+        }
         seen[static_cast<std::size_t>(frame)] = true;
         ++count;
     }
-    return !error && count == lastMaskFrame + 1;
+    if (error) return std::nullopt;
+    for (std::int64_t frame = 0; frame < count; ++frame) {
+        if (!seen[static_cast<std::size_t>(frame)]) {
+            return std::nullopt;
+        }
+    }
+    return count;
 }
 
 bool completionMatches(const std::filesystem::path& directory,
@@ -514,6 +561,25 @@ bool completionMatches(const std::filesystem::path& directory,
         mapMetadata.value("source_identity", Json::object()));
 }
 
+bool authenticatedPartialRunMatches(
+    const std::filesystem::path& directory,
+    const Json& mapMetadata,
+    std::int64_t lastMaskFrame)
+{
+    if (std::filesystem::is_regular_file(directory / "jcut_alpha.json")) {
+        return false;
+    }
+    const Json run = readJson(directory / "jcut_alpha_run.json");
+    const std::string mapHash = stringValue(run, "frame_map_sha256");
+    return stringValue(run, "schema") == "jcut_birefnet_alpha_run_v1" &&
+        integerValue(run, "expected_frame_count") == lastMaskFrame + 1 &&
+        isSha256(mapHash) &&
+        lower(mapHash) == lower(stringValue(mapMetadata, "map_sha256")) &&
+        identityObjectsMatch(
+            run.value("source_identity", Json::object()),
+            mapMetadata.value("source_identity", Json::object()));
+}
+
 } // namespace
 
 LoadedMaskFrameMap loadMaskFrameMapCoreUncached(
@@ -531,6 +597,8 @@ LoadedMaskFrameMap loadMaskFrameMapCoreUncached(
     }
     std::ifstream input(mapPath);
     std::int64_t previousSource = -1;
+    std::int64_t previousSourcePresentationTimestamp =
+        jcut::core::kUnknownSourcePresentationTimestamp;
     std::int64_t previousMask = -1;
     std::string line;
     while (std::getline(input, line)) {
@@ -538,25 +606,47 @@ LoadedMaskFrameMap loadMaskFrameMapCoreUncached(
         if (first == std::string::npos || line[first] == '#') continue;
         std::istringstream row(line);
         std::int64_t source = -1;
+        std::int64_t sourcePresentationTimestamp =
+            jcut::core::kUnknownSourcePresentationTimestamp;
         std::int64_t mask = -1;
         std::string extra;
-        if (!(row >> source >> mask) || source < 0 || mask < 0 ||
+        if (!(row >> source >> sourcePresentationTimestamp >> mask) ||
+            (row >> extra) ||
+            source < 0 ||
+            sourcePresentationTimestamp ==
+                jcut::core::kUnknownSourcePresentationTimestamp ||
+            mask < 0 ||
             mask != result.mappedFrameCount ||
             (result.mappedFrameCount > 0 &&
-             (source < previousSource || mask < previousMask))) {
-            result.sorted.clear();
+             (source < previousSource ||
+              sourcePresentationTimestamp <=
+                  previousSourcePresentationTimestamp ||
+              mask < previousMask))) {
+            result.entries.clear();
             result.error = "invalid mask frame map";
             return loaded;
         }
-        result.sorted.emplace_back(source, mask);
+        result.entries.push_back(MaskFrameMapEntryCore{
+            source,
+            sourcePresentationTimestamp,
+            mask});
         if (result.firstSourceFrame < 0) result.firstSourceFrame = source;
+        if (result.firstSourcePresentationTimestamp ==
+            jcut::core::kUnknownSourcePresentationTimestamp) {
+            result.firstSourcePresentationTimestamp =
+                sourcePresentationTimestamp;
+        }
         result.lastSourceFrame = source;
+        result.lastSourcePresentationTimestamp =
+            sourcePresentationTimestamp;
         result.lastMaskFrame = mask;
         previousSource = source;
+        previousSourcePresentationTimestamp =
+            sourcePresentationTimestamp;
         previousMask = mask;
         ++result.mappedFrameCount;
     }
-    if (result.sorted.empty()) {
+    if (result.entries.empty()) {
         result.error = "empty mask frame map";
         return loaded;
     }
@@ -564,14 +654,19 @@ LoadedMaskFrameMap loadMaskFrameMapCoreUncached(
     const Json metadata = readJson(directory / "jcut_frame_map.json");
     const std::string mapHash = sha256File(mapPath);
     result.metadataVerified =
-        stringValue(metadata, "schema") == "jcut_frame_index_map_v2" &&
+        stringValue(metadata, "schema") == "jcut_frame_index_map_v3" &&
         stringValue(metadata, "status") == "ready" &&
-        stringValue(metadata, "frame_domain") == "source_timestamp_to_generated_ordinal" &&
+        stringValue(metadata, "frame_domain") ==
+            "source_best_effort_timestamp_to_generated_ordinal" &&
         stringValue(metadata, "map_file") == "jcut_frame_map.tsv" &&
         metadata.contains("output_fps") && metadata["output_fps"].is_null() &&
         integerValue(metadata, "mapped_frame_count") == result.mappedFrameCount &&
         integerValue(metadata, "min_source_frame") == result.firstSourceFrame &&
         integerValue(metadata, "max_source_frame") == result.lastSourceFrame &&
+        integerValue(metadata, "min_source_presentation_timestamp") ==
+            result.firstSourcePresentationTimestamp &&
+        integerValue(metadata, "max_source_presentation_timestamp") ==
+            result.lastSourcePresentationTimestamp &&
         integerValue(metadata, "max_mask_frame") == result.lastMaskFrame &&
         integerValue(metadata, "expected_output_frame_count") == result.lastMaskFrame + 1 &&
         lower(stringValue(metadata, "map_sha256")) == lower(mapHash) &&
@@ -579,11 +674,21 @@ LoadedMaskFrameMap loadMaskFrameMapCoreUncached(
     const bool completionVerified =
         result.metadataVerified &&
         completionMatches(directory, metadata, result.lastMaskFrame);
+    const std::optional<std::int64_t> completedFrameCount =
+        completionVerified
+        ? contiguousFramePrefixCount(directory, result.lastMaskFrame)
+        : std::nullopt;
+    result.authenticatedPartialRun =
+        result.metadataVerified &&
+        !completionVerified &&
+        authenticatedPartialRunMatches(
+            directory, metadata, result.lastMaskFrame);
     loaded.directoryVersionRelevant =
         result.ordinalSidecar && completionVerified;
     result.renderReady = !result.ordinalSidecar ||
-        (completionVerified &&
-         exactFrameCoverage(directory, result.lastMaskFrame));
+        (completionVerified && completedFrameCount &&
+         *completedFrameCount == result.lastMaskFrame + 1) ||
+        result.authenticatedPartialRun;
     if (!result.renderReady) result.error = "mask sidecar validation failed";
     return loaded;
 }
@@ -595,6 +700,25 @@ std::shared_ptr<const MaskFrameMapCore> cachedMaskFrameMapCore(
     CacheState& state = cacheState();
     const CacheKey key = cacheKey(directory, sourceMediaPath);
     for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::unique_lock lock(state.mutex);
+            const auto found = state.entries.find(key);
+            if (found != state.entries.end()) {
+                const std::shared_ptr<CacheEntry>& cached = found->second;
+                if (cached->loading) {
+                    state.changed.wait(lock, [&cached]() { return !cached->loading; });
+                    --attempt;
+                    continue;
+                }
+                if (cached->map && now < cached->nextValidation) {
+                    ++state.hitCount;
+                    cached->lastAccess = ++state.accessCounter;
+                    return cached->map;
+                }
+            }
+        }
+
         const CacheFingerprint before =
             cacheFingerprint(directory, sourceMediaPath);
         std::shared_ptr<CacheEntry> entry;
@@ -611,6 +735,7 @@ std::shared_ptr<const MaskFrameMapCore> cachedMaskFrameMapCore(
             if (cacheEntryMatches(*entry, before)) {
                 ++state.hitCount;
                 entry->lastAccess = ++state.accessCounter;
+                entry->nextValidation = now + kFilesystemValidationInterval;
                 return entry->map;
             }
             ++state.missCount;
@@ -639,10 +764,12 @@ std::shared_ptr<const MaskFrameMapCore> cachedMaskFrameMapCore(
             if (stableDuringValidation) {
                 entry->fingerprint = after;
                 entry->map = loaded.map;
+                entry->nextValidation = now + kFilesystemValidationInterval;
                 entry->directoryVersionRelevant =
                     loaded.directoryVersionRelevant;
             } else {
                 entry->map.reset();
+                entry->nextValidation = {};
                 entry->directoryVersionRelevant = false;
             }
             entry->loading = false;
@@ -674,19 +801,61 @@ std::optional<std::int64_t> mappedMaskFrameForSourceFrameCore(
     const std::shared_ptr<const MaskFrameMapCore> cached =
         cachedMaskFrameMapCore(directory, sourceMediaPath);
     const MaskFrameMapCore& map = *cached;
-    if (map.sorted.empty()) return map.ordinalSidecar ? std::nullopt
-                                                      : std::optional<std::int64_t>(sourceFrame);
-    if (map.ordinalSidecar && (!map.metadataVerified || !map.renderReady ||
-        sourceFrame < map.firstSourceFrame || sourceFrame > map.lastSourceFrame)) return std::nullopt;
-    const auto lowerBound = std::lower_bound(map.sorted.begin(), map.sorted.end(), sourceFrame,
-        [](const auto& entry, std::int64_t value) { return entry.first < value; });
-    if (lowerBound != map.sorted.end() && lowerBound->first == sourceFrame) return lowerBound->second;
     if (map.ordinalSidecar) return std::nullopt;
-    if (lowerBound == map.sorted.begin()) return lowerBound->second;
-    if (lowerBound == map.sorted.end()) return map.sorted.back().second;
+    if (map.entries.empty()) return sourceFrame;
+    const auto lowerBound = std::lower_bound(
+        map.entries.begin(),
+        map.entries.end(),
+        sourceFrame,
+        [](const MaskFrameMapEntryCore& entry, std::int64_t value) {
+            return entry.sourceFrame < value;
+        });
+    if (lowerBound != map.entries.end() &&
+        lowerBound->sourceFrame == sourceFrame) {
+        return lowerBound->maskFrame;
+    }
+    if (lowerBound == map.entries.begin()) return lowerBound->maskFrame;
+    if (lowerBound == map.entries.end()) return map.entries.back().maskFrame;
     const auto previous = lowerBound - 1;
-    return std::abs(previous->first - sourceFrame) <= std::abs(lowerBound->first - sourceFrame)
-        ? previous->second : lowerBound->second;
+    return std::abs(previous->sourceFrame - sourceFrame) <=
+            std::abs(lowerBound->sourceFrame - sourceFrame)
+        ? previous->maskFrame
+        : lowerBound->maskFrame;
+}
+
+std::optional<std::int64_t> mappedMaskFrameForDecodedSampleCore(
+    const std::filesystem::path& directory,
+    const std::filesystem::path& sourceMediaPath,
+    std::int64_t sourceFrame,
+    std::int64_t sourcePresentationTimestamp)
+{
+    sourceFrame = std::max<std::int64_t>(0, sourceFrame);
+    const std::shared_ptr<const MaskFrameMapCore> cached =
+        cachedMaskFrameMapCore(directory, sourceMediaPath);
+    const MaskFrameMapCore& map = *cached;
+    if (!map.ordinalSidecar) {
+        return mappedMaskFrameForSourceFrameCore(
+            directory, sourceMediaPath, sourceFrame);
+    }
+    if (!map.metadataVerified || !map.renderReady ||
+        sourcePresentationTimestamp ==
+            jcut::core::kUnknownSourcePresentationTimestamp ||
+        map.entries.empty()) {
+        return std::nullopt;
+    }
+    const auto found = std::lower_bound(
+        map.entries.begin(),
+        map.entries.end(),
+        sourcePresentationTimestamp,
+        [](const MaskFrameMapEntryCore& entry, std::int64_t value) {
+            return entry.sourcePresentationTimestamp < value;
+        });
+    if (found == map.entries.end() ||
+        found->sourcePresentationTimestamp != sourcePresentationTimestamp ||
+        found->maskFrame < 0) {
+        return std::nullopt;
+    }
+    return found->maskFrame;
 }
 
 std::optional<std::filesystem::path> maskFramePathForSourceFrameCore(
@@ -699,13 +868,71 @@ std::optional<std::filesystem::path> maskFramePathForSourceFrameCore(
     std::ostringstream name;
     name << "frame_" << std::setw(6) << std::setfill('0') << (*frame + 1) << ".png";
     const std::filesystem::path path = directory / name.str();
-    std::error_code error;
-    return std::filesystem::is_regular_file(path, error) &&
-            !error &&
-            std::filesystem::file_size(path, error) > 0 &&
-            !error
+    return regularNonemptyFile(path)
         ? std::optional(path)
         : std::nullopt;
+}
+
+std::optional<std::filesystem::path> maskFramePathForDecodedSampleCore(
+    const std::filesystem::path& directory,
+    const std::filesystem::path& sourceMediaPath,
+    std::int64_t sourceFrame,
+    std::int64_t sourcePresentationTimestamp)
+{
+    const auto frame = mappedMaskFrameForDecodedSampleCore(
+        directory,
+        sourceMediaPath,
+        sourceFrame,
+        sourcePresentationTimestamp);
+    if (!frame) return std::nullopt;
+    std::ostringstream name;
+    name << "frame_" << std::setw(6) << std::setfill('0')
+         << (*frame + 1) << ".png";
+    const std::filesystem::path path = directory / name.str();
+    return regularNonemptyFile(path)
+        ? std::optional(path)
+        : std::nullopt;
+}
+
+std::vector<std::filesystem::path>
+maskFramePathsForSourceFramePrefetchCore(
+    const std::filesystem::path& directory,
+    const std::filesystem::path& sourceMediaPath,
+    std::int64_t sourceFrame)
+{
+    sourceFrame = std::max<std::int64_t>(0, sourceFrame);
+    const std::shared_ptr<const MaskFrameMapCore> cached =
+        cachedMaskFrameMapCore(directory, sourceMediaPath);
+    const MaskFrameMapCore& map = *cached;
+    if (!map.ordinalSidecar) {
+        const auto path = maskFramePathForSourceFrameCore(
+            directory, sourceMediaPath, sourceFrame);
+        return path ? std::vector<std::filesystem::path>{*path}
+                    : std::vector<std::filesystem::path>{};
+    }
+    if (!map.metadataVerified || !map.renderReady || map.entries.empty()) {
+        return {};
+    }
+    const auto first = std::lower_bound(
+        map.entries.begin(),
+        map.entries.end(),
+        sourceFrame,
+        [](const MaskFrameMapEntryCore& entry, std::int64_t value) {
+            return entry.sourceFrame < value;
+        });
+    std::vector<std::filesystem::path> paths;
+    for (auto entry = first;
+         entry != map.entries.end() && entry->sourceFrame == sourceFrame;
+         ++entry) {
+        std::ostringstream name;
+        name << "frame_" << std::setw(6) << std::setfill('0')
+             << (entry->maskFrame + 1) << ".png";
+        const std::filesystem::path path = directory / name.str();
+        if (regularNonemptyFile(path)) {
+            paths.push_back(path);
+        }
+    }
+    return paths;
 }
 
 MaskFrameMapCoreCacheStats maskFrameMapCoreCacheStats()

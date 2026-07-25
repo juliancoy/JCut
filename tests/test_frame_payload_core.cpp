@@ -51,7 +51,7 @@ void testOpaquePayloadOwnershipAndAccounting()
     int gpuTextureToken = 0;
     {
         jcut::core::FramePayloadCore payload;
-        payload.setIdentity(42, "media/clip.mov", 123456);
+        payload.setIdentity(42, "media/clip.mov", 123456, 9001);
         payload.setSize({10, 20});
         payload.setCpuPayload(
             std::shared_ptr<const void>(
@@ -70,6 +70,10 @@ void testOpaquePayloadOwnershipAndAccounting()
         expect(payload.frameNumber() == 42, "frame identity is retained");
         expect(payload.sourcePath() == "media/clip.mov", "source identity is retained");
         expect(payload.decodeTimestampMs() == 123456, "decode timestamp is retained");
+        expect(payload.hasSourcePresentationTimestamp(),
+               "exact source presentation identity is retained");
+        expect(payload.sourcePresentationTimestamp() == 9001,
+               "raw best-effort timestamp is retained without rescaling");
         expect(payload.hasCpuPayload(), "opaque CPU payload is retained");
         expect(payload.cpuMemoryUsage() == 800, "CPU byte count is exact");
         expect(payload.gpuTextureMemoryUsage() == 400,
@@ -84,8 +88,12 @@ void testOpaquePayloadOwnershipAndAccounting()
         jcut::core::FramePayloadCore moved(std::move(payload));
         expect(moved.hasCpuPayload(), "move preserves CPU payload ownership");
         expect(moved.hasOpaqueGpuTexture(), "move preserves opaque GPU identity");
+        expect(moved.sourcePresentationTimestamp() == 9001,
+               "move preserves source presentation identity");
         expect(!payload.hasCpuPayload(), "moved-from payload releases CPU ownership");
         expect(!payload.hasOpaqueGpuTexture(), "moved-from payload clears GPU identity");
+        expect(!payload.hasSourcePresentationTimestamp(),
+               "moved-from payload clears source presentation identity");
     }
     expect(cpuPayloadDestructions == 1, "opaque CPU payload is destroyed exactly once");
 }

@@ -48,7 +48,10 @@ constexpr size_t kVulkanPreviewCpuCacheBytes = 192ull * 1024ull * 1024ull;
 constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
-constexpr int kMaximumMaskLookaheadFrames = 4;
+// Gray8 mattes use one quarter of the former RGBA cache and upload footprint.
+// Preserve that memory budget as useful decode lead so mask followers are ready
+// before the transport reaches their exact presented frame.
+constexpr int kMaximumMaskLookaheadFrames = 16;
 
 bool gradingPreviewEnabledForTrack(const TimelineClip& clip,
                                    const QVector<TimelineTrack>& tracks)
@@ -172,12 +175,16 @@ QImage qtImageFromCoreBuffer(
     }
     auto* retained =
         new std::shared_ptr<const jcut::core::ImageBuffer>(buffer);
+    const QImage::Format format =
+        buffer->format == jcut::core::PixelFormat::Gray8
+            ? QImage::Format_Grayscale8
+            : QImage::Format_RGBA8888;
     return QImage(
         buffer->bytes.data(),
         buffer->size.width,
         buffer->size.height,
         buffer->strideBytes,
-        QImage::Format_RGBA8888,
+        format,
         [](void* value) {
             delete static_cast<
                 std::shared_ptr<const jcut::core::ImageBuffer>*>(value);
@@ -188,21 +195,23 @@ QImage qtImageFromCoreBuffer(
 std::shared_ptr<const jcut::core::ImageBuffer> coreBufferFromQtImage(
     const QImage& image)
 {
-    const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
-    if (rgba.isNull()) {
+    const QImage gray =
+        image.convertToFormat(QImage::Format_Grayscale8);
+    if (gray.isNull()) {
         return {};
     }
     auto result = std::make_shared<jcut::core::ImageBuffer>();
-    result->size = {rgba.width(), rgba.height()};
-    result->strideBytes = rgba.width() * 4;
+    result->format = jcut::core::PixelFormat::Gray8;
+    result->size = {gray.width(), gray.height()};
+    result->strideBytes = gray.width();
     result->bytes.resize(
         static_cast<std::size_t>(result->strideBytes) *
-        static_cast<std::size_t>(rgba.height()));
-    for (int y = 0; y < rgba.height(); ++y) {
+        static_cast<std::size_t>(gray.height()));
+    for (int y = 0; y < gray.height(); ++y) {
         std::memcpy(
             result->bytes.data() +
                 static_cast<std::size_t>(y) * result->strideBytes,
-            rgba.constScanLine(y),
+            gray.constScanLine(y),
             static_cast<std::size_t>(result->strideBytes));
     }
     return result;
@@ -1423,7 +1432,8 @@ void VulkanPreviewSurface::prefetchMaskBuffersForPlayback()
             if (m_maskPrefetchWindowKeys.contains(requestKey)) {
                 continue;
             }
-            rawClipMaskBuffer(clip, qMax<int64_t>(0, sourceFrame));
+            prefetchClipMaskBuffers(
+                clip, qMax<int64_t>(0, sourceFrame));
         }
     };
 
@@ -1431,6 +1441,29 @@ void VulkanPreviewSurface::prefetchMaskBuffersForPlayback()
         const int64_t samplePosition =
             m_interaction.currentSample + frameToSamples(offset);
         requestMasksAt(samplePosition, samplesToFramePosition(samplePosition));
+    }
+
+    const int transitionLeadFrames = qMax(
+        qMax(editor::debugPlaybackWindowAhead(),
+             editor::debugFileVideoPlaybackWindowAhead()),
+        m_interaction.playbackTiming.frameCrossfadeFrames);
+    const int64_t upcomingRangeStart =
+        upcomingNoncontiguousPlaybackRangeStart(
+            m_interaction.currentFramePosition,
+            m_interaction.playbackTiming,
+            transitionLeadFrames);
+    if (upcomingRangeStart >= 0) {
+        const int transitionMaskWindowFrames = qMax(
+            futureFrames,
+            m_interaction.playbackTiming.frameCrossfadeFrames);
+        for (int offset = 0;
+             offset <= transitionMaskWindowFrames;
+             ++offset) {
+            const int64_t timelineFrame =
+                upcomingRangeStart + offset;
+            requestMasksAt(frameToSamples(timelineFrame),
+                           static_cast<qreal>(timelineFrame));
+        }
     }
 
     const PlaybackFrameCrossfade frameCrossfade =
@@ -1516,6 +1549,30 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     registerVisibleClips();
     prefetchMaskBuffersForPlayback();
     if (m_interaction.playing && m_playbackPipeline) {
+        const auto onPlaybackFrameReady = [this]() {
+            if (!m_pipelineOwner) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                m_pipelineOwner.get(),
+                [this]() {
+                    queueFrameStatusRefresh(false);
+                },
+                Qt::QueuedConnection);
+        };
+        const PlaybackFrameCrossfade activeFrameCrossfade =
+            playbackFrameCrossfadeAtTimelineFrame(
+                m_interaction.currentFramePosition,
+                m_interaction.playbackTiming);
+        const int transitionLeadFrames = qMax(
+            qMax(editor::debugPlaybackWindowAhead(),
+                 editor::debugFileVideoPlaybackWindowAhead()),
+            m_interaction.playbackTiming.frameCrossfadeFrames);
+        const int64_t upcomingRangeStart =
+            upcomingNoncontiguousPlaybackRangeStart(
+                m_interaction.currentFramePosition,
+                m_interaction.playbackTiming,
+                transitionLeadFrames);
         qint64 visibleAttemptCount = 0;
         qint64 readyCount = 0;
         qint64 unavailableCount = 0;
@@ -1589,35 +1646,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                 ++m_visibleRequestDispatched;
                 m_playbackPipeline->requestFramesForSample(
                     visualSample,
-                    [this]() {
-                        if (!m_pipelineOwner) {
-                            return;
-                        }
-                        QMetaObject::invokeMethod(
-                            m_pipelineOwner.get(),
-                            [this]() {
-                                queueFrameStatusRefresh(false);
-                            },
-                            Qt::QueuedConnection);
-                    });
-                const PlaybackFrameCrossfade frameCrossfade =
-                    playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
-                                                          m_interaction.playbackTiming);
-                if (frameCrossfade.active) {
-                    m_playbackPipeline->requestFramesForSample(
-                        frameToSamples(qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame)),
-                        [this]() {
-                            if (!m_pipelineOwner) {
-                                return;
-                            }
-                            QMetaObject::invokeMethod(
-                                m_pipelineOwner.get(),
-                                [this]() {
-                                    queueFrameStatusRefresh(false);
-                                },
-                                Qt::QueuedConnection);
-                        });
-                }
+                    onPlaybackFrameReady);
             } else {
                 ++m_visibleRequestBlocked;
                 m_lastVisibleRequestDecision = QStringLiteral("playback_pipeline_displayable_backlog");
@@ -1635,6 +1664,17 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                                   QStringLiteral("playback_pipeline pending=%1 request=%2")
                                                       .arg(backlog)
                                                       .arg(requestWindow ? 1 : 0));
+        }
+        if (upcomingRangeStart >= 0) {
+            m_playbackPipeline->prefetchFramesForSample(
+                frameToSamples(upcomingRangeStart),
+                onPlaybackFrameReady);
+        }
+        if (activeFrameCrossfade.active) {
+            m_playbackPipeline->prefetchFramesForSample(
+                frameToSamples(qMax<int64_t>(
+                    0, activeFrameCrossfade.secondaryTimelineFrame)),
+                onPlaybackFrameReady);
         }
         queueFrameStatusRefresh(false);
         return;
@@ -2148,7 +2188,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 selectedFrame = FrameHandle::createCpuFrame(
                     masked,
                     selectedFrame.frameNumber(),
-                    selectedFrame.sourcePath());
+                    selectedFrame.sourcePath(),
+                    selectedFrame.sourcePresentationTimestamp());
                 status.correctionsApplied = true;
                 status.correctionsSupported = true;
             }
@@ -2176,10 +2217,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 clip.maskEnabled && !clip.maskFramesDir.trimmed().isEmpty() &&
                 (generatedMaskMatte || clip.maskShowOnly ||
                  clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
-            const int64_t maskSourceFrame =
-                staticImageClip ? 0 : qMax<int64_t>(0, status.presentedSourceFrame);
-            if (gpuMaskEnabled && maskSourceFrame >= 0) {
-                const auto mask = rawClipMaskBuffer(clip, maskSourceFrame);
+            if (gpuMaskEnabled) {
+                const auto mask = rawClipMaskBuffer(clip, status.frame);
                 if (mask && !mask->empty()) {
                     status.maskBuffer = mask;
                     status.maskTextureEnabled = true;
@@ -2287,7 +2326,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     if (gpuMaskEnabled) {
                         status.frameCrossfadeMaskBuffer = rawClipMaskBuffer(
                             clip,
-                            qMax<int64_t>(0, status.frameCrossfadePresentedSourceFrame));
+                            status.frameCrossfadeFrame);
                         status.frameCrossfadeMaskTextureEnabled =
                             status.frameCrossfadeMaskBuffer &&
                             !status.frameCrossfadeMaskBuffer->empty();
@@ -2353,15 +2392,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.effectsOwnerClipId = clip.id;
                     markerStatus.matteOwnerClipId = clip.id;
                     markerStatus.maskBuffer = rawClipMaskBuffer(
-                        clip, qMax<int64_t>(0, markerStatus.presentedSourceFrame));
+                        clip, markerStatus.frame);
                     markerStatus.maskTextureEnabled =
                         markerStatus.maskBuffer &&
                         !markerStatus.maskBuffer->empty();
                     markerStatus.frameCrossfadeMaskBuffer = markerStatus.frameCrossfadeActive
                         ? rawClipMaskBuffer(
                               clip,
-                              qMax<int64_t>(
-                                  0, markerStatus.frameCrossfadePresentedSourceFrame))
+                              markerStatus.frameCrossfadeFrame)
                         : std::shared_ptr<const jcut::core::ImageBuffer>{};
                     markerStatus.frameCrossfadeMaskTextureEnabled =
                         markerStatus.frameCrossfadeMaskBuffer &&

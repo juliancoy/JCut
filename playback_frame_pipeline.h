@@ -30,6 +30,8 @@ public:
     void setPlaybackSpeed(qreal speed);
 
     void requestFramesForSample(int64_t samplePosition, const std::function<void()>& onFrameReady);
+    void prefetchFramesForSample(int64_t samplePosition,
+                                 const std::function<void()>& onFrameReady);
 
     FrameHandle getFrame(const QString& clipId, int64_t frameNumber) const;
     FrameHandle getBestFrame(const QString& clipId, int64_t frameNumber) const;
@@ -38,7 +40,6 @@ public:
 
     int pendingVisibleRequestCount() const;
     int bufferedFrameCount() const;
-    int droppedPresentationFrameCount() const { return m_droppedPresentationFrames.load(); }
     QJsonObject decodeDiagnostics() const;
     QJsonObject bufferedFrameResidencySnapshot() const;
     QJsonArray frameTraceSnapshot(int limit = 200) const;
@@ -50,6 +51,11 @@ private slots:
     void onFrameReady(FrameHandle frame);
 
 private:
+    enum class RequestOwnership {
+        Visible,
+        DiscontinuityPrefetch,
+    };
+
     struct ClipInfo {
         TimelineClip clip;
         QString playbackPath;
@@ -89,12 +95,18 @@ private:
                                       int64_t keepFromFrame,
                                       qint64 nowMs);
     void scheduleSingleFrame(const ClipInfo& info,
-                             const std::function<void()>& onFrameReady);
+                             const std::function<void()>& onFrameReady,
+                             RequestOwnership ownership);
     void schedulePlaybackWindow(const ClipInfo& info,
                                 int64_t samplePosition,
                                 int64_t canonicalFrame,
                                 const QVector<RenderSyncMarker>& markers,
-                                const std::function<void()>& onFrameReady);
+                                const std::function<void()>& onFrameReady,
+                                RequestOwnership ownership);
+    void requestFramesForSampleWithOwnership(
+        int64_t samplePosition,
+        const std::function<void()>& onFrameReady,
+        RequestOwnership ownership);
 
     struct DecodeDiagnostics {
         uint64_t visibleDispatched = 0;
@@ -135,6 +147,7 @@ private:
     mutable QMutex m_pendingMutex;
     QSet<QString> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;
+    QSet<QString> m_pendingDiscontinuityPrefetchRequests;
     QHash<QString, int64_t> m_latestVisibleTargets;
     QHash<QString, int64_t> m_lastCancelKeepFromByPath;
     QHash<QString, qint64> m_lastCancelAtMsByPath;
@@ -161,7 +174,6 @@ private:
 
     std::atomic<bool> m_active{false};
     std::atomic<int64_t> m_playheadFrame{0};
-    mutable std::atomic<int> m_droppedPresentationFrames{0};
     std::atomic<double> m_playbackSpeed{1.0};
 };
 

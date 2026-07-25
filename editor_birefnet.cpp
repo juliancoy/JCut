@@ -1,6 +1,7 @@
 #include "editor.h"
 #include "birefnet_job_core.h"
 
+#include "decoder_context.h"
 #include "editor_shared_render_sync.h"
 #include "inspector_pane.h"
 #include "processing_job_docker.h"
@@ -206,12 +207,32 @@ bool showBiRefNetPreview(QWidget* parent,
     }
     QDir().mkpath(modelCache);
     QDir().mkpath(runtimeCache);
+    editor::DecoderContext decoder(inputPath, nullptr, true);
+    if (!decoder.initialize()) {
+        QMessageBox::warning(
+            parent,
+            QStringLiteral("BiRefNet Preview"),
+            QStringLiteral("Could not decode the selected source frame."));
+        return false;
+    }
+    const editor::FrameHandle presentedFrame = decoder.decodeFrame(frameIndex);
+    if (presentedFrame.isNull() ||
+        !presentedFrame.hasSourcePresentationTimestamp()) {
+        QMessageBox::warning(
+            parent,
+            QStringLiteral("BiRefNet Preview"),
+            QStringLiteral(
+                "The selected frame has no exact presentation timestamp."));
+        return false;
+    }
     QStringList command{scriptPath, inputPath,
                         QStringLiteral("--output-dir"), previewDirectory.path(),
                         QStringLiteral("--model"), model,
                         QStringLiteral("--revision"), revision,
                         QStringLiteral("--alpha-tolerance"), QString::number(alphaTolerance, 'f', 4),
-                        QStringLiteral("--source-frame"), QString::number(frameIndex)};
+                        QStringLiteral("--source-presentation-timestamp"),
+                        QString::number(
+                            presentedFrame.sourcePresentationTimestamp())};
     if (device == QStringLiteral("cpu")) command << QStringLiteral("--cpu");
     if (!fp16) command << QStringLiteral("--fp32");
 

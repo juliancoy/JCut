@@ -248,9 +248,8 @@ QJsonObject speakerFlowClipPayload(const QJsonObject& transcriptRoot, const QStr
     return clips.value(clipId).toObject();
 }
 
-QJsonArray sectionTrackMapForClip(const QJsonObject& transcriptRoot, const QString& clipId)
+QJsonArray sectionTrackMapFromClipPayload(const QJsonObject& clipPayload)
 {
-    const QJsonObject clipPayload = speakerFlowClipPayload(transcriptRoot, clipId);
     QJsonArray map =
         clipPayload.value(QStringLiteral("resolved_current"))
             .toObject()
@@ -258,6 +257,29 @@ QJsonArray sectionTrackMapForClip(const QJsonObject& transcriptRoot, const QStri
             .toArray();
     if (map.isEmpty()) {
         map = clipPayload.value(QStringLiteral("section_track_map")).toArray();
+    }
+    return map;
+}
+
+QJsonArray sectionTrackMapForClip(const QJsonObject& transcriptRoot, const QString& clipId)
+{
+    return sectionTrackMapFromClipPayload(speakerFlowClipPayload(transcriptRoot, clipId));
+}
+
+QJsonArray sectionTrackMapForRuntimeClip(const QJsonObject& transcriptRoot, const QString& clipId)
+{
+    QJsonArray map = sectionTrackMapForClip(transcriptRoot, clipId);
+    const QString trimmedClipId = clipId.trimmed();
+    const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clips = speakerFlow.value(QStringLiteral("clips")).toObject();
+    for (auto it = clips.constBegin(); it != clips.constEnd(); ++it) {
+        if (it.key().trimmed() == trimmedClipId) {
+            continue;
+        }
+        const QJsonArray candidateMap = sectionTrackMapFromClipPayload(it.value().toObject());
+        for (const QJsonValue& value : candidateMap) {
+            map.push_back(value);
+        }
     }
     return map;
 }
@@ -447,7 +469,7 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
     }
     const int64_t transcriptFrame =
         transcriptFrameForMediaSourcePosition(clip, mediaSourceFramePosition);
-    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    const QJsonArray sectionMap = sectionTrackMapForRuntimeClip(transcriptRoot, clip.id);
     for (const QJsonValue& value : sectionMap) {
         const QJsonObject row = value.toObject();
         if (row.value(QStringLiteral("speaker_id")).toString().trimmed() != trimmedSpeakerId) {
@@ -505,7 +527,7 @@ bool collectSectionRotationForSpeaker(const QJsonObject& transcriptRoot,
 
     const int64_t transcriptFrame =
         transcriptFrameForMediaSourcePosition(clip, mediaSourceFramePosition);
-    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    const QJsonArray sectionMap = sectionTrackMapForRuntimeClip(transcriptRoot, clip.id);
     for (const QJsonValue& value : sectionMap) {
         const QJsonObject row = value.toObject();
         if (row.value(QStringLiteral("speaker_id")).toString().trimmed() != trimmedSpeakerId) {
@@ -542,7 +564,7 @@ bool collectSectionRotationForClipAtSourcePosition(const QJsonObject& transcript
 
     const int64_t transcriptFrame =
         transcriptFrameForMediaSourcePosition(clip, mediaSourceFramePosition);
-    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    const QJsonArray sectionMap = sectionTrackMapForRuntimeClip(transcriptRoot, clip.id);
     for (const QJsonValue& value : sectionMap) {
         const QJsonObject row = value.toObject();
         const int64_t startFrame = row.value(QStringLiteral("start_frame")).toInteger(-1);
@@ -893,7 +915,7 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
             loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {
             const QJsonObject transcriptRoot = transcriptDoc.object();
             const bool sectionMappingActive =
-                !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty();
+                !sectionTrackMapForRuntimeClip(transcriptRoot, clip.id).isEmpty();
             const bool matchedSectionAssignment =
                 collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
                                                          clip,
@@ -987,7 +1009,7 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     QString assignmentCacheToken;
     qreal sectionRotationDegrees = 0.0;
     const bool sectionMappingActive =
-        !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty();
+        !sectionTrackMapForRuntimeClip(transcriptRoot, clip.id).isEmpty();
     const bool matchedSectionAssignment =
         collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
                                                  clip,
@@ -2199,7 +2221,7 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
         return;
     }
     const QJsonObject transcriptRoot = transcriptDoc.object();
-    const QJsonArray sectionMap = sectionTrackMapForClip(transcriptRoot, clip.id);
+    const QJsonArray sectionMap = sectionTrackMapForRuntimeClip(transcriptRoot, clip.id);
     if (sectionMap.isEmpty()) {
         const QJsonArray identityMap =
             jcut::speakertrack::assignmentMapForClip(transcriptRoot, clip.id);
@@ -2384,9 +2406,13 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         if (!hasSample) {
             hasSample =
                 manualContinuityTrackSampleForClip(clip, timelineFrame, mediaSourceFrame, &location, &boxSize);
+            if (hasSample && hasSectionCenterFallbackRotation) {
+                sectionRotationDegrees = sectionCenterFallbackRotationDegrees;
+            }
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            sectionRotationDegrees = 0.0;
+            sectionRotationDegrees =
+                hasSectionCenterFallbackRotation ? sectionCenterFallbackRotationDegrees : 0.0;
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2398,7 +2424,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 ContinuityAssignmentMode::SectionOrIdentity);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            sectionRotationDegrees = 0.0;
+            sectionRotationDegrees =
+                hasSectionCenterFallbackRotation ? sectionCenterFallbackRotationDegrees : 0.0;
             hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
         }
         if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
@@ -2560,7 +2587,7 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                                                              &diagnosticAssignmentCacheToken,
                                                              &diagnosticSectionRotationDegrees);
                 diagnosticsOut->insert(QStringLiteral("section_mapping_active"),
-                                       !sectionTrackMapForClip(transcriptRoot, clip.id).isEmpty());
+                                       !sectionTrackMapForRuntimeClip(transcriptRoot, clip.id).isEmpty());
                 diagnosticsOut->insert(QStringLiteral("matched_section_assignment"), matchedAssignment);
                 diagnosticsOut->insert(QStringLiteral("assigned_track_ids"),
                                        intSetDiagnosticArray(diagnosticAssignedTrackIds));
@@ -2612,11 +2639,15 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             hasSample = manualContinuityTrackSampleForClip(
                 clip, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
             if (hasSample) {
+                if (hasSectionCenterFallbackRotation) {
+                    sectionRotationDegrees = sectionCenterFallbackRotationDegrees;
+                }
                 sampleSource = QStringLiteral("manual_continuity_track");
             }
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            sectionRotationDegrees = 0.0;
+            sectionRotationDegrees =
+                hasSectionCenterFallbackRotation ? sectionCenterFallbackRotationDegrees : 0.0;
             hasSample = assignedContinuityTrackSampleForSpeaker(
                 clip,
                 activeSpeaker,
@@ -2631,7 +2662,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             }
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            sectionRotationDegrees = 0.0;
+            sectionRotationDegrees =
+                hasSectionCenterFallbackRotation ? sectionCenterFallbackRotationDegrees : 0.0;
             hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
             if (hasSample) {
                 sampleSource = QStringLiteral("speaker_profile_tracking");

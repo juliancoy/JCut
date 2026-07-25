@@ -389,6 +389,15 @@ void EditorWindow::setupHeartbeat()
     m_mainThreadHeartbeatTimer.start();
 
     m_fastCurrentFrame.store(0);
+    m_fastPlaybackSyncTelemetryRevision.store(0);
+    m_fastTransportTimelineSample.store(0);
+    m_fastProjectedAudioFeedbackTimelineSample.store(-1);
+    m_fastAudioClockAvailable.store(false);
+    m_fastHasPlayableAudio.store(false);
+    m_fastAudioPlaybackBlocked.store(false);
+    m_fastPitchPreservingAudioBlocked.store(false);
+    m_fastTimeStretchCacheMissCount.store(0);
+    m_fastAudioUnderrunCount.store(0);
     m_fastPlaybackActive.store(false);
 }
 
@@ -445,16 +454,99 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             const qint64 playheadMs = m_lastPlayheadAdvanceMs.load();
             const qint64 playheadAgeMs = playheadMs > 0 ? now - playheadMs : -1;
             const bool playbackIsActive = playbackActive();
-            const bool playbackTimerActive = m_playbackTimer.isActive();
             const bool playbackStalled = playbackIsActive &&
                                          playheadAgeMs > 500;
+            qint64 transportTimelineSample = 0;
+            qint64 projectedAudioSample = -1;
+            bool audioClockAvailable = false;
+            bool hasPlayableAudio = false;
+            bool audioPlaybackBlocked = false;
+            bool pitchPreservingAudioBlocked = false;
+            qint64 timeStretchCacheMissCount = 0;
+            int audioUnderrunCount = 0;
+            for (;;) {
+                const quint64 revisionBefore =
+                    m_fastPlaybackSyncTelemetryRevision.load(
+                        std::memory_order_acquire);
+                if ((revisionBefore & 1U) != 0U) {
+                    continue;
+                }
+                transportTimelineSample =
+                    m_fastTransportTimelineSample.load(
+                        std::memory_order_relaxed);
+                projectedAudioSample =
+                    m_fastProjectedAudioFeedbackTimelineSample.load(
+                        std::memory_order_relaxed);
+                audioClockAvailable =
+                    m_fastAudioClockAvailable.load(std::memory_order_relaxed);
+                hasPlayableAudio =
+                    m_fastHasPlayableAudio.load(std::memory_order_relaxed);
+                audioPlaybackBlocked =
+                    m_fastAudioPlaybackBlocked.load(std::memory_order_relaxed);
+                pitchPreservingAudioBlocked =
+                    m_fastPitchPreservingAudioBlocked.load(
+                        std::memory_order_relaxed);
+                timeStretchCacheMissCount =
+                    m_fastTimeStretchCacheMissCount.load(
+                        std::memory_order_relaxed);
+                audioUnderrunCount =
+                    m_fastAudioUnderrunCount.load(std::memory_order_relaxed);
+                const quint64 revisionAfter =
+                    m_fastPlaybackSyncTelemetryRevision.load(
+                        std::memory_order_acquire);
+                if (revisionBefore == revisionAfter) {
+                    break;
+                }
+            }
+            const PreviewSurface::PresentationTelemetrySnapshot
+                presentationTelemetry =
+                    m_preview
+                        ? m_preview->presentationTelemetrySnapshot()
+                        : PreviewSurface::PresentationTelemetrySnapshot{};
             return QJsonObject{
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("pid"), static_cast<qint64>(QCoreApplication::applicationPid())},
                 {QStringLiteral("current_frame"), m_fastCurrentFrame.load()},
+                {QStringLiteral("editor_current_frame"),
+                 m_fastCurrentFrame.load()},
+                {QStringLiteral("transport_timeline_sample"),
+                 transportTimelineSample},
+                {QStringLiteral("projected_audio_feedback_timeline_sample"),
+                 projectedAudioSample},
+                {QStringLiteral("projected_audio_feedback_timeline_frame"),
+                 projectedAudioSample >= 0
+                     ? static_cast<qint64>(std::floor(samplesToFramePosition(
+                           projectedAudioSample)))
+                     : static_cast<qint64>(-1)},
+                {QStringLiteral("audio_clock_available"),
+                 audioClockAvailable},
+                {QStringLiteral("has_playable_audio"),
+                 hasPlayableAudio},
+                {QStringLiteral("audio_playback_blocked"),
+                 audioPlaybackBlocked},
+                {QStringLiteral("pitch_preserving_audio_blocked"),
+                 pitchPreservingAudioBlocked},
+                {QStringLiteral("time_stretch_cache_miss_count"),
+                 timeStretchCacheMissCount},
+                {QStringLiteral("audio_underrun_count"),
+                 audioUnderrunCount},
+                {QStringLiteral("presented_frames"),
+                 presentationTelemetry.presentedFrames},
+                {QStringLiteral("unique_presentation_misses"),
+                 presentationTelemetry.uniquePresentationMisses},
+                {QStringLiteral("preview_update_requests"),
+                 presentationTelemetry.previewUpdateRequests},
+                {QStringLiteral("preview_update_events_delivered"),
+                 presentationTelemetry.previewUpdateEventsDelivered},
+                {QStringLiteral("preview_updates_delivered"),
+                 presentationTelemetry.previewUpdatesDelivered},
+                {QStringLiteral("active_requested_source_frame"),
+                 presentationTelemetry.activeRequestedSourceFrame},
+                {QStringLiteral("active_presented_source_frame"),
+                 presentationTelemetry.activePresentedSourceFrame},
                 {QStringLiteral("state_revision"), m_stateRevision.load()},
                 {QStringLiteral("playback_active"), playbackIsActive && !playbackStalled},
-                {QStringLiteral("playback_timer_active"), playbackTimerActive},
+                {QStringLiteral("playback_timer_active"), playbackIsActive},
                 {QStringLiteral("playback_stalled"), playbackStalled},
                 {QStringLiteral("main_thread_heartbeat_ms"), heartbeatMs},
                 {QStringLiteral("main_thread_heartbeat_age_ms"), heartbeatMs > 0 ? now - heartbeatMs : -1},

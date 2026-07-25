@@ -11,6 +11,7 @@
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_shader_paths.h"
+#include "vulkan_staging_flush_range.h"
 #include "vulkan_text_renderer.h"
 
 #include <QDateTime>
@@ -31,6 +32,7 @@ extern "C" {
 #endif
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
@@ -175,6 +177,7 @@ public:
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    VkDeviceSize stagingBufferSize = 0;
     VkDeviceSize stagingAllocationSize = 0;
     void *stagingMapped = nullptr;
     VkBuffer cudaExportBuffer = VK_NULL_HANDLE;
@@ -315,6 +318,8 @@ public:
     }
     m_physicalDevice = bestDevice;
     m_graphicsQueueFamily = bestQueueFamily;
+    m_nonCoherentAtomSize =
+        qMax<VkDeviceSize>(1, bestProperties.limits.nonCoherentAtomSize);
 
     if (m_physicalDevice == VK_NULL_HANDLE) {
       if (errorMessage) {
@@ -1018,6 +1023,7 @@ public:
         }
         return false;
       }
+      slot.stagingBufferSize = stagingSize;
       if (m_externalMemoryFdSupported && m_vkGetMemoryFdKHR) {
         const VkDeviceSize yPlaneBytes =
             static_cast<VkDeviceSize>(m_outputSize.width()) *
@@ -1860,6 +1866,8 @@ public:
         vkFreeMemory(m_device, slot.stagingMemory, nullptr);
         slot.stagingMemory = VK_NULL_HANDLE;
       }
+      slot.stagingBufferSize = 0;
+      slot.stagingAllocationSize = 0;
       if (slot.cudaExportBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(m_device, slot.cudaExportBuffer, nullptr);
         slot.cudaExportBuffer = VK_NULL_HANDLE;
@@ -2221,6 +2229,7 @@ public:
     }
 
     m_physicalDevice = VK_NULL_HANDLE;
+    m_nonCoherentAtomSize = 1;
     m_graphicsQueue = VK_NULL_HANDLE;
     m_commandBuffer = VK_NULL_HANDLE;
     m_descriptorSet = VK_NULL_HANDLE;
@@ -2319,6 +2328,10 @@ public:
     if (overlay.rgbaPremultiplied.size() < static_cast<qsizetype>(bytes)) {
       return false;
     }
+    if (!activeStagingRangeAvailable(
+            stagingOffset, static_cast<VkDeviceSize>(bytes))) {
+      return false;
+    }
     auto *dst = reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset;
     const auto *src = reinterpret_cast<const uint8_t *>(overlay.rgbaPremultiplied.constData());
     for (int y = 0; y < overlay.height; ++y) {
@@ -2337,6 +2350,10 @@ public:
     }
     const int rowBytes = rgba.width() * 4;
     const size_t bytes = static_cast<size_t>(rowBytes) * static_cast<size_t>(rgba.height());
+    if (!activeStagingRangeAvailable(
+            stagingOffset, static_cast<VkDeviceSize>(bytes))) {
+      return false;
+    }
     auto *dst = reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset;
     for (int y = 0; y < rgba.height(); ++y) {
       std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
@@ -2798,6 +2815,107 @@ public:
     return true;
   }
 
+  bool activeStagingRangeAvailable(VkDeviceSize offset,
+                                   VkDeviceSize size) const {
+    if (m_activeSlotIndex < 0 ||
+        m_activeSlotIndex >= m_frameSlots.size()) {
+      return false;
+    }
+    const FrameSlot &slot = m_frameSlots[m_activeSlotIndex];
+    return slot.stagingBuffer != VK_NULL_HANDLE &&
+        slot.stagingMemory != VK_NULL_HANDLE &&
+        slot.stagingMapped != nullptr &&
+        offset <= slot.stagingBufferSize &&
+        size <= slot.stagingBufferSize - offset;
+  }
+
+  bool ensureActiveStagingCapacity(VkDeviceSize requiredSize) {
+    if (requiredSize == 0 || m_activeSlotIndex < 0 ||
+        m_activeSlotIndex >= m_frameSlots.size()) {
+      return false;
+    }
+    FrameSlot &slot = m_frameSlots[m_activeSlotIndex];
+    if (slot.inFlight) {
+      return false;
+    }
+    if (slot.stagingBuffer != VK_NULL_HANDLE &&
+        slot.stagingMemory != VK_NULL_HANDLE &&
+        slot.stagingMapped != nullptr &&
+        slot.stagingBufferSize >= requiredSize) {
+      return true;
+    }
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = requiredSize;
+    bufferInfo.usage =
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer newBuffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(
+            m_device, &bufferInfo, nullptr, &newBuffer) != VK_SUCCESS) {
+      return false;
+    }
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(m_device, newBuffer, &requirements);
+    VkMemoryPropertyFlags memoryFlags = 0;
+    const uint32_t memoryType = findMemoryTypePreferred(
+        m_physicalDevice, requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &memoryFlags);
+    if (memoryType == UINT32_MAX) {
+      vkDestroyBuffer(m_device, newBuffer, nullptr);
+      return false;
+    }
+
+    VkMemoryAllocateInfo allocation{};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = memoryType;
+    VkDeviceMemory newMemory = VK_NULL_HANDLE;
+    if (vkAllocateMemory(
+            m_device, &allocation, nullptr, &newMemory) != VK_SUCCESS) {
+      vkDestroyBuffer(m_device, newBuffer, nullptr);
+      return false;
+    }
+    if (vkBindBufferMemory(
+            m_device, newBuffer, newMemory, 0) != VK_SUCCESS) {
+      vkFreeMemory(m_device, newMemory, nullptr);
+      vkDestroyBuffer(m_device, newBuffer, nullptr);
+      return false;
+    }
+    void *newMapped = nullptr;
+    if (vkMapMemory(
+            m_device, newMemory, 0, VK_WHOLE_SIZE, 0,
+            &newMapped) != VK_SUCCESS) {
+      vkDestroyBuffer(m_device, newBuffer, nullptr);
+      vkFreeMemory(m_device, newMemory, nullptr);
+      return false;
+    }
+
+    if (slot.stagingMapped && slot.stagingMemory != VK_NULL_HANDLE) {
+      vkUnmapMemory(m_device, slot.stagingMemory);
+    }
+    if (slot.stagingBuffer != VK_NULL_HANDLE) {
+      vkDestroyBuffer(m_device, slot.stagingBuffer, nullptr);
+    }
+    if (slot.stagingMemory != VK_NULL_HANDLE) {
+      vkFreeMemory(m_device, slot.stagingMemory, nullptr);
+    }
+    slot.stagingBuffer = newBuffer;
+    slot.stagingMemory = newMemory;
+    slot.stagingBufferSize = requiredSize;
+    slot.stagingAllocationSize = requirements.size;
+    slot.stagingMapped = newMapped;
+    slot.stagingHostCoherent =
+        (memoryFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    m_stagingBuffer = slot.stagingBuffer;
+    m_stagingMemory = slot.stagingMemory;
+    m_stagingMapped = slot.stagingMapped;
+    return true;
+  }
+
   bool invalidateSlotForHostRead(FrameSlot &slot) {
     if (slot.stagingHostCoherent || slot.stagingMemory == VK_NULL_HANDLE) {
       return true;
@@ -2815,15 +2933,26 @@ public:
       return false;
     }
     FrameSlot &slot = m_frameSlots[m_activeSlotIndex];
+    if (!activeStagingRangeAvailable(offset, size)) {
+      return false;
+    }
     if (slot.stagingHostCoherent || slot.stagingMemory == VK_NULL_HANDLE ||
         size == 0) {
       return true;
     }
+    const auto flushRange = alignedVulkanStagingFlushRange(
+        static_cast<std::uint64_t>(offset),
+        static_cast<std::uint64_t>(size),
+        static_cast<std::uint64_t>(slot.stagingAllocationSize),
+        static_cast<std::uint64_t>(m_nonCoherentAtomSize));
+    if (!flushRange.has_value()) {
+      return false;
+    }
     VkMappedMemoryRange range{};
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     range.memory = slot.stagingMemory;
-    range.offset = offset;
-    range.size = qMin(size, slot.stagingAllocationSize - offset);
+    range.offset = static_cast<VkDeviceSize>(flushRange->offset);
+    range.size = static_cast<VkDeviceSize>(flushRange->size);
     return vkFlushMappedMemoryRanges(m_device, 1, &range) == VK_SUCCESS;
   }
 
@@ -2861,6 +2990,55 @@ public:
       return QImage();
     }
     if (!selectNextSlot()) {
+      return QImage();
+    }
+
+    const auto rgbaBytesForSize = [](const QSize &size) -> VkDeviceSize {
+      if (!size.isValid() || size.isEmpty()) {
+        return 0;
+      }
+      return static_cast<VkDeviceSize>(size.width()) *
+          static_cast<VkDeviceSize>(size.height()) * 4;
+    };
+    const VkDeviceSize layerImageBytes = rgbaBytesForSize(m_outputSize);
+    VkDeviceSize maxAuxiliaryImageBytes = layerImageBytes;
+    for (const LayerInput &layer : layers) {
+      if (layer.maskTextureEnabled && !layer.maskImage.isNull()) {
+        maxAuxiliaryImageBytes = qMax(
+            maxAuxiliaryImageBytes,
+            rgbaBytesForSize(layer.maskImage.size()));
+      }
+      if (layer.differenceMatteEnabled &&
+          !layer.referenceFrameHandle.hasHardwareFrame()) {
+        maxAuxiliaryImageBytes = qMax(
+            maxAuxiliaryImageBytes,
+            rgbaBytesForSize(layer.referenceFrameHandle.size()));
+      }
+    }
+    constexpr VkDeviceSize maxDeviceSize =
+        std::numeric_limits<VkDeviceSize>::max();
+    const VkDeviceSize curveBytes = kCurveLutBytes * 2;
+    if (layerImageBytes > maxDeviceSize - curveBytes ||
+        maxAuxiliaryImageBytes >
+            maxDeviceSize - layerImageBytes - curveBytes) {
+      return QImage();
+    }
+    const VkDeviceSize layerStagingSize =
+        layerImageBytes + curveBytes + maxAuxiliaryImageBytes;
+    const VkDeviceSize stagingLayerCount = static_cast<VkDeviceSize>(
+        qMin(kMaxLayerTextures,
+             qMax(1, static_cast<int>(layers.size()))));
+    if (layerStagingSize > maxDeviceSize / stagingLayerCount) {
+      return QImage();
+    }
+    const VkDeviceSize requiredStagingBytes =
+        layerStagingSize * stagingLayerCount;
+    if (!ensureActiveStagingCapacity(requiredStagingBytes)) {
+      qWarning().noquote()
+          << QStringLiteral(
+                 "[vulkan-compose] unable to provide %1 bytes of per-frame "
+                 "staging for raw GPU auxiliary preprocessing")
+                 .arg(static_cast<qulonglong>(requiredStagingBytes));
       return QImage();
     }
 
@@ -2960,10 +3138,6 @@ public:
     fullScissor.offset = {0, 0};
     fullScissor.extent = {static_cast<uint32_t>(m_outputSize.width()),
                           static_cast<uint32_t>(m_outputSize.height())};
-    const VkDeviceSize layerImageBytes =
-        static_cast<VkDeviceSize>(m_outputSize.width()) *
-        static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
-    const VkDeviceSize layerStagingSize = (layerImageBytes * 2) + (kCurveLutBytes * 2);
     auto layerHasRenderableSource = [](const LayerInput &layer) {
       return !layer.overlayImage.isNull() || !layer.image.isNull() ||
              !layer.frameHandle.isNull();
@@ -3291,6 +3465,11 @@ public:
           return QImage();
         }
         const VkDeviceSize curveStagingOffset = stagingOffset + layerImageBytes;
+        if (!activeStagingRangeAvailable(
+                curveStagingOffset, kCurveLutBytes)) {
+          vkEndCommandBuffer(m_commandBuffer);
+          return QImage();
+        }
         std::memcpy(
             reinterpret_cast<uint8_t *>(m_stagingMapped) + curveStagingOffset,
             curveBytes.constData(), static_cast<size_t>(kCurveLutBytes));
@@ -3329,6 +3508,11 @@ public:
                 : identityCurveLutBytes();
         const VkDeviceSize maskCurveStagingOffset =
             stagingOffset + layerImageBytes + kCurveLutBytes;
+        if (!activeStagingRangeAvailable(
+                maskCurveStagingOffset, kCurveLutBytes)) {
+          vkEndCommandBuffer(m_commandBuffer);
+          return QImage();
+        }
         std::memcpy(
             reinterpret_cast<uint8_t *>(m_stagingMapped) + maskCurveStagingOffset,
             maskCurveBytes.constData(), static_cast<size_t>(kCurveLutBytes));
@@ -3369,28 +3553,33 @@ public:
             return QImage();
           }
           reference = reference.convertToFormat(QImage::Format_RGBA8888);
+          if (!ensureMaskRawImage(slot, reference.size())) {
+            vkEndCommandBuffer(m_commandBuffer);
+            return QImage();
+          }
           const VkDeviceSize referenceOffset = stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
           if (!writeRgbaImageToStagingTopLeft(reference, referenceOffset)) {
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
           }
-          transitionImageLayout(m_commandBuffer, slot.maskImage, slot.maskLayout,
+          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
+                                slot.maskRawLayout,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-          slot.maskLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+          slot.maskRawLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
           VkBufferImageCopy region{};
           region.bufferOffset = referenceOffset;
           region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
           region.imageSubresource.layerCount = 1;
           region.imageExtent = {static_cast<uint32_t>(reference.width()),
                                 static_cast<uint32_t>(reference.height()), 1};
-          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer, slot.maskImage,
+          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
+                                 slot.maskRawImage,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-          transitionImageLayout(m_commandBuffer, slot.maskImage,
+          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-          slot.maskLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-          slot.maskUploaded = true;
-          preparedLayers[i].auxiliaryView = slot.maskView;
+          slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+          preparedLayers[i].auxiliaryView = slot.maskRawView;
         } else if (layer.maskTextureEnabled) {
           QImage maskUpload = layer.maskImage;
           if (maskUpload.isNull()) {
@@ -3399,13 +3588,6 @@ public:
           }
           if (maskUpload.format() != QImage::Format_RGBA8888) {
             maskUpload = maskUpload.convertToFormat(QImage::Format_RGBA8888);
-          }
-          if (static_cast<VkDeviceSize>(maskUpload.sizeInBytes()) >
-              layerImageBytes) {
-            maskUpload = maskUpload.scaled(
-                m_outputSize,
-                Qt::IgnoreAspectRatio,
-                Qt::SmoothTransformation);
           }
           if (!ensureMaskRawImage(slot, maskUpload.size())) {
             vkEndCommandBuffer(m_commandBuffer);
@@ -3451,7 +3633,7 @@ public:
           QImage whiteMask(m_outputSize, QImage::Format_RGBA8888);
           whiteMask.fill(Qt::white);
           const VkDeviceSize maskStagingOffset =
-              stagingOffset + layerImageBytes + kCurveLutBytes;
+              stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
           if (!writeRgbaImageToStagingTopLeft(whiteMask, maskStagingOffset)) {
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
@@ -4684,6 +4866,7 @@ private:
 
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
+  VkDeviceSize m_nonCoherentAtomSize = 1;
   VkDevice m_device = VK_NULL_HANDLE;
   uint32_t m_graphicsQueueFamily = UINT32_MAX;
   VkQueue m_graphicsQueue = VK_NULL_HANDLE;
@@ -5016,7 +5199,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       // its parent. It must never combine a requested source key with a
       // different bounded decode result (TIME.md).
       QImage mask = frame.frameNumber() >= 0
-          ? rawClipMaskImage(matteOwner, frame.frameNumber())
+          ? rawClipMaskImage(matteOwner, frame)
           : QImage{};
       if (generatedMaskMatte) {
         mask = applyCorrectionPolygonsToMaskImage(

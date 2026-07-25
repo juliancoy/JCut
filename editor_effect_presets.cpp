@@ -620,7 +620,10 @@ bool reconcileMaskMatteChildrenFromDisk(QVector<TimelineClip>& clips,
                 // never turn transient artifact availability into a durable
                 // change to the user's maskEnabled intent.
                 if (existing != clips.end()) {
-                    setAvailability(*existing, false, sidecar.readinessIssue);
+                    setAvailability(
+                        *existing,
+                        sidecar.isAvailableForPersistedTimeline(),
+                        sidecar.readinessIssue);
                     ++nextZ;
                 }
                 continue;

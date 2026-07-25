@@ -57,6 +57,16 @@ public:
         int proxyLookaheadFrames = 8;
     };
 
+    struct PresentationTelemetrySnapshot {
+        qint64 presentedFrames = 0;
+        qint64 uniquePresentationMisses = 0;
+        qint64 previewUpdateRequests = 0;
+        qint64 previewUpdateEventsDelivered = 0;
+        qint64 previewUpdatesDelivered = 0;
+        qint64 activeRequestedSourceFrame = -1;
+        qint64 activePresentedSourceFrame = -1;
+    };
+
     virtual ~PreviewSurface() = default;
     virtual QWidget* asWidget() = 0;
     virtual const QWidget* asWidget() const = 0;
@@ -152,6 +162,9 @@ public:
     virtual PlaybackTuning playbackTuning() const = 0;
     virtual QImage latestPresentedFrameImageForClip(const QString& clipId) const = 0;
     virtual QVector<PipelineStageSnapshot> livePipelineSnapshots() const = 0;
+    // This snapshot is read by the control-server thread. Implementations must
+    // only load thread-safe telemetry and must not touch QObject/UI state.
+    virtual PresentationTelemetrySnapshot presentationTelemetrySnapshot() const = 0;
     virtual QJsonObject pipelineHealthSnapshot() const = 0;
     virtual QJsonObject profilingSnapshot() const = 0;
     virtual void resetProfilingStats() = 0;

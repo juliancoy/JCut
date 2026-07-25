@@ -4,6 +4,10 @@
 #include <cstring>
 #include <memory>
 
+extern "C" {
+#include <libavutil/frame.h>
+}
+
 namespace {
 
 std::int64_t currentTimestampMs()
@@ -33,10 +37,18 @@ size_t FrameData::memoryUsage() const {
 
 FrameHandle::FrameHandle() = default;
 
-FrameHandle FrameHandle::createCpuFrame(const QImage& image, int64_t frameNum, const QString& path) {
+FrameHandle FrameHandle::createCpuFrame(
+    const QImage& image,
+    int64_t frameNum,
+    const QString& path,
+    int64_t sourcePresentationTimestamp) {
     FrameHandle handle;
     handle.d = new FrameData();
-    handle.d->payload.setIdentity(frameNum, path.toStdString(), currentTimestampMs());
+    handle.d->payload.setIdentity(
+        frameNum,
+        path.toStdString(),
+        currentTimestampMs(),
+        sourcePresentationTimestamp);
     handle.d->payload.setSize({image.width(), image.height()});
     if (!image.isNull()) {
         const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
@@ -73,7 +85,11 @@ FrameHandle FrameHandle::createHardwareFrame(const AVFrame* frame,
     if (!handle.d->payload.cloneHardwareFrame(frame, swPixelFormat)) {
         return FrameHandle();
     }
-    handle.d->payload.setIdentity(frameNum, path.toStdString(), currentTimestampMs());
+    handle.d->payload.setIdentity(
+        frameNum,
+        path.toStdString(),
+        currentTimestampMs(),
+        frame->best_effort_timestamp);
     return handle;
 }
 
@@ -81,7 +97,9 @@ bool FrameHandle::operator==(const FrameHandle& other) const {
     if (d.constData() == other.d.constData()) return true;
     if (!d || !other.d) return false;
     return d->payload.sourcePath() == other.d->payload.sourcePath() &&
-           d->payload.frameNumber() == other.d->payload.frameNumber();
+           d->payload.frameNumber() == other.d->payload.frameNumber() &&
+           d->payload.sourcePresentationTimestamp() ==
+               other.d->payload.sourcePresentationTimestamp();
 }
 
 QImage FrameHandle::cpuImage() const {

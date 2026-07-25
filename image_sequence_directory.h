@@ -23,7 +23,8 @@ struct ImageSequenceDirectoryInfo {
 
 // Detects the same numbered-image-directory convention used by the Qt media
 // browser and returns every frame of the dominant extension in natural order.
-// Results are cached by absolute directory path and directory modification time.
+// Results are cached by absolute path and revalidate directory metadata at most
+// once per second so render-time lookups stay memory-only.
 ImageSequenceDirectoryInfo probeImageSequenceDirectory(
     const std::filesystem::path& path);
 

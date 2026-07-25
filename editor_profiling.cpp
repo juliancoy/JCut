@@ -43,7 +43,8 @@ QJsonArray pipelineStagesToJson(const QVector<PreviewSurface::PipelineStageSnaps
 
 } // namespace
 
-QJsonObject EditorWindow::playbackStageMetricsSnapshot() const
+QJsonObject EditorWindow::playbackStageMetricsSnapshot(
+    const QJsonObject& previewSnapshot) const
 {
     QJsonObject stages;
     stages.insert(QStringLiteral("clock_update"),
@@ -52,11 +53,10 @@ QJsonObject EditorWindow::playbackStageMetricsSnapshot() const
     stages.insert(QStringLiteral("playback_sample_apply"),
                   editor::playbackStageMetricToJson(m_playbackSampleApplyStageMetric,
                                             QStringLiteral("editor")));
-    if (m_preview) {
-        mergePlaybackStageMetricObjects(
-            &stages,
-            m_preview->profilingSnapshot().value(QStringLiteral("playback_pipeline_stages")).toObject());
-    }
+    mergePlaybackStageMetricObjects(
+        &stages,
+        previewSnapshot.value(
+            QStringLiteral("playback_pipeline_stages")).toObject());
     return stages;
 }
 
@@ -165,8 +165,10 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("slow_inspector_refresh_count"), m_inspectorRefreshSlowCount.load()},
         {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}};
 
+    QJsonObject previewSnapshot;
     if (m_preview) {
-        snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
+        previewSnapshot = m_preview->profilingSnapshot();
+        snapshot[QStringLiteral("preview")] = previewSnapshot;
     }
 
     if (m_audioEngine) {
@@ -195,7 +197,8 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},
         {QStringLiteral("last"), m_lastRenderProfile}};
-    snapshot[QStringLiteral("playback_pipeline_stages")] = playbackStageMetricsSnapshot();
+    snapshot[QStringLiteral("playback_pipeline_stages")] =
+        playbackStageMetricsSnapshot(previewSnapshot);
     snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
     snapshot[QStringLiteral("speakers_refresh")] = m_speakersTab
         ? QJsonObject{
@@ -578,7 +581,8 @@ QJsonObject EditorWindow::pipelineSnapshot(bool verbose) const
         preview.insert(QStringLiteral("diagnostic_detail"),
                        QStringLiteral("compact stage state; use /pipeline?verbose=1 for full overlay dumps"));
     }
-    preview.insert(QStringLiteral("playback_pipeline_stages"), playbackStageMetricsSnapshot());
+    preview.insert(QStringLiteral("playback_pipeline_stages"),
+                   playbackStageMetricsSnapshot(preview));
     return preview;
 }
 

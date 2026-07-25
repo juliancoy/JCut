@@ -384,7 +384,7 @@ void TimelineRenderer::paint(QPainter* painter) {
 
         const QString transcriptPath = transcriptWorkingPathForClip(clip);
         const bool transcriptExists =
-            !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+            transcriptPathExistsWithBoundedRefresh(transcriptPath);
         if (transcriptExists) {
             const QRect transcriptBarRect(visibleClipRect.left() + 2,
                                           barBottom - barHeight + 1,

@@ -576,23 +576,18 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
     QVERIFY(background.save(backgroundPath));
     QVERIFY(subject.save(subjectPath));
 
-    const QString maskDir = dir.filePath(QStringLiteral("subject_birefnet_alpha_masks"));
+    const QString maskDir = dir.filePath(QStringLiteral("subject_manual_alpha"));
     QVERIFY(QDir().mkpath(maskDir));
-    QImage mask(64, 64, QImage::Format_Grayscale8);
+    // Keep the raw mask larger than the output so this exercises fence-safe
+    // staging growth and Vulkan mask preparation rather than a CPU resize.
+    QImage mask(256, 256, QImage::Format_Grayscale8);
     mask.fill(0);
-    for (int y = 16; y < 32; ++y) {
+    for (int y = 64; y < 128; ++y) {
         uchar* row = mask.scanLine(y);
-        for (int x = 16; x < 24; ++x) row[x] = 255;
-        for (int x = 24; x < 32; ++x) row[x] = 128;
+        for (int x = 64; x < 96; ++x) row[x] = 255;
+        for (int x = 96; x < 128; ++x) row[x] = 128;
     }
     QVERIFY(mask.save(QDir(maskDir).filePath(QStringLiteral("frame_000001.png"))));
-    QFile frameMap(QDir(maskDir).filePath(QStringLiteral("jcut_frame_map.tsv")));
-    QVERIFY(frameMap.open(QIODevice::WriteOnly));
-    frameMap.write("# source_frame\tmask_frame\n0\t0\n");
-    frameMap.close();
-    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(maskDir, subjectPath));
-    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
-        maskDir, subjectPath, true));
 
     TimelineClip backgroundClip = makeImageClip(backgroundPath);
     backgroundClip.id = QStringLiteral("mask-shadow-background");
@@ -622,8 +617,10 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
     markerClip.videoEnabled = true;
     markerClip.maskForegroundLayerEnabled = false;
     markerClip.trackIndex = 2;
-    QVERIFY2(!rawClipMaskImage(markerClip, 0).isNull(),
-             "Mapped continuous-alpha fixture must resolve its first frame.");
+    QImage loadedMask;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(loadedMask = rawClipMaskImage(markerClip, 0)).isNull(),
+        3000);
 
     render_detail::OffscreenVulkanRenderer renderer;
     QString error;

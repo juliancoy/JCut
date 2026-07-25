@@ -8,7 +8,8 @@
 namespace jcut::core {
 
 enum class PixelFormat {
-    Rgba8
+    Rgba8,
+    Gray8,
 };
 
 struct ImageBuffer {

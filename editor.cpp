@@ -297,11 +297,13 @@ EditorWindow::EditorWindow(quint16 controlPort)
             this, [this]() {
                 const qint64 completedGeneration =
                     m_transcriptNormalizeRefreshWatcher.property("generation").toLongLong();
-                if (completedGeneration < m_appliedTranscriptNormalizeRefreshGeneration) {
-                    if (m_transcriptNormalizeRefreshGeneration > completedGeneration &&
-                        !m_transcriptNormalizeRefreshTimer.isActive()) {
+                if (completedGeneration < m_transcriptNormalizeRefreshGeneration) {
+                    if (!m_transcriptNormalizeRefreshTimer.isActive()) {
                         startTranscriptNormalizeRangeRefresh();
                     }
+                    return;
+                }
+                if (completedGeneration < m_appliedTranscriptNormalizeRefreshGeneration) {
                     return;
                 }
                 m_appliedTranscriptNormalizeRefreshGeneration = completedGeneration;
@@ -315,10 +317,6 @@ EditorWindow::EditorWindow(quint16 controlPort)
                 if (m_audioEngine) {
                     m_audioEngine->setTranscriptNormalizeRanges(
                         m_transcriptNormalizeRefreshWatcher.result());
-                }
-                if (m_transcriptNormalizeRefreshGeneration > completedGeneration &&
-                    !m_transcriptNormalizeRefreshTimer.isActive()) {
-                    startTranscriptNormalizeRangeRefresh();
                 }
             });
     connect(&m_transcriptTextCompanionBackfillWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
@@ -509,7 +507,8 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
         m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         if (seekPlayback) {
-            m_audioEngine->seek(currentFrame);
+            m_audioEngine->seekToTimelineSample(
+                frameToSamples(currentFrame));
         }
     }
 
@@ -2421,7 +2420,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (!startupMarking) {
         setCurrentFrame(currentFrame);
         if (m_audioEngine) {
-            m_audioEngine->seek(currentFrame);
+            m_audioEngine->seekToTimelineSample(
+                frameToSamples(currentFrame));
         }
         markStartup(QStringLiteral("apply_state.seek.end"));
     } else {
