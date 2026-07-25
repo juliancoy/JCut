@@ -475,6 +475,36 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->edgeFillBrightness = std::clamp(valueOr(value, "edgeFillBrightness", 0.0), -1.0, 1.0);
     clip->edgeFillSaturation = std::clamp(valueOr(value, "edgeFillSaturation", 1.0), 0.0, 3.0);
     clip->effectPreset = stringOr(value, "effectPreset", "none");
+    clip->effectEnabled = valueOr(value, "effectEnabled", true);
+    const json& effectEnabledKeyframes =
+        value.value("effectEnabledKeyframes", json::array());
+    if (effectEnabledKeyframes.is_array()) {
+        for (const json& keyframeValue : effectEnabledKeyframes) {
+            if (!keyframeValue.is_object()) continue;
+            clip->effectEnabledKeyframes.push_back(jcut::EditorBoolKeyframe{
+                std::clamp<std::int64_t>(
+                    valueOr(keyframeValue, "frame", std::int64_t{0}),
+                    0,
+                    std::max(0, clip->durationFrames - 1)),
+                valueOr(keyframeValue, "enabled", true)});
+        }
+        std::sort(
+            clip->effectEnabledKeyframes.begin(),
+            clip->effectEnabledKeyframes.end(),
+            [](const auto& left, const auto& right) {
+                return left.frame < right.frame;
+            });
+    }
+    clip->effectModulationMode =
+        stringOr(value, "effectModulationMode", "none");
+    clip->effectModulationTarget =
+        stringOr(value, "effectModulationTarget", "scale");
+    clip->effectModulationAmount = std::clamp(
+        valueOr(value, "effectModulationAmount", 0.0), -512.0, 512.0);
+    clip->effectModulationRate = std::clamp(
+        valueOr(value, "effectModulationRate", 1.0), 0.0, 20.0);
+    clip->effectModulationPhaseDegrees = std::clamp(
+        valueOr(value, "effectModulationPhaseDegrees", 0.0), -360.0, 360.0);
     clip->effectRows = valueOr(value, "effectRows", 32);
     clip->effectSpeed = valueOr(value, "effectSpeed", 1.0);
     clip->effectScale = valueOr(value, "effectScale", 1.0);
@@ -767,7 +797,12 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             valueOr(transport, "audioMuted", false);
         document->transport.audioVolume = std::clamp(
             valueOr(transport, "audioVolume", 0.8f), 0.0f, 1.0f);
-        document->transport.previewZoom = valueOr(transport, "previewZoom", 1.0f);
+        document->transport.previewZoom =
+            jcut::normalizedEditorPreviewZoom(
+                valueOr(
+                    transport,
+                    "previewZoom",
+                    jcut::kEditorDefaultPreviewZoom));
         document->transport.currentFrame = valueOr(transport, "currentFrame", 0);
     }
 
@@ -881,7 +916,12 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
         valueOr(root, "audioMuted", false);
     document->transport.audioVolume = std::clamp(
         valueOr(root, "audioVolume", 0.8f), 0.0f, 1.0f);
-    document->transport.previewZoom = valueOr(root, "timelineZoom", 1.0f);
+    document->transport.previewZoom =
+        jcut::normalizedEditorPreviewZoom(
+            valueOr(
+                root,
+                "previewZoom",
+                jcut::kEditorDefaultPreviewZoom));
     document->panels.showWaveform = valueOr(root, "audioWaveformVisible", true);
     document->panels.showTranscript = true;
     document->panels.showScopes = false;
@@ -1528,6 +1568,20 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["edgeFillBrightness"] = clip.edgeFillBrightness;
     (*out)["edgeFillSaturation"] = clip.edgeFillSaturation;
     (*out)["effectPreset"] = clip.effectPreset;
+    (*out)["effectEnabled"] = clip.effectEnabled;
+    json effectEnabledKeyframes = json::array();
+    for (const jcut::EditorBoolKeyframe& keyframe : clip.effectEnabledKeyframes) {
+        effectEnabledKeyframes.push_back({
+            {"frame", keyframe.frame},
+            {"enabled", keyframe.enabled}});
+    }
+    (*out)["effectEnabledKeyframes"] = std::move(effectEnabledKeyframes);
+    (*out)["effectModulationMode"] = clip.effectModulationMode;
+    (*out)["effectModulationTarget"] = clip.effectModulationTarget;
+    (*out)["effectModulationAmount"] = clip.effectModulationAmount;
+    (*out)["effectModulationRate"] = clip.effectModulationRate;
+    (*out)["effectModulationPhaseDegrees"] =
+        clip.effectModulationPhaseDegrees;
     (*out)["effectRows"] = clip.effectRows;
     (*out)["effectSpeed"] = clip.effectSpeed;
     (*out)["effectScale"] = clip.effectScale;
@@ -1769,7 +1823,9 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["audioMuted"] = document.transport.audioMuted;
     root["audioVolume"] = document.transport.audioVolume;
     root["exportPlaybackSpeed"] = document.exportRequest.playbackSpeed;
-    root["timelineZoom"] = document.transport.previewZoom;
+    root["previewZoom"] =
+        jcut::normalizedEditorPreviewZoom(
+            document.transport.previewZoom);
     root["audioWaveformVisible"] = document.panels.showWaveform;
     root["playbackAudioWarpMode"] =
         std::string(jcut::editorAudioTreatmentId(document.audioTreatment));

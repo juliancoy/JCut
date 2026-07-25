@@ -65,6 +65,8 @@ private slots:
   void transcriptTimingEditsInvertDisplayPadding();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
+  void exportPreviewUsesGpuDoubleBufferOnPrimarySurface();
+  void exportRunsOffGuiThreadWhilePrimarySurfacePresents();
 };
 
 namespace {
@@ -152,6 +154,8 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesQtUpdateContract(
           ? source.mid(frameReady, rendererEnd - frameReady)
           : QString();
   QVERIFY2(source.contains(QStringLiteral("requestUpdate();")) &&
+               !source.contains(QStringLiteral(
+                   "QCoreApplication::postEvent(this, new QEvent(QEvent::UpdateRequest))")) &&
                !source.contains(QStringLiteral("m_updateDeliveryQueued")) &&
                !source.contains(QStringLiteral("kStalePreviewUpdateMs")) &&
                source.contains(QStringLiteral("if (!m_updatePending)")) &&
@@ -159,7 +163,9 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesQtUpdateContract(
                !afterFrameReady.contains(QStringLiteral("schedulePreviewUpdate")) &&
                surface.contains(QStringLiteral("setCurrentPlaybackSample")) &&
                surface.contains(QStringLiteral("requestNativeUpdate();")),
-           "preview rendering must accept only latched Qt update requests and let timeline playback ticks schedule frames instead of self-rearming a UI-starving present loop");
+           "preview rendering must use Qt's compositor-paced update contract "
+           "and let timeline playback ticks schedule frames without bypassing "
+           "Wayland frame callbacks or self-rearming a UI-starving present loop");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -2861,6 +2867,95 @@ void TestDirectVulkanHandoffPipelineContract::
                "pos = vec2(-1.0, -1.0);\n        unitUv = vec2(0.0, 1.0);")),
            "text shader must not use legacy Y-flipped glyph UVs in the "
            "Vulkan presenter");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    exportPreviewUsesGpuDoubleBufferOnPrimarySurface() {
+  const QString frameContract =
+      readSourceFile(QStringLiteral("core/offscreen_vulkan_frame.h"));
+  const QString producer =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString presenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString exportLoop =
+      readSourceFile(QStringLiteral("render_export.cpp"));
+  const QString exportUi =
+      readSourceFile(QStringLiteral("editor_render_tools.cpp"));
+
+  QVERIFY2(frameContract.contains(QStringLiteral("readySemaphoreFd")) &&
+               frameContract.contains(QStringLiteral("consumedSemaphoreFd")) &&
+               frameContract.contains(QStringLiteral("bufferIndex")) &&
+               frameContract.contains(QStringLiteral("generation")),
+           "the GPU preview frame contract must identify both synchronization "
+           "directions and the published double-buffer generation");
+  QVERIFY2(producer.contains(QStringLiteral("m_previewSlots.resize(2)")) &&
+               producer.contains(QStringLiteral("slot.readySemaphore")) &&
+               producer.contains(QStringLiteral("slot.consumedSemaphore")) &&
+               producer.contains(QStringLiteral("VK_QUEUE_FAMILY_EXTERNAL")),
+           "the export renderer must own exactly two externally synchronized "
+           "GPU preview images");
+  QVERIFY2(presenter.contains(QStringLiteral("m_gpuExportPreviewSlots")) &&
+               presenter.contains(QStringLiteral("recordFrameCopy(")) &&
+               presenter.contains(QStringLiteral(
+                   "m_gpuExportPreviewFrames.takeFirst()")) &&
+               presenter.contains(QStringLiteral(
+                   "m_owner->hasGpuExportPreviewFrames()")),
+           "the primary Vulkan presenter must import, consume, and drain GPU "
+           "export preview publications");
+  QVERIFY2(exportLoop.contains(QStringLiteral(
+               "publishLastFrameForGpuPreview")) &&
+               exportLoop.contains(QStringLiteral(
+                   "while (!willQueueAsyncGpuFrame")) &&
+               exportLoop.contains(QStringLiteral(
+                   "releasePreview.releaseGpuPreview = true")),
+           "the export loop must publish GPU frames, preserve encoder timestamp "
+           "order, and release the preview consumer before renderer teardown");
+  QVERIFY2(exportUi.contains(QStringLiteral(
+               "m_preview->setGpuExportPreviewFrame")) &&
+               exportUi.contains(QStringLiteral(
+                   "m_preview->clearGpuExportPreview")) &&
+               !exportUi.contains(QStringLiteral("ExportVulkanPreviewWidget")),
+           "export progress must reuse the editor's primary Vulkan surface and "
+           "must not create a secondary preview window");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    exportRunsOffGuiThreadWhilePrimarySurfacePresents() {
+  const QString source =
+      readSourceFile(QStringLiteral("editor_render_tools.cpp"));
+  const qsizetype methodBegin = source.indexOf(QStringLiteral(
+      "bool EditorWindow::renderTimelineFromOutputRequest"));
+  const qsizetype methodEnd = source.indexOf(QStringLiteral(
+      "\nvoid EditorWindow::exportVideoForSpeakersOnSelectedClip"), methodBegin);
+  const QString method =
+      methodBegin >= 0 && methodEnd > methodBegin
+          ? source.mid(methodBegin, methodEnd - methodBegin)
+          : QString();
+
+  QVERIFY2(!method.isEmpty(),
+           "renderTimelineFromOutputRequest must be readable");
+  QVERIFY2(method.contains(QStringLiteral("QtConcurrent::run")) &&
+               method.contains(QStringLiteral("QFutureWatcher<RenderResult>")) &&
+               method.contains(QStringLiteral("renderEventLoop.exec()")),
+           "the export engine must run on a worker while the GUI event loop "
+           "continues driving the primary Vulkan swapchain");
+  QVERIFY2(method.contains(QStringLiteral("Qt::BlockingQueuedConnection")) &&
+               method.contains(QStringLiteral("progress.gpuPreviewFrame.valid")) &&
+               method.contains(QStringLiteral("progress.releaseGpuPreview")),
+           "only GPU preview ownership transitions may synchronously marshal "
+           "to the GUI thread");
+  QVERIFY2(method.contains(QStringLiteral("Qt::QueuedConnection")) &&
+               method.contains(QStringLiteral("latestProgress")) &&
+               method.contains(QStringLiteral("updateQueued")),
+           "ordinary export progress must use one coalesced non-blocking GUI "
+           "update instead of back-pressuring the render worker");
+  QVERIFY2(method.contains(QStringLiteral("std::atomic_bool")) &&
+               method.contains(QStringLiteral("memory_order_relaxed")),
+           "render cancellation must remain race-free after progress delivery "
+           "is made asynchronous");
+  QVERIFY2(!method.contains(QStringLiteral("QCoreApplication::processEvents")),
+           "export progress must not re-enter Vulkan presentation through "
+           "manual event pumping");
 }
 
 QTEST_MAIN(TestDirectVulkanHandoffPipelineContract)

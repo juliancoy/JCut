@@ -317,6 +317,7 @@ private:
     int64_t m_dragOriginalSourceInSamples = 0;
     QVector<TimelineClip::TransformKeyframe> m_dragOriginalTransformKeyframes;
     QVector<TimelineClip::TitleKeyframe> m_dragOriginalTitleKeyframes;
+    QVector<TimelineClip::BoolKeyframe> m_dragOriginalEffectEnabledKeyframes;
     int64_t m_dragOffsetFrames = 0;
     int64_t m_dragOffsetSamples = 0;
     QSet<QString> m_dragMoveClipIds;

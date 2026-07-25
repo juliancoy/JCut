@@ -383,6 +383,16 @@ public:
     }
     virtual bool copyLastFrameToBgra(AVFrame* frame,
                                      qint64* readbackMs = nullptr) = 0;
+    virtual bool publishLastFrameForGpuPreview(
+        OffscreenVulkanFrame* frame,
+        QString* errorMessage = nullptr) {
+        Q_UNUSED(frame)
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("GPU preview handoff is unsupported.");
+        }
+        return false;
+    }
+    virtual void finishGpuPreviewPublication() {}
     virtual bool supportsCudaExternalMemoryInterop() const { return false; }
     virtual bool supportsNv12CudaTransfer() const { return false; }
     virtual QString cudaExternalMemoryStatus() const { return QStringLiteral("unsupported"); }
@@ -425,6 +435,10 @@ public:
                                           qint64* readbackMs = nullptr) override;
     bool copyLastFrameToBgra(AVFrame* frame,
                              qint64* readbackMs = nullptr) override;
+    bool publishLastFrameForGpuPreview(
+        OffscreenVulkanFrame* frame,
+        QString* errorMessage = nullptr) override;
+    void finishGpuPreviewPublication() override;
     bool lastRenderedVulkanFrame(OffscreenVulkanFrame* frame,
                                  QString* errorMessage = nullptr) const;
     bool supportsCudaExternalMemoryInterop() const override;

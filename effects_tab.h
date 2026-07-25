@@ -31,6 +31,16 @@ public:
         QDoubleSpinBox* effectScaleSpin = nullptr;
         QCheckBox* effectAlternateDirectionCheck = nullptr;
         QCheckBox* effectSpeechSyncCheck = nullptr;
+        QCheckBox* effectEnabledCheck = nullptr;
+        QPushButton* effectKeyframeOnButton = nullptr;
+        QPushButton* effectKeyframeOffButton = nullptr;
+        QPushButton* effectKeyframeRemoveButton = nullptr;
+        QLabel* effectKeyframesLabel = nullptr;
+        QComboBox* effectModulationModeCombo = nullptr;
+        QComboBox* effectModulationTargetCombo = nullptr;
+        QDoubleSpinBox* effectModulationAmountSpin = nullptr;
+        QDoubleSpinBox* effectModulationRateSpin = nullptr;
+        QDoubleSpinBox* effectModulationPhaseSpin = nullptr;
         QSpinBox* differenceReferenceFramesSpin = nullptr;
         QDoubleSpinBox* differenceThresholdSpin = nullptr;
         QDoubleSpinBox* differenceSoftnessSpin = nullptr;
@@ -56,6 +66,7 @@ public:
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;
         std::function<bool(const TimelineClip&)> clipHasVisuals;
+        std::function<int64_t()> currentTimelineFrame;
     };
 
     explicit EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -64,6 +75,8 @@ public:
     void wire();
     void refresh();
     void applyEffectPreset(bool pushHistory = false);
+    void setEffectEnabledKeyframe(bool enabled);
+    void removeEffectEnabledKeyframe();
 
 signals:
     void effectsApplied();

@@ -563,6 +563,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
             m_dragOriginalSourceInSamples = clipSourceInSamples(m_clips[hitIndex]);
             m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
             m_dragOriginalTitleKeyframes = m_clips[hitIndex].titleKeyframes;
+            m_dragOriginalEffectEnabledKeyframes =
+                m_clips[hitIndex].effectEnabledKeyframes;
             m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
             m_dragOffsetSamples = sampleFromX(event->position().x()) - m_dragOriginalStartSample;
             m_dragMoveClipIds.clear();
@@ -1005,6 +1007,14 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 }
                 normalizeClipTransformKeyframes(clip);
             }
+            clip.effectEnabledKeyframes.clear();
+            for (const TimelineClip::BoolKeyframe& keyframe :
+                 m_dragOriginalEffectEnabledKeyframes) {
+                if (keyframe.frame < trimDelta) continue;
+                TimelineClip::BoolKeyframe shifted = keyframe;
+                shifted.frame -= trimDelta;
+                clip.effectEnabledKeyframes.push_back(shifted);
+            }
             normalizeMaskMatteClips(m_clips);
             m_currentFrame = newStartFrame;
         } else if (m_dragMode == ClipDragMode::TrimRight) {
@@ -1066,6 +1076,13 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                     }
                 }
                 normalizeClipTransformKeyframes(clip);
+            }
+            clip.effectEnabledKeyframes.clear();
+            for (const TimelineClip::BoolKeyframe& keyframe :
+                 m_dragOriginalEffectEnabledKeyframes) {
+                if (keyframe.frame < clip.durationFrames) {
+                    clip.effectEnabledKeyframes.push_back(keyframe);
+                }
             }
             normalizeMaskMatteClips(m_clips);
             m_currentFrame = newEndFrame;
@@ -1162,6 +1179,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         m_dragOriginalSourceInFrame = 0;
         m_dragOriginalTransformKeyframes.clear();
         m_dragOriginalTitleKeyframes.clear();
+        m_dragOriginalEffectEnabledKeyframes.clear();
         m_dragMoveClipIds.clear();
         m_dragMoveOriginalStartFrames.clear();
         m_dragMoveOriginalStartSamples.clear();

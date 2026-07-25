@@ -1683,6 +1683,16 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->effectScaleSpin(),
             m_inspectorPane->effectAlternateDirectionCheck(),
             m_inspectorPane->effectSpeechSyncCheck(),
+            m_inspectorPane->effectEnabledCheck(),
+            m_inspectorPane->effectKeyframeOnButton(),
+            m_inspectorPane->effectKeyframeOffButton(),
+            m_inspectorPane->effectKeyframeRemoveButton(),
+            m_inspectorPane->effectKeyframesLabel(),
+            m_inspectorPane->effectModulationModeCombo(),
+            m_inspectorPane->effectModulationTargetCombo(),
+            m_inspectorPane->effectModulationAmountSpin(),
+            m_inspectorPane->effectModulationRateSpin(),
+            m_inspectorPane->effectModulationPhaseSpin(),
             m_inspectorPane->differenceReferenceFramesSpin(),
             m_inspectorPane->differenceThresholdSpin(),
             m_inspectorPane->differenceSoftnessSpin(),
@@ -1713,7 +1723,10 @@ void EditorWindow::createEffectsTab()
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Effects")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this](const TimelineClip& clip) { return clipHasVisuals(clip); }});
+            [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+            [this]() -> int64_t {
+                return m_timeline ? m_timeline->currentFrame() : 0;
+            }});
     m_effectsTab->wire();
 }
 

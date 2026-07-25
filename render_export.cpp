@@ -94,19 +94,6 @@ bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
     return true;
 }
 
-QImage imageFromBgraFrame(const AVFrame* frame)
-{
-    if (!frame || frame->format != AV_PIX_FMT_BGRA || !frame->data[0] ||
-        frame->width <= 0 || frame->height <= 0 || frame->linesize[0] <= 0) {
-        return QImage();
-    }
-    return QImage(frame->data[0],
-                  frame->width,
-                  frame->height,
-                  frame->linesize[0],
-                  QImage::Format_ARGB32).copy();
-}
-
 struct ExportPathDecision {
     bool gpuNv12Conversion = false;
     bool gpuYuv420pConversion = false;
@@ -789,18 +776,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         return result;
     }
 
-    AVFrame* exportPreviewFrame = nullptr;
-    if (progressCallback && useGpuRenderer && !request.createVideoFromImageSequence) {
-        exportPreviewFrame = av_frame_alloc();
-        if (exportPreviewFrame) {
-            exportPreviewFrame->format = AV_PIX_FMT_BGRA;
-            exportPreviewFrame->width = codecCtx->width;
-            exportPreviewFrame->height = codecCtx->height;
-            if (av_frame_get_buffer(exportPreviewFrame, 32) < 0) {
-                av_frame_free(&exportPreviewFrame);
-            }
-        }
-    }
     constexpr int kAsyncGpuFrameCount = 5;
     constexpr int kAsyncGpuMaxPendingReadbacks = 4;
     QVector<AVFrame*> asyncGpuFrames;
@@ -831,7 +806,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             for (AVFrame* frame : asyncGpuFrames) {
                 av_frame_free(&frame);
             }
-            av_frame_free(&exportPreviewFrame);
             av_frame_free(&sourceFrame);
             av_frame_free(&encodedFrame);
             sws_freeContext(swsCtx);
@@ -888,6 +862,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QJsonObject skippedReasonCounts;
     QJsonObject lastExportFaceTransformDiagnostics;
     QImage lastExportPreviewFrame;
+    int64_t renderedFramesScheduled = 0;
     const QString exportPipeline = exportPath.pipeline;
     const QString gpuTransferLabel = exportPath.gpuTransferLabel;
     const QString exportPathFallbackReason = exportPath.fallbackReason;
@@ -917,8 +892,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             return true;
         }
         PendingAsyncGpuFrame pending = pendingAsyncGpuFrames.takeFirst();
-        if (!pending.frame ||
-            (pending.frame->format != AV_PIX_FMT_CUDA && av_frame_make_writable(pending.frame) < 0)) {
+        if (!pending.frame || av_frame_make_writable(pending.frame) < 0) {
             errorMessage = QStringLiteral("Failed to make async Vulkan encoder frame writable.");
             return false;
         }
@@ -1209,20 +1183,23 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 }
             }
 
+            render_detail::OffscreenVulkanFrame gpuPreviewFrame;
             if (progressCallback) {
                 if (!rendered.isNull()) {
                     lastExportPreviewFrame = rendered;
                 } else if (directGpuFrameReadback &&
-                           exportPreviewFrame &&
                            activeRenderer &&
-                           (framesCompleted == 0 || (framesCompleted % 30) == 0) &&
-                           av_frame_make_writable(exportPreviewFrame) >= 0) {
-                    qint64 previewReadbackMs = 0;
-                    if (activeRenderer->copyLastFrameToBgra(exportPreviewFrame, &previewReadbackMs)) {
-                        lastExportPreviewFrame = imageFromBgraFrame(exportPreviewFrame);
+                           (renderedFramesScheduled % 30) == 0) {
+                    QString previewError;
+                    if (!activeRenderer->publishLastFrameForGpuPreview(
+                            &gpuPreviewFrame, &previewError)) {
+                        qWarning().noquote()
+                            << QStringLiteral("GPU export preview unavailable: %1")
+                                   .arg(previewError);
                     }
                 }
             }
+            ++renderedFramesScheduled;
 
             if (progressCallback) {
                 RenderProgress progress;
@@ -1277,11 +1254,28 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 } else if (!directNv12Conversion) {
                     progress.previewFrame = rendered;
                 }
+                progress.gpuPreviewFrame = gpuPreviewFrame;
                 if (!progressCallback(progress)) {
                     result.cancelled = true;
                     errorMessage = QStringLiteral("Render cancelled.");
                     break;
                 }
+            }
+
+            const bool willQueueAsyncGpuFrame =
+                directGpuFrameReadback &&
+                rendered.isNull() &&
+                ((directNv12Conversion && vulkanGpuNv12Conversion) ||
+                 (!directNv12Conversion && vulkanGpuYuv420pConversion));
+            while (!willQueueAsyncGpuFrame &&
+                   errorMessage.isEmpty() &&
+                   !pendingAsyncGpuFrames.isEmpty()) {
+                if (!finishOldestAsyncGpuFrame()) {
+                    break;
+                }
+            }
+            if (!errorMessage.isEmpty()) {
+                break;
             }
 
             if ((!sourceFrame || av_frame_make_writable(sourceFrame) >= 0) &&
@@ -1317,7 +1311,10 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     if (!errorMessage.isEmpty()) {
                         break;
                     }
-                    if (gpuFrame->format != AV_PIX_FMT_CUDA && av_frame_make_writable(gpuFrame) < 0) {
+                    // NVENC can retain a CUDA surface after avcodec_send_frame().
+                    // Detach the pooled AVFrame before Vulkan writes the next image
+                    // or the encoder can observe overwritten frames out of order.
+                    if (av_frame_make_writable(gpuFrame) < 0) {
                         errorMessage = QStringLiteral("Failed to make async Vulkan encoder frame writable.");
                         break;
                     }
@@ -1543,7 +1540,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     for (AVFrame* frame : asyncGpuFrames) {
         av_frame_free(&frame);
     }
-    av_frame_free(&exportPreviewFrame);
     av_frame_free(&sourceFrame);
     av_frame_free(&encodedFrame);
     sws_freeContext(swsCtx);
@@ -1552,6 +1548,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
     if (audioState.codecCtx) {
         avcodec_free_context(&audioState.codecCtx);
+    }
+    if (progressCallback && useGpuRenderer) {
+        activeRenderer->finishGpuPreviewPublication();
+        RenderProgress releasePreview;
+        releasePreview.releaseGpuPreview = true;
+        progressCallback(releasePreview);
     }
     // Release Vulkan/CUDA external-memory imports while FFmpeg's CUDA device context is still alive.
     activeRenderer.reset();

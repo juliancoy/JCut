@@ -1,7 +1,6 @@
 #include "editor.h"
 
 #include "background_fill_effect.h"
-#include "export_vulkan_preview_widget.h"
 #include "speaker_export_harness.h"
 #include "speaker_section_export_core.h"
 
@@ -9,7 +8,9 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
@@ -28,8 +29,10 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
+#include <optional>
 
 using namespace editor;
 
@@ -828,7 +831,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     const bool verticalRenderOutput =
         effectiveRequest.outputSize.height() > effectiveRequest.outputSize.width();
 
-    bool localRenderCancelled = false;
+    std::atomic_bool localRenderCancelled{false};
     std::unique_ptr<QDialog> ownedProgressDialog;
     RenderProgressDialogControls localControls;
     if (!progressControls) {
@@ -847,14 +850,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         progressLayout->setContentsMargins(16, 16, 16, 16);
         progressLayout->setSpacing(10);
 
-        auto *renderPreviewWidget = new ExportVulkanPreviewWidget(progressDialog);
-
         auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), progressDialog);
         renderStatusLabel->setWordWrap(true);
         renderStatusLabel->setAlignment(Qt::AlignCenter);
-
-        auto *showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), progressDialog);
-        showRenderPreviewCheckBox->setChecked(true);
 
         auto *renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), progressDialog);
         renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -871,21 +869,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             auto *leftColumn = new QVBoxLayout;
             leftColumn->setSpacing(10);
             leftColumn->addWidget(renderStatusLabel);
-            leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
             leftColumn->addWidget(renderSourcesLabel);
             leftColumn->addWidget(renderSourcesList, 1);
 
-            auto *rightColumn = new QVBoxLayout;
-            rightColumn->setSpacing(10);
-            rightColumn->addWidget(renderPreviewWidget, 1);
-
             contentRow->addLayout(leftColumn, 3);
-            contentRow->addLayout(rightColumn, 2);
             progressLayout->addLayout(contentRow);
         } else {
             progressLayout->addWidget(renderStatusLabel);
-            progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
-            progressLayout->addWidget(renderPreviewWidget);
             progressLayout->addWidget(renderSourcesLabel);
             progressLayout->addWidget(renderSourcesList);
         }
@@ -900,17 +890,11 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         progressLayout->addLayout(buttonRow);
 
         QObject::connect(cancelRenderButton, &QPushButton::clicked, progressDialog, [&localRenderCancelled, cancelRenderButton]() {
-            localRenderCancelled = true;
+            localRenderCancelled.store(true, std::memory_order_relaxed);
             cancelRenderButton->setEnabled(false);
         });
-        QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, progressDialog, [renderPreviewWidget](bool checked) {
-            renderPreviewWidget->setVisible(checked);
-        });
-
         localControls.dialog = progressDialog;
         localControls.statusLabel = renderStatusLabel;
-        localControls.previewWidget = renderPreviewWidget;
-        localControls.previewCheckBox = showRenderPreviewCheckBox;
         localControls.sourcesList = renderSourcesList;
         localControls.progressBar = renderProgressBar;
         localControls.cancelled = &localRenderCancelled;
@@ -920,12 +904,11 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
 
     QDialog* progressDialog = progressControls->dialog;
     QLabel* renderStatusLabel = progressControls->statusLabel;
-    QLabel* renderPreviewLabel = progressControls->previewLabel;
-    ExportVulkanPreviewWidget* renderPreviewWidget = progressControls->previewWidget;
-    QCheckBox* showRenderPreviewCheckBox = progressControls->previewCheckBox;
     QPlainTextEdit* renderSourcesList = progressControls->sourcesList;
     QProgressBar* renderProgressBar = progressControls->progressBar;
-    bool* renderCancelled = progressControls->cancelled ? progressControls->cancelled : &localRenderCancelled;
+    std::atomic_bool* renderCancelled =
+        progressControls->cancelled ? progressControls->cancelled
+                                    : &localRenderCancelled;
     if (renderProgressBar) {
         renderProgressBar->setRange(0, static_cast<int>(qMin<int64_t>(totalFramesToRender, std::numeric_limits<int>::max())));
         renderProgressBar->setValue(0);
@@ -935,13 +918,6 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     }
     if (renderSourcesList) {
         renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
-    }
-    if (renderPreviewLabel) {
-        renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
-        renderPreviewLabel->setPixmap(QPixmap());
-    }
-    if (renderPreviewWidget) {
-        renderPreviewWidget->clearPreview();
     }
     if (progressDialog) {
         progressDialog->show();
@@ -1146,30 +1122,34 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     QElapsedTimer progressUiTimer;
     progressUiTimer.start();
     qint64 lastProgressUiUpdateMs = -1000;
-    qint64 lastEventPumpMs = -1000;
-    const RenderResult result = renderTimelineToFile(
-        effectiveRequest,
-        [this, renderStatusLabel, renderProgressBar, renderPreviewLabel, renderPreviewWidget,
-         renderSourcesList, showRenderPreviewCheckBox, renderCancelled,
+    const auto handleProgress =
+        [this, renderStatusLabel, renderProgressBar,
+         renderSourcesList, renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
-         activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs,
-         &lastEventPumpMs](const RenderProgress &progress)
+         activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs]
+        (const RenderProgress &progress)
         {
             const qint64 nowMs = progressUiTimer.elapsed();
-            const bool cancelled = renderCancelled && *renderCancelled;
+            if (progress.releaseGpuPreview) {
+                if (m_preview) {
+                    m_preview->clearGpuExportPreview();
+                }
+                return true;
+            }
+            if (progress.gpuPreviewFrame.valid && m_preview) {
+                m_preview->setGpuExportPreviewFrame(
+                    progress.gpuPreviewFrame);
+            }
+            const bool cancelled =
+                renderCancelled &&
+                renderCancelled->load(std::memory_order_relaxed);
             const bool finalProgress =
                 progress.totalFrames > 0 && progress.framesCompleted >= progress.totalFrames;
             const bool updateUi =
                 cancelled || finalProgress || lastProgressUiUpdateMs < 0 ||
                 nowMs - lastProgressUiUpdateMs >= 250;
-            const bool pumpEvents =
-                cancelled || lastEventPumpMs < 0 || nowMs - lastEventPumpMs >= 50;
 
             if (!updateUi) {
-                if (pumpEvents) {
-                    lastEventPumpMs = nowMs;
-                    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-                }
                 return !cancelled;
             }
 
@@ -1237,26 +1217,94 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                         .arg(formatEta(progress.estimatedRemainingMs))
                         .arg(metricsTable));
             }
-            if (showRenderPreviewCheckBox && showRenderPreviewCheckBox->isChecked() &&
-                !progress.previewFrame.isNull()) {
-                if (renderPreviewWidget) {
-                    renderPreviewWidget->setPreviewFrame(progress.previewFrame);
-                } else if (renderPreviewLabel) {
-                    const QPixmap pixmap = QPixmap::fromImage(progress.previewFrame).scaled(
-                        renderPreviewLabel->size(),
-                        Qt::KeepAspectRatio,
-                        Qt::SmoothTransformation);
-                    renderPreviewLabel->setPixmap(pixmap);
-                    renderPreviewLabel->setText(QString());
-                }
-            }
             if (renderSourcesList) {
                 renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
             }
-            lastEventPumpMs = nowMs;
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
             return !cancelled;
-        });
+        };
+
+    struct ProgressDispatchState {
+        std::mutex mutex;
+        std::optional<RenderProgress> latestProgress;
+        bool updateQueued = false;
+        std::function<bool(const RenderProgress&)> handler;
+    };
+    const auto progressDispatch =
+        std::make_shared<ProgressDispatchState>();
+    progressDispatch->handler = handleProgress;
+
+    QFutureWatcher<RenderResult> renderWatcher;
+    QEventLoop renderEventLoop;
+    QObject::connect(&renderWatcher, &QFutureWatcher<RenderResult>::finished,
+                     &renderEventLoop, &QEventLoop::quit);
+    renderWatcher.setFuture(QtConcurrent::run(
+        [this, effectiveRequest, progressDispatch, renderCancelled]() {
+            return renderTimelineToFile(
+                effectiveRequest,
+                [this, progressDispatch,
+                 renderCancelled](const RenderProgress &progress) {
+                    if (renderCancelled &&
+                        renderCancelled->load(std::memory_order_relaxed)) {
+                        return false;
+                    }
+
+                    if (progress.gpuPreviewFrame.valid ||
+                        progress.releaseGpuPreview) {
+                        bool continueRendering = false;
+                        QMetaObject::invokeMethod(
+                            this,
+                            [progressDispatch, &progress,
+                             &continueRendering]() {
+                                if (progressDispatch->handler) {
+                                    continueRendering =
+                                        progressDispatch->handler(progress);
+                                }
+                            },
+                            Qt::BlockingQueuedConnection);
+                        return continueRendering;
+                    }
+
+                    bool postUpdate = false;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            progressDispatch->mutex);
+                        progressDispatch->latestProgress = progress;
+                        if (!progressDispatch->updateQueued) {
+                            progressDispatch->updateQueued = true;
+                            postUpdate = true;
+                        }
+                    }
+                    if (postUpdate) {
+                        QMetaObject::invokeMethod(
+                            this,
+                            [progressDispatch]() {
+                                std::optional<RenderProgress> latest;
+                                {
+                                    std::lock_guard<std::mutex> lock(
+                                        progressDispatch->mutex);
+                                    latest = std::move(
+                                        progressDispatch->latestProgress);
+                                    progressDispatch->latestProgress.reset();
+                                    progressDispatch->updateQueued = false;
+                                }
+                                if (latest &&
+                                    progressDispatch->handler) {
+                                    progressDispatch->handler(*latest);
+                                }
+                            },
+                            Qt::QueuedConnection);
+                    }
+                    return !renderCancelled ||
+                        !renderCancelled->load(std::memory_order_relaxed);
+                });
+        }));
+    renderEventLoop.exec();
+    const RenderResult result = renderWatcher.result();
+    progressDispatch->handler = {};
+    {
+        std::lock_guard<std::mutex> lock(progressDispatch->mutex);
+        progressDispatch->latestProgress.reset();
+    }
     if (renderProgressBar) {
         renderProgressBar->setValue(renderProgressBar->maximum());
     }
@@ -1704,17 +1752,9 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     bulkLayout->setContentsMargins(16, 16, 16, 16);
     bulkLayout->setSpacing(10);
 
-    auto* renderPreviewWidget = new ExportVulkanPreviewWidget(&bulkDialog);
-
     auto* renderStatusLabel = new QLabel(QStringLiteral("Preparing bulk export..."), &bulkDialog);
     renderStatusLabel->setWordWrap(true);
     renderStatusLabel->setAlignment(Qt::AlignCenter);
-
-    auto* showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &bulkDialog);
-    showRenderPreviewCheckBox->setChecked(true);
-    QObject::connect(showRenderPreviewCheckBox, &QCheckBox::toggled, &bulkDialog, [renderPreviewWidget](bool checked) {
-        renderPreviewWidget->setVisible(checked);
-    });
 
     auto* renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &bulkDialog);
     renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -1770,14 +1810,9 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     auto* leftColumn = new QVBoxLayout;
     leftColumn->setSpacing(10);
     leftColumn->addWidget(renderStatusLabel);
-    leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
     leftColumn->addWidget(renderSourcesLabel);
     leftColumn->addWidget(renderSourcesList, 1);
-    auto* rightColumn = new QVBoxLayout;
-    rightColumn->setSpacing(10);
-    rightColumn->addWidget(renderPreviewWidget, 1);
     contentRow->addLayout(leftColumn, 3);
-    contentRow->addLayout(rightColumn, 2);
     bulkLayout->addLayout(contentRow);
     bulkLayout->addWidget(jobTable, 1);
 
@@ -1791,17 +1826,15 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     buttonRow->addWidget(cancelButton);
     bulkLayout->addLayout(buttonRow);
 
-    bool bulkCancelled = false;
+    std::atomic_bool bulkCancelled{false};
     QObject::connect(cancelButton, &QPushButton::clicked, &bulkDialog, [&bulkCancelled, cancelButton]() {
-        bulkCancelled = true;
+        bulkCancelled.store(true, std::memory_order_relaxed);
         cancelButton->setEnabled(false);
     });
 
     RenderProgressDialogControls bulkControls;
     bulkControls.dialog = &bulkDialog;
     bulkControls.statusLabel = renderStatusLabel;
-    bulkControls.previewWidget = renderPreviewWidget;
-    bulkControls.previewCheckBox = showRenderPreviewCheckBox;
     bulkControls.sourcesList = renderSourcesList;
     bulkControls.progressBar = renderProgressBar;
     bulkControls.cancelled = &bulkCancelled;
@@ -1814,7 +1847,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     int existingSkippedCount = 0;
     int failedCount = 0;
     for (BulkSectionExportJob& job : jobs) {
-        if (bulkCancelled) {
+        if (bulkCancelled.load(std::memory_order_relaxed)) {
             break;
         }
         if (job.alreadyExported) {
@@ -1844,7 +1877,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
             ++exportedCount;
             setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Exported"), QColor(QStringLiteral("#9be7b0")));
         } else {
-            if (bulkCancelled) {
+            if (bulkCancelled.load(std::memory_order_relaxed)) {
                 setBulkExportRowStatus(jobTable, job.row, QStringLiteral("Cancelled"), QColor(QStringLiteral("#fca5a5")));
                 break;
             }
@@ -1858,7 +1891,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     cancelButton->setEnabled(true);
     QObject::disconnect(cancelButton, nullptr, &bulkDialog, nullptr);
     QObject::connect(cancelButton, &QPushButton::clicked, &bulkDialog, &QDialog::accept);
-    if (bulkCancelled) {
+    if (bulkCancelled.load(std::memory_order_relaxed)) {
         renderStatusLabel->setText(QStringLiteral("Bulk export cancelled."));
     } else {
         renderStatusLabel->setText(QStringLiteral("Bulk export complete."));
@@ -1878,7 +1911,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
         summary += QStringLiteral("\n%1 section video(s) failed to export; see the render profile for details.")
                        .arg(failedCount);
     }
-    if (bulkCancelled) {
+    if (bulkCancelled.load(std::memory_order_relaxed)) {
         summary += QStringLiteral("\nBulk export was cancelled.");
     }
     const int mergedCount = validSections.size() - exportSections.size();

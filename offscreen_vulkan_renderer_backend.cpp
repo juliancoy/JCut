@@ -189,6 +189,18 @@ public:
     bool stagingHostCoherent = false;
     bool inFlight = false;
   };
+  struct PreviewSlot {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkSemaphore readySemaphore = VK_NULL_HANDLE;
+    VkSemaphore consumedSemaphore = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t memoryTypeIndex = UINT32_MAX;
+    std::uint64_t generation = 0;
+    bool published = false;
+    bool handlesExported = false;
+  };
   struct LayerTextureSlot {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -523,6 +535,74 @@ public:
         *errorMessage = QStringLiteral("Failed to create Vulkan image view.");
       }
       return false;
+    }
+
+    if (m_externalMemoryFdSupported &&
+        m_externalSemaphoreFdSupported &&
+        m_vkGetMemoryFdKHR &&
+        m_vkGetSemaphoreFdKHR) {
+      m_previewSlots.resize(2);
+      bool previewSlotsReady = true;
+      for (PreviewSlot &slot : m_previewSlots) {
+        VkImageCreateInfo previewImageInfo = imageInfo;
+        previewImageInfo.pNext = &externalImageInfo;
+        if (vkCreateImage(m_device, &previewImageInfo, nullptr, &slot.image) !=
+            VK_SUCCESS) {
+          previewSlotsReady = false;
+          break;
+        }
+        VkMemoryRequirements previewRequirements{};
+        vkGetImageMemoryRequirements(m_device, slot.image,
+                                     &previewRequirements);
+        const uint32_t previewMemoryType =
+            findMemoryType(m_physicalDevice,
+                           previewRequirements.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        slot.memoryTypeIndex = previewMemoryType;
+        VkExportMemoryAllocateInfo previewExport{};
+        previewExport.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+        previewExport.handleTypes =
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkMemoryAllocateInfo previewAllocation{};
+        previewAllocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        previewAllocation.pNext = &previewExport;
+        previewAllocation.allocationSize = previewRequirements.size;
+        previewAllocation.memoryTypeIndex = previewMemoryType;
+        if (previewMemoryType == UINT32_MAX ||
+            vkAllocateMemory(m_device, &previewAllocation, nullptr,
+                             &slot.memory) != VK_SUCCESS ||
+            vkBindImageMemory(m_device, slot.image, slot.memory, 0) !=
+                VK_SUCCESS) {
+          previewSlotsReady = false;
+          break;
+        }
+        VkImageViewCreateInfo previewViewInfo = viewInfo;
+        previewViewInfo.image = slot.image;
+        if (vkCreateImageView(m_device, &previewViewInfo, nullptr,
+                              &slot.view) != VK_SUCCESS) {
+          previewSlotsReady = false;
+          break;
+        }
+        VkExportSemaphoreCreateInfo semaphoreExport{};
+        semaphoreExport.sType =
+            VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        semaphoreExport.handleTypes =
+            VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        semaphoreInfo.pNext = &semaphoreExport;
+        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr,
+                              &slot.readySemaphore) != VK_SUCCESS ||
+            vkCreateSemaphore(m_device, &semaphoreInfo, nullptr,
+                              &slot.consumedSemaphore) != VK_SUCCESS) {
+          previewSlotsReady = false;
+          break;
+        }
+      }
+      if (!previewSlotsReady) {
+        qWarning() << "GPU export preview double buffers are unavailable.";
+        destroyPreviewSlots();
+      }
     }
 
     VkSamplerCreateInfo samplerInfo{};
@@ -1736,9 +1816,10 @@ public:
 	    if (m_nv12ScratchFrame) {
 	      av_frame_free(&m_nv12ScratchFrame);
 	    }
-	    if (m_device != VK_NULL_HANDLE) {
-	      vkDeviceWaitIdle(m_device);
-	    }
+    if (m_device != VK_NULL_HANDLE) {
+      vkDeviceWaitIdle(m_device);
+    }
+    destroyPreviewSlots();
     m_speakerTextRenderer.reset();
     m_transcriptTextRenderer.reset();
     for (FrameSlot &slot : m_frameSlots) {
@@ -2505,14 +2586,201 @@ public:
     vkResetFences(m_device, 1, &slot.fence);
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (m_pendingPreviewWait != VK_NULL_HANDLE) {
+      submitInfo.waitSemaphoreCount = 1;
+      submitInfo.pWaitSemaphores = &m_pendingPreviewWait;
+      submitInfo.pWaitDstStageMask = &waitStage;
+    }
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &slot.commandBuffer;
+    if (m_pendingPreviewSignal != VK_NULL_HANDLE) {
+      submitInfo.signalSemaphoreCount = 1;
+      submitInfo.pSignalSemaphores = &m_pendingPreviewSignal;
+    }
     if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, slot.fence) !=
         VK_SUCCESS) {
       return false;
     }
+    m_pendingPreviewWait = VK_NULL_HANDLE;
+    m_pendingPreviewSignal = VK_NULL_HANDLE;
     slot.inFlight = true;
     return true;
+  }
+
+  bool publishLastFrameForGpuPreview(OffscreenVulkanFrame *frame,
+                                     QString *errorMessage) {
+    if (frame) {
+      *frame = OffscreenVulkanFrame{};
+    }
+    if (!frame || !m_commandBufferOpenForConversion ||
+        m_previewSlots.size() != 2 || m_activeSlotIndex < 0) {
+      if (errorMessage) {
+        *errorMessage =
+            QStringLiteral("GPU preview double buffers are unavailable.");
+      }
+      return false;
+    }
+    const int previewIndex =
+        (m_lastPreviewSlotIndex + 1) % m_previewSlots.size();
+    PreviewSlot &slot = m_previewSlots[previewIndex];
+    if (slot.published) {
+      m_pendingPreviewWait = slot.consumedSemaphore;
+    }
+    m_pendingPreviewSignal = slot.readySemaphore;
+
+    transitionImageLayout(m_commandBuffer, m_colorImage, m_colorImageLayout,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    if (slot.published) {
+      VkImageMemoryBarrier acquire{};
+      acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      acquire.srcAccessMask = 0;
+      acquire.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      acquire.oldLayout = slot.layout;
+      acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+      acquire.dstQueueFamilyIndex = m_graphicsQueueFamily;
+      acquire.image = slot.image;
+      acquire.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      acquire.subresourceRange.levelCount = 1;
+      acquire.subresourceRange.layerCount = 1;
+      vkCmdPipelineBarrier(m_commandBuffer,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0,
+                           0,
+                           nullptr,
+                           0,
+                           nullptr,
+                           1,
+                           &acquire);
+    } else {
+      transitionImageLayout(m_commandBuffer, slot.image, slot.layout,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    }
+    slot.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    VkImageCopy copy{};
+    copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.srcSubresource.layerCount = 1;
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent = {
+        static_cast<uint32_t>(m_outputSize.width()),
+        static_cast<uint32_t>(m_outputSize.height()),
+        1};
+    vkCmdCopyImage(m_commandBuffer,
+                   m_colorImage,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   slot.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1,
+                   &copy);
+    VkImageMemoryBarrier release{};
+    release.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    release.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    release.dstAccessMask = 0;
+    release.oldLayout = slot.layout;
+    release.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    release.srcQueueFamilyIndex = m_graphicsQueueFamily;
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    release.image = slot.image;
+    release.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    release.subresourceRange.levelCount = 1;
+    release.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(m_commandBuffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         0,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr,
+                         1,
+                         &release);
+    slot.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    transitionImageLayout(m_commandBuffer, m_colorImage, m_colorImageLayout,
+                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    int readyFd = -1;
+    int consumedFd = -1;
+    if (!slot.handlesExported) {
+      VkSemaphoreGetFdInfoKHR fdInfo{};
+      fdInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+      fdInfo.handleType =
+          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+      fdInfo.semaphore = slot.readySemaphore;
+      if (m_vkGetSemaphoreFdKHR(m_device, &fdInfo, &readyFd) != VK_SUCCESS) {
+        readyFd = -1;
+      }
+      fdInfo.semaphore = slot.consumedSemaphore;
+      if (m_vkGetSemaphoreFdKHR(m_device, &fdInfo, &consumedFd) !=
+          VK_SUCCESS) {
+        consumedFd = -1;
+      }
+      if (readyFd < 0 || consumedFd < 0) {
+        if (readyFd >= 0) {
+          close(readyFd);
+        }
+        if (consumedFd >= 0) {
+          close(consumedFd);
+        }
+        m_pendingPreviewWait = VK_NULL_HANDLE;
+        m_pendingPreviewSignal = VK_NULL_HANDLE;
+        if (errorMessage) {
+          *errorMessage =
+              QStringLiteral("Failed to export GPU preview semaphores.");
+        }
+        return false;
+      }
+      slot.handlesExported = true;
+    }
+
+    ++slot.generation;
+    slot.published = true;
+    m_lastPreviewSlotIndex = previewIndex;
+    frame->physicalDevice = m_physicalDevice;
+    frame->device = m_device;
+    frame->queue = m_graphicsQueue;
+    frame->queueFamilyIndex = m_graphicsQueueFamily;
+    frame->image = slot.image;
+    frame->imageView = slot.view;
+    frame->imageMemory = slot.memory;
+    frame->imageLayout = slot.layout;
+    frame->imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+    frame->readySemaphoreFd = readyFd;
+    frame->consumedSemaphoreFd = consumedFd;
+    frame->bufferIndex = static_cast<std::uint32_t>(previewIndex);
+    frame->memoryTypeIndex = slot.memoryTypeIndex;
+    frame->generation = slot.generation;
+    frame->size = {m_outputSize.width(), m_outputSize.height()};
+    frame->queueSupportsCompute = m_graphicsQueueSupportsCompute;
+    frame->valid = true;
+    return true;
+  }
+
+  void destroyPreviewSlots() {
+    for (PreviewSlot &slot : m_previewSlots) {
+      if (slot.readySemaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(m_device, slot.readySemaphore, nullptr);
+      }
+      if (slot.consumedSemaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(m_device, slot.consumedSemaphore, nullptr);
+      }
+      if (slot.view != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_device, slot.view, nullptr);
+      }
+      if (slot.image != VK_NULL_HANDLE) {
+        vkDestroyImage(m_device, slot.image, nullptr);
+      }
+      if (slot.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, slot.memory, nullptr);
+      }
+    }
+    m_previewSlots.clear();
+    m_lastPreviewSlotIndex = -1;
+    m_pendingPreviewWait = VK_NULL_HANDLE;
+    m_pendingPreviewSignal = VK_NULL_HANDLE;
   }
 
   bool waitSlot(int slotIndex) {
@@ -4435,6 +4703,10 @@ private:
   QVector<int> m_pendingNv12CudaSlotIndices;
   QVector<int> m_pendingYuvSlotIndices;
   bool m_cudaExportBuffersReady = false;
+  QVector<PreviewSlot> m_previewSlots;
+  int m_lastPreviewSlotIndex = -1;
+  VkSemaphore m_pendingPreviewWait = VK_NULL_HANDLE;
+  VkSemaphore m_pendingPreviewSignal = VK_NULL_HANDLE;
 
   VkImage m_colorImage = VK_NULL_HANDLE;
   VkDeviceMemory m_colorImageMemory = VK_NULL_HANDLE;
@@ -4848,7 +5120,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
         QPointF(transform.scaleX, transform.scaleY));
     const QRectF outputRect(QPointF(0.0, 0.0), QSizeF(request.outputSize));
     const TimelineClip effectClip = clipWithResolvedTimingOwner(
-        clipWithRenderableEffectSettings(effectsOwner, request.tracks),
+        evaluateClipEffectAnimationAtPosition(
+            clipWithRenderableEffectSettings(effectsOwner, request.tracks),
+            static_cast<qreal>(timelineFrame),
+            request.renderSyncMarkers,
+            request.playbackTiming),
         request.clips);
     if (effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
       const int64_t referenceFrameNumber =
@@ -5326,6 +5602,20 @@ bool OffscreenVulkanRenderer::finishLastFrameToYuv420pReadback(
 bool OffscreenVulkanRenderer::copyLastFrameToBgra(AVFrame *frame,
                                                   qint64 *readbackMs) {
   return d && d->copyLastFrameToBgra(frame, readbackMs);
+}
+
+bool OffscreenVulkanRenderer::publishLastFrameForGpuPreview(
+    OffscreenVulkanFrame *frame, QString *errorMessage) {
+  return d && d->publishLastFrameForGpuPreview(frame, errorMessage);
+}
+
+void OffscreenVulkanRenderer::finishGpuPreviewPublication() {
+  if (!d || !d->hasPendingGpuFrame()) {
+    return;
+  }
+  OffscreenVulkanFrame frame;
+  QString error;
+  d->finishLastFrameForExternalSampling(&frame, &error);
 }
 
 bool OffscreenVulkanRenderer::lastRenderedVulkanFrame(

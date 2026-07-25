@@ -71,7 +71,6 @@
 #include <memory>
 #include <mutex>
 
-class ExportVulkanPreviewWidget;
 class MaskTab;
 
 namespace editor {
@@ -260,12 +259,9 @@ private:
     struct RenderProgressDialogControls {
         QDialog* dialog = nullptr;
         QLabel* statusLabel = nullptr;
-        QLabel* previewLabel = nullptr;
-        ExportVulkanPreviewWidget* previewWidget = nullptr;
-        QCheckBox* previewCheckBox = nullptr;
         QPlainTextEdit* sourcesList = nullptr;
         QProgressBar* progressBar = nullptr;
-        bool* cancelled = nullptr;
+        std::atomic_bool* cancelled = nullptr;
         bool closeOnFinish = true;
     };
     bool renderTimelineFromOutputRequest(const RenderRequest &request,

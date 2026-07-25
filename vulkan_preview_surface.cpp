@@ -2226,7 +2226,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             hardwareCount += status.hardwareFrame ? 1 : 0;
             cpuCount += status.cpuImage ? 1 : 0;
             const TimelineClip effectClip =
-                clipWithRenderableEffectSettings(clip, m_interaction.tracks);
+                evaluateClipEffectAnimationAtPosition(
+                    clipWithRenderableEffectSettings(
+                        clip, m_interaction.tracks),
+                    visualFramePosition,
+                    m_interaction.renderSyncMarkers,
+                    m_interaction.playbackTiming);
             auto auxiliaryFrame = [&](int64_t frameNumber) {
                 FrameHandle result = usePlaybackPipeline
                     ? m_playbackPipeline->getFrame(clip.id, frameNumber)
@@ -3346,4 +3351,19 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
              });
 
     return snapshots;
+}
+
+void VulkanPreviewSurface::setGpuExportPreviewFrame(
+    const render_detail::OffscreenVulkanFrame& frame)
+{
+    if (m_presenter) {
+        m_presenter->setGpuExportPreviewFrame(frame);
+    }
+}
+
+void VulkanPreviewSurface::clearGpuExportPreview()
+{
+    if (m_presenter) {
+        m_presenter->clearGpuExportPreview();
+    }
 }

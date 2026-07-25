@@ -21,6 +21,7 @@
 #include "vulkan_audio_tab.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
+#include "vulkan_external_frame_import_core.h"
 #include "vulkan_text_renderer.h"
 #include "waveform_service.h"
 #include "loiacono/loiacono_rolling.h"
@@ -66,6 +67,7 @@ QSize toQSize(const jcut::core::SizeI& size)
 #include <cmath>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 constexpr qint64 kPipelineThumbnailReadbackMinIntervalMs = 250;
@@ -154,6 +156,7 @@ public:
     void startNextFrame() override;
     void physicalDeviceLost() override;
     void logicalDeviceLost() override;
+    void clearGpuExportPreview();
 
 private:
     struct ReadbackSlot {
@@ -201,6 +204,18 @@ private:
     void advanceRetiredClipHandoffResources();
     void releaseClipHandoffResources(const std::shared_ptr<ClipHandoffResources>& resources);
     void updateClipHandoffResourceStats();
+    bool renderGpuExportPreview(VkCommandBuffer commandBuffer);
+    void beginGpuExportPreviewRenderPass(
+        VkCommandBuffer commandBuffer,
+        const VkRenderPassBeginInfo& renderPass);
+    void destroyGpuExportPreviewResources();
+    struct GpuExportPreviewSlot {
+        std::unique_ptr<jcut::vulkan_import::VulkanExternalFrameImportCore> importer;
+        VkSemaphore ready = VK_NULL_HANDLE;
+        VkSemaphore consumed = VK_NULL_HANDLE;
+        quint64 generation = 0;
+        bool initialized = false;
+    };
 
     DirectVulkanPreviewWindow* m_owner = nullptr;
     QVulkanWindow* m_window = nullptr;
@@ -232,6 +247,9 @@ private:
     QSize m_compositeSize;
     VkFormat m_compositeColorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_compositeDepthFormat = VK_FORMAT_UNDEFINED;
+    std::array<GpuExportPreviewSlot, 2> m_gpuExportPreviewSlots;
+    int m_gpuExportPreviewCurrentSlot = -1;
+    PFN_vkImportSemaphoreFdKHR m_importSemaphoreFd = nullptr;
 };
 
 } // namespace
@@ -285,7 +303,57 @@ public:
 
     QVulkanWindowRenderer* createRenderer() override
     {
-        return new DirectVulkanPreviewRenderer(this, this);
+        m_renderer = new DirectVulkanPreviewRenderer(this, this);
+        return m_renderer;
+    }
+
+    void setGpuExportPreviewFrame(
+        const render_detail::OffscreenVulkanFrame& frame)
+    {
+        if (!frame.valid || frame.bufferIndex >= 2) {
+            if (frame.readySemaphoreFd >= 0) {
+                ::close(frame.readySemaphoreFd);
+            }
+            if (frame.consumedSemaphoreFd >= 0) {
+                ::close(frame.consumedSemaphoreFd);
+            }
+            return;
+        }
+        m_gpuExportPreviewFrames.push_back(frame);
+        schedulePreviewUpdate();
+    }
+
+    bool takeGpuExportPreviewFrame(
+        render_detail::OffscreenVulkanFrame* frame)
+    {
+        if (!frame || m_gpuExportPreviewFrames.isEmpty()) {
+            return false;
+        }
+        *frame = m_gpuExportPreviewFrames.takeFirst();
+        return true;
+    }
+
+    bool hasGpuExportPreviewFrames() const
+    {
+        return !m_gpuExportPreviewFrames.isEmpty();
+    }
+
+    void clearGpuExportPreview()
+    {
+        if (m_renderer) {
+            m_renderer->clearGpuExportPreview();
+        }
+        for (const render_detail::OffscreenVulkanFrame& frame :
+             std::as_const(m_gpuExportPreviewFrames)) {
+            if (frame.readySemaphoreFd >= 0) {
+                ::close(frame.readySemaphoreFd);
+            }
+            if (frame.consumedSemaphoreFd >= 0) {
+                ::close(frame.consumedSemaphoreFd);
+            }
+        }
+        m_gpuExportPreviewFrames.clear();
+        schedulePreviewUpdate();
     }
 
     void schedulePreviewUpdate()
@@ -316,6 +384,9 @@ public:
                 }
             }
         }
+        // Let Qt coordinate the update with the compositor's frame callback.
+        // Posting UpdateRequest directly bypasses Wayland's pacing contract and
+        // can block QVulkanWindow::endFrame() inside wl_display_dispatch_queue.
         requestUpdate();
     }
 
@@ -1254,6 +1325,8 @@ private:
     QSize m_lastExposeScheduledSize;
     qint64 m_updateRequestMs = -1;
     qint64 m_lastPresentMs = 0;
+    DirectVulkanPreviewRenderer* m_renderer = nullptr;
+    QVector<render_detail::OffscreenVulkanFrame> m_gpuExportPreviewFrames;
 };
 
 void DirectVulkanPreviewRenderer::initResources()
@@ -1276,6 +1349,10 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
+    m_importSemaphoreFd =
+        reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(m_window->device(),
+                                "vkImportSemaphoreFdKHR"));
     m_playbackStatusOverlayResources = std::make_unique<VulkanResources>();
     if (!m_playbackStatusOverlayResources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
         if (m_owner) {
@@ -1359,6 +1436,7 @@ DirectVulkanPreviewRenderer::~DirectVulkanPreviewRenderer()
 
 void DirectVulkanPreviewRenderer::releaseResources()
 {
+    destroyGpuExportPreviewResources();
     destroyCompositeTarget();
     destroyReadbackSlots();
     for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end(); ++it) {
@@ -1379,6 +1457,7 @@ void DirectVulkanPreviewRenderer::releaseResources()
     m_playbackStatusOverlayTextureKey.clear();
     m_playbackStatusOverlayTextureReady = false;
     m_resources.reset();
+    m_importSemaphoreFd = nullptr;
     m_devFuncs = nullptr;
 }
 
@@ -2065,6 +2144,211 @@ void DirectVulkanPreviewRenderer::recordImageReadback(VkCommandBuffer cb,
     slot->pending = true;
 }
 
+bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
+    VkCommandBuffer commandBuffer)
+{
+    if (!m_owner || !m_window || !m_pipeline || !m_resources ||
+        !m_importSemaphoreFd) {
+        return false;
+    }
+    render_detail::OffscreenVulkanFrame frame;
+    if (m_owner->takeGpuExportPreviewFrame(&frame)) {
+        const int slotIndex = static_cast<int>(frame.bufferIndex);
+        if (slotIndex < 0 ||
+            slotIndex >= static_cast<int>(m_gpuExportPreviewSlots.size())) {
+            return false;
+        }
+        GpuExportPreviewSlot& slot =
+            m_gpuExportPreviewSlots[slotIndex];
+        if (!slot.initialized) {
+            if (frame.readySemaphoreFd < 0 ||
+                frame.consumedSemaphoreFd < 0) {
+                return false;
+            }
+            slot.importer =
+                std::make_unique<
+                    jcut::vulkan_import::VulkanExternalFrameImportCore>();
+            const jcut::vulkan_import::DeviceContext context{
+                m_window->physicalDevice(),
+                m_window->device(),
+                m_window->graphicsQueue(),
+                m_window->graphicsQueueFamilyIndex()};
+            std::string error;
+            if (!slot.importer->initialize(context, &error)) {
+                close(frame.readySemaphoreFd);
+                close(frame.consumedSemaphoreFd);
+                return false;
+            }
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType =
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(m_window->device(),
+                                  &semaphoreInfo,
+                                  nullptr,
+                                  &slot.ready) != VK_SUCCESS ||
+                vkCreateSemaphore(m_window->device(),
+                                  &semaphoreInfo,
+                                  nullptr,
+                                  &slot.consumed) != VK_SUCCESS) {
+                close(frame.readySemaphoreFd);
+                close(frame.consumedSemaphoreFd);
+                return false;
+            }
+            VkImportSemaphoreFdInfoKHR import{};
+            import.sType =
+                VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
+            import.handleType =
+                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+            import.semaphore = slot.ready;
+            import.fd = frame.readySemaphoreFd;
+            if (m_importSemaphoreFd(m_window->device(), &import) !=
+                VK_SUCCESS) {
+                close(frame.readySemaphoreFd);
+                close(frame.consumedSemaphoreFd);
+                return false;
+            }
+            import.semaphore = slot.consumed;
+            import.fd = frame.consumedSemaphoreFd;
+            if (m_importSemaphoreFd(m_window->device(), &import) !=
+                VK_SUCCESS) {
+                close(frame.consumedSemaphoreFd);
+                return false;
+            }
+            slot.initialized = true;
+        }
+
+        VkPipelineStageFlags waitStage =
+            VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSubmitInfo synchronization{};
+        synchronization.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        synchronization.waitSemaphoreCount = 1;
+        synchronization.pWaitSemaphores = &slot.ready;
+        synchronization.pWaitDstStageMask = &waitStage;
+        VkSemaphore consumed = VK_NULL_HANDLE;
+        if (m_gpuExportPreviewCurrentSlot >= 0 &&
+            m_gpuExportPreviewCurrentSlot != slotIndex) {
+            consumed =
+                m_gpuExportPreviewSlots[m_gpuExportPreviewCurrentSlot]
+                    .consumed;
+            synchronization.signalSemaphoreCount = 1;
+            synchronization.pSignalSemaphores = &consumed;
+        }
+        if (vkQueueSubmit(m_window->graphicsQueue(),
+                          1,
+                          &synchronization,
+                          VK_NULL_HANDLE) != VK_SUCCESS) {
+            return false;
+        }
+        std::string error;
+        if (!slot.importer->recordFrameCopy(
+                commandBuffer, frame, true, &error)) {
+            qWarning().noquote()
+                << QStringLiteral(
+                       "[vulkan-preview] GPU export preview import failed: %1")
+                       .arg(QString::fromStdString(error));
+            return false;
+        }
+        m_resources->beginFrameUploads(
+            static_cast<size_t>(qMax(0, m_window->currentFrame())),
+            static_cast<size_t>(
+                qMax(1, m_window->concurrentFrameCount())));
+        if (!m_resources->ensureCheckerTextureUploaded(commandBuffer) ||
+            !m_resources->ensureAuxiliaryImagesReadable(commandBuffer)) {
+            return false;
+        }
+        const jcut::vulkan_import::ExternalImage image =
+            slot.importer->externalImage();
+        if (!m_resources->setSampledImage(
+                image.imageView, image.imageLayout)) {
+            return false;
+        }
+        slot.generation = frame.generation;
+        m_gpuExportPreviewCurrentSlot = slotIndex;
+    }
+    if (m_gpuExportPreviewCurrentSlot < 0) {
+        return false;
+    }
+
+    const QSize size = m_window->swapChainImageSize();
+    VkClearValue clears[2]{};
+    clears[0].color.float32[0] = 0.055f;
+    clears[0].color.float32[1] = 0.075f;
+    clears[0].color.float32[2] = 0.105f;
+    clears[0].color.float32[3] = 1.0f;
+    clears[1].depthStencil.depth = 1.0f;
+    VkRenderPassBeginInfo renderPass{};
+    renderPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPass.renderPass = m_window->defaultRenderPass();
+    renderPass.framebuffer = m_window->currentFramebuffer();
+    renderPass.renderArea.extent = {
+        static_cast<uint32_t>(qMax(1, size.width())),
+        static_cast<uint32_t>(qMax(1, size.height()))};
+    renderPass.clearValueCount =
+        m_window->depthStencilFormat() == VK_FORMAT_UNDEFINED ? 1u : 2u;
+    renderPass.pClearValues = clears;
+    beginGpuExportPreviewRenderPass(commandBuffer, renderPass);
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(qMax(1, size.width()));
+    viewport.height = static_cast<float>(qMax(1, size.height()));
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{};
+    scissor.extent = {
+        static_cast<uint32_t>(qMax(1, size.width())),
+        static_cast<uint32_t>(qMax(1, size.height()))};
+    VulkanPipeline::Push push{};
+    m_pipeline->bindAndDraw(commandBuffer,
+                            viewport,
+                            scissor,
+                            m_resources->descriptorSet(),
+                            push);
+    m_devFuncs->vkCmdEndRenderPass(commandBuffer);
+    return true;
+}
+
+void DirectVulkanPreviewRenderer::destroyGpuExportPreviewResources()
+{
+    if (!m_window || m_window->device() == VK_NULL_HANDLE) {
+        return;
+    }
+    if (m_gpuExportPreviewCurrentSlot >= 0) {
+        VkSemaphore consumed =
+            m_gpuExportPreviewSlots[m_gpuExportPreviewCurrentSlot]
+                .consumed;
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.signalSemaphoreCount =
+            consumed == VK_NULL_HANDLE ? 0u : 1u;
+        submit.pSignalSemaphores =
+            consumed == VK_NULL_HANDLE ? nullptr : &consumed;
+        vkQueueSubmit(m_window->graphicsQueue(),
+                      1,
+                      &submit,
+                      VK_NULL_HANDLE);
+    }
+    vkQueueWaitIdle(m_window->graphicsQueue());
+    for (GpuExportPreviewSlot& slot : m_gpuExportPreviewSlots) {
+        if (slot.importer) {
+            slot.importer->release();
+            slot.importer.reset();
+        }
+        if (slot.ready != VK_NULL_HANDLE) {
+            vkDestroySemaphore(
+                m_window->device(), slot.ready, nullptr);
+        }
+        if (slot.consumed != VK_NULL_HANDLE) {
+            vkDestroySemaphore(
+                m_window->device(), slot.consumed, nullptr);
+        }
+        slot = {};
+    }
+    m_gpuExportPreviewCurrentSlot = -1;
+}
+
+void DirectVulkanPreviewRenderer::clearGpuExportPreview()
+{
+    destroyGpuExportPreviewResources();
+}
+
 void DirectVulkanPreviewRenderer::startNextFrame()
 {
     if (!m_owner || !m_window || !m_devFuncs) {
@@ -2075,6 +2359,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           1,
                                           QStringLiteral("source_unavailable"),
                                           QStringLiteral("renderer_or_device_unavailable"));
+        }
+        return;
+    }
+    VkCommandBuffer cb = m_window->currentCommandBuffer();
+    if (renderGpuExportPreview(cb)) {
+        m_owner->markPresented();
+        m_window->frameReady();
+        m_owner->markPreviewUpdateDelivered();
+        if (m_owner->hasGpuExportPreviewFrames()) {
+            m_owner->schedulePreviewUpdate();
         }
         return;
     }
@@ -2133,7 +2427,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     rp.clearValueCount = m_window->depthStencilFormat() == VK_FORMAT_UNDEFINED ? 1u : 2u;
     rp.pClearValues = clearValues;
 
-    VkCommandBuffer cb = m_window->currentCommandBuffer();
     const uint32_t swapchainImageIndex =
         static_cast<uint32_t>(std::max(0, m_window->currentSwapChainImageIndex()));
     for (ReadbackSlot& slot : m_readbackSlots) {
@@ -3226,7 +3519,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     continue;
                 }
                 const TimelineClip effectClip = clipWithResolvedTimingOwner(
-                    clipWithRenderableEffectSettings(*effectsOwner, state->tracks),
+                    evaluateClipEffectAnimationAtPosition(
+                        clipWithRenderableEffectSettings(
+                            *effectsOwner, state->tracks),
+                        state->currentFramePosition,
+                        state->renderSyncMarkers,
+                        state->playbackTiming),
                     state->clips);
                 const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
                     render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks);
@@ -4081,6 +4379,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     m_owner->markPreviewUpdateDelivered();
 }
 
+void DirectVulkanPreviewRenderer::beginGpuExportPreviewRenderPass(
+    VkCommandBuffer commandBuffer,
+    const VkRenderPassBeginInfo& renderPass)
+{
+    m_devFuncs->vkCmdBeginRenderPass(
+        commandBuffer, &renderPass, VK_SUBPASS_CONTENTS_INLINE);
+}
+
 void DirectVulkanPreviewRenderer::physicalDeviceLost()
 {
     if (m_owner) {
@@ -4241,6 +4547,23 @@ void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const 
 {
     if (window) {
         window->setTitle(title);
+    }
+}
+
+void directVulkanPreviewWindowSetGpuExportPreviewFrame(
+    DirectVulkanPreviewWindow* window,
+    const render_detail::OffscreenVulkanFrame& frame)
+{
+    if (window) {
+        window->setGpuExportPreviewFrame(frame);
+    }
+}
+
+void directVulkanPreviewWindowClearGpuExportPreview(
+    DirectVulkanPreviewWindow* window)
+{
+    if (window) {
+        window->clearGpuExportPreview();
     }
 }
 

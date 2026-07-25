@@ -1,6 +1,7 @@
 #pragma once
 
 #include "background_fill_effect_fwd.h"
+#include "core/offscreen_vulkan_frame.h"
 #include "editor_shared.h"
 #include "playback_timing_context.h"
 #include "timeline_fps.h"
@@ -54,6 +55,8 @@ struct RenderProgress {
     qint64 maxFrameReadbackStageMs = 0;
     qint64 maxFrameConvertStageMs = 0;
     QImage previewFrame;
+    render_detail::OffscreenVulkanFrame gpuPreviewFrame;
+    bool releaseGpuPreview = false;
     QJsonArray skippedClips;
     QJsonObject skippedClipReasonCounts;
     QJsonObject renderStageTable;

@@ -281,6 +281,16 @@ public:
     QDoubleSpinBox *effectScaleSpin() const { return m_effectScaleSpin; }
     QCheckBox *effectAlternateDirectionCheck() const { return m_effectAlternateDirectionCheck; }
     QCheckBox *effectSpeechSyncCheck() const { return m_effectSpeechSyncCheck; }
+    QCheckBox *effectEnabledCheck() const { return m_effectEnabledCheck; }
+    QPushButton *effectKeyframeOnButton() const { return m_effectKeyframeOnButton; }
+    QPushButton *effectKeyframeOffButton() const { return m_effectKeyframeOffButton; }
+    QPushButton *effectKeyframeRemoveButton() const { return m_effectKeyframeRemoveButton; }
+    QLabel *effectKeyframesLabel() const { return m_effectKeyframesLabel; }
+    QComboBox *effectModulationModeCombo() const { return m_effectModulationModeCombo; }
+    QComboBox *effectModulationTargetCombo() const { return m_effectModulationTargetCombo; }
+    QDoubleSpinBox *effectModulationAmountSpin() const { return m_effectModulationAmountSpin; }
+    QDoubleSpinBox *effectModulationRateSpin() const { return m_effectModulationRateSpin; }
+    QDoubleSpinBox *effectModulationPhaseSpin() const { return m_effectModulationPhaseSpin; }
     QComboBox *tilingPatternCombo() const { return m_tilingPatternCombo; }
     QDoubleSpinBox *tilingSpacingSpin() const { return m_tilingSpacingSpin; }
     QCheckBox *tilingWrapCheck() const { return m_tilingWrapCheck; }
@@ -609,6 +619,16 @@ private:
     QDoubleSpinBox *m_effectScaleSpin = nullptr;
     QCheckBox *m_effectAlternateDirectionCheck = nullptr;
     QCheckBox *m_effectSpeechSyncCheck = nullptr;
+    QCheckBox *m_effectEnabledCheck = nullptr;
+    QPushButton *m_effectKeyframeOnButton = nullptr;
+    QPushButton *m_effectKeyframeOffButton = nullptr;
+    QPushButton *m_effectKeyframeRemoveButton = nullptr;
+    QLabel *m_effectKeyframesLabel = nullptr;
+    QComboBox *m_effectModulationModeCombo = nullptr;
+    QComboBox *m_effectModulationTargetCombo = nullptr;
+    QDoubleSpinBox *m_effectModulationAmountSpin = nullptr;
+    QDoubleSpinBox *m_effectModulationRateSpin = nullptr;
+    QDoubleSpinBox *m_effectModulationPhaseSpin = nullptr;
     QSpinBox *m_differenceReferenceFramesSpin = nullptr;
     QDoubleSpinBox *m_differenceThresholdSpin = nullptr;
     QDoubleSpinBox *m_differenceSoftnessSpin = nullptr;

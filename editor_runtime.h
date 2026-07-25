@@ -182,6 +182,7 @@ enum class EditorKeyframeChannel {
     Grading,
     Opacity,
     Transform,
+    EffectEnabled,
     SpeakerFramingEnabled,
     SpeakerFraming,
     SpeakerFramingTarget,
@@ -282,6 +283,16 @@ struct SetClipMaskEffectCommand {
     double edgeFillOpacity = 1.0;
     double edgeFillBrightness = 0.0;
     double edgeFillSaturation = 1.0;
+    bool effectEnabled = true;
+    std::string effectModulationMode = "none";
+    std::string effectModulationTarget = "scale";
+    double effectModulationAmount = 0.0;
+    double effectModulationRate = 1.0;
+    double effectModulationPhaseDegrees = 0.0;
+};
+struct UpsertEffectEnabledKeyframeCommand {
+    int clipId = 0;
+    EditorBoolKeyframe keyframe;
 };
 // Updates only mask presentation fields. Keeping this separate from effect
 // normalization prevents a mask-only edit from rewriting a forward-compatible
@@ -482,6 +493,7 @@ using EditorCommand = std::variant<
     UpsertTransformKeyframeCommand,
     CommitPreviewTransformCommand,
     SetClipMaskEffectCommand,
+    UpsertEffectEnabledKeyframeCommand,
     SetClipMaskCommand,
     MaterializeMaskMatteCommand,
     SetClipZLevelCommand,

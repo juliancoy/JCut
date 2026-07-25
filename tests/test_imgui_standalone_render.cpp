@@ -8,10 +8,13 @@
 #include "../prompt_mask_job_core.h"
 #include "../standalone_preview_renderer.h"
 #include "../standalone_timeline_renderer.h"
+#include "../timeline_viewport_core.h"
 
 #include <QDataStream>
 #include <QDir>
 #include <QFile>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include <fstream>
@@ -26,6 +29,7 @@ private slots:
     void testStandalonePreviewCompositesOpacityAndTrackVisualModes();
     void testStandalonePreviewAppliesMaskMatteAndFailsClosed();
     void testStandalonePreviewRendersSourceTilingPatterns();
+    void testStandalonePreviewHonorsEffectEnableKeyframesAndDynamics();
     void testStandalonePreviewRendersDifferenceMatteAndTemporalEcho();
     void testStandalonePreviewRendersGeneratedRepeatEffects();
     void testStandalonePreviewRendersSinglePassPixelEffects();
@@ -38,6 +42,8 @@ private slots:
     void testFaceAvatarCropMatchesQtPolicy();
     void testStandaloneImportProbeReportsAudioPresence();
     void testStandaloneDecodePolicyBenchmark();
+    void testStandaloneDecoderSeeksToRequestedFrame();
+    void testTimelineViewportGeometry();
     void testImageSequenceDirectoryProbeAndRender();
     void testLegacyUnknownAudioPresenceIsProbedOnLoad();
     void testAudioFacadeRefreshesIdleTimelineStatus();
@@ -80,6 +86,38 @@ bool writeSilentPcmWav(const QString& path)
     return stream.writeRawData(silence.constData(), silence.size()) ==
             silence.size() &&
         stream.status() == QDataStream::Ok;
+}
+
+bool writeSeekTestVideo(const QString& path)
+{
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(
+            QStringLiteral("ffmpeg"));
+    if (ffmpeg.isEmpty()) {
+        return false;
+    }
+    QProcess process;
+    process.start(
+        ffmpeg,
+        {QStringLiteral("-y"),
+         QStringLiteral("-loglevel"),
+         QStringLiteral("error"),
+         QStringLiteral("-f"),
+         QStringLiteral("lavfi"),
+         QStringLiteral("-i"),
+         QStringLiteral(
+             "testsrc2=size=64x64:rate=30:duration=10"),
+         QStringLiteral("-an"),
+         QStringLiteral("-c:v"),
+         QStringLiteral("mpeg4"),
+         QStringLiteral("-g"),
+         QStringLiteral("30"),
+         QStringLiteral("-q:v"),
+         QStringLiteral("3"),
+         path});
+    return process.waitForFinished(15000) &&
+        process.exitStatus() == QProcess::NormalExit &&
+        process.exitCode() == 0;
 }
 
 bool writeSolidBmp(const QString& path,
@@ -282,6 +320,73 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersSourceTilingPatterns
     }
     QVERIFY(foregroundPixels > 0);
     QVERIFY(backgroundPixels > 0);
+}
+
+void TestImGuiStandaloneRender::testStandalonePreviewHonorsEffectEnableKeyframesAndDynamics()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath =
+        tempDir.filePath(QStringLiteral("animated_effect.bmp"));
+    QVERIFY(writeSolidBmp(imagePath, 240, 24, 12, 4, 4));
+
+    jcut::EditorDocumentCore document;
+    document.tracks.push_back({1, "Video", true});
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.persistentId = "animated-effect";
+    clip.trackId = 1;
+    clip.startFrame = 0;
+    clip.durationFrames = 90;
+    clip.sourcePath = imagePath.toStdString();
+    clip.mediaKind = "image";
+    clip.effectPreset = "source_tile";
+    clip.effectRows = 3;
+    clip.effectScale = 0.5;
+    clip.effectSpeed = 0.0;
+    clip.effectEnabledKeyframes = {{0, true}, {10, false}, {20, true}};
+    document.clips.push_back(clip);
+
+    constexpr jcut::core::SizeI outputSize{32, 24};
+    const auto keyedOff = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 15});
+    QVERIFY2(keyedOff.success, keyedOff.message.c_str());
+
+    document.clips.front().effectPreset = "none";
+    const auto plain = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 15});
+    QVERIFY2(plain.success, plain.message.c_str());
+    QCOMPARE(keyedOff.image.bytes, plain.image.bytes);
+
+    document.clips.front().effectPreset = "source_tile";
+    document.clips.front().effectEnabledKeyframes.clear();
+    document.clips.front().effectModulationMode = "steady_increase";
+    document.clips.front().effectModulationTarget = "scale";
+    document.clips.front().effectModulationAmount = 1.0;
+    const auto rampStart = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 0});
+    const auto rampLater = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 30});
+    QVERIFY2(rampStart.success, rampStart.message.c_str());
+    QVERIFY2(rampLater.success, rampLater.message.c_str());
+    QVERIFY(rampStart.image.bytes != rampLater.image.bytes);
+
+    document.clips.front().effectSkipAwareTiming = true;
+    document.renderSyncMarkers = {
+        {"animated-effect", 10, false, 10},
+    };
+    const auto transcriptAware = jcut::standalone_render::renderPreviewFrame({
+        document, outputSize, 30});
+    QVERIFY2(transcriptAware.success, transcriptAware.message.c_str());
+
+    document.clips.front().effectSkipAwareTiming = false;
+    document.renderSyncMarkers.clear();
+    const auto equivalentWallClock =
+        jcut::standalone_render::renderPreviewFrame({
+            document, outputSize, 20});
+    QVERIFY2(equivalentWallClock.success,
+             equivalentWallClock.message.c_str());
+    QCOMPARE(transcriptAware.image.bytes, equivalentWallClock.image.bytes);
 }
 
 void TestImGuiStandaloneRender::testStandalonePreviewRendersDifferenceMatteAndTemporalEcho()
@@ -1281,6 +1386,20 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                      "(std::clamp(trackIt->visualMode, 0, 2) + 1) % 3")) &&
                  shell.contains(QStringLiteral("!trackIt->audioEnabled")),
              "timeline track headers must expose Qt-compatible visual-mode cycling and audio toggling");
+    QVERIFY2(
+        shell.contains(QStringLiteral("\"TimelineViewport\"")) &&
+            shell.contains(QStringLiteral("requiredCanvasHeight")) &&
+            shell.contains(QStringLiteral(
+                "std::max(viewportAvail.y, requiredCanvasHeight)")),
+        "the timeline canvas must scroll inside a dedicated viewport when "
+        "its track rows exceed the visible panel height");
+    QVERIFY2(
+        !shell.contains(QStringLiteral(
+            "ImGui::Selectable(track.label.c_str(), track.selected)")) &&
+            !shell.contains(QStringLiteral(
+                "ImGui::Selectable(clip.label.c_str(), clip.selected)")),
+        "timeline selection must use the canvas hit-testing path instead of "
+        "appending duplicate selectable rows with label-derived ImGui IDs");
     QVERIFY2(shell.contains(QStringLiteral("readTextFileTail")) &&
                  shell.contains(QStringLiteral("64U * 1024U")) &&
                  shell.contains(QStringLiteral("Refresh Artifact")) &&
@@ -2115,6 +2234,117 @@ void TestImGuiStandaloneRender::testStandaloneDecodePolicyBenchmark()
             stillPath.toStdString(), policy, 1);
     QVERIFY(deterministic.success);
     QCOMPARE(deterministic.softwareThreadCount, 1);
+}
+
+void TestImGuiStandaloneRender::
+    testStandaloneDecoderSeeksToRequestedFrame()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString videoPath =
+        tempDir.filePath(QStringLiteral("seek-test.mp4"));
+    if (!writeSeekTestVideo(videoPath)) {
+        QSKIP("ffmpeg CLI with MPEG-4 encoding is required");
+    }
+
+    jcut::DecoderPolicySettingsCore policy;
+    policy.decodePreference =
+        jcut::DecodePreferenceCore::Software;
+    policy.deterministic = true;
+    const jcut::core::SizeI outputSize{64, 64};
+
+    jcut::standalone_render::StandaloneMediaFrameDecoder
+        sequential(videoPath.toStdString(), policy);
+    QVERIFY(sequential.decodeFrame(0, outputSize).success);
+    const auto expected240 =
+        sequential.decodeFrame(240, outputSize);
+    QVERIFY2(expected240.success, expected240.message.c_str());
+
+    jcut::standalone_render::StandaloneMediaFrameDecoder
+        direct(videoPath.toStdString(), policy);
+    const auto actual240 =
+        direct.decodeFrame(240, outputSize);
+    QVERIFY2(actual240.success, actual240.message.c_str());
+    QCOMPARE(actual240.image.size.width,
+             expected240.image.size.width);
+    QCOMPARE(actual240.image.size.height,
+             expected240.image.size.height);
+    QVERIFY(actual240.image.bytes ==
+            expected240.image.bytes);
+
+    const auto reverse60 =
+        direct.decodeFrame(60, outputSize);
+    QVERIFY2(reverse60.success, reverse60.message.c_str());
+    jcut::standalone_render::StandaloneMediaFrameDecoder
+        direct60(videoPath.toStdString(), policy);
+    const auto expected60 =
+        direct60.decodeFrame(60, outputSize);
+    QVERIFY2(expected60.success, expected60.message.c_str());
+    QVERIFY(reverse60.image.bytes ==
+            expected60.image.bytes);
+}
+
+void TestImGuiStandaloneRender::testTimelineViewportGeometry()
+{
+    using namespace jcut::timeline_viewport;
+
+    const std::vector<ClipSpan> clips{
+        {0, 120},
+        {900, 300},
+        {900, 300},
+    };
+    QCOMPARE(totalFrames(clips, 30), std::int64_t{1230});
+
+    constexpr float contentWidth = 615.0f;
+    const float fitZoom = fitPixelsPerFrame(
+        contentWidth, totalFrames(clips, 30));
+    QCOMPARE(fitZoom, 0.5f);
+    QCOMPARE(
+        visibleFrameCount(contentWidth, fitZoom),
+        std::int64_t{1230});
+    QCOMPARE(
+        maximumFrameOffset(
+            totalFrames(clips, 30),
+            contentWidth,
+            fitZoom),
+        std::int64_t{0});
+
+    constexpr float zoom = 2.0f;
+    constexpr std::int64_t offset = 400;
+    constexpr std::int64_t frame = 575;
+    const float x = xFromFrame(
+        200.0f, frame, offset, zoom);
+    QCOMPARE(x, 550.0f);
+    QCOMPARE(
+        frameFromX(200.0f, x, offset, zoom),
+        frame);
+    QCOMPARE(clipPixelWidth(300, fitZoom), 150.0f);
+    QCOMPARE(clipPixelWidth(1, 0.001f), 1.0f);
+
+    const std::int64_t anchoredOffset =
+        offsetKeepingFrameAtX(
+            frame,
+            348.0f,
+            4.0f,
+            totalFrames(clips, 30),
+            contentWidth);
+    QCOMPARE(anchoredOffset, std::int64_t{488});
+    QCOMPARE(
+        frameFromX(
+            200.0f,
+            548.0f,
+            anchoredOffset,
+            4.0f),
+        frame);
+
+    QCOMPARE(rulerStepFrames(0.35f, 30), std::int64_t{30});
+    QCOMPARE(
+        rulerStepFrames(0.35f, 30, 100.0f),
+        std::int64_t{300});
+    QCOMPARE(rulerStepFrames(0.001f, 30), std::int64_t{15000});
+    QCOMPARE(
+        QString::fromStdString(timecode(109815, 30)),
+        QStringLiteral("01:01:00:15"));
 }
 
 void TestImGuiStandaloneRender::testImageSequenceDirectoryProbeAndRender()

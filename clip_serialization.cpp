@@ -673,6 +673,20 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("edgeFillBrightness")] = clip.edgeFillBrightness;
         obj[QStringLiteral("edgeFillSaturation")] = clip.edgeFillSaturation;
         obj[QStringLiteral("effectPreset")] = effectPresetToJson(clip.effectPreset);
+        obj[QStringLiteral("effectEnabled")] = clip.effectEnabled;
+        QJsonArray effectEnabledKeyframes;
+        for (const TimelineClip::BoolKeyframe& keyframe : clip.effectEnabledKeyframes) {
+            effectEnabledKeyframes.push_back(QJsonObject{
+                {QStringLiteral("frame"), static_cast<qint64>(keyframe.frame)},
+                {QStringLiteral("enabled"), keyframe.enabled}});
+        }
+        obj[QStringLiteral("effectEnabledKeyframes")] = effectEnabledKeyframes;
+        obj[QStringLiteral("effectModulationMode")] = clip.effectModulationMode;
+        obj[QStringLiteral("effectModulationTarget")] = clip.effectModulationTarget;
+        obj[QStringLiteral("effectModulationAmount")] = clip.effectModulationAmount;
+        obj[QStringLiteral("effectModulationRate")] = clip.effectModulationRate;
+        obj[QStringLiteral("effectModulationPhaseDegrees")] =
+            clip.effectModulationPhaseDegrees;
         obj[QStringLiteral("effectRows")] = clip.effectRows;
         obj[QStringLiteral("effectSpeed")] = clip.effectSpeed;
         obj[QStringLiteral("effectScale")] = clip.effectScale;
@@ -1183,6 +1197,44 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.edgeFillSaturation = qBound<qreal>(0.0, obj.value(QStringLiteral("edgeFillSaturation")).toDouble(1.0), 3.0);
         clip.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
+        clip.effectEnabled = obj.value(QStringLiteral("effectEnabled")).toBool(true);
+        const QJsonArray effectEnabledKeyframes =
+            obj.value(QStringLiteral("effectEnabledKeyframes")).toArray();
+        for (const QJsonValue& value : effectEnabledKeyframes) {
+            const QJsonObject keyframeObj = value.toObject();
+            clip.effectEnabledKeyframes.push_back(TimelineClip::BoolKeyframe{
+                qBound<int64_t>(
+                    int64_t{0},
+                    static_cast<int64_t>(
+                        keyframeObj.value(QStringLiteral("frame"))
+                            .toVariant().toLongLong()),
+                    qMax<int64_t>(0, clip.durationFrames - 1)),
+                keyframeObj.value(QStringLiteral("enabled")).toBool(true)});
+        }
+        std::sort(
+            clip.effectEnabledKeyframes.begin(),
+            clip.effectEnabledKeyframes.end(),
+            [](const auto& left, const auto& right) {
+                return left.frame < right.frame;
+            });
+        clip.effectModulationMode =
+            obj.value(QStringLiteral("effectModulationMode"))
+                .toString(QStringLiteral("none"));
+        clip.effectModulationTarget =
+            obj.value(QStringLiteral("effectModulationTarget"))
+                .toString(QStringLiteral("scale"));
+        clip.effectModulationAmount = qBound<qreal>(
+            -512.0,
+            obj.value(QStringLiteral("effectModulationAmount")).toDouble(0.0),
+            512.0);
+        clip.effectModulationRate = qBound<qreal>(
+            0.0,
+            obj.value(QStringLiteral("effectModulationRate")).toDouble(1.0),
+            20.0);
+        clip.effectModulationPhaseDegrees = qBound<qreal>(
+            -360.0,
+            obj.value(QStringLiteral("effectModulationPhaseDegrees")).toDouble(0.0),
+            360.0);
         clip.effectRows = qBound(1,
                                  obj.value(QStringLiteral("effectRows")).toInt(32),
                                  clip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);

@@ -133,6 +133,9 @@ public:
     QJsonObject profilingSnapshot() const override;
     void resetProfilingStats() override;
     bool selectedOverlayIsTranscript() const override;
+    void setGpuExportPreviewFrame(
+        const render_detail::OffscreenVulkanFrame& frame) override;
+    void clearGpuExportPreview() override;
 
 private:
     using FacestreamKeyframe = FacestreamResolvedKeyframe;

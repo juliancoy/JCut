@@ -724,6 +724,70 @@ QWidget *InspectorPane::buildEffectsTab()
     presetSection.body->addLayout(presetForm);
     layout->addWidget(presetSection.container);
 
+    auto animationSection =
+        createDisclosureSection(content, QStringLiteral("Effect Animation"), true);
+    auto *animationForm = new QFormLayout;
+    animationForm->setContentsMargins(0, 0, 0, 0);
+    animationForm->setSpacing(6);
+    m_effectEnabledCheck =
+        new QCheckBox(QStringLiteral("Enabled before the first keyframe"), page);
+    m_effectEnabledCheck->setChecked(true);
+    animationForm->addRow(QStringLiteral("Base state"), m_effectEnabledCheck);
+    auto *keyframeButtons = new QHBoxLayout;
+    m_effectKeyframeOnButton =
+        new QPushButton(QStringLiteral("Key On"), page);
+    m_effectKeyframeOffButton =
+        new QPushButton(QStringLiteral("Key Off"), page);
+    m_effectKeyframeRemoveButton =
+        new QPushButton(QStringLiteral("Remove Key"), page);
+    keyframeButtons->addWidget(m_effectKeyframeOnButton);
+    keyframeButtons->addWidget(m_effectKeyframeOffButton);
+    keyframeButtons->addWidget(m_effectKeyframeRemoveButton);
+    animationForm->addRow(QStringLiteral("At playhead"), keyframeButtons);
+    m_effectKeyframesLabel =
+        new QLabel(QStringLiteral("No enable keyframes"), page);
+    m_effectKeyframesLabel->setWordWrap(true);
+    animationForm->addRow(QStringLiteral("Keys"), m_effectKeyframesLabel);
+
+    m_effectModulationModeCombo = new QComboBox(page);
+    m_effectModulationModeCombo->addItem(QStringLiteral("None"), QStringLiteral("none"));
+    m_effectModulationModeCombo->addItem(QStringLiteral("LFO"), QStringLiteral("lfo"));
+    m_effectModulationModeCombo->addItem(
+        QStringLiteral("Steady increase"), QStringLiteral("steady_increase"));
+    animationForm->addRow(QStringLiteral("Dynamic"), m_effectModulationModeCombo);
+    m_effectModulationTargetCombo = new QComboBox(page);
+    m_effectModulationTargetCombo->addItem(
+        QStringLiteral("Copies / radius"), QStringLiteral("rows"));
+    m_effectModulationTargetCombo->addItem(
+        QStringLiteral("Speed"), QStringLiteral("speed"));
+    m_effectModulationTargetCombo->addItem(
+        QStringLiteral("Amount / strength"), QStringLiteral("scale"));
+    m_effectModulationTargetCombo->addItem(
+        QStringLiteral("Spacing"), QStringLiteral("spacing"));
+    animationForm->addRow(QStringLiteral("Target"), m_effectModulationTargetCombo);
+    m_effectModulationAmountSpin = new QDoubleSpinBox(page);
+    m_effectModulationAmountSpin->setRange(-512.0, 512.0);
+    m_effectModulationAmountSpin->setDecimals(3);
+    m_effectModulationAmountSpin->setSingleStep(0.1);
+    m_effectModulationAmountSpin->setToolTip(
+        QStringLiteral("LFO amplitude, or units added per second for steady increase."));
+    animationForm->addRow(QStringLiteral("Amplitude / rate"), m_effectModulationAmountSpin);
+    m_effectModulationRateSpin = new QDoubleSpinBox(page);
+    m_effectModulationRateSpin->setRange(0.0, 20.0);
+    m_effectModulationRateSpin->setDecimals(3);
+    m_effectModulationRateSpin->setSingleStep(0.1);
+    m_effectModulationRateSpin->setValue(1.0);
+    m_effectModulationRateSpin->setSuffix(QStringLiteral(" Hz"));
+    animationForm->addRow(QStringLiteral("LFO frequency"), m_effectModulationRateSpin);
+    m_effectModulationPhaseSpin = new QDoubleSpinBox(page);
+    m_effectModulationPhaseSpin->setRange(-360.0, 360.0);
+    m_effectModulationPhaseSpin->setDecimals(1);
+    m_effectModulationPhaseSpin->setSingleStep(15.0);
+    m_effectModulationPhaseSpin->setSuffix(QStringLiteral("°"));
+    animationForm->addRow(QStringLiteral("LFO phase"), m_effectModulationPhaseSpin);
+    animationSection.body->addLayout(animationForm);
+    layout->addWidget(animationSection.container);
+
     auto temporalSection = createDisclosureSection(content, QStringLiteral("Temporal & Difference"), false);
     auto *temporalForm = new QFormLayout();
     temporalForm->setContentsMargins(0, 0, 0, 0);

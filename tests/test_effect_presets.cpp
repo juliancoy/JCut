@@ -57,6 +57,7 @@ private slots:
     void init();
     void cleanup();
     void clipSerializationPersistsEffectPresetState();
+    void effectEnableKeysAndDynamicsEvaluateDeterministically();
     void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
     void correctionPolygonsEraseMaskIntensity();
@@ -155,6 +156,13 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskFeatherGamma = 2.4;
     clip.maskFeatherFalloff = 3;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
+    clip.effectEnabled = false;
+    clip.effectEnabledKeyframes = {{10, true}, {40, false}};
+    clip.effectModulationMode = QStringLiteral("lfo");
+    clip.effectModulationTarget = QStringLiteral("scale");
+    clip.effectModulationAmount = 0.5;
+    clip.effectModulationRate = 0.25;
+    clip.effectModulationPhaseDegrees = 90.0;
     clip.effectRows = 32;
     clip.effectSpeed = 1.75;
     clip.effectScale = 0.85;
@@ -187,6 +195,10 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaX")).toDouble() - 120.0) < 0.000001);
     QVERIFY(std::abs(json.value(QStringLiteral("maskRepeatDeltaY")).toDouble() + 15.0) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("effectPreset")).toString(), QStringLiteral("news_logo_ticker"));
+    QCOMPARE(json.value(QStringLiteral("effectEnabled")).toBool(), false);
+    QCOMPARE(
+        json.value(QStringLiteral("effectEnabledKeyframes")).toArray().size(),
+        2);
     QCOMPARE(json.value(QStringLiteral("effectRows")).toInt(), 32);
     QCOMPARE(json.value(QStringLiteral("transformSkipAwareTiming")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("effectSkipAwareTiming")).toBool(), false);
@@ -212,6 +224,17 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QVERIFY(std::abs(loaded.edgeFillBrightness + 0.15) < 0.000001);
     QVERIFY(std::abs(loaded.edgeFillSaturation - 1.35) < 0.000001);
     QCOMPARE(loaded.effectPreset, ClipEffectPreset::NewsLogoTicker);
+    QCOMPARE(loaded.effectEnabled, false);
+    QCOMPARE(loaded.effectEnabledKeyframes.size(), 2);
+    QCOMPARE(loaded.effectEnabledKeyframes[0].frame, 10);
+    QVERIFY(loaded.effectEnabledKeyframes[0].enabled);
+    QCOMPARE(loaded.effectEnabledKeyframes[1].frame, 40);
+    QVERIFY(!loaded.effectEnabledKeyframes[1].enabled);
+    QCOMPARE(loaded.effectModulationMode, QStringLiteral("lfo"));
+    QCOMPARE(loaded.effectModulationTarget, QStringLiteral("scale"));
+    QCOMPARE(loaded.effectModulationAmount, 0.5);
+    QCOMPARE(loaded.effectModulationRate, 0.25);
+    QCOMPARE(loaded.effectModulationPhaseDegrees, 90.0);
     QCOMPARE(loaded.effectRows, 32);
     QVERIFY(std::abs(loaded.effectSpeed - 1.75) < 0.000001);
     QVERIFY(std::abs(loaded.effectScale - 0.85) < 0.000001);
@@ -232,6 +255,72 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(neonParameters.value(QStringLiteral("rows")).toInt(), 11);
     QCOMPARE(neonParameters.value(QStringLiteral("speed")).toDouble(), 2.5);
     QCOMPARE(neonParameters.value(QStringLiteral("scale")).toDouble(), 1.75);
+}
+
+void TestEffectPresets::effectEnableKeysAndDynamicsEvaluateDeterministically()
+{
+    TimelineClip clip;
+    clip.startFrame = 100;
+    clip.durationFrames = 300;
+    clip.effectPreset = ClipEffectPreset::PersonOrbit;
+    clip.edgeFillEffect = BackgroundFillEffect::Mirror;
+    clip.effectEnabled = true;
+    clip.effectEnabledKeyframes = {{30, false}, {60, true}};
+    clip.effectScale = 2.0;
+
+    QCOMPARE(
+        evaluateClipEffectAnimationAtPosition(clip, 120.0).effectPreset,
+        ClipEffectPreset::PersonOrbit);
+    const TimelineClip disabled =
+        evaluateClipEffectAnimationAtPosition(clip, 140.0);
+    QCOMPARE(disabled.effectPreset, ClipEffectPreset::None);
+    QCOMPARE(disabled.edgeFillEffect, BackgroundFillEffect::None);
+    QCOMPARE(
+        evaluateClipEffectAnimationAtPosition(clip, 170.0).effectPreset,
+        ClipEffectPreset::PersonOrbit);
+
+    clip.effectEnabledKeyframes.clear();
+    clip.effectModulationMode = QStringLiteral("lfo");
+    clip.effectModulationTarget = QStringLiteral("scale");
+    clip.effectModulationAmount = 0.5;
+    clip.effectModulationRate = 0.25;
+    clip.effectModulationPhaseDegrees = 90.0;
+    QCOMPARE(
+        evaluateClipEffectAnimationAtPosition(clip, 100.0).effectScale,
+        2.5);
+
+    clip.effectModulationMode = QStringLiteral("steady_increase");
+    clip.effectModulationTarget = QStringLiteral("speed");
+    clip.effectModulationAmount = 0.5;
+    clip.effectSpeed = 1.0;
+    QCOMPARE(
+        evaluateClipEffectAnimationAtPosition(
+            clip, 100.0 + 2.0 * kTimelineFps).effectSpeed,
+        2.0);
+
+    clip.startFrame = 0;
+    clip.durationFrames = 60;
+    clip.effectSkipAwareTiming = true;
+    PlaybackTimingContext transcriptTiming;
+    transcriptTiming.playbackRanges = {
+        ExportRangeSegment{0, 9},
+        ExportRangeSegment{20, 49},
+    };
+    const TimelineClip transcriptAware =
+        evaluateClipEffectAnimationAtPosition(
+            clip, 20.0, {}, transcriptTiming);
+    QCOMPARE(
+        transcriptAware.effectSpeed,
+        1.0 + (0.5 * 10.0 / kTimelineFps));
+
+    clip.effectSkipAwareTiming = false;
+    const TimelineClip wallClock =
+        evaluateClipEffectAnimationAtPosition(
+            clip, 20.0, {}, transcriptTiming);
+    QCOMPARE(
+        wallClock.effectSpeed,
+        1.0 + (0.5 * 20.0 / kTimelineFps));
+    QVERIFY(transcriptAware.effectSpeed < wallClock.effectSpeed);
 }
 
 void TestEffectPresets::textExtrudeModesSerializeAndMigrate()

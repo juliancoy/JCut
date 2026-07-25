@@ -28,6 +28,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 
 class TestEditorRuntime : public QObject {
@@ -88,6 +89,7 @@ private slots:
     void testGeneratedChildTrackRoundTripsAcrossNeutralAndQtBridges();
     void testTranscriptGeneratedTitlesUseImmutableChildTrack();
     void testGeneratedChildTrackReconciliationAndPoliciesAreUndoable();
+    void testGeneratedChildTracksRemainDistinctPerSidecar();
     void testMaskMatteCloneAndSplitRelationshipsStayValid();
     void testExtendedClipStateRoundTripsIntoRenderTimeline();
     void testExportCommandsUpdateCoreRequest();
@@ -2958,6 +2960,26 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
         std::string("progressive_bidirectional_edge_stretch"));
     QCOMPARE(bidirectionalClip.edgeFillPixels, 36);
     QCOMPARE(bidirectionalClip.edgeFillPower, 1.75);
+    jcut::SetClipMaskEffectCommand animatedCommand;
+    animatedCommand.clipId = 1;
+    animatedCommand.edgeFillEffect =
+        "progressive_bidirectional_edge_stretch";
+    animatedCommand.edgeFillPixels = 36;
+    animatedCommand.edgeFillPower = 1.75;
+    animatedCommand.effectPreset = "person_orbit";
+    animatedCommand.effectEnabled = false;
+    animatedCommand.effectModulationMode = "steady_increase";
+    animatedCommand.effectModulationTarget = "speed";
+    animatedCommand.effectModulationAmount = 0.5;
+    const jcut::CommandResult animatedResult =
+        runtime.execute(jcut::EditorCommand{animatedCommand});
+    QVERIFY2(animatedResult.applied, animatedResult.message.c_str());
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::UpsertEffectEnabledKeyframeCommand{
+            1, {12, true}}}).applied);
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::UpsertEffectEnabledKeyframeCommand{
+            1, {48, false}}}).applied);
     std::string roundTripError;
     const std::optional<jcut::EditorDocumentCore> roundTripped =
         jcut::editorDocumentCoreFromJson(
@@ -2967,6 +2989,19 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QCOMPARE(
         roundTripped->clips.front().edgeFillEffect,
         std::string("progressive_bidirectional_edge_stretch"));
+    QCOMPARE(roundTripped->clips.front().effectEnabled, false);
+    QCOMPARE(
+        roundTripped->clips.front().effectModulationMode,
+        std::string("steady_increase"));
+    QCOMPARE(
+        roundTripped->clips.front().effectModulationTarget,
+        std::string("speed"));
+    QCOMPARE(
+        roundTripped->clips.front().effectModulationAmount,
+        0.5);
+    QCOMPARE(
+        roundTripped->clips.front().effectEnabledKeyframes.size(),
+        std::size_t{2});
     QCOMPARE(
         jcut::editorDocumentCoreFromJson(
             jcut::toJson(runtime.snapshot()), &roundTripError)
@@ -4101,7 +4136,7 @@ void TestEditorRuntime::testGeneratedChildTrackRoundTripsAcrossNeutralAndQtBridg
     const jcut::EditorTrack& normalizedLane = normalized.tracks.at(1);
     QVERIFY(normalizedLane.generatedChildTrack);
     QCOMPARE(QString::fromStdString(normalizedLane.label),
-             QStringLiteral("↳ Person Mask"));
+             QStringLiteral("↳ Source • Person Mask"));
     QCOMPARE(normalizedLane.height, 48);
     QCOMPARE(normalizedLane.visualMode, 2);
     QCOMPARE(normalizedLane.gradingPreviewEnabled, false);
@@ -4469,7 +4504,7 @@ void TestEditorRuntime::testGeneratedChildTrackReconciliationAndPoliciesAreUndoa
     QCOMPARE(QString::fromStdString(maskALane->parentClipId),
              QStringLiteral("source-a"));
     QCOMPARE(QString::fromStdString(maskALane->label),
-             QStringLiteral("↳ Person Mask"));
+             QStringLiteral("↳ Source A • Person Mask"));
     QCOMPARE(maskALane->height, 40);
     QCOMPARE(maskALane->visualMode, 2);
     QCOMPARE(maskALane->gradingPreviewEnabled, false);
@@ -4583,7 +4618,7 @@ void TestEditorRuntime::testGeneratedChildTrackReconciliationAndPoliciesAreUndoa
     maskALane = trackById(normalized, 2);
     QVERIFY(maskALane);
     QCOMPARE(QString::fromStdString(maskALane->label),
-             QStringLiteral("↳ Person Mask"));
+             QStringLiteral("↳ Source A • Person Mask"));
     QCOMPARE(maskALane->height, 55);
     QVERIFY(runtime.execute(
         jcut::EditorCommand{jcut::UndoCommand{}}).applied);
@@ -4635,6 +4670,66 @@ void TestEditorRuntime::testGeneratedChildTrackReconciliationAndPoliciesAreUndoa
     QVERIFY(clipByPersistentId(restoredDelete, "source-a"));
     QVERIFY(clipByPersistentId(restoredDelete, "mask-a"));
     QVERIFY(trackById(restoredDelete, 2));
+}
+
+void TestEditorRuntime::testGeneratedChildTracksRemainDistinctPerSidecar()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks = {
+        {1, "Source", true},
+        {2, "Old shared masks", false},
+    };
+
+    jcut::EditorClip source;
+    source.id = 1;
+    source.trackId = 1;
+    source.persistentId = "source";
+    source.label = "Interview";
+    source.mediaKind = "video";
+    source.durationFrames = 90;
+    source.clipRole = "media";
+
+    const auto mask = [&](int id,
+                          const std::string& persistentId,
+                          const std::string& label,
+                          const std::string& sidecarId) {
+        jcut::EditorClip child = source;
+        child.id = id;
+        child.trackId = 2;
+        child.persistentId = persistentId;
+        child.label = label;
+        child.clipRole = "mask_matte";
+        child.linkedSourceClipId = source.persistentId;
+        child.generatedFromMaskId = sidecarId;
+        return child;
+    };
+    document.clips = {
+        source,
+        mask(2, "person", "Person Mask", "person-sidecar"),
+        mask(3, "microphone", "Microphone Mask", "microphone-sidecar"),
+        mask(4, "alpha", "Alpha Mask", "alpha-sidecar"),
+    };
+
+    const jcut::EditorDocumentCore normalized =
+        jcut::EditorRuntime::fromDocument(std::move(document)).snapshot();
+    QCOMPARE(normalized.tracks.size(), std::size_t(4));
+
+    std::unordered_set<int> childTrackIds;
+    for (const jcut::EditorClip& clip : normalized.clips) {
+        if (jcut::canonicalEditorClipRole(clip.clipRole) == "mask_matte") {
+            childTrackIds.insert(clip.trackId);
+        }
+    }
+    QCOMPARE(childTrackIds.size(), std::size_t(3));
+    for (const int trackId : childTrackIds) {
+        const auto track = std::find_if(
+            normalized.tracks.cbegin(), normalized.tracks.cend(),
+            [trackId](const jcut::EditorTrack& candidate) {
+                return candidate.id == trackId;
+            });
+        QVERIFY(track != normalized.tracks.cend());
+        QVERIFY(track->generatedChildTrack);
+    }
 }
 
 void TestEditorRuntime::testMaskMatteCloneAndSplitRelationshipsStayValid()
@@ -5714,6 +5809,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
         {"playbackSpeed", 1.5},
         {"exportPlaybackSpeed", 2.25},
         {"timelineZoom", 3.0},
+        {"previewZoom", 2.25},
         {"outputWidth", 1280},
         {"outputHeight", 720},
         {"outputFps", 24.0},
@@ -5766,7 +5862,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
     QCOMPARE(parsed->transport.playbackActive, true);
     QCOMPARE(parsed->transport.currentFrame, 48);
     QCOMPARE(parsed->transport.playbackSpeed, 1.5f);
-    QCOMPARE(parsed->transport.previewZoom, 3.0f);
+    QCOMPARE(parsed->transport.previewZoom, 2.25f);
     QCOMPARE(parsed->panels.showWaveform, false);
     QCOMPARE(parsed->tracks.size(), std::size_t(2));
     QCOMPARE(parsed->tracks.back().selected, true);
@@ -5795,6 +5891,22 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
     QCOMPARE(parsed->exportRequest.imageSequenceFormat, std::string("png"));
     QCOMPARE(parsed->exportRequest.outputMode,
              jcut::render::RenderOutputMode::EncodedFileAndImageSequence);
+
+    const nlohmann::json saved =
+        jcut::toLegacyStateJson(*parsed, &state);
+    QCOMPARE(saved.value("timelineZoom", 0.0), 3.0);
+    QCOMPARE(saved.value("previewZoom", 0.0), 2.25);
+
+    nlohmann::json corruptNeutral =
+        jcut::toJson(*parsed);
+    corruptNeutral["transport"]["previewZoom"] = 0.007957;
+    const std::optional<jcut::EditorDocumentCore> normalized =
+        jcut::editorDocumentCoreFromJson(
+            corruptNeutral, &error);
+    QVERIFY2(normalized.has_value(), error.c_str());
+    QCOMPARE(
+        normalized->transport.previewZoom,
+        jcut::kEditorMinimumPreviewZoom);
 }
 
 void TestEditorRuntime::testLegacyStateJsonPreservesQtOnlyArtifactFields()

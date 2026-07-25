@@ -411,6 +411,13 @@ struct TimelineClip {
     qreal edgeFillBrightness = 0.0;
     qreal edgeFillSaturation = 1.0;
     ClipEffectPreset effectPreset = ClipEffectPreset::None;
+    bool effectEnabled = true;
+    QVector<BoolKeyframe> effectEnabledKeyframes;
+    QString effectModulationMode = QStringLiteral("none");
+    QString effectModulationTarget = QStringLiteral("scale");
+    qreal effectModulationAmount = 0.0;
+    qreal effectModulationRate = 1.0;
+    qreal effectModulationPhaseDegrees = 0.0;
     int effectRows = 32;
     qreal effectSpeed = 1.0;
     qreal effectScale = 1.0;

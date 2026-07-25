@@ -1398,3 +1398,14 @@ void DirectVulkanPreviewPresenter::resetProfilingStats()
     m_presentedFrames = 0;
     m_stats = DirectVulkanPreviewStats{};
 }
+
+void DirectVulkanPreviewPresenter::setGpuExportPreviewFrame(
+    const render_detail::OffscreenVulkanFrame& frame)
+{
+    directVulkanPreviewWindowSetGpuExportPreviewFrame(m_window, frame);
+}
+
+void DirectVulkanPreviewPresenter::clearGpuExportPreview()
+{
+    directVulkanPreviewWindowClearGpuExportPreview(m_window);
+}

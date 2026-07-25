@@ -2,6 +2,7 @@
 
 #include "audio_dynamics_core.h"
 #include "background_fill_effect_fwd.h"
+#include "core/offscreen_vulkan_frame.h"
 #include "loiacono/spectrum_settings_dialog.h"
 #include "playback_timing_context.h"
 
@@ -155,6 +156,9 @@ public:
     virtual QJsonObject profilingSnapshot() const = 0;
     virtual void resetProfilingStats() = 0;
     virtual bool selectedOverlayIsTranscript() const = 0;
+    virtual void setGpuExportPreviewFrame(
+        const render_detail::OffscreenVulkanFrame& frame) = 0;
+    virtual void clearGpuExportPreview() = 0;
 
     std::function<void(const QString&)> selectionRequested;
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;

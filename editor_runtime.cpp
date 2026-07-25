@@ -20,8 +20,6 @@ namespace {
 
 constexpr float kMinPlaybackSpeed = 0.1f;
 constexpr float kMaxPlaybackSpeed = 3.0f;
-constexpr float kMinPreviewZoom = 0.5f;
-constexpr float kMaxPreviewZoom = 3.0f;
 constexpr double kDefaultTimelineFps = 30.0;
 constexpr std::int64_t kEditorAudioSampleRate = 48000;
 constexpr std::int64_t kEditorSamplesPerFrame =
@@ -1025,6 +1023,10 @@ jcut::CommandResult splitSingleClipAtFrame(
         &trailingClip.opacityKeyframes,
         localSplitFrame);
     splitKeyframes(
+        &clip->effectEnabledKeyframes,
+        &trailingClip.effectEnabledKeyframes,
+        localSplitFrame);
+    splitKeyframes(
         &clip->titleKeyframes,
         &trailingClip.titleKeyframes,
         localSplitFrame);
@@ -1556,6 +1558,7 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::UpsertTransformKeyframeCommand> ||
                    std::is_same_v<T, jcut::CommitPreviewTransformCommand> ||
                    std::is_same_v<T, jcut::SetClipMaskEffectCommand> ||
+                   std::is_same_v<T, jcut::UpsertEffectEnabledKeyframeCommand> ||
                    std::is_same_v<T, jcut::SetClipMaskCommand> ||
                    std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
                    std::is_same_v<T, jcut::SetClipZLevelCommand> ||
@@ -1654,6 +1657,7 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         std::size_t parentIndex = 0;
         std::string childId;
         std::string parentId;
+        std::string sidecarIdentity;
         int laneTrackId = 0;
     };
 
@@ -1700,8 +1704,17 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
             continue;
         }
         child.linkedSourceClipId = parentId;
+        std::string sidecarIdentity = trimmed(child.generatedFromMaskId);
+        if (sidecarIdentity.empty()) {
+            sidecarIdentity = trimmed(child.maskFramesDir);
+        }
+        if (sidecarIdentity.empty()) {
+            sidecarIdentity = std::string("legacy-track:") +
+                std::to_string(child.trackId);
+        }
         bindings.push_back(
-            {childIndex, parentIt->second, childId, parentId, 0});
+            {childIndex, parentIt->second, childId, parentId,
+             std::move(sidecarIdentity), 0});
     }
 
     std::unordered_map<int, std::vector<std::size_t>> occupantsByTrackId;
@@ -1714,6 +1727,9 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
 
     std::unordered_set<int> claimedTrackIds;
     claimedTrackIds.reserve(bindings.size());
+    std::unordered_map<std::string, int>
+        laneTrackIdBySourceTrackAndSidecar;
+    laneTrackIdBySourceTrackAndSidecar.reserve(bindings.size());
     const auto generatedTrackMatches = [&](const EditorTrack& track,
                                            const ChildBinding& binding) {
         return isGeneratedEditorChildTrack(track) &&
@@ -1736,15 +1752,27 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
     for (ChildBinding& binding : bindings) {
         const EditorClip& child = document->clips[binding.childIndex];
         const EditorClip& parent = document->clips[binding.parentIndex];
+        const std::string laneKey =
+            std::to_string(parent.trackId) + "\x1f" +
+            binding.sidecarIdentity;
         int laneTrackId = 0;
+        const auto sharedLane =
+            laneTrackIdBySourceTrackAndSidecar.find(laneKey);
+        if (sharedLane !=
+            laneTrackIdBySourceTrackAndSidecar.end()) {
+            laneTrackId = sharedLane->second;
+        }
 
         const auto currentTrackIt = trackIndexById.find(child.trackId);
-        if (currentTrackIt != trackIndexById.end()) {
+        if (laneTrackId == 0 &&
+            currentTrackIt != trackIndexById.end()) {
             const EditorTrack& currentTrack =
                 document->tracks[currentTrackIt->second];
             if ((generatedTrackMatches(currentTrack, binding) ||
                  (isGeneratedEditorChildTrack(currentTrack) &&
-                  trackContainsOnlyBoundChildren(currentTrack.id)))) {
+                  trackContainsOnlyBoundChildren(currentTrack.id))) &&
+                claimedTrackIds.find(currentTrack.id) ==
+                    claimedTrackIds.end()) {
                 laneTrackId = currentTrack.id;
             }
         }
@@ -1786,12 +1814,18 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         }
         binding.laneTrackId = laneTrackId;
         claimedTrackIds.insert(laneTrackId);
+        laneTrackIdBySourceTrackAndSidecar.emplace(
+            laneKey, laneTrackId);
     }
 
-    // A valid child binding owns its lane exclusively. Recover any malformed
-    // ordinary occupant onto a new neutral base track; another valid matte is
-    // assigned to its own lane below.
+    // Each sidecar collection on a source track owns one generated lane.
+    // Recover any malformed ordinary occupant onto a neutral base track.
+    std::unordered_set<int> recoveredLaneTrackIds;
     for (const ChildBinding& binding : bindings) {
+        if (!recoveredLaneTrackIds.insert(
+                binding.laneTrackId).second) {
+            continue;
+        }
         const auto laneIt = trackIndexById.find(binding.laneTrackId);
         if (laneIt == trackIndexById.end()) {
             continue;
@@ -1831,9 +1865,14 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         }
     }
 
+    std::unordered_set<int> initializedLaneTrackIds;
     for (const ChildBinding& binding : bindings) {
         EditorClip& child = document->clips[binding.childIndex];
         child.trackId = binding.laneTrackId;
+        if (!initializedLaneTrackIds.insert(
+                binding.laneTrackId).second) {
+            continue;
+        }
         const auto laneIt = trackIndexById.find(binding.laneTrackId);
         if (laneIt == trackIndexById.end()) {
             continue;
@@ -1842,8 +1881,15 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
         lane.generatedChildTrack = true;
         lane.parentClipId = binding.parentId;
         lane.childClipId = binding.childId;
-        lane.label = std::string("↳ ") +
-            (child.label.empty() ? std::string("Mask Matte") : child.label);
+        const std::string sourceLabel =
+            document->clips[binding.parentIndex].label.empty()
+                ? std::string("Masks")
+                : document->clips[binding.parentIndex].label;
+        const std::string sidecarLabel = child.label.empty()
+            ? std::string("Mask")
+            : child.label;
+        lane.label = std::string("↳ ") + sourceLabel +
+            " • " + sidecarLabel;
         lane.height = std::clamp(lane.height, kEditorTrackMinHeight, 56);
         lane.audioEnabled = false;
         lane.audioWaveformVisible = false;
@@ -3094,7 +3140,8 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 return {true, "transport audio updated"};
             } else if constexpr (std::is_same_v<T, SetPreviewZoomCommand>) {
                 m_document.transport.previewZoom =
-                    std::clamp(typedCommand.zoom, kMinPreviewZoom, kMaxPreviewZoom);
+                    jcut::normalizedEditorPreviewZoom(
+                        typedCommand.zoom);
                 return {true, "preview zoom updated"};
             } else if constexpr (std::is_same_v<T, SeekToFrameCommand>) {
                 m_document.transport.currentFrame =
@@ -3842,6 +3889,8 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 trimKeyframesFromStart(&clip->transformKeyframes, trimFrames);
                 trimKeyframesFromStart(&clip->gradingKeyframes, trimFrames);
                 trimKeyframesFromStart(&clip->opacityKeyframes, trimFrames);
+                trimKeyframesFromStart(
+                    &clip->effectEnabledKeyframes, trimFrames);
                 trimKeyframesFromStart(&clip->titleKeyframes, trimFrames);
                 for (EditorCorrectionPolygon& polygon : clip->correctionPolygons) {
                     polygon.startFrame = std::max<std::int64_t>(
@@ -4392,6 +4441,10 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     removed = removeKeyframeAtFrame(
                         &clip->transformKeyframes, typedCommand.frame);
                     break;
+                case EditorKeyframeChannel::EffectEnabled:
+                    removed = removeKeyframeAtFrame(
+                        &clip->effectEnabledKeyframes, typedCommand.frame);
+                    break;
                 case EditorKeyframeChannel::SpeakerFramingEnabled:
                     removed = removeKeyframeAtFrame(
                         &clip->speakerFramingEnabledKeyframes,
@@ -4715,7 +4768,41 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                     : "grid";
                 clip->tilingSpacing = std::clamp(typedCommand.tilingSpacing, 0.1, 8.0);
                 clip->tilingWrap = typedCommand.tilingWrap;
+                clip->effectEnabled = typedCommand.effectEnabled;
+                clip->effectModulationMode =
+                    typedCommand.effectModulationMode == "lfo" ||
+                    typedCommand.effectModulationMode == "steady_increase"
+                        ? typedCommand.effectModulationMode
+                        : "none";
+                clip->effectModulationTarget =
+                    typedCommand.effectModulationTarget == "rows" ||
+                    typedCommand.effectModulationTarget == "speed" ||
+                    typedCommand.effectModulationTarget == "spacing"
+                        ? typedCommand.effectModulationTarget
+                        : "scale";
+                clip->effectModulationAmount = std::clamp(
+                    typedCommand.effectModulationAmount, -512.0, 512.0);
+                clip->effectModulationRate = std::clamp(
+                    typedCommand.effectModulationRate, 0.0, 20.0);
+                clip->effectModulationPhaseDegrees = std::clamp(
+                    typedCommand.effectModulationPhaseDegrees,
+                    -360.0,
+                    360.0);
                 return {true, "clip mask and effect updated"};
+            } else if constexpr (
+                std::is_same_v<T, UpsertEffectEnabledKeyframeCommand>) {
+                EditorClip* clip =
+                    findClip(&m_document.clips, typedCommand.clipId);
+                if (!clip) return {false, "clip not found"};
+                EditorBoolKeyframe keyframe = typedCommand.keyframe;
+                keyframe.frame = std::clamp<std::int64_t>(
+                    keyframe.frame,
+                    0,
+                    std::max(0, clip->durationFrames - 1));
+                upsertKeyframe(
+                    &clip->effectEnabledKeyframes,
+                    std::move(keyframe));
+                return {true, "effect enabled keyframe updated"};
             } else if constexpr (std::is_same_v<T, SetClipMaskCommand>) {
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
@@ -4841,6 +4928,13 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 child.maskShowOnly = false;
                 child.maskForegroundLayerEnabled = false;
                 child.effectPreset = "none";
+                child.effectEnabled = true;
+                child.effectEnabledKeyframes.clear();
+                child.effectModulationMode = "none";
+                child.effectModulationTarget = "scale";
+                child.effectModulationAmount = 0.0;
+                child.effectModulationRate = 1.0;
+                child.effectModulationPhaseDegrees = 0.0;
                 child.effectRows = 32;
                 child.effectSpeed = 1.0;
                 child.effectScale = 1.0;

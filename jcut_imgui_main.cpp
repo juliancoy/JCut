@@ -31,6 +31,7 @@
 #include "standalone_export_renderer.h"
 #include "standalone_preview_renderer.h"
 #include "standalone_timeline_renderer.h"
+#include "timeline_viewport_core.h"
 #include "transcript_cut_session_core.h"
 #include "transcript_document_mutation_core.h"
 #include "transcript_mining_core.h"
@@ -176,12 +177,12 @@ enum class ProjectLifecycleAction {
     Rename,
 };
 
-constexpr float kTimelinePixelsPerFrame = 0.35f;
 constexpr float kTimelineRowHeight = 34.0f;
-constexpr float kTimelineLabelWidth = 90.0f;
+constexpr float kTimelineLabelWidth = 180.0f;
 constexpr float kTimelineClipHeight = 24.0f;
 constexpr float kTimelineTrackPadding = 12.0f;
 constexpr float kTimelineTopPadding = 10.0f;
+constexpr float kTimelineRulerHeight = 28.0f;
 constexpr float kTimelineHandleWidth = 8.0f;
 constexpr float kTimelineSnapThresholdPixels = 10.0f;
 constexpr char kProjectMediaDragPayload[] = "JCUT_MEDIA_ITEM";
@@ -484,6 +485,9 @@ struct ShellState {
     TimelineDragMode timelineDragMode = TimelineDragMode::None;
     TimelineToolMode timelineToolMode = TimelineToolMode::Select;
     bool timelineSnappingEnabled = true;
+    float timelinePixelsPerFrame =
+        jcut::timeline_viewport::kDefaultPixelsPerFrame;
+    std::int64_t timelineFrameOffset = 0;
     float trackCrossfadeSeconds = 0.5f;
     bool trackCrossfadeMoveClips = false;
     int timelineSnapIndicatorFrame = -1;
@@ -1028,6 +1032,12 @@ void loadUiPreferences(ShellState* shellState)
             root.value("uiFontSize", kDefaultUiFontSize),
             kMinUiFontSize,
             kMaxUiFontSize);
+        shellState->timelinePixelsPerFrame = std::clamp(
+            root.value(
+                "timelinePixelsPerFrame",
+                jcut::timeline_viewport::kDefaultPixelsPerFrame),
+            0.0001f,
+            jcut::timeline_viewport::kMaximumPixelsPerFrame);
         shellState->audioBufferFrames = std::clamp(
             root.value("audioBufferFrames", 1024), 64, 8192);
         shellState->audioOutputDeviceName =
@@ -1083,6 +1093,8 @@ void loadUiPreferences(ShellState* shellState)
             99.0f);
     } catch (...) {
         shellState->uiFontSize = kDefaultUiFontSize;
+        shellState->timelinePixelsPerFrame =
+            jcut::timeline_viewport::kDefaultPixelsPerFrame;
         shellState->audioBufferFrames = 1024;
         shellState->audioOutputDeviceName.clear();
         shellState->decoderPolicy.decodePreference =
@@ -1122,6 +1134,7 @@ void saveUiPreferences(const ShellState& shellState)
     }
     const nlohmann::json root{
         {"uiFontSize", shellState.uiFontSize},
+        {"timelinePixelsPerFrame", shellState.timelinePixelsPerFrame},
         {"audioBufferFrames", shellState.audioBufferFrames},
         {"audioOutputDeviceName", shellState.audioOutputDeviceName},
         {"standaloneDecodePreference",
@@ -3649,10 +3662,19 @@ void runExportWorker(ShellState* shellState)
     }
 }
 
-int frameFromTimelineX(float originX, float mouseX)
+int frameFromTimelineX(
+    float contentLeft,
+    float mouseX,
+    std::int64_t frameOffset,
+    float pixelsPerFrame)
 {
-    const float relative = mouseX - (originX + kTimelineLabelWidth + kTimelineTrackPadding);
-    return std::max(0, static_cast<int>(std::lround(relative / kTimelinePixelsPerFrame)));
+    return static_cast<int>(std::min<std::int64_t>(
+        jcut::timeline_viewport::frameFromX(
+            contentLeft,
+            mouseX,
+            frameOffset,
+            pixelsPerFrame),
+        std::numeric_limits<int>::max()));
 }
 
 int trackIndexFromTimelineY(const jcut::EditorDocumentCore& snapshot, float originY, float mouseY)
@@ -3799,19 +3821,22 @@ struct TimelineSnapResult {
     int boundaryFrame = -1;
 };
 
-int timelineSnapThresholdFrames()
+int timelineSnapThresholdFrames(float pixelsPerFrame)
 {
     return std::max(1, static_cast<int>(std::lround(
-        kTimelineSnapThresholdPixels / std::max(0.25f, kTimelinePixelsPerFrame))));
+        kTimelineSnapThresholdPixels /
+        std::max(0.25f, pixelsPerFrame))));
 }
 
 TimelineSnapResult snapTimelineBoundary(const jcut::EditorDocumentCore& snapshot,
                                         int proposedFrame,
+                                        float pixelsPerFrame,
                                         int excludedClipId = 0,
                                         bool excludeSelected = false)
 {
     const std::int64_t proposed = std::max(0, proposedFrame);
-    const std::int64_t threshold = timelineSnapThresholdFrames();
+    const std::int64_t threshold =
+        timelineSnapThresholdFrames(pixelsPerFrame);
     std::int64_t bestFrame = proposed;
     std::int64_t bestDistance = threshold + 1;
     auto consider = [&](std::int64_t candidate) {
@@ -3844,7 +3869,8 @@ TimelineSnapResult snapTimelineBoundary(const jcut::EditorDocumentCore& snapshot
 
 TimelineSnapResult snapTimelineMoveStart(const jcut::EditorDocumentCore& snapshot,
                                          int anchorClipId,
-                                         int proposedStartFrame)
+                                         int proposedStartFrame,
+                                         float pixelsPerFrame)
 {
     std::vector<jcut::timeline::SnapClip> clips;
     clips.reserve(snapshot.clips.size());
@@ -3864,7 +3890,7 @@ TimelineSnapResult snapTimelineMoveStart(const jcut::EditorDocumentCore& snapsho
             clips,
             anchorClipId,
             proposedStartFrame,
-            timelineSnapThresholdFrames());
+            timelineSnapThresholdFrames(pixelsPerFrame));
     return {
         static_cast<int>(std::clamp<std::int64_t>(
             result.anchorStartFrame,
@@ -7730,11 +7756,288 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
     }
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &shellState->timelineSnappingEnabled);
+
+    const std::int64_t timelineFps = std::max<std::int64_t>(
+        1,
+        snapshot.exportRequest.outputFps > 0.0
+            ? static_cast<std::int64_t>(
+                  std::llround(snapshot.exportRequest.outputFps))
+            : 30);
+    std::vector<jcut::timeline_viewport::ClipSpan> timelineClipSpans;
+    timelineClipSpans.reserve(snapshot.clips.size());
+    for (const jcut::EditorClip& clip : snapshot.clips) {
+        timelineClipSpans.push_back({
+            clip.startFrame,
+            clip.durationFrames,
+        });
+    }
+    const std::int64_t totalTimelineFrames =
+        jcut::timeline_viewport::totalFrames(
+            timelineClipSpans, timelineFps);
+    const float estimatedContentWidth = std::max(
+        1.0f,
+        ImGui::GetContentRegionAvail().x -
+            kTimelineLabelWidth -
+            kTimelineTrackPadding -
+            16.0f);
+    const float minimumTimelineZoom =
+        jcut::timeline_viewport::minimumPixelsPerFrame(
+            estimatedContentWidth, totalTimelineFrames);
+    shellState->timelinePixelsPerFrame = std::clamp(
+        shellState->timelinePixelsPerFrame,
+        minimumTimelineZoom,
+        jcut::timeline_viewport::kMaximumPixelsPerFrame);
+    shellState->timelineFrameOffset =
+        jcut::timeline_viewport::clampFrameOffset(
+            shellState->timelineFrameOffset,
+            totalTimelineFrames,
+            estimatedContentWidth,
+            shellState->timelinePixelsPerFrame);
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Zoom");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    const float oldTimelineZoom =
+        shellState->timelinePixelsPerFrame;
+    if (ImGui::SliderFloat(
+            "##TimelineZoom",
+            &shellState->timelinePixelsPerFrame,
+            minimumTimelineZoom,
+            jcut::timeline_viewport::kMaximumPixelsPerFrame,
+            "%.3g px/f",
+            ImGuiSliderFlags_Logarithmic)) {
+        const std::int64_t anchorFrame =
+            shellState->timelineFrameOffset +
+            jcut::timeline_viewport::visibleFrameCount(
+                estimatedContentWidth, oldTimelineZoom) /
+                2;
+        shellState->timelineFrameOffset =
+            jcut::timeline_viewport::offsetKeepingFrameAtX(
+                anchorFrame,
+                estimatedContentWidth * 0.5f,
+                shellState->timelinePixelsPerFrame,
+                totalTimelineFrames,
+                estimatedContentWidth);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        saveUiPreferences(*shellState);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Fit##Timeline")) {
+        shellState->timelinePixelsPerFrame =
+            jcut::timeline_viewport::fitPixelsPerFrame(
+                estimatedContentWidth, totalTimelineFrames);
+        shellState->timelineFrameOffset = 0;
+        saveUiPreferences(*shellState);
+    }
+
+    const std::int64_t maximumTimelineOffset =
+        jcut::timeline_viewport::maximumFrameOffset(
+            totalTimelineFrames,
+            estimatedContentWidth,
+            shellState->timelinePixelsPerFrame);
+    if (maximumTimelineOffset > 0) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted("View");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(
+            std::max(90.0f, ImGui::GetContentRegionAvail().x));
+        const std::int64_t minimumTimelineOffset = 0;
+        ImGui::SliderScalar(
+            "##TimelinePan",
+            ImGuiDataType_S64,
+            &shellState->timelineFrameOffset,
+            &minimumTimelineOffset,
+            &maximumTimelineOffset,
+            "%lld",
+            ImGuiSliderFlags_AlwaysClamp);
+    }
     ImGui::Separator();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
+
+    const ImVec2 rulerOrigin = ImGui::GetCursorScreenPos();
+    const ImVec2 rulerSize(
+        ImGui::GetContentRegionAvail().x,
+        kTimelineRulerHeight);
+    const float rulerContentLeft =
+        rulerOrigin.x + kTimelineLabelWidth +
+        kTimelineTrackPadding;
+    const float rulerContentRight =
+        rulerOrigin.x + rulerSize.x - 12.0f;
+    const float rulerContentWidth = std::max(
+        1.0f, rulerContentRight - rulerContentLeft);
+    shellState->timelineFrameOffset =
+        jcut::timeline_viewport::clampFrameOffset(
+            shellState->timelineFrameOffset,
+            totalTimelineFrames,
+            rulerContentWidth,
+            shellState->timelinePixelsPerFrame);
+    ImDrawList* rulerDrawList = ImGui::GetWindowDrawList();
+    rulerDrawList->AddRectFilled(
+        rulerOrigin,
+        ImVec2(
+            rulerOrigin.x + rulerSize.x,
+            rulerOrigin.y + rulerSize.y),
+        IM_COL32(24, 27, 32, 255),
+        4.0f);
+    rulerDrawList->AddText(
+        ImVec2(rulerOrigin.x + 8.0f, rulerOrigin.y + 6.0f),
+        IM_COL32(174, 184, 194, 255),
+        "Tracks");
+    const std::int64_t rulerStep =
+        jcut::timeline_viewport::rulerStepFrames(
+            shellState->timelinePixelsPerFrame,
+            timelineFps);
+    const std::int64_t majorRulerStep =
+        jcut::timeline_viewport::rulerStepFrames(
+            shellState->timelinePixelsPerFrame,
+            timelineFps,
+            100.0f);
+    const std::int64_t visibleStartFrame =
+        shellState->timelineFrameOffset;
+    const std::int64_t visibleEndFrame =
+        visibleStartFrame +
+        jcut::timeline_viewport::visibleFrameCount(
+            rulerContentWidth,
+            shellState->timelinePixelsPerFrame);
+    const std::int64_t firstRulerFrame =
+        (visibleStartFrame / rulerStep) * rulerStep;
+    for (std::int64_t frame = firstRulerFrame, tick = 0;
+         frame <= visibleEndFrame && tick < 1000;
+         frame += rulerStep, ++tick) {
+        const float x = jcut::timeline_viewport::xFromFrame(
+            rulerContentLeft,
+            frame,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
+        if (x < rulerContentLeft || x > rulerContentRight) {
+            continue;
+        }
+        const bool major = frame % majorRulerStep == 0;
+        rulerDrawList->AddLine(
+            ImVec2(
+                x,
+                rulerOrigin.y +
+                    (major ? 5.0f : 14.0f)),
+            ImVec2(x, rulerOrigin.y + rulerSize.y),
+            major
+                ? IM_COL32(150, 164, 180, 255)
+                : IM_COL32(82, 94, 108, 255));
+        if (major) {
+            const std::string label =
+                jcut::timeline_viewport::timecode(
+                    frame, timelineFps);
+            rulerDrawList->AddText(
+                ImVec2(x + 4.0f, rulerOrigin.y + 4.0f),
+                IM_COL32(196, 204, 214, 255),
+                label.c_str());
+        }
+    }
+    const float rulerPlayheadX =
+        jcut::timeline_viewport::xFromFrame(
+            rulerContentLeft,
+            snapshot.transport.currentFrame,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
+    if (rulerPlayheadX >= rulerContentLeft &&
+        rulerPlayheadX <= rulerContentRight) {
+        rulerDrawList->AddTriangleFilled(
+            ImVec2(rulerPlayheadX - 5.0f, rulerOrigin.y),
+            ImVec2(rulerPlayheadX + 5.0f, rulerOrigin.y),
+            ImVec2(rulerPlayheadX, rulerOrigin.y + 7.0f),
+            IM_COL32(255, 196, 86, 255));
+    }
+    ImGui::InvisibleButton("TimelineRuler", rulerSize);
+    if (ImGui::IsItemHovered() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::GetIO().MousePos.x >= rulerContentLeft) {
+        applyCommand(
+            shellState,
+            jcut::SeekToFrameCommand{
+                frameFromTimelineX(
+                    rulerContentLeft,
+                    ImGui::GetIO().MousePos.x,
+                    shellState->timelineFrameOffset,
+                    shellState->timelinePixelsPerFrame)});
+    }
+
+    const ImVec2 timelineViewportSize =
+        ImGui::GetContentRegionAvail();
+    ImGui::BeginChild(
+        "TimelineViewport",
+        timelineViewportSize,
+        false,
+        ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    const ImVec2 viewportAvail = ImGui::GetContentRegionAvail();
+    const float requiredCanvasHeight =
+        kTimelineTopPadding +
+        static_cast<float>(snapshot.tracks.size()) * kTimelineRowHeight +
+        ImGui::GetStyle().WindowPadding.y;
+    const ImVec2 avail(
+        viewportAvail.x,
+        std::max(viewportAvail.y, requiredCanvasHeight));
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     drawList->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), IM_COL32(18, 20, 24, 255), 6.0f);
+    const float contentLeft =
+        origin.x + kTimelineLabelWidth +
+        kTimelineTrackPadding;
+    const float contentRight =
+        origin.x + avail.x - 12.0f;
+    const float contentWidth = std::max(
+        1.0f, contentRight - contentLeft);
+    const ImGuiIO& timelineIo = ImGui::GetIO();
+    if (ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        timelineIo.MouseWheel != 0.0f) {
+        if (timelineIo.KeyCtrl) {
+            const std::int64_t anchorFrame =
+                jcut::timeline_viewport::frameFromX(
+                    contentLeft,
+                    timelineIo.MousePos.x,
+                    shellState->timelineFrameOffset,
+                    shellState->timelinePixelsPerFrame);
+            shellState->timelinePixelsPerFrame = std::clamp(
+                shellState->timelinePixelsPerFrame *
+                    std::pow(1.15f, timelineIo.MouseWheel),
+                jcut::timeline_viewport::minimumPixelsPerFrame(
+                    contentWidth, totalTimelineFrames),
+                jcut::timeline_viewport::kMaximumPixelsPerFrame);
+            shellState->timelineFrameOffset =
+                jcut::timeline_viewport::offsetKeepingFrameAtX(
+                    anchorFrame,
+                    timelineIo.MousePos.x - contentLeft,
+                    shellState->timelinePixelsPerFrame,
+                    totalTimelineFrames,
+                    contentWidth);
+            saveUiPreferences(*shellState);
+        } else if (timelineIo.KeyShift) {
+            const std::int64_t panFrames =
+                std::max<std::int64_t>(
+                    1,
+                    jcut::timeline_viewport::visibleFrameCount(
+                        contentWidth,
+                        shellState->timelinePixelsPerFrame) /
+                        12);
+            shellState->timelineFrameOffset =
+                jcut::timeline_viewport::clampFrameOffset(
+                    shellState->timelineFrameOffset -
+                        static_cast<std::int64_t>(
+                            std::llround(
+                                timelineIo.MouseWheel *
+                                panFrames)),
+                    totalTimelineFrames,
+                    contentWidth,
+                    shellState->timelinePixelsPerFrame);
+        }
+    }
+    const std::int64_t canvasVisibleStartFrame =
+        shellState->timelineFrameOffset;
+    const std::int64_t canvasVisibleEndFrame =
+        canvasVisibleStartFrame +
+        jcut::timeline_viewport::visibleFrameCount(
+            contentWidth,
+            shellState->timelinePixelsPerFrame);
 
     constexpr std::array<ImU32, 4> trackColors = {
         IM_COL32(54, 110, 156, 255),
@@ -7756,6 +8059,39 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
     int hoveredRenderSyncTrackId = 0;
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
 
+    const std::int64_t canvasRulerStep =
+        jcut::timeline_viewport::rulerStepFrames(
+            shellState->timelinePixelsPerFrame,
+            timelineFps);
+    const std::int64_t canvasMajorRulerStep =
+        jcut::timeline_viewport::rulerStepFrames(
+            shellState->timelinePixelsPerFrame,
+            timelineFps,
+            100.0f);
+    const std::int64_t firstCanvasRulerFrame =
+        (canvasVisibleStartFrame / canvasRulerStep) *
+        canvasRulerStep;
+    for (std::int64_t frame = firstCanvasRulerFrame, tick = 0;
+         frame <= canvasVisibleEndFrame && tick < 1000;
+         frame += canvasRulerStep, ++tick) {
+        const float x = jcut::timeline_viewport::xFromFrame(
+            contentLeft,
+            frame,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
+        if (x < contentLeft || x > contentRight) {
+            continue;
+        }
+        const bool major =
+            frame % canvasMajorRulerStep == 0;
+        drawList->AddLine(
+            ImVec2(x, origin.y),
+            ImVec2(x, origin.y + avail.y),
+            major
+                ? IM_COL32(53, 61, 71, 180)
+                : IM_COL32(39, 45, 53, 145));
+    }
+
     for (std::size_t i = 0; i < snapshot.tracks.size(); ++i) {
         const jcut::EditorTrack& track = snapshot.tracks[i];
         const bool generatedChildTrack =
@@ -7764,14 +8100,13 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             ? std::string(kGeneratedTrackLabelPrefix) + track.label
             : track.label;
         const float y = origin.y + kTimelineTopPadding + static_cast<float>(i) * kTimelineRowHeight;
-        drawList->AddText(
-            ImVec2(origin.x + 10.0f, y + 6.0f),
-            track.selected
-                ? IM_COL32(255, 214, 140, 255)
-                : (generatedChildTrack
-                       ? IM_COL32(158, 168, 178, 255)
-                       : IM_COL32(224, 228, 232, 255)),
-            timelineTrackLabel.c_str());
+        if (!ImGui::IsRectVisible(
+                ImVec2(origin.x, y),
+                ImVec2(
+                    origin.x + avail.x,
+                    y + kTimelineRowHeight))) {
+            continue;
+        }
         const jcut::EditorTrackMediaPresenceCore trackPresence =
             jcut::editorTrackMediaPresenceCore(snapshot, track.id);
         const ImVec2 visualToggleMin(
@@ -7784,6 +8119,24 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         const ImVec2 audioToggleMax(
             origin.x + kTimelineLabelWidth - 6.0f,
             y + kTimelineClipHeight - 4.0f);
+        const ImVec4 trackLabelClipRect(
+            origin.x + 8.0f,
+            y,
+            visualToggleMin.x - 5.0f,
+            y + kTimelineClipHeight);
+        drawList->AddText(
+            nullptr,
+            0.0f,
+            ImVec2(origin.x + 10.0f, y + 6.0f),
+            track.selected
+                ? IM_COL32(255, 214, 140, 255)
+                : (generatedChildTrack
+                       ? IM_COL32(158, 168, 178, 255)
+                       : IM_COL32(224, 228, 232, 255)),
+            timelineTrackLabel.c_str(),
+            nullptr,
+            0.0f,
+            &trackLabelClipRect);
         const ImU32 disabledToggleColor = IM_COL32(66, 70, 76, 255);
         const ImU32 visualToggleColor = !trackPresence.hasVisual
             ? disabledToggleColor
@@ -7820,8 +8173,8 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             hoveredTrackAudioToggleAvailable =
                 trackPresence.hasAudio && !generatedChildTrack;
         }
-        drawList->AddRectFilled(ImVec2(origin.x + kTimelineLabelWidth, y),
-                                ImVec2(origin.x + avail.x - 12.0f, y + kTimelineClipHeight),
+        drawList->AddRectFilled(ImVec2(contentLeft - kTimelineTrackPadding, y),
+                                ImVec2(contentRight, y + kTimelineClipHeight),
                                 generatedChildTrack
                                     ? kGeneratedTrackLaneColor
                                     : IM_COL32(34, 38, 44, 255),
@@ -7830,13 +8183,35 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             if (clip.trackId != track.id) {
                 continue;
             }
+            const std::int64_t clipEndFrame =
+                static_cast<std::int64_t>(clip.startFrame) +
+                std::max(0, clip.durationFrames);
+            if (clipEndFrame < canvasVisibleStartFrame ||
+                clip.startFrame > canvasVisibleEndFrame) {
+                continue;
+            }
             const bool maskMatteClip =
                 jcut::canonicalEditorClipRole(clip.clipRole) == "mask_matte";
-            const float clipStart = origin.x + kTimelineLabelWidth + kTimelineTrackPadding +
-                static_cast<float>(clip.startFrame) * kTimelinePixelsPerFrame;
-            const float clipWidth = std::max(40.0f, static_cast<float>(clip.durationFrames) * kTimelinePixelsPerFrame);
-            const ImVec2 clipMin(clipStart, y + 2.0f);
-            const ImVec2 clipMax(clipStart + clipWidth, y + kTimelineClipHeight - 2.0f);
+            const float clipStart =
+                jcut::timeline_viewport::xFromFrame(
+                    contentLeft,
+                    clip.startFrame,
+                    shellState->timelineFrameOffset,
+                    shellState->timelinePixelsPerFrame);
+            const float clipWidth =
+                jcut::timeline_viewport::clipPixelWidth(
+                    clip.durationFrames,
+                    shellState->timelinePixelsPerFrame);
+            const float clipEnd = clipStart + clipWidth;
+            const ImVec2 clipMin(
+                std::max(contentLeft, clipStart),
+                y + 2.0f);
+            const ImVec2 clipMax(
+                std::min(contentRight, clipEnd),
+                y + kTimelineClipHeight - 2.0f);
+            if (clipMax.x <= clipMin.x) {
+                continue;
+            }
             const ImU32 color = generatedChildTrack
                 ? (clip.selected
                        ? kGeneratedTrackSelectedClipColor
@@ -7851,7 +8226,8 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             if (snapshot.panels.showWaveform &&
                 track.audioWaveformVisible &&
                 clip.hasAudio &&
-                clip.audioEnabled) {
+                clip.audioEnabled &&
+                clipMax.x - clipMin.x >= 8.0f) {
                 const int waveformColumns = std::clamp(
                     static_cast<int>(
                         std::floor(clipWidth - 4.0f)),
@@ -7912,23 +8288,71 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     }
                 }
             }
-            drawList->AddText(ImVec2(clipStart + 8.0f, y + 6.0f), IM_COL32(245, 245, 245, 255), clip.label.c_str());
-            if (clip.locked) {
+            const ImVec4 clipLabelClipRect(
+                clipMin.x + 3.0f,
+                clipMin.y,
+                clipMax.x - (clip.locked ? 45.0f : 3.0f),
+                clipMax.y);
+            if (clipLabelClipRect.z > clipLabelClipRect.x) {
                 drawList->AddText(
+                    nullptr,
+                    0.0f,
+                    ImVec2(clipMin.x + 8.0f, y + 6.0f),
+                    IM_COL32(245, 245, 245, 255),
+                    clip.label.c_str(),
+                    nullptr,
+                    0.0f,
+                    &clipLabelClipRect);
+            }
+            if (clip.locked) {
+                const ImVec4 lockClipRect(
+                    std::max(
+                        clipMin.x,
+                        clipMax.x - 45.0f),
+                    clipMin.y,
+                    clipMax.x - 3.0f,
+                    clipMax.y);
+                drawList->AddText(
+                    nullptr,
+                    0.0f,
                     ImVec2(std::max(clipMin.x + 8.0f, clipMax.x - 42.0f),
                            y + 6.0f),
                     IM_COL32(255, 226, 160, 255),
-                    "LOCK");
+                    "LOCK",
+                    nullptr,
+                    0.0f,
+                    &lockClipRect);
             }
             if (clip.selected && !clip.locked && !maskMatteClip) {
-                drawList->AddRectFilled(clipMin,
-                                        ImVec2(clipMin.x + kTimelineHandleWidth, clipMax.y),
-                                        IM_COL32(255, 228, 160, 180),
-                                        3.0f);
-                drawList->AddRectFilled(ImVec2(clipMax.x - kTimelineHandleWidth, clipMin.y),
-                                        clipMax,
-                                        IM_COL32(255, 228, 160, 180),
-                                        3.0f);
+                if (clipMax.x - clipMin.x <
+                    kTimelineHandleWidth * 2.0f) {
+                    drawList->AddRect(
+                        clipMin,
+                        clipMax,
+                        IM_COL32(255, 228, 160, 220),
+                        3.0f,
+                        0,
+                        2.0f);
+                } else if (clipStart >= contentLeft) {
+                    drawList->AddRectFilled(
+                        clipMin,
+                        ImVec2(
+                            clipMin.x + kTimelineHandleWidth,
+                            clipMax.y),
+                        IM_COL32(255, 228, 160, 180),
+                        3.0f);
+                }
+                if (clipMax.x - clipMin.x >=
+                        kTimelineHandleWidth * 2.0f &&
+                    clipEnd <= contentRight) {
+                    drawList->AddRectFilled(
+                        ImVec2(
+                            clipMax.x - kTimelineHandleWidth,
+                            clipMin.y),
+                        clipMax,
+                        IM_COL32(255, 228, 160, 180),
+                        3.0f);
+                }
             }
 
             if (ImGui::IsMouseHoveringRect(clipMin, clipMax)) {
@@ -7941,9 +8365,16 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     : TimelineDragMode::MoveClip;
                 if (shellState->timelineToolMode == TimelineToolMode::Select &&
                     !clip.locked) {
-                    if (clip.selected && mousePos.x <= clipMin.x + kTimelineHandleWidth) {
+                    if (clip.selected &&
+                        clipStart >= contentLeft &&
+                        mousePos.x <=
+                            clipStart + kTimelineHandleWidth) {
                         hoveredMode = TimelineDragMode::TrimClipStart;
-                    } else if (clip.selected && mousePos.x >= clipMax.x - kTimelineHandleWidth) {
+                    } else if (
+                        clip.selected &&
+                        clipEnd <= contentRight &&
+                        mousePos.x >=
+                            clipEnd - kTimelineHandleWidth) {
                         hoveredMode = TimelineDragMode::TrimClipEnd;
                     }
                 }
@@ -7977,7 +8408,9 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             });
         if (clipIt == snapshot.clips.end() ||
             marker.frame < clipIt->startFrame ||
-            marker.frame >= clipIt->startFrame + clipIt->durationFrames) {
+            marker.frame >= clipIt->startFrame + clipIt->durationFrames ||
+            marker.frame < canvasVisibleStartFrame ||
+            marker.frame > canvasVisibleEndFrame) {
             continue;
         }
         const auto trackIt = std::find_if(
@@ -7990,9 +8423,12 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         }
         const std::size_t trackIndex = static_cast<std::size_t>(
             std::distance(snapshot.tracks.begin(), trackIt));
-        const float markerX = origin.x + kTimelineLabelWidth +
-            kTimelineTrackPadding +
-            static_cast<float>(marker.frame) * kTimelinePixelsPerFrame;
+        const float markerX =
+            jcut::timeline_viewport::xFromFrame(
+                contentLeft,
+                marker.frame,
+                shellState->timelineFrameOffset,
+                shellState->timelinePixelsPerFrame);
         const float markerY = origin.y + kTimelineTopPadding +
             static_cast<float>(trackIndex) * kTimelineRowHeight + 2.0f;
         const ImVec2 markerMin(markerX - 3.0f, markerY);
@@ -8021,9 +8457,17 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
 
     if (shellState->timelineToolMode == TimelineToolMode::Razor &&
         hoveredClipId != 0 && !hoveredClipIsMaskMatte) {
-        const int razorFrame = frameFromTimelineX(origin.x, mousePos.x);
-        const float razorX = origin.x + kTimelineLabelWidth + kTimelineTrackPadding +
-            static_cast<float>(razorFrame) * kTimelinePixelsPerFrame;
+        const int razorFrame = frameFromTimelineX(
+            contentLeft,
+            mousePos.x,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
+        const float razorX =
+            jcut::timeline_viewport::xFromFrame(
+                contentLeft,
+                razorFrame,
+                shellState->timelineFrameOffset,
+                shellState->timelinePixelsPerFrame);
         drawList->AddLine(ImVec2(razorX, origin.y + 4.0f),
                           ImVec2(razorX, origin.y + avail.y - 4.0f),
                           IM_COL32(120, 220, 255, 230),
@@ -8031,20 +8475,34 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
     }
 
     if (shellState->timelineSnapIndicatorFrame >= 0) {
-        const float snapX = origin.x + kTimelineLabelWidth + kTimelineTrackPadding +
-            static_cast<float>(shellState->timelineSnapIndicatorFrame) * kTimelinePixelsPerFrame;
-        drawList->AddLine(ImVec2(snapX, origin.y + 4.0f),
-                          ImVec2(snapX, origin.y + avail.y - 4.0f),
-                          IM_COL32(92, 232, 178, 230),
-                          2.0f);
+        const float snapX =
+            jcut::timeline_viewport::xFromFrame(
+                contentLeft,
+                shellState->timelineSnapIndicatorFrame,
+                shellState->timelineFrameOffset,
+                shellState->timelinePixelsPerFrame);
+        if (snapX >= contentLeft && snapX <= contentRight) {
+            drawList->AddLine(
+                ImVec2(snapX, origin.y + 4.0f),
+                ImVec2(snapX, origin.y + avail.y - 4.0f),
+                IM_COL32(92, 232, 178, 230),
+                2.0f);
+        }
     }
 
-    const float playheadX = origin.x + kTimelineLabelWidth + kTimelineTrackPadding +
-        static_cast<float>(snapshot.transport.currentFrame) * kTimelinePixelsPerFrame;
-    drawList->AddLine(ImVec2(playheadX, origin.y + 6.0f),
-                      ImVec2(playheadX, origin.y + avail.y - 6.0f),
-                      IM_COL32(255, 196, 86, 255),
-                      2.0f);
+    const float playheadX =
+        jcut::timeline_viewport::xFromFrame(
+            contentLeft,
+            snapshot.transport.currentFrame,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
+    if (playheadX >= contentLeft && playheadX <= contentRight) {
+        drawList->AddLine(
+            ImVec2(playheadX, origin.y + 6.0f),
+            ImVec2(playheadX, origin.y + avail.y - 6.0f),
+            IM_COL32(255, 196, 86, 255),
+            2.0f);
+    }
 
     const bool mouseInsideCanvas = ImGui::IsMouseHoveringRect(origin, ImVec2(origin.x + avail.x, origin.y + avail.y));
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && mouseInsideCanvas) {
@@ -8101,7 +8559,11 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     applyCommand(shellState, jcut::SelectClipCommand{hoveredClipId});
                 }
                 applyCommand(shellState, jcut::SplitSelectedClipsCommand{
-                    frameFromTimelineX(origin.x, mousePos.x)});
+                    frameFromTimelineX(
+                        contentLeft,
+                        mousePos.x,
+                        shellState->timelineFrameOffset,
+                        shellState->timelinePixelsPerFrame)});
                 clearTimelineDrag(shellState);
             } else {
                 const ImGuiKeyChord keyMods = ImGui::GetIO().KeyMods;
@@ -8152,8 +8614,18 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             if (trackIndex >= 0) {
                 applyCommand(shellState, jcut::SelectTrackCommand{snapshot.tracks[trackIndex].id});
             }
-            applyCommand(shellState, jcut::SeekToFrameCommand{frameFromTimelineX(origin.x, mousePos.x)});
-            shellState->timelineDragMode = TimelineDragMode::Seek;
+            if (mousePos.x >= contentLeft) {
+                applyCommand(
+                    shellState,
+                    jcut::SeekToFrameCommand{
+                        frameFromTimelineX(
+                            contentLeft,
+                            mousePos.x,
+                            shellState->timelineFrameOffset,
+                            shellState->timelinePixelsPerFrame)});
+                shellState->timelineDragMode =
+                    TimelineDragMode::Seek;
+            }
         }
     }
 
@@ -8206,7 +8678,11 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
             : hoveredIt->persistentId;
         shellState->timelineContextFrame = snapshot.transport.currentFrame;
         shellState->timelineContextClickFrame =
-            frameFromTimelineX(origin.x, mousePos.x);
+            frameFromTimelineX(
+                contentLeft,
+                mousePos.x,
+                shellState->timelineFrameOffset,
+                shellState->timelinePixelsPerFrame);
         shellState->timelineContextDocumentGeneration =
             shellState->documentGeneration;
         ImGui::OpenPopup("TimelineClipContext");
@@ -8214,10 +8690,18 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
 
     if (shellState->timelineDragMode != TimelineDragMode::None && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         if (shellState->timelineDragMode == TimelineDragMode::Seek) {
-            applyCommand(shellState, jcut::SeekToFrameCommand{frameFromTimelineX(origin.x, mousePos.x)});
+            applyCommand(
+                shellState,
+                jcut::SeekToFrameCommand{
+                    frameFromTimelineX(
+                        contentLeft,
+                        mousePos.x,
+                        shellState->timelineFrameOffset,
+                        shellState->timelinePixelsPerFrame)});
         } else {
             const int deltaFrames = static_cast<int>(std::lround(
-                (mousePos.x - shellState->timelineDragMouseX) / kTimelinePixelsPerFrame));
+                (mousePos.x - shellState->timelineDragMouseX) /
+                shellState->timelinePixelsPerFrame));
             if (shellState->timelineDragMode == TimelineDragMode::MoveClip) {
                 int targetTrackId = shellState->timelineDragTrackId;
                 const int hoveredTrackIndex = trackIndexFromTimelineY(snapshot, origin.y, mousePos.y);
@@ -8232,7 +8716,10 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     std::numeric_limits<int>::max()));
                 const TimelineSnapResult snap = shellState->timelineSnappingEnabled
                     ? snapTimelineMoveStart(
-                          snapshot, shellState->timelineDragClipId, unsnappedStart)
+                          snapshot,
+                          shellState->timelineDragClipId,
+                          unsnappedStart,
+                          shellState->timelinePixelsPerFrame)
                     : TimelineSnapResult{unsnappedStart, -1};
                 shellState->timelineSnapIndicatorFrame = snap.boundaryFrame;
                 applyCommand(shellState, jcut::MoveSelectedClipsCommand{
@@ -8253,7 +8740,10 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     maximumStart));
                 TimelineSnapResult snap = shellState->timelineSnappingEnabled
                     ? snapTimelineBoundary(
-                          snapshot, unsnappedStart, shellState->timelineDragClipId)
+                          snapshot,
+                          unsnappedStart,
+                          shellState->timelinePixelsPerFrame,
+                          shellState->timelineDragClipId)
                     : TimelineSnapResult{unsnappedStart, -1};
                 snap.frame = std::clamp(snap.frame, 0, maximumStart);
                 if (snap.frame != snap.boundaryFrame) {
@@ -8276,7 +8766,10 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     std::numeric_limits<int>::max()));
                 TimelineSnapResult snap = shellState->timelineSnappingEnabled
                     ? snapTimelineBoundary(
-                          snapshot, unsnappedEnd, shellState->timelineDragClipId)
+                          snapshot,
+                          unsnappedEnd,
+                          shellState->timelinePixelsPerFrame,
+                          shellState->timelineDragClipId)
                     : TimelineSnapResult{unsnappedEnd, -1};
                 snap.frame = std::max(minimumEnd, snap.frame);
                 if (snap.frame != snap.boundaryFrame) {
@@ -8686,9 +9179,16 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
     if (ImGui::BeginDragDropTarget()) {
         const TimelineTrackDropTarget dropTarget = timelineTrackDropTarget(
             snapshot, origin.y, ImGui::GetIO().MousePos.y);
-        int dropFrame = frameFromTimelineX(origin.x, ImGui::GetIO().MousePos.x);
+        int dropFrame = frameFromTimelineX(
+            contentLeft,
+            ImGui::GetIO().MousePos.x,
+            shellState->timelineFrameOffset,
+            shellState->timelinePixelsPerFrame);
         if (shellState->timelineSnappingEnabled) {
-            const TimelineSnapResult snap = snapTimelineBoundary(snapshot, dropFrame);
+            const TimelineSnapResult snap = snapTimelineBoundary(
+                snapshot,
+                dropFrame,
+                shellState->timelinePixelsPerFrame);
             dropFrame = snap.frame;
             shellState->timelineSnapIndicatorFrame = snap.boundaryFrame;
         }
@@ -8712,9 +9212,12 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         const ImGuiPayload* filesystemPayload = ImGui::AcceptDragDropPayload(
             kFilesystemMediaDragPayload, acceptFlags);
         if (projectPayload || filesystemPayload) {
-            const float dropX = origin.x + kTimelineLabelWidth +
-                kTimelineTrackPadding +
-                static_cast<float>(dropFrame) * kTimelinePixelsPerFrame;
+            const float dropX =
+                jcut::timeline_viewport::xFromFrame(
+                    contentLeft,
+                    dropFrame,
+                    shellState->timelineFrameOffset,
+                    shellState->timelinePixelsPerFrame);
             const float trackY = origin.y + kTimelineTopPadding +
                 static_cast<float>(dropTarget.trackIndex) * kTimelineRowHeight;
             if (dropTarget.insertTrack) {
@@ -8725,8 +9228,10 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
                     3.0f);
             } else {
                 drawList->AddRect(
-                    ImVec2(origin.x + kTimelineLabelWidth, trackY),
-                    ImVec2(origin.x + avail.x - 12.0f,
+                    ImVec2(
+                        contentLeft - kTimelineTrackPadding,
+                        trackY),
+                    ImVec2(contentRight,
                            trackY + kTimelineClipHeight),
                     IM_COL32(92, 232, 178, 230),
                     4.0f,
@@ -8795,23 +9300,7 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         }
         ImGui::EndDragDropTarget();
     }
-
-    ImGui::Separator();
-    for (const jcut::EditorTrack& track : snapshot.tracks) {
-        if (ImGui::Selectable(track.label.c_str(), track.selected)) {
-            applyCommand(shellState, jcut::SelectTrackCommand{track.id});
-        }
-    }
-    for (const jcut::EditorClip& clip : snapshot.clips) {
-        if (ImGui::Selectable(clip.label.c_str(), clip.selected)) {
-            const ImGuiKeyChord keyMods = ImGui::GetIO().KeyMods;
-            const bool toggleSelection = (keyMods & ImGuiMod_Ctrl) != 0;
-            const bool additiveSelection = !toggleSelection &&
-                (keyMods & ImGuiMod_Shift) != 0;
-            applyCommand(shellState, jcut::SelectClipCommand{
-                clip.id, additiveSelection, toggleSelection});
-        }
-    }
+    ImGui::EndChild();
     ImGui::End();
 }
 
@@ -11178,6 +11667,19 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             float tilingSpacing = currentClip
                 ? static_cast<float>(currentClip->tilingSpacing) : 1.0f;
             bool tilingWrap = currentClip ? currentClip->tilingWrap : true;
+            bool effectEnabled =
+                currentClip ? currentClip->effectEnabled : true;
+            std::string effectModulationMode = currentClip
+                ? currentClip->effectModulationMode : "none";
+            std::string effectModulationTarget = currentClip
+                ? currentClip->effectModulationTarget : "scale";
+            float effectModulationAmount = currentClip
+                ? static_cast<float>(currentClip->effectModulationAmount) : 0.0f;
+            float effectModulationRate = currentClip
+                ? static_cast<float>(currentClip->effectModulationRate) : 1.0f;
+            float effectModulationPhase = currentClip
+                ? static_cast<float>(
+                      currentClip->effectModulationPhaseDegrees) : 0.0f;
 
             if (commonParameters) {
                 const char* rowsLabel = edge
@@ -11230,11 +11732,6 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         "Alternate Direction", &alternate);
                     ImGui::EndDisabled();
                 }
-            }
-            if (commonParameters && !edge && !neon && !speakerMask &&
-                !progressiveEdge) {
-                effectChanged |= ImGui::Checkbox(
-                    "Synchronize motion with Speech Filter", &speechSync);
             }
             if (presetId == "difference_matte") {
                 effectChanged |= ImGui::SliderInt(
@@ -11289,6 +11786,143 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 beginRuntimeHistoryTransactionForLastItem(shellState);
                 effectChanged |= ImGui::Checkbox("Wrap Across Bounds", &tilingWrap);
             }
+            ImGui::SeparatorText("Effect Animation");
+            effectChanged |= ImGui::Checkbox(
+                "Enabled before first key", &effectEnabled);
+            bool enabledAtPlayhead = effectEnabled;
+            bool keyAtPlayhead = false;
+            if (currentClip) {
+                for (const jcut::EditorBoolKeyframe& keyframe :
+                     currentClip->effectEnabledKeyframes) {
+                    if (keyframe.frame <= currentClipLocalFrame) {
+                        enabledAtPlayhead = keyframe.enabled;
+                    }
+                    keyAtPlayhead |=
+                        keyframe.frame == currentClipLocalFrame;
+                }
+            }
+            ImGui::TextDisabled(
+                "At frame %lld: %s",
+                static_cast<long long>(currentClipLocalFrame),
+                enabledAtPlayhead ? "On" : "Off");
+            if (ImGui::Button("Key On") && currentClip) {
+                applyCommand(
+                    shellState,
+                    jcut::UpsertEffectEnabledKeyframeCommand{
+                        currentClip->id,
+                        {currentClipLocalFrame, true}});
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Key Off") && currentClip) {
+                applyCommand(
+                    shellState,
+                    jcut::UpsertEffectEnabledKeyframeCommand{
+                        currentClip->id,
+                        {currentClipLocalFrame, false}});
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!keyAtPlayhead);
+            if (ImGui::Button("Remove Enable Key") && currentClip) {
+                applyCommand(
+                    shellState,
+                    jcut::RemoveClipKeyframeCommand{
+                        currentClip->id,
+                        jcut::EditorKeyframeChannel::EffectEnabled,
+                        currentClipLocalFrame});
+            }
+            ImGui::EndDisabled();
+            static constexpr std::array<
+                std::pair<std::string_view, const char*>, 3>
+                kModulationModes{{
+                    {"none", "None"},
+                    {"lfo", "LFO"},
+                    {"steady_increase", "Steady Increase"},
+                }};
+            const char* modulationModeLabel = "None";
+            for (const auto& [id, label] : kModulationModes) {
+                if (effectModulationMode == id) modulationModeLabel = label;
+            }
+            if (ImGui::BeginCombo(
+                    "Dynamic Control", modulationModeLabel)) {
+                for (const auto& [id, label] : kModulationModes) {
+                    const bool selected = effectModulationMode == id;
+                    if (ImGui::Selectable(label, selected)) {
+                        effectModulationMode = id;
+                        effectChanged = true;
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            const bool movingPresetTranscriptTiming =
+                commonParameters && !edge && !neon && !speakerMask &&
+                !progressiveEdge;
+            if (effectModulationMode == "steady_increase" ||
+                movingPresetTranscriptTiming) {
+                effectChanged |= ImGui::Checkbox(
+                    effectModulationMode == "steady_increase"
+                        ? "Transcript-aware steady increase"
+                        : "Synchronize motion with Speech Filter",
+                    &speechSync);
+                if (effectModulationMode == "steady_increase" &&
+                    ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Pause the steady-increase clock across transcript "
+                        "ranges removed by the Speech Filter.");
+                }
+            }
+            static constexpr std::array<
+                std::pair<std::string_view, const char*>, 4>
+                kModulationTargets{{
+                    {"rows", "Copies / Radius"},
+                    {"speed", "Speed"},
+                    {"scale", "Amount / Strength"},
+                    {"spacing", "Spacing"},
+                }};
+            const char* modulationTargetLabel = "Amount / Strength";
+            for (const auto& [id, label] : kModulationTargets) {
+                if (effectModulationTarget == id) {
+                    modulationTargetLabel = label;
+                }
+            }
+            const bool modulationEnabled =
+                effectModulationMode != "none";
+            ImGui::BeginDisabled(!modulationEnabled);
+            if (ImGui::BeginCombo(
+                    "Dynamic Target", modulationTargetLabel)) {
+                for (const auto& [id, label] : kModulationTargets) {
+                    const bool selected = effectModulationTarget == id;
+                    if (ImGui::Selectable(label, selected)) {
+                        effectModulationTarget = id;
+                        effectChanged = true;
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            effectChanged |= ImGui::SliderFloat(
+                effectModulationMode == "lfo"
+                    ? "Amplitude"
+                    : "Increase Per Second",
+                &effectModulationAmount,
+                -512.0f,
+                512.0f,
+                "%.3f");
+            ImGui::BeginDisabled(effectModulationMode != "lfo");
+            effectChanged |= ImGui::SliderFloat(
+                "LFO Frequency (Hz)",
+                &effectModulationRate,
+                0.0f,
+                20.0f,
+                "%.3f");
+            effectChanged |= ImGui::SliderFloat(
+                "LFO Phase",
+                &effectModulationPhase,
+                -360.0f,
+                360.0f,
+                "%.1f deg");
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
             if (effectChanged && currentClip) {
                 jcut::SetClipMaskEffectCommand command;
                 command.clipId = currentClip->id;
@@ -11306,6 +11940,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 command.edgeFillOpacity = edgeFillOpacity;
                 command.edgeFillBrightness = edgeFillBrightness;
                 command.edgeFillSaturation = edgeFillSaturation;
+                command.effectEnabled = effectEnabled;
+                command.effectModulationMode = effectModulationMode;
+                command.effectModulationTarget = effectModulationTarget;
+                command.effectModulationAmount = effectModulationAmount;
+                command.effectModulationRate = effectModulationRate;
+                command.effectModulationPhaseDegrees =
+                    effectModulationPhase;
                 command.effectPreset = presetId;
                 command.effectRows = rows;
                 command.effectSpeed = speed;
@@ -17788,7 +18429,7 @@ int main(int argc, char** argv)
         return 1;
     }
     std::string controlServerError;
-    const std::uint16_t controlPort = jcut::runtimeControlPortFromEnvironment(40130);
+    const std::uint16_t controlPort = jcut::runtimeControlPortFromEnvironment(40131);
     if (shellState.controlServer.start(
             controlPort,
             jcut::RuntimeControlProvider{

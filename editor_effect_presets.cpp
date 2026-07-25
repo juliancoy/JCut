@@ -262,6 +262,13 @@ TimelineClip makeMaskMatteClip(const TimelineClip& sourceClip)
     maskClip.maskShowOnly = false;
     maskClip.maskForegroundLayerEnabled = false;
     maskClip.effectPreset = ClipEffectPreset::None;
+    maskClip.effectEnabled = true;
+    maskClip.effectEnabledKeyframes.clear();
+    maskClip.effectModulationMode = QStringLiteral("none");
+    maskClip.effectModulationTarget = QStringLiteral("scale");
+    maskClip.effectModulationAmount = 0.0;
+    maskClip.effectModulationRate = 1.0;
+    maskClip.effectModulationPhaseDegrees = 0.0;
     maskClip.effectRows = defaults.effectRows;
     maskClip.effectSpeed = defaults.effectSpeed;
     maskClip.effectScale = defaults.effectScale;

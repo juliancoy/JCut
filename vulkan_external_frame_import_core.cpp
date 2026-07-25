@@ -156,6 +156,7 @@ public:
 
     bool recordFrameCopy(VkCommandBuffer targetCommandBuffer,
                          const render_detail::OffscreenVulkanFrame& frame,
+                         bool externalQueueOwnership,
                          std::string* errorMessage)
     {
         if (!initialized || targetCommandBuffer == VK_NULL_HANDLE) {
@@ -174,7 +175,10 @@ public:
         }
         importedImageLayout = frame.imageLayout;
         return recordImportedFrameCopyToLocal(
-            targetCommandBuffer, frame.imageLayout, errorMessage);
+            targetCommandBuffer,
+            frame.imageLayout,
+            externalQueueOwnership,
+            errorMessage);
     }
 
     ExternalImage externalImage() const
@@ -491,7 +495,7 @@ private:
                 "Failed to begin Vulkan preview sync command buffer.");
             return false;
         }
-        recordImageCopy(commandBuffer, sourceLayout);
+        recordImageCopy(commandBuffer, sourceLayout, false);
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
             setError(
                 errorMessage,
@@ -515,6 +519,7 @@ private:
 
     bool recordImportedFrameCopyToLocal(VkCommandBuffer targetCommandBuffer,
                                         VkImageLayout sourceLayout,
+                                        bool externalQueueOwnership,
                                         std::string* errorMessage)
     {
         if (targetCommandBuffer == VK_NULL_HANDLE ||
@@ -527,23 +532,51 @@ private:
         if (!finishPendingCopy(nullptr, errorMessage)) {
             return false;
         }
-        recordImageCopy(targetCommandBuffer, sourceLayout);
+        recordImageCopy(
+            targetCommandBuffer, sourceLayout, externalQueueOwnership);
         imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         return true;
     }
 
     void recordImageCopy(VkCommandBuffer targetCommandBuffer,
-                         VkImageLayout sourceLayout)
+                         VkImageLayout sourceLayout,
+                         bool externalQueueOwnership)
     {
-        transitionSpecificImage(
-            targetCommandBuffer,
-            importedImage,
-            sourceLayout,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            0,
-            VK_ACCESS_TRANSFER_READ_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT);
+        if (externalQueueOwnership) {
+            VkImageMemoryBarrier acquire{};
+            acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            acquire.srcAccessMask = 0;
+            acquire.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            acquire.oldLayout = sourceLayout;
+            acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+            acquire.dstQueueFamilyIndex = context.queueFamilyIndex;
+            acquire.image = importedImage;
+            acquire.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            acquire.subresourceRange.levelCount = 1;
+            acquire.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(
+                targetCommandBuffer,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &acquire);
+        } else {
+            transitionSpecificImage(
+                targetCommandBuffer,
+                importedImage,
+                sourceLayout,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                0,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT);
+        }
         transitionImage(
             targetCommandBuffer,
             imageLayout,
@@ -570,15 +603,41 @@ private:
             targetCommandBuffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        transitionSpecificImage(
-            targetCommandBuffer,
-            importedImage,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            sourceLayout,
-            VK_ACCESS_TRANSFER_READ_BIT,
-            0,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        if (externalQueueOwnership) {
+            VkImageMemoryBarrier release{};
+            release.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            release.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            release.dstAccessMask = 0;
+            release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            release.newLayout = sourceLayout;
+            release.srcQueueFamilyIndex = context.queueFamilyIndex;
+            release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+            release.image = importedImage;
+            release.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            release.subresourceRange.levelCount = 1;
+            release.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(
+                targetCommandBuffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &release);
+        } else {
+            transitionSpecificImage(
+                targetCommandBuffer,
+                importedImage,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                sourceLayout,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                0,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        }
     }
 
 public:
@@ -760,9 +819,11 @@ bool VulkanExternalFrameImportCore::importFrame(
 bool VulkanExternalFrameImportCore::recordFrameCopy(
     VkCommandBuffer commandBuffer,
     const render_detail::OffscreenVulkanFrame& frame,
+    bool externalQueueOwnership,
     std::string* errorMessage)
 {
-    return m_impl->recordFrameCopy(commandBuffer, frame, errorMessage);
+    return m_impl->recordFrameCopy(
+        commandBuffer, frame, externalQueueOwnership, errorMessage);
 }
 
 bool VulkanExternalFrameImportCore::finishPendingCopy(

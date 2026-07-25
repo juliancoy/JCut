@@ -23,6 +23,7 @@
 #include <QPainterPath>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <QtMath>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -70,6 +71,95 @@ TimelineClip clipWithRenderableEffectSettings(const TimelineClip& clip,
         renderable.effectPreset = ClipEffectPreset::None;
     }
     return renderable;
+}
+
+namespace {
+qreal effectTimelinePositionForClip(
+    const TimelineClip& clip,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const PlaybackTimingContext& timing);
+}
+
+TimelineClip evaluateClipEffectAnimationAtPosition(const TimelineClip& clip,
+                                                   qreal timelineFramePosition)
+{
+    return evaluateClipEffectAnimationAtPosition(
+        clip,
+        timelineFramePosition,
+        {},
+        activePlaybackTimingContext());
+}
+
+TimelineClip evaluateClipEffectAnimationAtPosition(
+    const TimelineClip& clip,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const PlaybackTimingContext& timing)
+{
+    TimelineClip evaluated = clip;
+    const qreal localFrame = qBound<qreal>(
+        0.0,
+        timelineFramePosition - static_cast<qreal>(clip.startFrame),
+        static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1)));
+    bool enabled = clip.effectEnabled;
+    QVector<TimelineClip::BoolKeyframe> keyframes = clip.effectEnabledKeyframes;
+    std::sort(keyframes.begin(), keyframes.end(),
+              [](const auto& left, const auto& right) {
+                  return left.frame < right.frame;
+              });
+    for (const TimelineClip::BoolKeyframe& keyframe : keyframes) {
+        if (static_cast<qreal>(keyframe.frame) > localFrame) break;
+        enabled = keyframe.enabled;
+    }
+    if (!enabled) {
+        evaluated.effectPreset = ClipEffectPreset::None;
+        evaluated.edgeFillEffect = BackgroundFillEffect::None;
+        return evaluated;
+    }
+
+    const QString mode = clip.effectModulationMode.trimmed().toLower();
+    if (mode == QStringLiteral("none")) {
+        return evaluated;
+    }
+    qreal modulationLocalFrame = localFrame;
+    if (clip.effectSkipAwareTiming) {
+        modulationLocalFrame = qBound<qreal>(
+            0.0,
+            effectTimelinePositionForClip(
+                clip, timelineFramePosition, markers, timing) -
+                static_cast<qreal>(clip.startFrame),
+            static_cast<qreal>(qMax<int64_t>(
+                0, clip.durationFrames - 1)));
+    }
+    const qreal seconds =
+        modulationLocalFrame / static_cast<qreal>(kTimelineFps);
+    qreal delta = 0.0;
+    if (mode == QStringLiteral("lfo")) {
+        constexpr qreal kTwoPi = 6.28318530717958647692;
+        const qreal phase =
+            qDegreesToRadians(clip.effectModulationPhaseDegrees);
+        delta = clip.effectModulationAmount *
+                std::sin(kTwoPi * clip.effectModulationRate * seconds + phase);
+    } else if (mode == QStringLiteral("steady_increase")) {
+        delta = clip.effectModulationAmount * seconds;
+    }
+
+    const QString target = clip.effectModulationTarget.trimmed().toLower();
+    if (target == QStringLiteral("rows")) {
+        evaluated.effectRows = qBound(
+            1, qRound(static_cast<qreal>(clip.effectRows) + delta), 512);
+    } else if (target == QStringLiteral("speed")) {
+        evaluated.effectSpeed =
+            qBound<qreal>(-8.0, clip.effectSpeed + delta, 8.0);
+    } else if (target == QStringLiteral("spacing")) {
+        evaluated.tilingSpacing =
+            qBound<qreal>(0.1, clip.tilingSpacing + delta, 8.0);
+    } else {
+        evaluated.effectScale =
+            qBound<qreal>(0.1, clip.effectScale + delta, 8.0);
+    }
+    return evaluated;
 }
 
 namespace {

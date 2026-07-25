@@ -61,8 +61,9 @@ a lock flag.
 `linkedSourceClipId` on the child is the canonical relationship. Generated-track
 fields such as `parentClipId` and `childClipId` are derived presentation indices,
 not a second ownership graph. Model reconciliation rebuilds or repairs those
-indices from the clip relationship and leaves at most one track binding for each
-child.
+indices from the clip relationship and leaves one compact generated track binding
+for each stable sidecar identity whose source parents occupy the same ordinary
+timeline track.
 
 ## Sidecars
 
@@ -100,15 +101,20 @@ its name or coverage looks similar.
 
 ## Timeline hierarchy and compositing
 
-Each Mask Matte is shown on a compact child track immediately below its source
-parent's track. The child track retains independent visibility and grading-preview
-state. Its position in the timeline hierarchy is presentation only and does not
-determine compositing order.
+Each materialized sidecar is shown on its own compact generated child track
+immediately below the ordinary source track. Children for split or sequential
+source clips reuse the same child track only when their stable sidecar identity
+matches. Person, microphone, alpha, and other distinct sidecars therefore remain
+separately visible and controllable. Each sidecar track controls collection
+visibility and grading-preview state; mask parameters, grading, corrections,
+effects, and Z-level remain independently owned by each child clip. Its position
+in the timeline hierarchy is presentation only and does not determine compositing
+order.
 
 Child-track visibility is authoritative in both preview and export. A hidden Mask
-Matte child neither composites nor keeps its source parent active as a decode
-provider. A hidden source parent may still decode for any visible child, but that
-provider-only source status is never drawn as a full-frame layer.
+Matte collection neither composites nor keeps its source parent active as a decode
+provider. A hidden source parent may still decode for any visible child collection,
+but that provider-only source status is never drawn as a full-frame layer.
 
 Every visual clip has an explicit Z-level. Mask Matte children initially receive
 consecutive levels above their parent, and users may edit each level independently
@@ -265,7 +271,8 @@ The REST profile endpoint reports both owners and the effective grading values i
   deterministically.
 - `linkedSourceClipId` is authoritative; generated-track relationship fields are
   derived and cannot create ownership.
-- Timeline hierarchy and Z-level are independent concerns.
+- Timeline hierarchy is compacted by ordinary source track and remains independent
+  of each child's Z-level.
 - Mask Matte normalization never overwrites `gradingKeyframes`.
 - A sidecar switch changes matte samples, not grading ownership.
 - Legacy masked-area grading is migrated once and cannot be applied twice.

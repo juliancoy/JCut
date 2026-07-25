@@ -244,6 +244,15 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.edgeFillBrightness = clip.edgeFillBrightness;
         timelineClip.edgeFillSaturation = clip.edgeFillSaturation;
         timelineClip.effectPreset = editor::effectPresetFromJson(QString::fromStdString(clip.effectPreset));
+        timelineClip.effectEnabled = clip.effectEnabled;
+        timelineClip.effectModulationMode =
+            QString::fromStdString(clip.effectModulationMode);
+        timelineClip.effectModulationTarget =
+            QString::fromStdString(clip.effectModulationTarget);
+        timelineClip.effectModulationAmount = clip.effectModulationAmount;
+        timelineClip.effectModulationRate = clip.effectModulationRate;
+        timelineClip.effectModulationPhaseDegrees =
+            clip.effectModulationPhaseDegrees;
         timelineClip.effectRows = clip.effectRows;
         timelineClip.effectSpeed = clip.effectSpeed;
         timelineClip.effectScale = clip.effectScale;
@@ -404,6 +413,13 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
                 keyframe.frame,
                 keyframe.opacity,
                 keyframe.linearInterpolation
+            });
+        }
+        for (const EditorBoolKeyframe& keyframe :
+             clip.effectEnabledKeyframes) {
+            timelineClip.effectEnabledKeyframes.push_back({
+                keyframe.frame,
+                keyframe.enabled
             });
         }
         for (const EditorTitleKeyframe& keyframe : clip.titleKeyframes) {

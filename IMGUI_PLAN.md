@@ -19,6 +19,34 @@ preview, and standalone export are implemented. Advanced editor workflows and ri
 equivalence remain incomplete; strict Qt-free linkage of the final `jcut_imgui` executable is now
 complete and guarded by automated checks.
 
+### Timeline viewport production contract
+
+The ImGui timeline now uses `timeline_viewport_core.h` for the Qt-free geometry rules that must
+remain consistent across presentation and input: duration bounds, fit/min/max zoom, visible-frame
+range, clamped frame offset, frame/X conversion, cursor-anchored zoom, true temporal clip width,
+ruler cadence, and timecode formatting. These policies intentionally mirror the mature Qt
+timeline interaction model without linking the ImGui executable to Qt.
+
+The viewport keeps track headers fixed while horizontal navigation changes the visible frame
+offset. It provides persisted logarithmic zoom, Fit, an explicit frame-range scrollbar,
+Ctrl+wheel cursor-anchored zoom, Shift+wheel pan, a clickable adaptive ruler, aligned grid,
+vertical track scrolling, visible-row and visible-frame culling, clipped labels/badges, and
+zoom-aware snapping. The canvas remains the only selection/hit-test path, so repeated generated
+clip names cannot create conflicting Dear ImGui IDs. Fit/overview mode uses true frame-scaled clip
+widths instead of the former 40-pixel visual minimum, preventing adjacent clips from overlapping.
+
+Acceptance for future timeline work requires behavioral geometry tests, the duplicate-label
+canvas contract, a full `./build.sh`, and a live dense-project inspection at both default and Fit
+zoom. A visible widget, source-string check alone, or a build without the live inspection is not
+timeline parity evidence.
+
+Preview and timeline zoom are separate contracts. Legacy `timelineZoom` belongs exclusively to
+the Qt timeline viewport and must be preserved as opaque Qt state by the neutral bridge.
+`previewZoom` owns the Program monitor transform and is normalized to the shared 0.5x-3.0x range
+at JSON load and runtime command boundaries. The legacy writer persists `previewZoom` separately
+without overwriting `timelineZoom`. This prevents a fit-to-timeline value such as `0.016 px/frame`
+from shrinking an otherwise valid Vulkan preview to a nearly invisible point.
+
 The ImGui shell now talks to preview audio and external Vulkan frames through Qt-free public
 interfaces. Preview audio uses RtAudio plus the standalone decoder, mixer, and shared Rubber Band
 core; it retains asynchronous warmup, source polling, sidecar discovery, mute/solo/gain/pan/fade

@@ -7,8 +7,10 @@
 #include <QDir>
 #include <QFormLayout>
 #include <QLabel>
+#include <QStringList>
 #include <QtGlobal>
 #include <QStandardItemModel>
+#include <algorithm>
 #include <memory>
 
 EffectsTab::EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -164,7 +166,9 @@ bool speakerMaskDilationPreset(ClipEffectPreset preset)
            preset == ClipEffectPreset::SpeakerMaskDilationRings;
 }
 
-void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets, ClipEffectPreset preset)
+void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
+                                     ClipEffectPreset preset,
+                                     const QString& modulationMode)
 {
     const bool commonParameters =
         preset == ClipEffectPreset::NewsLogoTicker ||
@@ -213,7 +217,12 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets, ClipEff
     setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge);
     setFormFieldVisible(widgets.effectScaleSpin, commonParameters);
     setFormFieldVisible(widgets.effectAlternateDirectionCheck, commonParameters && !edge && !neon && !speakerMask);
-    setFormFieldVisible(widgets.effectSpeechSyncCheck, commonParameters && !edge && !neon && !speakerMask);
+    const bool steadyIncrease =
+        modulationMode == QStringLiteral("steady_increase");
+    setFormFieldVisible(
+        widgets.effectSpeechSyncCheck,
+        steadyIncrease ||
+            (commonParameters && !edge && !neon && !speakerMask));
     setFormFieldVisible(widgets.differenceReferenceFramesSpin, difference);
     setFormFieldVisible(widgets.differenceThresholdSpin, difference);
     setFormFieldVisible(widgets.differenceSoftnessSpin, difference);
@@ -293,6 +302,49 @@ void EffectsTab::wire()
     if (m_widgets.effectSpeechSyncCheck) {
         connect(m_widgets.effectSpeechSyncCheck, &QCheckBox::toggled,
                 this, &EffectsTab::onEffectControlChanged);
+    }
+    if (m_widgets.effectEnabledCheck) {
+        connect(m_widgets.effectEnabledCheck, &QCheckBox::toggled,
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    if (m_widgets.effectKeyframeOnButton) {
+        connect(m_widgets.effectKeyframeOnButton, &QPushButton::clicked,
+                this, [this]() { setEffectEnabledKeyframe(true); });
+    }
+    if (m_widgets.effectKeyframeOffButton) {
+        connect(m_widgets.effectKeyframeOffButton, &QPushButton::clicked,
+                this, [this]() { setEffectEnabledKeyframe(false); });
+    }
+    if (m_widgets.effectKeyframeRemoveButton) {
+        connect(m_widgets.effectKeyframeRemoveButton, &QPushButton::clicked,
+                this, &EffectsTab::removeEffectEnabledKeyframe);
+    }
+    if (m_widgets.effectModulationModeCombo) {
+        connect(
+            m_widgets.effectModulationModeCombo,
+            qOverload<int>(&QComboBox::currentIndexChanged),
+            this,
+            [this]() {
+                if (m_updating) return;
+                applyEffectPreset(false);
+                refresh();
+            });
+    }
+    if (m_widgets.effectModulationTargetCombo) {
+        connect(m_widgets.effectModulationTargetCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    for (QDoubleSpinBox* spin : {
+             m_widgets.effectModulationAmountSpin,
+             m_widgets.effectModulationRateSpin,
+             m_widgets.effectModulationPhaseSpin}) {
+        if (spin) {
+            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                    this, &EffectsTab::onEffectControlChanged);
+            connect(spin, &QDoubleSpinBox::editingFinished,
+                    this, &EffectsTab::onEditingFinished);
+        }
     }
     if (m_widgets.tilingPatternCombo) {
         connect(m_widgets.tilingPatternCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -418,6 +470,22 @@ void EffectsTab::refresh()
             m_widgets.effectSpeechSyncCheck->setChecked(false);
             m_widgets.effectSpeechSyncCheck->setEnabled(false);
         }
+        for (QWidget* widget : {
+                 static_cast<QWidget*>(m_widgets.effectEnabledCheck),
+                 static_cast<QWidget*>(m_widgets.effectKeyframeOnButton),
+                 static_cast<QWidget*>(m_widgets.effectKeyframeOffButton),
+                 static_cast<QWidget*>(m_widgets.effectKeyframeRemoveButton),
+                 static_cast<QWidget*>(m_widgets.effectModulationModeCombo),
+                 static_cast<QWidget*>(m_widgets.effectModulationTargetCombo),
+                 static_cast<QWidget*>(m_widgets.effectModulationAmountSpin),
+                 static_cast<QWidget*>(m_widgets.effectModulationRateSpin),
+                 static_cast<QWidget*>(m_widgets.effectModulationPhaseSpin)}) {
+            if (widget) widget->setEnabled(false);
+        }
+        if (m_widgets.effectKeyframesLabel) {
+            m_widgets.effectKeyframesLabel->setText(
+                QStringLiteral("Select a visual clip to animate its effect."));
+        }
         if (m_widgets.differenceReferenceFramesSpin) {
             m_widgets.differenceReferenceFramesSpin->setValue(selectedTrack ? selectedTrack->differenceReferenceFrames : 1);
             m_widgets.differenceReferenceFramesSpin->setEnabled(trackEffectActive);
@@ -456,7 +524,8 @@ void EffectsTab::refresh()
             m_widgets.tilingWrapCheck->setChecked(!selectedTrack || selectedTrack->tilingWrap);
             m_widgets.tilingWrapCheck->setEnabled(trackEffectActive);
         }
-        updatePresetParameterVisibility(m_widgets, trackPreset);
+        updatePresetParameterVisibility(
+            m_widgets, trackPreset, QStringLiteral("none"));
         m_updating = false;
         return;
     }
@@ -521,6 +590,94 @@ void EffectsTab::refresh()
     }
     if (m_widgets.effectSpeechSyncCheck) {
         m_widgets.effectSpeechSyncCheck->setChecked(clip->effectSkipAwareTiming);
+        const bool steadyIncrease =
+            clip->effectModulationMode == QStringLiteral("steady_increase");
+        m_widgets.effectSpeechSyncCheck->setText(
+            steadyIncrease
+                ? QStringLiteral("Transcript-aware steady increase")
+                : QStringLiteral("Synchronize motion with Speech Filter"));
+        m_widgets.effectSpeechSyncCheck->setToolTip(
+            steadyIncrease
+                ? QStringLiteral(
+                      "Pause the steady-increase clock across transcript "
+                      "ranges removed by the Speech Filter.")
+                : QStringLiteral(
+                      "Drive moving effect patterns from speech-filter timing "
+                      "so skipped gaps do not create visible jumps."));
+    }
+    if (m_widgets.effectEnabledCheck) {
+        m_widgets.effectEnabledCheck->setChecked(clip->effectEnabled);
+        m_widgets.effectEnabledCheck->setEnabled(true);
+    }
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame() : clip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0, timelineFrame - clip->startFrame,
+        qMax<int64_t>(0, clip->durationFrames - 1));
+    QStringList keyDescriptions;
+    bool hasKeyAtPlayhead = false;
+    for (const TimelineClip::BoolKeyframe& keyframe :
+         clip->effectEnabledKeyframes) {
+        keyDescriptions.push_back(
+            QStringLiteral("%1:%2")
+                .arg(keyframe.frame)
+                .arg(keyframe.enabled ? QStringLiteral("On")
+                                      : QStringLiteral("Off")));
+        hasKeyAtPlayhead |= keyframe.frame == localFrame;
+    }
+    if (m_widgets.effectKeyframesLabel) {
+        m_widgets.effectKeyframesLabel->setText(
+            keyDescriptions.isEmpty()
+                ? QStringLiteral("No enable keyframes")
+                : keyDescriptions.join(QStringLiteral("  •  ")));
+    }
+    for (QPushButton* button : {
+             m_widgets.effectKeyframeOnButton,
+             m_widgets.effectKeyframeOffButton}) {
+        if (button) button->setEnabled(true);
+    }
+    if (m_widgets.effectKeyframeRemoveButton) {
+        m_widgets.effectKeyframeRemoveButton->setEnabled(hasKeyAtPlayhead);
+    }
+    auto setComboData = [](QComboBox* combo, const QString& value) {
+        if (!combo) return;
+        const int index = combo->findData(value);
+        combo->setCurrentIndex(qMax(0, index));
+    };
+    setComboData(m_widgets.effectModulationModeCombo,
+                 clip->effectModulationMode);
+    setComboData(m_widgets.effectModulationTargetCombo,
+                 clip->effectModulationTarget);
+    if (m_widgets.effectModulationAmountSpin) {
+        m_widgets.effectModulationAmountSpin->setValue(
+            clip->effectModulationAmount);
+    }
+    if (m_widgets.effectModulationRateSpin) {
+        m_widgets.effectModulationRateSpin->setValue(
+            clip->effectModulationRate);
+    }
+    if (m_widgets.effectModulationPhaseSpin) {
+        m_widgets.effectModulationPhaseSpin->setValue(
+            clip->effectModulationPhaseDegrees);
+    }
+    const bool dynamicEnabled =
+        clip->effectModulationMode != QStringLiteral("none");
+    const bool lfoEnabled =
+        clip->effectModulationMode == QStringLiteral("lfo");
+    if (m_widgets.effectModulationModeCombo) {
+        m_widgets.effectModulationModeCombo->setEnabled(true);
+    }
+    if (m_widgets.effectModulationTargetCombo) {
+        m_widgets.effectModulationTargetCombo->setEnabled(dynamicEnabled);
+    }
+    if (m_widgets.effectModulationAmountSpin) {
+        m_widgets.effectModulationAmountSpin->setEnabled(dynamicEnabled);
+    }
+    if (m_widgets.effectModulationRateSpin) {
+        m_widgets.effectModulationRateSpin->setEnabled(lfoEnabled);
+    }
+    if (m_widgets.effectModulationPhaseSpin) {
+        m_widgets.effectModulationPhaseSpin->setEnabled(lfoEnabled);
     }
     if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setValue(clip->differenceReferenceFrames);
     if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setValue(clip->differenceThreshold);
@@ -571,7 +728,11 @@ void EffectsTab::refresh()
         m_widgets.effectAlternateDirectionCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
     }
     if (m_widgets.effectSpeechSyncCheck) {
-        m_widgets.effectSpeechSyncCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
+        const bool steadyIncrease =
+            clip->effectModulationMode == QStringLiteral("steady_increase");
+        m_widgets.effectSpeechSyncCheck->setEnabled(
+            imagePresetCapable && imagePresetActive &&
+            (steadyIncrease || !progressiveEdgePreset));
     }
     if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setEnabled(imagePresetActive);
     if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setEnabled(imagePresetActive);
@@ -590,7 +751,8 @@ void EffectsTab::refresh()
     if (m_widgets.tilingWrapCheck) {
         m_widgets.tilingWrapCheck->setEnabled(tilingControlsActive);
     }
-    updatePresetParameterVisibility(m_widgets, clipPreset);
+    updatePresetParameterVisibility(
+        m_widgets, clipPreset, clip->effectModulationMode);
     m_updating = false;
 }
 
@@ -622,10 +784,31 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     const bool tilingWrap = !m_widgets.tilingWrapCheck || m_widgets.tilingWrapCheck->isChecked();
     const bool alternate =
         !m_widgets.effectAlternateDirectionCheck || m_widgets.effectAlternateDirectionCheck->isChecked();
+    const QString modulationMode =
+        m_widgets.effectModulationModeCombo
+            ? m_widgets.effectModulationModeCombo->currentData().toString()
+            : QStringLiteral("none");
     const bool speechSync =
-        preset != ClipEffectPreset::None &&
+        (preset != ClipEffectPreset::None ||
+         modulationMode == QStringLiteral("steady_increase")) &&
         m_widgets.effectSpeechSyncCheck &&
         m_widgets.effectSpeechSyncCheck->isChecked();
+    const bool effectEnabled =
+        !m_widgets.effectEnabledCheck ||
+        m_widgets.effectEnabledCheck->isChecked();
+    const QString modulationTarget =
+        m_widgets.effectModulationTargetCombo
+            ? m_widgets.effectModulationTargetCombo->currentData().toString()
+            : QStringLiteral("scale");
+    const double modulationAmount =
+        m_widgets.effectModulationAmountSpin
+            ? m_widgets.effectModulationAmountSpin->value() : 0.0;
+    const double modulationRate =
+        m_widgets.effectModulationRateSpin
+            ? m_widgets.effectModulationRateSpin->value() : 1.0;
+    const double modulationPhase =
+        m_widgets.effectModulationPhaseSpin
+            ? m_widgets.effectModulationPhaseSpin->value() : 0.0;
     const BackgroundFillEffect edgeFillEffect = backgroundFillEffectFromString(
         m_widgets.edgeFillEffectCombo
             ? m_widgets.edgeFillEffectCombo->currentData().toString()
@@ -661,6 +844,15 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             clip.edgeFillBrightness = qBound<qreal>(-1.0, edgeFillBrightness, 1.0);
             clip.edgeFillSaturation = qBound<qreal>(0.0, edgeFillSaturation, 3.0);
             clip.effectPreset = preset;
+            clip.effectEnabled = effectEnabled;
+            clip.effectModulationMode = modulationMode;
+            clip.effectModulationTarget = modulationTarget;
+            clip.effectModulationAmount =
+                qBound<qreal>(-512.0, modulationAmount, 512.0);
+            clip.effectModulationRate =
+                qBound<qreal>(0.0, modulationRate, 20.0);
+            clip.effectModulationPhaseDegrees =
+                qBound<qreal>(-360.0, modulationPhase, 360.0);
             if (preset != previousPreset) {
                 restoreEffectParameters(clip, clip.effectParameterSets.value(presetParameterKey(preset)).toObject());
             } else {
@@ -712,6 +904,85 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     applyTabEditEffects(effectsEditCallbacks(m_deps),
                         TabEditEffects{.pushHistory = pushHistory});
     emit effectsApplied();
+}
+
+void EffectsTab::setEffectEnabledKeyframe(bool enabled)
+{
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip || !m_deps.updateClipById) return;
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                    : selectedClip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - selectedClip->startFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    const QString clipId = selectedClip->id;
+    if (!m_deps.updateClipById(
+            clipId,
+            [localFrame, enabled](TimelineClip& clip) {
+                auto existing = std::find_if(
+                    clip.effectEnabledKeyframes.begin(),
+                    clip.effectEnabledKeyframes.end(),
+                    [localFrame](const auto& keyframe) {
+                        return keyframe.frame == localFrame;
+                    });
+                const TimelineClip::BoolKeyframe keyframe{
+                    localFrame, enabled};
+                if (existing == clip.effectEnabledKeyframes.end()) {
+                    clip.effectEnabledKeyframes.push_back(keyframe);
+                } else {
+                    *existing = keyframe;
+                }
+                std::sort(
+                    clip.effectEnabledKeyframes.begin(),
+                    clip.effectEnabledKeyframes.end(),
+                    [](const auto& left, const auto& right) {
+                        return left.frame < right.frame;
+                    });
+            })) {
+        return;
+    }
+    applyTabEditEffects(
+        effectsEditCallbacks(m_deps),
+        TabEditEffects{.pushHistory = true});
+    emit effectsApplied();
+    refresh();
+}
+
+void EffectsTab::removeEffectEnabledKeyframe()
+{
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip || !m_deps.updateClipById) return;
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                    : selectedClip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - selectedClip->startFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    const QString clipId = selectedClip->id;
+    if (!m_deps.updateClipById(
+            clipId,
+            [localFrame](TimelineClip& clip) {
+                clip.effectEnabledKeyframes.erase(
+                    std::remove_if(
+                        clip.effectEnabledKeyframes.begin(),
+                        clip.effectEnabledKeyframes.end(),
+                        [localFrame](const auto& keyframe) {
+                            return keyframe.frame == localFrame;
+                        }),
+                    clip.effectEnabledKeyframes.end());
+            })) {
+        return;
+    }
+    applyTabEditEffects(
+        effectsEditCallbacks(m_deps),
+        TabEditEffects{.pushHistory = true});
+    emit effectsApplied();
+    refresh();
 }
 
 void EffectsTab::onApplyClicked()

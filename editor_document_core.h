@@ -4,6 +4,8 @@
 #include "render_contract_types.h"
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +14,21 @@
 #include <vector>
 
 namespace jcut {
+
+inline constexpr float kEditorDefaultPreviewZoom = 1.0f;
+inline constexpr float kEditorMinimumPreviewZoom = 0.5f;
+inline constexpr float kEditorMaximumPreviewZoom = 3.0f;
+
+inline float normalizedEditorPreviewZoom(float zoom)
+{
+    if (!std::isfinite(zoom)) {
+        return kEditorDefaultPreviewZoom;
+    }
+    return std::clamp(
+        zoom,
+        kEditorMinimumPreviewZoom,
+        kEditorMaximumPreviewZoom);
+}
 
 enum class EditorAudioTreatment {
     Disabled,
@@ -449,6 +466,13 @@ struct EditorClip {
     double edgeFillBrightness = 0.0;
     double edgeFillSaturation = 1.0;
     std::string effectPreset = "none";
+    bool effectEnabled = true;
+    std::vector<EditorBoolKeyframe> effectEnabledKeyframes;
+    std::string effectModulationMode = "none";
+    std::string effectModulationTarget = "scale";
+    double effectModulationAmount = 0.0;
+    double effectModulationRate = 1.0;
+    double effectModulationPhaseDegrees = 0.0;
     int effectRows = 32;
     double effectSpeed = 1.0;
     double effectScale = 1.0;
@@ -511,7 +535,7 @@ struct EditorTransportState {
     std::string previewViewMode = "video";
     bool audioMuted = false;
     float audioVolume = 0.8f;
-    float previewZoom = 1.0f;
+    float previewZoom = kEditorDefaultPreviewZoom;
     int currentFrame = 0;
 };
 

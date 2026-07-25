@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -2483,8 +2484,61 @@ std::int64_t ptsForFrameIndex(int frameIndex, const AVStream* stream)
 {
     const double fps = std::max(0.001, streamFps(stream));
     const double seconds = static_cast<double>(std::max(0, frameIndex)) / fps;
-    const double ticks = seconds / av_q2d(stream->time_base);
-    return static_cast<std::int64_t>(std::llround(ticks));
+    const double timeBase = stream && av_q2d(stream->time_base) > 0.0
+        ? av_q2d(stream->time_base)
+        : 1.0 / fps;
+    const std::int64_t startPts =
+        stream && stream->start_time != AV_NOPTS_VALUE
+            ? stream->start_time
+            : 0;
+    return startPts +
+        static_cast<std::int64_t>(
+            std::llround(seconds / timeBase));
+}
+
+int frameIndexForPts(std::int64_t pts, const AVStream* stream)
+{
+    if (!stream || pts == AV_NOPTS_VALUE) {
+        return -1;
+    }
+    const std::int64_t startPts =
+        stream->start_time != AV_NOPTS_VALUE
+            ? stream->start_time
+            : 0;
+    const double seconds =
+        static_cast<double>(pts - startPts) *
+        av_q2d(stream->time_base);
+    return static_cast<int>(std::clamp<std::int64_t>(
+        static_cast<std::int64_t>(
+            std::llround(
+                std::max(0.0, seconds) *
+                streamFps(stream))),
+        0,
+        std::numeric_limits<int>::max()));
+}
+
+bool isStandaloneStillImagePath(const std::string& path)
+{
+    std::string extension =
+        std::filesystem::path(path).extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char value) {
+            return static_cast<char>(std::tolower(value));
+        });
+    return extension == ".png" ||
+        extension == ".jpg" ||
+        extension == ".jpeg" ||
+        extension == ".webp" ||
+        extension == ".tga" ||
+        extension == ".tif" ||
+        extension == ".tiff" ||
+        extension == ".exr" ||
+        extension == ".bmp" ||
+        extension == ".ppm" ||
+        extension == ".pgm";
 }
 
 struct ActiveVisualClip {
@@ -2660,6 +2714,56 @@ int effectFrameForClip(const EditorDocumentCore& document,
         elapsed, std::numeric_limits<int>::max()));
 }
 
+EditorClip evaluateEffectAnimation(const EditorClip& clip,
+                                   double localFrame,
+                                   double modulationLocalFrame)
+{
+    EditorClip evaluated = clip;
+    bool enabled = clip.effectEnabled;
+    std::vector<jcut::EditorBoolKeyframe> keyframes =
+        clip.effectEnabledKeyframes;
+    std::sort(keyframes.begin(), keyframes.end(),
+              [](const auto& left, const auto& right) {
+                  return left.frame < right.frame;
+              });
+    for (const jcut::EditorBoolKeyframe& keyframe : keyframes) {
+        if (static_cast<double>(keyframe.frame) > localFrame) break;
+        enabled = keyframe.enabled;
+    }
+    if (!enabled) {
+        evaluated.effectPreset = "none";
+        evaluated.edgeFillEffect = "none";
+        return evaluated;
+    }
+    double delta = 0.0;
+    const double seconds =
+        std::max(0.0, modulationLocalFrame) /
+        static_cast<double>(kTimelineFps);
+    if (clip.effectModulationMode == "lfo") {
+        constexpr double kTwoPi = 6.28318530717958647692;
+        const double phase =
+            clip.effectModulationPhaseDegrees * kTwoPi / 360.0;
+        delta = clip.effectModulationAmount *
+            std::sin(kTwoPi * clip.effectModulationRate * seconds + phase);
+    } else if (clip.effectModulationMode == "steady_increase") {
+        delta = clip.effectModulationAmount * seconds;
+    }
+    if (clip.effectModulationTarget == "rows") {
+        evaluated.effectRows = std::clamp(
+            static_cast<int>(std::lround(clip.effectRows + delta)), 1, 512);
+    } else if (clip.effectModulationTarget == "speed") {
+        evaluated.effectSpeed =
+            std::clamp(clip.effectSpeed + delta, -8.0, 8.0);
+    } else if (clip.effectModulationTarget == "spacing") {
+        evaluated.tilingSpacing =
+            std::clamp(clip.tilingSpacing + delta, 0.1, 8.0);
+    } else {
+        evaluated.effectScale =
+            std::clamp(clip.effectScale + delta, 0.1, 8.0);
+    }
+    return evaluated;
+}
+
 std::string resolveClipPath(const EditorClip& clip, const std::string& rootDirectory)
 {
     std::filesystem::path resolvedPath(clip.sourcePath);
@@ -2676,6 +2780,8 @@ public:
         DecoderPolicySettingsCore decoderPolicy = {})
         : m_path(std::move(path))
         , m_decoderPolicy(decoderPolicy)
+        , m_stillImageSource(
+              isStandaloneStillImagePath(m_path))
         , m_effectivePolicy(effectiveDecoderPolicyCore(
               decoderPolicy,
               false,
@@ -2964,20 +3070,61 @@ private:
         if (!open(errorOut)) {
             return false;
         }
-        if (m_lastDecodedFrameIndex < 0 || frameIndex < m_lastDecodedFrameIndex) {
-            const std::int64_t targetPts =
-                ptsForFrameIndex(frameIndex, m_stream);
-            av_seek_frame(
+        frameIndex = m_stillImageSource
+            ? 0
+            : std::max(0, frameIndex);
+        constexpr int kMaximumSequentialAdvanceFrames = 48;
+        const std::int64_t targetPts =
+            ptsForFrameIndex(frameIndex, m_stream);
+        const bool initialRequest = !m_haveBestFrame;
+        const bool backwardRequest =
+            m_haveBestFrame &&
+            ((m_lastDecodedPts != AV_NOPTS_VALUE &&
+              targetPts < m_lastDecodedPts) ||
+             (m_lastDecodedPts == AV_NOPTS_VALUE &&
+              frameIndex < m_lastDecodedFrameIndex));
+        const bool largeForwardRequest =
+            m_haveBestFrame &&
+            m_lastDecodedFrameIndex >= 0 &&
+            frameIndex >
+                m_lastDecodedFrameIndex +
+                    kMaximumSequentialAdvanceFrames;
+        if (initialRequest ||
+            backwardRequest ||
+            largeForwardRequest) {
+            const int seekResult = av_seek_frame(
                 m_formatContext.get(),
                 m_videoStreamIndex,
                 targetPts,
                 AVSEEK_FLAG_BACKWARD);
-            avcodec_flush_buffers(m_codecContext.get());
-            m_lastDecodedFrameIndex = -1;
-            av_frame_unref(m_bestFrame.get());
-            m_haveBestFrame = false;
+            if (seekResult >= 0) {
+                avcodec_flush_buffers(m_codecContext.get());
+                // Timestamped frames replace this estimate as soon as the
+                // decoder produces one. The fallback keeps timestamp-less
+                // streams from counting again from frame zero after seeking
+                // near a nonzero target.
+                m_lastDecodedFrameIndex =
+                    std::max(-1, frameIndex - 1);
+                m_lastDecodedPts = AV_NOPTS_VALUE;
+                av_frame_unref(m_bestFrame.get());
+                m_haveBestFrame = false;
+            } else if (initialRequest || backwardRequest) {
+                if (errorOut) {
+                    *errorOut =
+                        "failed to seek standalone decoder";
+                }
+                return false;
+            }
         }
-        while (!m_haveBestFrame || m_lastDecodedFrameIndex < frameIndex) {
+        const auto targetReached = [&]() {
+            if (!m_haveBestFrame) {
+                return false;
+            }
+            return m_lastDecodedPts != AV_NOPTS_VALUE
+                ? m_lastDecodedPts >= targetPts
+                : m_lastDecodedFrameIndex >= frameIndex;
+        };
+        while (!targetReached()) {
             if (!readNextFrame(errorOut)) {
                 if (m_hardwareDecodeFailed &&
                     reopenWithSoftwareDecoder(errorOut)) {
@@ -2986,7 +3133,7 @@ private:
                 break;
             }
         }
-        if (!m_haveBestFrame) {
+        if (!targetReached()) {
             if (errorOut) {
                 *errorOut = "failed to decode timeline frame";
             }
@@ -3013,6 +3160,7 @@ private:
         m_stream = nullptr;
         m_videoStreamIndex = -1;
         m_lastDecodedFrameIndex = -1;
+        m_lastDecodedPts = AV_NOPTS_VALUE;
         m_haveBestFrame = false;
         m_opened = false;
         return open(errorOut);
@@ -3059,7 +3207,21 @@ private:
                 av_frame_unref(m_bestFrame.get());
                 av_frame_ref(m_bestFrame.get(), m_frame.get());
                 m_haveBestFrame = true;
-                ++m_lastDecodedFrameIndex;
+                const std::int64_t decodedPts =
+                    m_frame->best_effort_timestamp !=
+                            AV_NOPTS_VALUE
+                        ? m_frame->best_effort_timestamp
+                        : m_frame->pts;
+                const int timestampFrameIndex =
+                    frameIndexForPts(decodedPts, m_stream);
+                if (timestampFrameIndex >= 0) {
+                    m_lastDecodedFrameIndex =
+                        timestampFrameIndex;
+                    m_lastDecodedPts = decodedPts;
+                } else {
+                    ++m_lastDecodedFrameIndex;
+                    m_lastDecodedPts = AV_NOPTS_VALUE;
+                }
                 av_frame_unref(m_frame.get());
                 return true;
             }
@@ -3142,6 +3304,7 @@ private:
 
     std::string m_path;
     DecoderPolicySettingsCore m_decoderPolicy;
+    bool m_stillImageSource = false;
     EffectiveDecoderPolicyCore m_effectivePolicy;
     AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
     bool m_hardwareAccelerated = false;
@@ -3155,6 +3318,7 @@ private:
     bool m_opened = false;
     int m_videoStreamIndex = -1;
     int m_lastDecodedFrameIndex = -1;
+    std::int64_t m_lastDecodedPts = AV_NOPTS_VALUE;
     bool m_haveBestFrame = false;
     AVStream* m_stream = nullptr;
     std::unique_ptr<AVFormatContext, AvFormatContextDeleter> m_formatContext;
@@ -3617,11 +3781,24 @@ public:
         }
 
         for (const ActiveVisualClip& active : activeClips) {
-            const EditorClip& clip = *active.clip;
-            const int localFrame = std::max(
+            const int rawLocalFrame = std::max(
                 0,
                 static_cast<int>(std::floor(request.timelineFrame)) -
-                    clip.startFrame);
+                    active.clip->startFrame);
+            const double modulationLocalFrame =
+                active.clip->effectSkipAwareTiming
+                    ? static_cast<double>(effectFrameForClip(
+                          request.document,
+                          *active.clip,
+                          rawLocalFrame))
+                    : static_cast<double>(rawLocalFrame);
+            const EditorClip animatedClip = evaluateEffectAnimation(
+                *active.clip,
+                request.timelineFrame -
+                    static_cast<double>(active.clip->startFrame),
+                modulationLocalFrame);
+            const EditorClip& clip = animatedClip;
+            const int localFrame = rawLocalFrame;
             ImageBuffer decoded;
             int sourceFrame = localFrame;
             const int effectFrame = effectFrameForClip(

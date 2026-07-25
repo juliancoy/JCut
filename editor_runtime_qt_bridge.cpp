@@ -229,6 +229,20 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.edgeFillBrightness = clip.edgeFillBrightness;
         coreClip.edgeFillSaturation = clip.edgeFillSaturation;
         coreClip.effectPreset = editor::effectPresetToJson(clip.effectPreset).toStdString();
+        coreClip.effectEnabled = clip.effectEnabled;
+        for (const TimelineClip::BoolKeyframe& keyframe :
+             clip.effectEnabledKeyframes) {
+            coreClip.effectEnabledKeyframes.push_back(
+                EditorBoolKeyframe{keyframe.frame, keyframe.enabled});
+        }
+        coreClip.effectModulationMode =
+            clip.effectModulationMode.toStdString();
+        coreClip.effectModulationTarget =
+            clip.effectModulationTarget.toStdString();
+        coreClip.effectModulationAmount = clip.effectModulationAmount;
+        coreClip.effectModulationRate = clip.effectModulationRate;
+        coreClip.effectModulationPhaseDegrees =
+            clip.effectModulationPhaseDegrees;
         coreClip.effectRows = clip.effectRows;
         coreClip.effectSpeed = clip.effectSpeed;
         coreClip.effectScale = clip.effectScale;

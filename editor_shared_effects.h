@@ -70,3 +70,10 @@ bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role);
 // but rendered inactive to keep the matte fail-closed.
 TimelineClip clipWithRenderableEffectSettings(const TimelineClip& clip,
                                               const QVector<TimelineTrack>& tracks);
+TimelineClip evaluateClipEffectAnimationAtPosition(const TimelineClip& clip,
+                                                   qreal timelineFramePosition);
+TimelineClip evaluateClipEffectAnimationAtPosition(
+    const TimelineClip& clip,
+    qreal timelineFramePosition,
+    const QVector<RenderSyncMarker>& markers,
+    const PlaybackTimingContext& timing);

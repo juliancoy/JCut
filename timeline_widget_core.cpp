@@ -754,96 +754,183 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     }
     ensureTrackCount(trackCount());
 
-    QHash<int, int> clipCountByTrack;
+    // Mask Matte children are one visual collection per sidecar on an
+    // ordinary source track. Split or sequential parents reuse that
+    // sidecar's row, while distinct sidecars remain independently visible.
     QHash<QString, int> sourceTrackById;
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        ++clipCountByTrack[clip.trackIndex];
-        if (clip.clipRole != ClipRole::MaskMatte && !clip.id.trimmed().isEmpty()) {
+        if (clip.clipRole != ClipRole::MaskMatte &&
+            clip.clipRole != ClipRole::SpeakerTitle &&
+            !clip.id.trimmed().isEmpty()) {
             sourceTrackById.insert(clip.id.trimmed(), clip.trackIndex);
         }
     }
-    for (TimelineClip& child : m_clips) {
-        if (child.clipRole != ClipRole::MaskMatte) continue;
-        const int sourceTrack = sourceTrackById.value(child.linkedSourceClipId.trimmed(), -1);
-        if (sourceTrack < 0) continue;
-        const bool dedicatedExistingTrack =
-            child.trackIndex >= 0 && child.trackIndex < m_tracks.size() &&
-            child.trackIndex != sourceTrack &&
-            (m_tracks.at(child.trackIndex).generatedChildTrack ||
-             clipCountByTrack.value(child.trackIndex) == 1);
-        if (!dedicatedExistingTrack) {
+    struct MaskMatteGroup {
+        QString parentId;
+        QString parentLabel;
+        QString sidecarLabel;
+        int parentTrackIndex = -1;
+        QVector<int> childClipIndices;
+        int childTrackIndex = -1;
+    };
+    QVector<MaskMatteGroup> maskGroups;
+    QHash<QString, int> maskGroupBySourceTrackAndSidecar;
+    for (int clipIndex = 0; clipIndex < m_clips.size(); ++clipIndex) {
+        const TimelineClip& child = m_clips.at(clipIndex);
+        if (child.clipRole != ClipRole::MaskMatte) {
+            continue;
+        }
+        const QString parentId =
+            child.linkedSourceClipId.trimmed();
+        const int parentTrackIndex =
+            sourceTrackById.value(parentId, -1);
+        if (parentId.isEmpty() || parentTrackIndex < 0) {
+            continue;
+        }
+        QString sidecarIdentity =
+            child.generatedFromMaskId.trimmed();
+        if (sidecarIdentity.isEmpty()) {
+            sidecarIdentity = child.maskFramesDir.trimmed();
+        }
+        if (sidecarIdentity.isEmpty()) {
+            sidecarIdentity = QStringLiteral("legacy-track:%1")
+                .arg(child.trackIndex);
+        }
+        const QString groupKey =
+            QString::number(parentTrackIndex) +
+            QChar(u'\x1f') + sidecarIdentity;
+        int groupIndex =
+            maskGroupBySourceTrackAndSidecar.value(
+                groupKey, -1);
+        if (groupIndex < 0) {
+            groupIndex = maskGroups.size();
+            maskGroupBySourceTrackAndSidecar.insert(
+                groupKey, groupIndex);
+            MaskMatteGroup group;
+            group.parentId = parentId;
+            group.parentTrackIndex = parentTrackIndex;
+            group.sidecarLabel = child.label.trimmed();
+            const auto parent = std::find_if(
+                m_clips.cbegin(), m_clips.cend(),
+                [&](const TimelineClip& candidate) {
+                    return candidate.id.trimmed() ==
+                        parentId;
+                });
+            if (parent != m_clips.cend()) {
+                group.parentLabel =
+                    parent->label.trimmed();
+            }
+            maskGroups.push_back(std::move(group));
+        }
+        maskGroups[groupIndex].childClipIndices.push_back(
+            clipIndex);
+    }
+
+    QSet<int> obsoleteMaskTracks;
+    for (MaskMatteGroup& group : maskGroups) {
+        QSet<int> childIndices(
+            group.childClipIndices.cbegin(),
+            group.childClipIndices.cend());
+        QVector<int> dedicatedTrackIndices;
+        for (int trackIndex = 0;
+             trackIndex < m_tracks.size(); ++trackIndex) {
+            if (trackIndex == group.parentTrackIndex) {
+                continue;
+            }
+            QVector<int> occupants;
+            for (int clipIndex = 0;
+                 clipIndex < m_clips.size(); ++clipIndex) {
+                if (m_clips.at(clipIndex).trackIndex ==
+                    trackIndex) {
+                    occupants.push_back(clipIndex);
+                }
+            }
+            if (occupants.isEmpty()) {
+                continue;
+            }
+            const bool dedicated = std::all_of(
+                occupants.cbegin(), occupants.cend(),
+                [&](int occupantIndex) {
+                    return childIndices.contains(
+                        occupantIndex);
+                });
+            if (dedicated) {
+                dedicatedTrackIndices.push_back(
+                    trackIndex);
+            }
+        }
+        std::sort(dedicatedTrackIndices.begin(),
+                  dedicatedTrackIndices.end());
+        if (!dedicatedTrackIndices.isEmpty()) {
+            group.childTrackIndex =
+                dedicatedTrackIndices.constFirst();
+        } else {
             TimelineTrack childTrack;
             childTrack.height = 44;
             childTrack.audioEnabled = false;
             childTrack.audioWaveformVisible = false;
-            m_tracks.push_back(childTrack);
-            child.trackIndex = m_tracks.size() - 1;
+            m_tracks.push_back(std::move(childTrack));
+            group.childTrackIndex = m_tracks.size() - 1;
         }
-        TimelineTrack& track = m_tracks[child.trackIndex];
+        for (const int trackIndex :
+             std::as_const(dedicatedTrackIndices)) {
+            if (trackIndex != group.childTrackIndex) {
+                obsoleteMaskTracks.insert(trackIndex);
+            }
+        }
+        for (const int childIndex :
+             std::as_const(group.childClipIndices)) {
+            m_clips[childIndex].trackIndex =
+                group.childTrackIndex;
+        }
+        TimelineTrack& track =
+            m_tracks[group.childTrackIndex];
         track.generatedChildTrack = true;
-        track.parentClipId = child.linkedSourceClipId.trimmed();
-        track.childClipId = child.id;
-        track.name = QStringLiteral("↳ %1").arg(child.label);
-        track.height = qBound(kMinTrackHeight, track.height, 56);
+        track.parentClipId = group.parentId;
+        track.childClipId =
+            m_clips.at(group.childClipIndices.constFirst())
+                .id.trimmed();
+        const QString sourceLabel = group.parentLabel.isEmpty()
+            ? QStringLiteral("Masks")
+            : group.parentLabel;
+        const QString sidecarLabel = group.sidecarLabel.isEmpty()
+            ? QStringLiteral("Mask")
+            : group.sidecarLabel;
+        track.name = QStringLiteral("↳ %1 • %2")
+            .arg(sourceLabel, sidecarLabel);
+        track.height = qBound(
+            kMinTrackHeight, track.height, 56);
         track.audioEnabled = false;
         track.audioWaveformVisible = false;
     }
 
-    // Keep child tracks adjacent to their source track without using that
-    // layout position as compositing order.
-    QVector<int> baseTracks;
-    QHash<int, QVector<int>> childTracksBySourceTrack;
-    QSet<int> placedChildTracks;
-    for (int trackIndex = 0; trackIndex < m_tracks.size(); ++trackIndex) {
-        const TimelineTrack& track = m_tracks.at(trackIndex);
-        if (!track.generatedChildTrack) {
-            baseTracks.push_back(trackIndex);
+    QList<int> obsoleteMaskTrackIndices =
+        obsoleteMaskTracks.values();
+    std::sort(obsoleteMaskTrackIndices.begin(),
+              obsoleteMaskTrackIndices.end(),
+              std::greater<int>());
+    for (const int trackIndex :
+         std::as_const(obsoleteMaskTrackIndices)) {
+        const bool occupied = std::any_of(
+            m_clips.cbegin(), m_clips.cend(),
+            [trackIndex](const TimelineClip& clip) {
+                return clip.trackIndex == trackIndex;
+            });
+        if (occupied || trackIndex < 0 ||
+            trackIndex >= m_tracks.size()) {
             continue;
         }
-        const int sourceTrack = sourceTrackById.value(track.parentClipId.trimmed(), -1);
-        if (sourceTrack >= 0) childTracksBySourceTrack[sourceTrack].push_back(trackIndex);
-    }
-    QVector<int> desiredTrackOrder;
-    desiredTrackOrder.reserve(m_tracks.size());
-    for (const int baseTrack : std::as_const(baseTracks)) {
-        desiredTrackOrder.push_back(baseTrack);
-        QVector<int> children = childTracksBySourceTrack.value(baseTrack);
-        std::sort(children.begin(), children.end(), [this](int leftTrack, int rightTrack) {
-            const auto childForTrack = [this](int trackIndex) -> const TimelineClip* {
-                for (const TimelineClip& clip : m_clips) {
-                    if (clip.trackIndex == trackIndex && clip.clipRole == ClipRole::MaskMatte) return &clip;
-                }
-                return nullptr;
-            };
-            const TimelineClip* left = childForTrack(leftTrack);
-            const TimelineClip* right = childForTrack(rightTrack);
-            if (!left || !right) return leftTrack < rightTrack;
-            const int labelOrder = QString::localeAwareCompare(left->label, right->label);
-            return labelOrder == 0 ? left->id < right->id : labelOrder < 0;
-        });
-        for (const int childTrack : std::as_const(children)) {
-            desiredTrackOrder.push_back(childTrack);
-            placedChildTracks.insert(childTrack);
-        }
-    }
-    for (int trackIndex = 0; trackIndex < m_tracks.size(); ++trackIndex) {
-        if (m_tracks.at(trackIndex).generatedChildTrack && !placedChildTracks.contains(trackIndex)) {
-            desiredTrackOrder.push_back(trackIndex);
-        }
-    }
-    if (desiredTrackOrder.size() == m_tracks.size()) {
-        QVector<TimelineTrack> reorderedTracks;
-        reorderedTracks.reserve(m_tracks.size());
-        QHash<int, int> newIndexByOldIndex;
-        for (const int oldIndex : std::as_const(desiredTrackOrder)) {
-            newIndexByOldIndex.insert(oldIndex, reorderedTracks.size());
-            reorderedTracks.push_back(m_tracks.at(oldIndex));
-        }
+        m_tracks.removeAt(trackIndex);
         for (TimelineClip& clip : m_clips) {
-            clip.trackIndex = newIndexByOldIndex.value(clip.trackIndex, clip.trackIndex);
+            if (clip.trackIndex > trackIndex) {
+                --clip.trackIndex;
+            }
         }
-        m_selectedTrackIndex = newIndexByOldIndex.value(m_selectedTrackIndex, m_selectedTrackIndex);
-        m_tracks = reorderedTracks;
+        if (m_selectedTrackIndex > trackIndex) {
+            --m_selectedTrackIndex;
+        } else if (m_selectedTrackIndex == trackIndex) {
+            m_selectedTrackIndex = -1;
+        }
     }
 
     // Speaker introductions are generated from transcript parameters as one
@@ -1800,6 +1887,11 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                                   leftDuration,
                                   &clip.opacityKeyframes,
                                   &rightClip.opacityKeyframes);
+            splitSimpleKeyframes(
+                originalClip.effectEnabledKeyframes,
+                leftDuration,
+                &clip.effectEnabledKeyframes,
+                &rightClip.effectEnabledKeyframes);
             splitCorrectionPolygons(originalClip.correctionPolygons,
                                     leftDuration,
                                     &clip.correctionPolygons,
@@ -1905,6 +1997,11 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                                       childLeftDuration,
                                       &leftChild.opacityKeyframes,
                                       &rightChild.opacityKeyframes);
+                splitSimpleKeyframes(
+                    originalChild.effectEnabledKeyframes,
+                    childLeftDuration,
+                    &leftChild.effectEnabledKeyframes,
+                    &rightChild.effectEnabledKeyframes);
                 splitSimpleKeyframes(
                     originalChild.titleKeyframes,
                     childLeftDuration,

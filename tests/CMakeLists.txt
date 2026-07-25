@@ -10,6 +10,7 @@ set(EDITOR_TEST_TARGETS
     test_explorer_pane
     test_media_drag_drop
     test_mask_tab
+    test_effects_tab
     test_media_root_contract
     test_timeline_cache
     test_integration
@@ -127,6 +128,9 @@ set_tests_properties(test_media_drag_drop PROPERTIES
 set_tests_properties(test_mask_tab PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
+set_tests_properties(test_effects_tab PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
 target_sources(test_explorer_pane PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../explorer_pane.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../media_drag_payload.cpp
@@ -147,6 +151,10 @@ target_sources(test_media_drag_drop PRIVATE
 target_sources(test_mask_tab PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.h
+)
+target_sources(test_effects_tab PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../effects_tab.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../effects_tab.h
 )
 
 target_sources(test_editor_runtime

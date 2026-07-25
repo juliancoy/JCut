@@ -2,6 +2,7 @@
 
 #include "preview_interaction_state.h"
 #include "playback_stage_metrics.h"
+#include "core/offscreen_vulkan_frame.h"
 
 #include <functional>
 #include <QJsonObject>
@@ -136,6 +137,9 @@ public:
     QJsonObject pipelineHealthSnapshot() const;
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
+    void setGpuExportPreviewFrame(
+        const render_detail::OffscreenVulkanFrame& frame);
+    void clearGpuExportPreview();
 
 private:
     void showFailure(const QString& reason);

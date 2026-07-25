@@ -1935,7 +1935,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(
     std::string* errorMessage)
 {
     const bool imported = m_externalFrameImporter.recordFrameCopy(
-        commandBuffer, frame, errorMessage);
+        commandBuffer, frame, false, errorMessage);
     m_lastMode = imported
         ? FrameHandoffMode::ExternalMemoryImport
         : FrameHandoffMode::Invalid;

@@ -54,5 +54,10 @@ bool directVulkanPreviewWindowPipelineThumbnailReadbackPending(DirectVulkanPrevi
 void directVulkanPreviewWindowRaise(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowHide(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const QString& title);
+void directVulkanPreviewWindowSetGpuExportPreviewFrame(
+    DirectVulkanPreviewWindow* window,
+    const render_detail::OffscreenVulkanFrame& frame);
+void directVulkanPreviewWindowClearGpuExportPreview(
+    DirectVulkanPreviewWindow* window);
 bool directVulkanPreviewWindowIsVisible(DirectVulkanPreviewWindow* window);
 QString directVulkanPreviewWindowCursorShape(DirectVulkanPreviewWindow* window);

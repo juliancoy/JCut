@@ -114,6 +114,9 @@ public:
     QJsonObject profilingSnapshot() const override;
     void resetProfilingStats() override;
     bool selectedOverlayIsTranscript() const override;
+    void setGpuExportPreviewFrame(
+        const render_detail::OffscreenVulkanFrame&) override {}
+    void clearGpuExportPreview() override {}
 
 protected:
     void paintEvent(QPaintEvent* event) override;

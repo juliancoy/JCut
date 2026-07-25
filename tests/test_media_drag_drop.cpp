@@ -77,6 +77,7 @@ private slots:
     void unavailablePathProducesNoPayload();
     void explorerPayloadInsertsClipOnTimeline();
     void loadingTimelineRemovesDuplicateGeneratedMaskTracks();
+    void loadingTimelineUsesOneChildTrackPerSidecar();
     void loadingTimelineRecoversParentStrandedOnDuplicateMaskTrack();
     void transcriptTitlesReconcileToImmutableGeneratedChildTrack();
     void clipClipboardPreservesRelativeLayoutAndUsesFreshIds();
@@ -325,6 +326,75 @@ void TestMediaDragDrop::loadingTimelineRemovesDuplicateGeneratedMaskTracks()
     QVERIFY(timeline.tracks().at(1).generatedChildTrack);
     QCOMPARE(timeline.tracks().at(1).childClipId, matte.id);
     QCOMPARE(timeline.tracks().at(1).visualMode, TrackVisualMode::Hidden);
+}
+
+void TestMediaDragDrop::loadingTimelineUsesOneChildTrackPerSidecar()
+{
+    TimelineClip source = makeMaskTestSource();
+    source.label = QStringLiteral("Interview");
+    source.trackIndex = 0;
+
+    TimelineClip person = makeMaskTestChild(source);
+    person.id = QStringLiteral("person-mask");
+    person.label = QStringLiteral("Person Mask");
+    person.generatedFromMaskId =
+        QStringLiteral("person-sidecar");
+    person.trackIndex = 1;
+    person.zLevel = 101;
+
+    TimelineClip microphone = person;
+    microphone.id = QStringLiteral("microphone-mask");
+    microphone.label = QStringLiteral("Microphone Mask");
+    microphone.generatedFromMaskId =
+        QStringLiteral("microphone-sidecar");
+    microphone.trackIndex = 2;
+    microphone.zLevel = 102;
+
+    TimelineClip alpha = person;
+    alpha.id = QStringLiteral("alpha-mask");
+    alpha.label = QStringLiteral("Alpha Mask");
+    alpha.generatedFromMaskId =
+        QStringLiteral("alpha-sidecar");
+    alpha.trackIndex = 3;
+    alpha.zLevel = 103;
+
+    TimelineTrack sourceTrack;
+    sourceTrack.name = QStringLiteral("Source");
+    TimelineTrack personTrack;
+    personTrack.generatedChildTrack = true;
+    personTrack.parentClipId = source.id;
+    personTrack.childClipId = person.id;
+    personTrack.visualMode = TrackVisualMode::Hidden;
+    TimelineTrack microphoneTrack = personTrack;
+    microphoneTrack.childClipId = microphone.id;
+    microphoneTrack.visualMode = TrackVisualMode::Enabled;
+    TimelineTrack alphaTrack = personTrack;
+    alphaTrack.childClipId = alpha.id;
+
+    TimelineWidget timeline;
+    timeline.setTracks(
+        {sourceTrack, personTrack, microphoneTrack, alphaTrack});
+    timeline.setClips(
+        {source, person, microphone, alpha});
+
+    QCOMPARE(timeline.tracks().size(), 4);
+    QVERIFY(timeline.tracks().at(1).generatedChildTrack);
+    QCOMPARE(timeline.tracks().at(1).parentClipId,
+             source.id);
+    QCOMPARE(timeline.tracks().at(1).name,
+             QStringLiteral("↳ Interview • Person Mask"));
+    QCOMPARE(timeline.tracks().at(1).visualMode,
+             TrackVisualMode::Hidden);
+    QCOMPARE(clipById(timeline, person.id)->trackIndex, 1);
+    QCOMPARE(clipById(timeline, microphone.id)->trackIndex, 2);
+    QCOMPARE(clipById(timeline, alpha.id)->trackIndex, 3);
+    QCOMPARE(timeline.tracks().at(2).name,
+             QStringLiteral("↳ Interview • Microphone Mask"));
+    QCOMPARE(timeline.tracks().at(3).name,
+             QStringLiteral("↳ Interview • Alpha Mask"));
+    QCOMPARE(clipById(timeline, person.id)->zLevel, 101);
+    QCOMPARE(clipById(timeline, microphone.id)->zLevel, 102);
+    QCOMPARE(clipById(timeline, alpha.id)->zLevel, 103);
 }
 
 void TestMediaDragDrop::loadingTimelineRecoversParentStrandedOnDuplicateMaskTrack()
