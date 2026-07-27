@@ -523,6 +523,7 @@ private:
                                   bool skipped);
     bool saveClipSpeakerFramingTargetsFromControls();
     bool saveClipSpeakerFramingEnabledFromControls();
+    void scheduleSpeakerTitleRegeneration();
     bool applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString& clipId,
                                                         int trackId,
                                                         const QString& streamId,
@@ -555,8 +556,10 @@ private:
     bool m_faceStreamPanelRefreshQueued = false;
     bool m_assignmentHistorySnapshotQueued = false;
     bool m_selectedSpeakerPanelRefreshQueued = false;
+    bool m_speakerTitleRegenerationQueued = false;
     QTimer* m_faceStreamPanelRefreshTimer = nullptr;
     QTimer* m_selectedSpeakerPanelRefreshTimer = nullptr;
+    QTimer* m_speakerTitleRegenerationTimer = nullptr;
     QString m_speakersTableRefreshSignature;
     bool m_faceStreamPanelRefreshDeferredForPlayback = false;
     QString m_lastPlayheadSyncedSpeakerId;

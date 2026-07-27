@@ -176,8 +176,10 @@ void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
     QFile exportSource(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
     QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
     const QString exportText = QString::fromUtf8(exportSource.readAll());
-    QVERIFY2(exportText.contains(QStringLiteral("rawClipMaskImage(matteOwner, frame)")),
-             "Vulkan export must resolve masks from the actual rendered FrameHandle.");
+    QVERIFY2(exportText.contains(QStringLiteral(
+                 "rawClipMaskImageBlocking(matteOwner, frame)")),
+             "Definitive Vulkan export must synchronously resolve masks from "
+             "the actual rendered FrameHandle.");
     QVERIFY2(!exportText.contains(QStringLiteral("preparedClipMaskImage(clip")),
              "Vulkan export must not CPU-prepare Vulkan masks.");
     QVERIFY2(!exportText.contains(QStringLiteral("maskUpload = maskUpload.scaled")),
@@ -546,7 +548,7 @@ void TestShaderGradingLogic::testDecodeOrdinalMaskWithoutFrameMapFailsClosed()
     QImage initialMask;
     QTRY_VERIFY_WITH_TIMEOUT(
         !(initialMask =
-              rawClipMaskImage(clip, presentedFrame(0, 0))).isNull(),
+              rawClipMaskImageBlocking(clip, presentedFrame(0, 0))).isNull(),
         3000);
     QCOMPARE(initialMask.convertToFormat(QImage::Format_Grayscale8)
                  .constScanLine(0)[0],

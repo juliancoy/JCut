@@ -939,7 +939,7 @@ void TestEffectPresets::completedOrdinalSidecarWithInteriorHoleFailsClosed()
     const QString sidecarDir =
         temp.filePath(QStringLiteral("source_sam3_person_binary_masks"));
     QVERIFY(QDir().mkpath(sidecarDir));
-    for (const int frame : {1, 3}) {
+    for (const int frame : {1, 2, 3}) {
         QImage image(2, 2, QImage::Format_Grayscale8);
         image.fill(frame * 32);
         QVERIFY(image.save(QDir(sidecarDir).filePath(
@@ -989,6 +989,16 @@ void TestEffectPresets::completedOrdinalSidecarWithInteriorHoleFailsClosed()
             {QStringLiteral("expected_frame_count"), 3},
             {QStringLiteral("source_identity"), identity},
         }));
+
+    const editor::masks::MaskSidecar completeSidecar =
+        editor::masks::inspectMaskSidecar(
+            sidecarDir, QStringLiteral("source"), mediaPath);
+    QVERIFY(completeSidecar.isReadyForTimeline());
+    QVERIFY(editor::masks::inspectMaskSidecar(
+                sidecarDir, QStringLiteral("source"), mediaPath)
+                .isReadyForTimeline());
+    QVERIFY(QFile::remove(
+        QDir(sidecarDir).filePath(QStringLiteral("frame_000002.png"))));
 
     const editor::masks::MaskSidecar sidecar =
         editor::masks::inspectMaskSidecar(

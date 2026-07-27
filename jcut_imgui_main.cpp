@@ -8549,16 +8549,13 @@ void drawTimelinePanel(ShellState* shellState, const jcut::EditorDocumentCore& s
         } else if (hoveredClipId != 0) {
             if (shellState->timelineToolMode == TimelineToolMode::Razor &&
                 !hoveredClipIsMaskMatte) {
-                const auto hoveredIt = std::find_if(
-                    snapshot.clips.begin(), snapshot.clips.end(),
-                    [&](const jcut::EditorClip& clip) {
-                        return clip.id == hoveredClipId;
-                    });
                 applyCommand(shellState, jcut::SelectTrackCommand{hoveredTrackId});
-                if (hoveredIt != snapshot.clips.end() && !hoveredIt->selected) {
-                    applyCommand(shellState, jcut::SelectClipCommand{hoveredClipId});
-                }
-                applyCommand(shellState, jcut::SplitSelectedClipsCommand{
+                applyCommand(shellState, jcut::SelectClipCommand{hoveredClipId});
+                // Clicking with the blade cuts only the clip under it.
+                // Ctrl+B and the Edit menu retain explicit group-split
+                // behavior for intentionally selected clips.
+                applyCommand(shellState, jcut::SplitClipCommand{
+                    hoveredClipId,
                     frameFromTimelineX(
                         contentLeft,
                         mousePos.x,

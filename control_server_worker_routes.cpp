@@ -527,6 +527,7 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
         ((request.method == QStringLiteral("POST")) &&
          (path == QStringLiteral("/window") || path == QStringLiteral("/menu") || path == QStringLiteral("/click-item") ||
           path == QStringLiteral("/click") || path == QStringLiteral("/profile/reset") ||
+          path == QStringLiteral("/ui/profile/reset") ||
           path == QStringLiteral("/clips"))) ||
         ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&
          path == QStringLiteral("/click"));
@@ -1374,6 +1375,49 @@ bool ControlServerWorker::handleHistoryRoutes(QTcpSocket* socket, const Request&
 }
 
 bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/ui/profile")) {
+        QJsonObject profile;
+        QString liveError;
+        if (!refreshProfileCacheFromUi(m_uiInvokeTimeoutMs, &liveError)) {
+            const QString error = liveError.isEmpty()
+                ? QStringLiteral("ui action profile unavailable")
+                : liveError;
+            writeError(socket, 503, error);
+            return true;
+        }
+        profile = m_lastProfileSnapshot.value(QStringLiteral("ui_actions")).toObject();
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), !profile.isEmpty()},
+            {QStringLiteral("ui_actions"), profile},
+            {QStringLiteral("cache"), profileCacheMeta()}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/ui/profile/reset")) {
+        bool reset = false;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &reset, [this]() {
+                if (m_resetProfilingCallback) {
+                    m_resetProfilingCallback();
+                    return true;
+                }
+                return false;
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for ui action profile reset"));
+            return true;
+        }
+        if (reset) {
+            m_lastProfileSnapshot = QJsonObject{};
+            m_lastProfileSnapshotMs = 0;
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), reset},
+            {QStringLiteral("message"), reset ? QStringLiteral("ui action profiling stats reset")
+                                              : QStringLiteral("no reset callback configured")}
+        });
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/pipeline")) {
         const QUrlQuery query(request.url);
         const bool verbose =

@@ -43,6 +43,7 @@ private slots:
     void testActivePlaybackRuntimeConfigRealignsStreams();
     void testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeEnd();
     void testPlaybackSyncDiagnosticsUseAudioFollowerDomain();
+    void testSpeakerTitleRegenerationBypassesFullTimelineReset();
 };
 
 void TestPlaybackPolicy::testClockSourceRoundTrip() {
@@ -526,13 +527,39 @@ void TestPlaybackPolicy::testPlaybackStartStopsCleanlyWhenFirstAdvanceHitsRangeE
              "stopping playback must still stop an active timer even if the "
              "fast playback flag is already false");
     QVERIFY2(playback.contains(QStringLiteral(
-                 "const bool videoReady = m_preview->preparePlaybackAdvance(nextFrame)")) &&
+                 "const bool videoReady = m_preview->preparePlaybackAdvanceSample(nextSample)")) &&
                  playback.contains(QStringLiteral("video_follower_waiting")) &&
                  playback.contains(QStringLiteral("transport_not_blocked")) &&
                  !playback.contains(QStringLiteral(
-                     "if (!m_preview->preparePlaybackAdvance(nextFrame)")),
+                     "if (!m_preview->preparePlaybackAdvanceSample(nextSample)")),
              "video readiness is follower telemetry and must not hold or "
              "redefine the monotonic transport clock");
+    const qsizetype sampleApplyStart =
+        playback.indexOf(QStringLiteral("void EditorWindow::setCurrentPlaybackSample"));
+    const qsizetype setFrameStart =
+        playback.indexOf(QStringLiteral("void EditorWindow::setCurrentFrame"), sampleApplyStart);
+    const QString sampleApplyBody =
+        sampleApplyStart >= 0 && setFrameStart > sampleApplyStart
+            ? playback.mid(sampleApplyStart, setFrameStart - sampleApplyStart)
+            : QString();
+    QVERIFY2(sampleApplyBody.contains(QStringLiteral(
+                 "m_preview->setCurrentPlaybackSample(boundedSample)")) &&
+                 sampleApplyBody.contains(QStringLiteral(
+                     "const bool syncQtPlaybackFollowers")) &&
+                 sampleApplyBody.contains(QStringLiteral(
+                     "m_timeline->setCurrentFrame(bounded)")) &&
+                 sampleApplyBody.indexOf(QStringLiteral(
+                     "m_preview->setCurrentPlaybackSample(boundedSample)")) <
+                     sampleApplyBody.indexOf(QStringLiteral(
+                         "const bool syncQtPlaybackFollowers")),
+             "preview playback must consume every transport sample before "
+             "coalescing timeline/slider/label UI followers");
+    QVERIFY2(sampleApplyBody.contains(QStringLiteral(
+                 "syncQtPlaybackFollowers &&")) &&
+                 sampleApplyBody.contains(QStringLiteral(
+                     "m_lastPlaybackChromeSyncMs = tickNowMs")),
+             "during playback, table and chrome followers must be throttled "
+             "so Qt repaint/layout work cannot dominate the transport tick");
     const QString setup = readSourceFile(QStringLiteral("editor_setup.cpp"));
     QVERIFY2(
         setup.contains(
@@ -591,6 +618,71 @@ void TestPlaybackPolicy::testPlaybackSyncDiagnosticsUseAudioFollowerDomain()
         "requested/presented handoff instead of reimplementing temporal "
         "mapping, toggle the real Wayland transport widget, and select the "
         "media parent rather than a generated mask child");
+}
+
+void TestPlaybackPolicy::testSpeakerTitleRegenerationBypassesFullTimelineReset()
+{
+    const QString editorTabs = readSourceFile(QStringLiteral("editor_tabs.cpp"));
+    QVERIFY2(!editorTabs.isEmpty(), "editor_tabs.cpp must be readable");
+
+    const QString marker = QStringLiteral("Transcript • Speaker Introductions");
+    const qsizetype markerIndex = editorTabs.indexOf(marker);
+    QVERIFY2(markerIndex >= 0, "speaker-title dependency must still be wired");
+
+    const qsizetype lambdaStart = editorTabs.lastIndexOf(
+        QStringLiteral("replaceGeneratedClipsForSource("), markerIndex);
+    QVERIFY2(lambdaStart >= 0,
+             "speaker-title dependency must call the narrow TimelineWidget "
+             "generated-clip replacement API");
+
+    const qsizetype lambdaEnd = editorTabs.indexOf(
+        QStringLiteral("scheduleSaveState();"), markerIndex);
+    QVERIFY2(lambdaEnd > lambdaStart,
+             "speaker-title dependency body must be bounded");
+
+    const QString dependencyBody =
+        editorTabs.mid(lambdaStart, lambdaEnd - lambdaStart);
+    QVERIFY2(!dependencyBody.contains(QStringLiteral("setClips(")),
+             "regenerating Animated Speaker Titles must not go through "
+             "TimelineWidget::setClips(); that broad mutation path runs mask "
+             "sidecar reconciliation and audio-source refresh");
+    QVERIFY2(!dependencyBody.contains(QStringLiteral("setTracks(")),
+             "regenerating Animated Speaker Titles must not reset every track; "
+             "generated children are a narrow in-place timeline mutation");
+
+    const QString timelineCore =
+        readSourceFile(QStringLiteral("timeline_widget_core.cpp"));
+    QVERIFY2(!timelineCore.isEmpty(), "timeline_widget_core.cpp must be readable");
+    const qsizetype methodIndex = timelineCore.indexOf(
+        QStringLiteral("TimelineWidget::replaceGeneratedClipsForSource"));
+    QVERIFY2(methodIndex >= 0,
+             "TimelineWidget must expose a generated-child replacement "
+             "mutation boundary");
+    const qsizetype methodEnd = timelineCore.indexOf(
+        QStringLiteral("TimelineWidget::setDeferMaskSidecarReconciliation"),
+        methodIndex);
+    QVERIFY2(methodEnd > methodIndex,
+             "generated-child replacement method must be bounded");
+    const QString methodBody = timelineCore.mid(methodIndex, methodEnd - methodIndex);
+    QVERIFY2(!methodBody.contains(QStringLiteral("reconcileMaskMatteChildrenFromDisk")),
+             "speaker-title regeneration must not trigger filesystem "
+             "mask-sidecar reconciliation");
+    QVERIFY2(!methodBody.contains(QStringLiteral("refreshClipAudioSource")),
+             "speaker-title regeneration must not refresh audio sources for "
+             "unrelated media clips");
+
+    const QString speakersWiring =
+        readSourceFile(QStringLiteral("speakers_tab_wiring.cpp"));
+    QVERIFY2(!speakersWiring.isEmpty(), "speakers_tab_wiring.cpp must be readable");
+    QVERIFY2(speakersWiring.contains(
+                 QStringLiteral("m_speakerTitleRegenerationTimer->setInterval(200)")),
+             "speaker-title parameter edits must be debounced instead of "
+             "regenerating on each UI event");
+    QVERIFY2(speakersWiring.contains(QStringLiteral(
+                 "auto refreshEnabledFlyIn = [this]() { "
+                 "scheduleSpeakerTitleRegeneration(); };")),
+             "speaker-title parameter edits must route through the debounce "
+             "boundary");
 }
 
 QTEST_MAIN(TestPlaybackPolicy)

@@ -305,6 +305,9 @@ QWidget *InspectorPane::buildGradingTab()
     m_contrastSpin = new QDoubleSpinBox(content);
     m_saturationSpin = new QDoubleSpinBox(content);
     m_opacitySpin = new QDoubleSpinBox(content);
+    m_brightnessSpin->setObjectName(QStringLiteral("grading.brightness"));
+    m_contrastSpin->setObjectName(QStringLiteral("grading.contrast"));
+    m_saturationSpin->setObjectName(QStringLiteral("grading.saturation"));
 
     for (QDoubleSpinBox *spin : {m_brightnessSpin, m_contrastSpin, m_saturationSpin})
     {
@@ -334,6 +337,9 @@ QWidget *InspectorPane::buildGradingTab()
     m_shadowsRSpin = new QDoubleSpinBox(shadowsGroup);
     m_shadowsGSpin = new QDoubleSpinBox(shadowsGroup);
     m_shadowsBSpin = new QDoubleSpinBox(shadowsGroup);
+    m_shadowsRSpin->setObjectName(QStringLiteral("grading.shadows.r"));
+    m_shadowsGSpin->setObjectName(QStringLiteral("grading.shadows.g"));
+    m_shadowsBSpin->setObjectName(QStringLiteral("grading.shadows.b"));
     for (QDoubleSpinBox *spin : {m_shadowsRSpin, m_shadowsGSpin, m_shadowsBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -352,6 +358,9 @@ QWidget *InspectorPane::buildGradingTab()
     m_midtonesRSpin = new QDoubleSpinBox(midtonesGroup);
     m_midtonesGSpin = new QDoubleSpinBox(midtonesGroup);
     m_midtonesBSpin = new QDoubleSpinBox(midtonesGroup);
+    m_midtonesRSpin->setObjectName(QStringLiteral("grading.midtones.r"));
+    m_midtonesGSpin->setObjectName(QStringLiteral("grading.midtones.g"));
+    m_midtonesBSpin->setObjectName(QStringLiteral("grading.midtones.b"));
     for (QDoubleSpinBox *spin : {m_midtonesRSpin, m_midtonesGSpin, m_midtonesBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -370,6 +379,9 @@ QWidget *InspectorPane::buildGradingTab()
     m_highlightsRSpin = new QDoubleSpinBox(highlightsGroup);
     m_highlightsGSpin = new QDoubleSpinBox(highlightsGroup);
     m_highlightsBSpin = new QDoubleSpinBox(highlightsGroup);
+    m_highlightsRSpin->setObjectName(QStringLiteral("grading.highlights.r"));
+    m_highlightsGSpin->setObjectName(QStringLiteral("grading.highlights.g"));
+    m_highlightsBSpin->setObjectName(QStringLiteral("grading.highlights.b"));
     for (QDoubleSpinBox *spin : {m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin}) {
         spin->setRange(-2.0, 2.0);
         spin->setDecimals(3);
@@ -400,6 +412,7 @@ QWidget *InspectorPane::buildGradingTab()
         "QTabBar::tab:selected { background:#223246; color:#dbe9f8; }"));
     curveChannelLayout->addWidget(m_gradingCurveChannelTabs, 1);
     m_gradingCurveChannelCombo = new QComboBox(m_gradingCurvesPanel);
+    m_gradingCurveChannelCombo->setObjectName(QStringLiteral("grading.curve.channel"));
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Red"));
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Green"));
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Blue"));
@@ -430,12 +443,14 @@ QWidget *InspectorPane::buildGradingTab()
     auto *curveOptionsLayout = new QHBoxLayout;
     m_gradingCurveThreePointLockCheckBox =
         new QCheckBox(QStringLiteral("Sync Lift/Gamma/Gain"), m_gradingCurvesPanel);
+    m_gradingCurveThreePointLockCheckBox->setObjectName(QStringLiteral("grading.curve.three_point_lock"));
     m_gradingCurveThreePointLockCheckBox->setChecked(false);
     m_gradingCurveThreePointLockCheckBox->setToolTip(QStringLiteral(
         "When enabled, the RGB Lift/Gamma/Gain numbers and the current curve channel stay linked "
         "as a three-point correction."));
     m_gradingCurveSmoothingCheckBox =
         new QCheckBox(QStringLiteral("Smooth"), m_gradingCurvesPanel);
+    m_gradingCurveSmoothingCheckBox->setObjectName(QStringLiteral("grading.curve.smoothing"));
     m_gradingCurveSmoothingCheckBox->setChecked(true);
     m_gradingCurveSmoothingCheckBox->setToolTip(QStringLiteral("Smooth curve interpolation"));
     curveOptionsLayout->addWidget(m_gradingCurveThreePointLockCheckBox);
@@ -443,6 +458,7 @@ QWidget *InspectorPane::buildGradingTab()
     curveOptionsLayout->addStretch();
 
     m_gradingHistogramWidget = new GradingHistogramWidget(m_gradingCurvesPanel);
+    m_gradingHistogramWidget->setObjectName(QStringLiteral("grading.curve.histogram"));
     m_gradingHistogramWidget->setMinimumHeight(180);
     m_gradingHistogramWidget->setMaximumHeight(220);
     m_gradingHistogramWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -492,6 +508,7 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingFadeDurationSpin->setToolTip(QStringLiteral("Fade duration in seconds"));
 
     m_gradingKeyframeTable = new QTableWidget(content);
+    m_gradingKeyframeTable->setObjectName(QStringLiteral("grading.keyframes"));
     m_gradingKeyframeTable->setColumnCount(5);
     m_gradingKeyframeTable->setHorizontalHeaderLabels({QStringLiteral("Frame"),
                                                        QStringLiteral("Bright"),

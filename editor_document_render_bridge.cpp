@@ -186,6 +186,8 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.audioGain = clip.audioGain;
         timelineClip.audioPan = clip.audioPan;
         timelineClip.audioSolo = clip.audioSolo;
+        timelineClip.audioDynamics = clip.audioDynamics;
+        timelineClip.audioDynamicsSet = clip.audioDynamicsSet;
         timelineClip.audioLinkedToVideo = clip.audioLinkedToVideo;
         timelineClip.fadeSamples = std::max(0, clip.fadeSamples);
         timelineClip.brightness = clip.brightness;

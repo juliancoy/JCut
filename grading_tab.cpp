@@ -20,6 +20,7 @@
 #include <QFormLayout>
 #include <QSpinBox>
 #include <cmath>
+#include <utility>
 namespace {
 using GradeProbeSample = jcut::EditorGradeProbeSampleCore;
 using OpposeGradeEvent = jcut::EditorOpposeGradeEventCore;
@@ -110,6 +111,36 @@ GradingTab::GradingTab(const Widgets& widgets, const Dependencies& deps, QObject
         m_deps.seekToTimelineFrame(m_pendingSeekTimelineFrame);
         m_pendingSeekTimelineFrame = -1;
     });
+}
+
+GradingTab::ActionScope::ActionScope(const Dependencies* deps,
+                                     QString actionId,
+                                     QJsonObject details)
+    : m_deps(deps)
+    , m_actionId(std::move(actionId))
+    , m_details(std::move(details))
+{
+    m_timer.start();
+}
+
+GradingTab::ActionScope::~ActionScope()
+{
+    if (m_deps && m_deps->recordUiAction && !m_actionId.isEmpty()) {
+        m_deps->recordUiAction(m_actionId, m_timer.elapsed(), m_details);
+    }
+}
+
+void GradingTab::ActionScope::addDetail(const QString& key, const QJsonValue& value)
+{
+    if (!key.isEmpty()) {
+        m_details.insert(key, value);
+    }
+}
+
+GradingTab::ActionScope GradingTab::profileAction(const QString& actionId,
+                                                  const QJsonObject& details) const
+{
+    return ActionScope(&m_gradingDeps, actionId, details);
 }
 
 void GradingTab::wire()
@@ -207,6 +238,7 @@ void GradingTab::wire()
 
 void GradingTab::refresh()
 {
+    auto profile = profileAction(QStringLiteral("grading.refresh"));
     if (!m_widgets.gradingPathLabel || !m_widgets.brightnessSpin || !m_widgets.contrastSpin ||
         !m_widgets.saturationSpin || !m_widgets.gradingKeyframeTable) {
         return;
@@ -309,10 +341,14 @@ void GradingTab::refresh()
 
 void GradingTab::applyGradeFromInspector(bool pushHistory)
 {
+    auto profile = profileAction(
+        QStringLiteral("grading.apply_from_inspector"),
+        QJsonObject{{QStringLiteral("push_history"), pushHistory}});
     if (m_updating) return;
 
     const TimelineClip* selectedClip = m_deps.getSelectedClip();
     if (!selectedClip || !m_deps.clipHasVisuals(*selectedClip)) return;
+    profile.addDetail(QStringLiteral("clip_id"), selectedClip->id);
 
     int64_t targetFrame = m_selectedKeyframeFrame;
     if (targetFrame < 0) {
@@ -383,13 +419,20 @@ void GradingTab::upsertKeyframeAtPlayhead()
 
 void GradingTab::syncTableToPlayhead()
 {
+    auto profile = profileAction(QStringLiteral("grading.sync_table_to_playhead"));
+    if (gradingEditorHasFocus()) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("grading_editor_has_focus"));
+        return;
+    }
     if (shouldSkipSyncToPlayhead(m_widgets.gradingKeyframeTable, m_widgets.gradingFollowCurrentCheckBox)) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("base_sync_skip"));
         return;
     }
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     if (!clip || !m_deps.clipHasVisuals(*clip) || m_widgets.gradingKeyframeTable->rowCount() <= 0) {
         m_widgets.gradingKeyframeTable->clearSelection();
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("no_visual_clip_or_rows"));
         return;
     }
 
@@ -409,6 +452,8 @@ void GradingTab::syncTableToPlayhead()
     if (matchingRow < 0) {
         matchingRow = 0;
     }
+    profile.addDetail(QStringLiteral("matching_row"), matchingRow);
+    profile.addDetail(QStringLiteral("local_frame"), static_cast<qint64>(localFrame));
 
     applySyncedRowSelection(m_widgets.gradingKeyframeTable,
                             matchingRow,
@@ -427,6 +472,38 @@ void GradingTab::syncTableToPlayhead()
         updateSpinBoxesFromKeyframe(evaluateDisplayedGrading(*clip, primaryFrame));
     }
     updateHistogramAndCurve();
+}
+
+bool GradingTab::gradingEditorHasFocus() const
+{
+    QWidget* focus = QApplication::focusWidget();
+    if (!focus) {
+        return false;
+    }
+    const QVector<QWidget*> controls{
+        m_widgets.brightnessSpin,
+        m_widgets.contrastSpin,
+        m_widgets.saturationSpin,
+        m_widgets.shadowsRSpin,
+        m_widgets.shadowsGSpin,
+        m_widgets.shadowsBSpin,
+        m_widgets.midtonesRSpin,
+        m_widgets.midtonesGSpin,
+        m_widgets.midtonesBSpin,
+        m_widgets.highlightsRSpin,
+        m_widgets.highlightsGSpin,
+        m_widgets.highlightsBSpin,
+        m_widgets.gradingCurveChannelCombo,
+        m_widgets.gradingCurveThreePointLockCheckBox,
+        m_widgets.gradingCurveSmoothingCheckBox,
+        m_widgets.gradingHistogramWidget
+    };
+    for (QWidget* control : controls) {
+        if (control && (focus == control || control->isAncestorOf(focus))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void GradingTab::onAutoScrollToggled(bool checked)

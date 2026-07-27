@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio_dynamics_core.h"
 #include "background_fill_effect.h"
 #include "timeline_fps.h"
 
@@ -309,6 +310,8 @@ struct TimelineClip {
     qreal audioGain = 1.0;
     qreal audioPan = 0.0;
     bool audioSolo = false;
+    jcut::audio::DynamicsSettingsCore audioDynamics;
+    bool audioDynamicsSet = false;
     bool audioLinkedToVideo = true;
     qint64 audioSourceLastVerifiedMs = 0;
     qreal sourceFps = static_cast<qreal>(kTimelineFps);

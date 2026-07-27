@@ -319,6 +319,14 @@ void ProjectManager::loadProjectsFromFolders()
     }
 }
 
+void ProjectManager::adoptLoadedProjectFromStartup(const QString& projectId)
+{
+    const QString trimmed = projectId.trimmed();
+    m_loadedRootDirPath = rootDirPath();
+    m_currentProjectId =
+        trimmed.isEmpty() ? QStringLiteral("default") : trimmed;
+}
+
 void ProjectManager::loadDefaultProjectFromFolders()
 {
     m_loadedRootDirPath = rootDirPath();

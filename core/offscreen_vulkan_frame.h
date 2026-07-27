@@ -2,11 +2,17 @@
 
 #include "geometry.h"
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 
 #include <vulkan/vulkan.h>
 
 namespace render_detail {
+
+struct OffscreenVulkanFrameConsumptionState {
+    std::atomic<std::uint64_t> completedGeneration{0};
+};
 
 // Neutral borrowed-frame contract shared by render backends and UI adapters.
 // Resource ownership remains with the producing renderer; consumers must finish
@@ -27,7 +33,17 @@ struct OffscreenVulkanFrame {
     int consumedSemaphoreFd = -1;
     std::uint32_t bufferIndex = 0;
     std::uint32_t memoryTypeIndex = UINT32_MAX;
+    VkDeviceSize memoryAllocationSize = 0;
+    // Logical producer lifetime. Vulkan handles may be numerically reused
+    // after a chunk renderer is destroyed, so handles alone cannot identify
+    // an imported allocation or its semaphore pair.
+    std::uint64_t producerSessionId = 0;
     std::uint64_t generation = 0;
+    // Same-process, host-visible mailbox acknowledgment. A producer may reuse
+    // a preview slot only after the consumer has queued its consumed semaphore
+    // signal and published this generation. Busy slots are dropped instead of
+    // ever placing an unresolved preview wait onto the export queue.
+    std::shared_ptr<OffscreenVulkanFrameConsumptionState> consumptionState;
     jcut::core::SizeI size;
     bool queueSupportsCompute = false;
     bool valid = false;

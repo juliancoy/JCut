@@ -863,6 +863,7 @@ set(JCUT_RUNTIME_SUPPORT_SOURCES
 )
 
 set(EDITOR_WIDGET_TEST_SUPPORT_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/action_profiler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/detector_settings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facefind_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform_qt_widgets.cpp
@@ -905,6 +906,7 @@ jcut_use_qt_widgets_headers_only(jcut_runtime_support)
 
 target_link_libraries(jcut_runtime_support
     PRIVATE
+        jcut_audio_dynamics_core
         jcut_preview_decode_runtime
         jcut_image_decode_core
     PUBLIC
@@ -1194,7 +1196,7 @@ add_executable(editor
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
 )
-target_link_libraries(editor PRIVATE editor_core)
+target_link_libraries(editor PRIVATE "$<LINK_GROUP:RESCAN,editor_core>")
 if(TARGET CPPMonetize::cppmonetize)
     target_link_libraries(editor PRIVATE CPPMonetize::cppmonetize)
 endif()

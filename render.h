@@ -15,6 +15,8 @@
 #include <QVector>
 
 #include <functional>
+#include <atomic>
+#include <memory>
 
 struct RenderProgress {
     int64_t framesCompleted = 0;
@@ -62,12 +64,16 @@ struct RenderProgress {
     QJsonObject renderStageTable;
     QJsonObject worstFrameTable;
     QJsonObject exportFaceTransformDiagnostics;
+    int incrementalChunksCompleted = 0;
+    int incrementalChunksTotal = 0;
+    int64_t incrementalFramesReused = 0;
+    QString incrementalCachePath;
 };
 
 struct RenderRequest {
     QString outputPath;
     QString outputFormat;
-    QString imageSequenceFormat;  // "jpeg", "webp", or empty for none
+    QString imageSequenceFormat;  // "png", "jpeg", "webp", or empty for none
     QSize outputSize;
     double outputFps = static_cast<double>(kTimelineFps);
     double playbackSpeed = 1.0;
@@ -76,6 +82,11 @@ struct RenderRequest {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
+    bool gpuExportPreviewEnabled = false;
+    std::shared_ptr<std::atomic_bool> gpuExportPreviewReady;
+    bool incrementalExport = true;
+    int incrementalChunkFrames = 900;
+    bool losslessIntermediateAudio = false;
     BackgroundFillEffect backgroundFillEffect{};
     qreal backgroundFillOpacity = 1.0;
     qreal backgroundFillBrightness = 0.0;
@@ -153,6 +164,10 @@ struct RenderResult {
     QJsonObject renderStageTable;
     QJsonObject worstFrameTable;
     QJsonObject exportFaceTransformDiagnostics;
+    int incrementalChunksCompleted = 0;
+    int incrementalChunksTotal = 0;
+    int64_t incrementalFramesReused = 0;
+    QString incrementalCachePath;
 };
 
 RenderResult renderTimelineToFile(const RenderRequest& request,

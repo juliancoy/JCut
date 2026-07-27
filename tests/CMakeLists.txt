@@ -266,6 +266,38 @@ set_tests_properties(test_vulkan_subtitle_render PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
+add_executable(test_incremental_render
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_incremental_render.cpp
+)
+target_link_libraries(test_incremental_render
+    PRIVATE
+        jcut_editor_runtime
+        Qt6::Test
+)
+jcut_force_bundled_ffmpeg_runtime(test_incremental_render)
+add_test(NAME test_incremental_render COMMAND test_incremental_render)
+set_tests_properties(test_incremental_render PROPERTIES
+    LABELS "render;gpu-soft"
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_executable(test_vulkan_preview_offline_export
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_preview_offline_export.cpp
+)
+target_link_libraries(test_vulkan_preview_offline_export
+    PRIVATE
+        jcut_editor_runtime
+        Qt6::Test
+)
+jcut_force_bundled_ffmpeg_runtime(test_vulkan_preview_offline_export)
+add_test(NAME test_vulkan_preview_offline_export
+    COMMAND test_vulkan_preview_offline_export)
+set_tests_properties(test_vulkan_preview_offline_export PROPERTIES
+    LABELS "render;gpu-soft;headless"
+    TIMEOUT 120
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
 add_test(NAME test_editor_core_excludes_vulkan_export_stub
     COMMAND ${CMAKE_COMMAND}
         -DARCHIVE=$<TARGET_FILE:editor_core>

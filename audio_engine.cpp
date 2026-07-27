@@ -53,6 +53,22 @@ bool anyAudioSolo(const QVector<TimelineClip> &clips,
   return false;
 }
 
+bool audioDynamicsProcessingEnabled(
+    const jcut::audio::DynamicsSettingsCore &settings) {
+  return settings.amplifyEnabled || settings.normalizeEnabled ||
+         settings.selectiveNormalizeEnabled || settings.peakReductionEnabled ||
+         settings.limiterEnabled || settings.compressorEnabled ||
+         settings.softClipEnabled || settings.stereoToMonoEnabled;
+}
+
+jcut::audio::DynamicsSettingsCore audioDynamicsForClip(
+    const TimelineClip &clip) {
+  if (!clip.audioDynamicsSet) {
+    return {};
+  }
+  return jcut::audio::normalizedDynamicsSettingsCore(clip.audioDynamics);
+}
+
 float mixerGainForClip(const TimelineClip &clip,
                        const QVector<TimelineTrack> &tracks,
                        bool soloActive) {
@@ -3553,6 +3569,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     bool usingPrecomputedTimeStretch = false;
     bool starvedThisChunk = false;
     bool starvationEnqueued = false;
+    jcut::audio::DynamicsSettingsCore dynamics;
   };
   QVector<PreparedClipAudio> preparedClips;
   preparedClips.reserve(context.clips.size());
@@ -3751,6 +3768,18 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         usingPrecomputedTimeStretch ? timeStretchSpeed : 1.0;
     prepared.usingPrecomputedTimeStretch = usingPrecomputedTimeStretch;
     prepared.linearSourceMapping = context.renderSyncMarkers.isEmpty();
+    prepared.dynamics = audioDynamicsForClip(clip);
+    if (audioDynamicsProcessingEnabled(prepared.dynamics) &&
+        !prepared.audio.samples.isEmpty()) {
+      jcut::audio::processAudioDynamicsCore(
+          prepared.audio.samples.data(),
+          static_cast<int>(prepared.audio.samples.size() /
+                           qMax(1, prepared.audio.channelCount)),
+          prepared.audio.channelCount,
+          prepared.audio.sampleRate > 0 ? prepared.audio.sampleRate
+                                        : m_sampleRate,
+          prepared.dynamics);
+    }
     preparedClips.push_back(prepared);
 
     if (usingPrecomputedTimeStretch) {
@@ -3772,8 +3801,6 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     }
   }
 
-  const bool transcriptNormalizeEnabled =
-      m_transcriptNormalizeEnabled.load(std::memory_order_acquire);
   const bool blockedWaitingForPlayableAudio = mixPrepareMustBlock(
       preparedClips.size(), cacheMissCount, invalidAudioCount);
   if (blockedWaitingForPlayableAudio) {
@@ -3786,10 +3813,13 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
 
   const QVector<ExportRangeSegment> transcriptNormalizeRanges =
       transcriptNormalizeRangesCopy();
-  if (transcriptNormalizeEnabled && !transcriptNormalizeRanges.isEmpty()) {
+  if (!transcriptNormalizeRanges.isEmpty()) {
     constexpr float kTranscriptNormalizeTargetLinear = 0.95f;
     constexpr float kMaxTranscriptNormalizeGain = 2.5f;
     for (PreparedClipAudio &prepared : preparedClips) {
+      if (!prepared.dynamics.transcriptNormalizeEnabled) {
+        continue;
+      }
       for (const ExportRangeSegment &range : transcriptNormalizeRanges) {
         const int64_t rangeStartSample =
             timelineFrameToSamples(range.startFrame);
@@ -4124,67 +4154,6 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       ++framesSourceNonzero;
     }
   }
-
-  const bool amplifyEnabled = m_amplifyEnabled.load(std::memory_order_acquire);
-  const qreal amplifyDb = m_amplifyDb.load(std::memory_order_acquire);
-  const bool normalizeEnabled =
-      m_normalizeEnabled.load(std::memory_order_acquire);
-  const qreal normalizeTargetDb =
-      m_normalizeTargetDb.load(std::memory_order_acquire);
-  const bool selectiveNormalizeEnabled =
-      m_selectiveNormalizeEnabled.load(std::memory_order_acquire);
-  const qreal selectiveNormalizeMinSegmentSeconds =
-      m_selectiveNormalizeMinSegmentSeconds.load(std::memory_order_acquire);
-  const qreal selectiveNormalizePeakDb =
-      m_selectiveNormalizePeakDb.load(std::memory_order_acquire);
-  const int selectiveNormalizePasses =
-      m_selectiveNormalizePasses.load(std::memory_order_acquire);
-  const bool peakReductionEnabled =
-      m_peakReductionEnabled.load(std::memory_order_acquire);
-  const qreal peakThresholdDb =
-      m_peakThresholdDb.load(std::memory_order_acquire);
-  const bool limiterEnabled = m_limiterEnabled.load(std::memory_order_acquire);
-  const qreal limiterThresholdDb =
-      m_limiterThresholdDb.load(std::memory_order_acquire);
-  const bool compressorEnabled =
-      m_compressorEnabled.load(std::memory_order_acquire);
-  const qreal compressorThresholdDb =
-      m_compressorThresholdDb.load(std::memory_order_acquire);
-  const qreal compressorRatio =
-      m_compressorRatio.load(std::memory_order_acquire);
-  const bool softClipEnabled =
-      m_softClipEnabled.load(std::memory_order_acquire);
-  const bool stereoToMonoEnabled =
-      m_stereoToMonoEnabled.load(std::memory_order_acquire);
-
-  jcut::audio::DynamicsSettingsCore sharedDynamics;
-  sharedDynamics.amplifyEnabled = amplifyEnabled;
-  sharedDynamics.amplifyDb = amplifyDb;
-  sharedDynamics.normalizeEnabled = normalizeEnabled;
-  sharedDynamics.normalizeTargetDb = normalizeTargetDb;
-  sharedDynamics.selectiveNormalizeEnabled =
-      selectiveNormalizeEnabled;
-  sharedDynamics.selectiveNormalizeMinSegmentSeconds =
-      selectiveNormalizeMinSegmentSeconds;
-  sharedDynamics.selectiveNormalizePeakDb =
-      selectiveNormalizePeakDb;
-  sharedDynamics.selectiveNormalizePasses =
-      selectiveNormalizePasses;
-  sharedDynamics.peakReductionEnabled = peakReductionEnabled;
-  sharedDynamics.peakThresholdDb = peakThresholdDb;
-  sharedDynamics.limiterEnabled = limiterEnabled;
-  sharedDynamics.limiterThresholdDb = limiterThresholdDb;
-  sharedDynamics.compressorEnabled = compressorEnabled;
-  sharedDynamics.compressorThresholdDb = compressorThresholdDb;
-  sharedDynamics.compressorRatio = compressorRatio;
-  sharedDynamics.softClipEnabled = softClipEnabled;
-  sharedDynamics.stereoToMonoEnabled = stereoToMonoEnabled;
-  jcut::audio::processAudioDynamicsCore(
-      output,
-      frames,
-      m_channelCount,
-      m_sampleRate,
-      sharedDynamics);
 
 #if 0
   auto dbToAmpLocal = [](float db) -> float {

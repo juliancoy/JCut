@@ -321,6 +321,12 @@ parent-child aggregate at one model boundary. Split, copy/paste, cut, delete, an
 orphan reconciliation follow the lifecycle contract in `MASKS.md`. These editing
 rules preserve the mapping; they do not create an additional runtime clock.
 
+An interactive razor click targets only the ordinary clip directly under the
+blade, plus that clip's owned generated children. Other selected clips, including
+an external audio clip, remain unsplit and retain their exact timeline placement
+and source mapping. Splitting multiple selected clips is a separate explicit
+operation exposed by Ctrl+B and the Edit menu.
+
 ## Subtitles And Transcript Follow
 
 Subtitles and transcript follow must use the same timeline/source mapping as video.

@@ -191,18 +191,41 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
     }
 
     auto it = decoders.find(path);
-    if (it == decoders.end()) {
+    auto createDecoder = [&]() -> editor::DecoderContext* {
         const QHash<int, AVBufferRef*>* sharedHwDevices =
             (!forceSoftwareDecode && asyncDecoder) ? asyncDecoder->sharedHwDevicesForDecoderContexts() : nullptr;
         editor::DecoderContext* ctx = new editor::DecoderContext(path, sharedHwDevices, forceSoftwareDecode);
         ctx->setPreferHardwareFrames(preferHardwareFrames);
         if (!ctx->initialize()) {
             delete ctx;
+            return nullptr;
+        }
+        return ctx;
+    };
+    if (it == decoders.end()) {
+        editor::DecoderContext* ctx = createDecoder();
+        if (!ctx) {
             return editor::FrameHandle();
         }
         it = decoders.insert(path, ctx);
     }
-    return it.value()->decodeFrame(frameNumber);
+    editor::FrameHandle frame = it.value()->decodeFrame(frameNumber);
+    if (!frame.isNull()) {
+        return frame;
+    }
+
+    // Export is definitive, not best-effort. Reopen a failed decoder once so
+    // a recoverable seek/codec state error cannot make an eligible layer
+    // disappear for a single output frame.
+    editor::DecoderContext* failedDecoder = it.value();
+    decoders.erase(it);
+    delete failedDecoder;
+    editor::DecoderContext* retryDecoder = createDecoder();
+    if (!retryDecoder) {
+        return editor::FrameHandle();
+    }
+    decoders.insert(path, retryDecoder);
+    return retryDecoder->decodeFrame(frameNumber);
 }
 
 QString avErrToString(int errnum) {

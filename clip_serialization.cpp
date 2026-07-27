@@ -350,6 +350,98 @@ QVector<QPointF> curvePointsFromJson(const QJsonValue& value)
     return points;
 }
 
+QJsonObject audioDynamicsToJson(
+    const jcut::audio::DynamicsSettingsCore& requested)
+{
+    const auto settings =
+        jcut::audio::normalizedDynamicsSettingsCore(requested);
+    QJsonObject object;
+    object[QStringLiteral("amplifyEnabled")] = settings.amplifyEnabled;
+    object[QStringLiteral("amplifyDb")] = settings.amplifyDb;
+    object[QStringLiteral("normalizeEnabled")] = settings.normalizeEnabled;
+    object[QStringLiteral("normalizeTargetDb")] = settings.normalizeTargetDb;
+    object[QStringLiteral("selectiveNormalizeEnabled")] =
+        settings.selectiveNormalizeEnabled;
+    object[QStringLiteral("selectiveNormalizeMinSegmentSeconds")] =
+        settings.selectiveNormalizeMinSegmentSeconds;
+    object[QStringLiteral("selectiveNormalizePeakDb")] =
+        settings.selectiveNormalizePeakDb;
+    object[QStringLiteral("selectiveNormalizePasses")] =
+        settings.selectiveNormalizePasses;
+    object[QStringLiteral("selectiveNormalizeOverlayVisible")] =
+        settings.selectiveNormalizeOverlayVisible;
+    object[QStringLiteral("transcriptNormalizeEnabled")] =
+        settings.transcriptNormalizeEnabled;
+    object[QStringLiteral("peakReductionEnabled")] =
+        settings.peakReductionEnabled;
+    object[QStringLiteral("peakThresholdDb")] = settings.peakThresholdDb;
+    object[QStringLiteral("limiterEnabled")] = settings.limiterEnabled;
+    object[QStringLiteral("limiterThresholdDb")] =
+        settings.limiterThresholdDb;
+    object[QStringLiteral("compressorEnabled")] =
+        settings.compressorEnabled;
+    object[QStringLiteral("compressorThresholdDb")] =
+        settings.compressorThresholdDb;
+    object[QStringLiteral("compressorRatio")] = settings.compressorRatio;
+    object[QStringLiteral("softClipEnabled")] = settings.softClipEnabled;
+    object[QStringLiteral("stereoToMonoEnabled")] =
+        settings.stereoToMonoEnabled;
+    object[QStringLiteral("waveformPreviewPostProcessing")] =
+        settings.waveformPreviewPostProcessing;
+    return object;
+}
+
+jcut::audio::DynamicsSettingsCore audioDynamicsFromJson(
+    const QJsonObject& object)
+{
+    jcut::audio::DynamicsSettingsCore settings;
+    settings.amplifyEnabled =
+        object.value(QStringLiteral("amplifyEnabled")).toBool(false);
+    settings.amplifyDb =
+        object.value(QStringLiteral("amplifyDb")).toDouble(0.0);
+    settings.normalizeEnabled =
+        object.value(QStringLiteral("normalizeEnabled")).toBool(false);
+    settings.normalizeTargetDb =
+        object.value(QStringLiteral("normalizeTargetDb")).toDouble(-1.0);
+    settings.selectiveNormalizeEnabled =
+        object.value(QStringLiteral("selectiveNormalizeEnabled")).toBool(false);
+    settings.selectiveNormalizeMinSegmentSeconds =
+        object.value(QStringLiteral("selectiveNormalizeMinSegmentSeconds"))
+            .toDouble(0.5);
+    settings.selectiveNormalizePeakDb =
+        object.value(QStringLiteral("selectiveNormalizePeakDb"))
+            .toDouble(-12.0);
+    settings.selectiveNormalizePasses =
+        object.value(QStringLiteral("selectiveNormalizePasses")).toInt(1);
+    settings.selectiveNormalizeOverlayVisible =
+        object.value(QStringLiteral("selectiveNormalizeOverlayVisible"))
+            .toBool(true);
+    settings.transcriptNormalizeEnabled =
+        object.value(QStringLiteral("transcriptNormalizeEnabled")).toBool(false);
+    settings.peakReductionEnabled =
+        object.value(QStringLiteral("peakReductionEnabled")).toBool(false);
+    settings.peakThresholdDb =
+        object.value(QStringLiteral("peakThresholdDb")).toDouble(-6.0);
+    settings.limiterEnabled =
+        object.value(QStringLiteral("limiterEnabled")).toBool(false);
+    settings.limiterThresholdDb =
+        object.value(QStringLiteral("limiterThresholdDb")).toDouble(-1.0);
+    settings.compressorEnabled =
+        object.value(QStringLiteral("compressorEnabled")).toBool(false);
+    settings.compressorThresholdDb =
+        object.value(QStringLiteral("compressorThresholdDb")).toDouble(-18.0);
+    settings.compressorRatio =
+        object.value(QStringLiteral("compressorRatio")).toDouble(3.0);
+    settings.softClipEnabled =
+        object.value(QStringLiteral("softClipEnabled")).toBool(false);
+    settings.stereoToMonoEnabled =
+        object.value(QStringLiteral("stereoToMonoEnabled")).toBool(false);
+    settings.waveformPreviewPostProcessing =
+        object.value(QStringLiteral("waveformPreviewPostProcessing"))
+            .toBool(true);
+    return jcut::audio::normalizedDynamicsSettingsCore(settings);
+}
+
 }
 
 QJsonObject clipToJson(const TimelineClip &clip)
@@ -378,6 +470,11 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("audioGain")] = clip.audioGain;
         obj[QStringLiteral("audioPan")] = clip.audioPan;
         obj[QStringLiteral("audioSolo")] = clip.audioSolo;
+        obj[QStringLiteral("audioDynamicsSet")] = clip.audioDynamicsSet;
+        if (clip.audioDynamicsSet) {
+            obj[QStringLiteral("audioDynamics")] =
+                audioDynamicsToJson(clip.audioDynamics);
+        }
         obj[QStringLiteral("audioLinkedToVideo")] = clip.audioLinkedToVideo;
         obj[QStringLiteral("audioSourceLastVerifiedMs")] = static_cast<qint64>(clip.audioSourceLastVerifiedMs);
         obj[QStringLiteral("sourceFps")] = clip.sourceFps;
@@ -752,6 +849,13 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.audioGain = qBound<qreal>(0.0, obj.value(QStringLiteral("audioGain")).toDouble(1.0), 4.0);
         clip.audioPan = qBound<qreal>(-1.0, obj.value(QStringLiteral("audioPan")).toDouble(0.0), 1.0);
         clip.audioSolo = obj.value(QStringLiteral("audioSolo")).toBool(false);
+        clip.audioDynamicsSet =
+            obj.value(QStringLiteral("audioDynamicsSet"))
+                .toBool(obj.contains(QStringLiteral("audioDynamics")));
+        if (obj.value(QStringLiteral("audioDynamics")).isObject()) {
+            clip.audioDynamics = audioDynamicsFromJson(
+                obj.value(QStringLiteral("audioDynamics")).toObject());
+        }
         clip.audioLinkedToVideo = obj.value(QStringLiteral("audioLinkedToVideo")).toBool(true);
         clip.audioSourceLastVerifiedMs =
             obj.value(QStringLiteral("audioSourceLastVerifiedMs")).toVariant().toLongLong();

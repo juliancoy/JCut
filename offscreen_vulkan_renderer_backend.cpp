@@ -43,6 +43,9 @@ extern "C" {
 namespace render_detail {
 namespace {
 
+constexpr std::uint64_t kExportGpuFenceTimeoutNs = 5'000'000'000ull;
+std::atomic<std::uint64_t> g_nextOffscreenProducerSessionId{1};
+
 QJsonObject rectDiagnosticObject(const QRectF &rect) {
   return QJsonObject{{QStringLiteral("x"), rect.x()},
                      {QStringLiteral("y"), rect.y()},
@@ -200,7 +203,10 @@ public:
     VkSemaphore consumedSemaphore = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t memoryTypeIndex = UINT32_MAX;
+    VkDeviceSize memoryAllocationSize = 0;
     std::uint64_t generation = 0;
+    std::shared_ptr<OffscreenVulkanFrameConsumptionState> consumptionState =
+        std::make_shared<OffscreenVulkanFrameConsumptionState>();
     bool published = false;
     bool handlesExported = false;
   };
@@ -241,6 +247,9 @@ public:
 
   bool initialize(const QSize &outputSize, QString *errorMessage) {
     release();
+    m_producerSessionId =
+        g_nextOffscreenProducerSessionId.fetch_add(
+            1, std::memory_order_relaxed);
 
     m_outputSize =
         QSize(qMax(16, outputSize.width()), qMax(16, outputSize.height()));
@@ -559,6 +568,7 @@ public:
         VkMemoryRequirements previewRequirements{};
         vkGetImageMemoryRequirements(m_device, slot.image,
                                      &previewRequirements);
+        slot.memoryAllocationSize = previewRequirements.size;
         const uint32_t previewMemoryType =
             findMemoryType(m_physicalDevice,
                            previewRequirements.memoryTypeBits,
@@ -568,6 +578,11 @@ public:
         previewExport.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
         previewExport.handleTypes =
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkMemoryDedicatedAllocateInfo previewDedicated{};
+        previewDedicated.sType =
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        previewDedicated.image = slot.image;
+        previewExport.pNext = &previewDedicated;
         VkMemoryAllocateInfo previewAllocation{};
         previewAllocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         previewAllocation.pNext = &previewExport;
@@ -2638,12 +2653,32 @@ public:
       }
       return false;
     }
-    const int previewIndex =
-        (m_lastPreviewSlotIndex + 1) % m_previewSlots.size();
-    PreviewSlot &slot = m_previewSlots[previewIndex];
-    if (slot.published) {
-      m_pendingPreviewWait = slot.consumedSemaphore;
+    int previewIndex = -1;
+    for (int offset = 1; offset <= m_previewSlots.size(); ++offset) {
+      const int candidate =
+          (m_lastPreviewSlotIndex + offset) % m_previewSlots.size();
+      const PreviewSlot &candidateSlot = m_previewSlots[candidate];
+      if (!candidateSlot.published ||
+          (candidateSlot.consumptionState &&
+           candidateSlot.consumptionState->completedGeneration.load(
+               std::memory_order_acquire) >= candidateSlot.generation)) {
+        previewIndex = candidate;
+        break;
+      }
     }
+    if (previewIndex < 0) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "GPU export preview dropped: both optional preview slots are busy.");
+      }
+      return false;
+    }
+    PreviewSlot &slot = m_previewSlots[previewIndex];
+    // Host acknowledgment proves that the prior consumed signal has already
+    // been queued. Preserve the semaphore wait for device ownership without
+    // ever enqueueing it for an unresponsive optional consumer.
+    m_pendingPreviewWait =
+        slot.published ? slot.consumedSemaphore : VK_NULL_HANDLE;
     m_pendingPreviewSignal = slot.readySemaphore;
 
     transitionImageLayout(m_commandBuffer, m_colorImage, m_colorImageLayout,
@@ -2769,10 +2804,21 @@ public:
     frame->consumedSemaphoreFd = consumedFd;
     frame->bufferIndex = static_cast<std::uint32_t>(previewIndex);
     frame->memoryTypeIndex = slot.memoryTypeIndex;
+    frame->memoryAllocationSize = slot.memoryAllocationSize;
+    frame->producerSessionId = m_producerSessionId;
     frame->generation = slot.generation;
+    frame->consumptionState = slot.consumptionState;
     frame->size = {m_outputSize.width(), m_outputSize.height()};
     frame->queueSupportsCompute = m_graphicsQueueSupportsCompute;
     frame->valid = true;
+    if (slot.generation == 1) {
+      qInfo().noquote()
+          << QStringLiteral(
+                 "[render-export-preview] published GPU slot=%1 "
+                 "producer_session=%2")
+                 .arg(previewIndex)
+                 .arg(m_producerSessionId);
+    }
     return true;
   }
 
@@ -2806,8 +2852,22 @@ public:
     }
     FrameSlot &slot = m_frameSlots[slotIndex];
     if (slot.inFlight) {
-      if (vkWaitForFences(m_device, 1, &slot.fence, VK_TRUE, UINT64_MAX) !=
-          VK_SUCCESS) {
+      const VkResult waitResult = vkWaitForFences(
+          m_device,
+          1,
+          &slot.fence,
+          VK_TRUE,
+          kExportGpuFenceTimeoutNs);
+      if (waitResult != VK_SUCCESS) {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "[vulkan-sync-timeout] stage=export_frame_slot "
+                   "slot=%1 timeout_ms=5000 result=%2 "
+                   "preview_wait_pending=%3 preview_signal_pending=%4")
+                   .arg(slotIndex)
+                   .arg(static_cast<int>(waitResult))
+                   .arg(m_pendingPreviewWait != VK_NULL_HANDLE)
+                   .arg(m_pendingPreviewSignal != VK_NULL_HANDLE);
         return false;
       }
       slot.inFlight = false;
@@ -2984,7 +3044,9 @@ public:
   QImage renderFrameFromLayers(const QVector<LayerInput> &layers,
                                const VulkanTextInputs &textInputs,
                                const FinalCompositeStretchInput &finalStretch,
-                               bool readbackToImage) {
+                               bool readbackToImage,
+                               OffscreenVulkanFrame *gpuPreviewFrame = nullptr,
+                               QString *gpuPreviewError = nullptr) {
     if (!m_initialized || m_device == VK_NULL_HANDLE ||
         m_commandBuffer == VK_NULL_HANDLE) {
       return QImage();
@@ -3374,32 +3436,6 @@ public:
       }
       return true;
     };
-    QSet<int> preparedTranscriptTextIndices;
-    if (m_transcriptTextRenderer && m_transcriptTextRenderer->isReady()) {
-      for (int i = 0; i < textInputs.transcripts.size(); ++i) {
-        const TranscriptTextInput &text = textInputs.transcripts.at(i);
-        if (m_transcriptTextRenderer->prepareTranscriptOverlayAtlas(
-                m_commandBuffer, m_outputSize, text.clip, text.layout,
-                text.outputRect, text.speakerTitle)) {
-          preparedTranscriptTextIndices.insert(i);
-        }
-      }
-    }
-    QSet<int> preparedTitle3DIndices;
-    if (m_transcriptTextRenderer && m_transcriptTextRenderer->isReady()) {
-      for (int i = 0; i < textInputs.title3D.size(); ++i) {
-        if (m_transcriptTextRenderer->prepareTitleOverlayAtlas(
-                m_commandBuffer, m_outputSize, textInputs.title3D.at(i))) {
-          preparedTitle3DIndices.insert(i);
-        }
-      }
-    }
-    const bool preparedSpeakerText =
-        textInputs.hasSpeakerLabel && m_speakerTextRenderer &&
-        m_speakerTextRenderer->isReady() &&
-        m_speakerTextRenderer->prepareSpeakerLabelAtlas(
-            m_commandBuffer, m_outputSize, textInputs.speakerLabel);
-
     int layerIndex = 0;
     while (layerIndex < layers.size()) {
       const int batchCount =
@@ -3873,32 +3909,79 @@ public:
       }
     }
 
-    if (!preparedTranscriptTextIndices.isEmpty() || !preparedTitle3DIndices.isEmpty() || preparedSpeakerText) {
-      vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
-                           VK_SUBPASS_CONTENTS_INLINE);
-      const QRectF outputTargetRect(QPointF(0.0, 0.0), QSizeF(m_outputSize));
-      for (int i = 0; i < textInputs.transcripts.size(); ++i) {
-        if (!preparedTranscriptTextIndices.contains(i)) {
+    const QRectF outputTargetRect(
+        QPointF(0.0, 0.0), QSizeF(m_outputSize));
+    auto finishTextDrawBeforeAtlasMutation = [&]() -> bool {
+      if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS ||
+          !submitAndWait()) {
+        return false;
+      }
+      vkResetCommandBuffer(m_commandBuffer, 0);
+      VkCommandBufferBeginInfo nextBegin{};
+      nextBegin.sType =
+          VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+      return vkBeginCommandBuffer(
+                 m_commandBuffer, &nextBegin) == VK_SUCCESS;
+    };
+    if (m_transcriptTextRenderer &&
+        m_transcriptTextRenderer->isReady()) {
+      bool textRendererDrawRecorded = false;
+      for (const TranscriptTextInput& text :
+           std::as_const(textInputs.transcripts)) {
+        if (textRendererDrawRecorded) {
+          if (!finishTextDrawBeforeAtlasMutation()) {
+            return QImage();
+          }
+          textRendererDrawRecorded = false;
+        }
+        if (!m_transcriptTextRenderer->prepareTranscriptOverlayAtlas(
+                m_commandBuffer, m_outputSize, text.clip, text.layout,
+                text.outputRect, text.speakerTitle)) {
           continue;
         }
-        const TranscriptTextInput &text = textInputs.transcripts.at(i);
+        vkCmdBeginRenderPass(
+            m_commandBuffer, &renderPassBeginInfo,
+            VK_SUBPASS_CONTENTS_INLINE);
         m_transcriptTextRenderer->drawTranscriptOverlay(
-            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
-            text.clip, text.layout, text.outputRect, text.speakerTitle);
+            m_commandBuffer, m_outputSize, m_outputSize,
+            outputTargetRect, text.clip, text.layout,
+            text.outputRect, text.speakerTitle);
+        vkCmdEndRenderPass(m_commandBuffer);
+        textRendererDrawRecorded = true;
       }
-      for (int i = 0; i < textInputs.title3D.size(); ++i) {
-        if (!preparedTitle3DIndices.contains(i)) {
+      for (const EvaluatedTitle& title :
+           std::as_const(textInputs.title3D)) {
+        if (textRendererDrawRecorded) {
+          if (!finishTextDrawBeforeAtlasMutation()) {
+            return QImage();
+          }
+          textRendererDrawRecorded = false;
+        }
+        if (!m_transcriptTextRenderer->prepareTitleOverlayAtlas(
+                m_commandBuffer, m_outputSize, title)) {
           continue;
         }
+        vkCmdBeginRenderPass(
+            m_commandBuffer, &renderPassBeginInfo,
+            VK_SUBPASS_CONTENTS_INLINE);
         m_transcriptTextRenderer->drawTitleOverlay3D(
-            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
-            textInputs.title3D.at(i));
+            m_commandBuffer, m_outputSize, m_outputSize,
+            outputTargetRect, title);
+        vkCmdEndRenderPass(m_commandBuffer);
+        textRendererDrawRecorded = true;
       }
-      if (preparedSpeakerText) {
-        m_speakerTextRenderer->drawSpeakerLabel(
-            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
-            textInputs.speakerLabel);
-      }
+    }
+    if (textInputs.hasSpeakerLabel && m_speakerTextRenderer &&
+        m_speakerTextRenderer->isReady() &&
+        m_speakerTextRenderer->prepareSpeakerLabelAtlas(
+            m_commandBuffer, m_outputSize,
+            textInputs.speakerLabel)) {
+      vkCmdBeginRenderPass(
+          m_commandBuffer, &renderPassBeginInfo,
+          VK_SUBPASS_CONTENTS_INLINE);
+      m_speakerTextRenderer->drawSpeakerLabel(
+          m_commandBuffer, m_outputSize, m_outputSize,
+          outputTargetRect, textInputs.speakerLabel);
       vkCmdEndRenderPass(m_commandBuffer);
     }
 
@@ -3983,6 +4066,18 @@ public:
                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    if (gpuPreviewFrame) {
+      m_commandBufferOpenForConversion = true;
+      const bool previewPublished =
+          publishLastFrameForGpuPreview(gpuPreviewFrame, gpuPreviewError);
+      m_commandBufferOpenForConversion = false;
+      if (previewPublished) {
+        transitionImageLayout(m_commandBuffer, m_colorImage,
+                              m_colorImageLayout,
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      }
+    }
     if (readbackToImage) {
       VkBufferImageCopy readbackRegion{};
       readbackRegion.bufferOffset = 0;
@@ -4718,6 +4813,12 @@ public:
       const QVector<TimelineClip> &orderedClips) {
     QVector<TranscriptTextInput> inputs;
     for (const TimelineClip &clip : orderedClips) {
+      if (!clip.transcriptOverlay.enabled ||
+          (clip.mediaType != ClipMediaType::Audio && !clip.hasAudio) ||
+          clock.timelineSample < clipTimelineStartSamples(clip) ||
+          clock.timelineSample >= clipTimelineEndSamples(clip)) {
+        continue;
+      }
       const QString transcriptPath =
           renderTranscriptPath(clip);
       if (transcriptPath.trimmed().isEmpty()) {
@@ -4975,6 +5076,7 @@ private:
   VkImageLayout m_colorImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   bool m_yuv420pPlanesPrimed = false;
   bool m_commandBufferOpenForConversion = false;
+  std::uint64_t m_producerSessionId = 0;
 };
 
 OffscreenVulkanRenderer::OffscreenVulkanRenderer()
@@ -5012,8 +5114,25 @@ QImage OffscreenVulkanRenderer::renderFrame(
   QJsonObject *exportFaceTransformDiagnostics =
       context.exportFaceTransformDiagnostics;
   Q_UNUSED(clipStageStats);
-  Q_UNUSED(skippedClips);
-  Q_UNUSED(skippedReasonCounts);
+  QStringList unresolvedVisualLayers;
+  auto recordUnresolvedLayer =
+      [&](const TimelineClip& clip, const QString& reason) {
+    unresolvedVisualLayers.push_back(
+        QStringLiteral("%1: %2")
+            .arg(clip.id.isEmpty() ? clip.label : clip.id, reason));
+    if (skippedClips) {
+      skippedClips->push_back(QJsonObject{
+          {QStringLiteral("clip_id"), clip.id},
+          {QStringLiteral("clip_label"), clip.label},
+          {QStringLiteral("reason"), reason},
+      });
+    }
+    if (skippedReasonCounts) {
+      skippedReasonCounts->insert(
+          reason,
+          skippedReasonCounts->value(reason).toInt() + 1);
+    }
+  };
 
   if (decodeMs) {
     *decodeMs = 0;
@@ -5145,12 +5264,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
       textInputs.title3D.push_back(title);
       continue;
     }
+    ++visualClipCandidates;
     const QString decodePath = playbackMediaPathForClip(mediaOwner);
     if (decodePath.isEmpty()) {
       ++decodePathMissingCount;
+      recordUnresolvedLayer(clip, QStringLiteral("decode_path_missing"));
       continue;
     }
-    ++visualClipCandidates;
     const ClipFrameMapping frameMapping =
         clipFrameMappingForClock(
             clip, request.clips, frameClock, request.renderSyncMarkers);
@@ -5159,6 +5279,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         decodeFrameForTimingOwner(timingOwner, decodePath, localFrame);
     if (frame.isNull()) {
       ++decodeNullCount;
+      recordUnresolvedLayer(clip, QStringLiteral("decode_frame_unavailable"));
       continue;
     }
     OffscreenVulkanRendererPrivate::LayerInput layer;
@@ -5175,6 +5296,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
           frame.hasCpuImage() ? frame.cpuImage() : frameHandleToCpuImage(frame);
       if (layerImage.isNull()) {
         ++decodeConvertFailCount;
+        recordUnresolvedLayer(clip, QStringLiteral("frame_conversion_failed"));
         continue;
       }
       layer.image = layerImage;
@@ -5199,7 +5321,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
       // its parent. It must never combine a requested source key with a
       // different bounded decode result (TIME.md).
       QImage mask = frame.frameNumber() >= 0
-          ? rawClipMaskImage(matteOwner, frame)
+          ? rawClipMaskImageBlocking(matteOwner, frame)
           : QImage{};
       if (generatedMaskMatte) {
         mask = applyCorrectionPolygonsToMaskImage(
@@ -5249,6 +5371,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     // A generated matte is never allowed to fall back to a full-frame copy
     // when its sidecar has no sample for this frame.
     if (generatedMaskMatte && !layer.maskTextureEnabled) {
+      --visualClipCandidates;
       continue;
     }
     const VulkanDrawEffectState layerEffects = vulkanDrawEffectStateForGrade(grade);
@@ -5320,6 +5443,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.midtones[3] = static_cast<float>(qBound<qreal>(0.0, effectClip.differenceThreshold, 1.0));
         layer.highlights[3] = static_cast<float>(qBound<qreal>(0.0, effectClip.differenceSoftness, 1.0));
         layer.maskTextureEnabled = false;
+      } else {
+        recordUnresolvedLayer(
+            clip, QStringLiteral("difference_reference_unavailable"));
       }
     }
     const VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
@@ -5532,7 +5658,11 @@ QImage OffscreenVulkanRenderer::renderFrame(
           const int64_t echoFrameNumber = qMax<int64_t>(0, localFrame - echoIndex * spacing);
           const editor::FrameHandle echoFrame = decodeFrameForTimingOwner(
               timingSource, decodePath, echoFrameNumber);
-          if (echoFrame.isNull()) continue;
+          if (echoFrame.isNull()) {
+            recordUnresolvedLayer(
+                clip, QStringLiteral("temporal_echo_frame_unavailable"));
+            continue;
+          }
           OffscreenVulkanRendererPrivate::LayerInput echoLayer = layer;
           echoLayer.frameHandle = echoFrame;
           echoLayer.referenceFrameHandle = {};
@@ -5635,9 +5765,17 @@ QImage OffscreenVulkanRenderer::renderFrame(
           textInputs.speakerLabel.organization);
     }
   }
-  if (visualClipCandidates > 0 && visualLayersResolved == 0) {
+  if (!unresolvedVisualLayers.isEmpty() ||
+      visualLayersResolved != visualClipCandidates) {
+    const QString failure = QStringLiteral(
+        "Vulkan export refused an incomplete composition at frame %1 "
+        "(resolved %2/%3): %4")
+        .arg(timelineFrame)
+        .arg(visualLayersResolved)
+        .arg(visualClipCandidates)
+        .arg(unresolvedVisualLayers.join(QStringLiteral("; ")));
     qWarning().noquote() << QStringLiteral(
-                                "[vulkan-compose] no visual layers resolved at "
+                                "[vulkan-compose] incomplete visual layers at "
                                 "frame=%1 candidates=%2 decode_path_missing=%3 "
                                 "decode_null=%4 convert_fail=%5")
                                 .arg(timelineFrame)
@@ -5645,6 +5783,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
                                 .arg(decodePathMissingCount)
                                 .arg(decodeNullCount)
                                 .arg(decodeConvertFailCount);
+    if (context.frameFailureReason) {
+      *context.frameFailureReason = failure;
+    }
     return QImage();
   }
   if (layers.isEmpty()) {
@@ -5660,7 +5801,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
   const QImage output = d->renderFrameFromLayers(layers,
                                                  textInputs,
                                                  finalCompositeStretch,
-                                                 shouldReadbackToImage);
+                                                 shouldReadbackToImage,
+                                                 context.gpuPreviewFrame,
+                                                 context.gpuPreviewError);
   if (compositeMs) {
     *compositeMs = (QDateTime::currentMSecsSinceEpoch() - renderStartMs);
   }
@@ -5709,7 +5852,11 @@ bool OffscreenVulkanRenderer::renderFrameToOutput(
   *output = OffscreenRenderFrame{};
   OffscreenRenderContext frameContext = context;
   frameContext.readbackMs = readbackToCpuImage ? context.readbackMs : nullptr;
+  frameContext.frameFailureReason = &output->failureReason;
   output->cpuImage = renderFrame(frameContext);
+  if (!output->failureReason.isEmpty()) {
+    return false;
+  }
   if (!frameContext.externalVulkanOutput) {
     const bool rendered = readbackToCpuImage
         ? !output->cpuImage.isNull()

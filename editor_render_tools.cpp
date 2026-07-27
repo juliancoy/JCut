@@ -1,6 +1,7 @@
 #include "editor.h"
 
 #include "background_fill_effect.h"
+#include "export_vulkan_preview_widget.h"
 #include "speaker_export_harness.h"
 #include "speaker_section_export_core.h"
 
@@ -28,6 +29,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -862,6 +864,11 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         renderSourcesList->setMinimumHeight(140);
         renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
 
+        auto* renderPreviewWidget =
+            new ExportVulkanPreviewWidget(progressDialog);
+        renderPreviewWidget->setMinimumWidth(
+            verticalRenderOutput ? 360 : 480);
+
         if (verticalRenderOutput) {
             auto *contentRow = new QHBoxLayout;
             contentRow->setSpacing(12);
@@ -873,8 +880,10 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             leftColumn->addWidget(renderSourcesList, 1);
 
             contentRow->addLayout(leftColumn, 3);
+            contentRow->addWidget(renderPreviewWidget, 2);
             progressLayout->addLayout(contentRow);
         } else {
+            progressLayout->addWidget(renderPreviewWidget);
             progressLayout->addWidget(renderStatusLabel);
             progressLayout->addWidget(renderSourcesLabel);
             progressLayout->addWidget(renderSourcesList);
@@ -897,6 +906,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         localControls.statusLabel = renderStatusLabel;
         localControls.sourcesList = renderSourcesList;
         localControls.progressBar = renderProgressBar;
+        localControls.previewWidget = renderPreviewWidget;
         localControls.cancelled = &localRenderCancelled;
         progressControls = &localControls;
         progressDialog->show();
@@ -906,6 +916,28 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     QLabel* renderStatusLabel = progressControls->statusLabel;
     QPlainTextEdit* renderSourcesList = progressControls->sourcesList;
     QProgressBar* renderProgressBar = progressControls->progressBar;
+    ExportVulkanPreviewWidget* renderPreviewWidget =
+        progressControls->previewWidget;
+    effectiveRequest.gpuExportPreviewEnabled =
+        renderPreviewWidget != nullptr;
+    if (renderPreviewWidget) {
+        effectiveRequest.gpuExportPreviewReady =
+            std::make_shared<std::atomic_bool>(false);
+        auto* previewReadyTimer = new QTimer(progressDialog);
+        previewReadyTimer->setInterval(16);
+        QObject::connect(
+            previewReadyTimer, &QTimer::timeout, progressDialog,
+            [renderPreviewWidget,
+             ready = effectiveRequest.gpuExportPreviewReady,
+             previewReadyTimer]() {
+                if (!renderPreviewWidget->isReady()) {
+                    return;
+                }
+                ready->store(true, std::memory_order_release);
+                previewReadyTimer->stop();
+            });
+        previewReadyTimer->start();
+    }
     std::atomic_bool* renderCancelled =
         progressControls->cancelled ? progressControls->cancelled
                                     : &localRenderCancelled;
@@ -956,14 +988,20 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     };
     const auto renderProfileFromProgress = [&formatEta](const RenderProgress &progress) -> QJsonObject
     {
-        const qint64 completedFrames = qMax<int64_t>(1, progress.framesCompleted);
+        const qint64 renderedThisRun =
+            qMax<int64_t>(
+                0, progress.framesCompleted -
+                       progress.incrementalFramesReused);
+        const qint64 completedFrames = qMax<int64_t>(1, renderedThisRun);
         const double fps = progress.elapsedMs > 0
-                               ? (1000.0 * static_cast<double>(progress.framesCompleted)) / static_cast<double>(progress.elapsedMs)
+                               ? (1000.0 * static_cast<double>(renderedThisRun)) / static_cast<double>(progress.elapsedMs)
                                : 0.0;
         return QJsonObject{
             {QStringLiteral("status"), QStringLiteral("running")},
             {QStringLiteral("output_path"), QString()},
             {QStringLiteral("frames_completed"), static_cast<qint64>(progress.framesCompleted)},
+            {QStringLiteral("frames_rendered_this_run"),
+             static_cast<qint64>(renderedThisRun)},
             {QStringLiteral("total_frames"), static_cast<qint64>(progress.totalFrames)},
             {QStringLiteral("segment_index"), progress.segmentIndex},
             {QStringLiteral("segment_count"), progress.segmentCount},
@@ -1007,6 +1045,14 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("render_stage_table"), progress.renderStageTable},
             {QStringLiteral("worst_frame_table"), progress.worstFrameTable},
             {QStringLiteral("export_face_transform"), progress.exportFaceTransformDiagnostics},
+            {QStringLiteral("incremental_chunks_completed"),
+             progress.incrementalChunksCompleted},
+            {QStringLiteral("incremental_chunks_total"),
+             progress.incrementalChunksTotal},
+            {QStringLiteral("incremental_frames_reused"),
+             static_cast<qint64>(progress.incrementalFramesReused)},
+            {QStringLiteral("incremental_cache_path"),
+             progress.incrementalCachePath},
             {QStringLiteral("render_stage_per_frame_ms"), static_cast<double>(progress.renderStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_decode_stage_per_frame_ms"), static_cast<double>(progress.renderDecodeStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_texture_stage_per_frame_ms"), static_cast<double>(progress.renderTextureStageMs) / static_cast<double>(completedFrames)},
@@ -1019,9 +1065,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     };
     const auto renderProfileFromResult = [&formatEta, &outputPath](const RenderResult &result) -> QJsonObject
     {
-        const qint64 completedFrames = qMax<int64_t>(1, result.framesRendered);
+        const qint64 renderedThisRun =
+            qMax<int64_t>(
+                0, result.framesRendered -
+                       result.incrementalFramesReused);
+        const qint64 completedFrames = qMax<int64_t>(1, renderedThisRun);
         const double fps = result.elapsedMs > 0
-                               ? (1000.0 * static_cast<double>(result.framesRendered)) / static_cast<double>(result.elapsedMs)
+                               ? (1000.0 * static_cast<double>(renderedThisRun)) / static_cast<double>(result.elapsedMs)
                                : 0.0;
         return QJsonObject{
             {QStringLiteral("status"), result.success ? QStringLiteral("completed")
@@ -1029,6 +1079,8 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                                                                           : QStringLiteral("failed"))},
             {QStringLiteral("output_path"), QDir::toNativeSeparators(outputPath)},
             {QStringLiteral("frames_completed"), static_cast<qint64>(result.framesRendered)},
+            {QStringLiteral("frames_rendered_this_run"),
+             static_cast<qint64>(renderedThisRun)},
             {QStringLiteral("total_frames"), static_cast<qint64>(result.framesRendered)},
             {QStringLiteral("segment_index"), 0},
             {QStringLiteral("segment_count"), 0},
@@ -1071,6 +1123,14 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("render_stage_table"), result.renderStageTable},
             {QStringLiteral("worst_frame_table"), result.worstFrameTable},
             {QStringLiteral("export_face_transform"), result.exportFaceTransformDiagnostics},
+            {QStringLiteral("incremental_chunks_completed"),
+             result.incrementalChunksCompleted},
+            {QStringLiteral("incremental_chunks_total"),
+             result.incrementalChunksTotal},
+            {QStringLiteral("incremental_frames_reused"),
+             static_cast<qint64>(result.incrementalFramesReused)},
+            {QStringLiteral("incremental_cache_path"),
+             result.incrementalCachePath},
             {QStringLiteral("render_stage_per_frame_ms"), static_cast<double>(result.renderStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_decode_stage_per_frame_ms"), static_cast<double>(result.renderDecodeStageMs) / static_cast<double>(completedFrames)},
             {QStringLiteral("render_texture_stage_per_frame_ms"), static_cast<double>(result.renderTextureStageMs) / static_cast<double>(completedFrames)},
@@ -1123,7 +1183,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     progressUiTimer.start();
     qint64 lastProgressUiUpdateMs = -1000;
     const auto handleProgress =
-        [this, renderStatusLabel, renderProgressBar,
+        [this, renderStatusLabel, renderProgressBar, renderPreviewWidget,
          renderSourcesList, renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
          activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs]
@@ -1131,13 +1191,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         {
             const qint64 nowMs = progressUiTimer.elapsed();
             if (progress.releaseGpuPreview) {
-                if (m_preview) {
-                    m_preview->clearGpuExportPreview();
+                if (renderPreviewWidget) {
+                    renderPreviewWidget->clearPreview();
                 }
                 return true;
             }
-            if (progress.gpuPreviewFrame.valid && m_preview) {
-                m_preview->setGpuExportPreviewFrame(
+            if (progress.gpuPreviewFrame.valid && renderPreviewWidget) {
+                renderPreviewWidget->setGpuPreviewFrame(
                     progress.gpuPreviewFrame);
             }
             const bool cancelled =
@@ -1168,6 +1228,10 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             const QString gpuTransferMetricLabel = progress.gpuTransferLabel.isEmpty()
                                                        ? QStringLiteral("GPU Transfer")
                                                        : progress.gpuTransferLabel;
+            const int64_t renderedThisRun =
+                qMax<int64_t>(
+                    0, progress.framesCompleted -
+                           progress.incrementalFramesReused);
             m_liveRenderProfile = renderProfileFromProgress(progress);
             m_liveRenderProfile[QStringLiteral("output_path")] = QDir::toNativeSeparators(outputPath);
             refreshProfileInspector();
@@ -1189,22 +1253,30 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                 "<td align='right'><b>Audio setup</b></td><td>%10 ms</td>"
                 "</tr>"
                 "</table>")
-                .arg(stageSummary(progress.renderStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.renderDecodeStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.renderTextureStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.renderCompositeStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.renderNv12StageMs, progress.framesCompleted))
+                .arg(stageSummary(progress.renderStageMs, renderedThisRun))
+                .arg(stageSummary(progress.renderDecodeStageMs, renderedThisRun))
+                .arg(stageSummary(progress.renderTextureStageMs, renderedThisRun))
+                .arg(stageSummary(progress.renderCompositeStageMs, renderedThisRun))
+                .arg(stageSummary(progress.renderNv12StageMs, renderedThisRun))
                 .arg(gpuTransferMetricLabel)
-                .arg(stageSummary(progress.gpuReadbackMs, progress.framesCompleted))
-                .arg(stageSummary(progress.convertStageMs, progress.framesCompleted))
-                .arg(stageSummary(progress.encodeStageMs, progress.framesCompleted))
+                .arg(stageSummary(progress.gpuReadbackMs, renderedThisRun))
+                .arg(stageSummary(progress.convertStageMs, renderedThisRun))
+                .arg(stageSummary(progress.encodeStageMs, renderedThisRun))
                 .arg(progress.audioSetupMs);
             if (renderStatusLabel) {
+                const QString checkpointStatus =
+                    progress.incrementalChunksTotal > 0
+                    ? QStringLiteral(
+                          "<br>Checkpoint %1/%2 | %3 frames reused")
+                          .arg(progress.incrementalChunksCompleted)
+                          .arg(progress.incrementalChunksTotal)
+                          .arg(progress.incrementalFramesReused)
+                    : QString();
                 renderStatusLabel->setText(
                     QStringLiteral("<b>Rendering frame %1 of %2</b><br>"
                                    "Segment %3/%4: %5-%6<br>"
                                    "%7 | %8 (%9)<br>"
-                                   "ETA: %10<br>%11")
+                                   "ETA: %10%11<br>%12")
                         .arg(progress.framesCompleted + 1)
                         .arg(qMax<int64_t>(1, progress.totalFrames))
                         .arg(progress.segmentIndex)
@@ -1215,6 +1287,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                         .arg(encoderMode)
                         .arg(encoderLabel)
                         .arg(formatEta(progress.estimatedRemainingMs))
+                        .arg(checkpointStatus)
                         .arg(metricsTable));
             }
             if (renderSourcesList) {
@@ -1248,12 +1321,11 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                         return false;
                     }
 
-                    if (progress.gpuPreviewFrame.valid ||
-                        progress.releaseGpuPreview) {
+                    if (progress.releaseGpuPreview) {
                         bool continueRendering = false;
                         QMetaObject::invokeMethod(
                             this,
-                            [progressDispatch, &progress,
+                            [progressDispatch, progress,
                              &continueRendering]() {
                                 if (progressDispatch->handler) {
                                     continueRendering =
@@ -1262,6 +1334,19 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                             },
                             Qt::BlockingQueuedConnection);
                         return continueRendering;
+                    }
+                    if (progress.gpuPreviewFrame.valid) {
+                        QMetaObject::invokeMethod(
+                            this,
+                            [progressDispatch, progress]() {
+                                if (progressDispatch->handler) {
+                                    progressDispatch->handler(progress);
+                                }
+                            },
+                            Qt::QueuedConnection);
+                        return !renderCancelled ||
+                            !renderCancelled->load(
+                                std::memory_order_relaxed);
                     }
 
                     bool postUpdate = false;
@@ -1300,6 +1385,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         }));
     renderEventLoop.exec();
     const RenderResult result = renderWatcher.result();
+    if (renderPreviewWidget) {
+        renderPreviewWidget->clearPreview();
+    }
     progressDispatch->handler = {};
     {
         std::lock_guard<std::mutex> lock(progressDispatch->mutex);
@@ -1764,6 +1852,10 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     renderSourcesList->setMinimumHeight(120);
     renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
 
+    auto* renderPreviewWidget =
+        new ExportVulkanPreviewWidget(&bulkDialog);
+    renderPreviewWidget->setMinimumWidth(420);
+
     auto* jobTable = new QTableWidget(jobs.size(), 4, &bulkDialog);
     jobTable->setHorizontalHeaderLabels({
         QStringLiteral("#"),
@@ -1813,6 +1905,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     leftColumn->addWidget(renderSourcesLabel);
     leftColumn->addWidget(renderSourcesList, 1);
     contentRow->addLayout(leftColumn, 3);
+    contentRow->addWidget(renderPreviewWidget, 2);
     bulkLayout->addLayout(contentRow);
     bulkLayout->addWidget(jobTable, 1);
 
@@ -1837,6 +1930,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     bulkControls.statusLabel = renderStatusLabel;
     bulkControls.sourcesList = renderSourcesList;
     bulkControls.progressBar = renderProgressBar;
+    bulkControls.previewWidget = renderPreviewWidget;
     bulkControls.cancelled = &bulkCancelled;
     bulkControls.closeOnFinish = false;
     bulkDialog.show();

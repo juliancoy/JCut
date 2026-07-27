@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -63,13 +64,27 @@ QString maskSidecarIdForClip(const TimelineClip& clip)
 
 void MaskTab::wire()
 {
+    if (!m_treatmentEditTimer) {
+        m_treatmentEditTimer = new QTimer(this);
+        m_treatmentEditTimer->setSingleShot(true);
+        m_treatmentEditTimer->setInterval(75);
+        connect(m_treatmentEditTimer, &QTimer::timeout, this, [this]() {
+            const bool zLevelEdited = m_pendingTreatmentZLevelEdited;
+            m_pendingTreatmentZLevelEdited = false;
+            applyTreatmentEdit(false, zLevelEdited);
+        });
+    }
     auto connectApply = [this](auto* widget) {
         if (widget) {
             connect(widget, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
-                apply(false);
+                scheduleTreatmentEdit(false);
             });
             connect(widget, &QDoubleSpinBox::editingFinished, this, [this]() {
-                apply(true);
+                if (m_treatmentEditTimer) {
+                    m_treatmentEditTimer->stop();
+                }
+                m_pendingTreatmentZLevelEdited = false;
+                applyTreatmentEdit(true);
             });
         }
     };
@@ -127,9 +142,15 @@ void MaskTab::wire()
     }
     if (m_widgets.zLevelSpin) {
         connect(m_widgets.zLevelSpin, qOverload<int>(&QSpinBox::valueChanged),
-                this, [this](int) { apply(false, true); });
+                this, [this](int) { scheduleTreatmentEdit(true); });
         connect(m_widgets.zLevelSpin, &QSpinBox::editingFinished,
-                this, [this]() { apply(true, true); });
+                this, [this]() {
+                    if (m_treatmentEditTimer) {
+                        m_treatmentEditTimer->stop();
+                    }
+                    m_pendingTreatmentZLevelEdited = false;
+                    applyTreatmentEdit(true, true);
+                });
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
                              m_widgets.showOnlyCheck,
@@ -487,6 +508,71 @@ void MaskTab::apply(bool pushHistory, bool zLevelEdited)
         return;
     }
     applyTabEditEffects(maskEditCallbacks(m_deps), TabEditEffects{.pushHistory = pushHistory});
+}
+
+void MaskTab::scheduleTreatmentEdit(bool zLevelEdited)
+{
+    if (m_updating) {
+        return;
+    }
+    m_pendingTreatmentZLevelEdited = m_pendingTreatmentZLevelEdited || zLevelEdited;
+    if (!m_treatmentEditTimer) {
+        applyTreatmentEdit(false, m_pendingTreatmentZLevelEdited);
+        m_pendingTreatmentZLevelEdited = false;
+        return;
+    }
+    m_treatmentEditTimer->start();
+}
+
+void MaskTab::applyTreatmentEdit(bool commit, bool zLevelEdited)
+{
+    if (m_updating || !m_deps.updateClipById) {
+        return;
+    }
+    const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip ||
+        selectedClip->clipRole != ClipRole::MaskMatte ||
+        selectedClip->mediaType != ClipMediaType::Video) {
+        return;
+    }
+
+    const QString id = selectedClip->id;
+    const bool updated = m_deps.updateClipById(
+        id,
+        [this, zLevelEdited](TimelineClip& clip) {
+            if (zLevelEdited && m_widgets.zLevelSpin) {
+                clip.zLevel = m_widgets.zLevelSpin->value();
+                clip.zLevelUserSet = true;
+            }
+            clip.maskFeather = m_widgets.featherSpin ? m_widgets.featherSpin->value() : 0.0;
+            clip.maskFeatherGamma = m_widgets.featherPowerSpin ? m_widgets.featherPowerSpin->value() : 2.0;
+            clip.maskFeatherFalloff = m_widgets.featherFalloffCombo
+                ? qBound(0, m_widgets.featherFalloffCombo->currentData().toInt(), 5) : 0;
+            clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
+            clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
+            clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
+            clip.maskOpacity = m_widgets.opacitySpin ? m_widgets.opacitySpin->value() : 1.0;
+            clip.maskRepeatDeltaX =
+                m_widgets.repeatDeltaXSpin ? m_widgets.repeatDeltaXSpin->value() : 160.0;
+            clip.maskRepeatDeltaY =
+                m_widgets.repeatDeltaYSpin ? m_widgets.repeatDeltaYSpin->value() : 0.0;
+            clip.maskDropShadowRadius =
+                m_widgets.shadowRadiusSpin ? m_widgets.shadowRadiusSpin->value() : 12.0;
+            clip.maskDropShadowOffsetX =
+                m_widgets.shadowOffsetXSpin ? m_widgets.shadowOffsetXSpin->value() : 0.0;
+            clip.maskDropShadowOffsetY =
+                m_widgets.shadowOffsetYSpin ? m_widgets.shadowOffsetYSpin->value() : 4.0;
+            clip.maskDropShadowOpacity =
+                m_widgets.shadowOpacitySpin ? m_widgets.shadowOpacitySpin->value() : 0.45;
+        });
+    if (!updated) {
+        return;
+    }
+
+    applyTabEditEffects(maskEditCallbacks(m_deps),
+                        TabEditEffects{.refreshInspector = commit,
+                                       .scheduleSave = commit,
+                                       .pushHistory = commit});
 }
 
 void MaskTab::setControlsEnabled(bool enabled)

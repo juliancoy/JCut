@@ -22,6 +22,7 @@ private slots:
   void testSpeechFilterRangesAreDerivedFromExportRanges();
   void testSpeechFilterFadeModesShapeBoundaryGain();
   void testSpliceSecondaryTapStopsAtClipEnd();
+  void testAudioDynamicsAreAppliedPerClipBeforeMix();
   void testTrackGainMuteAndSoloAffectMix();
   void testExportMixerUsesPreviewClipFadePolicy();
   void testTimelineStateAtFrameRejectsStaleMixerGeneration();
@@ -378,6 +379,39 @@ void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {
            qPrintable(QStringLiteral("expected near-silence at crossfade "
                                      "tail, got %1")
                           .arg(lastFrameValue)));
+}
+
+void TestAudioMixPolicy::testAudioDynamicsAreAppliedPerClipBeforeMix() {
+  AudioEngine engine;
+  const QString pathA = QStringLiteral("/tmp/jcut_mix_policy_dynamics_a.wav");
+  const QString pathB = QStringLiteral("/tmp/jcut_mix_policy_dynamics_b.wav");
+
+  AudioEngine::MixContext context;
+  TimelineClip clipA = makeAudioClip(QStringLiteral("a"), pathA, 0, 30);
+  clipA.audioDynamicsSet = true;
+  clipA.audioDynamics.amplifyEnabled = true;
+  clipA.audioDynamics.amplifyDb = 6.0206;
+  TimelineClip clipB = makeAudioClip(QStringLiteral("b"), pathB, 0, 30);
+  context.clips.push_back(clipA);
+  context.clips.push_back(clipB);
+  context.tracks.resize(1);
+  context.volume = 1.0;
+
+  PreviewSurface::AudioDynamicsSettings obsoleteGlobal;
+  obsoleteGlobal.amplifyEnabled = true;
+  obsoleteGlobal.amplifyDb = 12.0;
+  engine.setAudioDynamicsSettings(obsoleteGlobal);
+
+  {
+    std::lock_guard<std::mutex> lock(engine.m_stateMutex);
+    engine.m_audioCache.insert(pathA, makeCacheEntry(0, 48000, 0.1f));
+    engine.m_audioCache.insert(pathB, makeCacheEntry(0, 48000, 0.2f));
+  }
+
+  QVector<float> output(1024 * 2, 0.0f);
+  QVERIFY(engine.mixChunk(context, output.data(), 1024, 0, 1.0, 1.0));
+  QVERIFY(std::abs(output[512 * 2] - 0.4f) < 0.02f);
+  QVERIFY(std::abs(output[512 * 2 + 1] - 0.4f) < 0.02f);
 }
 
 void TestAudioMixPolicy::testTrackGainMuteAndSoloAffectMix() {

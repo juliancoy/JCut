@@ -562,7 +562,13 @@ bool initializeExportAudio(const RenderRequest& request,
     qDebug() << "Audio export:" << decodedCount << "clip(s) decoded successfully," << failedCount << "failed";
 
     QString codecLabel;
-    const AVCodec* audioCodec = audioCodecForRequest(request.outputFormat, &codecLabel);
+    const AVCodec* audioCodec = nullptr;
+    if (request.losslessIntermediateAudio) {
+        codecLabel = QStringLiteral("pcm_s16le");
+        audioCodec = avcodec_find_encoder(AV_CODEC_ID_PCM_S16LE);
+    } else {
+        audioCodec = audioCodecForRequest(request.outputFormat, &codecLabel);
+    }
     if (!audioCodec) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("No audio encoder available for format %1.").arg(request.outputFormat);

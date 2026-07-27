@@ -43,11 +43,66 @@ struct FrameIndexMapInspection {
     QString mapSha256;
 };
 
+struct CachedMaskSidecarInspection {
+    QString signature;
+    MaskSidecar sidecar;
+};
+
 constexpr qint64 kIdentityHashBytes = 1024 * 1024;
 constexpr qint64 kSourceHashChunkBytes = 4 * 1024 * 1024;
 constexpr int kSourceHashCacheEntries = 8;
 const QString kSourceIdentitySchema =
     QStringLiteral("jcut_source_content_identity_v1");
+QMutex g_maskSidecarInspectionCacheMutex;
+QHash<QString, CachedMaskSidecarInspection> g_maskSidecarInspectionCache;
+
+QString maskSidecarInspectionSignature(const QString& directory,
+                                       const QString& sourceMediaPath)
+{
+    QStringList fields;
+    const auto appendStat = [&fields](const QString& path) {
+        struct stat fileStat {};
+        const QByteArray encoded = QFile::encodeName(path);
+        if (::stat(encoded.constData(), &fileStat) != 0) {
+            fields.push_back(QStringLiteral("missing"));
+            return;
+        }
+#if defined(__APPLE__)
+        const qint64 modifiedNanoseconds =
+            static_cast<qint64>(fileStat.st_mtimespec.tv_sec) * 1000000000LL +
+            fileStat.st_mtimespec.tv_nsec;
+        const qint64 changedNanoseconds =
+            static_cast<qint64>(fileStat.st_ctimespec.tv_sec) * 1000000000LL +
+            fileStat.st_ctimespec.tv_nsec;
+#else
+        const qint64 modifiedNanoseconds =
+            static_cast<qint64>(fileStat.st_mtim.tv_sec) * 1000000000LL +
+            fileStat.st_mtim.tv_nsec;
+        const qint64 changedNanoseconds =
+            static_cast<qint64>(fileStat.st_ctim.tv_sec) * 1000000000LL +
+            fileStat.st_ctim.tv_nsec;
+#endif
+        fields.push_back(
+            QStringLiteral("%1:%2:%3:%4:%5")
+                .arg(static_cast<qulonglong>(fileStat.st_dev))
+                .arg(static_cast<qulonglong>(fileStat.st_ino))
+                .arg(static_cast<qlonglong>(fileStat.st_size))
+                .arg(modifiedNanoseconds)
+                .arg(changedNanoseconds));
+    };
+
+    const QDir dir(directory);
+    appendStat(dir.absolutePath());
+    appendStat(dir.filePath(QStringLiteral("jcut_frame_map.tsv")));
+    appendStat(dir.filePath(QStringLiteral("jcut_frame_map.json")));
+    appendStat(dir.filePath(QStringLiteral("jcut_mask.json")));
+    appendStat(dir.filePath(QStringLiteral("jcut_alpha.json")));
+    appendStat(dir.filePath(QStringLiteral("jcut_alpha_run.json")));
+    if (!sourceMediaPath.trimmed().isEmpty()) {
+        appendStat(QFileInfo(sourceMediaPath).absoluteFilePath());
+    }
+    return fields.join(QLatin1Char('|'));
+}
 
 QJsonObject readJsonObject(const QString& path)
 {
@@ -420,8 +475,7 @@ FrameIndexMapInspection inspectFrameIndexMap(const QDir& directory)
         if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
             continue;
         }
-        const QStringList fields = line.split(
-            QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        const QStringList fields = line.split(QLatin1Char('\t'));
         bool sourceOk = false;
         bool sourcePresentationTimestampOk = false;
         bool maskOk = false;
@@ -768,6 +822,22 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
         return sidecar;
     }
     const QDir dir(dirInfo.absoluteFilePath());
+    const QString normalizedSourcePath = sourceMediaPath.trimmed().isEmpty()
+        ? QString()
+        : QFileInfo(sourceMediaPath).absoluteFilePath();
+    const QString cacheKey =
+        dir.absolutePath() + QLatin1Char('\n') + mediaStem +
+        QLatin1Char('\n') + normalizedSourcePath;
+    const QString cacheSignature =
+        maskSidecarInspectionSignature(dir.absolutePath(), sourceMediaPath);
+    {
+        QMutexLocker lock(&g_maskSidecarInspectionCacheMutex);
+        const auto cached = g_maskSidecarInspectionCache.constFind(cacheKey);
+        if (cached != g_maskSidecarInspectionCache.cend() &&
+            cached->signature == cacheSignature) {
+            return cached->sidecar;
+        }
+    }
     const FrameIndexMapInspection map = inspectFrameIndexMap(dir);
     const int64_t expectedOrdinalFrameCount = map.lastMaskFrame + 1;
     const bool trackOrdinalCoverage = map.populated &&
@@ -779,12 +849,11 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     int64_t seenOrdinalFrameCount = 0;
     bool ordinalCoverageValid = trackOrdinalCoverage;
     const QRegularExpression framePattern(QStringLiteral("^frame_(\\d+)\\.png$"));
-    QDirIterator frames(dir.absolutePath(),
-                        QStringList{QStringLiteral("frame_*.png")},
-                        QDir::Files | QDir::NoSymLinks);
-    while (frames.hasNext()) {
-        const QFileInfo frameInfo(frames.next());
-        const QString frameName = frameInfo.fileName();
+    const QStringList frameNames = dir.entryList(
+        QStringList{QStringLiteral("frame_*.png")},
+        QDir::Files | QDir::NoSymLinks,
+        QDir::Name);
+    for (const QString& frameName : frameNames) {
         const QRegularExpressionMatch match = framePattern.match(frameName);
         if (!match.hasMatch()) {
             continue;
@@ -807,7 +876,6 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
                 frame, 6, 10, QLatin1Char('0'));
             if (frameName != canonicalName || zeroBasedFrame < 0 ||
                 zeroBasedFrame >= expectedOrdinalFrameCount ||
-                frameInfo.size() <= 0 ||
                 seenOrdinalFrames.testBit(static_cast<int>(zeroBasedFrame))) {
                 ordinalCoverageValid = false;
             } else {
@@ -891,6 +959,11 @@ MaskSidecar inspectMaskSidecar(const QString& directory,
     }
     if (sidecar.displayName.isEmpty()) {
         sidecar.displayName = QStringLiteral("Generated mask");
+    }
+    {
+        QMutexLocker lock(&g_maskSidecarInspectionCacheMutex);
+        g_maskSidecarInspectionCache.insert(
+            cacheKey, CachedMaskSidecarInspection{cacheSignature, sidecar});
     }
     return sidecar;
 }

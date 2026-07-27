@@ -413,6 +413,8 @@ struct EditorClip {
     double audioGain = 1.0;
     double audioPan = 0.0;
     bool audioSolo = false;
+    audio::DynamicsSettingsCore audioDynamics;
+    bool audioDynamicsSet = false;
     bool audioLinkedToVideo = true;
     double brightness = 0.0;
     double contrast = 1.0;

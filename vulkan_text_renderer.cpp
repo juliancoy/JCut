@@ -118,6 +118,7 @@ ResolvedFontFace cachedResolvedFontFace(const QString& family, bool bold)
 
 struct FaceGuard {
     FT_Face face = nullptr;
+    QByteArray fontData;
     ~FaceGuard()
     {
         if (face) {
@@ -125,6 +126,31 @@ struct FaceGuard {
         }
     }
 };
+
+QByteArray cachedFontData(const QString& path)
+{
+    static QMutex mutex;
+    static QHash<QString, QByteArray> cache;
+    {
+        QMutexLocker locker(&mutex);
+        const auto it = cache.constFind(path);
+        if (it != cache.constEnd()) {
+            return it.value();
+        }
+    }
+
+    QFile file(path);
+    const QByteArray loaded = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+    {
+        QMutexLocker locker(&mutex);
+        const auto existing = cache.constFind(path);
+        if (existing != cache.constEnd()) {
+            return existing.value();
+        }
+        cache.insert(path, loaded);
+        return loaded;
+    }
+}
 
 bool loadFace(const QString& family, bool bold, int pixelSize, FaceGuard* guard)
 {
@@ -135,8 +161,13 @@ bool loadFace(const QString& family, bool bold, int pixelSize, FaceGuard* guard)
     if (resolved.path.isEmpty()) {
         return false;
     }
-    const QByteArray pathUtf8 = resolved.path.toUtf8();
-    if (FT_New_Face(ftLibraryHolder().library, pathUtf8.constData(), resolved.faceIndex, &guard->face) != 0 ||
+    guard->fontData = cachedFontData(resolved.path);
+    if (guard->fontData.isEmpty() ||
+        FT_New_Memory_Face(ftLibraryHolder().library,
+                           reinterpret_cast<const FT_Byte*>(guard->fontData.constData()),
+                           static_cast<FT_Long>(guard->fontData.size()),
+                           resolved.faceIndex,
+                           &guard->face) != 0 ||
         !guard->face) {
         return false;
     }
@@ -2017,14 +2048,29 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
     if (rebuilt.valid && title.vulkan3DExtrudeEnabled &&
         title.textExtrudeMode != TextExtrudeMode::None &&
         title.vulkan3DExtrudeDepth > 0.001) {
-        rebuilt.meshVertices = buildExtrudedTitleMesh(
-            title.text,
-            TitleMeshExtrusionOptions{title.fontFamily, title.bold,
-                                      qBound(24, qRound(title.fontSize * 2.0), 256),
-                                      title.vulkan3DExtrudeDepth,
-                                      title.textExtrudeMode == TextExtrudeMode::ErodedSolid
-                                          ? title.vulkan3DBevelScale : 0.0},
-            nullptr);
+        const TitleMeshExtrusionOptions meshOptions{
+            title.fontFamily,
+            title.bold,
+            qBound(24, qRound(title.fontSize * 2.0), 256),
+            title.vulkan3DExtrudeDepth,
+            title.textExtrudeMode == TextExtrudeMode::ErodedSolid
+                ? title.vulkan3DBevelScale
+                : 0.0};
+        const QString meshMaterial =
+            title.text + QLatin1Char('|') +
+            meshOptions.fontFamily + QLatin1Char('|') +
+            QString::number(meshOptions.bold ? 1 : 0) + QLatin1Char('|') +
+            QString::number(meshOptions.pixelHeight) + QLatin1Char('|') +
+            QString::number(meshOptions.depth, 'f', 3) + QLatin1Char('|') +
+            QString::number(meshOptions.bevelScale, 'f', 3);
+        rebuilt.meshKey = QString::fromLatin1(
+            QCryptographicHash::hash(meshMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
+        if (m_titleLayoutCache.valid && m_titleLayoutCache.meshKey == rebuilt.meshKey) {
+            rebuilt.meshVertices = m_titleLayoutCache.meshVertices;
+        } else {
+            rebuilt.meshVertices =
+                buildExtrudedTitleMesh(title.text, meshOptions, nullptr);
+        }
     }
     rebuilt.atlasKey = rebuilt.atlas.key;
     if (!rebuilt.valid) {

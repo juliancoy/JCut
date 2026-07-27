@@ -29,6 +29,7 @@
 
 #include <QDebug>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
@@ -73,6 +74,7 @@ QSize toQSize(const jcut::core::SizeI& size)
 namespace {
 constexpr qint64 kPipelineThumbnailReadbackMinIntervalMs = 250;
 constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
+constexpr std::uint64_t kPreviewGpuWaitTimeoutNs = 1'000'000'000ull;
 
 using namespace jcut::direct_vulkan_preview;
 
@@ -155,6 +157,7 @@ public:
 
     void initResources();
     void releaseResources();
+    void releaseDeviceResources();
     void startNextFrame();
     void physicalDeviceLost();
     void logicalDeviceLost();
@@ -215,6 +218,7 @@ private:
         std::unique_ptr<jcut::vulkan_import::VulkanExternalFrameImportCore> importer;
         VkSemaphore ready = VK_NULL_HANDLE;
         VkSemaphore consumed = VK_NULL_HANDLE;
+        std::uint64_t producerSessionId = 0;
         quint64 generation = 0;
         bool initialized = false;
     };
@@ -263,12 +267,14 @@ public:
                               DirectVulkanPreviewStats* stats,
                               bool* active,
                               QString* failureReason,
+                              bool enableAudioPipeline,
                               std::function<void(const QString&)> failureCallback = {})
         : m_state(state),
           m_presentationTelemetry(presentationTelemetry),
           m_stats(stats),
           m_active(active),
           m_failureReason(failureReason),
+          m_enableAudioPipeline(enableAudioPipeline),
           m_failureCallback(std::move(failureCallback))
     {
         setSurfaceType(QSurface::VulkanSurface);
@@ -323,6 +329,7 @@ public:
     VkCommandBuffer currentCommandBuffer() const { return m_currentCommandBuffer; }
     VkFormat depthStencilFormat() const { return m_depthStencilFormat; }
     VkFormat colorFormat() const { return m_colorFormat; }
+    bool audioPipelineEnabled() const { return m_enableAudioPipeline; }
     void frameReady();
 
     void setInteractionCallbacks(std::function<void(const QString&)> selectionRequested,
@@ -413,12 +420,13 @@ public:
         if (m_frameInProgress) {
             return;
         }
-        m_updateDirty = false;
+        if (m_updateRequestPosted) {
+            return;
+        }
+        m_updateRequestPosted = true;
         m_updateRequestMs = QDateTime::currentMSecsSinceEpoch();
         if (m_presentationTelemetry) {
             m_presentationTelemetry->previewUpdateRequests.fetch_add(
-                1, std::memory_order_relaxed);
-            m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
                 1, std::memory_order_relaxed);
         }
         // Diagnostic: JCUT_DEBUG_UPDATE_STORM=1 dumps who keeps re-arming
@@ -439,7 +447,7 @@ public:
                 }
             }
         }
-        renderNow();
+        QCoreApplication::postEvent(this, new QEvent(QEvent::UpdateRequest));
     }
 
     bool updatePending() const
@@ -1108,13 +1116,19 @@ protected:
         }
 
         if (event->type() == QEvent::UpdateRequest) {
-            // Native preview presentation no longer depends on Qt delivering a
-            // frame callback. Keep the counter for diagnostics if the platform
-            // routes an update event through the host window anyway.
+            m_updateRequestPosted = false;
             if (m_presentationTelemetry) {
                 m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
                     1, std::memory_order_relaxed);
             }
+            if (!m_frameInProgress && isExposed()) {
+                m_updateDirty = false;
+                renderNow();
+                if (!m_frameInProgress) {
+                    m_updateRequestMs = -1;
+                }
+            }
+            return true;
         }
 
         if (event->type() == QEvent::Leave) {
@@ -1477,6 +1491,7 @@ private:
     DirectVulkanPreviewStats* m_stats = nullptr;
     bool* m_active = nullptr;
     QString* m_failureReason = nullptr;
+    bool m_enableAudioPipeline = true;
     std::function<void(const QString&)> m_failureCallback;
     std::function<void(const QImage&)> m_mirrorCallback;
     std::function<void(const QString&)> m_selectionRequested;
@@ -1496,6 +1511,7 @@ private:
     qint64 m_lastPipelineThumbnailReadbackMs = 0;
     bool m_updateDirty = false;
     bool m_frameInProgress = false;
+    bool m_updateRequestPosted = false;
     bool m_updateDeferredWhileNotExposed = false;
     bool m_scheduledWhileExposed = false;
     QSize m_lastExposeScheduledSize;
@@ -1688,6 +1704,9 @@ void DirectVulkanPreviewWindow::cleanupSwapchain()
 void DirectVulkanPreviewWindow::cleanupDevice()
 {
     cleanupSwapchain();
+    if (m_renderer) {
+        m_renderer->releaseDeviceResources();
+    }
     QVulkanInstance* instance = vulkanInstance();
     if (instance && m_device != VK_NULL_HANDLE) {
         instance->resetDeviceFunctions(m_device);
@@ -2189,13 +2208,25 @@ void DirectVulkanPreviewWindow::renderNow()
     FrameResources& frame =
         m_frames[static_cast<size_t>(
             m_currentFrameSlot % static_cast<int>(m_frames.size()))];
-    vkWaitForFences(m_device, 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
+    const VkResult frameWaitResult = vkWaitForFences(
+        m_device,
+        1,
+        &frame.inFlightFence,
+        VK_TRUE,
+        kPreviewGpuWaitTimeoutNs);
+    if (frameWaitResult != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Timed out after 1000 ms waiting for direct preview frame "
+            "ownership (VkResult %1).")
+                        .arg(static_cast<int>(frameWaitResult)));
+        return;
+    }
     vkResetFences(m_device, 1, &frame.inFlightFence);
 
     VkResult acquireResult = vkAcquireNextImageKHR(
         m_device,
         m_swapchain,
-        UINT64_MAX,
+        kPreviewGpuWaitTimeoutNs,
         frame.imageAcquiredSemaphore,
         VK_NULL_HANDLE,
         reinterpret_cast<uint32_t*>(&m_currentSwapchainImageIndex));
@@ -2204,6 +2235,14 @@ void DirectVulkanPreviewWindow::renderNow()
         acquireResult == VK_ERROR_SURFACE_LOST_KHR) {
         markSwapchainDirty();
         m_updateDirty = true;
+        return;
+    }
+    if (acquireResult == VK_TIMEOUT) {
+        m_updateDirty = true;
+        qWarning().noquote()
+            << QStringLiteral(
+                   "[vulkan-sync-timeout] stage=preview_swapchain_acquire "
+                   "timeout_ms=1000");
         return;
     }
     if (acquireResult != VK_SUCCESS) {
@@ -2307,31 +2346,46 @@ void DirectVulkanPreviewRenderer::initResources()
     m_devFuncs = m_window && m_window->vulkanInstance()
         ? m_window->vulkanInstance()->deviceFunctions(m_window->device())
         : nullptr;
-    if (m_window && m_window->physicalDeviceProperties()) {
-        const VkPhysicalDeviceProperties* props = m_window->physicalDeviceProperties();
-        qInfo().noquote()
-            << QStringLiteral("[vulkan-preview] direct presenter device=%1 vendor=0x%2 type=%3")
-                   .arg(QString::fromLatin1(props->deviceName))
-                   .arg(QString::number(props->vendorID, 16))
-                   .arg(static_cast<int>(props->deviceType));
-    }
-    m_resources = std::make_unique<VulkanResources>();
-    if (!m_resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
-        if (m_owner) {
-            m_owner->markFailure(QStringLiteral("Failed to initialize direct presenter Vulkan resources."));
+    if (!m_resources) {
+        if (m_window && m_window->physicalDeviceProperties()) {
+            const VkPhysicalDeviceProperties* props =
+                m_window->physicalDeviceProperties();
+            qInfo().noquote()
+                << QStringLiteral(
+                       "[vulkan-preview] direct presenter device=%1 vendor=0x%2 type=%3")
+                       .arg(QString::fromLatin1(props->deviceName))
+                       .arg(QString::number(props->vendorID, 16))
+                       .arg(static_cast<int>(props->deviceType));
         }
-        return;
-    }
-    m_importSemaphoreFd =
-        reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
-            vkGetDeviceProcAddr(m_window->device(),
-                                "vkImportSemaphoreFdKHR"));
-    m_playbackStatusOverlayResources = std::make_unique<VulkanResources>();
-    if (!m_playbackStatusOverlayResources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
-        if (m_owner) {
-            m_owner->markFailure(QStringLiteral("Failed to initialize playback status overlay Vulkan resources."));
+        m_resources = std::make_unique<VulkanResources>();
+        if (!m_resources->initialize(
+                m_window->physicalDevice(),
+                m_window->device(),
+                m_devFuncs)) {
+            if (m_owner) {
+                m_owner->markFailure(QStringLiteral(
+                    "Failed to initialize direct presenter Vulkan resources."));
+            }
+            return;
         }
-        return;
+        m_importSemaphoreFd =
+            reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+                vkGetDeviceProcAddr(m_window->device(),
+                                    "vkImportSemaphoreFdKHR"));
+    }
+    if (!m_playbackStatusOverlayResources) {
+        m_playbackStatusOverlayResources =
+            std::make_unique<VulkanResources>();
+        if (!m_playbackStatusOverlayResources->initialize(
+                m_window->physicalDevice(),
+                m_window->device(),
+                m_devFuncs)) {
+            if (m_owner) {
+                m_owner->markFailure(QStringLiteral(
+                    "Failed to initialize playback status overlay Vulkan resources."));
+            }
+            return;
+        }
     }
     m_pipeline = std::make_unique<VulkanPipeline>();
     QString error;
@@ -2386,18 +2440,20 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
-    m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
-    if (!m_audioTab->initialize(m_window->physicalDevice(),
-                                m_window->device(),
-                                m_devFuncs,
-                                m_window->defaultRenderPass(),
-                                &error)) {
-        if (m_owner) {
-            m_owner->markFailure(error.isEmpty()
-                                     ? QStringLiteral("Failed to initialize Vulkan audio waveform pipeline.")
-                                     : error);
+    if (m_window->audioPipelineEnabled()) {
+        m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
+        if (!m_audioTab->initialize(m_window->physicalDevice(),
+                                    m_window->device(),
+                                    m_devFuncs,
+                                    m_window->defaultRenderPass(),
+                                    &error)) {
+            if (m_owner) {
+                m_owner->markFailure(error.isEmpty()
+                                         ? QStringLiteral("Failed to initialize Vulkan audio waveform pipeline.")
+                                         : error);
+            }
+            return;
         }
-        return;
     }
 }
 
@@ -2409,9 +2465,25 @@ DirectVulkanPreviewRenderer::~DirectVulkanPreviewRenderer()
 
 void DirectVulkanPreviewRenderer::releaseResources()
 {
-    destroyGpuExportPreviewResources();
+    // Swapchain lifetime: only objects tied to its extent or render pass are
+    // rebuilt. Device-level descriptors, imported images/semaphores, and
+    // per-clip handoff allocations remain valid across ordinary resizes.
     destroyCompositeTarget();
     destroyReadbackSlots();
+    m_audioTab.reset();
+    m_temporalDebugTextRenderer.reset();
+    m_speakerTextRenderer.reset();
+    m_textRenderer.reset();
+    m_pipeline.reset();
+    m_lastPreparedTextKey.clear();
+    m_lastPreparedTextReady = false;
+}
+
+void DirectVulkanPreviewRenderer::releaseDeviceResources()
+{
+    // The queue is idle when cleanupDevice reaches this method, so every
+    // device-owned import and cached allocation can be retired exactly once.
+    destroyGpuExportPreviewResources();
     for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end(); ++it) {
         releaseClipHandoffResources(it.value());
     }
@@ -2421,11 +2493,6 @@ void DirectVulkanPreviewRenderer::releaseResources()
     m_clipHandoffResources.clear();
     m_titleOverlayResources.clear();
     m_retiredClipHandoffResources.clear();
-    m_audioTab.reset();
-    m_temporalDebugTextRenderer.reset();
-    m_speakerTextRenderer.reset();
-    m_textRenderer.reset();
-    m_pipeline.reset();
     m_playbackStatusOverlayResources.reset();
     m_playbackStatusOverlayTextureKey.clear();
     m_playbackStatusOverlayTextureReady = false;
@@ -3133,6 +3200,26 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
         }
         GpuExportPreviewSlot& slot =
             m_gpuExportPreviewSlots[slotIndex];
+        if (slot.initialized &&
+            slot.producerSessionId != frame.producerSessionId) {
+            vkQueueWaitIdle(m_window->graphicsQueue());
+            if (slot.importer) {
+                slot.importer->release();
+                slot.importer.reset();
+            }
+            if (slot.ready != VK_NULL_HANDLE) {
+                vkDestroySemaphore(
+                    m_window->device(), slot.ready, nullptr);
+            }
+            if (slot.consumed != VK_NULL_HANDLE) {
+                vkDestroySemaphore(
+                    m_window->device(), slot.consumed, nullptr);
+            }
+            slot = {};
+            if (m_gpuExportPreviewCurrentSlot == slotIndex) {
+                m_gpuExportPreviewCurrentSlot = -1;
+            }
+        }
         if (!slot.initialized) {
             if (frame.readySemaphoreFd < 0 ||
                 frame.consumedSemaphoreFd < 0) {
@@ -3187,39 +3274,57 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
                 close(frame.consumedSemaphoreFd);
                 return false;
             }
+            slot.producerSessionId = frame.producerSessionId;
             slot.initialized = true;
         }
 
-        VkPipelineStageFlags waitStage =
-            VK_PIPELINE_STAGE_TRANSFER_BIT;
-        VkSubmitInfo synchronization{};
-        synchronization.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        synchronization.waitSemaphoreCount = 1;
-        synchronization.pWaitSemaphores = &slot.ready;
-        synchronization.pWaitDstStageMask = &waitStage;
-        VkSemaphore consumed = VK_NULL_HANDLE;
-        if (m_gpuExportPreviewCurrentSlot >= 0 &&
-            m_gpuExportPreviewCurrentSlot != slotIndex) {
-            consumed =
-                m_gpuExportPreviewSlots[m_gpuExportPreviewCurrentSlot]
-                    .consumed;
-            synchronization.signalSemaphoreCount = 1;
-            synchronization.pSignalSemaphores = &consumed;
-        }
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSubmitInfo waitForReady{};
+        waitForReady.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        waitForReady.waitSemaphoreCount = 1;
+        waitForReady.pWaitSemaphores = &slot.ready;
+        waitForReady.pWaitDstStageMask = &waitStage;
         if (vkQueueSubmit(m_window->graphicsQueue(),
                           1,
-                          &synchronization,
+                          &waitForReady,
                           VK_NULL_HANDLE) != VK_SUCCESS) {
             return false;
         }
+
+        const auto signalConsumed = [this, &slot]() {
+            VkSubmitInfo signal{};
+            signal.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            signal.signalSemaphoreCount = 1;
+            signal.pSignalSemaphores = &slot.consumed;
+            return vkQueueSubmit(m_window->graphicsQueue(),
+                                 1,
+                                 &signal,
+                                 VK_NULL_HANDLE) == VK_SUCCESS;
+        };
         std::string error;
-        if (!slot.importer->recordFrameCopy(
-                commandBuffer, frame, true, &error)) {
+        if (!slot.importer->importExternalFrame(frame, &error) ||
+            !slot.importer->finishPendingCopy(nullptr, &error)) {
+            signalConsumed();
             qWarning().noquote()
                 << QStringLiteral(
                        "[vulkan-preview] GPU export preview import failed: %1")
                        .arg(QString::fromStdString(error));
             return false;
+        }
+        if (!signalConsumed()) {
+            return false;
+        }
+        if (frame.consumptionState) {
+            frame.consumptionState->completedGeneration.store(
+                frame.generation, std::memory_order_release);
+        }
+        if (frame.generation == 1) {
+            qInfo().noquote()
+                << QStringLiteral(
+                       "[render-export-preview] consumed GPU slot=%1 "
+                       "producer_session=%2")
+                       .arg(slotIndex)
+                       .arg(frame.producerSessionId);
         }
         m_resources->beginFrameUploads(
             static_cast<size_t>(qMax(0, m_window->currentFrame())),
@@ -3282,21 +3387,6 @@ void DirectVulkanPreviewRenderer::destroyGpuExportPreviewResources()
 {
     if (!m_window || m_window->device() == VK_NULL_HANDLE) {
         return;
-    }
-    if (m_gpuExportPreviewCurrentSlot >= 0) {
-        VkSemaphore consumed =
-            m_gpuExportPreviewSlots[m_gpuExportPreviewCurrentSlot]
-                .consumed;
-        VkSubmitInfo submit{};
-        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.signalSemaphoreCount =
-            consumed == VK_NULL_HANDLE ? 0u : 1u;
-        submit.pSignalSemaphores =
-            consumed == VK_NULL_HANDLE ? nullptr : &consumed;
-        vkQueueSubmit(m_window->graphicsQueue(),
-                      1,
-                      &submit,
-                      VK_NULL_HANDLE);
     }
     vkQueueWaitIdle(m_window->graphicsQueue());
     for (GpuExportPreviewSlot& slot : m_gpuExportPreviewSlots) {
@@ -5411,6 +5501,7 @@ DirectVulkanPreviewWindow* createDirectVulkanPreviewWindow(
     DirectVulkanPreviewStats* stats,
     bool* active,
     QString* failureReason,
+    bool enableAudioPipeline,
     std::function<void(const QString&)> failureCallback)
 {
     return new DirectVulkanPreviewWindow(state,
@@ -5418,6 +5509,7 @@ DirectVulkanPreviewWindow* createDirectVulkanPreviewWindow(
                                          stats,
                                          active,
                                          failureReason,
+                                         enableAudioPipeline,
                                          std::move(failureCallback));
 }
 

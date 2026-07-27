@@ -292,6 +292,12 @@ private:
     int64_t m_visibleRequestCallbacks = 0;
     int64_t m_visibleRequestNullCallbacks = 0;
     QString m_lastVisibleRequestCallbackPayload;
+    qint64 m_lastPlaybackActiveSetCheckMs = 0;
+    qint64 m_maxPlaybackActiveSetCheckMs = 0;
+    qint64 m_lastPlaybackFrameRequestMs = 0;
+    qint64 m_maxPlaybackFrameRequestMs = 0;
+    qint64 m_lastPlaybackNativeUpdateMs = 0;
+    qint64 m_maxPlaybackNativeUpdateMs = 0;
     editor::PlaybackStageMetric m_timelineInputStageMetric;
     editor::PlaybackStageMetric m_sourceMappingStageMetric;
     editor::PlaybackStageMetric m_visibleRequestStageMetric;

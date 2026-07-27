@@ -358,16 +358,17 @@ EditorWindow::EditorWindow(quint16 controlPort)
     connect(&m_startupStateLoadWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
         const QJsonObject result = m_startupStateLoadWatcher.result();
         const QString projectId = result.value(QStringLiteral("project_id")).toString();
-        const QString activeProjectId = m_projectManager
-            ? m_projectManager->currentProjectIdOrDefault()
-            : QStringLiteral("default");
-        if (projectId.isEmpty() || projectId != activeProjectId) {
+        if (projectId.isEmpty()) {
             return;
+        }
+        if (m_projectManager) {
+            m_projectManager->adoptLoadedProjectFromStartup(projectId);
         }
 
         startupProfileMark(QStringLiteral("startup_load.state_parse.complete"),
                            QJsonObject{
                                {QStringLiteral("project_id"), projectId},
+                               {QStringLiteral("project_root"), result.value(QStringLiteral("project_root")).toString()},
                                {QStringLiteral("defer_history"), result.value(QStringLiteral("defer_history")).toBool(false)},
                                {QStringLiteral("history_entry_count"), result.value(QStringLiteral("history_entries")).toArray().size()}
                            });
@@ -494,9 +495,7 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
         m_audioEngine->setTimelineClips(m_timeline->clips());
         m_audioEngine->setExportRanges(playbackRanges);
         m_audioEngine->setTranscriptNormalizeRanges(
-            m_previewAudioDynamics.transcriptNormalizeEnabled
-                ? effectiveTranscriptNormalizeRanges()
-                : QVector<ExportRangeSegment>{});
+            anyClipTranscriptNormalizeEnabled() ? effectiveTranscriptNormalizeRanges() : QVector<ExportRangeSegment>{});
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
         m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
@@ -504,8 +503,8 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
         m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
         m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-        m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
-        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+        m_audioEngine->setAudioDynamicsSettings({});
         if (seekPlayback) {
             m_audioEngine->seekToTimelineSample(
                 frameToSamples(currentFrame));
@@ -577,9 +576,7 @@ void EditorWindow::scheduleTranscriptTextCompanionBackfill()
 void EditorWindow::applyDeferredStartupPanelState(const QJsonObject& root,
                                                   const QStringList& expandedExplorerPaths)
 {
-    if (m_explorerPane) {
-        m_explorerPane->restoreExpandedExplorerPaths(expandedExplorerPaths);
-    }
+    Q_UNUSED(expandedExplorerPaths);
 
     const QJsonArray transcriptColumnHidden =
         root.value(QStringLiteral("transcriptColumnHidden")).toArray();
@@ -794,6 +791,8 @@ bool EditorWindow::reconcileMissingMediaForClips(QVector<TimelineClip>* clips,
 
 void EditorWindow::syncTranscriptTableToPlayhead()
 {
+    auto profile = m_uiActionProfiler.scope(QStringLiteral("playhead.sync_transcript_tables"),
+                                            uiActionContext(QStringLiteral("Transcript")));
     if (!m_timeline || !m_transcriptTable || m_updatingTranscriptInspector) return;
     if (!m_transcriptFollowCurrentWordCheckBox || !m_transcriptFollowCurrentWordCheckBox->isChecked()) return;
 
@@ -841,6 +840,8 @@ void EditorWindow::syncTranscriptTableToPlayhead()
 
 void EditorWindow::syncKeyframeTableToPlayhead()
 {
+    auto profile = m_uiActionProfiler.scope(QStringLiteral("playhead.sync_transform_table"),
+                                            uiActionContext(QStringLiteral("Transform")));
     if (m_videoKeyframeTab) {
         m_videoKeyframeTab->syncTableToPlayhead();
     }
@@ -848,6 +849,8 @@ void EditorWindow::syncKeyframeTableToPlayhead()
 
 void EditorWindow::syncGradingTableToPlayhead()
 {
+    auto profile = m_uiActionProfiler.scope(QStringLiteral("playhead.sync_grading_tables"),
+                                            uiActionContext(QStringLiteral("Grade")));
     if (m_gradingTab) {
         m_gradingTab->syncTableToPlayhead();
     }
@@ -1367,6 +1370,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int aiRateLimitPerMinute = qMax(1, root.value(QStringLiteral("aiRateLimitPerMinute")).toInt(12));
     const int aiRequestTimeoutMs = qMax(1000, root.value(QStringLiteral("aiRequestTimeoutMs")).toInt(15000));
     const int aiRequestRetries = qBound(0, root.value(QStringLiteral("aiRequestRetries")).toInt(1), 3);
+    const bool legacyRootAudioDynamicsPresent =
+        root.contains(QStringLiteral("audioAmplifyEnabled")) ||
+        root.contains(QStringLiteral("audioNormalizeEnabled")) ||
+        root.contains(QStringLiteral("audioStereoToMonoEnabled")) ||
+        root.contains(QStringLiteral("audioSelectiveNormalizeEnabled")) ||
+        root.contains(QStringLiteral("audioTranscriptNormalizeEnabled")) ||
+        root.contains(QStringLiteral("audioPeakReductionEnabled")) ||
+        root.contains(QStringLiteral("audioLimiterEnabled")) ||
+        root.contains(QStringLiteral("audioCompressorEnabled")) ||
+        root.contains(QStringLiteral("audioSoftClipEnabled"));
     PreviewSurface::AudioDynamicsSettings loadedAudioDynamics;
     loadedAudioDynamics.amplifyEnabled = root.value(QStringLiteral("audioAmplifyEnabled")).toBool(false);
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
@@ -1579,6 +1592,36 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         clip.edgeFillPixels = qBound(1, clip.effectRows, 512);
         clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
         clip.effectPreset = ClipEffectPreset::None;
+    }
+    if (legacyRootAudioDynamicsPresent) {
+        auto migrateDynamicsToClip = [&loadedAudioDynamics](
+                                         TimelineClip& clip) -> bool {
+            if (clip.audioDynamicsSet ||
+                !(clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
+                return false;
+            }
+            clip.audioDynamics =
+                jcut::audio::normalizedDynamicsSettingsCore(
+                    loadedAudioDynamics);
+            clip.audioDynamicsSet = true;
+            return true;
+        };
+        bool migrated = false;
+        if (!selectedClipId.trimmed().isEmpty()) {
+            for (TimelineClip& clip : loadedClips) {
+                if (clip.id == selectedClipId) {
+                    migrated = migrateDynamicsToClip(clip);
+                    break;
+                }
+            }
+        }
+        if (!migrated) {
+            for (TimelineClip& clip : loadedClips) {
+                if (migrateDynamicsToClip(clip)) {
+                    break;
+                }
+            }
+        }
     }
     markStartup(QStringLiteral("apply_state.render_sync_parse.begin"));
        const QJsonArray renderSyncMarkers = root.value(QStringLiteral("renderSyncMarkers")).toArray();
@@ -2079,7 +2122,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_transcriptFollowCurrentWordCheckBox) { QSignalBlocker block(m_transcriptFollowCurrentWordCheckBox); m_transcriptFollowCurrentWordCheckBox->setChecked(transcriptFollowCurrentWord); }
     if (m_gradingFollowCurrentCheckBox) { QSignalBlocker block(m_gradingFollowCurrentCheckBox); m_gradingFollowCurrentCheckBox->setChecked(gradingFollowCurrent); }
     if (m_gradingAutoScrollCheckBox) { QSignalBlocker block(m_gradingAutoScrollCheckBox); m_gradingAutoScrollCheckBox->setChecked(gradingAutoScroll); }
-    if (m_bypassGradingCheckBox) { QSignalBlocker block(m_bypassGradingCheckBox); m_bypassGradingCheckBox->setChecked(true); }
+    if (m_bypassGradingCheckBox) {
+        const TimelineClip* selectedClip = m_timeline ? m_timeline->selectedClip() : nullptr;
+        const TimelineTrack* selectedTrack =
+            selectedClip && selectedClip->trackIndex >= 0 &&
+                    selectedClip->trackIndex < m_timeline->tracks().size()
+                ? &m_timeline->tracks().at(selectedClip->trackIndex)
+                : nullptr;
+        QSignalBlocker block(m_bypassGradingCheckBox);
+        m_bypassGradingCheckBox->setChecked(selectedTrack ? selectedTrack->gradingPreviewEnabled : false);
+    }
     if (m_keyframesFollowCurrentCheckBox) { QSignalBlocker block(m_keyframesFollowCurrentCheckBox); m_keyframesFollowCurrentCheckBox->setChecked(keyframesFollowCurrent); }
     if (m_keyframesAutoScrollCheckBox) { QSignalBlocker block(m_keyframesAutoScrollCheckBox); m_keyframesAutoScrollCheckBox->setChecked(keyframesAutoScroll); }
     if (m_inspectorPane && m_inspectorPane->correctionsEnabledCheck()) {
@@ -2437,6 +2489,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     updateTransportLabels();
 
     m_loadingState = false;
+    refreshAudioInspectorViews();
     refreshAiIntegrationState();
     markStartup(QStringLiteral("apply_state.end"));
     
@@ -2445,7 +2498,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     // root when restoring the project.
     const QString mediaRoot = resolvedRootPath;
     
-    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges, root, expandedExplorerPaths]() {
+    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges, root, expandedExplorerPaths, markStartup]() {
         if (m_explorerPane) {
             m_explorerPane->setInitialRootPath(mediaRoot);
         }
@@ -2454,7 +2507,22 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         }
         if (startupMarking) {
             applyDeferredStartupPanelState(root, expandedExplorerPaths);
-            QTimer::singleShot(0, this, [this, mediaRoot]() {
+            markStartup(QStringLiteral("apply_state.preview_audio_bind.deferred"));
+            QTimer::singleShot(0, this, [this, currentFrame, selectedClipId]() {
+                const QVector<ExportRangeSegment> deferredPlaybackRanges = effectivePlaybackRanges();
+                bindTimelineMediaState(selectedClipId, deferredPlaybackRanges, currentFrame, true);
+            });
+            if (!expandedExplorerPaths.isEmpty()) {
+                markStartup(QStringLiteral("apply_state.explorer_expand.deferred"),
+                            QJsonObject{{QStringLiteral("path_count"), expandedExplorerPaths.size()}});
+                QTimer::singleShot(1200, this, [this, expandedExplorerPaths]() {
+                    if (m_explorerPane) {
+                        m_explorerPane->restoreExpandedExplorerPaths(expandedExplorerPaths);
+                    }
+                });
+            }
+            markStartup(QStringLiteral("apply_state.media_relocate.deferred"));
+            QTimer::singleShot(1500, this, [this, mediaRoot]() {
                 if (!m_timeline) {
                     return;
                 }
@@ -2467,12 +2535,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                 m_loadingState = false;
                 scheduleSaveState();
             });
-            QTimer::singleShot(0, this, [this, currentFrame, selectedClipId]() {
+            markStartup(QStringLiteral("apply_state.mask_sidecar_reconcile.deferred"));
+            QTimer::singleShot(750, this, [this]() {
                 if (m_timeline) {
                     m_timeline->reconcileMaskSidecarsNow();
                 }
-                const QVector<ExportRangeSegment> deferredPlaybackRanges = effectivePlaybackRanges();
-                bindTimelineMediaState(selectedClipId, deferredPlaybackRanges, currentFrame, true);
             });
         }
     });

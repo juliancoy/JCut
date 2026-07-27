@@ -199,6 +199,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("last"), m_lastRenderProfile}};
     snapshot[QStringLiteral("playback_pipeline_stages")] =
         playbackStageMetricsSnapshot(previewSnapshot);
+    snapshot[QStringLiteral("ui_actions")] = m_uiActionProfiler.snapshot();
     snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
     snapshot[QStringLiteral("speakers_refresh")] = m_speakersTab
         ? QJsonObject{
@@ -239,6 +240,26 @@ QJsonObject EditorWindow::profilingSnapshot() const
         : QJsonObject{};
 
     return snapshot;
+}
+
+UiActionProfiler::Context EditorWindow::uiActionContext(const QString& selectedTab) const
+{
+    UiActionProfiler::Context context;
+    context.playbackActive = m_playbackTimer.isActive();
+    context.frame = m_timeline ? static_cast<qint64>(m_timeline->currentFrame()) : -1;
+    context.sample = static_cast<qint64>(m_transportTimelineSample);
+    context.stateRevision = m_stateRevision.load();
+    context.selectedTab = selectedTab;
+    if (context.selectedTab.isEmpty() && m_inspectorPane && m_inspectorPane->tabs()) {
+        const int index = m_inspectorPane->tabs()->currentIndex();
+        if (index >= 0) {
+            context.selectedTab = m_inspectorPane->tabs()->tabText(index);
+        }
+    }
+    if (m_timeline) {
+        context.selectedClipId = m_timeline->selectedClipId();
+    }
+    return context;
 }
 
 QJsonObject EditorWindow::speakerUiPerformanceSnapshot() const
@@ -592,6 +613,7 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
     return QJsonObject{
         {QStringLiteral("ok"), true},
         {QStringLiteral("playback_ui_sync_min_interval_ms"), m_playbackUiSyncMinIntervalMs},
+        {QStringLiteral("playback_table_sync_min_interval_ms"), m_playbackTableSyncMinIntervalMs},
         {QStringLiteral("playback_state_save_min_interval_ms"), m_playbackStateSaveMinIntervalMs},
         {QStringLiteral("slow_seek_warn_threshold_ms"), m_slowSeekWarnThresholdMs},
         {QStringLiteral("playback_start_lookahead_frames"), m_playbackStartLookaheadFrames},
@@ -659,6 +681,7 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
     int previewProxyLookaheadFrames =
         m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames;
     if (!parsePositiveMs(patch, QStringLiteral("playback_ui_sync_min_interval_ms"), &m_playbackUiSyncMinIntervalMs, &error) ||
+        !parsePositiveMs(patch, QStringLiteral("playback_table_sync_min_interval_ms"), &m_playbackTableSyncMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("playback_state_save_min_interval_ms"), &m_playbackStateSaveMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("slow_seek_warn_threshold_ms"), &m_slowSeekWarnThresholdMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("playback_start_lookahead_frames"), &m_playbackStartLookaheadFrames, &error) ||

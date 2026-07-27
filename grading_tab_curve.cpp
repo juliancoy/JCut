@@ -72,6 +72,7 @@ void toneValuesFromThreePointCurve(const QVector<QPointF>& points,
 
 void GradingTab::onNormalizeCurvesClicked()
 {
+    auto profile = profileAction(QStringLiteral("grading.normalize_curves"));
     jcut::EditorGradingKeyframe grade;
     grade.curvePointsR = editorCurveFromQt(m_curvePointsR);
     grade.curvePointsG = editorCurveFromQt(m_curvePointsG);
@@ -109,10 +110,16 @@ void GradingTab::onCurveChannelChanged(int index)
 
 void GradingTab::onCurveAdjusted(const QVector<QPointF>& points, bool finalized)
 {
+    auto profile = profileAction(
+        QStringLiteral("grading.curve_adjusted"),
+        QJsonObject{{QStringLiteral("finalized"), finalized},
+                    {QStringLiteral("point_count"), points.size()}});
     if (m_updating) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("updating"));
         return;
     }
     if (comboAlphaSelected(m_widgets.gradingCurveChannelCombo)) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("alpha_channel"));
         return;
     }
     if (m_curveThreePointLock) {
@@ -155,14 +162,20 @@ void GradingTab::onCurveSmoothingToggled(bool checked)
 
 void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
 {
+    auto profile = profileAction(
+        QStringLiteral("grading.update_histogram_and_curve"),
+        QJsonObject{{QStringLiteral("force_histogram_refresh"), forceHistogramRefresh}});
     if (!m_widgets.gradingHistogramWidget) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("no_histogram_widget"));
         return;
     }
 
     const bool paused = !m_gradingDeps.isPlaybackPaused || m_gradingDeps.isPlaybackPaused();
+    profile.addDetail(QStringLiteral("playback_paused"), paused);
     m_widgets.gradingHistogramWidget->setVisible(paused);
     updateCurveFromInspectorValues();
     if (!paused) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("playback_active"));
         return;
     }
 
@@ -328,21 +341,24 @@ void GradingTab::applyCurvePointsToCurrentChannel(const QVector<QPointF>& points
 
 void GradingTab::onBrightnessChanged(double value)
 {
-    Q_UNUSED(value);
+    auto profile = profileAction(QStringLiteral("grading.brightness_changed"),
+                                 QJsonObject{{QStringLiteral("value"), value}});
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
 
 void GradingTab::onContrastChanged(double value)
 {
-    Q_UNUSED(value);
+    auto profile = profileAction(QStringLiteral("grading.contrast_changed"),
+                                 QJsonObject{{QStringLiteral("value"), value}});
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
 
 void GradingTab::onSaturationChanged(double value)
 {
-    Q_UNUSED(value);
+    auto profile = profileAction(QStringLiteral("grading.saturation_changed"),
+                                 QJsonObject{{QStringLiteral("value"), value}});
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }

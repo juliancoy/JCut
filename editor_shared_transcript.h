@@ -66,6 +66,8 @@ bool ensureEditableTranscriptForSource(const TranscriptSourceKey& source, QStrin
 bool ensureEditableTranscriptForClip(const TimelineClip& clip, QString* editablePathOut = nullptr);
 bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut);
 QVector<TranscriptSection> transcriptSectionsFromDocument(const QJsonDocument& document);
+bool publishTranscriptDocumentToRuntimeCaches(const QString& transcriptPath,
+                                              const QJsonDocument& document);
 std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath);
 std::shared_ptr<const TranscriptRuntimeDocument> cachedTranscriptRuntimeDocumentMemoryOnly(
     const QString& transcriptPath);

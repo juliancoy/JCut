@@ -33,6 +33,26 @@
 
 void SpeakersTab::wire()
 {
+    if (!m_speakerTitleRegenerationTimer) {
+        m_speakerTitleRegenerationTimer = new QTimer(this);
+        m_speakerTitleRegenerationTimer->setSingleShot(true);
+        m_speakerTitleRegenerationTimer->setInterval(200);
+        connect(m_speakerTitleRegenerationTimer, &QTimer::timeout, this, [this]() {
+            m_speakerTitleRegenerationQueued = false;
+            const TimelineClip* selectedClip = m_deps.getSelectedClip
+                ? m_deps.getSelectedClip() : nullptr;
+            const bool hasGeneratedIntroductions =
+                selectedClip && selectedClip->speakerTitleEngineActive;
+            if (!m_updating && m_widgets.speakerOverlayCreateTitleClipsButton &&
+                (m_widgets.speakerOverlayCreateTitleClipsButton->isChecked() ||
+                 hasGeneratedIntroductions)) {
+                onSpeakerCreateTitleClipsClicked();
+            }
+            if (!m_updating && m_deps.scheduleSaveState) {
+                m_deps.scheduleSaveState();
+            }
+        });
+    }
     if (!m_faceStreamPanelRefreshTimer) {
         m_faceStreamPanelRefreshTimer = new QTimer(this);
         m_faceStreamPanelRefreshTimer->setSingleShot(true);
@@ -133,20 +153,7 @@ void SpeakersTab::wire()
                     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
                 });
 
-        auto refreshEnabledFlyIn = [this]() {
-            const TimelineClip* selectedClip = m_deps.getSelectedClip
-                ? m_deps.getSelectedClip() : nullptr;
-            const bool hasGeneratedIntroductions =
-                selectedClip && selectedClip->speakerTitleEngineActive;
-            if (!m_updating && m_widgets.speakerOverlayCreateTitleClipsButton &&
-                (m_widgets.speakerOverlayCreateTitleClipsButton->isChecked() ||
-                 hasGeneratedIntroductions)) {
-                onSpeakerCreateTitleClipsClicked();
-            }
-            if (!m_updating && m_deps.scheduleSaveState) {
-                m_deps.scheduleSaveState();
-            }
-        };
+        auto refreshEnabledFlyIn = [this]() { scheduleSpeakerTitleRegeneration(); };
         for (QDoubleSpinBox* spin : {
                  m_widgets.speakerOverlayFlyInDelaySpin,
                  m_widgets.speakerOverlayFlyInDurationSpin,

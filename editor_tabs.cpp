@@ -312,7 +312,12 @@ void EditorWindow::resumeSamProcessingJob(const QString& manifestPath)
 void EditorWindow::refreshInspectorTabByName(const QString& tabName)
 {
     const QString normalized = tabName.trimmed();
+    auto profile = m_uiActionProfiler.scope(
+        QStringLiteral("inspector.refresh_tab"),
+        uiActionContext(normalized),
+        QJsonObject{{QStringLiteral("tab"), normalized}});
     if (playbackActive() && inspectorTabRefreshIsHeavyDuringPlayback(normalized)) {
+        profile.addDetail(QStringLiteral("skipped_reason"), QStringLiteral("heavy_during_playback"));
         return;
     }
     if (normalized.compare(QStringLiteral("Grade"), Qt::CaseInsensitive) == 0) {
@@ -703,6 +708,152 @@ void EditorWindow::syncAudioTabTimelineWaveforms()
     m_timeline->setAudioTabWaveformsVisible(audioTabActive);
 }
 
+bool EditorWindow::anyClipTranscriptNormalizeEnabled() const
+{
+    if (!m_timeline) {
+        return false;
+    }
+    for (const TimelineClip& clip : m_timeline->clips()) {
+        if (!clip.hasAudio || !clip.audioEnabled || !clip.audioDynamicsSet) {
+            continue;
+        }
+        const auto settings =
+            jcut::audio::normalizedDynamicsSettingsCore(clip.audioDynamics);
+        if (settings.transcriptNormalizeEnabled) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void EditorWindow::refreshAudioDynamicsControlsForClip(
+    const TimelineClip* clip)
+{
+    const bool hasAudioClip =
+        clip && (clip->mediaType == ClipMediaType::Audio || clip->hasAudio);
+    const bool controlsEnabled = hasAudioClip && m_featureAudioDynamicsTools;
+    PreviewSurface::AudioDynamicsSettings settings;
+    if (hasAudioClip && clip->audioDynamicsSet) {
+        settings = jcut::audio::normalizedDynamicsSettingsCore(
+            clip->audioDynamics);
+    }
+    m_previewAudioDynamics = settings;
+    if (m_preview) {
+        m_preview->setAudioDynamicsSettings(settings);
+    }
+
+    if (m_audioAmplifyEnabledCheckBox) {
+        QSignalBlocker block(m_audioAmplifyEnabledCheckBox);
+        m_audioAmplifyEnabledCheckBox->setChecked(settings.amplifyEnabled);
+        m_audioAmplifyEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioAmplifyDbSpin) {
+        QSignalBlocker block(m_audioAmplifyDbSpin);
+        m_audioAmplifyDbSpin->setValue(settings.amplifyDb);
+        m_audioAmplifyDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioNormalizeEnabledCheckBox);
+        m_audioNormalizeEnabledCheckBox->setChecked(settings.normalizeEnabled);
+        m_audioNormalizeEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioNormalizeTargetDbSpin) {
+        QSignalBlocker block(m_audioNormalizeTargetDbSpin);
+        m_audioNormalizeTargetDbSpin->setValue(settings.normalizeTargetDb);
+        m_audioNormalizeTargetDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioStereoToMonoCheckBox) {
+        QSignalBlocker block(m_audioStereoToMonoCheckBox);
+        m_audioStereoToMonoCheckBox->setChecked(settings.stereoToMonoEnabled);
+        m_audioStereoToMonoCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioSelectiveNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioSelectiveNormalizeEnabledCheckBox);
+        m_audioSelectiveNormalizeEnabledCheckBox->setChecked(
+            settings.selectiveNormalizeEnabled);
+        m_audioSelectiveNormalizeEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioSelectiveNormalizeMinSecondsSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizeMinSecondsSpin);
+        m_audioSelectiveNormalizeMinSecondsSpin->setValue(
+            settings.selectiveNormalizeMinSegmentSeconds);
+        m_audioSelectiveNormalizeMinSecondsSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioSelectiveNormalizePeakDbSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizePeakDbSpin);
+        m_audioSelectiveNormalizePeakDbSpin->setValue(
+            settings.selectiveNormalizePeakDb);
+        m_audioSelectiveNormalizePeakDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioSelectiveNormalizePassesSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizePassesSpin);
+        m_audioSelectiveNormalizePassesSpin->setValue(
+            settings.selectiveNormalizePasses);
+        m_audioSelectiveNormalizePassesSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioSelectiveNormalizeOverlayVisibleCheckBox) {
+        QSignalBlocker block(m_audioSelectiveNormalizeOverlayVisibleCheckBox);
+        m_audioSelectiveNormalizeOverlayVisibleCheckBox->setChecked(
+            settings.selectiveNormalizeOverlayVisible);
+        m_audioSelectiveNormalizeOverlayVisibleCheckBox->setEnabled(
+            controlsEnabled);
+    }
+    if (m_audioTranscriptNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioTranscriptNormalizeEnabledCheckBox);
+        m_audioTranscriptNormalizeEnabledCheckBox->setChecked(
+            settings.transcriptNormalizeEnabled);
+        m_audioTranscriptNormalizeEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioWaveformPreviewProcessedCheckBox) {
+        QSignalBlocker block(m_audioWaveformPreviewProcessedCheckBox);
+        m_audioWaveformPreviewProcessedCheckBox->setChecked(
+            settings.waveformPreviewPostProcessing);
+        m_audioWaveformPreviewProcessedCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioPeakReductionEnabledCheckBox) {
+        QSignalBlocker block(m_audioPeakReductionEnabledCheckBox);
+        m_audioPeakReductionEnabledCheckBox->setChecked(
+            settings.peakReductionEnabled);
+        m_audioPeakReductionEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioPeakThresholdDbSpin) {
+        QSignalBlocker block(m_audioPeakThresholdDbSpin);
+        m_audioPeakThresholdDbSpin->setValue(settings.peakThresholdDb);
+        m_audioPeakThresholdDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioLimiterEnabledCheckBox) {
+        QSignalBlocker block(m_audioLimiterEnabledCheckBox);
+        m_audioLimiterEnabledCheckBox->setChecked(settings.limiterEnabled);
+        m_audioLimiterEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioLimiterThresholdDbSpin) {
+        QSignalBlocker block(m_audioLimiterThresholdDbSpin);
+        m_audioLimiterThresholdDbSpin->setValue(settings.limiterThresholdDb);
+        m_audioLimiterThresholdDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioCompressorEnabledCheckBox) {
+        QSignalBlocker block(m_audioCompressorEnabledCheckBox);
+        m_audioCompressorEnabledCheckBox->setChecked(settings.compressorEnabled);
+        m_audioCompressorEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+    if (m_audioCompressorThresholdDbSpin) {
+        QSignalBlocker block(m_audioCompressorThresholdDbSpin);
+        m_audioCompressorThresholdDbSpin->setValue(
+            settings.compressorThresholdDb);
+        m_audioCompressorThresholdDbSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioCompressorRatioSpin) {
+        QSignalBlocker block(m_audioCompressorRatioSpin);
+        m_audioCompressorRatioSpin->setValue(settings.compressorRatio);
+        m_audioCompressorRatioSpin->setEnabled(controlsEnabled);
+    }
+    if (m_audioSoftClipEnabledCheckBox) {
+        QSignalBlocker block(m_audioSoftClipEnabledCheckBox);
+        m_audioSoftClipEnabledCheckBox->setChecked(settings.softClipEnabled);
+        m_audioSoftClipEnabledCheckBox->setEnabled(controlsEnabled);
+    }
+}
+
 void EditorWindow::refreshAudioInspectorViews()
 {
     if (!m_audioCurrentSpeakerTitleLabel || !m_audioCurrentSpeakerDetailsLabel || !m_timeline) {
@@ -754,11 +905,13 @@ void EditorWindow::refreshAudioInspectorViews()
 
     const TimelineClip *clip = m_timeline->selectedClip();
     if (!clip || !(clip->mediaType == ClipMediaType::Audio || clip->hasAudio)) {
+        refreshAudioDynamicsControlsForClip(nullptr);
         m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No audio clip selected"));
         m_audioCurrentSpeakerDetailsLabel->setText(
             QStringLiteral("Select an audio-backed clip to inspect the speaker at the current playhead."));
         return;
     }
+    refreshAudioDynamicsControlsForClip(clip);
 
     const QString transcriptPath = activeTranscriptPathForClip(*clip);
     if (transcriptPath.trimmed().isEmpty()) {
@@ -1163,6 +1316,8 @@ void EditorWindow::createTranscriptTab()
         QJsonDocument liveTranscriptDocument;
         if (m_transcriptTab->activeTranscriptDocumentSnapshot(
                 nullptr, &liveTranscriptPath, &liveTranscriptDocument)) {
+            publishTranscriptDocumentToRuntimeCaches(
+                liveTranscriptPath, liveTranscriptDocument);
             m_transcriptEngine.setLiveTranscriptDocument(
                 liveTranscriptPath, liveTranscriptDocument);
         } else {
@@ -1189,9 +1344,8 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         scheduleTranscriptNormalizeRangeRefresh(50);
         refreshTranscriptDerivedInspectorViews(true);
@@ -1223,9 +1377,8 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         scheduleTranscriptNormalizeRangeRefresh(50);
         if (m_timeline && m_preview) {
@@ -1283,9 +1436,8 @@ void EditorWindow::createSpeakersTab()
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         scheduleTranscriptNormalizeRangeRefresh(50);
         refreshTranscriptDerivedInspectorViews(true);
@@ -1412,11 +1564,7 @@ void EditorWindow::createSpeakersTab()
                 if (!m_timeline) {
                     return {};
                 }
-                QVector<TimelineClip> clips = m_timeline->clips();
-                QVector<TimelineTrack> tracks = m_timeline->tracks();
-                GeneratedClipPlacementResult result = replaceGeneratedClipsForSource(
-                    clips,
-                    tracks,
+                GeneratedClipPlacementResult result = m_timeline->replaceGeneratedClipsForSource(
                     sourceClipId,
                     ClipRole::SpeakerTitle,
                     titleClips,
@@ -1424,8 +1572,6 @@ void EditorWindow::createSpeakersTab()
                 if (!result.changed) {
                     return result;
                 }
-                m_timeline->setTracks(tracks);
-                m_timeline->setClips(clips);
                 // Generated introductions are immutable children of the
                 // transcript clip. Preserve the parent selection so edits stay
                 // at the generator-parameter boundary.
@@ -1569,9 +1715,8 @@ void EditorWindow::createSpeakersTab()
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         scheduleTranscriptNormalizeRangeRefresh(50);
         refreshTranscriptDerivedInspectorViews(true);
@@ -1628,6 +1773,12 @@ void EditorWindow::createGradingTab()
             },
             [this]() -> bool {
                 return !playbackActive();
+            },
+            [this](const QString& actionId, qint64 elapsedMs, const QJsonObject& details) {
+                m_uiActionProfiler.record(actionId,
+                                          elapsedMs,
+                                          uiActionContext(QStringLiteral("Grade")),
+                                          details);
             }});
     m_gradingTab->wire();
 }

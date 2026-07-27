@@ -48,6 +48,7 @@ struct MaskWidgets {
     QPushButton prompt;
     QSpinBox zLevel;
     QDoubleSpinBox feather;
+    QDoubleSpinBox dilate;
     QCheckBox foreground;
     QCheckBox repeat;
     QDoubleSpinBox repeatX;
@@ -70,6 +71,7 @@ struct MaskWidgets {
         widgets.newPromptButton = &prompt;
         widgets.zLevelSpin = &zLevel;
         widgets.featherSpin = &feather;
+        widgets.dilateSpin = &dilate;
         widgets.foregroundLayerCheck = &foreground;
         widgets.repeatEnabledCheck = &repeat;
         widgets.repeatDeltaXSpin = &repeatX;
@@ -91,6 +93,7 @@ private slots:
     void unavailableChildPreservesEnabledIntentAndReportsAvailability();
     void onlyExplicitZEditsFreezeAutomaticOrdering();
     void treatmentEditsApplyOnlyToSelectedMaskChild();
+    void liveTreatmentEditsOnlyUpdateSelectedChildAndPreview();
 };
 
 void TestMaskTab::inactiveRefreshNeverMaterializesOrSelects()
@@ -263,11 +266,13 @@ void TestMaskTab::onlyExplicitZEditsFreezeAutomaticOrdering()
     tab.refresh();
 
     controls.feather.setValue(3.0);
+    QTest::qWait(100);
     QCOMPARE(selected.maskFeather, 3.0);
     QCOMPARE(selected.zLevel, 7);
     QVERIFY(!selected.zLevelUserSet);
 
     controls.zLevel.setValue(12);
+    QTest::qWait(100);
     QCOMPARE(selected.zLevel, 12);
     QVERIFY(selected.zLevelUserSet);
 }
@@ -314,6 +319,7 @@ void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
     controls.repeat.setChecked(true);
     controls.repeatX.setValue(42.0);
     controls.repeatY.setValue(-12.0);
+    QTest::qWait(100);
 
     QCOMPARE(selected.maskFeather, 12.5);
     QVERIFY(selected.maskForegroundLayerEnabled);
@@ -326,6 +332,88 @@ void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
     QVERIFY(!source.maskRepeatEnabled);
     QCOMPARE(source.maskRepeatDeltaX, 7.0);
     QCOMPARE(source.maskRepeatDeltaY, 8.0);
+}
+
+void TestMaskTab::liveTreatmentEditsOnlyUpdateSelectedChildAndPreview()
+{
+    TimelineClip source = makeSourceClip();
+    source.maskFeather = 91.0;
+    source.maskDilate = 77.0;
+
+    TimelineClip selected = makeMaskChild(
+        source, QStringLiteral("/missing/source_alpha_masks"));
+    selected.generatedFromMaskId = editor::masks::stableMaskSidecarId(
+        selected.maskFramesDir);
+    selected.maskFeather = 2.0;
+    selected.maskDilate = 1.0;
+
+    int updateCalls = 0;
+    int previewCalls = 0;
+    int refreshCalls = 0;
+    int saveCalls = 0;
+    int historyCalls = 0;
+    int materializeCalls = 0;
+    int selectCalls = 0;
+    MaskWidgets controls;
+
+    MaskTab::Dependencies deps;
+    deps.getSelectedClip = [&selected]() { return &selected; };
+    deps.updateClipById = [&selected, &updateCalls](
+                              const QString& id,
+                              const std::function<void(TimelineClip&)>& update) {
+        if (id != selected.id) return false;
+        ++updateCalls;
+        update(selected);
+        return true;
+    };
+    deps.setPreviewTimelineClips = [&previewCalls]() { ++previewCalls; };
+    deps.refreshInspector = [&refreshCalls]() { ++refreshCalls; };
+    deps.scheduleSaveState = [&saveCalls]() { ++saveCalls; };
+    deps.pushHistorySnapshot = [&historyCalls]() { ++historyCalls; };
+    deps.materializeMaskMatteForSidecar =
+        [&materializeCalls](const QString&, const QString&) {
+            ++materializeCalls;
+            return QStringLiteral("unexpected-child");
+        };
+    deps.selectClipById = [&selectCalls](const QString&) { ++selectCalls; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.isMaskInspectorActive = []() { return true; };
+
+    MaskTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    controls.feather.setValue(3.0);
+    controls.feather.setValue(4.0);
+    controls.dilate.setValue(2.0);
+    controls.dilate.setValue(3.0);
+
+    QCOMPARE(updateCalls, 0);
+    QCOMPARE(previewCalls, 0);
+    QTest::qWait(100);
+
+    QCOMPARE(selected.maskFeather, 4.0);
+    QCOMPARE(selected.maskDilate, 3.0);
+    QCOMPARE(source.maskFeather, 91.0);
+    QCOMPARE(source.maskDilate, 77.0);
+    QCOMPARE(updateCalls, 1);
+    QCOMPARE(previewCalls, 1);
+    QCOMPARE(refreshCalls, 0);
+    QCOMPARE(saveCalls, 0);
+    QCOMPARE(historyCalls, 0);
+    QCOMPARE(materializeCalls, 0);
+    QCOMPARE(selectCalls, 0);
+
+    QMetaObject::invokeMethod(&controls.dilate, "editingFinished", Qt::DirectConnection);
+
+    QCOMPARE(selected.maskDilate, 3.0);
+    QCOMPARE(updateCalls, 2);
+    QCOMPARE(previewCalls, 2);
+    QCOMPARE(refreshCalls, 1);
+    QCOMPARE(saveCalls, 1);
+    QCOMPARE(historyCalls, 1);
+    QCOMPARE(materializeCalls, 0);
+    QCOMPARE(selectCalls, 0);
 }
 
 QTEST_MAIN(TestMaskTab)

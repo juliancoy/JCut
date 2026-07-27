@@ -231,6 +231,7 @@ struct RawMaskCacheCore {
     static constexpr std::size_t kMaximumBytes = 256ull * 1024ull * 1024ull;
 
     std::mutex mutex;
+    std::condition_variable loadCompleted;
     std::unordered_map<std::string, std::shared_ptr<jcut::core::ImageBuffer>> images;
     std::unordered_set<std::string> loadsInFlight;
     std::deque<std::string> insertionOrder;
@@ -912,8 +913,45 @@ QImage preparedClipMaskImage(const TimelineClip& clip, int64_t sourceFrame, cons
     return preparedClipMask(clip, sourceFrame, size);
 }
 
+void storeRawMaskDecodeResult(
+    const std::string& cacheKey,
+    const std::shared_ptr<jcut::core::ImageBuffer>& decoded)
+{
+    RawMaskCacheCore& cache = rawMaskCacheCore();
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        cache.loadsInFlight.erase(cacheKey);
+        if (decoded && !decoded->empty() &&
+            decoded->bytes.size() <= RawMaskCacheCore::kMaximumBytes) {
+            while (cache.storedBytes + decoded->bytes.size() >
+                       RawMaskCacheCore::kMaximumBytes &&
+                   !cache.insertionOrder.empty()) {
+                const std::string oldest =
+                    std::move(cache.insertionOrder.front());
+                cache.insertionOrder.pop_front();
+                const auto found = cache.images.find(oldest);
+                if (found == cache.images.end()) {
+                    continue;
+                }
+                cache.storedBytes -= found->second->bytes.size();
+                cache.images.erase(found);
+            }
+            const auto existing = cache.images.find(cacheKey);
+            if (existing != cache.images.end()) {
+                cache.storedBytes -= existing->second->bytes.size();
+            } else {
+                cache.insertionOrder.push_back(cacheKey);
+            }
+            cache.storedBytes += decoded->bytes.size();
+            cache.images[cacheKey] = decoded;
+        }
+    }
+    cache.loadCompleted.notify_all();
+}
+
 static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
-    const QString& path)
+    const QString& path,
+    bool blocking = false)
 {
     if (path.isEmpty()) {
         return {};
@@ -933,14 +971,27 @@ static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
             .arg(version.inode);
     const std::string coreCacheKey = cacheKey.toStdString();
     std::shared_ptr<const jcut::core::ImageBuffer> cached;
+    bool ownsDecode = false;
     {
         RawMaskCacheCore& cache = rawMaskCacheCore();
-        std::lock_guard<std::mutex> lock(cache.mutex);
+        std::unique_lock<std::mutex> lock(cache.mutex);
         const auto found = cache.images.find(coreCacheKey);
         if (found != cache.images.end()) {
             cached = found->second;
-        } else if (!cache.loadsInFlight.insert(coreCacheKey).second) {
-            return {};
+        } else {
+            ownsDecode = cache.loadsInFlight.insert(coreCacheKey).second;
+            if (!ownsDecode) {
+                if (!blocking) {
+                    return {};
+                }
+                cache.loadCompleted.wait(lock, [&]() {
+                    return !cache.loadsInFlight.contains(coreCacheKey);
+                });
+                const auto completed = cache.images.find(coreCacheKey);
+                return completed != cache.images.end()
+                    ? completed->second
+                    : std::shared_ptr<const jcut::core::ImageBuffer>{};
+            }
         }
     }
     if (cached) {
@@ -948,36 +999,18 @@ static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
     }
 
     const std::string corePath = info.absoluteFilePath().toStdString();
+    if (blocking) {
+        auto decoded = std::make_shared<jcut::core::ImageBuffer>(
+            jcut::core::decodeImageFileGray(corePath));
+        storeRawMaskDecodeResult(coreCacheKey, decoded);
+        return decoded->empty()
+            ? std::shared_ptr<const jcut::core::ImageBuffer>{}
+            : decoded;
+    }
     rawMaskDecodeExecutor().enqueue([corePath, coreCacheKey]() {
         auto decoded = std::make_shared<jcut::core::ImageBuffer>(
             jcut::core::decodeImageFileGray(corePath));
-        RawMaskCacheCore& cache = rawMaskCacheCore();
-        std::lock_guard<std::mutex> lock(cache.mutex);
-        cache.loadsInFlight.erase(coreCacheKey);
-        if (decoded->empty() ||
-            decoded->bytes.size() > RawMaskCacheCore::kMaximumBytes) {
-            return;
-        }
-        while (cache.storedBytes + decoded->bytes.size() >
-                   RawMaskCacheCore::kMaximumBytes &&
-               !cache.insertionOrder.empty()) {
-            const std::string oldest = std::move(cache.insertionOrder.front());
-            cache.insertionOrder.pop_front();
-            const auto found = cache.images.find(oldest);
-            if (found == cache.images.end()) {
-                continue;
-            }
-            cache.storedBytes -= found->second->bytes.size();
-            cache.images.erase(found);
-        }
-        const auto existing = cache.images.find(coreCacheKey);
-        if (existing != cache.images.end()) {
-            cache.storedBytes -= existing->second->bytes.size();
-        } else {
-            cache.insertionOrder.push_back(coreCacheKey);
-        }
-        cache.storedBytes += decoded->bytes.size();
-        cache.images[coreCacheKey] = std::move(decoded);
+        storeRawMaskDecodeResult(coreCacheKey, decoded);
     });
     return {};
 }
@@ -1023,6 +1056,16 @@ QImage rawClipMaskImage(const TimelineClip& clip,
 {
     return qtImageFromCoreBuffer(
         rawClipMaskBuffer(clip, presentedFrame));
+}
+
+QImage rawClipMaskImageBlocking(
+    const TimelineClip& clip,
+    const editor::FrameHandle& presentedFrame)
+{
+    return qtImageFromCoreBuffer(
+        rawClipMaskBufferForPath(
+            maskFramePathForPresentedFrame(clip, presentedFrame),
+            true));
 }
 
 QImage applyCorrectionPolygonsToMaskImage(

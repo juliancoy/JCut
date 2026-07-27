@@ -23,6 +23,7 @@ DirectVulkanPreviewWindow* createDirectVulkanPreviewWindow(
     DirectVulkanPreviewStats* stats,
     bool* active,
     QString* failureReason,
+    bool enableAudioPipeline = true,
     std::function<void(const QString&)> failureCallback = {});
 void directVulkanPreviewWindowSetVulkanInstance(DirectVulkanPreviewWindow* window,
                                                 QVulkanInstance* instance);

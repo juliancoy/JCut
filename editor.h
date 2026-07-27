@@ -9,6 +9,7 @@
 #include "timeline_widget.h"
 #include "preview_surface.h"
 #include "playback_stage_metrics.h"
+#include "action_profiler.h"
 #include "editor_pane.h"
 #include "explorer_pane.h"
 #include "inspector_pane.h"
@@ -72,6 +73,7 @@
 #include <mutex>
 
 class MaskTab;
+class ExportVulkanPreviewWidget;
 
 namespace editor {
 
@@ -145,6 +147,7 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
+    UiActionProfiler::Context uiActionContext(const QString& selectedTab = QString()) const;
     QJsonObject speakerUiPerformanceSnapshot() const;
     QJsonObject pipelineSnapshot(bool verbose = false) const;
     QJsonObject playbackStageMetricsSnapshot(
@@ -262,6 +265,7 @@ private:
         QLabel* statusLabel = nullptr;
         QPlainTextEdit* sourcesList = nullptr;
         QProgressBar* progressBar = nullptr;
+        ExportVulkanPreviewWidget* previewWidget = nullptr;
         std::atomic_bool* cancelled = nullptr;
         bool closeOnFinish = true;
     };
@@ -364,6 +368,8 @@ private:
     void scheduleDeferredInspectorRefresh(int delayMs = 75);
     void refreshInspectorTabByName(const QString& tabName);
     void refreshAudioInspectorViews();
+    void refreshAudioDynamicsControlsForClip(const TimelineClip* clip);
+    bool anyClipTranscriptNormalizeEnabled() const;
     void syncAudioTabTimelineWaveforms();
     void refreshProcessingJobsTab();
     void showProcessingJobLog(const QString& manifestPath);
@@ -859,6 +865,7 @@ private:
     std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_inspectorRefreshSlowCount{0};
+    UiActionProfiler m_uiActionProfiler;
     std::atomic<bool> m_startupReadinessFirstPlaybackTick{false};
     std::atomic<bool> m_startupReadinessAudioStarted{false};
     std::atomic<bool> m_startupReadinessVideoSampleApplied{false};
@@ -869,7 +876,10 @@ private:
     QJsonArray m_startupProfileEvents;
     mutable std::mutex m_startupReadinessMutex;
     QJsonObject m_startupReadinessSnapshot;
-    qint64 m_playbackUiSyncMinIntervalMs = 100;
+    qint64 m_lastPlaybackChromeSyncMs = 0;
+    qint64 m_lastPlaybackTableSyncMs = 0;
+    qint64 m_playbackUiSyncMinIntervalMs = 500;
+    qint64 m_playbackTableSyncMinIntervalMs = 500;
     qint64 m_playbackStateSaveMinIntervalMs = 1000;
     qint64 m_slowSeekWarnThresholdMs = 20;
     int m_playbackStartLookaheadFrames = 5;

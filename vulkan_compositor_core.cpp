@@ -13,6 +13,9 @@
 namespace jcut::vulkan {
 namespace {
 
+constexpr std::uint64_t kHeadlessCompositorWaitTimeoutNs =
+    5'000'000'000ull;
+
 bool fail(std::string* errorOut, const char* message)
 {
     if (errorOut) {
@@ -179,7 +182,7 @@ public:
         if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS ||
             vkWaitForFences(
                 device, 1, &fence, VK_TRUE,
-                std::numeric_limits<std::uint64_t>::max()) !=
+                kHeadlessCompositorWaitTimeoutNs) !=
                 VK_SUCCESS) {
             return fail(errorOut, "Vulkan upload submission failed");
         }
@@ -301,7 +304,7 @@ public:
         if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS ||
             vkWaitForFences(
                 device, 1, &fence, VK_TRUE,
-                std::numeric_limits<std::uint64_t>::max()) !=
+                kHeadlessCompositorWaitTimeoutNs) !=
                 VK_SUCCESS) {
             return fail(
                 errorOut,
@@ -1023,7 +1026,7 @@ private:
         if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS ||
             vkWaitForFences(
                 device, 1, &fence, VK_TRUE,
-                std::numeric_limits<std::uint64_t>::max()) !=
+                kHeadlessCompositorWaitTimeoutNs) !=
                 VK_SUCCESS) {
             return fail(
                 errorOut,

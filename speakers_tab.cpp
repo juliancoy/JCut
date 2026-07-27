@@ -1476,6 +1476,33 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     }
 }
 
+void SpeakersTab::scheduleSpeakerTitleRegeneration()
+{
+    if (m_updating || !m_widgets.speakerOverlayCreateTitleClipsButton) {
+        return;
+    }
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    const bool hasGeneratedIntroductions =
+        selectedClip && selectedClip->speakerTitleEngineActive;
+    if (!m_widgets.speakerOverlayCreateTitleClipsButton->isChecked() &&
+        !hasGeneratedIntroductions) {
+        if (m_deps.scheduleSaveState) {
+            m_deps.scheduleSaveState();
+        }
+        return;
+    }
+    if (!m_speakerTitleRegenerationTimer) {
+        onSpeakerCreateTitleClipsClicked();
+        if (m_deps.scheduleSaveState) {
+            m_deps.scheduleSaveState();
+        }
+        return;
+    }
+    m_speakerTitleRegenerationQueued = true;
+    m_speakerTitleRegenerationTimer->start(200);
+}
+
 
 QString SpeakersTab::originalTranscriptPathForClip(const QString& clipFilePath) const
 {

@@ -238,11 +238,17 @@ struct OffscreenRenderContext {
     bool forceSoftwareDecode = false;
     bool preferHardwareFrames = false;
     bool externalVulkanOutput = false;
+    QString* frameFailureReason = nullptr;
+    OffscreenVulkanFrame* gpuPreviewFrame = nullptr;
+    QString* gpuPreviewError = nullptr;
 };
 
-class OffscreenRenderer {
+// Canonical headless timeline compositor. Export owns this renderer; visible
+// preview surfaces may consume its neutral OffscreenVulkanFrame output but
+// never participate in composition ownership or encoder progress.
+class HeadlessVulkanCompositor {
 public:
-    virtual ~OffscreenRenderer() = default;
+    virtual ~HeadlessVulkanCompositor() = default;
 
     virtual bool initialize(const QSize& outputSize, QString* errorMessage) = 0;
     virtual QImage renderFrame(const OffscreenRenderContext& context)
@@ -308,7 +314,9 @@ public:
                              qreal generatedEffectClockTimelineFrame = -1.0,
                              bool forceSoftwareDecode = false,
                              bool preferHardwareFrames = false,
-                             bool externalVulkanOutput = true)
+                             bool externalVulkanOutput = true,
+                             OffscreenVulkanFrame* gpuPreviewFrame = nullptr,
+                             QString* gpuPreviewError = nullptr)
     {
         return renderFrameToOutput(OffscreenRenderContext{request,
                                                           timelineFrame,
@@ -329,7 +337,10 @@ public:
                                                               : timelineFrame,
                                                           forceSoftwareDecode,
                                                           preferHardwareFrames,
-                                                          externalVulkanOutput},
+                                                          externalVulkanOutput,
+                                                          nullptr,
+                                                          gpuPreviewFrame,
+                                                          gpuPreviewError},
                                    output,
                                    readbackToCpuImage);
     }
@@ -399,10 +410,10 @@ public:
     virtual QString backendId() const = 0;
 };
 
-class OffscreenVulkanRenderer : public OffscreenRenderer {
+class OffscreenVulkanRenderer : public HeadlessVulkanCompositor {
 public:
-    using OffscreenRenderer::renderFrame;
-    using OffscreenRenderer::renderFrameToOutput;
+    using HeadlessVulkanCompositor::renderFrame;
+    using HeadlessVulkanCompositor::renderFrameToOutput;
 
     OffscreenVulkanRenderer();
     ~OffscreenVulkanRenderer() override;

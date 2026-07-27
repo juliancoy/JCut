@@ -723,7 +723,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 clip.transcriptOverlay.showSpeakerTitle = false;
             });
             const GeneratedClipPlacementResult placement =
-                replaceGeneratedClipsForSource(
+                ::replaceGeneratedClipsForSource(
                     m_clips,
                     m_tracks,
                     source.id,

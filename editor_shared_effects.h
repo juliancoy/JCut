@@ -22,6 +22,8 @@ QImage applyClipMaskEffectsToImage(const QImage& source,
 QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame);
 QImage rawClipMaskImage(const TimelineClip& clip,
                         const editor::FrameHandle& presentedFrame);
+QImage rawClipMaskImageBlocking(const TimelineClip& clip,
+                                const editor::FrameHandle& presentedFrame);
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
     int64_t sourceFrame);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_document_core.h"
+#include "editor_effect_presets.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
 
@@ -61,6 +62,10 @@ public:
     void setDeferMaskSidecarReconciliation(bool defer);
     void reconcileMaskSidecarsNow();
     void setTracks(const QVector<TimelineTrack>& tracks);
+    GeneratedClipPlacementResult replaceGeneratedClipsForSource(const QString& sourceClipId,
+                                                                ClipRole generatedRole,
+                                                                const QVector<TimelineClip>& generatedClips,
+                                                                const QString& trackBaseName);
 
     QString selectedClipId() const;
     QSet<QString> selectedClipIds() const;

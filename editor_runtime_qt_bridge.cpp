@@ -170,6 +170,8 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.audioGain = clip.audioGain;
         coreClip.audioPan = clip.audioPan;
         coreClip.audioSolo = clip.audioSolo;
+        coreClip.audioDynamics = clip.audioDynamics;
+        coreClip.audioDynamicsSet = clip.audioDynamicsSet;
         coreClip.audioLinkedToVideo = clip.audioLinkedToVideo;
         coreClip.fadeSamples = std::max(0, clip.fadeSamples);
         coreClip.brightness = clip.brightness;

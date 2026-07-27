@@ -27,6 +27,7 @@ public:
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     void setPlaybackActive(bool active);
     void setPlayheadFrame(int64_t playheadFrame);
+    void setPlayheadSample(int64_t playheadSample);
     void setPlaybackSpeed(qreal speed);
 
     void requestFramesForSample(int64_t samplePosition, const std::function<void()>& onFrameReady);
@@ -90,7 +91,7 @@ private:
     int64_t normalizeFrameNumber(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
     void clearBuffers();
-    void dropStaleRequestsForPlayhead(int64_t playheadFrame);
+    void dropStaleRequestsForPlayheadSample(int64_t playheadSample);
     void cancelDecoderBeforeThrottled(const QString& playbackPath,
                                       int64_t keepFromFrame,
                                       qint64 nowMs);
@@ -174,6 +175,7 @@ private:
 
     std::atomic<bool> m_active{false};
     std::atomic<int64_t> m_playheadFrame{0};
+    std::atomic<int64_t> m_playheadSample{0};
     std::atomic<double> m_playbackSpeed{1.0};
 };
 

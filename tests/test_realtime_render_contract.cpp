@@ -54,6 +54,7 @@ class TestRealtimeRenderContract : public QObject {
 
 private slots:
     void outputFpsSamplingProducesFractionalTimelinePositions();
+    void integralDurationDoesNotGainFrameFromFloatingPointNoise();
     void exportFrameTimingNamesOutputTimeAndTimelineDomains();
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
@@ -76,6 +77,19 @@ void TestRealtimeRenderContract::outputFpsSamplingProducesFractionalTimelinePosi
     QVERIFY2(std::abs(positions.at(2) - 1.0) < 0.000001,
              "output PTS mapping must advance by output-frame duration");
     QCOMPARE(positions.constLast(), 29.0);
+}
+
+void TestRealtimeRenderContract::
+    integralDurationDoesNotGainFrameFromFloatingPointNoise()
+{
+    QCOMPARE(
+        jcut::export_timing::outputFrameCountForTimelineRange(
+            0, 30, 30.0, 1.0),
+        std::int64_t(31));
+    QCOMPARE(
+        jcut::export_timing::outputFrameCountForTimelineRange(
+            31, 61, 30.0, 1.0),
+        std::int64_t(31));
 }
 
 void TestRealtimeRenderContract::exportFrameTimingNamesOutputTimeAndTimelineDomains()
@@ -396,8 +410,11 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     QVERIFY2(vulkanFile.open(QIODevice::ReadOnly),
              "offscreen_vulkan_renderer_backend.cpp must be readable");
     const QString vulkanSource = QString::fromUtf8(vulkanFile.readAll());
-    QVERIFY2(vulkanSource.contains(QStringLiteral("const bool gpuOutputOnly = (readbackMs == nullptr)")),
-             "Vulkan export must make GPU-output mode explicit");
+    QVERIFY2(vulkanSource.contains(QStringLiteral(
+                 "if (!frameContext.externalVulkanOutput)")) &&
+                 vulkanSource.contains(QStringLiteral(
+                     "lastRenderedVulkanFrame(&output->vulkanFrame")),
+             "Vulkan export must make canonical external Vulkan output mode explicit");
     QVERIFY2(!vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
                  vulkanSource.contains(QStringLiteral("textInputs.title3D.push_back(title)")),
              "All titles must use the Vulkan text path, including GPU-only export");

@@ -245,6 +245,9 @@ int main(int argc, char **argv)
     QCommandLineOption speakerHarnessOption(
         QStringList{QStringLiteral("speaker-export-harness")},
         QStringLiteral("Run speaker export harness without showing the main window."));
+    QCommandLineOption offlineExportHarnessOption(
+        QStringList{QStringLiteral("offline-export-harness")},
+        QStringLiteral("Render an exact project frame range headlessly with the Vulkan export compositor."));
     QCommandLineOption stateOption(
         QStringList{QStringLiteral("state")},
         QStringLiteral("Path to state JSON for harness mode."),
@@ -279,6 +282,24 @@ int main(int argc, char **argv)
     QCommandLineOption noProxyOption(
         QStringList{QStringLiteral("no-proxy")},
         QStringLiteral("Disable proxy rendering in harness mode."));
+    QCommandLineOption startFrameOption(
+        QStringList{QStringLiteral("start-frame")},
+        QStringLiteral("First timeline frame for offline export harness."),
+        QStringLiteral("frame"));
+    QCommandLineOption endFrameOption(
+        QStringList{QStringLiteral("end-frame")},
+        QStringLiteral("Last timeline frame for offline export harness."),
+        QStringLiteral("frame"));
+    QCommandLineOption gpuExportPreviewOption(
+        QStringList{QStringLiteral("gpu-export-preview")},
+        QStringLiteral("Exercise optional external-memory preview publication in offline export harness."));
+    QCommandLineOption imageSequenceOption(
+        QStringList{QStringLiteral("image-sequence")},
+        QStringLiteral("Checkpoint rendered frames as an intermittent image sequence in offline export harness."));
+    QCommandLineOption previousRangeEndOption(
+        QStringList{QStringLiteral("previous-range-end")},
+        QStringLiteral("Previous disjoint timeline range end used to reproduce an export crossfade."),
+        QStringLiteral("frame"));
     parser.addOption(debugPlaybackOption);
     parser.addOption(debugCacheOption);
     parser.addOption(debugDecodeOption);
@@ -288,6 +309,7 @@ int main(int argc, char **argv)
     parser.addOption(noRestOption);
     parser.addOption(restVulkanDiagnosticsOption);
     parser.addOption(speakerHarnessOption);
+    parser.addOption(offlineExportHarnessOption);
     parser.addOption(stateOption);
     parser.addOption(outputOption);
     parser.addOption(speakerOption);
@@ -297,6 +319,11 @@ int main(int argc, char **argv)
     parser.addOption(heightOption);
     parser.addOption(useProxyOption);
     parser.addOption(noProxyOption);
+    parser.addOption(startFrameOption);
+    parser.addOption(endFrameOption);
+    parser.addOption(gpuExportPreviewOption);
+    parser.addOption(imageSequenceOption);
+    parser.addOption(previousRangeEndOption);
     parser.process(app);
 
     if (parser.isSet(restVulkanDiagnosticsOption)) {
@@ -367,6 +394,52 @@ int main(int argc, char **argv)
             config.useProxyMedia = parser.isSet(useProxyOption) && !parser.isSet(noProxyOption);
         }
         return editor::runSpeakerExportHarness(config);
+    }
+    if (parser.isSet(offlineExportHarnessOption)) {
+        bool startOk = false;
+        bool endOk = false;
+        editor::OfflineExportHarnessConfig config;
+        config.statePath = parser.value(stateOption);
+        config.outputPath = parser.value(outputOption);
+        config.outputFormat = parser.value(formatOption);
+        config.startFrame =
+            parser.value(startFrameOption).toLongLong(&startOk);
+        config.endFrame =
+            parser.value(endFrameOption).toLongLong(&endOk);
+        if (!startOk || !endOk) {
+            fprintf(stderr,
+                    "Offline export harness requires integer --start-frame "
+                    "and --end-frame values.\n");
+            return 2;
+        }
+        config.gpuExportPreviewEnabled =
+            parser.isSet(gpuExportPreviewOption);
+        config.createImageSequence =
+            parser.isSet(imageSequenceOption);
+        if (parser.isSet(previousRangeEndOption)) {
+            bool previousEndOk = false;
+            config.previousRangeEndFrame =
+                parser.value(previousRangeEndOption)
+                    .toLongLong(&previousEndOk);
+            if (!previousEndOk) {
+                fprintf(stderr,
+                        "--previous-range-end must be an integer.\n");
+                return 2;
+            }
+        }
+        if (parser.isSet(widthOption) || parser.isSet(heightOption)) {
+            bool widthOk = false;
+            bool heightOk = false;
+            const int parsedWidth =
+                parser.value(widthOption).toInt(&widthOk);
+            const int parsedHeight =
+                parser.value(heightOption).toInt(&heightOk);
+            config.outputSize =
+                QSize(widthOk ? parsedWidth : 1080,
+                      heightOk ? parsedHeight : 1920);
+            config.outputSizeOverride = true;
+        }
+        return editor::runOfflineExportHarness(config);
     }
 
     if (qEnvironmentVariableIsEmpty("JCUT_GPU_PREFERENCE")) {

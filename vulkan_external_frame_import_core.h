@@ -57,6 +57,9 @@ public:
     [[nodiscard]] bool isInitialized() const;
     bool importFrame(const render_detail::OffscreenVulkanFrame& frame,
                      std::string* errorMessage = nullptr);
+    bool importExternalFrame(
+        const render_detail::OffscreenVulkanFrame& frame,
+        std::string* errorMessage = nullptr);
     bool recordFrameCopy(VkCommandBuffer commandBuffer,
                          const render_detail::OffscreenVulkanFrame& frame,
                          bool externalQueueOwnership,

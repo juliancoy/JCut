@@ -816,13 +816,20 @@ void ExplorerPane::setExplorerRootPath(const QString &path, bool emitSignals)
         return;
     }
 
-    QString resolvedPath = path;
-    if (resolvedPath.isEmpty() || !QFileInfo::exists(resolvedPath) || !QFileInfo(resolvedPath).isDir())
-    {
-        resolvedPath = QDir::currentPath();
+    const QFileInfo requestedInfo(path.trimmed());
+    if (!requestedInfo.exists() || !requestedInfo.isDir()) {
+        if (m_rootPathLabel && m_currentRootPath.isEmpty()) {
+            m_rootPathLabel->setText(QStringLiteral("Media Root: Not set"));
+        }
+        return;
     }
 
-    m_currentRootPath = QDir(resolvedPath).absolutePath();
+    const QString nextRootPath = QDir(requestedInfo.absoluteFilePath()).absolutePath();
+    if (!emitSignals && QDir(m_currentRootPath).absolutePath() == nextRootPath) {
+        return;
+    }
+
+    m_currentRootPath = nextRootPath;
     const QModelIndex rootIndex = m_fsModel->setRootPath(m_currentRootPath);
     m_tree->setRootIndex(rootIndex);
     hideExplorerHoverPreview();

@@ -212,6 +212,7 @@ QJsonObject loadActiveProjectStartupStatePayload(QString* projectIdOut,
     const QString projectId = manager->currentProjectIdOrDefault();
     const QString statePath = manager->stateFilePathForProject(projectId);
     const QString historyPath = manager->historyFilePathForProject(projectId);
+    const QString rootPath = manager->rootDirPath();
 
     if (projectIdOut) {
         *projectIdOut = projectId;
@@ -223,7 +224,11 @@ QJsonObject loadActiveProjectStartupStatePayload(QString* projectIdOut,
         *historyPathOut = historyPath;
     }
 
-    return loadStartupStatePayload(projectId, statePath, historyPath);
+    QJsonObject result = loadStartupStatePayload(projectId, statePath, historyPath);
+    result[QStringLiteral("state_path")] = statePath;
+    result[QStringLiteral("history_path")] = historyPath;
+    result[QStringLiteral("project_root")] = rootPath;
+    return result;
 }
 
 QVector<TimelineClip> startupTimelineClips(const QJsonObject& root)

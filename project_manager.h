@@ -39,6 +39,7 @@ public:
     void ensureDefaultProjectExists() const;
     
     void loadProjectsFromFolders();
+    void adoptLoadedProjectFromStartup(const QString& projectId);
     void loadDefaultProjectFromFolders();
     void saveCurrentProjectMarker();
     QString currentProjectName() const;

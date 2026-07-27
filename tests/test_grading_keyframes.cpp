@@ -5,6 +5,7 @@
 #include "../editor_grading_core.h"
 #include "../editor_runtime.h"
 #include "../editor_shared.h"
+#include "../action_profiler.h"
 #include "../render_vulkan_shared.h"
 
 #include <array>
@@ -120,6 +121,7 @@ private slots:
     void testVulkanDrawStateDoesNotEnableCurveByDefault();
     void testSpeakerGradeOverridesRatherThanCombinesWithClipGrade();
     void testGradingTabKeepsDisplayedFramesClipLocal();
+    void testUiActionProfilerKeepsSlowActionSummary();
 };
 
 void TestGradingKeyframes::testNeutralEvaluatorMatchesQtGradeSemantics()
@@ -264,6 +266,47 @@ void TestGradingKeyframes::testGradingTabKeepsDisplayedFramesClipLocal()
              "Grade table selection must evaluate the selected clip-local frame");
     QVERIFY2(!contents.contains("evaluateDisplayedGrading(*clip, clip->startFrame"),
              "Grade-tab callers must not add the clip start before the display helper adds it");
+}
+
+void TestGradingKeyframes::testUiActionProfilerKeepsSlowActionSummary()
+{
+    UiActionProfiler profiler;
+    UiActionProfiler::Context context;
+    context.playbackActive = true;
+    context.frame = 9869;
+    context.sample = 15790768;
+    context.stateRevision = 1180;
+    context.selectedTab = QStringLiteral("Grade");
+    context.selectedClipId = QStringLiteral("clip-a");
+
+    profiler.record(QStringLiteral("grading.apply_from_inspector"),
+                    18,
+                    context,
+                    QJsonObject{{QStringLiteral("clip_id"), QStringLiteral("clip-a")}});
+    profiler.record(QStringLiteral("grading.sync_table_to_playhead"),
+                    2,
+                    context,
+                    QJsonObject{{QStringLiteral("skipped_reason"),
+                                 QStringLiteral("grading_editor_has_focus")}});
+
+    const QJsonObject snapshot = profiler.snapshot();
+    QCOMPARE(snapshot.value(QStringLiteral("record_count")).toInt(), 2);
+    QCOMPARE(snapshot.value(QStringLiteral("total_count")).toInteger(), qint64{2});
+    QCOMPARE(snapshot.value(QStringLiteral("slow_count")).toInteger(), qint64{1});
+
+    const QJsonArray slow = snapshot.value(QStringLiteral("slow_actions")).toArray();
+    QCOMPARE(slow.size(), 1);
+    const QJsonObject action = slow.first().toObject();
+    QCOMPARE(action.value(QStringLiteral("action_id")).toString(),
+             QStringLiteral("grading.apply_from_inspector"));
+    QCOMPARE(action.value(QStringLiteral("context")).toObject()
+                 .value(QStringLiteral("selected_tab")).toString(),
+             QStringLiteral("Grade"));
+
+    profiler.reset();
+    const QJsonObject reset = profiler.snapshot();
+    QCOMPARE(reset.value(QStringLiteral("record_count")).toInt(), 0);
+    QCOMPARE(reset.value(QStringLiteral("total_count")).toInteger(), qint64{0});
 }
 
 void TestGradingKeyframes::testSpeakerGradeOverridesRatherThanCombinesWithClipGrade()

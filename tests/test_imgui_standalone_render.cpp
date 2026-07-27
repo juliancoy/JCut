@@ -1531,10 +1531,14 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  shell.contains(QStringLiteral("Remove from Project")),
              "project media removal must use the neutral guarded command from an explicit context action");
     QVERIFY2(shell.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
+                 shell.contains(QStringLiteral(
+                     "jcut::SplitClipCommand{\n                    hoveredClipId")) &&
+                 shell.contains(QStringLiteral(
+                     "jcut::SelectClipCommand{hoveredClipId}")) &&
                  shell.contains(QStringLiteral("TimelineToolMode::Razor")) &&
                  shell.contains(QStringLiteral("snapTimelineMoveStart")) &&
                  shell.contains(QStringLiteral("timelineSnapIndicatorFrame")),
-             "the ImGui timeline must expose shared razor semantics and visible boundary snapping");
+             "the ImGui timeline must cut only the clicked clip while retaining explicit selected-group splitting and visible boundary snapping");
     QVERIFY2(shell.contains(QStringLiteral("RemoveClipKeyframeCommand")) &&
                  shell.contains(QStringLiteral("EditorKeyframeChannel::Grading")) &&
                  shell.contains(QStringLiteral("EditorKeyframeChannel::Opacity")) &&

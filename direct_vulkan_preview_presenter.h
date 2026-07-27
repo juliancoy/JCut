@@ -114,7 +114,9 @@ struct DirectVulkanPresentationTelemetry {
 
 class DirectVulkanPreviewPresenter final {
 public:
-    explicit DirectVulkanPreviewPresenter(PreviewInteractionState* state, QWidget* parent = nullptr);
+    explicit DirectVulkanPreviewPresenter(PreviewInteractionState* state,
+                                          QWidget* parent = nullptr,
+                                          bool enableAudioPipeline = true);
     ~DirectVulkanPreviewPresenter();
 
     DirectVulkanPreviewPresenter(const DirectVulkanPreviewPresenter&) = delete;
@@ -142,6 +144,7 @@ public:
         std::function<void(const QString&)> createKeyframeRequested = {});
 
     void requestUpdate();
+    void requestFrameUpdate();
     void requestPipelineTapReadback();
     QImage latestPipelineTapImage() const;
     void updateTitle();

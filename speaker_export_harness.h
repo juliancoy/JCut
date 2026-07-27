@@ -20,4 +20,19 @@ struct SpeakerExportHarnessConfig {
 
 int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config);
 
+struct OfflineExportHarnessConfig {
+    QString statePath;
+    QString outputPath;
+    QString outputFormat;
+    int64_t startFrame = 0;
+    int64_t endFrame = 0;
+    QSize outputSize;
+    bool outputSizeOverride = false;
+    bool gpuExportPreviewEnabled = false;
+    bool createImageSequence = false;
+    int64_t previousRangeEndFrame = -1;
+};
+
+int runOfflineExportHarness(const OfflineExportHarnessConfig& config);
+
 }  // namespace editor

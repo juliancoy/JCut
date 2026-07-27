@@ -97,7 +97,7 @@ struct ThreadLocalPreviewRenderer {
 
     RenderBackend backend = RenderBackend::Vulkan;
     QSize initializedSize;
-    std::unique_ptr<render_detail::OffscreenRenderer> renderer;
+    std::unique_ptr<render_detail::HeadlessVulkanCompositor> renderer;
     QHash<QString, editor::DecoderContext*> decoders;
     editor::AsyncDecoder asyncDecoder;
     QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;

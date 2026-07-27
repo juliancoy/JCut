@@ -87,6 +87,7 @@ private slots:
 
     void testSpeechFilterUsesActiveTranscriptCut();
     void testSpeechFilterUsesLiveTranscriptBeforeAsyncSave();
+    void testPublishedTranscriptIsVisibleToRuntimeBeforeAsyncSave();
     void testAllSkippedWordsYieldNoSpeechRanges();
     void testAudibleTimelineClipsExcludeDisabledOverlappingTrack();
     void testSpeechFilterIgnoresMalformedWordTiming();
@@ -107,6 +108,7 @@ private slots:
     void testSpeakerFramingSectionRotationWithoutFaceBoxUsesClipCenter();
     void testTimelineSectionRotationAppliesToVideoFromAudioTranscript();
     void testSpeakerFramingSectionRotationAppliesAcrossClipBucketsForProfileTracking();
+    void testTranscriptSpeakerGradingDoesNotOverrideSourceLinkedChildGrade();
     void testTranscriptFrameMappingUsesSourceSeconds();
     void testTranscriptFrameMappingFromPresentedSourceFrame();
     void testAudioVideoCaptionMappingStaysSampleAccurateAtOnePointFiveX();
@@ -222,6 +224,56 @@ void TestTranscriptLogic::testSpeechFilterUsesLiveTranscriptBeforeAsyncSave() {
     const QVector<ExportRangeSegment> diskRanges = engine.transcriptWordExportRanges(
         {ExportRangeSegment{100, 189}}, {clip}, {}, 0, 0);
     QVERIFY(diskRanges.isEmpty());
+}
+
+void TestTranscriptLogic::testPublishedTranscriptIsVisibleToRuntimeBeforeAsyncSave() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString transcriptPath =
+        dir.filePath(QStringLiteral("clip_editable.json"));
+    QJsonArray diskWords;
+    diskWords.push_back(wordObj(0.0, 0.5, false));
+    QVERIFY(writeTranscriptJson(transcriptPath, diskWords));
+    invalidateTranscriptJsonCache(transcriptPath);
+
+    const std::shared_ptr<const TranscriptRuntimeDocument> diskDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    QVERIFY(diskDocument);
+    QCOMPARE(diskDocument->sections.size(), 1);
+    QCOMPARE(diskDocument->sections.constFirst().words.constFirst().text,
+             QStringLiteral("hello"));
+
+    QJsonObject liveWord = wordObj(1.0, 1.2, false);
+    liveWord[QStringLiteral("word")] = QStringLiteral("immediate");
+    QJsonObject liveSegment;
+    liveSegment[QStringLiteral("words")] = QJsonArray{liveWord};
+    QJsonObject liveRoot;
+    liveRoot[QStringLiteral("segments")] = QJsonArray{liveSegment};
+    const QJsonDocument liveDocument(liveRoot);
+
+    QVERIFY(publishTranscriptDocumentToRuntimeCaches(
+        transcriptPath, liveDocument));
+    const std::shared_ptr<const TranscriptRuntimeDocument> publishedDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    QVERIFY(publishedDocument);
+    QCOMPARE(publishedDocument->sections.size(), 1);
+    const TranscriptWord& publishedWord =
+        publishedDocument->sections.constFirst().words.constFirst();
+    QCOMPARE(publishedWord.text, QStringLiteral("immediate"));
+    QCOMPARE(publishedWord.skipped, false);
+
+    QFile unchangedDiskFile(transcriptPath);
+    QVERIFY(unchangedDiskFile.open(QIODevice::ReadOnly));
+    const QJsonDocument unchangedDiskDocument =
+        QJsonDocument::fromJson(unchangedDiskFile.readAll());
+    QCOMPARE(unchangedDiskDocument.object()
+                 .value(QStringLiteral("segments")).toArray()
+                 .first().toObject()
+                 .value(QStringLiteral("words")).toArray()
+                 .first().toObject()
+                 .value(QStringLiteral("word")).toString(),
+             QStringLiteral("hello"));
 }
 
 void TestTranscriptLogic::testAudibleTimelineClipsExcludeDisabledOverlappingTrack() {
@@ -1003,6 +1055,74 @@ void TestTranscriptLogic::testSpeakerFramingSectionRotationAppliesAcrossClipBuck
              QStringLiteral("speaker_profile_tracking"));
     QCOMPARE(diagnostics.value(QStringLiteral("applied_rotation_degrees")).toDouble(), 12.0);
     QCOMPARE(diagnostics.value(QStringLiteral("section_mapping_active")).toBool(), true);
+}
+
+void TestTranscriptLogic::testTranscriptSpeakerGradingDoesNotOverrideSourceLinkedChildGrade() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.mp4"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath = dir.filePath(QStringLiteral("clip_editable.json"));
+
+    QJsonObject word;
+    word[QStringLiteral("word")] = QStringLiteral("hello");
+    word[QStringLiteral("start")] = 0.0;
+    word[QStringLiteral("end")] = 1.0;
+    word[QStringLiteral("speaker")] = QStringLiteral("S1");
+    QJsonObject segment;
+    segment[QStringLiteral("words")] = QJsonArray{word};
+
+    QJsonObject grading;
+    grading[QStringLiteral("enabled")] = true;
+    grading[QStringLiteral("brightness")] = -0.25;
+    grading[QStringLiteral("contrast")] = 1.75;
+    grading[QStringLiteral("saturation")] = 0.50;
+    QJsonObject profile;
+    profile[QStringLiteral("grading")] = grading;
+    QJsonObject profiles;
+    profiles[QStringLiteral("S1")] = profile;
+
+    QJsonObject root;
+    root[QStringLiteral("segments")] = QJsonArray{segment};
+    root[QStringLiteral("speaker_profiles")] = profiles;
+    QVERIFY(writeTranscriptDocument(transcriptPath, root));
+
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+    invalidateTranscriptJsonCache(transcriptPath);
+    invalidateTranscriptSpeakerProfileCache(transcriptPath);
+
+    TimelineClip source;
+    source.id = QStringLiteral("source");
+    source.filePath = clipPath;
+    source.mediaType = ClipMediaType::Video;
+    source.clipRole = ClipRole::Media;
+    source.startFrame = 0;
+    source.durationFrames = 30;
+    source.sourceDurationFrames = 30;
+    source.gradingKeyframes = {
+        TimelineClip::GradingKeyframe{0, 0.10, 1.10, 1.20}
+    };
+
+    TimelineClip child = source;
+    child.id = QStringLiteral("child");
+    child.linkedSourceClipId = source.id;
+    child.syncLockedToSource = true;
+    child.gradingKeyframes = {
+        TimelineClip::GradingKeyframe{0, 0.60, 1.40, 0.70}
+    };
+
+    const TimelineClip::GradingKeyframe sourceGrade =
+        evaluateEffectiveClipGradingAtPosition(source, {}, 15.0);
+    const TimelineClip::GradingKeyframe childGrade =
+        evaluateEffectiveClipGradingAtPosition(child, {}, 15.0);
+
+    QCOMPARE(sourceGrade.brightness, -0.25);
+    QCOMPARE(sourceGrade.contrast, 1.75);
+    QCOMPARE(sourceGrade.saturation, 0.50);
+    QCOMPARE(childGrade.brightness, 0.60);
+    QCOMPARE(childGrade.contrast, 1.40);
+    QCOMPARE(childGrade.saturation, 0.70);
 }
 
 void TestTranscriptLogic::testTranscriptFrameMappingUsesSourceSeconds() {

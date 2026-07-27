@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace editor {
@@ -286,9 +287,17 @@ void PlaybackFramePipeline::setPlaybackActive(bool active) {
 }
 
 void PlaybackFramePipeline::setPlayheadFrame(int64_t playheadFrame) {
+    setPlayheadSample(frameToSamples(playheadFrame));
+}
+
+void PlaybackFramePipeline::setPlayheadSample(int64_t playheadSample) {
+    playheadSample = qMax<int64_t>(0, playheadSample);
+    const int64_t playheadFrame = qMax<int64_t>(
+        0, static_cast<int64_t>(std::floor(samplesToFramePosition(playheadSample))));
+    m_playheadSample.store(playheadSample);
     m_playheadFrame.store(playheadFrame);
     if (m_active.load()) {
-        dropStaleRequestsForPlayhead(playheadFrame);
+        dropStaleRequestsForPlayheadSample(playheadSample);
     }
 }
 
@@ -296,7 +305,7 @@ void PlaybackFramePipeline::setPlaybackSpeed(qreal speed) {
     m_playbackSpeed.store(qBound<qreal>(0.1, std::abs(speed), 4.0));
 }
 
-void PlaybackFramePipeline::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
+void PlaybackFramePipeline::dropStaleRequestsForPlayheadSample(int64_t playheadSample) {
     QHash<QString, int64_t> activeLocalFrames;
     QVector<RenderSyncMarker> markers;
     {
@@ -308,15 +317,14 @@ void PlaybackFramePipeline::dropStaleRequestsForPlayhead(int64_t playheadFrame) 
             if (info.isSingleFrame || info.playbackPath.isEmpty()) {
                 continue;
             }
-            if (playheadFrame < info.clip.startFrame ||
-                playheadFrame >= info.clip.startFrame + info.clip.durationFrames) {
+            const int64_t clipStartSample = clipTimelineStartSamples(info.clip);
+            const int64_t clipEndSample = clipTimelineEndSamples(info.clip);
+            if (playheadSample < clipStartSample || playheadSample >= clipEndSample) {
                 continue;
             }
             const int64_t activeSourceFrame = normalizeFrameNumber(
                 info,
-                sourceFrameForClipAtTimelinePosition(info.clip,
-                                                     static_cast<qreal>(playheadFrame),
-                                                     markers));
+                sourceFrameForClipAtTimelineSample(info.clip, playheadSample, markers));
             activeLocalFrames.insert(it.key(), activeSourceFrame);
         }
     }
@@ -539,7 +547,7 @@ void PlaybackFramePipeline::onFrameReady(FrameHandle frame) {
     };
 
     QVector<SeedTarget> seedTargets;
-    const int64_t playheadFrame = m_playheadFrame.load();
+    const int64_t playheadSample = m_playheadSample.load();
     const int64_t maxAheadFrame =
         qMax<int64_t>(debugPlaybackWindowAhead(), debugMaxPresentationFutureFrameDelta());
     {
@@ -550,16 +558,15 @@ void PlaybackFramePipeline::onFrameReady(FrameHandle frame) {
                 continue;
             }
 
-            if (playheadFrame < info.clip.startFrame ||
-                playheadFrame >= info.clip.startFrame + info.clip.durationFrames) {
+            const int64_t clipStartSample = clipTimelineStartSamples(info.clip);
+            const int64_t clipEndSample = clipTimelineEndSamples(info.clip);
+            if (playheadSample < clipStartSample || playheadSample >= clipEndSample) {
                 continue;
             }
 
             const int64_t activeSourceFrame = normalizeFrameNumber(
                 info,
-                sourceFrameForClipAtTimelinePosition(info.clip,
-                                                     static_cast<qreal>(playheadFrame),
-                                                     markers));
+                sourceFrameForClipAtTimelineSample(info.clip, playheadSample, markers));
             const int64_t decodedFrameNumber = normalizeFrameNumber(info, frame.frameNumber());
             const bool isSequenceClip = isImageSequencePlaybackClip(info.clip);
             const int64_t lateSeedSlack = isSequenceClip
@@ -1110,8 +1117,6 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                     }
                 }
 
-                const int64_t playheadFrame = self->m_playheadFrame.load();
-                Q_UNUSED(playheadFrame);
                 const bool obsoleteForPresentation =
                     !frame.isNull() &&
                     targetFrame < qMax<int64_t>(0, latestTargetFrame - obsoleteVisibleFrameSlack);

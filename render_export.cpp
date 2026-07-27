@@ -1,20 +1,81 @@
 #include "render_internal.h"
+#include "clip_serialization.h"
 #include "cpu_overlay_render_backend.h"
 #include "export_timing.h"
 #include "render_backend.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QImageReader>
+#include <QImageWriter>
 #include <QPainter>
+#include <QProcess>
+#include <QSaveFile>
+#include <QSet>
+#include <QStandardPaths>
 
 #include <cmath>
+#include <cstdio>
+#include <limits>
 #include <memory>
+#include <optional>
 using namespace render_detail;
 
 namespace {
+
+QString normalizedImageSequenceFormat(const QString& requested)
+{
+    const QString format = requested.trimmed().toLower();
+    if (format == QStringLiteral("jpg") ||
+        format == QStringLiteral("jpeg")) {
+        return QStringLiteral("jpg");
+    }
+    if (format == QStringLiteral("webp")) {
+        return QStringLiteral("webp");
+    }
+    if (format == QStringLiteral("png")) {
+        return QStringLiteral("png");
+    }
+    return QStringLiteral("jpg");
+}
+
+bool saveImageAtomically(const QImage& image,
+                         const QString& path,
+                         const QString& format,
+                         QString* errorMessage)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (errorMessage) {
+            *errorMessage = file.errorString();
+        }
+        return false;
+    }
+    QImageWriter writer(&file, format.toLatin1());
+    if (format != QStringLiteral("png")) {
+        writer.setQuality(90);
+    }
+    if (!writer.write(image)) {
+        if (errorMessage) {
+            *errorMessage = writer.errorString();
+        }
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (errorMessage) {
+            *errorMessage = file.errorString();
+        }
+        return false;
+    }
+    return true;
+}
 
 inline int clampByte(int value) {
     return value < 0 ? 0 : (value > 255 ? 255 : value);
@@ -117,7 +178,7 @@ struct ScopedAvBufferRef {
 };
 
 ExportPathDecision chooseExportPath(bool useGpuRenderer,
-                                    const render_detail::OffscreenRenderer* renderer,
+                                    const render_detail::HeadlessVulkanCompositor* renderer,
                                     AVPixelFormat encoderInputPixFmt,
                                     bool cudaHardwareFrames,
                                     bool imageSequenceExport,
@@ -268,8 +329,10 @@ void configureVideoCodecContext(AVCodecContext* ctx,
 
 } // namespace
 
-RenderResult renderTimelineToFile(const RenderRequest& request,
-                                  const std::function<bool(const RenderProgress&)>& progressCallback) {
+static RenderResult renderTimelineSingleFile(
+    const RenderRequest& request,
+    const std::function<bool(const RenderProgress&)>& progressCallback,
+    HeadlessVulkanCompositor* persistentRenderer = nullptr) {
     RenderResult result;
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
     const qreal playbackSpeed = std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
@@ -369,9 +432,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         sortedTranscriptOverlayClips(request.clips, request.tracks);
     QString gpuInitializationError;
 
-    std::unique_ptr<OffscreenRenderer> activeRenderer;
+    std::unique_ptr<HeadlessVulkanCompositor> ownedRenderer;
+    HeadlessVulkanCompositor* activeRenderer = persistentRenderer;
     if (requestedBackend == RenderBackend::Vulkan) {
-        activeRenderer = std::make_unique<OffscreenVulkanRenderer>();
+        if (!activeRenderer) {
+            ownedRenderer = std::make_unique<OffscreenVulkanRenderer>();
+            activeRenderer = ownedRenderer.get();
+        }
         result.effectiveRenderBackend = QStringLiteral("vulkan");
     } else {
         result.message = QStringLiteral("Unsupported render backend. Vulkan is required.");
@@ -393,7 +460,11 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                .arg(playbackSpeed, 0, 'f', 3)
                .arg(exportRanges.size())
                .arg(totalFramesToRender);
-    const bool gpuInitialized = activeRenderer && activeRenderer->initialize(request.outputSize, &gpuInitializationError);
+    const bool gpuInitialized =
+        activeRenderer &&
+        (persistentRenderer ||
+         activeRenderer->initialize(
+             request.outputSize, &gpuInitializationError));
     const bool useGpuRenderer = gpuInitialized;
     if (!useGpuRenderer) {
         qWarning().noquote()
@@ -651,7 +722,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     const bool directNv12Conversion = encoderInputPixFmt == AV_PIX_FMT_NV12;
     const ExportPathDecision exportPath =
         chooseExportPath(useGpuRenderer,
-                         activeRenderer.get(),
+                         activeRenderer,
                          encoderInputPixFmt,
                          cudaHardwareFrames,
                          request.createVideoFromImageSequence,
@@ -1059,6 +1130,15 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             }
             QJsonArray frameSkippedClips;
             render_detail::OffscreenRenderFrame renderedFrame;
+            render_detail::OffscreenVulkanFrame gpuPreviewFrame;
+            QString gpuPreviewError;
+            const bool publishGpuPreview =
+                progressCallback &&
+                request.gpuExportPreviewEnabled &&
+                (!request.gpuExportPreviewReady ||
+                 request.gpuExportPreviewReady->load(
+                     std::memory_order_acquire)) &&
+                (renderedFramesScheduled % 30) == 0;
             QJsonObject frameExportFaceTransformDiagnostics;
             const bool renderedOk =
                 activeRenderer->renderFrameToOutput(request,
@@ -1080,7 +1160,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 	                                                    timelineFramePosition,
                                                     false,
                                                     false,
-                                                    false);
+                                                    false,
+                                                    publishGpuPreview
+                                                        ? &gpuPreviewFrame
+                                                        : nullptr,
+                                                    publishGpuPreview
+                                                        ? &gpuPreviewError
+                                                        : nullptr);
             QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
             if (!frameExportFaceTransformDiagnostics.isEmpty()) {
@@ -1142,62 +1228,32 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 
             // Save intermediate image files if requested
             if (request.createVideoFromImageSequence && !namedDirPath.isEmpty() && !request.imageSequenceFormat.isEmpty()) {
-                QString imagePath;
-                QString format = request.imageSequenceFormat.toLower();
-                QString extension = format;
-                
-                if (format == "webp") {
-                    imagePath = QString("%1/frame_%2.webp").arg(namedDirPath).arg(outputFrameNumber, 8, 10, QChar('0'));
-                } else if (format == "jpeg" || format == "jpg") {
-                    imagePath = QString("%1/frame_%2.jpg").arg(namedDirPath).arg(outputFrameNumber, 8, 10, QChar('0'));
-                    format = "JPEG";  // QImage expects "JPEG" not "jpeg"
-                } else {
-                    qWarning() << "Unsupported image sequence format:" << request.imageSequenceFormat;
-                    continue;
-                }
-                
-                // Save the image with optional parallel write disabling
-                bool saveSuccess = false;
-                if (request.disableParallelImageWrite) {
-                    // Force sequential write for debugging
-                    saveSuccess = rendered.save(imagePath, format.toUtf8().constData(), 90);
-                } else {
-                    saveSuccess = rendered.save(imagePath, format.toUtf8().constData(), 90);
-                }
-                
-                if (!saveSuccess) {
-                    qWarning() << "Failed to save" << format << "frame:" << timelineFrame 
-                               << "to:" << imagePath 
-                               << "size:" << rendered.size()
-                               << "format:" << rendered.format()
-                               << "depth:" << rendered.depth();
-                    
-                    // Try to get more detailed error information
-                    QFile file(imagePath);
-                    if (file.open(QIODevice::WriteOnly)) {
-                        qWarning() << "File opened successfully, but QImage::save failed";
-                        file.close();
-                    } else {
-                        qWarning() << "Cannot open file for writing:" << file.errorString();
-                    }
+                const QString format =
+                    normalizedImageSequenceFormat(request.imageSequenceFormat);
+                const QString imagePath =
+                    QStringLiteral("%1/frame_%2.%3")
+                        .arg(namedDirPath)
+                        .arg(outputFrameNumber, 8, 10, QChar('0'))
+                        .arg(format);
+                QString saveError;
+                if (!saveImageAtomically(
+                        rendered, imagePath, format, &saveError)) {
+                    errorMessage =
+                        QStringLiteral("Failed to atomically checkpoint "
+                                       "rendered frame %1 to %2: %3")
+                            .arg(timelineFrame)
+                            .arg(imagePath, saveError);
+                    break;
                 }
             }
 
-            render_detail::OffscreenVulkanFrame gpuPreviewFrame;
-            if (progressCallback) {
-                if (!rendered.isNull()) {
-                    lastExportPreviewFrame = rendered;
-                } else if (directGpuFrameReadback &&
-                           activeRenderer &&
-                           (renderedFramesScheduled % 30) == 0) {
-                    QString previewError;
-                    if (!activeRenderer->publishLastFrameForGpuPreview(
-                            &gpuPreviewFrame, &previewError)) {
-                        qWarning().noquote()
-                            << QStringLiteral("GPU export preview unavailable: %1")
-                                   .arg(previewError);
-                    }
-                }
+            if (!gpuPreviewError.isEmpty()) {
+                qWarning().noquote()
+                    << QStringLiteral("GPU export preview unavailable: %1")
+                           .arg(gpuPreviewError);
+            }
+            if (progressCallback && !rendered.isNull()) {
+                lastExportPreviewFrame = rendered;
             }
             ++renderedFramesScheduled;
 
@@ -1549,14 +1605,18 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     if (audioState.codecCtx) {
         avcodec_free_context(&audioState.codecCtx);
     }
-    if (progressCallback && useGpuRenderer) {
+    if (!persistentRenderer && progressCallback && useGpuRenderer &&
+        request.gpuExportPreviewEnabled) {
         activeRenderer->finishGpuPreviewPublication();
         RenderProgress releasePreview;
         releasePreview.releaseGpuPreview = true;
         progressCallback(releasePreview);
     }
     // Release Vulkan/CUDA external-memory imports while FFmpeg's CUDA device context is still alive.
-    activeRenderer.reset();
+    if (ownedRenderer) {
+        ownedRenderer.reset();
+        activeRenderer = nullptr;
+    }
     avcodec_free_context(&codecCtx);
     avformat_free_context(formatCtx);
 
@@ -1638,5 +1698,902 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                          .arg(framesCompleted)
                          .arg(QDir::toNativeSeparators(request.outputPath))
                          .arg(renderPathSuffix);
+    return result;
+}
+
+namespace {
+
+struct IncrementalRenderChunk {
+    int index = 0;
+    QVector<ExportRangeSegment> ranges;
+    int64_t frameCount = 0;
+    QString path;
+};
+
+inline constexpr int kIncrementalRenderSchema = 3;
+
+QString incrementalChunkFrameDirectory(const IncrementalRenderChunk& chunk)
+{
+    const QFileInfo chunkInfo(chunk.path);
+    return chunkInfo.dir().filePath(
+        chunkInfo.completeBaseName() + QStringLiteral("_frames"));
+}
+
+QString incrementalChunkFramePath(const IncrementalRenderChunk& chunk,
+                                  int64_t frame,
+                                  const QString& format)
+{
+    return QDir(incrementalChunkFrameDirectory(chunk)).filePath(
+        QStringLiteral("frame_%1.%2")
+            .arg(frame, 8, 10, QLatin1Char('0'))
+            .arg(format));
+}
+
+bool hasCompleteIncrementalImageChunk(
+    const IncrementalRenderChunk& chunk,
+    const RenderRequest& request)
+{
+    const QString format =
+        normalizedImageSequenceFormat(request.imageSequenceFormat);
+    for (int64_t frame = 0; frame < chunk.frameCount; ++frame) {
+        const QString path =
+            incrementalChunkFramePath(chunk, frame, format);
+        const QFileInfo info(path);
+        if (!info.isFile() || info.size() <= 0) {
+            return false;
+        }
+        QImageReader reader(path);
+        if (!reader.canRead() || reader.size() != request.outputSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QVector<ExportRangeSegment> normalizedExportRanges(const RenderRequest& request)
+{
+    QVector<ExportRangeSegment> ranges = request.exportRanges;
+    if (ranges.isEmpty()) {
+        const int64_t start = qMax<int64_t>(0, request.exportStartFrame);
+        ranges.push_back(
+            ExportRangeSegment{start, qMax(start, request.exportEndFrame)});
+    }
+    std::sort(
+        ranges.begin(), ranges.end(),
+        [](const ExportRangeSegment& left, const ExportRangeSegment& right) {
+            return left.startFrame == right.startFrame
+                ? left.endFrame < right.endFrame
+                : left.startFrame < right.startFrame;
+        });
+    return ranges;
+}
+
+int64_t outputFramesForRange(const ExportRangeSegment& range,
+                             double outputFps,
+                             qreal playbackSpeed)
+{
+    const int64_t start = qMax<int64_t>(0, range.startFrame);
+    return jcut::export_timing::outputFrameCountForTimelineRange(
+        start,
+        qMax(start, range.endFrame),
+        outputFps,
+        playbackSpeed);
+}
+
+QJsonObject trackSignatureJson(const TimelineTrack& track)
+{
+    return QJsonObject{
+        {QStringLiteral("name"), track.name},
+        {QStringLiteral("generatedChildTrack"), track.generatedChildTrack},
+        {QStringLiteral("parentClipId"), track.parentClipId},
+        {QStringLiteral("childClipId"), track.childClipId},
+        {QStringLiteral("visualMode"), static_cast<int>(track.visualMode)},
+        {QStringLiteral("gradingPreviewEnabled"), track.gradingPreviewEnabled},
+        {QStringLiteral("audioEnabled"), track.audioEnabled},
+        {QStringLiteral("audioBusId"), track.audioBusId},
+        {QStringLiteral("audioGain"), track.audioGain},
+        {QStringLiteral("audioMuted"), track.audioMuted},
+        {QStringLiteral("audioSolo"), track.audioSolo},
+        {QStringLiteral("effectPreset"), static_cast<int>(track.effectPreset)},
+        {QStringLiteral("effectRows"), track.effectRows},
+        {QStringLiteral("effectSpeed"), track.effectSpeed},
+        {QStringLiteral("effectScale"), track.effectScale},
+        {QStringLiteral("effectAlternateDirection"),
+         track.effectAlternateDirection},
+        {QStringLiteral("differenceReferenceFrames"),
+         track.differenceReferenceFrames},
+        {QStringLiteral("differenceThreshold"), track.differenceThreshold},
+        {QStringLiteral("differenceSoftness"), track.differenceSoftness},
+        {QStringLiteral("temporalEchoCount"), track.temporalEchoCount},
+        {QStringLiteral("temporalEchoSpacingFrames"),
+         track.temporalEchoSpacingFrames},
+        {QStringLiteral("temporalEchoDecay"), track.temporalEchoDecay},
+        {QStringLiteral("tilingPattern"),
+         static_cast<int>(track.tilingPattern)},
+        {QStringLiteral("tilingSpacing"), track.tilingSpacing},
+        {QStringLiteral("tilingWrap"), track.tilingWrap},
+        {QStringLiteral("effectParameterSets"), track.effectParameterSets},
+    };
+}
+
+QByteArray incrementalRenderSignature(const RenderRequest& request,
+                                      int chunkFrames)
+{
+    QJsonObject root{
+        {QStringLiteral("schema"), kIncrementalRenderSchema},
+        {QStringLiteral("outputFormat"), request.outputFormat},
+        {QStringLiteral("width"), request.outputSize.width()},
+        {QStringLiteral("height"), request.outputSize.height()},
+        {QStringLiteral("outputFps"), request.outputFps},
+        {QStringLiteral("playbackSpeed"), request.playbackSpeed},
+        {QStringLiteral("useProxyMedia"), request.useProxyMedia},
+        {QStringLiteral("bypassGrading"), request.bypassGrading},
+        {QStringLiteral("correctionsEnabled"), request.correctionsEnabled},
+        {QStringLiteral("imageSequenceFormat"),
+         normalizedImageSequenceFormat(request.imageSequenceFormat)},
+        {QStringLiteral("backgroundFillEffect"),
+         static_cast<int>(request.backgroundFillEffect)},
+        {QStringLiteral("backgroundFillOpacity"),
+         request.backgroundFillOpacity},
+        {QStringLiteral("backgroundFillBrightness"),
+         request.backgroundFillBrightness},
+        {QStringLiteral("backgroundFillSaturation"),
+         request.backgroundFillSaturation},
+        {QStringLiteral("backgroundFillEdgePixels"),
+         request.backgroundFillEdgePixels},
+        {QStringLiteral("backgroundFillEdgeProgressive"),
+         request.backgroundFillEdgeProgressive},
+        {QStringLiteral("backgroundFillEdgePower"),
+         request.backgroundFillEdgePower},
+        {QStringLiteral("backgroundFillStretchSourceClipId"),
+         request.backgroundFillStretchSourceClipId},
+        {QStringLiteral("showCurrentSpeakerName"),
+         request.showCurrentSpeakerName},
+        {QStringLiteral("showCurrentSpeakerOrganization"),
+         request.showCurrentSpeakerOrganization},
+        {QStringLiteral("transcriptPrependMs"), request.transcriptPrependMs},
+        {QStringLiteral("transcriptPostpendMs"), request.transcriptPostpendMs},
+        {QStringLiteral("transcriptOffsetMs"), request.transcriptOffsetMs},
+        {QStringLiteral("frameTransitionMode"),
+         static_cast<int>(request.playbackTiming.frameTransitionMode)},
+        {QStringLiteral("frameCrossfadeEnabled"),
+         request.playbackTiming.frameCrossfadeEnabled},
+        {QStringLiteral("frameCrossfadeFrames"),
+         request.playbackTiming.frameCrossfadeFrames},
+        {QStringLiteral("chunkFrames"), chunkFrames},
+    };
+
+    QJsonArray clips;
+    QSet<QString> sourcePaths;
+    for (const TimelineClip& clip : request.clips) {
+        QJsonObject clipSignature = editor::clipToJson(clip);
+        // Health-check bookkeeping changes every time a project is opened,
+        // but it cannot change a rendered pixel or sample.
+        clipSignature.remove(QStringLiteral("audioSourceLastVerifiedMs"));
+        clips.push_back(clipSignature);
+        for (const QString& path :
+             {clip.filePath, clip.proxyPath, clip.audioSourcePath,
+              clip.maskFramesDir}) {
+            if (!path.trimmed().isEmpty()) {
+                sourcePaths.insert(QFileInfo(path).absoluteFilePath());
+            }
+        }
+    }
+    root.insert(QStringLiteral("clips"), clips);
+
+    QJsonArray tracks;
+    for (const TimelineTrack& track : request.tracks) {
+        tracks.push_back(trackSignatureJson(track));
+    }
+    root.insert(QStringLiteral("tracks"), tracks);
+
+    QJsonArray ranges;
+    for (const ExportRangeSegment& range : normalizedExportRanges(request)) {
+        ranges.push_back(QJsonObject{
+            {QStringLiteral("start"), static_cast<qint64>(range.startFrame)},
+            {QStringLiteral("end"), static_cast<qint64>(range.endFrame)}});
+    }
+    root.insert(QStringLiteral("ranges"), ranges);
+
+    QJsonArray playbackRanges;
+    for (const ExportRangeSegment& range :
+         request.playbackTiming.playbackRanges) {
+        playbackRanges.push_back(QJsonObject{
+            {QStringLiteral("start"), static_cast<qint64>(range.startFrame)},
+            {QStringLiteral("end"), static_cast<qint64>(range.endFrame)}});
+    }
+    root.insert(QStringLiteral("playbackRanges"), playbackRanges);
+
+    QJsonArray markers;
+    for (const RenderSyncMarker& marker : request.renderSyncMarkers) {
+        markers.push_back(QJsonObject{
+            {QStringLiteral("clipId"), marker.clipId},
+            {QStringLiteral("frame"), static_cast<qint64>(marker.frame)},
+            {QStringLiteral("action"), static_cast<int>(marker.action)},
+            {QStringLiteral("count"), marker.count}});
+    }
+    root.insert(QStringLiteral("renderSyncMarkers"), markers);
+
+    QStringList sortedPaths(sourcePaths.begin(), sourcePaths.end());
+    std::sort(sortedPaths.begin(), sortedPaths.end());
+    QJsonArray sources;
+    for (const QString& path : std::as_const(sortedPaths)) {
+        const QFileInfo info(path);
+        sources.push_back(QJsonObject{
+            {QStringLiteral("path"), path},
+            {QStringLiteral("exists"), info.exists()},
+            {QStringLiteral("size"), static_cast<qint64>(info.size())},
+            {QStringLiteral("modifiedMs"),
+             static_cast<qint64>(info.lastModified().toMSecsSinceEpoch())}});
+    }
+    root.insert(QStringLiteral("sources"), sources);
+
+    return QCryptographicHash::hash(
+               QJsonDocument(root).toJson(QJsonDocument::Compact),
+               QCryptographicHash::Sha256)
+        .toHex();
+}
+
+QVector<IncrementalRenderChunk> buildIncrementalChunks(
+    const RenderRequest& request,
+    const QString& cacheDirectory,
+    int targetFrames)
+{
+    const double outputFps =
+        jcut::export_timing::normalizedOutputFps(request.outputFps);
+    const qreal playbackSpeed =
+        std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
+        ? request.playbackSpeed
+        : 1.0;
+    QVector<ExportRangeSegment> checkpointRanges;
+    for (const ExportRangeSegment& range : normalizedExportRanges(request)) {
+        int64_t cursor = qMax<int64_t>(0, range.startFrame);
+        const int64_t rangeEnd = qMax(cursor, range.endFrame);
+        while (cursor <= rangeEnd) {
+            int64_t low = cursor;
+            int64_t high = rangeEnd;
+            int64_t checkpointEnd = cursor;
+            while (low <= high) {
+                const int64_t candidate =
+                    low + ((high - low) / 2);
+                const int64_t candidateFrames =
+                    outputFramesForRange(
+                        ExportRangeSegment{cursor, candidate},
+                        outputFps,
+                        playbackSpeed);
+                if (candidateFrames <= targetFrames ||
+                    candidate == cursor) {
+                    checkpointEnd = candidate;
+                    low = candidate + 1;
+                } else {
+                    high = candidate - 1;
+                }
+            }
+            checkpointRanges.push_back(
+                ExportRangeSegment{cursor, checkpointEnd});
+            if (checkpointEnd == std::numeric_limits<int64_t>::max()) {
+                break;
+            }
+            cursor = checkpointEnd + 1;
+        }
+    }
+
+    QVector<IncrementalRenderChunk> chunks;
+    IncrementalRenderChunk current;
+    for (const ExportRangeSegment& range : checkpointRanges) {
+        const int64_t rangeFrames =
+            outputFramesForRange(range, outputFps, playbackSpeed);
+        if (!current.ranges.isEmpty() &&
+            current.frameCount + rangeFrames > targetFrames) {
+            current.index = chunks.size();
+            current.path = QDir(cacheDirectory).filePath(
+                QStringLiteral("chunk_%1.mkv")
+                    .arg(current.index, 5, 10, QLatin1Char('0')));
+            chunks.push_back(current);
+            current = {};
+        }
+        current.ranges.push_back(range);
+        current.frameCount += rangeFrames;
+        if (current.frameCount >= targetFrames) {
+            current.index = chunks.size();
+            current.path = QDir(cacheDirectory).filePath(
+                QStringLiteral("chunk_%1.mkv")
+                    .arg(current.index, 5, 10, QLatin1Char('0')));
+            chunks.push_back(current);
+            current = {};
+        }
+    }
+    if (!current.ranges.isEmpty()) {
+        current.index = chunks.size();
+        current.path = QDir(cacheDirectory).filePath(
+            QStringLiteral("chunk_%1.mkv")
+                .arg(current.index, 5, 10, QLatin1Char('0')));
+        chunks.push_back(current);
+    }
+    return chunks;
+}
+
+QJsonArray rangesToJson(const QVector<ExportRangeSegment>& ranges)
+{
+    QJsonArray array;
+    for (const ExportRangeSegment& range : ranges) {
+        array.push_back(QJsonObject{
+            {QStringLiteral("start"), static_cast<qint64>(range.startFrame)},
+            {QStringLiteral("end"), static_cast<qint64>(range.endFrame)}});
+    }
+    return array;
+}
+
+bool writeIncrementalManifest(
+    const QString& manifestPath,
+    const QByteArray& signature,
+    int targetFrames,
+    int64_t totalFrames,
+    const QVector<IncrementalRenderChunk>& chunks,
+    const QSet<int>& completedChunks,
+    const RenderResult& aggregate,
+    QString* errorMessage)
+{
+    QJsonArray chunkArray;
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        chunkArray.push_back(QJsonObject{
+            {QStringLiteral("index"), chunk.index},
+            {QStringLiteral("file"), QFileInfo(chunk.path).fileName()},
+            {QStringLiteral("framesDirectory"),
+             QFileInfo(incrementalChunkFrameDirectory(chunk)).fileName()},
+            {QStringLiteral("frames"), static_cast<qint64>(chunk.frameCount)},
+            {QStringLiteral("ranges"), rangesToJson(chunk.ranges)},
+            {QStringLiteral("complete"),
+             completedChunks.contains(chunk.index)}});
+    }
+    const QJsonObject manifest{
+        {QStringLiteral("schema"), kIncrementalRenderSchema},
+        {QStringLiteral("signature"), QString::fromLatin1(signature)},
+        {QStringLiteral("chunkFrames"), targetFrames},
+        {QStringLiteral("totalFrames"), static_cast<qint64>(totalFrames)},
+        {QStringLiteral("updatedUtc"),
+         QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+        {QStringLiteral("usedGpu"), aggregate.usedGpu},
+        {QStringLiteral("usedHardwareEncode"),
+         aggregate.usedHardwareEncode},
+        {QStringLiteral("encoderLabel"), aggregate.encoderLabel},
+        {QStringLiteral("exportPipeline"), aggregate.exportPipeline},
+        {QStringLiteral("chunks"), chunkArray},
+    };
+    QSaveFile file(manifestPath);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented)) < 0 ||
+        !file.commit()) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Failed to atomically write incremental render "
+                               "manifest: %1")
+                    .arg(file.errorString());
+        }
+        return false;
+    }
+    return true;
+}
+
+QSet<int> reusableChunksFromManifest(
+    const QString& manifestPath,
+    const QByteArray& signature,
+    const QVector<IncrementalRenderChunk>& chunks,
+    const RenderRequest& request,
+    RenderResult* aggregate)
+{
+    QFile file(manifestPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        return {};
+    }
+    const QJsonObject root = document.object();
+    if (root.value(QStringLiteral("schema")).toInt() !=
+            kIncrementalRenderSchema ||
+        root.value(QStringLiteral("signature")).toString() !=
+            QString::fromLatin1(signature)) {
+        return {};
+    }
+    if (aggregate) {
+        aggregate->usedGpu =
+            root.value(QStringLiteral("usedGpu")).toBool();
+        aggregate->usedHardwareEncode =
+            root.value(QStringLiteral("usedHardwareEncode")).toBool();
+        aggregate->encoderLabel =
+            root.value(QStringLiteral("encoderLabel")).toString();
+        aggregate->exportPipeline =
+            root.value(QStringLiteral("exportPipeline")).toString();
+    }
+    QSet<int> reusable;
+    const QJsonArray entries = root.value(QStringLiteral("chunks")).toArray();
+    for (const QJsonValue& value : entries) {
+        const QJsonObject entry = value.toObject();
+        const int index = entry.value(QStringLiteral("index")).toInt(-1);
+        if (index < 0 || index >= chunks.size() ||
+            !entry.value(QStringLiteral("complete")).toBool() ||
+            entry.value(QStringLiteral("frames")).toVariant().toLongLong() !=
+                chunks.at(index).frameCount) {
+            continue;
+        }
+        const QFileInfo audioSidecar(chunks.at(index).path);
+        if (audioSidecar.isFile() && audioSidecar.size() > 1024 &&
+            hasCompleteIncrementalImageChunk(chunks.at(index), request)) {
+            reusable.insert(index);
+        }
+    }
+    return reusable;
+}
+
+void accumulateIncrementalResult(RenderResult* aggregate,
+                                 const RenderResult& chunk)
+{
+    if (!aggregate) {
+        return;
+    }
+    aggregate->usedGpu = aggregate->usedGpu || chunk.usedGpu;
+    aggregate->usedHardwareEncode =
+        aggregate->usedHardwareEncode || chunk.usedHardwareEncode;
+    aggregate->encoderLabel = chunk.encoderLabel;
+    aggregate->exportPipeline = chunk.exportPipeline;
+    aggregate->gpuTransferLabel = chunk.gpuTransferLabel;
+    aggregate->encoderPixelFormat = chunk.encoderPixelFormat;
+    aggregate->encoderSoftwarePixelFormat =
+        chunk.encoderSoftwarePixelFormat;
+    aggregate->cudaExternalMemoryStatus =
+        chunk.cudaExternalMemoryStatus;
+    aggregate->exportPathFallbackReason =
+        chunk.exportPathFallbackReason;
+    aggregate->cudaExternalTransfer =
+        aggregate->cudaExternalTransfer || chunk.cudaExternalTransfer;
+    aggregate->cudaExternalMemorySupported =
+        aggregate->cudaExternalMemorySupported ||
+        chunk.cudaExternalMemorySupported;
+    aggregate->encoderHardwareFrames =
+        aggregate->encoderHardwareFrames || chunk.encoderHardwareFrames;
+    aggregate->requestedRenderBackend = chunk.requestedRenderBackend;
+    aggregate->effectiveRenderBackend = chunk.effectiveRenderBackend;
+    aggregate->renderStageMs += chunk.renderStageMs;
+    aggregate->renderDecodeStageMs += chunk.renderDecodeStageMs;
+    aggregate->renderTextureStageMs += chunk.renderTextureStageMs;
+    aggregate->renderCompositeStageMs += chunk.renderCompositeStageMs;
+    aggregate->renderNv12StageMs += chunk.renderNv12StageMs;
+    aggregate->gpuReadbackMs += chunk.gpuReadbackMs;
+    aggregate->overlayStageMs += chunk.overlayStageMs;
+    aggregate->convertStageMs += chunk.convertStageMs;
+    aggregate->encodeStageMs += chunk.encodeStageMs;
+    aggregate->audioStageMs += chunk.audioStageMs;
+    aggregate->audioSetupMs += chunk.audioSetupMs;
+    aggregate->maxFrameRenderStageMs =
+        qMax(aggregate->maxFrameRenderStageMs,
+             chunk.maxFrameRenderStageMs);
+    aggregate->maxFrameDecodeStageMs =
+        qMax(aggregate->maxFrameDecodeStageMs,
+             chunk.maxFrameDecodeStageMs);
+    aggregate->maxFrameTextureStageMs =
+        qMax(aggregate->maxFrameTextureStageMs,
+             chunk.maxFrameTextureStageMs);
+    aggregate->maxFrameReadbackStageMs =
+        qMax(aggregate->maxFrameReadbackStageMs,
+             chunk.maxFrameReadbackStageMs);
+    aggregate->maxFrameConvertStageMs =
+        qMax(aggregate->maxFrameConvertStageMs,
+             chunk.maxFrameConvertStageMs);
+    aggregate->skippedClips = chunk.skippedClips;
+    aggregate->skippedClipReasonCounts =
+        chunk.skippedClipReasonCounts;
+    aggregate->renderStageTable = chunk.renderStageTable;
+    aggregate->worstFrameTable = chunk.worstFrameTable;
+    aggregate->exportFaceTransformDiagnostics =
+        chunk.exportFaceTransformDiagnostics;
+}
+
+bool assembleIncrementalChunks(
+    const RenderRequest& request,
+    const QVector<IncrementalRenderChunk>& chunks,
+    const QString& cacheDirectory,
+    QString* errorMessage)
+{
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffmpeg.isEmpty()) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Incremental export requires the ffmpeg "
+                               "executable for final lossless remuxing.");
+        }
+        return false;
+    }
+    const QString concatPath =
+        QDir(cacheDirectory).filePath(QStringLiteral("concat.txt"));
+    QSaveFile concatFile(concatPath);
+    if (!concatFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = concatFile.errorString();
+        }
+        return false;
+    }
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        QString escaped = QFileInfo(chunk.path).absoluteFilePath();
+        escaped.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+        concatFile.write(
+            QStringLiteral("file '%1'\n").arg(escaped).toUtf8());
+    }
+    if (!concatFile.commit()) {
+        if (errorMessage) {
+            *errorMessage = concatFile.errorString();
+        }
+        return false;
+    }
+
+    const QString frameConcatPath =
+        QDir(cacheDirectory).filePath(QStringLiteral("frames.txt"));
+    QSaveFile frameConcatFile(frameConcatPath);
+    if (!frameConcatFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = frameConcatFile.errorString();
+        }
+        return false;
+    }
+    const QString frameFormat =
+        normalizedImageSequenceFormat(request.imageSequenceFormat);
+    const double frameDuration =
+        1.0 / jcut::export_timing::normalizedOutputFps(request.outputFps);
+    int64_t totalFrames = 0;
+    QString lastFramePath;
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        if (!hasCompleteIncrementalImageChunk(chunk, request)) {
+            if (errorMessage) {
+                *errorMessage =
+                    QStringLiteral("Image-sequence checkpoint %1 is "
+                                   "missing or corrupt.")
+                        .arg(chunk.index + 1);
+            }
+            return false;
+        }
+        for (int64_t frame = 0; frame < chunk.frameCount; ++frame) {
+            QString path =
+                incrementalChunkFramePath(chunk, frame, frameFormat);
+            path.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+            frameConcatFile.write(
+                QStringLiteral("file '%1'\nduration %2\n")
+                    .arg(path)
+                    .arg(frameDuration, 0, 'f', 12)
+                    .toUtf8());
+            lastFramePath = path;
+            ++totalFrames;
+        }
+    }
+    // The concat demuxer applies the last duration only when its final image
+    // is repeated. -frames:v below prevents that sentinel from adding output.
+    frameConcatFile.write(
+        QStringLiteral("file '%1'\n").arg(lastFramePath).toUtf8());
+    if (!frameConcatFile.commit()) {
+        if (errorMessage) {
+            *errorMessage = frameConcatFile.errorString();
+        }
+        return false;
+    }
+
+    const QFileInfo outputInfo(request.outputPath);
+    const QString assemblingPath = outputInfo.dir().filePath(
+        outputInfo.completeBaseName() +
+        QStringLiteral(".assembling.") + outputInfo.suffix());
+    QFile::remove(assemblingPath);
+    QStringList arguments{
+        QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("concat"),
+        QStringLiteral("-safe"), QStringLiteral("0"),
+        QStringLiteral("-i"), frameConcatPath,
+        QStringLiteral("-f"), QStringLiteral("concat"),
+        QStringLiteral("-safe"), QStringLiteral("0"),
+        QStringLiteral("-i"), concatPath,
+        QStringLiteral("-map"), QStringLiteral("0:v:0"),
+        QStringLiteral("-map"), QStringLiteral("1:a:0?"),
+        QStringLiteral("-frames:v"), QString::number(totalFrames),
+        QStringLiteral("-r"),
+        QString::number(
+            jcut::export_timing::normalizedOutputFps(request.outputFps),
+            'f', 6),
+    };
+    const QString suffix = outputInfo.suffix().toLower();
+    if (suffix == QStringLiteral("webm")) {
+        arguments << QStringLiteral("-c:v") << QStringLiteral("libvpx-vp9")
+                  << QStringLiteral("-c:a") << QStringLiteral("libopus");
+    } else {
+        arguments << QStringLiteral("-c:v") << QStringLiteral("h264_nvenc")
+                  << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
+                  << QStringLiteral("-c:a") << QStringLiteral("aac")
+                  << QStringLiteral("-b:a") << QStringLiteral("192k");
+    }
+    if (suffix == QStringLiteral("mp4") ||
+        suffix == QStringLiteral("mov")) {
+        arguments << QStringLiteral("-movflags")
+                  << QStringLiteral("+faststart");
+    }
+    arguments << QStringLiteral("-y") << assemblingPath;
+
+    QProcess process;
+    process.setProgram(ffmpeg);
+    process.setArguments(arguments);
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start();
+    if (!process.waitForStarted() ||
+        !process.waitForFinished(-1) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0 ||
+        QFileInfo(assemblingPath).size() <= 1024) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Failed to assemble incremental render: %1")
+                    .arg(QString::fromUtf8(process.readAll()).trimmed());
+        }
+        return false;
+    }
+    const QByteArray assemblingName = QFile::encodeName(assemblingPath);
+    const QByteArray outputName = QFile::encodeName(request.outputPath);
+    if (std::rename(assemblingName.constData(), outputName.constData()) != 0) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Could not atomically publish assembled "
+                               "output: %1")
+                    .arg(QDir::toNativeSeparators(request.outputPath));
+        }
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+RenderResult renderTimelineToFile(
+    const RenderRequest& request,
+    const std::function<bool(const RenderProgress&)>& progressCallback)
+{
+    if (!request.incrementalExport) {
+        return renderTimelineSingleFile(request, progressCallback);
+    }
+
+    RenderResult result;
+    QElapsedTimer totalTimer;
+    totalTimer.start();
+    const int targetFrames =
+        qBound(60, request.incrementalChunkFrames, 18000);
+    const QByteArray signature =
+        incrementalRenderSignature(request, targetFrames);
+    const QFileInfo outputInfo(request.outputPath);
+    const QString cacheRoot = outputInfo.dir().filePath(
+        outputInfo.completeBaseName() +
+        QStringLiteral(".jcut-render-cache"));
+    const QString cacheDirectory =
+        QDir(cacheRoot).filePath(QString::fromLatin1(signature.left(16)));
+    if (!QDir().mkpath(cacheDirectory)) {
+        result.message =
+            QStringLiteral("Failed to create incremental render cache: %1")
+                .arg(QDir::toNativeSeparators(cacheDirectory));
+        return result;
+    }
+    const QVector<IncrementalRenderChunk> chunks =
+        buildIncrementalChunks(request, cacheDirectory, targetFrames);
+    if (chunks.isEmpty()) {
+        result.message = QStringLiteral("Incremental render has no frames.");
+        return result;
+    }
+    int64_t totalFrames = 0;
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        totalFrames += chunk.frameCount;
+    }
+    const QString manifestPath =
+        QDir(cacheDirectory).filePath(QStringLiteral("manifest.json"));
+    QSet<int> completed =
+        reusableChunksFromManifest(
+            manifestPath, signature, chunks, request, &result);
+    int64_t reusedFrames = 0;
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        if (completed.contains(chunk.index)) {
+            reusedFrames += chunk.frameCount;
+        }
+    }
+    int64_t completedFrames = 0;
+    result.incrementalChunksTotal = chunks.size();
+    result.incrementalChunksCompleted = completed.size();
+    result.incrementalFramesReused = reusedFrames;
+    result.incrementalCachePath = cacheDirectory;
+
+    QString manifestError;
+    if (!writeIncrementalManifest(
+            manifestPath, signature, targetFrames, totalFrames, chunks,
+            completed, result, &manifestError)) {
+        result.message = manifestError;
+        return result;
+    }
+
+    struct IncrementalRendererSession {
+        std::unique_ptr<HeadlessVulkanCompositor> renderer;
+        bool previewEnabled = false;
+        const std::function<bool(const RenderProgress&)>* progress = nullptr;
+
+        void finish()
+        {
+            if (!renderer) {
+                return;
+            }
+            if (previewEnabled) {
+                renderer->finishGpuPreviewPublication();
+                if (progress && *progress) {
+                    RenderProgress releasePreview;
+                    releasePreview.releaseGpuPreview = true;
+                    (*progress)(releasePreview);
+                }
+            }
+            renderer.reset();
+        }
+
+        ~IncrementalRendererSession()
+        {
+            finish();
+        }
+    } rendererSession{
+        nullptr, request.gpuExportPreviewEnabled, &progressCallback};
+
+    for (const IncrementalRenderChunk& chunk : chunks) {
+        if (completed.contains(chunk.index)) {
+            completedFrames += chunk.frameCount;
+            if (progressCallback) {
+                RenderProgress progress;
+                progress.framesCompleted = completedFrames;
+                progress.totalFrames = totalFrames;
+                progress.segmentIndex = completed.size();
+                progress.segmentCount = chunks.size();
+                progress.timelineFrame = chunk.ranges.constLast().endFrame;
+                progress.incrementalChunksCompleted = completed.size();
+                progress.incrementalChunksTotal = chunks.size();
+                progress.incrementalFramesReused = reusedFrames;
+                progress.incrementalCachePath = cacheDirectory;
+                progress.elapsedMs = totalTimer.elapsed();
+                const int64_t workFrames =
+                    qMax<int64_t>(
+                        0, completedFrames - reusedFrames);
+                progress.estimatedRemainingMs =
+                    workFrames > 0
+                    ? (progress.elapsedMs *
+                       qMax<int64_t>(0, totalFrames - completedFrames)) /
+                          workFrames
+                    : -1;
+                if (!progressCallback(progress)) {
+                    result.cancelled = true;
+                    result.framesRendered = completedFrames;
+                    result.elapsedMs = totalTimer.elapsed();
+                    result.message = QStringLiteral("Render cancelled.");
+                    return result;
+                }
+            }
+            continue;
+        }
+
+        RenderRequest chunkRequest = request;
+        chunkRequest.incrementalExport = false;
+        chunkRequest.losslessIntermediateAudio = true;
+        chunkRequest.createVideoFromImageSequence = true;
+        chunkRequest.imageSequenceFormat =
+            normalizedImageSequenceFormat(request.imageSequenceFormat);
+        chunkRequest.outputPath = chunk.path;
+        chunkRequest.exportRanges = chunk.ranges;
+        chunkRequest.exportStartFrame =
+            chunk.ranges.constFirst().startFrame;
+        chunkRequest.exportEndFrame =
+            chunk.ranges.constLast().endFrame;
+        if (!rendererSession.renderer) {
+            if (desiredRenderBackendFromEnvironment() !=
+                RenderBackend::Vulkan) {
+                result.message =
+                    QStringLiteral(
+                        "Incremental export requires the Vulkan renderer.");
+                return result;
+            }
+            rendererSession.renderer =
+                std::make_unique<OffscreenVulkanRenderer>();
+            QString rendererError;
+            if (!rendererSession.renderer->initialize(
+                    request.outputSize, &rendererError)) {
+                result.message = rendererError.trimmed().isEmpty()
+                    ? QStringLiteral(
+                          "Vulkan export renderer initialization failed.")
+                    : rendererError.trimmed();
+                return result;
+            }
+            qInfo().noquote()
+                << QStringLiteral(
+                       "[render-incremental] persistent Vulkan compositor "
+                       "initialized once for %1 pending chunk(s)")
+                       .arg(chunks.size() - completed.size());
+        }
+        const int64_t framesBeforeChunk = completedFrames;
+        const RenderResult chunkResult = renderTimelineSingleFile(
+            chunkRequest,
+            [&, framesBeforeChunk](const RenderProgress& localProgress) {
+                if (!progressCallback) {
+                    return true;
+                }
+                if (localProgress.releaseGpuPreview) {
+                    return progressCallback(localProgress);
+                }
+                RenderProgress progress = localProgress;
+                progress.framesCompleted =
+                    framesBeforeChunk + localProgress.framesCompleted;
+                progress.totalFrames = totalFrames;
+                progress.segmentIndex = chunk.index + 1;
+                progress.segmentCount = chunks.size();
+                progress.incrementalChunksCompleted = completed.size();
+                progress.incrementalChunksTotal = chunks.size();
+                progress.incrementalFramesReused = reusedFrames;
+                progress.incrementalCachePath = cacheDirectory;
+                progress.elapsedMs = totalTimer.elapsed();
+                const int64_t workFrames =
+                    qMax<int64_t>(
+                        0, progress.framesCompleted - reusedFrames);
+                progress.estimatedRemainingMs =
+                    workFrames > 0
+                    ? (progress.elapsedMs *
+                       qMax<int64_t>(
+                           0, totalFrames - progress.framesCompleted)) /
+                          workFrames
+                    : -1;
+                return progressCallback(progress);
+            },
+            rendererSession.renderer.get());
+        accumulateIncrementalResult(&result, chunkResult);
+        if (!chunkResult.success) {
+            result.success = false;
+            result.cancelled = chunkResult.cancelled;
+            result.framesRendered =
+                framesBeforeChunk + chunkResult.framesRendered;
+            result.elapsedMs = totalTimer.elapsed();
+            result.message =
+                QStringLiteral("Incremental chunk %1/%2 failed: %3")
+                    .arg(chunk.index + 1)
+                    .arg(chunks.size())
+                    .arg(chunkResult.message);
+            return result;
+        }
+        completedFrames += chunk.frameCount;
+        completed.insert(chunk.index);
+        result.incrementalChunksCompleted = completed.size();
+        if (!writeIncrementalManifest(
+                manifestPath, signature, targetFrames, totalFrames, chunks,
+                completed, result, &manifestError)) {
+            result.message = manifestError;
+            result.framesRendered = completedFrames;
+            result.elapsedMs = totalTimer.elapsed();
+            return result;
+        }
+    }
+
+    rendererSession.finish();
+    QString assemblyError;
+    if (!assembleIncrementalChunks(
+            request, chunks, cacheDirectory, &assemblyError)) {
+        result.message = assemblyError;
+        result.framesRendered = completedFrames;
+        result.elapsedMs = totalTimer.elapsed();
+        return result;
+    }
+    result.success = true;
+    result.framesRendered = totalFrames;
+    result.elapsedMs = totalTimer.elapsed();
+    result.incrementalChunksCompleted = chunks.size();
+    result.message =
+        QStringLiteral("Rendered %1 frames to %2 from %3 resumable "
+                       "image-sequence checkpoints (%4 frames reused).")
+            .arg(totalFrames)
+            .arg(QDir::toNativeSeparators(request.outputPath))
+            .arg(chunks.size())
+            .arg(reusedFrames);
     return result;
 }

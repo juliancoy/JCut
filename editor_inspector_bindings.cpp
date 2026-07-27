@@ -356,20 +356,8 @@ void EditorWindow::bindInspectorWidgets()
                                                    ? QStringLiteral("Open the Audio tab.")
                                                    : QStringLiteral("Audio dynamics tools disabled by feature flag."));
             }
-            const QList<QWidget*> controls{
-                m_audioAmplifyEnabledCheckBox, m_audioAmplifyDbSpin, m_audioNormalizeEnabledCheckBox,
-                m_audioNormalizeTargetDbSpin, m_audioStereoToMonoCheckBox,
-                m_audioSelectiveNormalizeEnabledCheckBox,
-                m_audioSelectiveNormalizeMinSecondsSpin, m_audioSelectiveNormalizePeakDbSpin,
-                m_audioSelectiveNormalizePassesSpin, m_audioWaveformPreviewProcessedCheckBox,
-                m_audioPeakReductionEnabledCheckBox, m_audioPeakThresholdDbSpin,
-                m_audioLimiterEnabledCheckBox, m_audioLimiterThresholdDbSpin, m_audioCompressorEnabledCheckBox,
-                m_audioCompressorThresholdDbSpin, m_audioCompressorRatioSpin, m_audioSoftClipEnabledCheckBox};
-            for (QWidget* control : controls) {
-                if (control) {
-                    control->setEnabled(m_featureAudioDynamicsTools);
-                }
-            }
+            refreshAudioDynamicsControlsForClip(
+                m_timeline ? m_timeline->selectedClip() : nullptr);
             scheduleSaveState();
         });
     }
@@ -386,18 +374,15 @@ void EditorWindow::setupSpeechFilterControls()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setTranscriptNormalizeRanges(
-                m_previewAudioDynamics.transcriptNormalizeEnabled
-                    ? effectiveTranscriptNormalizeRanges()
-                    : QVector<ExportRangeSegment>{});
+                anyClipTranscriptNormalizeEnabled() ? effectiveTranscriptNormalizeRanges() : QVector<ExportRangeSegment>{});
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         m_inspectorPane->refreshTab(QStringLiteral("Transcript"));
         scheduleSaveState();
@@ -677,39 +662,62 @@ void EditorWindow::setupPreviewControls()
             !m_audioWaveformPreviewProcessedCheckBox) {
             return;
         }
-        m_previewAudioDynamics.amplifyEnabled = m_audioAmplifyEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.amplifyDb = m_audioAmplifyDbSpin->value();
-        m_previewAudioDynamics.normalizeEnabled = m_audioNormalizeEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.normalizeTargetDb = m_audioNormalizeTargetDbSpin->value();
-        m_previewAudioDynamics.stereoToMonoEnabled = m_audioStereoToMonoCheckBox->isChecked();
-        m_previewAudioDynamics.selectiveNormalizeEnabled = m_audioSelectiveNormalizeEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds =
+        if (!m_timeline) {
+            return;
+        }
+        const TimelineClip* selected = m_timeline->selectedClip();
+        if (!selected ||
+            !(selected->mediaType == ClipMediaType::Audio || selected->hasAudio)) {
+            refreshAudioDynamicsControlsForClip(nullptr);
+            return;
+        }
+        const QString selectedClipId = selected->id;
+        PreviewSurface::AudioDynamicsSettings next;
+        next.amplifyEnabled = m_audioAmplifyEnabledCheckBox->isChecked();
+        next.amplifyDb = m_audioAmplifyDbSpin->value();
+        next.normalizeEnabled = m_audioNormalizeEnabledCheckBox->isChecked();
+        next.normalizeTargetDb = m_audioNormalizeTargetDbSpin->value();
+        next.stereoToMonoEnabled = m_audioStereoToMonoCheckBox->isChecked();
+        next.selectiveNormalizeEnabled = m_audioSelectiveNormalizeEnabledCheckBox->isChecked();
+        next.selectiveNormalizeMinSegmentSeconds =
             m_audioSelectiveNormalizeMinSecondsSpin->value();
-        m_previewAudioDynamics.selectiveNormalizePeakDb =
+        next.selectiveNormalizePeakDb =
             m_audioSelectiveNormalizePeakDbSpin ? m_audioSelectiveNormalizePeakDbSpin->value() : -12.0;
-        m_previewAudioDynamics.selectiveNormalizePasses =
+        next.selectiveNormalizePasses =
             m_audioSelectiveNormalizePassesSpin->value();
-        m_previewAudioDynamics.selectiveNormalizeOverlayVisible =
+        next.selectiveNormalizeOverlayVisible =
             m_audioSelectiveNormalizeOverlayVisibleCheckBox->isChecked();
-        m_previewAudioDynamics.transcriptNormalizeEnabled =
+        next.transcriptNormalizeEnabled =
             m_audioTranscriptNormalizeEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.peakReductionEnabled = m_audioPeakReductionEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.peakThresholdDb = m_audioPeakThresholdDbSpin->value();
-        m_previewAudioDynamics.limiterEnabled = m_audioLimiterEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.limiterThresholdDb = m_audioLimiterThresholdDbSpin->value();
-        m_previewAudioDynamics.compressorEnabled = m_audioCompressorEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.compressorThresholdDb = m_audioCompressorThresholdDbSpin->value();
-        m_previewAudioDynamics.compressorRatio = m_audioCompressorRatioSpin->value();
-        m_previewAudioDynamics.softClipEnabled = m_audioSoftClipEnabledCheckBox->isChecked();
-        m_previewAudioDynamics.waveformPreviewPostProcessing =
+        next.peakReductionEnabled = m_audioPeakReductionEnabledCheckBox->isChecked();
+        next.peakThresholdDb = m_audioPeakThresholdDbSpin->value();
+        next.limiterEnabled = m_audioLimiterEnabledCheckBox->isChecked();
+        next.limiterThresholdDb = m_audioLimiterThresholdDbSpin->value();
+        next.compressorEnabled = m_audioCompressorEnabledCheckBox->isChecked();
+        next.compressorThresholdDb = m_audioCompressorThresholdDbSpin->value();
+        next.compressorRatio = m_audioCompressorRatioSpin->value();
+        next.softClipEnabled = m_audioSoftClipEnabledCheckBox->isChecked();
+        next.waveformPreviewPostProcessing =
             m_audioWaveformPreviewProcessedCheckBox->isChecked();
+        next = jcut::audio::normalizedDynamicsSettingsCore(next);
+        m_previewAudioDynamics = next;
+        if (!m_timeline->updateClipById(
+                selectedClipId,
+                [next](TimelineClip& clip) {
+                    clip.audioDynamics = next;
+                    clip.audioDynamicsSet = true;
+                })) {
+            return;
+        }
         if (m_preview) {
-            m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_preview->setTimelineClips(m_timeline->clips());
+            m_preview->setAudioDynamicsSettings(next);
         }
         if (m_audioEngine) {
+            m_audioEngine->setTimelineClips(m_timeline->clips());
             m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+                anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
             scheduleTranscriptNormalizeRangeRefresh(0);
         }
         scheduleSaveState();

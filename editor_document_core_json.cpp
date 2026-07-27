@@ -332,6 +332,10 @@ void parseTranscriptOverlay(const json& value, jcut::EditorTranscriptOverlayStat
     overlay->highlightTextColor = stringOr(value, "highlightTextColor", overlay->highlightTextColor);
 }
 
+void parseAudioDynamics(const json& root,
+                        bool legacyRoot,
+                        jcut::audio::DynamicsSettingsCore* settings);
+
 void parseExtendedClip(const json& value, jcut::EditorClip* clip)
 {
     if (!value.is_object() || !clip) {
@@ -379,6 +383,11 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->audioGain = valueOr(value, "audioGain", 1.0);
     clip->audioPan = valueOr(value, "audioPan", 0.0);
     clip->audioSolo = valueOr(value, "audioSolo", false);
+    clip->audioDynamicsSet = valueOr(
+        value, "audioDynamicsSet", value.contains("audioDynamics"));
+    if (value.contains("audioDynamics")) {
+        parseAudioDynamics(value, false, &clip->audioDynamics);
+    }
     clip->audioLinkedToVideo = valueOr(value, "audioLinkedToVideo", true);
     clip->fadeSamples = std::max(0, valueOr(value, "fadeSamples", 250));
     clip->speakerFramingEnabled =
@@ -1458,6 +1467,10 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["audioGain"] = clip.audioGain;
     (*out)["audioPan"] = clip.audioPan;
     (*out)["audioSolo"] = clip.audioSolo;
+    (*out)["audioDynamicsSet"] = clip.audioDynamicsSet;
+    if (clip.audioDynamicsSet) {
+        (*out)["audioDynamics"] = audioDynamicsJson(clip.audioDynamics);
+    }
     (*out)["audioLinkedToVideo"] = clip.audioLinkedToVideo;
     (*out)["fadeSamples"] = std::max(0, clip.fadeSamples);
     (*out)["speakerFramingEnabled"] =

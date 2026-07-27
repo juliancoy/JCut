@@ -429,7 +429,15 @@ const QWidget* VulkanPreviewSurface::asWidget() const
 
 void VulkanPreviewSurface::requestNativeUpdate()
 {
-    if (!m_bulkUpdating && m_presenter) {
+    if (m_bulkUpdating || !m_presenter) {
+        return;
+    }
+    if (m_interaction.playing && m_presenter->updatePending()) {
+        return;
+    }
+    if (m_interaction.playing) {
+        m_presenter->requestFrameUpdate();
+    } else {
         m_presenter->requestUpdate();
     }
 }
@@ -455,7 +463,10 @@ void VulkanPreviewSurface::setPlaybackState(bool playing)
     }
     if (m_playbackPipeline) {
         m_playbackPipeline->setPlaybackActive(playing);
-        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+        m_playbackPipeline->setPlayheadSample(
+            m_interaction.currentSample >= 0
+                ? m_interaction.currentSample
+                : frameToSamples(m_interaction.currentFrame));
     }
     requestFramesForCurrentPosition();
     requestNativeUpdate();
@@ -486,7 +497,7 @@ void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
     if (m_playbackPipeline) {
-        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+        m_playbackPipeline->setPlayheadSample(frameToSamples(m_interaction.currentFrame));
     }
     requestFramesForCurrentPosition();
     updateNativeTitle();
@@ -495,10 +506,18 @@ void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
 
 void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
 {
+    auto recordMax = [](qint64 value, qint64* target) {
+        if (target && value > *target) {
+            *target = value;
+        }
+    };
     const int64_t boundedSample = std::max<int64_t>(0, samplePosition);
     if (m_interaction.currentSample == boundedSample) {
         return;
     }
+    m_lastPlaybackActiveSetCheckMs = 0;
+    m_lastPlaybackFrameRequestMs = 0;
+    m_lastPlaybackNativeUpdateMs = 0;
     auto activeVisualClipIdsAtSample = [this](int64_t sample) {
         QSet<QString> ids;
         const qreal framePosition = samplesToFramePosition(sample);
@@ -518,11 +537,15 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
     };
     const int64_t previousSample = m_interaction.currentSample;
     if (m_interaction.playing && previousSample >= 0 && !m_lastPresentedFrameByClip.isEmpty()) {
+        QElapsedTimer activeSetTimer;
+        activeSetTimer.start();
         const int64_t sampleDelta = qAbs(boundedSample - previousSample);
         const bool largeJump =
             sampleDelta > frameToSamples(editor::kPreviewMaxHeldPresentationFrameDelta);
         const bool activeVisualSetChanged =
             activeVisualClipIdsAtSample(previousSample) != activeVisualClipIdsAtSample(boundedSample);
+        m_lastPlaybackActiveSetCheckMs = activeSetTimer.elapsed();
+        recordMax(m_lastPlaybackActiveSetCheckMs, &m_maxPlaybackActiveSetCheckMs);
         if (largeJump || activeVisualSetChanged) {
             m_lastPresentedFrameByClip.clear();
         }
@@ -536,10 +559,22 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
     if (m_playbackPipeline) {
-        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+        m_playbackPipeline->setPlayheadSample(m_interaction.currentSample);
     }
-    requestFramesForCurrentPosition();
-    requestNativeUpdate();
+    {
+        QElapsedTimer frameRequestTimer;
+        frameRequestTimer.start();
+        requestFramesForCurrentPosition();
+        m_lastPlaybackFrameRequestMs = frameRequestTimer.elapsed();
+        recordMax(m_lastPlaybackFrameRequestMs, &m_maxPlaybackFrameRequestMs);
+    }
+    {
+        QElapsedTimer nativeUpdateTimer;
+        nativeUpdateTimer.start();
+        requestNativeUpdate();
+        m_lastPlaybackNativeUpdateMs = nativeUpdateTimer.elapsed();
+        recordMax(m_lastPlaybackNativeUpdateMs, &m_maxPlaybackNativeUpdateMs);
+    }
 }
 
 void VulkanPreviewSurface::setClipCount(int count)
@@ -1304,7 +1339,10 @@ void VulkanPreviewSurface::ensureFramePipeline()
     m_playbackPipeline = std::make_unique<editor::PlaybackFramePipeline>(m_decoder.get(),
                                                                          m_pipelineOwner.get());
     m_playbackPipeline->setPlaybackActive(m_interaction.playing);
-    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    m_playbackPipeline->setPlayheadSample(
+        m_interaction.currentSample >= 0
+            ? m_interaction.currentSample
+            : frameToSamples(m_interaction.currentFrame));
     m_playbackPipeline->setPlaybackSpeed(m_playbackSpeed);
     m_playbackPipeline->setTimelineClips(
         directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia,
@@ -2704,7 +2742,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         return false;
     }
     m_playbackPipeline->setPlaybackActive(true);
-    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    m_playbackPipeline->setPlayheadSample(targetSample);
 
     const bool targetIsCurrentPresentationSample = targetSample == m_interaction.currentSample;
     bool ready = true;
@@ -2839,7 +2877,7 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
         return false;
     }
     m_playbackPipeline->setPlaybackActive(true);
-    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    m_playbackPipeline->setPlayheadSample(m_interaction.currentSample);
     const int cappedFutureFrames = qMin(futureFrames, effectivePlaybackLookaheadFrames());
     m_playbackPipeline->requestFramesForSample(
         m_interaction.currentSample,

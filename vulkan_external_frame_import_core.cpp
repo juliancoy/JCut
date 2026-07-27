@@ -126,6 +126,7 @@ public:
         imageSize = {};
         importSourceDevice = VK_NULL_HANDLE;
         importSourceMemory = VK_NULL_HANDLE;
+        importSourceProducerSessionId = 0;
         importedImage = VK_NULL_HANDLE;
         importedImageMemory = VK_NULL_HANDLE;
         importedImageView = VK_NULL_HANDLE;
@@ -136,6 +137,7 @@ public:
     }
 
     bool importFrame(const render_detail::OffscreenVulkanFrame& frame,
+                     bool externalQueueOwnership,
                      std::string* errorMessage)
     {
         if (!initialized) {
@@ -151,7 +153,8 @@ public:
             return false;
         }
         importedImageLayout = frame.imageLayout;
-        return copyImportedFrameToLocal(frame.imageLayout, errorMessage);
+        return copyImportedFrameToLocal(
+            frame.imageLayout, externalQueueOwnership, errorMessage);
     }
 
     bool recordFrameCopy(VkCommandBuffer targetCommandBuffer,
@@ -210,7 +213,9 @@ private:
                 frame.size, frame.imageFormat, errorMessage)) {
             return false;
         }
-        if (importSourceDevice == frame.device &&
+        if (frame.producerSessionId != 0 &&
+            importSourceProducerSessionId == frame.producerSessionId &&
+            importSourceDevice == frame.device &&
             importSourceMemory == frame.imageMemory &&
             importedImage != VK_NULL_HANDLE &&
             importedImageView != VK_NULL_HANDLE &&
@@ -254,11 +259,22 @@ private:
         VkMemoryRequirements requirements{};
         vkGetImageMemoryRequirements(
             context.device, importedImage, &requirements);
-        const std::uint32_t memoryType = findMemoryType(
-            requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (memoryType == UINT32_MAX) {
+        const bool hasExactAllocationContract =
+            frame.memoryTypeIndex < 32 &&
+            frame.memoryAllocationSize > 0;
+        const std::uint32_t memoryType = hasExactAllocationContract
+            ? frame.memoryTypeIndex
+            : findMemoryType(
+                  requirements.memoryTypeBits,
+                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX || memoryType >= 32 ||
+            (requirements.memoryTypeBits & (1u << memoryType)) == 0 ||
+            (hasExactAllocationContract &&
+             requirements.size != frame.memoryAllocationSize)) {
             close(fd);
-            setError(errorMessage, "No imported Vulkan image memory type.");
+            setError(
+                errorMessage,
+                "External Vulkan image allocation contract does not match.");
             return false;
         }
 
@@ -266,10 +282,17 @@ private:
         importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
         importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
         importInfo.fd = fd;
+        VkMemoryDedicatedAllocateInfo dedicatedInfo{};
+        dedicatedInfo.sType =
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        dedicatedInfo.image = importedImage;
+        importInfo.pNext = &dedicatedInfo;
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.pNext = &importInfo;
-        allocInfo.allocationSize = requirements.size;
+        allocInfo.allocationSize = hasExactAllocationContract
+            ? frame.memoryAllocationSize
+            : requirements.size;
         allocInfo.memoryTypeIndex = memoryType;
         const VkResult allocationResult = vkAllocateMemory(
             context.device, &allocInfo, nullptr, &importedImageMemory);
@@ -317,6 +340,7 @@ private:
 
         importSourceDevice = frame.device;
         importSourceMemory = frame.imageMemory;
+        importSourceProducerSessionId = frame.producerSessionId;
         return true;
     }
 
@@ -441,6 +465,7 @@ private:
         importedImageFormat = format;
         importSourceDevice = VK_NULL_HANDLE;
         importSourceMemory = VK_NULL_HANDLE;
+        importSourceProducerSessionId = 0;
 
         VkExternalMemoryImageCreateInfo externalInfo{};
         externalInfo.sType =
@@ -460,11 +485,13 @@ private:
         imageInfo.format = format;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        // OPAQUE_FD image imports must recreate the producer image exactly.
+        // Adding capabilities can change NVIDIA's opaque allocation layout and
+        // makes the imported allocation invalid even when dimensions match.
+        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-            VK_IMAGE_USAGE_STORAGE_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT |
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            VK_IMAGE_USAGE_SAMPLED_BIT;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(
@@ -479,6 +506,7 @@ private:
     }
 
     bool copyImportedFrameToLocal(VkImageLayout sourceLayout,
+                                  bool externalQueueOwnership,
                                   std::string* errorMessage)
     {
         if (!finishPendingCopy(nullptr, errorMessage)) {
@@ -495,7 +523,8 @@ private:
                 "Failed to begin Vulkan preview sync command buffer.");
             return false;
         }
-        recordImageCopy(commandBuffer, sourceLayout, false);
+        recordImageCopy(
+            commandBuffer, sourceLayout, externalQueueOwnership);
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
             setError(
                 errorMessage,
@@ -770,6 +799,7 @@ private:
 
     VkDevice importSourceDevice = VK_NULL_HANDLE;
     VkDeviceMemory importSourceMemory = VK_NULL_HANDLE;
+    std::uint64_t importSourceProducerSessionId = 0;
     VkImage importedImage = VK_NULL_HANDLE;
     VkDeviceMemory importedImageMemory = VK_NULL_HANDLE;
     VkImageView importedImageView = VK_NULL_HANDLE;
@@ -813,7 +843,14 @@ bool VulkanExternalFrameImportCore::importFrame(
     const render_detail::OffscreenVulkanFrame& frame,
     std::string* errorMessage)
 {
-    return m_impl->importFrame(frame, errorMessage);
+    return m_impl->importFrame(frame, false, errorMessage);
+}
+
+bool VulkanExternalFrameImportCore::importExternalFrame(
+    const render_detail::OffscreenVulkanFrame& frame,
+    std::string* errorMessage)
+{
+    return m_impl->importFrame(frame, true, errorMessage);
 }
 
 bool VulkanExternalFrameImportCore::recordFrameCopy(

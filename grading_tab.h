@@ -10,6 +10,9 @@
 #include <QPushButton>
 #include <QTimer>
 #include <QComboBox>
+#include <QElapsedTimer>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QPointF>
 #include <QVector>
 #include <functional>
@@ -57,6 +60,7 @@ public:
     {
         std::function<QImage()> getCurrentFrameImage;
         std::function<bool()> isPlaybackPaused;
+        std::function<void(const QString&, qint64, const QJsonObject&)> recordUiAction;
     };
 
     explicit GradingTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -138,6 +142,27 @@ private:
         double brightnessStrength = 2.4;
     };
 
+    class ActionScope
+    {
+    public:
+        ActionScope(const Dependencies* deps,
+                    QString actionId,
+                    QJsonObject details = {});
+        ~ActionScope();
+        ActionScope(const ActionScope&) = delete;
+        ActionScope& operator=(const ActionScope&) = delete;
+        void addDetail(const QString& key, const QJsonValue& value);
+
+    private:
+        const Dependencies* m_deps = nullptr;
+        QString m_actionId;
+        QJsonObject m_details;
+        QElapsedTimer m_timer;
+    };
+
+    [[nodiscard]] ActionScope profileAction(const QString& actionId,
+                                            const QJsonObject& details = QJsonObject()) const;
+
     QString videoInterpolationLabel(bool linearInterpolation) const;
     QString nextVideoInterpolationLabel(const QString& text) const;
     bool parseVideoInterpolationText(const QString& text, bool* linearInterpolationOut) const;
@@ -155,6 +180,7 @@ private:
     void syncCurrentChannelCurveFromToneSpins();
     void syncToneSpinsFromCurvePoints(const QVector<QPointF>& points);
     bool configureAutoOpposeSettings(AutoOpposeSettings* settings);
+    bool gradingEditorHasFocus() const;
 
     Widgets m_widgets;
     Dependencies m_gradingDeps;

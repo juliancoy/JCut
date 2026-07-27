@@ -208,6 +208,7 @@ private:
         QVector<LaidOutGlyph> glyphs;
         QVector<TranscriptBackground> backgrounds;
         QPointF center;
+        QString meshKey;
         QVector<TitleMeshVertex> meshVertices;
     };
 

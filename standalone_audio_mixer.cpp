@@ -429,13 +429,36 @@ float mixerGain(const jcut::EditorDocumentCore& document,
     return static_cast<float>(gain);
 }
 
+bool audioDynamicsProcessingEnabled(
+    const jcut::audio::DynamicsSettingsCore& settings)
+{
+    return settings.amplifyEnabled ||
+        settings.normalizeEnabled ||
+        settings.selectiveNormalizeEnabled ||
+        settings.peakReductionEnabled ||
+        settings.limiterEnabled ||
+        settings.compressorEnabled ||
+        settings.softClipEnabled ||
+        settings.stereoToMonoEnabled;
+}
+
+jcut::audio::DynamicsSettingsCore audioDynamicsForClip(
+    const jcut::EditorClip& clip)
+{
+    if (!clip.audioDynamicsSet) {
+        return {};
+    }
+    return jcut::audio::normalizedDynamicsSettingsCore(clip.audioDynamics);
+}
+
 void prepareTranscriptNormalization(
     const jcut::EditorDocumentCore& document,
     const jcut::EditorClip& clip,
+    const jcut::audio::DynamicsSettingsCore& dynamics,
     const std::string& rootDirectory,
     jcut::standalone_render::audio::DecodedAudioClip* decoded)
 {
-    if (!decoded || !document.audioDynamics.transcriptNormalizeEnabled ||
+    if (!decoded || !dynamics.transcriptNormalizeEnabled ||
         decoded->samples.empty()) {
         return;
     }
@@ -748,8 +771,19 @@ bool decodeDocumentAudio(const EditorDocumentCore& document,
             decoded.samples = std::move(stretched);
             decoded.sourceSampleScale = 1.0 / playbackRate;
         }
+        const jcut::audio::DynamicsSettingsCore clipDynamics =
+            audioDynamicsForClip(clip);
+        if (audioDynamicsProcessingEnabled(clipDynamics) &&
+            !decoded.samples.empty()) {
+            jcut::audio::processAudioDynamicsCore(
+                decoded.samples.data(),
+                static_cast<int>(decoded.samples.size() / kChannelCount),
+                kChannelCount,
+                kSampleRate,
+                clipDynamics);
+        }
         prepareTranscriptNormalization(
-            document, clip, rootDirectory, &decoded);
+            document, clip, clipDynamics, rootDirectory, &decoded);
         cacheOut->emplace(clip.id, std::move(decoded));
     }
     return true;
@@ -885,12 +919,6 @@ void mixAudioChunk(const EditorDocumentCore& document,
             }
         }
     }
-    jcut::audio::processAudioDynamicsCore(
-        output,
-        frames,
-        kChannelCount,
-        kSampleRate,
-        document.audioDynamics);
 }
 
 } // namespace jcut::standalone_render::audio

@@ -596,7 +596,16 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
         [this](bool verbose) { return pipelineSnapshot(verbose); },
         [this]() {
             if (m_preview) m_preview->resetProfilingStats();
+            m_lastSetCurrentPlaybackSampleDurationMs.store(0);
+            m_maxSetCurrentPlaybackSampleDurationMs.store(0);
+            m_setCurrentPlaybackSampleSlowCount.store(0);
+            m_lastInspectorRefreshDurationMs.store(0);
+            m_maxInspectorRefreshDurationMs.store(0);
+            m_inspectorRefreshSlowCount.store(0);
+            m_playbackClockStageMetric = {};
+            m_playbackSampleApplyStageMetric = {};
             resetTranscriptSpeakerTrackingProfiling();
+            m_uiActionProfiler.reset();
         },
         [this](int64_t frame) { setCurrentFrame(frame, false); },
         [this]() { return throttleConfigSnapshot(); },
@@ -645,12 +654,10 @@ void EditorWindow::setupAudioEngine()
     m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
     m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
     m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-    m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
+    m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
     m_audioEngine->setTranscriptNormalizeRanges(
-        m_previewAudioDynamics.transcriptNormalizeEnabled
-            ? effectiveTranscriptNormalizeRanges()
-            : QVector<ExportRangeSegment>{});
-    m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        anyClipTranscriptNormalizeEnabled() ? effectiveTranscriptNormalizeRanges() : QVector<ExportRangeSegment>{});
+    m_audioEngine->setAudioDynamicsSettings({});
     // Pre-warm audio backend and decode workers off the startup event loop so
     // first playback doesn't pay full initialization/decode startup latency.
     if (!restVulkanDiagnosticsModeEnabled()) {
@@ -669,12 +676,14 @@ void EditorWindow::setupAudioEngine()
 
 void EditorWindow::scheduleDeferredStartupUiWarmup(bool refreshProjects)
 {
-    QTimer::singleShot(0, this, [this, refreshProjects]() {
-        if (refreshProjects) {
-            refreshProjectsList();
-        }
+    QTimer::singleShot(0, this, [this]() {
         refreshCurrentInspectorTab();
     });
+    if (refreshProjects) {
+        QTimer::singleShot(1000, this, [this]() {
+            refreshProjectsList();
+        });
+    }
 }
 
 void EditorWindow::setupStartupLoad()
@@ -696,19 +705,11 @@ void EditorWindow::setupStartupLoad()
             scheduleDeferredStartupUiWarmup(false);
             return;
         }
-        if (m_projectManager) {
-            m_projectManager->loadProjectsFromFolders();
-        }
-        startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
-        const QString projectId = m_projectManager
-            ? m_projectManager->currentProjectIdOrDefault()
-            : QStringLiteral("default");
-        const QString statePath = m_projectManager ? m_projectManager->stateFilePath() : QString();
-        const QString historyPath = m_projectManager ? m_projectManager->historyFilePath() : QString();
+        const QString projectId = QStringLiteral("startup_background");
         startupProfileMark(QStringLiteral("startup_load.state_parse.begin"),
                            QJsonObject{{QStringLiteral("project_id"), projectId}});
-        m_startupStateLoadWatcher.setFuture(QtConcurrent::run([projectId, statePath, historyPath]() {
-            return editor_startup::loadStartupStatePayload(projectId, statePath, historyPath);
+        m_startupStateLoadWatcher.setFuture(QtConcurrent::run([]() {
+            return editor_startup::loadActiveProjectStartupStatePayload();
         }));
     });
 }

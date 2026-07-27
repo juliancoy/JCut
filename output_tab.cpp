@@ -66,6 +66,7 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
     // Initialize image sequence format combo box
     if (m_widgets.imageSequenceFormatCombo) {
         m_widgets.imageSequenceFormatCombo->clear();
+        m_widgets.imageSequenceFormatCombo->addItem("PNG (lossless)", "png");
         m_widgets.imageSequenceFormatCombo->addItem("JPEG", "jpeg");
         m_widgets.imageSequenceFormatCombo->addItem("WEBP", "webp");
         m_widgets.imageSequenceFormatCombo->setCurrentIndex(0);

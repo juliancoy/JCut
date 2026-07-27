@@ -520,11 +520,11 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         const int hitIndex = clipIndexAt(event->position().toPoint());
         if (hitIndex >= 0 && m_toolMode == ToolMode::Razor) {
             const QString clickedClipId = m_clips[hitIndex].id;
-            if (!isClipSelected(clickedClipId)) {
-                setSelectedClipId(clickedClipId);
-            }
             const int64_t clickFrame = frameFromX(event->position().x());
-            splitSelectedClipAtFrame(clickFrame);
+            // A razor click targets the clip under the blade. Multi-clip
+            // splitting remains an explicit Ctrl+B / menu operation, so a
+            // previously selected audio clip is never cut incidentally.
+            splitClipAtFrame(clickedClipId, clickFrame);
             update();
             return;
         }

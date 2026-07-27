@@ -1331,6 +1331,46 @@ bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* docu
     return loadTranscriptJsonWithCache(transcriptPath, documentOut);
 }
 
+bool publishTranscriptDocumentToRuntimeCaches(const QString& transcriptPath,
+                                              const QJsonDocument& document)
+{
+    const QString absolutePath = QFileInfo(transcriptPath).absoluteFilePath();
+    if (transcriptPath.trimmed().isEmpty() || !document.isObject()) {
+        return false;
+    }
+
+    const QFileInfo info(absolutePath);
+    const qint64 mtimeMs =
+        info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 fileSize = info.exists() ? info.size() : -1;
+    const qint64 nextValidationMs =
+        monotonicNowMs() + kTranscriptFilesystemRefreshMs;
+
+    auto runtimeDocument = std::make_shared<TranscriptRuntimeDocument>();
+    runtimeDocument->mtimeMs = mtimeMs;
+    runtimeDocument->fileSize = fileSize;
+    runtimeDocument->sections = buildTranscriptSectionsFromDocument(document);
+    runtimeDocument->sentenceRunsBySpeaker =
+        buildSpeakerSentenceRunsFromDocument(document);
+
+    {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        transcriptJsonCacheByPath().insert(
+            absolutePath,
+            TranscriptJsonCacheEntry{
+                mtimeMs, fileSize, nextValidationMs, document});
+    }
+    {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        transcriptRuntimeCacheByPath().insert(
+            absolutePath,
+            TranscriptRuntimeCacheEntry{
+                mtimeMs, fileSize, nextValidationMs, runtimeDocument});
+    }
+    invalidateTranscriptSpeakerProfileCache(absolutePath);
+    return true;
+}
+
 std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath)
 {
     if (transcriptPath.trimmed().isEmpty()) {

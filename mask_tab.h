@@ -12,6 +12,7 @@
 
 class QComboBox;
 class QSpinBox;
+class QTimer;
 
 class MaskTab : public QObject
 {
@@ -71,10 +72,14 @@ public:
     void apply(bool pushHistory = false, bool zLevelEdited = false);
 
 private:
+    void scheduleTreatmentEdit(bool zLevelEdited = false);
+    void applyTreatmentEdit(bool commit, bool zLevelEdited = false);
     void setControlsEnabled(bool enabled);
     void setTreatmentControlsEnabled(bool enabled);
 
     Widgets m_widgets;
     Dependencies m_deps;
     bool m_updating = false;
+    bool m_pendingTreatmentZLevelEdited = false;
+    QTimer* m_treatmentEditTimer = nullptr;
 };

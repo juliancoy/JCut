@@ -51,6 +51,12 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("render_use_proxy_media"), m_useProxyMedia);
     snapshot.insert(QStringLiteral("playing"), m_interaction.playing);
     snapshot.insert(QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample));
+    snapshot.insert(QStringLiteral("playback_sample_active_set_check_last_ms"), m_lastPlaybackActiveSetCheckMs);
+    snapshot.insert(QStringLiteral("playback_sample_active_set_check_max_ms"), m_maxPlaybackActiveSetCheckMs);
+    snapshot.insert(QStringLiteral("playback_sample_frame_request_last_ms"), m_lastPlaybackFrameRequestMs);
+    snapshot.insert(QStringLiteral("playback_sample_frame_request_max_ms"), m_maxPlaybackFrameRequestMs);
+    snapshot.insert(QStringLiteral("playback_sample_native_update_last_ms"), m_lastPlaybackNativeUpdateMs);
+    snapshot.insert(QStringLiteral("playback_sample_native_update_max_ms"), m_maxPlaybackNativeUpdateMs);
     snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
     snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
     snapshot.insert(QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale);
@@ -491,6 +497,12 @@ void VulkanPreviewSurface::resetProfilingStats()
         m_presenter->resetProfilingStats();
     }
     m_playbackSmoothnessSamples.clear();
+    m_lastPlaybackActiveSetCheckMs = 0;
+    m_maxPlaybackActiveSetCheckMs = 0;
+    m_lastPlaybackFrameRequestMs = 0;
+    m_maxPlaybackFrameRequestMs = 0;
+    m_lastPlaybackNativeUpdateMs = 0;
+    m_maxPlaybackNativeUpdateMs = 0;
     m_adaptivePlaybackBoostLevel = 0;
     m_lastAdaptivePlaybackTuningAdjustMs = 0;
     applyAdaptivePlaybackTuning();

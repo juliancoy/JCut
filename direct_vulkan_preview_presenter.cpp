@@ -391,7 +391,10 @@ private:
 
 } // namespace
 
-DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionState* state, QWidget* parent)
+DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(
+    PreviewInteractionState* state,
+    QWidget* parent,
+    bool enableAudioPipeline)
     : m_state(state)
 {
     m_instance = std::make_unique<QVulkanInstance>();
@@ -458,6 +461,7 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
         &m_stats,
         &m_active,
         &m_failureReason,
+        enableAudioPipeline,
         [this](const QString& reason) { showFailure(reason); });
     directVulkanPreviewWindowSetVulkanInstance(m_window, m_instance.get());
     const QVulkanInfoVector<QVulkanExtension> supportedDeviceExtensions =
@@ -727,6 +731,13 @@ void DirectVulkanPreviewPresenter::requestUpdate()
     }
     if (m_statusLabel && m_statusLabel->isVisible()) {
         m_statusLabel->raise();
+    }
+}
+
+void DirectVulkanPreviewPresenter::requestFrameUpdate()
+{
+    if (m_window) {
+        directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
     }
 }
 

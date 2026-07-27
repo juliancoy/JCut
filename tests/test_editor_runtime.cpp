@@ -8,6 +8,8 @@
 #include "../editor_runtime_qt_bridge.h"
 #include "../editor_timeline_types.h"
 #include "../clip_serialization.h"
+#include "../project_manager.h"
+#include "../startup_project_state.h"
 #include "../editor_shared_render_sync.h"
 #include "../editor_shared_timing.h"
 #include "../render.h"
@@ -21,6 +23,7 @@
 
 #include <QString>
 #include <QDataStream>
+#include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <algorithm>
@@ -48,6 +51,7 @@ private slots:
     void testMediaRemovalRejectsReferencedItemsAndIsUndoable();
     void testSplitClipCommandUpdatesTimeline();
     void testSplitSelectedClipsCommandMatchesRazorSemantics();
+    void testSingleTargetSplitLeavesSelectedAudioUntouched();
     void testTrimClipCommandsUpdateTimeline();
     void testProjectAndClipEditCommandsUpdateDocument();
     void testSelectionCommandsSwitchSingleSelection();
@@ -102,6 +106,7 @@ private slots:
     void testAudioPresenceSurvivesPlaybackToggle();
     void testExplicitAudioSourceWorksWithoutPrimaryMedia();
     void testCoreDocumentJsonRoundTrips();
+    void testStartupPayloadAdoptsResolvedProject();
     void testLegacyStateJsonBuildsDocumentCore();
     void testLegacyStateJsonPreservesQtOnlyArtifactFields();
     void testLegacySaveRemapsGappedTrackIds();
@@ -1077,6 +1082,60 @@ void TestEditorRuntime::testSplitSelectedClipsCommandMatchesRazorSemantics()
     QCOMPARE(ineligibleRuntime.canUndo(), false);
 }
 
+void TestEditorRuntime::testSingleTargetSplitLeavesSelectedAudioUntouched()
+{
+    jcut::EditorDocumentCore document;
+    document.tracks = {
+        {1, "Video", true},
+        {2, "External audio", false},
+    };
+
+    jcut::EditorClip video;
+    video.id = 1;
+    video.persistentId = "video";
+    video.trackId = 1;
+    video.label = "Camera";
+    video.mediaKind = "video";
+    video.startFrame = 0;
+    video.durationFrames = 300;
+    video.selected = true;
+
+    jcut::EditorClip audio;
+    audio.id = 2;
+    audio.persistentId = "audio";
+    audio.trackId = 2;
+    audio.label = "Recorder";
+    audio.mediaKind = "audio";
+    audio.startFrame = 20;
+    audio.durationFrames = 260;
+    audio.sourceInFrame = 40;
+    audio.selected = true;
+    document.clips = {video, audio};
+
+    jcut::EditorRuntime runtime =
+        jcut::EditorRuntime::fromDocument(std::move(document));
+    const jcut::CommandResult result = runtime.execute(
+        jcut::EditorCommand{jcut::SplitClipCommand{1, 100}});
+    QCOMPARE(result.applied, true);
+
+    const jcut::EditorDocumentCore split = runtime.snapshot();
+    QCOMPARE(std::count_if(
+                 split.clips.cbegin(), split.clips.cend(),
+                 [](const jcut::EditorClip& clip) {
+                     return clip.mediaKind == "video";
+                 }),
+             std::ptrdiff_t(2));
+    const auto audioClip = std::find_if(
+        split.clips.cbegin(), split.clips.cend(),
+        [](const jcut::EditorClip& clip) {
+            return clip.persistentId == "audio";
+        });
+    QVERIFY(audioClip != split.clips.cend());
+    QCOMPARE(audioClip->startFrame, 20);
+    QCOMPARE(audioClip->durationFrames, 260);
+    QCOMPARE(audioClip->sourceInFrame, std::int64_t(40));
+}
+
 void TestEditorRuntime::testTrimClipCommandsUpdateTimeline()
 {
     jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
@@ -1110,6 +1169,11 @@ void TestEditorRuntime::testAudioClipDurationPreservesSubframeSamples()
     clip.startSubframeSamples = kSamplesPerFrame / 4;
     clip.durationFrames = 2;
     clip.durationSubframeSamples = kSamplesPerFrame / 2;
+    clip.audioDynamicsSet = true;
+    clip.audioDynamics.amplifyEnabled = true;
+    clip.audioDynamics.amplifyDb = 5.5;
+    clip.audioDynamics.limiterEnabled = true;
+    clip.audioDynamics.limiterThresholdDb = -3.0;
 
     QCOMPARE(clipTimelineDurationSamples(clip),
              frameToSamples(2) + (kSamplesPerFrame / 2));
@@ -1125,6 +1189,11 @@ void TestEditorRuntime::testAudioClipDurationPreservesSubframeSamples()
     QCOMPARE(loaded.durationFrames, clip.durationFrames);
     QCOMPARE(loaded.durationSubframeSamples, clip.durationSubframeSamples);
     QCOMPARE(clipTimelineDurationSamples(loaded), clipTimelineDurationSamples(clip));
+    QCOMPARE(loaded.audioDynamicsSet, true);
+    QCOMPARE(loaded.audioDynamics.amplifyEnabled, true);
+    QCOMPARE(loaded.audioDynamics.amplifyDb, 5.5);
+    QCOMPARE(loaded.audioDynamics.limiterEnabled, true);
+    QCOMPARE(loaded.audioDynamics.limiterThresholdDb, -3.0);
 }
 
 void TestEditorRuntime::testProjectAndClipEditCommandsUpdateDocument()
@@ -5510,6 +5579,10 @@ void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
     clipB.startFrame = 24;
     clipB.durationFrames = 120;
     clipB.hasAudio = true;
+    clipB.audioDynamicsSet = true;
+    clipB.audioDynamics.normalizeEnabled = true;
+    clipB.audioDynamics.normalizeTargetDb = -2.0;
+    clipB.audioDynamics.transcriptNormalizeEnabled = true;
 
     const jcut::EditorDocumentCore document = jcut::buildEditorDocumentCore(
         QStringLiteral("Runtime Bridge"),
@@ -5532,6 +5605,10 @@ void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
         31);
     QCOMPARE(document.clips.back().audioPresenceKnown, true);
     QCOMPARE(document.clips.back().hasAudio, true);
+    QCOMPARE(document.clips.back().audioDynamicsSet, true);
+    QCOMPARE(document.clips.back().audioDynamics.normalizeEnabled, true);
+    QCOMPARE(document.clips.back().audioDynamics.normalizeTargetDb, -2.0);
+    QCOMPARE(document.clips.back().audioDynamics.transcriptNormalizeEnabled, true);
     QCOMPARE(document.mediaItems.back().audioPresenceKnown, true);
     QCOMPARE(document.mediaItems.back().hasAudio, true);
     const jcut::EditorGradingKeyframe& coreGrade =
@@ -5545,6 +5622,13 @@ void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
     QCOMPARE(coreGrade.curvePointsLuma.front().y, 0.4);
     QCOMPARE(coreGrade.curveThreePointLock, true);
     QCOMPARE(coreGrade.curveSmoothingEnabled, false);
+
+    const jcut::render::TimelineRenderData renderData =
+        jcut::render::buildTimelineRenderData(document);
+    QCOMPARE(renderData.clips.back().audioDynamicsSet, true);
+    QCOMPARE(renderData.clips.back().audioDynamics.normalizeEnabled, true);
+    QCOMPARE(renderData.clips.back().audioDynamics.normalizeTargetDb, -2.0);
+    QCOMPARE(renderData.clips.back().audioDynamics.transcriptNormalizeEnabled, true);
 }
 
 void TestEditorRuntime::testDocumentBuildsTimelineRenderData()
@@ -5706,6 +5790,11 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     original.mediaItems.front().hasAudio = false;
     original.clips.front().audioPresenceKnown = true;
     original.clips.front().hasAudio = false;
+    original.clips.front().audioDynamicsSet = true;
+    original.clips.front().audioDynamics.amplifyEnabled = true;
+    original.clips.front().audioDynamics.amplifyDb = 4.0;
+    original.clips.front().audioDynamics.compressorEnabled = true;
+    original.clips.front().audioDynamics.compressorRatio = 2.5;
     original.clips.front().speakerSectionMinimumWords = 37;
     original.exportRequest.backgroundFillEffect = "blur";
     original.exportRequest.backgroundFillOpacity = 0.42;
@@ -5733,6 +5822,11 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->mediaItems.front().hasAudio, false);
     QCOMPARE(reparsed->clips.front().audioPresenceKnown, true);
     QCOMPARE(reparsed->clips.front().hasAudio, false);
+    QCOMPARE(reparsed->clips.front().audioDynamicsSet, true);
+    QCOMPARE(reparsed->clips.front().audioDynamics.amplifyEnabled, true);
+    QCOMPARE(reparsed->clips.front().audioDynamics.amplifyDb, 4.0);
+    QCOMPARE(reparsed->clips.front().audioDynamics.compressorEnabled, true);
+    QCOMPARE(reparsed->clips.front().audioDynamics.compressorRatio, 2.5);
     QCOMPARE(
         reparsed->clips.front().speakerSectionMinimumWords,
         37);
@@ -5796,6 +5890,58 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(safelyParsed->exportRequest.outputFps, 30.0);
     QCOMPARE(safelyParsed->exportRequest.outputSize.width, 1080);
     QCOMPARE(safelyParsed->exportRequest.outputSize.height, 1920);
+}
+
+void TestEditorRuntime::testStartupPayloadAdoptsResolvedProject()
+{
+    QTemporaryDir tempRoot;
+    QVERIFY(tempRoot.isValid());
+
+    const QByteArray previousRoot = qgetenv("JCUT_PROJECT_ROOT");
+    qputenv("JCUT_PROJECT_ROOT", tempRoot.path().toUtf8());
+    struct EnvRestore {
+        QByteArray previous;
+        ~EnvRestore()
+        {
+            if (previous.isNull()) {
+                qunsetenv("JCUT_PROJECT_ROOT");
+            } else {
+                qputenv("JCUT_PROJECT_ROOT", previous);
+            }
+        }
+    } restore{previousRoot};
+
+    QDir root(tempRoot.path());
+    QVERIFY(root.mkpath(QStringLiteral("projects/alpha")));
+    QFile marker(root.filePath(QStringLiteral("projects/.current_project")));
+    QVERIFY(marker.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(marker.write("alpha") == 5);
+    marker.close();
+
+    QFile state(root.filePath(QStringLiteral("projects/alpha/state.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray statePayload =
+        QByteArrayLiteral("{\"projectName\":\"Alpha Startup\",\"timeline\":[],\"tracks\":[]}");
+    QVERIFY(state.write(statePayload) == statePayload.size());
+    state.close();
+
+    const QJsonObject payload =
+        editor_startup::loadActiveProjectStartupStatePayload();
+    QCOMPARE(payload.value(QStringLiteral("project_id")).toString(),
+             QStringLiteral("alpha"));
+    QCOMPARE(payload.value(QStringLiteral("root")).toObject()
+                 .value(QStringLiteral("projectName")).toString(),
+             QStringLiteral("Alpha Startup"));
+    QVERIFY(payload.value(QStringLiteral("state_path")).toString()
+                .endsWith(QStringLiteral("projects/alpha/state.json")));
+    QCOMPARE(QDir(payload.value(QStringLiteral("project_root")).toString())
+                 .absolutePath(),
+             QDir(tempRoot.path()).absolutePath());
+
+    ProjectManager uiManager;
+    uiManager.adoptLoadedProjectFromStartup(
+        payload.value(QStringLiteral("project_id")).toString());
+    QCOMPARE(uiManager.currentProjectIdOrDefault(), QStringLiteral("alpha"));
 }
 
 void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()

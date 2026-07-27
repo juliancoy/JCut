@@ -91,21 +91,17 @@ void EditorWindow::advanceFrame()
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = tickNowMs;
         if (m_preview) {
-            m_preview->preparePlaybackAdvance(loopStartFrame);
+            m_preview->preparePlaybackAdvanceSample(loopStartSample);
         }
         setCurrentPlaybackSample(loopStartSample, true, true);
         return;
     }
 
     if (m_preview) {
-        const int64_t nextFrame =
-            qBound<int64_t>(0,
-                            static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
-                            lastPlayableFrame());
         // Video is a follower of the monotonic transport clock. A decode miss
         // must not abort the clock step or discard fractional carry; the
         // presenter holds the last usable frame while the pipeline catches up.
-        const bool videoReady = m_preview->preparePlaybackAdvance(nextFrame);
+        const bool videoReady = m_preview->preparePlaybackAdvanceSample(nextSample);
         editor::accumulatePlaybackStageMetric(
             &m_playbackClockStageMetric,
             videoReady ? 1 : 0,
@@ -356,7 +352,7 @@ void EditorWindow::invalidatePlaybackRangeCaches()
 
 void EditorWindow::scheduleTranscriptNormalizeRangeRefresh(int delayMs)
 {
-    if (!m_previewAudioDynamics.transcriptNormalizeEnabled) {
+    if (!anyClipTranscriptNormalizeEnabled()) {
         ++m_transcriptNormalizeRefreshGeneration;
         m_transcriptNormalizeRefreshTimer.stop();
         if (m_audioEngine) {
@@ -385,7 +381,7 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
     if (m_transcriptNormalizeRefreshWatcher.isRunning()) {
         return;
     }
-    if (!m_previewAudioDynamics.transcriptNormalizeEnabled) {
+    if (!anyClipTranscriptNormalizeEnabled()) {
         m_appliedTranscriptNormalizeRefreshGeneration = m_transcriptNormalizeRefreshGeneration;
         if (m_audioEngine) {
             m_audioEngine->setTranscriptNormalizeRanges({});
@@ -651,6 +647,12 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
 {
     QElapsedTimer seekUpdateTimer;
     seekUpdateTimer.start();
+    auto uiActionProfile = m_uiActionProfiler.scope(
+        QStringLiteral("playback.apply_sample"),
+        uiActionContext(),
+        QJsonObject{{QStringLiteral("requested_sample"), static_cast<qint64>(samplePosition)},
+                    {QStringLiteral("sync_audio"), syncAudio},
+                    {QStringLiteral("during_playback"), duringPlayback}});
     editor::accumulatePlaybackStageMetric(&m_playbackSampleApplyStageMetric,
                                   1,
                                   0,
@@ -703,24 +705,59 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
         m_playbackAudioFeedbackAnchorFeedbackSample = boundedSample;
     }
     
-    m_timeline->setCurrentFrame(bounded);
-    m_preview->setCurrentPlaybackSample(boundedSample);
+    {
+        auto previewSampleProfile = m_uiActionProfiler.scope(
+            QStringLiteral("playback.preview_sample"),
+            uiActionContext(),
+            QJsonObject{{QStringLiteral("sample"), static_cast<qint64>(boundedSample)},
+                        {QStringLiteral("frame"), static_cast<qint64>(bounded)},
+                        {QStringLiteral("during_playback"), duringPlayback}});
+        m_preview->setCurrentPlaybackSample(boundedSample);
+    }
     publishFastPlaybackSyncTelemetry();
     if (!m_startupReadinessVideoSampleApplied.exchange(true)) {
         startupReadinessMark(QStringLiteral("video.playback_sample_applied"),
                              QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(bounded)},
                                          {QStringLiteral("sample"), static_cast<qint64>(boundedSample)}});
     }
-    
-    m_ignoreSeekSignal = true;
-    m_seekSlider->setValue(static_cast<int>(qMin<int64_t>(bounded, INT_MAX)));
-    m_ignoreSeekSignal = false;
-    
-    m_timecodeLabel->setText(frameToTimecode(bounded));
-    
-    updateTransportLabels();
+
+    // The preview and telemetry consume every monotonic transport sample. The
+    // Qt timeline, seek slider, and labels are UI followers; repainting and
+    // relayout there on every playback tick competes with presentation and can
+    // make A/V sync judgments meaningless.
+    const bool syncQtPlaybackFollowers =
+        !duringPlayback ||
+        m_lastPlaybackChromeSyncMs <= 0 ||
+        (tickNowMs - m_lastPlaybackChromeSyncMs) >= m_playbackUiSyncMinIntervalMs;
+    if (syncQtPlaybackFollowers) {
+        auto chromeProfile = m_uiActionProfiler.scope(
+            QStringLiteral("playback.chrome_followers"),
+            uiActionContext(),
+            QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(bounded)},
+                        {QStringLiteral("during_playback"), duringPlayback}});
+        m_timeline->setCurrentFrame(bounded);
+
+        m_ignoreSeekSignal = true;
+        m_seekSlider->setValue(static_cast<int>(qMin<int64_t>(bounded, INT_MAX)));
+        m_ignoreSeekSignal = false;
+
+        m_timecodeLabel->setText(frameToTimecode(bounded));
+
+        updateTransportLabels();
+        if (duringPlayback) {
+            m_lastPlaybackChromeSyncMs = tickNowMs;
+        }
+    }
     if (duringPlayback) {
-        if ((tickNowMs - m_lastPlaybackUiSyncMs) >= m_playbackUiSyncMinIntervalMs) {
+        const bool syncQtPlaybackTables =
+            syncQtPlaybackFollowers &&
+            (m_lastPlaybackTableSyncMs <= 0 ||
+             (tickNowMs - m_lastPlaybackTableSyncMs) >= m_playbackTableSyncMinIntervalMs);
+        if (syncQtPlaybackTables) {
+            auto tableProfile = m_uiActionProfiler.scope(
+                QStringLiteral("playback.table_followers"),
+                uiActionContext(),
+                QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(bounded)}});
             syncTranscriptTableToPlayhead();
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
@@ -734,15 +771,25 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
                 }
             }
             m_lastPlaybackUiSyncMs = tickNowMs;
+            m_lastPlaybackTableSyncMs = tickNowMs;
         }
     } else {
+        m_lastPlaybackChromeSyncMs = 0;
+        m_lastPlaybackTableSyncMs = 0;
         scheduleDeferredInspectorRefresh();
-        syncTranscriptTableToPlayhead();
-        syncKeyframeTableToPlayhead();
-        syncGradingTableToPlayhead();
-        m_titlesTab->syncTableToPlayhead();
-        if (m_speakersTab) {
-            m_speakersTab->syncCurrentSpeakerSentenceToPlayhead(/*duringPlayback=*/false);
+        {
+            auto tableProfile = m_uiActionProfiler.scope(
+                QStringLiteral("playback.table_followers"),
+                uiActionContext(),
+                QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(bounded)},
+                            {QStringLiteral("during_playback"), false}});
+            syncTranscriptTableToPlayhead();
+            syncKeyframeTableToPlayhead();
+            syncGradingTableToPlayhead();
+            m_titlesTab->syncTableToPlayhead();
+            if (m_speakersTab) {
+                m_speakersTab->syncCurrentSpeakerSentenceToPlayhead(/*duringPlayback=*/false);
+            }
         }
         m_lastPlaybackUiSyncMs = tickNowMs;
     }
@@ -861,9 +908,8 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
         m_audioEngine->setPlaybackWarpMode(normalizedWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
-        m_audioEngine->setTranscriptNormalizeEnabled(
-            m_previewAudioDynamics.transcriptNormalizeEnabled);
-        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+        m_audioEngine->setAudioDynamicsSettings({});
     }
     updatePlaybackTimerInterval();
     reconcileActivePlaybackAudioState(activePlaybackReconfigured);
@@ -1053,9 +1099,8 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
         m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
-        m_audioEngine->setTranscriptNormalizeEnabled(
-            m_previewAudioDynamics.transcriptNormalizeEnabled);
-        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+        m_audioEngine->setAudioDynamicsSettings({});
         if (audioStarted && alignRunningAudioToPlayhead) {
             const int64_t currentFrame = m_timeline->currentFrame();
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
@@ -1337,6 +1382,7 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_audioDriftRetimeMultiplier = 1.0;
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = nowMs();
+        m_lastPlaybackChromeSyncMs = 0;
         const auto ranges = effectivePlaybackRanges();
         int64_t playbackStartSample = m_transportTimelineSample;
         if (!ranges.isEmpty()) {
@@ -1381,9 +1427,7 @@ void EditorWindow::setPlaybackActive(bool playing)
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setTranscriptNormalizeRanges(
-                m_previewAudioDynamics.transcriptNormalizeEnabled
-                    ? effectiveTranscriptNormalizeRanges()
-                    : QVector<ExportRangeSegment>{});
+                anyClipTranscriptNormalizeEnabled() ? effectiveTranscriptNormalizeRanges() : QVector<ExportRangeSegment>{});
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
@@ -1392,9 +1436,8 @@ void EditorWindow::setPlaybackActive(bool playing)
                 normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
             m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
-            m_audioEngine->setTranscriptNormalizeEnabled(
-                m_previewAudioDynamics.transcriptNormalizeEnabled);
-            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+            m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
+            m_audioEngine->setAudioDynamicsSettings({});
         }
         const PlaybackAudioWarpMode runtimeWarpMode =
             normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
@@ -1442,6 +1485,7 @@ void EditorWindow::setPlaybackActive(bool playing)
     } else {
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = 0;
+        m_lastPlaybackChromeSyncMs = 0;
         logPlaybackTransitionPhase(QStringLiteral("state_reset"));
         if (m_audioEngine) {
             updateAudioDriftRetime(true);
@@ -1454,6 +1498,16 @@ void EditorWindow::setPlaybackActive(bool playing)
         logPlaybackTransitionPhase(QStringLiteral("preview_stop"));
         if (m_speakersTab) {
             m_speakersTab->flushDeferredPlaybackRefreshes();
+        }
+        if (m_timeline) {
+            const int64_t stoppedFrame =
+                qBound<int64_t>(
+                    0,
+                    static_cast<int64_t>(std::floor(samplesToFramePosition(m_transportTimelineSample))),
+                    lastPlayableFrame());
+            if (m_timeline->currentFrame() != stoppedFrame) {
+                m_timeline->setCurrentFrame(stoppedFrame);
+            }
         }
         logPlaybackTransitionPhase(QStringLiteral("speaker_deferred_refresh_queued"));
     }

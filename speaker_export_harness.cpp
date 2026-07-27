@@ -5,6 +5,7 @@
 #include "render.h"
 
 #include <QElapsedTimer>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -15,6 +16,7 @@
 #include <QVector>
 
 #include <cmath>
+#include <unistd.h>
 
 namespace editor {
 namespace {
@@ -403,6 +405,146 @@ int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config) {
     out << "  message: " << result.message << "\n";
     out.flush();
 
+    return result.success ? 0 : 1;
+}
+
+int runOfflineExportHarness(const OfflineExportHarnessConfig& config) {
+    QTextStream out(stdout);
+    QTextStream err(stderr);
+    if (config.statePath.trimmed().isEmpty() ||
+        config.outputPath.trimmed().isEmpty() ||
+        config.endFrame < config.startFrame) {
+        err << "Usage error: require --state, --output, and a valid "
+               "--start-frame/--end-frame range.\n";
+        return 2;
+    }
+
+    QFile stateFile(config.statePath);
+    if (!stateFile.open(QIODevice::ReadOnly)) {
+        err << "Failed to open state file: " << config.statePath << "\n";
+        return 2;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(stateFile.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        err << "Invalid state JSON: " << parseError.errorString() << "\n";
+        return 2;
+    }
+    const QJsonObject root = document.object();
+    const QString mediaRoot =
+        root.value(QStringLiteral("mediaRoot")).toString().trimmed();
+    if (!mediaRoot.isEmpty() && !QDir::setCurrent(mediaRoot)) {
+        err << "Could not enter project media root: " << mediaRoot << "\n";
+        return 2;
+    }
+
+    RenderRequest request;
+    request.outputPath = config.outputPath;
+    request.outputFormat =
+        inferOutputFormat(config.outputFormat, config.outputPath, root);
+    request.outputSize = config.outputSizeOverride
+        ? config.outputSize
+        : QSize(root.value(QStringLiteral("outputWidth")).toInt(1080),
+                root.value(QStringLiteral("outputHeight")).toInt(1920));
+    request.outputFps = qBound(
+        1.0,
+        root.value(QStringLiteral("outputFps"))
+            .toDouble(static_cast<double>(kTimelineFps)),
+        240.0);
+    request.playbackSpeed =
+        qMax(0.001,
+             root.value(QStringLiteral("exportPlaybackSpeed"))
+                 .toDouble(1.0));
+    request.correctionsEnabled =
+        root.value(QStringLiteral("correctionsEnabled")).toBool(true);
+    request.useProxyMedia =
+        root.value(QStringLiteral("renderUseProxies")).toBool(false);
+    request.clips = loadClips(root);
+    request.tracks = loadTracks(root);
+    request.renderSyncMarkers = loadRenderSyncMarkers(root);
+    request.exportStartFrame = config.startFrame;
+    request.exportEndFrame = config.endFrame;
+    request.exportRanges = {
+        ExportRangeSegment{config.startFrame, config.endFrame}};
+    request.incrementalExport = false;
+    request.createVideoFromImageSequence =
+        config.createImageSequence;
+    request.imageSequenceFormat =
+        root.value(QStringLiteral("imageSequenceFormat"))
+            .toString(QStringLiteral("png"));
+    request.gpuExportPreviewEnabled =
+        config.gpuExportPreviewEnabled;
+    request.transcriptPrependMs =
+        qMax(0, root.value(QStringLiteral("transcriptPrependMs")).toInt());
+    request.transcriptPostpendMs =
+        qMax(0, root.value(QStringLiteral("transcriptPostpendMs")).toInt());
+    request.transcriptOffsetMs =
+        qBound(-10000,
+               root.value(QStringLiteral("transcriptOffsetMs")).toInt(),
+               10000);
+    if (config.previousRangeEndFrame >= 0 &&
+        config.previousRangeEndFrame + 1 < config.startFrame) {
+        const int crossfadeFrames =
+            qBound(1,
+                   root.value(
+                           QStringLiteral(
+                               "speechFilterFrameCrossfadeFrames"))
+                       .toInt(5),
+                   240);
+        request.playbackTiming.playbackRanges = {
+            ExportRangeSegment{
+                qMax<int64_t>(
+                    0,
+                    config.previousRangeEndFrame -
+                        crossfadeFrames + 1),
+                config.previousRangeEndFrame},
+            ExportRangeSegment{
+                config.startFrame,
+                config.endFrame}};
+        request.playbackTiming.frameTransitionMode =
+            PlaybackFrameTransitionMode::Crossfade;
+        request.playbackTiming.frameCrossfadeEnabled = true;
+        request.playbackTiming.frameCrossfadeFrames =
+            crossfadeFrames;
+    }
+
+    out << "Offline Vulkan export harness\n"
+        << "  state: " << config.statePath << "\n"
+        << "  output: " << config.outputPath << "\n"
+        << "  rangeFrames: " << config.startFrame << "-"
+        << config.endFrame << "\n"
+        << "  gpuExportPreview: "
+        << (request.gpuExportPreviewEnabled ? "true" : "false") << "\n"
+        << "  imageSequence: "
+        << (request.createVideoFromImageSequence ? "true" : "false")
+        << "\n"
+        << "  previousRangeEndFrame: "
+        << config.previousRangeEndFrame << "\n";
+    out.flush();
+
+    const RenderResult result = renderTimelineToFile(
+        request,
+        [&out](const RenderProgress& progress) {
+            out << "progress frame=" << progress.timelineFrame
+                << " complete=" << progress.framesCompleted << "/"
+                << progress.totalFrames << "\n";
+            out.flush();
+            if (progress.gpuPreviewFrame.readySemaphoreFd >= 0) {
+                ::close(progress.gpuPreviewFrame.readySemaphoreFd);
+            }
+            if (progress.gpuPreviewFrame.consumedSemaphoreFd >= 0) {
+                ::close(progress.gpuPreviewFrame.consumedSemaphoreFd);
+            }
+            return true;
+        });
+    out << "  success: " << (result.success ? "true" : "false") << "\n"
+        << "  framesRendered: " << result.framesRendered << "\n"
+        << "  effectiveBackend: " << result.effectiveRenderBackend << "\n"
+        << "  exportPipeline: " << result.exportPipeline << "\n"
+        << "  message: " << result.message << "\n";
+    out.flush();
     return result.success ? 0 : 1;
 }
 

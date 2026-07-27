@@ -1268,6 +1268,52 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     update();
 }
 
+GeneratedClipPlacementResult TimelineWidget::replaceGeneratedClipsForSource(
+    const QString& sourceClipId,
+    ClipRole generatedRole,
+    const QVector<TimelineClip>& generatedClips,
+    const QString& trackBaseName)
+{
+    GeneratedClipPlacementResult result = ::replaceGeneratedClipsForSource(
+        m_clips,
+        m_tracks,
+        sourceClipId,
+        generatedRole,
+        generatedClips,
+        trackBaseName);
+    if (!result.changed) {
+        return result;
+    }
+
+    invalidateHoveredClipToolTipCache();
+    normalizeSpeakerTitleParentBounds(&m_clips);
+    normalizeRenderSyncMarkerOwnership();
+    normalizeTrackIndices();
+    sortClips();
+    ensureTrackCount(trackCount());
+    applyClipSelection(m_clipSelection.ids, m_clipSelection.primaryId, false);
+    if (m_selectedTrackIndex >= trackCount()) {
+        m_selectedTrackIndex = -1;
+    }
+    if (!m_hoveredClipId.isEmpty()) {
+        const bool hoveredClipStillExists = std::any_of(
+            m_clips.cbegin(), m_clips.cend(),
+            [this](const TimelineClip& clip) {
+                return clip.id == m_hoveredClipId;
+            });
+        if (!hoveredClipStillExists) {
+            m_hoveredClipId.clear();
+        }
+    }
+    normalizeExportRange();
+    updateMinimumTimelineHeight();
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
+    update();
+    return result;
+}
+
 void TimelineWidget::setDeferMaskSidecarReconciliation(bool defer)
 {
     m_deferMaskSidecarReconciliation = defer;

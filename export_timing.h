@@ -38,12 +38,22 @@ inline std::int64_t outputFrameCountForTimelineRange(std::int64_t startFrame,
     const std::int64_t boundedEnd = std::max<std::int64_t>(boundedStart, endFrame);
     const double safeOutputFps = normalizedOutputFps(outputFps);
     const double safePlaybackSpeed = normalizedPlaybackSpeed(playbackSpeed);
-    const double timelineDurationSeconds =
-        static_cast<double>(boundedEnd - boundedStart + 1) / static_cast<double>(kTimelineFps);
-    const double outputDurationSeconds = timelineDurationSeconds / safePlaybackSpeed;
+    const long double exactOutputFrames =
+        static_cast<long double>(boundedEnd - boundedStart + 1) *
+        static_cast<long double>(safeOutputFps) /
+        (static_cast<long double>(kTimelineFps) *
+         static_cast<long double>(safePlaybackSpeed));
+    const long double nearestInteger = std::round(exactOutputFrames);
+    const long double roundingTolerance =
+        std::max<long double>(1.0e-12L,
+                              std::abs(exactOutputFrames) * 1.0e-12L);
+    const long double stableOutputFrames =
+        std::abs(exactOutputFrames - nearestInteger) <= roundingTolerance
+        ? nearestInteger
+        : exactOutputFrames;
     return std::max<std::int64_t>(
         1,
-        static_cast<std::int64_t>(std::ceil(outputDurationSeconds * safeOutputFps)));
+        static_cast<std::int64_t>(std::ceil(stableOutputFrames)));
 }
 
 inline ExportFrameTiming frameTimingForOutputFrame(std::int64_t outputFrame,
