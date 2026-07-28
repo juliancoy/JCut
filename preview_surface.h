@@ -97,15 +97,9 @@ public:
     virtual void setShowCorrectionOverlays(bool show) = 0;
     virtual void setSelectedCorrectionPolygon(int polygonIndex) = 0;
     virtual void setBackgroundColor(const QColor& color) = 0;
-    virtual void setBackgroundFillEffect(BackgroundFillEffect effect) = 0;
-    virtual void setBackgroundFillOpacity(qreal opacity) = 0;
-    virtual void setBackgroundFillBrightness(qreal brightness) = 0;
-    virtual void setBackgroundFillSaturation(qreal saturation) = 0;
-    virtual void setBackgroundFillEdgePixels(int pixels) = 0;
-    virtual void setBackgroundFillEdgeProgressive(bool progressive) = 0;
-    virtual void setBackgroundFillEdgePower(qreal power) = 0;
-    virtual void setBackgroundFillStretchSourceClipId(const QString& clipId) = 0;
     virtual void setPreviewZoom(qreal zoom) = 0;
+    virtual void setInstagramSafeAreaGuidesVisible(bool visible) = 0;
+    virtual void setAlignmentGridGuidesVisible(bool visible) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
     virtual void setShowRawDetections(bool show) = 0;

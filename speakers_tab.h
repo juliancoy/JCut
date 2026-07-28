@@ -59,6 +59,7 @@ public:
         QDoubleSpinBox* speakerOverlayFlyInDelaySpin = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInDurationSpin = nullptr;
         QCheckBox* speakerOverlayShowAtSectionEndCheckBox = nullptr;
+        QCheckBox* speakerOverlayRespectSpeechFilterTimingCheckBox = nullptr;
         QDoubleSpinBox* speakerOverlayCadenceSpin = nullptr;
         QDoubleSpinBox* speakerOverlayFlyInTimeSpin = nullptr;
         QDoubleSpinBox* speakerOverlayWrapRadiusSpin = nullptr;
@@ -170,6 +171,7 @@ public:
 
     void wire();
     void refresh();
+    void refreshSpeakerTitleControlState();
     void refreshForSubtab(const QString& subtabName);
     void flushDeferredPlaybackRefreshes();
     void syncIdentityToPlayhead(int64_t absolutePlaybackSample,

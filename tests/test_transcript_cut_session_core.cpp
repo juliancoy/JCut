@@ -1103,6 +1103,7 @@ void testNeutralSpeakerTitleGenerationAndReplacement()
     jcut::SpeakerTitleFlyInSettingsCore settings;
     settings.style = jcut::SpeakerTitleFlyInStyleCore::SlideFromRight;
     settings.showSpeakerOrganization = true;
+    settings.respectSpeechFilterTiming = false;
     const std::vector<jcut::EditorClip> generated =
         jcut::makeSpeakerTitleClipsCore(source, *transcript, 0, settings);
     expect(generated.size() == 3,
@@ -1111,6 +1112,7 @@ void testNeutralSpeakerTitleGenerationAndReplacement()
         expect(generated[0].label == "Speaker: Alice\nExample Org" &&
                    generated[0].clipRole == "speaker_title" &&
                    generated[0].linkedSourceClipId == "source-7" &&
+                   !generated[0].effectSkipAwareTiming &&
                    generated[0].titleKeyframes.size() >= 4 &&
                    generated[0].titleKeyframes[1].color == "#aabbcc" &&
                    generated[1].startFrame == 130 &&
@@ -1166,9 +1168,13 @@ void testNeutralSpeakerTitleGenerationAndReplacement()
         }
         expect(
             repeatedStarts ==
-                std::vector<int>({100, 166, 220, 280, 340, 346}),
-            "neutral generation supports section-end titles and source-start cadence: " +
+                std::vector<int>({100, 166, 220, 280, 346, 400}),
+            "neutral generation resets cadence at each speaker change: " +
                 repeatedStartSummary);
+        expect(
+            !repeatedTitles.empty() &&
+                repeatedTitles.back().label == "Speaker: Bob",
+            "post-change cadence title belongs to the current speaker");
         expect(
             std::all_of(
                 repeatedTitles.begin(),

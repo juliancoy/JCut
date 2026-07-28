@@ -27,6 +27,19 @@ class InspectorPane final : public QWidget
     Q_OBJECT
 
 public:
+    struct PreviewGuideControls {
+        QCheckBox *instagramSafeAreaGuides = nullptr;
+        QCheckBox *alignmentGridGuides = nullptr;
+    };
+
+    struct OutputRenderControls {
+        QCheckBox *incrementalRender = nullptr;
+        QCheckBox *instagramSafeAreaGuides = nullptr;
+        QCheckBox *alignmentGridGuides = nullptr;
+        QLabel *renderCachePath = nullptr;
+        QPushButton *clearRenderCache = nullptr;
+    };
+
     explicit InspectorPane(QWidget *parent = nullptr);
     void setHeaderWidget(QWidget *widget);
 
@@ -135,6 +148,7 @@ public:
     QDoubleSpinBox *speakerOverlayFlyInDelaySpin() const { return m_speakerOverlayFlyInDelaySpin; }
     QDoubleSpinBox *speakerOverlayFlyInDurationSpin() const { return m_speakerOverlayFlyInDurationSpin; }
     QCheckBox *speakerOverlayShowAtSectionEndCheckBox() const { return m_speakerOverlayShowAtSectionEndCheckBox; }
+    QCheckBox *speakerOverlayRespectSpeechFilterTimingCheckBox() const { return m_speakerOverlayRespectSpeechFilterTimingCheckBox; }
     QDoubleSpinBox *speakerOverlayCadenceSpin() const { return m_speakerOverlayCadenceSpin; }
     QDoubleSpinBox *speakerOverlayFlyInTimeSpin() const { return m_speakerOverlayFlyInTimeSpin; }
     QDoubleSpinBox *speakerOverlayWrapRadiusSpin() const { return m_speakerOverlayWrapRadiusSpin; }
@@ -406,6 +420,11 @@ public:
     QPushButton *trackCrossfadeButton() const { return m_trackCrossfadeButton; }
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
     QCheckBox *previewShowSpeakerTrackPointsCheckBox() const { return m_previewShowSpeakerTrackPointsCheckBox; }
+    PreviewGuideControls previewGuideControls() const
+    {
+        return {m_previewInstagramSafeAreaGuidesCheckBox,
+                m_previewAlignmentGridGuidesCheckBox};
+    }
     QComboBox *previewVulkanPresenterCombo() const { return m_previewVulkanPresenterCombo; }
     QComboBox *previewGpuCombo() const { return m_previewGpuCombo; }
     QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
@@ -481,6 +500,14 @@ public:
     QComboBox *renderBackendCombo() const { return m_renderBackendCombo; }
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
+    OutputRenderControls outputRenderControls() const
+    {
+        return {m_incrementalRenderCheckBox,
+                m_instagramSafeAreaGuidesCheckBox,
+                m_alignmentGridGuidesCheckBox,
+                m_renderCachePathLabel,
+                m_clearRenderCacheButton};
+    }
     QCheckBox *renderCreateVideoFromSequenceCheckBox() const { return m_renderCreateVideoFromSequenceCheckBox; }
     QCheckBox *outputPlaybackCacheFallbackCheckBox() const { return m_outputPlaybackCacheFallbackCheckBox; }
     QCheckBox *outputLeadPrefetchEnabledCheckBox() const { return m_outputLeadPrefetchEnabledCheckBox; }
@@ -761,6 +788,8 @@ private:
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
+    QCheckBox *m_previewInstagramSafeAreaGuidesCheckBox = nullptr;
+    QCheckBox *m_previewAlignmentGridGuidesCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
     QComboBox *m_previewGpuCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
@@ -894,6 +923,7 @@ private:
     QDoubleSpinBox *m_speakerOverlayFlyInDelaySpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInDurationSpin = nullptr;
     QCheckBox *m_speakerOverlayShowAtSectionEndCheckBox = nullptr;
+    QCheckBox *m_speakerOverlayRespectSpeechFilterTimingCheckBox = nullptr;
     QDoubleSpinBox *m_speakerOverlayCadenceSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayFlyInTimeSpin = nullptr;
     QDoubleSpinBox *m_speakerOverlayWrapRadiusSpin = nullptr;
@@ -1010,7 +1040,12 @@ private:
     QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
+    QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;
     QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;
+    QLabel *m_renderCachePathLabel = nullptr;
+    QPushButton *m_clearRenderCacheButton = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
     QCheckBox *m_outputLeadPrefetchEnabledCheckBox = nullptr;
     QSpinBox *m_outputLeadPrefetchCountSpin = nullptr;

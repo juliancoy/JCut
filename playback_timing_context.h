@@ -77,6 +77,11 @@ struct PlaybackFrameCrossfade {
     float secondaryOpacity = 0.0f;
 };
 
+struct PlaybackTimelineFrameClocks {
+    qreal transportTimelineFrame = 0.0;
+    qreal visualTimelineFrame = 0.0;
+};
+
 inline int64_t upcomingNoncontiguousPlaybackRangeStart(
     qreal timelineFramePosition,
     const PlaybackTimingContext& timing,
@@ -225,4 +230,15 @@ inline qreal playbackVisualTimelineFramePosition(qreal timelineFramePosition,
     const PlaybackFrameSpeedThrough speedThrough =
         playbackFrameSpeedThroughAtTimelineFrame(timelineFramePosition, timing);
     return speedThrough.active ? speedThrough.timelineFramePosition : timelineFramePosition;
+}
+
+inline PlaybackTimelineFrameClocks playbackTimelineFrameClocks(
+    qreal transportTimelineFrame,
+    const PlaybackTimingContext& timing)
+{
+    PlaybackTimelineFrameClocks clocks;
+    clocks.transportTimelineFrame = transportTimelineFrame;
+    clocks.visualTimelineFrame =
+        playbackVisualTimelineFramePosition(transportTimelineFrame, timing);
+    return clocks;
 }

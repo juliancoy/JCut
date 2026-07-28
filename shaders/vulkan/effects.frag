@@ -115,6 +115,71 @@ vec4 sampleBidirectionalRing(vec2 polarDirection,
                        sampleMax - sampleHalfTexel));
 }
 
+vec4 bidirectionalSampleToPremultiplied(vec4 sampleColor) {
+    // Some decoded video surfaces carry useful RGB with an unset alpha
+    // channel. Treat those as opaque before filtering, while preserving real
+    // transparent texels.
+    if (sampleColor.a <= 0.0001 &&
+        max(max(sampleColor.r, sampleColor.g), sampleColor.b) > 0.0001) {
+        sampleColor.a = 1.0;
+    }
+    sampleColor.rgb *= sampleColor.a;
+    return sampleColor;
+}
+
+vec4 sampleBidirectionalReconstructionBand(vec2 polarDirection,
+                                           float sampleRadius,
+                                           float angularStep,
+                                           vec2 sampleMin,
+                                           vec2 sampleMax,
+                                           vec2 sampleSpan,
+                                           vec2 sampleHalfTexel) {
+    vec4 result = bidirectionalSampleToPremultiplied(
+        sampleBidirectionalRing(
+            polarDirection,
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel)) * 0.4;
+    result += bidirectionalSampleToPremultiplied(
+        sampleBidirectionalRing(
+            rotatedDirection(polarDirection, angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel)) * 0.2;
+    result += bidirectionalSampleToPremultiplied(
+        sampleBidirectionalRing(
+            rotatedDirection(polarDirection, -angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel)) * 0.2;
+    result += bidirectionalSampleToPremultiplied(
+        sampleBidirectionalRing(
+            rotatedDirection(polarDirection, 2.0 * angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel)) * 0.1;
+    result += bidirectionalSampleToPremultiplied(
+        sampleBidirectionalRing(
+            rotatedDirection(polarDirection, -2.0 * angularStep),
+            sampleRadius,
+            sampleMin,
+            sampleMax,
+            sampleSpan,
+            sampleHalfTexel)) * 0.1;
+    if (result.a > 0.0001) {
+        result.rgb /= result.a;
+    }
+    return result;
+}
+
 vec4 blurredFillSample(vec2 uv) {
     vec2 texelSize = 1.0 / vec2(textureSize(u_texture, 0));
     float radius = abs(pc.u_midtones.a);
@@ -312,10 +377,6 @@ vec4 progressiveBidirectionalEdgeStretchSample(vec2 uv) {
     vec2 direction = superellipseDirection(polarDirection);
     float boundaryPixelRadius = length(direction * validTexturePixels * 0.5);
     float edgePixels = clamp(pc.u_midtones.x, 1.0, 512.0);
-    float coreRadius = clamp(
-        1.0 - edgePixels / max(1.0, boundaryPixelRadius),
-        0.05,
-        0.995);
 
     float rayX = delta.x;
     float rayY = delta.y;
@@ -327,6 +388,23 @@ vec4 progressiveBidirectionalEdgeStretchSample(vec2 uv) {
         : (-center.y) / min(-0.0001, rayY);
     float canvasScale = min(canvasScaleX, canvasScaleY);
     float canvasRadius = max(radius, radius * canvasScale);
+
+    // A one-pixel source band cannot be expanded across hundreds of output
+    // pixels without turning individual edge texels into large radial wedges.
+    // Grow the reconstruction band with the actual canvas expansion, capped at
+    // one fifth of the source radius. The explicit Edge Width remains the
+    // minimum artistic width.
+    float automaticBandFraction = clamp(
+        (canvasRadius - 1.0) / 24.0,
+        0.0,
+        0.2);
+    float effectiveBandPixels = max(
+        edgePixels,
+        boundaryPixelRadius * automaticBandFraction);
+    float coreRadius = clamp(
+        1.0 - effectiveBandPixels / max(1.0, boundaryPixelRadius),
+        0.05,
+        0.995);
     float stretchT = clamp(
         (radius - coreRadius) / max(0.0001, canvasRadius - coreRadius),
         0.0,
@@ -336,48 +414,19 @@ vec4 progressiveBidirectionalEdgeStretchSample(vec2 uv) {
         1.0,
         pow(stretchT, max(0.25, pc.u_midtones.z)));
     vec2 sampleHalfTexel = min(halfTexel, sampleSpan * 0.5);
-    vec4 result = sampleBidirectionalRing(
+    float angularStep = clamp(
+        max(1.0, effectiveBandPixels * 0.25) /
+            max(1.0, boundaryPixelRadius),
+        0.001,
+        0.12);
+    vec4 result = sampleBidirectionalReconstructionBand(
         polarDirection,
         sampleRadius,
+        angularStep,
         sampleMin,
         sampleMax,
         sampleSpan,
         sampleHalfTexel);
-    float clipWidthPixels = frameOutputSize.y / inverseWidth;
-    float clipHeightPixels = frameOutputSize.y / abs(signedInverseHeight);
-    float minClipPixels = min(clipWidthPixels, clipHeightPixels);
-    if (minClipPixels < 128.0) {
-        float angularStep = clamp(2.0 / max(1.0, minClipPixels), 0.0, 0.18);
-        result *= 0.4;
-        result += sampleBidirectionalRing(
-            rotatedDirection(polarDirection, angularStep),
-            sampleRadius,
-            sampleMin,
-            sampleMax,
-            sampleSpan,
-            sampleHalfTexel) * 0.2;
-        result += sampleBidirectionalRing(
-            rotatedDirection(polarDirection, -angularStep),
-            sampleRadius,
-            sampleMin,
-            sampleMax,
-            sampleSpan,
-            sampleHalfTexel) * 0.2;
-        result += sampleBidirectionalRing(
-            rotatedDirection(polarDirection, 2.0 * angularStep),
-            sampleRadius,
-            sampleMin,
-            sampleMax,
-            sampleSpan,
-            sampleHalfTexel) * 0.1;
-        result += sampleBidirectionalRing(
-            rotatedDirection(polarDirection, -2.0 * angularStep),
-            sampleRadius,
-            sampleMin,
-            sampleMax,
-            sampleSpan,
-            sampleHalfTexel) * 0.1;
-    }
 
     // Feather the overlay in from the protected core.  At the clip boundary
     // it is fully opaque, so the same warped sample continues outside without
@@ -474,42 +523,73 @@ void main() {
         edgeStretchFill ||
         blurredFill ||
         finalCompositeProgressiveEdgeStretchFill;
-    bool mirrorRing = pc.u_shadows.a > 5.5 && pc.u_shadows.a < 6.5;
-    bool tessellation = pc.u_shadows.a > 6.5 && pc.u_shadows.a < 7.5;
-    int artisticMode = int(floor(pc.u_shadows.a + 0.5));
+    // Background fills repurpose u_shadows.a for the signed
+    // output-height/source-height mapping. It is geometry, not an effect mode.
+    // Without this namespace boundary, ordinary zoom ratios such as 4, 5, or
+    // 6 accidentally select Synth 3D, Difference Matte, or Mirror Ring.
+    bool mirrorRing = !backgroundFill &&
+        pc.u_shadows.a > 5.5 && pc.u_shadows.a < 6.5;
+    bool tessellation = !backgroundFill &&
+        pc.u_shadows.a > 6.5 && pc.u_shadows.a < 7.5;
+    int artisticMode = backgroundFill
+        ? 0
+        : int(floor(pc.u_shadows.a + 0.5));
     vec2 effectUv = v_texCoord;
     if (mirrorRing) {
         vec2 p = v_texCoord - vec2(0.5);
         float radius = length(p) * 2.0;
-        float angle = atan(p.y, p.x);
-        const float sectors = 12.0;
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float sectors = clamp(floor(frame.effectParams.y + 0.5), 2.0, 96.0);
+        float geometry = clamp(frame.effectParams.w, 0.1, 8.0);
+        float angle = atan(p.y, p.x) + frame.effectParams.z * 0.01;
         float wedge = 6.28318530718 / sectors;
         angle = abs(mod(angle + wedge * 0.5, wedge) - wedge * 0.5);
-        effectUv = vec2(0.5) + vec2(cos(angle), sin(angle)) * mirroredCoord(radius) * 0.5;
+        float radial = mirroredCoord(radius * geometry / grain);
+        effectUv = vec2(0.5) + vec2(cos(angle), sin(angle)) * radial * 0.5;
     } else if (tessellation) {
-        const float tileScale = 6.0;
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float cells = clamp(floor(frame.effectParams.y + 0.5), 1.0, 96.0);
+        float geometry = clamp(frame.effectParams.w, 0.1, 8.0);
+        float tileScale = cells / grain;
         vec2 tile = v_texCoord * tileScale;
         vec2 cell = floor(tile);
         vec2 local = fract(tile);
         if (mod(cell.x + cell.y, 2.0) > 0.5) local.x = 1.0 - local.x;
         if (local.x + local.y > 1.0) local = vec2(1.0) - local.yx;
-        effectUv = vec2(local.x + 0.5 * local.y, 0.86602540378 * local.y);
+        effectUv = vec2(local.x + 0.5 * local.y * geometry,
+                        0.86602540378 * local.y / geometry);
     } else if (artisticMode == 8) { // Kaleidoscope
         vec2 p = v_texCoord - 0.5;
-        float r = length(p);
-        float wedge = 6.28318530718 / 16.0;
-        float a = abs(mod(atan(p.y, p.x) + wedge * 0.5, wedge) - wedge * 0.5);
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float sectors = clamp(floor(frame.effectParams.y + 0.5), 2.0, 96.0);
+        float geometry = clamp(frame.effectParams.w, 0.1, 8.0);
+        float r = length(p) * geometry / grain;
+        float wedge = 6.28318530718 / sectors;
+        float inputAngle = atan(p.y, p.x) + frame.effectParams.z * 0.01;
+        float a = abs(mod(inputAngle + wedge * 0.5, wedge) - wedge * 0.5);
         effectUv = 0.5 + vec2(cos(a), sin(a)) * r;
     } else if (artisticMode == 9) { // Hexagonal prism
-        vec2 p = v_texCoord * 5.0;
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float cells = clamp(floor(frame.effectParams.y + 0.5), 1.0, 96.0);
+        float geometry = clamp(frame.effectParams.w, 0.1, 8.0);
+        float phase = frame.effectParams.z * 0.01;
+        mat2 rotation = mat2(cos(phase), -sin(phase), sin(phase), cos(phase));
+        vec2 p = rotation * (v_texCoord - 0.5) * (cells / grain) + 0.5;
         vec2 q = vec2(p.x - p.y * 0.5, p.y * 0.8660254);
         vec2 h = abs(fract(q) - 0.5);
-        effectUv = 0.5 + vec2(h.x + h.y * 0.5, h.y) * 0.85;
+        effectUv = 0.5 + vec2(h.x + h.y * 0.5 * geometry,
+                              h.y / geometry) * 0.85;
     } else if (artisticMode == 10) { // Droste recursion
         vec2 p = v_texCoord - 0.5;
         float r = max(length(p), 0.0001);
-        float a = atan(p.y, p.x) + log(r) * 0.7;
-        float rr = exp(fract(log(r) / log(2.0)) * log(2.0)) * 0.24;
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float density = clamp(frame.effectParams.y, 1.0, 96.0);
+        float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
+        float recursionBase = clamp(1.15 + density * 0.035, 1.2, 4.5);
+        float a = atan(p.y, p.x) + log(r) * spacing +
+                  frame.effectParams.z * 0.01;
+        float rr = exp(fract(log(r) / log(recursionBase)) *
+                       log(recursionBase)) * (0.24 * grain);
         effectUv = 0.5 + vec2(cos(a), sin(a)) * rr;
     } else if (artisticMode == 11) { // Polar tunnel
         vec2 p = v_texCoord - 0.5;
@@ -519,10 +599,27 @@ void main() {
         effectUv = vec2(fract(atan(p.y, p.x) / 6.2831853 + 0.5), clamp(1.15 - length(p) * 1.75, 0.0, 1.0));
     } else if (artisticMode == 13) { // Infinite mirror
         vec2 p = v_texCoord - 0.5;
-        float band = fract(-log2(max(max(abs(p.x), abs(p.y)), 0.001)));
-        effectUv = 0.5 + normalize(p + vec2(0.0001)) * band * 0.48;
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float density = clamp(frame.effectParams.y, 1.0, 96.0);
+        float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
+        float phase = frame.effectParams.z * 0.01;
+        mat2 rotation = mat2(cos(phase), -sin(phase), sin(phase), cos(phase));
+        vec2 rp = rotation * p;
+        float recursionBase = clamp(1.15 + density * 0.035, 1.2, 4.5);
+        float band = fract(-log(max(max(abs(rp.x), abs(rp.y)), 0.001)) /
+                           log(recursionBase) * spacing);
+        effectUv = 0.5 + normalize(rp + vec2(0.0001)) *
+                            band * clamp(0.48 * grain, 0.05, 1.5);
     } else if (artisticMode == 14) { // Quad mirror
-        effectUv = 0.5 + abs(v_texCoord - 0.5);
+        float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+        float cells = clamp(floor(frame.effectParams.y + 0.5), 1.0, 96.0);
+        float geometry = clamp(frame.effectParams.w, 0.1, 8.0);
+        float phase = frame.effectParams.z * 0.01;
+        mat2 rotation = mat2(cos(phase), -sin(phase), sin(phase), cos(phase));
+        vec2 tiled = rotation * (v_texCoord - 0.5) * (cells / grain);
+        vec2 local = vec2(mirroredCoord(tiled.x),
+                          mirroredCoord(tiled.y));
+        effectUv = 0.5 + abs(local - 0.5) * geometry;
     } else if (artisticMode == 15) { // Slit scan
         float band = floor(v_texCoord.y * 96.0);
         effectUv.x = mirroredCoord(v_texCoord.x + sin(band * 0.37) * 0.22);
@@ -650,8 +747,10 @@ void main() {
         sourceAlpha = pow(blurredAlpha, 1.0 / max(0.01, pc.u_highlights.a));
     }
 
-    bool synth3d = pc.u_shadows.a > 3.5 && pc.u_shadows.a < 4.5;
-    bool differenceMatte = pc.u_shadows.a > 4.5 && pc.u_shadows.a < 5.5;
+    bool synth3d = !backgroundFill &&
+        pc.u_shadows.a > 3.5 && pc.u_shadows.a < 4.5;
+    bool differenceMatte = !backgroundFill &&
+        pc.u_shadows.a > 4.5 && pc.u_shadows.a < 5.5;
     if (differenceMatte) {
         vec3 referenceRgb = texture(u_mask, v_texCoord).rgb;
         float difference = max(max(abs(rgb.r - referenceRgb.r),

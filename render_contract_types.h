@@ -28,14 +28,10 @@ struct RenderRequestCore {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
-    std::string backgroundFillEffect = "none";
-    double backgroundFillOpacity = 1.0;
-    double backgroundFillBrightness = 0.0;
-    double backgroundFillSaturation = 1.0;
-    int backgroundFillEdgePixels = 1;
-    bool backgroundFillEdgeProgressive = false;
-    double backgroundFillEdgePower = 2.0;
-    std::string backgroundFillStretchSourceClipId;
+    bool incrementalExport = true;
+    int incrementalChunkFrames = 900;
+    bool instagramSafeAreaGuides = false;
+    bool alignmentGridGuides = false;
     int transcriptPrependMs = 150;
     int transcriptPostpendMs = 70;
     int transcriptOffsetMs = 0;

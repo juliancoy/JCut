@@ -14,6 +14,7 @@
 #include "editor_shared.h"
 #include "editor_shared_effects.h"
 #include "editor_shared_timing.h"
+#include "offscreen_vulkan_renderer_helpers.h"
 #include "playback_frame_pipeline.h"
 #include "preview_frame_selection.h"
 #include "preview_view_transform.h"
@@ -93,17 +94,6 @@ bool directVulkanPreviewSupportsClip(const TimelineClip& clip)
     return !clip.filePath.isEmpty() &&
            clip.sourceKind != MediaSourceKind::ImageSequence &&
            (clip.mediaType == ClipMediaType::Video || clip.mediaType == ClipMediaType::Image);
-}
-
-bool clipUsesSidecarMask(const TimelineClip& clip)
-{
-    if (!clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
-        return false;
-    }
-    return clip.clipRole == ClipRole::MaskMatte ||
-           clip.maskShowOnly ||
-           clip.maskForegroundLayerEnabled ||
-           clip.maskRepeatEnabled;
 }
 
 bool visualClipActiveAtSample(const TimelineClip& clip,
@@ -816,54 +806,6 @@ void VulkanPreviewSurface::setBackgroundColor(const QColor& color)
     requestNativeUpdate();
 }
 
-void VulkanPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect effect)
-{
-    m_interaction.backgroundFillEffect = effect;
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillOpacity(qreal opacity)
-{
-    m_interaction.backgroundFillOpacity = qBound<qreal>(0.0, opacity, 1.0);
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillBrightness(qreal brightness)
-{
-    m_interaction.backgroundFillBrightness = qBound<qreal>(-1.0, brightness, 1.0);
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillSaturation(qreal saturation)
-{
-    m_interaction.backgroundFillSaturation = qBound<qreal>(0.0, saturation, 3.0);
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillEdgePixels(int pixels)
-{
-    m_interaction.backgroundFillEdgePixels = qBound(1, pixels, 512);
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillEdgeProgressive(bool progressive)
-{
-    m_interaction.backgroundFillEdgeProgressive = progressive;
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillEdgePower(qreal power)
-{
-    m_interaction.backgroundFillEdgePower = qBound<qreal>(0.25, power, 8.0);
-    requestNativeUpdate();
-}
-
-void VulkanPreviewSurface::setBackgroundFillStretchSourceClipId(const QString& clipId)
-{
-    m_interaction.backgroundFillStretchSourceClipId = clipId.trimmed();
-    requestNativeUpdate();
-}
-
 void VulkanPreviewSurface::setPreviewZoom(qreal zoom)
 {
     const qreal oldZoom = m_interaction.previewZoom;
@@ -879,6 +821,24 @@ void VulkanPreviewSurface::setPreviewZoom(qreal zoom)
         m_interaction.previewPanOffset =
             PreviewViewTransform::clampedPanOffset(baseRect, m_interaction.previewZoom, m_interaction.previewPanOffset);
     }
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setInstagramSafeAreaGuidesVisible(bool visible)
+{
+    if (m_interaction.instagramSafeAreaGuides == visible) {
+        return;
+    }
+    m_interaction.instagramSafeAreaGuides = visible;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setAlignmentGridGuidesVisible(bool visible)
+{
+    if (m_interaction.alignmentGridGuides == visible) {
+        return;
+    }
+    m_interaction.alignmentGridGuides = visible;
     requestNativeUpdate();
 }
 
@@ -1416,63 +1376,25 @@ void VulkanPreviewSurface::prefetchMaskBuffersForPlayback()
         : 0;
     QSet<QString> nextWindowKeys;
 
-    const auto requestMasksAt = [this, &nextWindowKeys](
-                                    int64_t samplePosition,
-                                    qreal framePosition) {
+    const auto requestMasksAt = [this, &nextWindowKeys](int64_t,
+                                                        qreal framePosition) {
         const qreal visualFramePosition =
             playbackVisualTimelineFramePosition(framePosition,
                                                 m_interaction.playbackTiming);
         const int64_t visualSample =
             framePositionToSamples(visualFramePosition);
-        for (const TimelineClip& clip : m_interaction.clips) {
-            if (!clipUsesSidecarMask(clip) ||
-                !clipVisualPlaybackEnabled(clip, m_interaction.tracks)) {
-                continue;
-            }
-
-            const TimelineClip* mediaOwner = &clip;
-            if (clip.clipRole == ClipRole::MaskMatte) {
-                mediaOwner = clipParent(clip, m_interaction.clips);
-                if (!mediaOwner ||
-                    mediaOwner->clipRole != ClipRole::Media ||
-                    mediaOwner->mediaType != ClipMediaType::Video ||
-                    mediaOwner->filePath.trimmed().isEmpty()) {
-                    continue;
-                }
-                const TimelineClip& timingSource =
-                    resolvedClipTimingSource(clip, m_interaction.clips);
-                if (visualFramePosition < timingSource.startFrame ||
-                    visualFramePosition >=
-                        timingSource.startFrame + timingSource.durationFrames) {
-                    continue;
-                }
-            } else if (!visualClipActiveAtSample(
-                           clip,
-                           m_interaction.tracks,
-                           visualSample,
-                           visualFramePosition,
-                           m_bypassGrading)) {
-                continue;
-            }
-
-            const int64_t sourceFrame =
-                mediaOwner->mediaType == ClipMediaType::Image
-                    ? 0
-                    : sourceFrameForSample(*mediaOwner, visualSample);
-            const QString requestKey =
-                QStringLiteral("%1\x1f%2\x1f%3")
-                    .arg(clip.id, clip.maskFramesDir)
-                    .arg(sourceFrame);
-            if (nextWindowKeys.contains(requestKey)) {
-                continue;
-            }
-            nextWindowKeys.insert(requestKey);
-            if (m_maskPrefetchWindowKeys.contains(requestKey)) {
-                continue;
-            }
-            prefetchClipMaskBuffers(
-                clip, qMax<int64_t>(0, sourceFrame));
-        }
+        RenderFrameClock visualClock = renderFrameClockForTimelineSample(visualSample);
+        visualClock.timelineFramePosition = visualFramePosition;
+        visualClock.timelineFrame =
+            qMax<int64_t>(0, static_cast<int64_t>(std::floor(visualFramePosition)));
+        prefetchRenderableClipMaskBuffersForClock(
+            m_interaction.clips,
+            m_interaction.tracks,
+            m_interaction.renderSyncMarkers,
+            visualClock,
+            &nextWindowKeys,
+            &m_maskPrefetchWindowKeys,
+            m_bypassGrading);
     };
 
     for (int offset = 0; offset <= futureFrames; ++offset) {
@@ -2014,10 +1936,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     QElapsedTimer refreshTimer;
     refreshTimer.start();
     QVector<VulkanPreviewClipFrameStatus> statuses;
-    const qreal visualFramePosition =
-        playbackVisualTimelineFramePosition(m_interaction.currentFramePosition,
-                                            m_interaction.playbackTiming);
-    const qreal transformFramePosition = m_interaction.currentFramePosition;
+    const PlaybackTimelineFrameClocks frameClocks =
+        playbackTimelineFrameClocks(m_interaction.currentFramePosition,
+                                    m_interaction.playbackTiming);
+    const qreal visualFramePosition = frameClocks.visualTimelineFrame;
+    const qreal transformFramePosition = frameClocks.visualTimelineFrame;
     const int64_t visualSample = framePositionToSamples(visualFramePosition);
     QSet<QString> maskMatteSourceIds;
     for (const TimelineClip& clip : m_interaction.clips) {
@@ -2925,11 +2848,25 @@ QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& cli
         return QImage();
     }
 
-    const editor::FrameHandle frame = m_lastPresentedFrameByClip.value(clipId);
-    if (!frame.hasCpuImage()) {
-        return QImage();
+    QString mediaOwnerClipId = clipId;
+    const auto clipIt = std::find_if(
+        m_interaction.clips.cbegin(),
+        m_interaction.clips.cend(),
+        [&clipId](const TimelineClip& clip) { return clip.id == clipId; });
+    if (clipIt != m_interaction.clips.cend()) {
+        const TimelineClip* mediaOwner =
+            clipSelectionContext(&*clipIt, m_interaction.clips).owner();
+        if (mediaOwner) {
+            mediaOwnerClipId = mediaOwner->id;
+        }
     }
-    return frame.cpuImage();
+
+    const editor::FrameHandle frame =
+        m_lastPresentedFrameByClip.value(mediaOwnerClipId);
+    if (frame.hasCpuImage()) {
+        return frame.cpuImage();
+    }
+    return render_detail::frameHandleToCpuImage(frame);
 }
 
 QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelineSnapshots() const

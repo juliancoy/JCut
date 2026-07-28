@@ -12,8 +12,10 @@
 #include <QVector>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -74,6 +76,26 @@ QImage makeCheckerboardSource()
                 c = QColor(245, 220, 45, 255);
             }
             image.setPixelColor(x, y, c);
+        }
+    }
+    return image;
+}
+
+QImage makeDarkPerimeterSource()
+{
+    QImage image(kSourceW, kSourceH, QImage::Format_RGBA8888);
+    image.fill(QColor(0, 0, 0, 255));
+    for (int y = 4; y < image.height() - 4; ++y) {
+        for (int x = 4; x < image.width() - 4; ++x) {
+            const double horizontal =
+                static_cast<double>(x - 4) / (image.width() - 9);
+            image.setPixelColor(
+                x,
+                y,
+                QColor(qRound(235.0 - horizontal * 90.0),
+                       qRound(70.0 + horizontal * 150.0),
+                       48,
+                       255));
         }
     }
     return image;
@@ -231,14 +253,6 @@ QImage makeBidirectionalShaderReference(const QImage& source, double clipScale)
             const double boundaryPixelRadius = std::hypot(
                 directionX * renderTexture.width() * 0.5,
                 directionY * renderTexture.height() * 0.5);
-            const double coreRadius = std::clamp(
-                1.0 - kEdgePixels / std::max(1.0, boundaryPixelRadius),
-                0.05,
-                0.995);
-            if (radius <= coreRadius) {
-                expected.setPixelColor(x, y, base);
-                continue;
-            }
 
             const double canvasScaleX = std::abs(dx) < 0.0001
                 ? std::numeric_limits<double>::infinity()
@@ -249,6 +263,21 @@ QImage makeBidirectionalShaderReference(const QImage& source, double clipScale)
             const double canvasRadius = std::max(
                 radius,
                 radius * std::min(canvasScaleX, canvasScaleY));
+            const double automaticBandFraction = std::clamp(
+                (canvasRadius - 1.0) / 24.0,
+                0.0,
+                0.2);
+            const double effectiveBandPixels = std::max(
+                static_cast<double>(kEdgePixels),
+                boundaryPixelRadius * automaticBandFraction);
+            const double coreRadius = std::clamp(
+                1.0 - effectiveBandPixels / std::max(1.0, boundaryPixelRadius),
+                0.05,
+                0.995);
+            if (radius <= coreRadius) {
+                expected.setPixelColor(x, y, base);
+                continue;
+            }
             const double stretch = clamp01(
                 (radius - coreRadius) /
                 std::max(0.0001, canvasRadius - coreRadius));
@@ -272,28 +301,43 @@ QImage makeBidirectionalShaderReference(const QImage& source, double clipScale)
                     0.5 + (rotatedX / norm) * sampleRadius * 0.5,
                     0.5 + (rotatedY / norm) * sampleRadius * 0.5);
             };
-            QColor warped = sampleRing(0.0);
-            const double minClipPixels = std::min(clipWidth, clipHeight);
-            if (minClipPixels < 128.0) {
-                const double angularStep =
-                    std::clamp(2.0 / std::max(1.0, minClipPixels), 0.0, 0.18);
-                const QColor positive = sampleRing(angularStep);
-                const QColor negative = sampleRing(-angularStep);
-                const QColor positiveWide = sampleRing(2.0 * angularStep);
-                const QColor negativeWide = sampleRing(-2.0 * angularStep);
+            const double angularStep = std::clamp(
+                std::max(1.0, effectiveBandPixels * 0.25) /
+                    std::max(1.0, boundaryPixelRadius),
+                0.001,
+                0.12);
+            const std::array<QColor, 5> samples{
+                sampleRing(0.0),
+                sampleRing(angularStep),
+                sampleRing(-angularStep),
+                sampleRing(2.0 * angularStep),
+                sampleRing(-2.0 * angularStep)};
+            constexpr std::array<double, 5> weights{
+                0.4, 0.2, 0.2, 0.1, 0.1};
+            double alpha = 0.0;
+            double red = 0.0;
+            double green = 0.0;
+            double blue = 0.0;
+            for (std::size_t i = 0; i < samples.size(); ++i) {
+                double sampleAlpha = samples[i].alphaF();
+                if (sampleAlpha <= 0.0001 &&
+                    std::max({samples[i].redF(),
+                              samples[i].greenF(),
+                              samples[i].blueF()}) > 0.0001) {
+                    sampleAlpha = 1.0;
+                }
+                alpha += sampleAlpha * weights[i];
+                red += samples[i].redF() * sampleAlpha * weights[i];
+                green += samples[i].greenF() * sampleAlpha * weights[i];
+                blue += samples[i].blueF() * sampleAlpha * weights[i];
+            }
+            QColor warped = Qt::transparent;
+            if (alpha > 0.0001) {
                 warped = QColor::fromRgbF(
-                    warped.redF() * 0.4 +
-                        (positive.redF() + negative.redF()) * 0.2 +
-                        (positiveWide.redF() + negativeWide.redF()) * 0.1,
-                    warped.greenF() * 0.4 +
-                        (positive.greenF() + negative.greenF()) * 0.2 +
-                        (positiveWide.greenF() + negativeWide.greenF()) * 0.1,
-                    warped.blueF() * 0.4 +
-                        (positive.blueF() + negative.blueF()) * 0.2 +
-                        (positiveWide.blueF() + negativeWide.blueF()) * 0.1,
-                    warped.alphaF() * 0.4 +
-                        (positive.alphaF() + negative.alphaF()) * 0.2 +
-                        (positiveWide.alphaF() + negativeWide.alphaF()) * 0.1);
+                    clamp01(red / alpha),
+                    clamp01(green / alpha),
+                    clamp01(blue / alpha),
+                    clamp01(alpha));
             }
             const double featherWidth =
                 std::max(0.002, (1.0 - coreRadius) * 0.25);
@@ -420,20 +464,11 @@ private slots:
         request.outputFormat = QStringLiteral("preview");
         request.outputSize = QSize(kOutputW, kOutputH);
         request.correctionsEnabled = true;
-        request.backgroundFillEffect = BackgroundFillEffect::None;
-        request.backgroundFillOpacity = 1.0;
-        request.backgroundFillBrightness = 0.0;
-        request.backgroundFillSaturation = 1.0;
-        request.backgroundFillEdgePixels = 1;
-        request.backgroundFillEdgePower = 2.0;
         request.clips = QVector<TimelineClip>{makeProgressiveStretchClip(sourcePath)};
         request.exportStartFrame = 0;
         request.exportEndFrame = 0;
-        const render_detail::VulkanProgressiveEdgeStretchLayerPolicy policy =
-            render_detail::vulkanProgressiveEdgeStretchLayerPolicy(request.clips.first(), request.tracks);
-        QVERIFY(policy.sourceEligible);
-        QVERIFY(!policy.presetActive);
-        QVERIFY(!policy.drawBackground);
+        QVERIFY(render_detail::vulkanClipSupportsBackgroundFillSource(
+            request.clips.first()));
 
         QVector<TimelineClip> orderedClips = request.clips;
         QHash<QString, editor::DecoderContext*> decoders;
@@ -526,7 +561,6 @@ private slots:
         request.outputFormat = QStringLiteral("preview");
         request.outputSize = QSize(kOutputW, kOutputH);
         request.correctionsEnabled = true;
-        request.backgroundFillEffect = BackgroundFillEffect::None;
         request.clips =
             QVector<TimelineClip>{makeBidirectionalStretchClip(sourcePath, kLowScale)};
         request.exportStartFrame = 0;
@@ -571,6 +605,71 @@ private slots:
                     .arg(stats.materiallyDifferingPixels)
                     .arg(stats.differingPixels)
                     .arg(stats.maxChannelDelta)));
+
+        // A narrow dark perimeter used to dominate the entire fill because a
+        // one-pixel ring was magnified across the canvas. The adaptive
+        // reconstruction band must pull meaningful neighboring image content
+        // into the low-scale fill.
+        const QString darkSourcePath =
+            artifactDir.filePath(QStringLiteral("bidirectional_dark_perimeter_source.png"));
+        QVERIFY(makeDarkPerimeterSource().save(darkSourcePath));
+        TimelineClip darkClip =
+            makeBidirectionalStretchClip(darkSourcePath, kLowScale);
+        darkClip.id = QStringLiteral("dark-perimeter-bidirectional-stretch");
+        darkClip.edgeFillPixels = 1;
+        request.outputPath =
+            QStringLiteral("test://bidirectional-dark-perimeter-low-scale");
+        request.clips = QVector<TimelineClip>{darkClip};
+        orderedClips = request.clips;
+        asyncCache.clear();
+        const QImage darkResult = renderer.renderFrame(
+            request,
+            0,
+            decoders,
+            nullptr,
+            &asyncCache,
+            orderedClips,
+            nullptr,
+            &decodeMs,
+            &textureMs,
+            &compositeMs,
+            &readbackMs,
+            nullptr,
+            nullptr);
+        QVERIFY2(!darkResult.isNull(),
+                 "Dark-perimeter bidirectional render returned a null frame");
+        QVERIFY(darkResult.save(
+            artifactDir.filePath(
+                QStringLiteral("bidirectional_dark_perimeter_low_scale_vulkan.png"))));
+        const double clipWidth = kSourceW * kLowScale;
+        const double clipHeight = kSourceH * kLowScale;
+        const double clipLeft = (kOutputW - clipWidth) * 0.5;
+        const double clipTop = (kOutputH - clipHeight) * 0.5;
+        int filledPixels = 0;
+        int coloredPixels = 0;
+        for (int y = 0; y < darkResult.height(); ++y) {
+            for (int x = 0; x < darkResult.width(); ++x) {
+                const bool insideClip =
+                    x + 0.5 >= clipLeft && x + 0.5 <= clipLeft + clipWidth &&
+                    y + 0.5 >= clipTop && y + 0.5 <= clipTop + clipHeight;
+                if (insideClip) {
+                    continue;
+                }
+                ++filledPixels;
+                const QColor pixel = darkResult.pixelColor(x, y);
+                if (std::max({pixel.red(), pixel.green(), pixel.blue()}) > 48) {
+                    ++coloredPixels;
+                }
+            }
+        }
+        QVERIFY2(
+            coloredPixels > filledPixels / 6,
+            qPrintable(
+                QStringLiteral(
+                    "Adaptive bidirectional reconstruction remained dominated by "
+                    "the dark perimeter: %1 of %2 fill pixels carried image color")
+                    .arg(coloredPixels)
+                    .arg(filledPixels)));
     }
 
     void tileAndMirrorFillTheCanvas()
@@ -590,15 +689,18 @@ private slots:
             QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
         }
 
-        const auto renderMode = [&](BackgroundFillEffect effect, const QString& name) {
+        const auto renderMode = [&](BackgroundFillEffect effect,
+                                    const QString& name,
+                                    double clipScale = 1.0) {
             TimelineClip clip = makeProgressiveStretchClip(sourcePath);
             clip.edgeFillEffect = effect;
+            clip.baseScaleX *= clipScale;
+            clip.baseScaleY *= clipScale;
             RenderRequest request;
             request.outputPath = QStringLiteral("test://") + name;
             request.outputFormat = QStringLiteral("preview");
             request.outputSize = QSize(kOutputW, kOutputH);
             request.correctionsEnabled = true;
-            request.backgroundFillEffect = BackgroundFillEffect::None;
             request.clips = QVector<TimelineClip>{clip};
             request.exportStartFrame = 0;
             request.exportEndFrame = 0;
@@ -640,6 +742,141 @@ private slots:
         QVERIFY2(
             stats.materiallyDifferingPixels > 1000,
             "Tile and Mirror must produce distinct full-canvas sampling.");
+
+        // output-height/source-height is exactly 5.0 at this scale. That
+        // geometry value used to collide with foreground effect mode 5
+        // (Difference Matte), turning every fill into the same grayscale edge
+        // map. Background modes must retain source color at the collision.
+        constexpr double kDifferenceMatteCollisionScale = 2.0 / 3.0;
+        const std::array<std::pair<BackgroundFillEffect, QString>, 4>
+            collisionModes{{
+                {BackgroundFillEffect::ProgressiveEdgeStretch,
+                 QStringLiteral("edge_fill_progressive_mode_collision")},
+                {BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch,
+                 QStringLiteral("edge_fill_bidirectional_mode_collision")},
+                {BackgroundFillEffect::Tile,
+                 QStringLiteral("edge_fill_tile_mode_collision")},
+                {BackgroundFillEffect::Mirror,
+                 QStringLiteral("edge_fill_mirror_mode_collision")}}};
+        for (const auto& [effect, name] : collisionModes) {
+            const QImage image =
+                renderMode(effect, name, kDifferenceMatteCollisionScale);
+            QVERIFY2(!image.isNull(), qPrintable(name + QStringLiteral(" was null")));
+            int chromaticPixels = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor pixel = image.pixelColor(x, y);
+                    const int maximum =
+                        std::max({pixel.red(), pixel.green(), pixel.blue()});
+                    const int minimum =
+                        std::min({pixel.red(), pixel.green(), pixel.blue()});
+                    if (maximum - minimum >= 24) {
+                        ++chromaticPixels;
+                    }
+                }
+            }
+            QVERIFY2(
+                chromaticPixels > (kOutputW * kOutputH) / 20,
+                qPrintable(
+                    QStringLiteral(
+                        "%1 lost source color at the geometry/effect-mode "
+                        "collision: only %2 chromatic pixels")
+                        .arg(name)
+                        .arg(chromaticPixels)));
+        }
+    }
+
+    void exportFillLayersInheritClipCurveLut()
+    {
+        const QString artifactDirPath =
+            QDir(QStringLiteral(JCUT_BINARY_DIR)).filePath(
+                QStringLiteral("test_artifacts/progressive_edge_stretch_render_path"));
+        QDir artifactDir(artifactDirPath);
+        QVERIFY(artifactDir.mkpath(QStringLiteral(".")));
+        const QString sourcePath =
+            artifactDir.filePath(QStringLiteral("edge_fill_curve_source.png"));
+        QVERIFY(makeCheckerboardSource().save(sourcePath));
+
+        render_detail::OffscreenVulkanRenderer renderer;
+        QString error;
+        if (!renderer.initialize(QSize(kOutputW, kOutputH), &error)) {
+            QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+        }
+
+        const auto renderGradedFill =
+            [&](BackgroundFillEffect effect, const QString& name) {
+                TimelineClip clip = makeProgressiveStretchClip(sourcePath);
+                clip.edgeFillEffect = effect;
+                clip.baseScaleX *= 0.35;
+                clip.baseScaleY *= 0.35;
+                TimelineClip::GradingKeyframe grade;
+                grade.frame = 0;
+                grade.curvePointsR =
+                    QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}};
+                grade.curvePointsG =
+                    QVector<QPointF>{{0.0, 0.0}, {1.0, 0.0}};
+                grade.curvePointsB =
+                    QVector<QPointF>{{0.0, 0.0}, {1.0, 0.0}};
+                grade.curvePointsLuma =
+                    QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}};
+                clip.gradingKeyframes = QVector<TimelineClip::GradingKeyframe>{grade};
+
+                RenderRequest request;
+                request.outputPath = QStringLiteral("test://") + name;
+                request.outputFormat = QStringLiteral("preview");
+                request.outputSize = QSize(kOutputW, kOutputH);
+                request.correctionsEnabled = true;
+                request.clips = QVector<TimelineClip>{clip};
+                request.exportStartFrame = 0;
+                request.exportEndFrame = 0;
+
+                QVector<TimelineClip> orderedClips = request.clips;
+                QHash<QString, editor::DecoderContext*> decoders;
+                QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle>
+                    asyncCache;
+                qint64 decodeMs = 0;
+                qint64 textureMs = 0;
+                qint64 compositeMs = 0;
+                qint64 readbackMs = 0;
+                const QImage image = renderer.renderFrame(
+                    request,
+                    0,
+                    decoders,
+                    nullptr,
+                    &asyncCache,
+                    orderedClips,
+                    nullptr,
+                    &decodeMs,
+                    &textureMs,
+                    &compositeMs,
+                    &readbackMs,
+                    nullptr,
+                    nullptr);
+                image.save(artifactDir.filePath(name + QStringLiteral(".png")));
+                return image;
+            };
+
+        const std::array<std::pair<BackgroundFillEffect, QString>, 2> modes{{
+            {BackgroundFillEffect::Mirror,
+             QStringLiteral("edge_fill_mirror_curve_graded")},
+            {BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch,
+             QStringLiteral("edge_fill_bidirectional_curve_graded")}}};
+        for (const auto& [effect, name] : modes) {
+            const QImage image = renderGradedFill(effect, name);
+            QVERIFY2(!image.isNull(), qPrintable(name + QStringLiteral(" was null")));
+            const QColor corner = image.pixelColor(2, 2);
+            QVERIFY2(
+                corner.red() > 150 && corner.green() < 20 &&
+                    corner.blue() < 20,
+                qPrintable(
+                    QStringLiteral(
+                        "%1 exported its fill with an identity LUT: corner was "
+                        "rgb(%2,%3,%4)")
+                        .arg(name)
+                        .arg(corner.red())
+                        .arg(corner.green())
+                        .arg(corner.blue())));
+        }
     }
 };
 

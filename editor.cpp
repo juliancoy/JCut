@@ -127,17 +127,6 @@ QJsonObject resolveClipStateObjectPaths(QJsonObject obj, const QString& rootPath
     return obj;
 }
 
-bool clipSupportsProgressiveEdgeStretchMigration(const TimelineClip& clip,
-                                                 const QVector<TimelineTrack>& tracks)
-{
-    if (clip.clipRole != ClipRole::Media ||
-        (clip.mediaType != ClipMediaType::Image && clip.mediaType != ClipMediaType::Video) ||
-        playbackMediaPathForClip(clip).trimmed().isEmpty()) {
-        return false;
-    }
-    return clipVisualPlaybackEnabled(clip, tracks);
-}
-
 bool hasUsableConfiguredProxy(const QVector<TimelineClip>& clips)
 {
     for (const TimelineClip& clip : clips) {
@@ -1087,6 +1076,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
+    const bool previewInstagramSafeAreaGuides =
+        root.value(QStringLiteral("previewInstagramSafeAreaGuides")).toBool(false);
+    const bool previewAlignmentGridGuides =
+        root.value(QStringLiteral("previewAlignmentGridGuides")).toBool(false);
+    const bool instagramSafeAreaGuides =
+        root.value(QStringLiteral("instagramSafeAreaGuides")).toBool(false);
+    const bool alignmentGridGuides =
+        root.value(QStringLiteral("alignmentGridGuides")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
     const bool speakerShowContiguousTranscriptSections =
@@ -1558,9 +1555,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.audioWaveformVisible = obj.value(QStringLiteral("audioWaveformVisible")).toBool(true);
         track.effectPreset =
             effectPresetFromJson(obj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
-        track.effectRows = qBound(1,
-                                  obj.value(QStringLiteral("effectRows")).toInt(32),
-                                  track.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
+        track.effectRows = qBound(
+            1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
         track.differenceReferenceFrames = qBound(1, obj.value(QStringLiteral("differenceReferenceFrames")).toInt(1), 300);
         track.differenceThreshold = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceThreshold")).toDouble(0.10), 1.0);
         track.differenceSoftness = qBound<qreal>(0.0, obj.value(QStringLiteral("differenceSoftness")).toDouble(0.05), 1.0);
@@ -1583,16 +1579,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     markStartup(QStringLiteral("apply_state.tracks_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_track_count"), loadedTracks.size()}});
-    for (TimelineClip& clip : loadedClips) {
-        if (clip.effectPreset != ClipEffectPreset::ProgressiveEdgeStretch ||
-            !clipSupportsProgressiveEdgeStretchMigration(clip, loadedTracks)) {
-            continue;
-        }
-        clip.edgeFillEffect = BackgroundFillEffect::ProgressiveEdgeStretch;
-        clip.edgeFillPixels = qBound(1, clip.effectRows, 512);
-        clip.edgeFillPower = qBound<qreal>(0.25, clip.effectScale, 8.0);
-        clip.effectPreset = ClipEffectPreset::None;
-    }
     if (legacyRootAudioDynamicsPresent) {
         auto migrateDynamicsToClip = [&loadedAudioDynamics](
                                          TimelineClip& clip) -> bool {
@@ -1733,6 +1719,22 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_previewShowSpeakerTrackPointsCheckBox);
         m_previewShowSpeakerTrackPointsCheckBox->setChecked(previewShowSpeakerTrackPoints);
     }
+    if (m_previewInstagramSafeAreaGuidesCheckBox) {
+        QSignalBlocker block(m_previewInstagramSafeAreaGuidesCheckBox);
+        m_previewInstagramSafeAreaGuidesCheckBox->setChecked(previewInstagramSafeAreaGuides);
+    }
+    if (m_previewAlignmentGridGuidesCheckBox) {
+        QSignalBlocker block(m_previewAlignmentGridGuidesCheckBox);
+        m_previewAlignmentGridGuidesCheckBox->setChecked(previewAlignmentGridGuides);
+    }
+    if (m_instagramSafeAreaGuidesCheckBox) {
+        QSignalBlocker block(m_instagramSafeAreaGuidesCheckBox);
+        m_instagramSafeAreaGuidesCheckBox->setChecked(instagramSafeAreaGuides);
+    }
+    if (m_alignmentGridGuidesCheckBox) {
+        QSignalBlocker block(m_alignmentGridGuidesCheckBox);
+        m_alignmentGridGuidesCheckBox->setChecked(alignmentGridGuides);
+    }
     if (m_previewVulkanPresenterCombo) {
         QSignalBlocker block(m_previewVulkanPresenterCombo);
         const int presenterIndex = m_previewVulkanPresenterCombo->findData(m_previewVulkanPresenterPreference);
@@ -1795,6 +1797,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             showAtEnd->setChecked(
                 speakerTitleSettings.value(QStringLiteral("showAtSectionEnd"))
                     .toBool(false));
+        }
+        if (QCheckBox* respectSpeechFilterTiming =
+                m_inspectorPane->speakerOverlayRespectSpeechFilterTimingCheckBox()) {
+            const QSignalBlocker blocker(respectSpeechFilterTiming);
+            respectSpeechFilterTiming->setChecked(
+                speakerTitleSettings
+                    .value(QStringLiteral("respectSpeechFilterTiming"))
+                    .toBool(true));
         }
         setDecimal(m_inspectorPane->speakerOverlayCadenceSpin(), QStringLiteral("cadenceSeconds"));
         setDecimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), QStringLiteral("flyTimeSeconds"));
@@ -2185,15 +2195,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
-        m_preview->setBackgroundFillEffect(BackgroundFillEffect::None);
-        m_preview->setBackgroundFillOpacity(1.0);
-        m_preview->setBackgroundFillBrightness(0.0);
-        m_preview->setBackgroundFillSaturation(1.0);
-        m_preview->setBackgroundFillEdgePixels(1);
-        m_preview->setBackgroundFillEdgeProgressive(false);
-        m_preview->setBackgroundFillEdgePower(2.0);
-        m_preview->setBackgroundFillStretchSourceClipId(QString());
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
+        m_preview->setInstagramSafeAreaGuidesVisible(previewInstagramSafeAreaGuides);
+        m_preview->setAlignmentGridGuidesVisible(previewAlignmentGridGuides);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);
         // Legacy current-speaker painting is retired. Transcript-linked title

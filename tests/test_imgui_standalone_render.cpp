@@ -540,7 +540,23 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersSinglePassPixelEffec
         QVERIFY2(rendered.image.bytes != base.image.bytes, preset);
     }
 
-    document.clips.front().effectPreset = "progressive_edge_stretch";
+    document.clips.front().effectPreset = "kaleidoscope";
+    document.clips.front().effectRows = 6;
+    document.clips.front().effectScale = 0.6;
+    document.clips.front().tilingSpacing = 0.75;
+    const auto coarseKaleidoscope = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 7.0, {}});
+    document.clips.front().effectRows = 28;
+    document.clips.front().effectScale = 2.4;
+    document.clips.front().tilingSpacing = 2.0;
+    const auto fineKaleidoscope = jcut::standalone_render::renderTimelineFrame({
+        document, {96, 64}, 7.0, {}});
+    QVERIFY(coarseKaleidoscope.success);
+    QVERIFY(fineKaleidoscope.success);
+    QVERIFY(coarseKaleidoscope.image.bytes != fineKaleidoscope.image.bytes);
+
+    document.clips.front().effectPreset = "none";
+    document.clips.front().edgeFillEffect = "progressive_edge_stretch";
     document.clips.front().effectRows = 12;
     document.clips.front().effectScale = 1.2;
     const auto progressive = jcut::standalone_render::renderTimelineFrame({

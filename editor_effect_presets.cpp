@@ -135,7 +135,6 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("Ripple / shockwave"), ClipEffectPreset::RippleShockwave, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Displacement map"), ClipEffectPreset::DisplacementMap, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Glass / refraction"), ClipEffectPreset::GlassRefraction, QStringLiteral("Warp & Distort")},
-        {QStringLiteral("Progressive edge stretch"), ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Temporal echo"), ClipEffectPreset::TemporalEcho, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Slit scan"), ClipEffectPreset::SlitScan, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern, QStringLiteral("Time & Repeat")},
@@ -182,8 +181,6 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::DirectionalTrimTicker:
     case ClipEffectPreset::SourceTile:
     case ClipEffectPreset::Vulkan3DSynth:
-    case ClipEffectPreset::ProgressiveEdgeStretch:
-        return true;
     case ClipEffectPreset::None:
     case ClipEffectPreset::PersonOrbit:
     case ClipEffectPreset::FreezePattern:
@@ -827,7 +824,13 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(const Time
         int64_t startFrame = 0;
         int priority = 0;
     };
+    struct SpeakerRun {
+        QString speakerId;
+        int64_t startFrame = 0;
+        int64_t endFrame = 0;
+    };
     QVector<TitleEvent> events;
+    QVector<SpeakerRun> speakerRuns;
     int runStart = 0;
     for (int index = 1; index <= words.size(); ++index) {
         const bool runEnded =
@@ -837,6 +840,11 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(const Time
         }
         const QString speakerId = words.at(runStart).speaker.trimmed();
         const int64_t runStartFrame = timelineFrameForSource(words.at(runStart).startFrame);
+        const int64_t runEndFrame =
+            index < words.size()
+                ? timelineFrameForSource(words.at(index).startFrame)
+                : clipTimelineEnd;
+        speakerRuns.push_back({speakerId, runStartFrame, runEndFrame});
         events.push_back({speakerId, runStartFrame, 2});
         if (settings.showAtSectionEnd) {
             int64_t runEndSourceFrame = words.at(runStart).endFrame;
@@ -856,23 +864,18 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(const Time
 
     const int64_t cadence = qMax<int64_t>(0, settings.cadenceFrames);
     if (cadence > 0) {
-        int wordIndex = -1;
-        for (int64_t cadenceFrame = sourceClip.startFrame + cadence; cadenceFrame < clipTimelineEnd;
-             cadenceFrame += cadence) {
-            const int64_t cadenceSourceFrame =
-                sourceStart + qRound64((cadenceFrame - sourceClip.startFrame) * playbackRate);
-            while (wordIndex + 1 < words.size() && words.at(wordIndex + 1).startFrame <= cadenceSourceFrame) {
-                ++wordIndex;
-            }
-            if (wordIndex < 0) {
-                continue;
-            }
-            const bool titleAlreadyScheduled =
-                std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
-                    return cadenceFrame >= event.startFrame && cadenceFrame < event.startFrame + boundedDuration;
-                });
-            if (!titleAlreadyScheduled) {
-                events.push_back({words.at(wordIndex).speaker.trimmed(), cadenceFrame, 1});
+        for (const SpeakerRun& run : std::as_const(speakerRuns)) {
+            for (int64_t cadenceFrame = run.startFrame + cadence;
+                 cadenceFrame < run.endFrame;
+                 cadenceFrame += cadence) {
+                const bool titleAlreadyScheduled =
+                    std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
+                        return cadenceFrame >= event.startFrame &&
+                               cadenceFrame < event.startFrame + boundedDuration;
+                    });
+                if (!titleAlreadyScheduled) {
+                    events.push_back({run.speakerId, cadenceFrame, 1});
+                }
             }
         }
     }
@@ -922,6 +925,7 @@ QVector<TimelineClip> makeSpeakerTitleClipsForTranscriptIntroductions(const Time
         titleClip.videoEnabled = true;
         titleClip.audioEnabled = false;
         titleClip.hasAudio = false;
+        titleClip.effectSkipAwareTiming = settings.respectSpeechFilterTiming;
         titleClip.color = QColor(QStringLiteral("#255f85"));
 
         TimelineClip::TitleKeyframe base;
@@ -1211,6 +1215,7 @@ bool applyNewsLowerThirdFlyInPreset(TimelineClip& clip, const SpeakerTitleFlyInS
     if (!jcut::applySpeakerTitleFlyInCore(&coreClip, coreSettings)) {
         return false;
     }
+    clip.effectSkipAwareTiming = settings.respectSpeechFilterTiming;
     clip.titleKeyframes.clear();
     clip.titleKeyframes.reserve(
         static_cast<qsizetype>(coreClip.titleKeyframes.size()));

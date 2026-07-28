@@ -1,6 +1,7 @@
 #include "output_tab.h"
 #include "debug_controls.h"
 
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -9,6 +10,7 @@
 
 #include <cmath>
 
+#include "render.h"
 #include "timeline_fps.h"
 
 namespace {
@@ -43,6 +45,16 @@ QString baseNameWithExportSpeed(const QString& baseName, double speed)
     return stripExportSpeedSuffix(baseName) + exportSpeedSuffix(speed);
 }
 
+bool isSafeRenderCacheRoot(const QString& path)
+{
+    const QFileInfo info(path);
+    const QString absolutePath = info.absoluteFilePath();
+    return !absolutePath.isEmpty() &&
+           QDir(absolutePath).isAbsolute() &&
+           info.fileName().endsWith(QStringLiteral(".jcut-render-cache")) &&
+           info.fileName().size() > QStringLiteral(".jcut-render-cache").size();
+}
+
 } // namespace
 
 OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -75,6 +87,31 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
     }
     
     // Set checkbox label if not already set
+    if (m_widgets.incrementalRenderCheckBox) {
+        m_widgets.incrementalRenderCheckBox->setText(
+            QStringLiteral("Incremental chunked render"));
+        m_widgets.incrementalRenderCheckBox->setToolTip(
+            QStringLiteral("Render resumable encoded chunks and assemble "
+                           "them into the final video. Disable for one "
+                           "continuous export without chunk checkpoints."));
+        m_widgets.incrementalRenderCheckBox->setChecked(true);
+    }
+    if (m_widgets.instagramSafeAreaGuidesCheckBox) {
+        m_widgets.instagramSafeAreaGuidesCheckBox->setText(
+            QStringLiteral("Render Instagram 250px safe-area guides"));
+        m_widgets.instagramSafeAreaGuidesCheckBox->setToolTip(
+            QStringLiteral("Draw top and bottom horizontal guide lines 250 output pixels from the frame edge. "
+                           "Disabled is pipeline passthrough."));
+        m_widgets.instagramSafeAreaGuidesCheckBox->setChecked(false);
+    }
+    if (m_widgets.alignmentGridGuidesCheckBox) {
+        m_widgets.alignmentGridGuidesCheckBox->setText(
+            QStringLiteral("Render 3x3 alignment grid"));
+        m_widgets.alignmentGridGuidesCheckBox->setToolTip(
+            QStringLiteral("Draw 3x3 output-space alignment guide lines in preview and export. "
+                           "Disabled is pipeline passthrough."));
+        m_widgets.alignmentGridGuidesCheckBox->setChecked(false);
+    }
     if (m_widgets.createImageSequenceCheckBox) {
         m_widgets.createImageSequenceCheckBox->setText("Create intermediate image sequence");
     }
@@ -158,6 +195,22 @@ void OutputTab::wire()
         connect(m_widgets.outputDeterministicPipelineCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onOutputDeterministicPipelineToggled);
     }
+    if (m_widgets.instagramSafeAreaGuidesCheckBox) {
+        connect(m_widgets.instagramSafeAreaGuidesCheckBox, &QCheckBox::toggled,
+                this, [this](bool checked) {
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
+                    }
+                });
+    }
+    if (m_widgets.alignmentGridGuidesCheckBox) {
+        connect(m_widgets.alignmentGridGuidesCheckBox, &QCheckBox::toggled,
+                this, [this](bool checked) {
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
+                    }
+                });
+    }
     if (m_widgets.outputResetPipelineDefaultsButton) {
         connect(m_widgets.outputResetPipelineDefaultsButton, &QPushButton::clicked,
                 this, &OutputTab::onOutputResetPipelineDefaultsClicked);
@@ -200,6 +253,10 @@ void OutputTab::wire()
     if (m_widgets.renderButton) {
         connect(m_widgets.renderButton, &QPushButton::clicked,
                 this, &OutputTab::onRenderClicked);
+    }
+    if (m_widgets.clearRenderCacheButton) {
+        connect(m_widgets.clearRenderCacheButton, &QPushButton::clicked,
+                this, &OutputTab::onClearRenderCacheClicked);
     }
 }
 
@@ -304,6 +361,7 @@ void OutputTab::refresh()
     }
 
     updateRangeSummary();
+    updateRenderCacheStatus();
     updateRenderButtonState();
     m_updating = false;
 }
@@ -345,14 +403,6 @@ void OutputTab::renderFromInspector()
     if (request.outputFormat.empty()) {
         request.outputFormat = "mp4";
     }
-    request.backgroundFillEffect = "none";
-    request.backgroundFillOpacity = 1.0;
-    request.backgroundFillBrightness = 0.0;
-    request.backgroundFillSaturation = 1.0;
-    request.backgroundFillEdgePixels = 1;
-    request.backgroundFillEdgeProgressive = false;
-    request.backgroundFillEdgePower = 2.0;
-    request.backgroundFillStretchSourceClipId.clear();
 
     const QString outputFormat = QString::fromStdString(request.outputFormat);
     const double outputSpeed = normalizedExportSpeed(
@@ -413,6 +463,7 @@ void OutputTab::renderFromInspector()
     if (m_deps.setLastRenderOutputPath) {
         m_deps.setLastRenderOutputPath(selectedPath);
     }
+    updateRenderCacheStatus();
 
     request.outputSize = {
         m_widgets.outputWidthSpin ? m_widgets.outputWidthSpin->value() : 1080,
@@ -423,6 +474,15 @@ void OutputTab::renderFromInspector()
     request.playbackSpeed = outputSpeed;
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
+    request.incrementalExport =
+        !m_widgets.incrementalRenderCheckBox ||
+        m_widgets.incrementalRenderCheckBox->isChecked();
+    request.instagramSafeAreaGuides =
+        m_widgets.instagramSafeAreaGuidesCheckBox &&
+        m_widgets.instagramSafeAreaGuidesCheckBox->isChecked();
+    request.alignmentGridGuides =
+        m_widgets.alignmentGridGuidesCheckBox &&
+        m_widgets.alignmentGridGuidesCheckBox->isChecked();
     
     // Image sequence settings
     request.createVideoFromImageSequence = m_widgets.createImageSequenceCheckBox &&
@@ -681,6 +741,70 @@ void OutputTab::onHistoryMaxMegabytesChanged(int value)
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
 }
 
+void OutputTab::onClearRenderCacheClicked()
+{
+    const QString outputPath =
+        m_deps.lastRenderOutputPath ? m_deps.lastRenderOutputPath() : QString();
+    const QString cacheRoot =
+        outputPath.isEmpty() ? QString() : incrementalRenderCacheRootForOutputPath(outputPath);
+    if (cacheRoot.isEmpty() || !isSafeRenderCacheRoot(cacheRoot)) {
+        QMessageBox::warning(
+            m_widgets.clearRenderCacheButton,
+            QStringLiteral("Clear Render Cache"),
+            QStringLiteral("No safe render-cache directory is associated with the current output target."));
+        updateRenderCacheStatus();
+        return;
+    }
+
+    const QFileInfo cacheInfo(cacheRoot);
+    if (!cacheInfo.exists()) {
+        QMessageBox::information(
+            m_widgets.clearRenderCacheButton,
+            QStringLiteral("Clear Render Cache"),
+            QStringLiteral("No render cache exists for this output target:\n%1")
+                .arg(QDir::toNativeSeparators(cacheRoot)));
+        updateRenderCacheStatus();
+        return;
+    }
+    if (!cacheInfo.isDir()) {
+        QMessageBox::warning(
+            m_widgets.clearRenderCacheButton,
+            QStringLiteral("Clear Render Cache"),
+            QStringLiteral("The render-cache path exists but is not a directory:\n%1")
+                .arg(QDir::toNativeSeparators(cacheRoot)));
+        updateRenderCacheStatus();
+        return;
+    }
+
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        m_widgets.clearRenderCacheButton,
+        QStringLiteral("Clear Render Cache"),
+        QStringLiteral("Delete the render cache for this output target?\n\n%1")
+            .arg(QDir::toNativeSeparators(cacheRoot)),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    if (!QDir(cacheRoot).removeRecursively()) {
+        QMessageBox::warning(
+            m_widgets.clearRenderCacheButton,
+            QStringLiteral("Clear Render Cache"),
+            QStringLiteral("Failed to delete render cache:\n%1")
+                .arg(QDir::toNativeSeparators(cacheRoot)));
+        updateRenderCacheStatus();
+        return;
+    }
+
+    QMessageBox::information(
+        m_widgets.clearRenderCacheButton,
+        QStringLiteral("Clear Render Cache"),
+        QStringLiteral("Render cache cleared:\n%1")
+            .arg(QDir::toNativeSeparators(cacheRoot)));
+    updateRenderCacheStatus();
+}
+
 void OutputTab::updateRangeSummary()
 {
     if (!m_widgets.outputRangeSummaryLabel) return;
@@ -708,6 +832,33 @@ void OutputTab::updateRangeSummary()
                 .arg(segments.join(QStringLiteral(" | "))));
     }
     m_widgets.outputRangeSummaryLabel->setToolTip(m_widgets.outputRangeSummaryLabel->text());
+}
+
+void OutputTab::updateRenderCacheStatus()
+{
+    if (!m_widgets.renderCachePathLabel && !m_widgets.clearRenderCacheButton) {
+        return;
+    }
+
+    const QString outputPath =
+        m_deps.lastRenderOutputPath ? m_deps.lastRenderOutputPath() : QString();
+    const QString cacheRoot =
+        outputPath.isEmpty() ? QString() : incrementalRenderCacheRootForOutputPath(outputPath);
+    const bool safe = !cacheRoot.isEmpty() && isSafeRenderCacheRoot(cacheRoot);
+    const bool exists = safe && QFileInfo(cacheRoot).isDir();
+
+    if (m_widgets.renderCachePathLabel) {
+        const QString status = !safe
+            ? QStringLiteral("Render cache: choose a render output first.")
+            : QStringLiteral("Render cache: %1%2")
+                  .arg(QDir::toNativeSeparators(cacheRoot),
+                       exists ? QString() : QStringLiteral(" (not created yet)"));
+        m_widgets.renderCachePathLabel->setText(status);
+        m_widgets.renderCachePathLabel->setToolTip(status);
+    }
+    if (m_widgets.clearRenderCacheButton) {
+        m_widgets.clearRenderCacheButton->setEnabled(exists);
+    }
 }
 
 void OutputTab::updateRenderButtonState()

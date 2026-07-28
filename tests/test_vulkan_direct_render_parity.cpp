@@ -76,6 +76,14 @@ private slots:
         const render_detail::VulkanDrawEffectState curveState =
             render_detail::vulkanDrawEffectStateForGrade(grade);
         QCOMPARE(curveState.shadows[3], render_detail::kVulkanEffectModeCurve);
+
+        const render_detail::VulkanGradePayload payload =
+            render_detail::vulkanGradePayloadForGrade(grade);
+        QVERIFY(payload.curveLutApplied);
+        QCOMPARE(payload.effects.shadows[3],
+                 render_detail::kVulkanEffectModeCurve);
+        QCOMPARE(payload.curveLutRgba,
+                 render_detail::vulkanCurveLutRgbaBytes(grade));
     }
 
     void sharedCurveLutHasShaderTextureShape()
@@ -96,7 +104,7 @@ private slots:
         baseState.saturation = 0.7f;
         const render_detail::VulkanDrawEffectState edgeState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, false, 2.5f);
+                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, 2.5f);
         QCOMPARE(edgeState.opacity, 0.8f);
         QVERIFY(qAbs(edgeState.brightness - 0.1f) < 0.0001f);
         QCOMPARE(edgeState.contrast, 1.3f);
@@ -119,7 +127,6 @@ private slots:
                 -0.02f,
                 1.5f,
                 24,
-                false,
                 2.5f,
                 QRectF(0.0, 0.0, 1.0, 1.0));
         QCOMPARE(progressiveEdgeState.midtones[0], 24.0f);
@@ -137,7 +144,6 @@ private slots:
                 -0.02f,
                 1.5f,
                 24,
-                false,
                 2.5f,
                 QRectF(0.0, 0.0, 1.0, 1.0));
         QCOMPARE(
@@ -152,7 +158,6 @@ private slots:
                 -0.02f,
                 1.5f,
                 24,
-                false,
                 2.5f,
                 QRectF(0.0, 0.0, 1.0, 1.0));
         QCOMPARE(
@@ -161,7 +166,7 @@ private slots:
 
         const render_detail::VulkanDrawEffectState mirrorState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, true, 2.5f);
+                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, 2.5f);
         QCOMPARE(mirrorState.shadows[0], 0.5f);
         QCOMPARE(mirrorState.shadows[1], 0.5f);
         QCOMPARE(mirrorState.shadows[2], 1.0f);
@@ -269,39 +274,11 @@ private slots:
 
         Q_UNUSED(tracks);
         Q_UNUSED(ordered);
-        QVERIFY(render_detail::vulkanClipSupportsProgressiveEdgeStretchSource(top));
-        QVERIFY(!render_detail::vulkanClipSupportsProgressiveEdgeStretchSource(maskMatte));
+        QVERIFY(render_detail::vulkanClipSupportsBackgroundFillSource(top));
+        QVERIFY(!render_detail::vulkanClipSupportsBackgroundFillSource(maskMatte));
 
-        top.effectPreset = ClipEffectPreset::ProgressiveEdgeStretch;
-        const render_detail::VulkanProgressiveEdgeStretchLayerPolicy mediaPolicy =
-            render_detail::vulkanProgressiveEdgeStretchLayerPolicy(top, {});
-        QVERIFY(mediaPolicy.presetActive);
-        QVERIFY(mediaPolicy.sourceEligible);
-        QVERIFY(mediaPolicy.drawBackground);
-
-        maskMatte.effectPreset = ClipEffectPreset::ProgressiveEdgeStretch;
-        const render_detail::VulkanProgressiveEdgeStretchLayerPolicy mattePolicy =
-            render_detail::vulkanProgressiveEdgeStretchLayerPolicy(maskMatte, {});
-        QVERIFY(mattePolicy.presetActive);
-        QVERIFY(!mattePolicy.sourceEligible);
-        QVERIFY(!mattePolicy.drawBackground);
-
-        TimelineClip trackDriven = top;
-        trackDriven.effectPreset = ClipEffectPreset::None;
-        QVector<TimelineTrack> progressiveTracks(5);
-        progressiveTracks[trackDriven.trackIndex].effectPreset =
-            ClipEffectPreset::ProgressiveEdgeStretch;
-        const render_detail::VulkanProgressiveEdgeStretchLayerPolicy trackPolicy =
-            render_detail::vulkanProgressiveEdgeStretchLayerPolicy(trackDriven, progressiveTracks);
-        QVERIFY(!trackPolicy.presetActive);
-        QVERIFY(!trackPolicy.drawBackground);
         TimelineClip independentMask = maskMatte;
         independentMask.effectPreset = ClipEffectPreset::None;
-        const render_detail::VulkanProgressiveEdgeStretchLayerPolicy independentMaskPolicy =
-            render_detail::vulkanProgressiveEdgeStretchLayerPolicy(independentMask, {});
-        QVERIFY(!independentMaskPolicy.presetActive);
-        QVERIFY(!independentMaskPolicy.sourceEligible);
-        QVERIFY(!independentMaskPolicy.drawBackground);
         QVERIFY(!render_detail::vulkanEffectPipelinePlan(
                      independentMask, QRectF(0.0, 0.0, 1080.0, 1920.0),
                      QSize(1920, 1080), 12.0, 12.0).usesGeneratedDraws());
@@ -493,49 +470,32 @@ private slots:
         QVERIFY2(renderer.open(QIODevice::ReadOnly), "Unable to open direct Vulkan preview renderer.");
         const QString source = QString::fromUtf8(renderer.readAll());
 
-        QVERIFY2(source.contains(QStringLiteral("const BackgroundFillEffect fillEffect = state->backgroundFillEffect")),
-                 "Direct Vulkan presenter must use the selectable background fill effect.");
-        QVERIFY2(source.contains(QStringLiteral("vulkanDrawEffectStateForGrade(status->grading)")),
-                 "Direct Vulkan presenter must derive background fill from the main grading state.");
+        QVERIFY2(
+            source.contains(QStringLiteral(
+                "const BackgroundFillEffect effectiveFillEffect =")) &&
+                source.contains(QStringLiteral("effectClip.edgeFillEffect")),
+            "Direct Vulkan presenter must use the selected clip's Edge Fill.");
+        QVERIFY2(source.contains(QStringLiteral("vulkanGradePayloadForGrade(status.grading)")),
+                 "Direct Vulkan presenter must derive foreground and background "
+                 "from the canonical complete grading payload.");
         QVERIFY2(source.contains(QStringLiteral("baseEffects.shadows")) &&
                      source.contains(QStringLiteral("baseEffects.midtones")) &&
                      source.contains(QStringLiteral("baseEffects.highlights")) &&
                      source.contains(QStringLiteral("frameUniformDynamicOffset")),
                  "Direct Vulkan presenter must pass full background grading through per-draw dynamic uniforms.");
-        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillOpacity)")),
-                 "Direct Vulkan presenter must use the output background fill opacity.");
-        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillBrightness)")),
-                 "Direct Vulkan presenter must use the output background fill brightness.");
-        QVERIFY2(source.contains(QStringLiteral("static_cast<float>(state->backgroundFillSaturation)")),
-                 "Direct Vulkan presenter must use the output background fill saturation.");
-        QVERIFY2(source.contains(QStringLiteral("progressiveEdgeStretchEffect")) &&
-                     source.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")),
-                 "Direct Vulkan presenter must use clip effect rows as the progressive edge pixel band.");
-        QVERIFY2(source.contains(QStringLiteral("state->backgroundFillEdgeProgressive")),
-                 "Direct Vulkan presenter must use the output background fill progressive mode.");
-        QVERIFY2(source.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
-                 "Direct Vulkan presenter must use clip effect scale as the progressive edge curve.");
+        QVERIFY2(source.contains(QStringLiteral("effectClip.edgeFillOpacity")) &&
+                     source.contains(QStringLiteral("effectClip.edgeFillBrightness")) &&
+                     source.contains(QStringLiteral("effectClip.edgeFillSaturation")),
+                 "Direct Vulkan presenter must use clip-owned fill grading.");
+        QVERIFY2(source.contains(QStringLiteral("qBound(1, effectClip.edgeFillPixels, 512)")) &&
+                     source.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0)")),
+                 "Direct Vulkan presenter must use canonical Edge Fill geometry.");
         QVERIFY2(source.contains(QStringLiteral("effectiveFillEffect == BackgroundFillEffect::EdgeStretch")),
                  "Direct Vulkan presenter must default through the edge-stretch background path.");
-        QVERIFY2(source.contains(QStringLiteral("render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks)")),
-                 "Direct Vulkan presenter must apply progressive edge stretch through the shared layer policy.");
-        QVERIFY2(source.contains(QStringLiteral("progressiveEdgeStretchEffect")),
-                 "Direct Vulkan presenter must identify the clip-basis progressive stretch effect.");
         QVERIFY2(source.contains(QStringLiteral("BackgroundFillEffect::ProgressiveEdgeStretch")),
-                 "Clip-basis progressive stretch must reuse the progressive edge stretch shader mode.");
-        QVERIFY2(source.contains(QStringLiteral("progressiveStretchOwnsClipBackground")),
-                 "Progressive stretch ownership must be explicit so source/generated effects cannot leak through.");
-        QVERIFY2(source.contains(QStringLiteral("foregroundEffectClip.effectPreset = ClipEffectPreset::None")) &&
-                     source.contains(QStringLiteral("foregroundEffectClip.maskRepeatEnabled = false")),
-                 "A clip used as the progressive stretch source must not also run generated foreground effects.");
-        QVERIFY2(source.contains(QStringLiteral("(clipOwnedEdgeFill || !backgroundFilled)")),
-                 "Clip-owned Edge Fill must not be suppressed by an earlier background layer.");
-        QVERIFY2(source.contains(QStringLiteral("if (!clipOwnedEdgeFill)")),
-                 "Only non-clip background fills should consume the once-per-frame background fill guard.");
+                 "Clip-owned progressive stretch must reuse its dedicated shader mode.");
         QVERIFY2(source.contains(QStringLiteral("progressiveRenderSpaceFill")),
                  "Progressive edge stretch must use render/output-space shader coordinates in preview.");
-        QVERIFY2(source.contains(QStringLiteral("render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks)")),
-                 "Direct Vulkan presenter must use the shared progressive edge stretch layer policy.");
         QVERIFY2(source.contains(QStringLiteral("!(status && status->maskClipSource)")),
                  "Direct Vulkan presenter must reject decoded mask-source statuses for progressive edge stretch.");
         QVERIFY2(source.contains(QStringLiteral("render_detail::fitRectF(renderSourceSize, renderOutputSize)")),
@@ -579,26 +539,22 @@ private slots:
         QFile offscreen(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
         QVERIFY2(offscreen.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
         const QString offscreenSource = QString::fromUtf8(offscreen.readAll());
-        QVERIFY2(offscreenSource.contains(QStringLiteral("vulkanProgressiveEdgeStretchLayerPolicy(clip, request.tracks)")),
-                 "Offscreen renderer must use the shared progressive edge stretch layer policy.");
-  QVERIFY2(offscreenSource.contains(QStringLiteral("backgroundLayer.backgroundShadows")) &&
+        QVERIFY2(offscreenSource.contains(QStringLiteral("backgroundLayer.backgroundShadows")) &&
                offscreenSource.contains(QStringLiteral("updateFrameUniformForDraw(&layer")) &&
                      offscreenSource.contains(QStringLiteral("VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC")),
                  "Offscreen renderer must pass background grading through per-draw dynamic uniforms.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("progressiveEdgeStretchEffect = progressiveStretchPolicy.drawBackground")),
-                 "Offscreen renderer must identify the clip-basis progressive stretch effect from the shared policy.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("foregroundEffectClip.effectPreset = ClipEffectPreset::None")) &&
-                     offscreenSource.contains(QStringLiteral("foregroundEffectClip.maskRepeatEnabled = false")),
-                 "Offscreen progressive stretch source clips must not also run generated foreground effects.");
+        QVERIFY2(
+            offscreenSource.contains(QStringLiteral(
+                "backgroundLayer.curveLutRgba = gradePayload.curveLutRgba")) &&
+                offscreenSource.contains(QStringLiteral(
+                    "backgroundLayer.curveLutApplied = gradePayload.curveLutApplied")),
+            "Offscreen fill layers must inherit the source clip's complete "
+            "curve-LUT payload.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("if (layer.maskTextureEnabled &&")),
                  "Offscreen renderer must retain mask foreground layers during progressive edge stretch.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("(clipOwnedEdgeFill || !backgroundFilled)")),
-                 "Offscreen clip-owned Edge Fill must not be suppressed by an earlier background layer.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("if (!clipOwnedEdgeFill)")),
-                 "Offscreen background fill guard must not consume clip-owned Edge Fill effects.");
-        QVERIFY2(offscreenSource.contains(QStringLiteral("qBound(1, effectClip.effectRows, 512)")) &&
-                     offscreenSource.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.effectScale, 8.0)")),
-                 "Offscreen renderer must source progressive edge parameters from the selected clip effect.");
+        QVERIFY2(offscreenSource.contains(QStringLiteral("qBound(1, effectClip.edgeFillPixels, 512)")) &&
+                     offscreenSource.contains(QStringLiteral("qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0)")),
+                 "Offscreen renderer must source geometry from canonical Edge Fill fields.");
         QVERIFY2(
             offscreenSource.contains(QStringLiteral("effectClip.edgeFillEffect")) &&
                 offscreenSource.contains(QStringLiteral("bidirectionalEdgeLayerPending")) &&
@@ -620,8 +576,7 @@ private slots:
             !editorSource.contains(
                 QStringLiteral("migrateLegacyBackgroundProgressiveStretchToClipEffect")) &&
                 !projectStateSource.contains(QStringLiteral("backgroundFillEffect")) &&
-                outputTabSource.contains(
-                    QStringLiteral("request.backgroundFillEffect = \"none\"")),
+                !outputTabSource.contains(QStringLiteral("backgroundFillEffect")),
             "Output must not own, persist, or migrate fill effects; Edge Fill is clip-owned.");
     }
 

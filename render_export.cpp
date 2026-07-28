@@ -12,7 +12,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
-#include <QImageReader>
 #include <QImageWriter>
 #include <QPainter>
 #include <QProcess>
@@ -933,7 +932,7 @@ static RenderResult renderTimelineSingleFile(
     QJsonObject skippedReasonCounts;
     QJsonObject lastExportFaceTransformDiagnostics;
     QImage lastExportPreviewFrame;
-    int64_t renderedFramesScheduled = 0;
+    bool gpuPreviewBusyLogged = false;
     const QString exportPipeline = exportPath.pipeline;
     const QString gpuTransferLabel = exportPath.gpuTransferLabel;
     const QString exportPathFallbackReason = exportPath.fallbackReason;
@@ -944,6 +943,10 @@ static RenderResult renderTimelineSingleFile(
         qint64 frameRenderMs = 0;
         qint64 frameDecodeMs = 0;
         qint64 frameTextureMs = 0;
+        qint64 frameLayerPlanMs = 0;
+        qint64 frameTextPrepMs = 0;
+        qint64 frameGuideOverlayMs = 0;
+        qint64 frameGpuCompositeMs = 0;
         qint64 frameReadbackMs = 0;
         qint64 frameConvertStartMs = 0;
         int64_t pts = 0;
@@ -1015,6 +1018,10 @@ static RenderResult renderTimelineSingleFile(
                              pending.frameRenderMs,
                              pending.frameDecodeMs,
                              pending.frameTextureMs,
+                             pending.frameLayerPlanMs,
+                             pending.frameTextPrepMs,
+                             pending.frameGuideOverlayMs,
+                             pending.frameGpuCompositeMs,
                              pending.frameReadbackMs,
                              frameConvertMs
                          });
@@ -1038,6 +1045,10 @@ static RenderResult renderTimelineSingleFile(
                                      orderedClips,
                                      asyncDecoder.get(),
                                      asyncFrameCache);
+        prewarmRenderMaskSegment(request,
+                                 exportStart,
+                                 exportEnd,
+                                 orderedClips);
         for (int64_t segmentOutputFrame = 0;
              segmentOutputFrame < segmentOutputFrames;
              ++segmentOutputFrame) {
@@ -1057,6 +1068,9 @@ static RenderResult renderTimelineSingleFile(
                                           orderedClips,
                                           asyncDecoder.get(),
                                           asyncFrameCache);
+            enqueueRenderMaskLookahead(request,
+                                       timelineFrame,
+                                       orderedClips);
             if (progressCallback) {
                 RenderProgress progress;
                 progress.framesCompleted = framesCompleted;
@@ -1118,11 +1132,17 @@ static RenderResult renderTimelineSingleFile(
             qint64 frameTextureMs = 0;
             qint64 frameCompositeMs = 0;
             qint64 frameReadbackMs = 0;
+            qint64 frameLayerPlanMs = 0;
+            qint64 frameTextPrepMs = 0;
+            qint64 frameGuideOverlayMs = 0;
+            qint64 frameGpuCompositeMs = 0;
             qint64* frameReadbackMsPtr = &frameReadbackMs;
-            const qreal visualTimelineFramePosition =
-                playbackVisualTimelineFramePosition(timelineFramePosition, request.playbackTiming);
+            const PlaybackTimelineFrameClocks frameClocks =
+                playbackTimelineFrameClocks(timelineFramePosition, request.playbackTiming);
             const PlaybackFrameCrossfade frameCrossfade =
-                playbackFrameCrossfadeAtTimelineFrame(timelineFramePosition, request.playbackTiming);
+                playbackFrameCrossfadeAtTimelineFrame(
+                    frameClocks.transportTimelineFrame,
+                    request.playbackTiming);
             const bool directGpuFrameReadback =
                 useGpuRenderer && !request.createVideoFromImageSequence && !frameCrossfade.active;
             if (directGpuFrameReadback) {
@@ -1137,12 +1157,11 @@ static RenderResult renderTimelineSingleFile(
                 request.gpuExportPreviewEnabled &&
                 (!request.gpuExportPreviewReady ||
                  request.gpuExportPreviewReady->load(
-                     std::memory_order_acquire)) &&
-                (renderedFramesScheduled % 30) == 0;
+                     std::memory_order_acquire));
             QJsonObject frameExportFaceTransformDiagnostics;
             const bool renderedOk =
                 activeRenderer->renderFrameToOutput(request,
-                                                    timelineFramePosition,
+                                                    frameClocks.visualTimelineFrame,
                                                     decoders,
                                                     asyncDecoder.get(),
                                                     &asyncFrameCache,
@@ -1154,13 +1173,17 @@ static RenderResult renderTimelineSingleFile(
                                                     &frameTextureMs,
                                                     &frameCompositeMs,
                                                     frameReadbackMsPtr,
-	                                                    &frameSkippedClips,
-	                                                    &skippedReasonCounts,
-	                                                    &frameExportFaceTransformDiagnostics,
-	                                                    timelineFramePosition,
+                                                    &frameSkippedClips,
+                                                    &skippedReasonCounts,
+                                                    &frameExportFaceTransformDiagnostics,
+                                                    frameClocks.transportTimelineFrame,
                                                     false,
                                                     false,
                                                     false,
+                                                    &frameLayerPlanMs,
+                                                    &frameTextPrepMs,
+                                                    &frameGuideOverlayMs,
+                                                    &frameGpuCompositeMs,
                                                     publishGpuPreview
                                                         ? &gpuPreviewFrame
                                                         : nullptr,
@@ -1178,7 +1201,12 @@ static RenderResult renderTimelineSingleFile(
             totalRenderCompositeStageMs += frameCompositeMs;
             totalGpuReadbackMs += frameReadbackMs;
             if ((!renderedOk || rendered.isNull()) && !directGpuFrameReadback) {
-                errorMessage = QStringLiteral("Failed to render Vulkan timeline frame %1.").arg(timelineFrame);
+                const QString frameFailure = renderedFrame.failureReason.trimmed();
+                errorMessage = frameFailure.isEmpty()
+                    ? QStringLiteral("Failed to render Vulkan timeline frame %1.").arg(timelineFrame)
+                    : QStringLiteral("Failed to render Vulkan timeline frame %1: %2")
+                          .arg(timelineFrame)
+                          .arg(frameFailure);
                 break;
             }
             if (frameCrossfade.active && !rendered.isNull()) {
@@ -1205,10 +1233,10 @@ static RenderResult renderTimelineSingleFile(
                     &secondaryTextureMs,
                     &secondaryCompositeMs,
                     &secondaryReadbackMs,
-	                    &secondarySkippedClips,
-	                    &skippedReasonCounts,
-	                    &secondaryFaceDiagnostics,
-	                    timelineFramePosition);
+                    &secondarySkippedClips,
+                    &skippedReasonCounts,
+                    &secondaryFaceDiagnostics,
+                    static_cast<qreal>(frameCrossfade.secondaryTimelineFrame));
                 totalRenderDecodeStageMs += secondaryDecodeMs;
                 totalRenderTextureStageMs += secondaryTextureMs;
                 totalRenderCompositeStageMs += secondaryCompositeMs;
@@ -1248,15 +1276,22 @@ static RenderResult renderTimelineSingleFile(
             }
 
             if (!gpuPreviewError.isEmpty()) {
-                qWarning().noquote()
-                    << QStringLiteral("GPU export preview unavailable: %1")
-                           .arg(gpuPreviewError);
+                const bool optionalSlotBusy =
+                    gpuPreviewError.contains(
+                        QStringLiteral("all optional preview slots are busy"));
+                if (!optionalSlotBusy || !gpuPreviewBusyLogged) {
+                    qWarning().noquote()
+                        << QStringLiteral("GPU export preview unavailable: %1")
+                               .arg(gpuPreviewError);
+                }
+                gpuPreviewBusyLogged = optionalSlotBusy;
+            }
+            if (gpuPreviewFrame.valid) {
+                gpuPreviewBusyLogged = false;
             }
             if (progressCallback && !rendered.isNull()) {
                 lastExportPreviewFrame = rendered;
             }
-            ++renderedFramesScheduled;
-
             if (progressCallback) {
                 RenderProgress progress;
                 progress.framesCompleted = framesCompleted;
@@ -1393,6 +1428,10 @@ static RenderResult renderTimelineSingleFile(
                         renderStageTimer.elapsed(),
                         frameDecodeMs,
                         frameTextureMs,
+                        frameLayerPlanMs,
+                        frameTextPrepMs,
+                        frameGuideOverlayMs,
+                        frameGpuCompositeMs,
                         frameReadbackMs,
                         frameConvertMs,
                         outputPts++
@@ -1458,6 +1497,10 @@ static RenderResult renderTimelineSingleFile(
                         renderStageTimer.elapsed(),
                         frameDecodeMs,
                         frameTextureMs,
+                        frameLayerPlanMs,
+                        frameTextPrepMs,
+                        frameGuideOverlayMs,
+                        frameGpuCompositeMs,
                         frameReadbackMs,
                         frameConvertMs,
                         outputPts++
@@ -1500,6 +1543,10 @@ static RenderResult renderTimelineSingleFile(
                                          frameRenderMs,
                                          frameDecodeMs,
                                          frameTextureMs,
+                                         frameLayerPlanMs,
+                                         frameTextPrepMs,
+                                         frameGuideOverlayMs,
+                                         frameGpuCompositeMs,
                                          frameReadbackMs,
                                          frameConvertMs
                                      });
@@ -1557,6 +1604,10 @@ static RenderResult renderTimelineSingleFile(
                                  frameRenderMs,
                                  frameDecodeMs,
                                  frameTextureMs,
+                                 frameLayerPlanMs,
+                                 frameTextPrepMs,
+                                 frameGuideOverlayMs,
+                                 frameGpuCompositeMs,
                                  frameReadbackMs,
                                  frameConvertMs
                              });
@@ -1710,42 +1761,144 @@ struct IncrementalRenderChunk {
     QString path;
 };
 
-inline constexpr int kIncrementalRenderSchema = 3;
+inline constexpr int kIncrementalRenderSchema = 4;
 
-QString incrementalChunkFrameDirectory(const IncrementalRenderChunk& chunk)
+std::optional<int64_t> encodedVideoFrameCount(const QString& path)
 {
-    const QFileInfo chunkInfo(chunk.path);
-    return chunkInfo.dir().filePath(
-        chunkInfo.completeBaseName() + QStringLiteral("_frames"));
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffprobe.isEmpty()) {
+        return std::nullopt;
+    }
+    QProcess probe;
+    probe.start(
+        ffprobe,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=nb_read_frames"),
+         QStringLiteral("-of"), QStringLiteral("default=nw=1:nk=1"),
+         path});
+    if (!probe.waitForFinished(30000) ||
+        probe.exitStatus() != QProcess::NormalExit ||
+        probe.exitCode() != 0) {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const int64_t frames =
+        QString::fromUtf8(probe.readAllStandardOutput())
+            .trimmed()
+            .toLongLong(&ok);
+    if (!ok || frames < 0) {
+        return std::nullopt;
+    }
+    return frames;
 }
 
-QString incrementalChunkFramePath(const IncrementalRenderChunk& chunk,
-                                  int64_t frame,
-                                  const QString& format)
-{
-    return QDir(incrementalChunkFrameDirectory(chunk)).filePath(
-        QStringLiteral("frame_%1.%2")
-            .arg(frame, 8, 10, QLatin1Char('0'))
-            .arg(format));
-}
-
-bool hasCompleteIncrementalImageChunk(
+bool hasCompleteIncrementalEncodedChunk(
     const IncrementalRenderChunk& chunk,
     const RenderRequest& request)
 {
-    const QString format =
-        normalizedImageSequenceFormat(request.imageSequenceFormat);
-    for (int64_t frame = 0; frame < chunk.frameCount; ++frame) {
-        const QString path =
-            incrementalChunkFramePath(chunk, frame, format);
-        const QFileInfo info(path);
-        if (!info.isFile() || info.size() <= 0) {
-            return false;
+    Q_UNUSED(request);
+    const QFileInfo info(chunk.path);
+    if (!info.isFile() || info.size() <= 0) {
+        return false;
+    }
+    const std::optional<int64_t> frames =
+        encodedVideoFrameCount(info.absoluteFilePath());
+    if (frames && *frames != chunk.frameCount) {
+        return false;
+    }
+    return true;
+}
+
+QString incrementalChunkAttemptPath(const IncrementalRenderChunk& chunk)
+{
+    const QFileInfo info(chunk.path);
+    return info.dir().filePath(
+        QStringLiteral("%1.tmp.%2.%3.%4")
+            .arg(info.completeBaseName())
+            .arg(QCoreApplication::applicationPid())
+            .arg(QDateTime::currentMSecsSinceEpoch())
+            .arg(info.suffix().isEmpty() ? QStringLiteral("mkv")
+                                          : info.suffix()));
+}
+
+QString incrementalChunkFailurePath(const IncrementalRenderChunk& chunk)
+{
+    const QFileInfo info(chunk.path);
+    return info.dir().filePath(
+        QStringLiteral("%1.failed.%2")
+            .arg(info.completeBaseName())
+            .arg(info.suffix().isEmpty() ? QStringLiteral("mkv")
+                                          : info.suffix()));
+}
+
+bool writeIncrementalChunkFailureDiagnostic(
+    const IncrementalRenderChunk& chunk,
+    const QString& failedAttemptPath,
+    const RenderResult& chunkResult,
+    QString* errorMessage)
+{
+    const QString diagnosticPath = chunk.path + QStringLiteral(".failure.json");
+    const QJsonObject diagnostic{
+        {QStringLiteral("chunkIndex"), chunk.index},
+        {QStringLiteral("chunkFile"), QFileInfo(chunk.path).fileName()},
+        {QStringLiteral("failedAttemptFile"),
+         QFileInfo(failedAttemptPath).fileName()},
+        {QStringLiteral("expectedFrames"),
+         static_cast<qint64>(chunk.frameCount)},
+        {QStringLiteral("framesRendered"),
+         static_cast<qint64>(chunkResult.framesRendered)},
+        {QStringLiteral("cancelled"), chunkResult.cancelled},
+        {QStringLiteral("message"), chunkResult.message},
+        {QStringLiteral("updatedUtc"),
+         QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}};
+    QSaveFile file(diagnosticPath);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(QJsonDocument(diagnostic).toJson(QJsonDocument::Indented)) < 0 ||
+        !file.commit()) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Failed to write incremental chunk failure "
+                               "diagnostic: %1")
+                    .arg(file.errorString());
         }
-        QImageReader reader(path);
-        if (!reader.canRead() || reader.size() != request.outputSize) {
-            return false;
+        return false;
+    }
+    return true;
+}
+
+bool publishIncrementalEncodedChunk(
+    const IncrementalRenderChunk& chunk,
+    const QString& attemptPath,
+    const RenderRequest& request,
+    QString* errorMessage)
+{
+    IncrementalRenderChunk attemptChunk = chunk;
+    attemptChunk.path = attemptPath;
+    if (!hasCompleteIncrementalEncodedChunk(attemptChunk, request)) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Encoded checkpoint chunk %1 produced an "
+                               "incomplete temporary file.")
+                    .arg(chunk.index + 1);
         }
+        return false;
+    }
+    QFile::remove(chunk.path);
+    const QByteArray attemptName = QFile::encodeName(attemptPath);
+    const QByteArray chunkName = QFile::encodeName(chunk.path);
+    if (std::rename(attemptName.constData(), chunkName.constData()) != 0) {
+        if (errorMessage) {
+            *errorMessage =
+                QStringLiteral("Could not atomically publish checkpoint "
+                               "chunk %1: %2")
+                    .arg(chunk.index + 1)
+                    .arg(QDir::toNativeSeparators(chunk.path));
+        }
+        return false;
     }
     return true;
 }
@@ -1829,24 +1982,8 @@ QByteArray incrementalRenderSignature(const RenderRequest& request,
         {QStringLiteral("useProxyMedia"), request.useProxyMedia},
         {QStringLiteral("bypassGrading"), request.bypassGrading},
         {QStringLiteral("correctionsEnabled"), request.correctionsEnabled},
-        {QStringLiteral("imageSequenceFormat"),
-         normalizedImageSequenceFormat(request.imageSequenceFormat)},
-        {QStringLiteral("backgroundFillEffect"),
-         static_cast<int>(request.backgroundFillEffect)},
-        {QStringLiteral("backgroundFillOpacity"),
-         request.backgroundFillOpacity},
-        {QStringLiteral("backgroundFillBrightness"),
-         request.backgroundFillBrightness},
-        {QStringLiteral("backgroundFillSaturation"),
-         request.backgroundFillSaturation},
-        {QStringLiteral("backgroundFillEdgePixels"),
-         request.backgroundFillEdgePixels},
-        {QStringLiteral("backgroundFillEdgeProgressive"),
-         request.backgroundFillEdgeProgressive},
-        {QStringLiteral("backgroundFillEdgePower"),
-         request.backgroundFillEdgePower},
-        {QStringLiteral("backgroundFillStretchSourceClipId"),
-         request.backgroundFillStretchSourceClipId},
+        {QStringLiteral("checkpointMode"),
+         QStringLiteral("encoded-chunk")},
         {QStringLiteral("showCurrentSpeakerName"),
          request.showCurrentSpeakerName},
         {QStringLiteral("showCurrentSpeakerOrganization"),
@@ -2032,6 +2169,8 @@ bool writeIncrementalManifest(
     const QVector<IncrementalRenderChunk>& chunks,
     const QSet<int>& completedChunks,
     const RenderResult& aggregate,
+    int failedChunkIndex,
+    const QString& failedMessage,
     QString* errorMessage)
 {
     QJsonArray chunkArray;
@@ -2039,14 +2178,12 @@ bool writeIncrementalManifest(
         chunkArray.push_back(QJsonObject{
             {QStringLiteral("index"), chunk.index},
             {QStringLiteral("file"), QFileInfo(chunk.path).fileName()},
-            {QStringLiteral("framesDirectory"),
-             QFileInfo(incrementalChunkFrameDirectory(chunk)).fileName()},
             {QStringLiteral("frames"), static_cast<qint64>(chunk.frameCount)},
             {QStringLiteral("ranges"), rangesToJson(chunk.ranges)},
             {QStringLiteral("complete"),
              completedChunks.contains(chunk.index)}});
     }
-    const QJsonObject manifest{
+    QJsonObject manifest{
         {QStringLiteral("schema"), kIncrementalRenderSchema},
         {QStringLiteral("signature"), QString::fromLatin1(signature)},
         {QStringLiteral("chunkFrames"), targetFrames},
@@ -2060,6 +2197,15 @@ bool writeIncrementalManifest(
         {QStringLiteral("exportPipeline"), aggregate.exportPipeline},
         {QStringLiteral("chunks"), chunkArray},
     };
+    if (failedChunkIndex >= 0 || !failedMessage.trimmed().isEmpty()) {
+        manifest.insert(
+            QStringLiteral("lastFailure"),
+            QJsonObject{
+                {QStringLiteral("chunkIndex"), failedChunkIndex},
+                {QStringLiteral("message"), failedMessage.trimmed()},
+                {QStringLiteral("updatedUtc"),
+                 QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+    }
     QSaveFile file(manifestPath);
     if (!file.open(QIODevice::WriteOnly) ||
         file.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented)) < 0 ||
@@ -2121,9 +2267,7 @@ QSet<int> reusableChunksFromManifest(
                 chunks.at(index).frameCount) {
             continue;
         }
-        const QFileInfo audioSidecar(chunks.at(index).path);
-        if (audioSidecar.isFile() && audioSidecar.size() > 1024 &&
-            hasCompleteIncrementalImageChunk(chunks.at(index), request)) {
+        if (hasCompleteIncrementalEncodedChunk(chunks.at(index), request)) {
             reusable.insert(index);
         }
     }
@@ -2231,53 +2375,16 @@ bool assembleIncrementalChunks(
         return false;
     }
 
-    const QString frameConcatPath =
-        QDir(cacheDirectory).filePath(QStringLiteral("frames.txt"));
-    QSaveFile frameConcatFile(frameConcatPath);
-    if (!frameConcatFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        if (errorMessage) {
-            *errorMessage = frameConcatFile.errorString();
-        }
-        return false;
-    }
-    const QString frameFormat =
-        normalizedImageSequenceFormat(request.imageSequenceFormat);
-    const double frameDuration =
-        1.0 / jcut::export_timing::normalizedOutputFps(request.outputFps);
-    int64_t totalFrames = 0;
-    QString lastFramePath;
     for (const IncrementalRenderChunk& chunk : chunks) {
-        if (!hasCompleteIncrementalImageChunk(chunk, request)) {
+        if (!hasCompleteIncrementalEncodedChunk(chunk, request)) {
             if (errorMessage) {
                 *errorMessage =
-                    QStringLiteral("Image-sequence checkpoint %1 is "
+                    QStringLiteral("Encoded checkpoint chunk %1 is "
                                    "missing or corrupt.")
                         .arg(chunk.index + 1);
             }
             return false;
         }
-        for (int64_t frame = 0; frame < chunk.frameCount; ++frame) {
-            QString path =
-                incrementalChunkFramePath(chunk, frame, frameFormat);
-            path.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
-            frameConcatFile.write(
-                QStringLiteral("file '%1'\nduration %2\n")
-                    .arg(path)
-                    .arg(frameDuration, 0, 'f', 12)
-                    .toUtf8());
-            lastFramePath = path;
-            ++totalFrames;
-        }
-    }
-    // The concat demuxer applies the last duration only when its final image
-    // is repeated. -frames:v below prevents that sentinel from adding output.
-    frameConcatFile.write(
-        QStringLiteral("file '%1'\n").arg(lastFramePath).toUtf8());
-    if (!frameConcatFile.commit()) {
-        if (errorMessage) {
-            *errorMessage = frameConcatFile.errorString();
-        }
-        return false;
     }
 
     const QFileInfo outputInfo(request.outputPath);
@@ -2290,26 +2397,16 @@ bool assembleIncrementalChunks(
         QStringLiteral("-loglevel"), QStringLiteral("error"),
         QStringLiteral("-f"), QStringLiteral("concat"),
         QStringLiteral("-safe"), QStringLiteral("0"),
-        QStringLiteral("-i"), frameConcatPath,
-        QStringLiteral("-f"), QStringLiteral("concat"),
-        QStringLiteral("-safe"), QStringLiteral("0"),
         QStringLiteral("-i"), concatPath,
         QStringLiteral("-map"), QStringLiteral("0:v:0"),
-        QStringLiteral("-map"), QStringLiteral("1:a:0?"),
-        QStringLiteral("-frames:v"), QString::number(totalFrames),
-        QStringLiteral("-r"),
-        QString::number(
-            jcut::export_timing::normalizedOutputFps(request.outputFps),
-            'f', 6),
+        QStringLiteral("-map"), QStringLiteral("0:a:0?"),
+        QStringLiteral("-c:v"), QStringLiteral("copy"),
     };
     const QString suffix = outputInfo.suffix().toLower();
     if (suffix == QStringLiteral("webm")) {
-        arguments << QStringLiteral("-c:v") << QStringLiteral("libvpx-vp9")
-                  << QStringLiteral("-c:a") << QStringLiteral("libopus");
+        arguments << QStringLiteral("-c:a") << QStringLiteral("libopus");
     } else {
-        arguments << QStringLiteral("-c:v") << QStringLiteral("h264_nvenc")
-                  << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
-                  << QStringLiteral("-c:a") << QStringLiteral("aac")
+        arguments << QStringLiteral("-c:a") << QStringLiteral("aac")
                   << QStringLiteral("-b:a") << QStringLiteral("192k");
     }
     if (suffix == QStringLiteral("mp4") ||
@@ -2352,6 +2449,14 @@ bool assembleIncrementalChunks(
 
 } // namespace
 
+QString incrementalRenderCacheRootForOutputPath(const QString& outputPath)
+{
+    const QFileInfo outputInfo(outputPath);
+    return outputInfo.dir().filePath(
+        outputInfo.completeBaseName() +
+        QStringLiteral(".jcut-render-cache"));
+}
+
 RenderResult renderTimelineToFile(
     const RenderRequest& request,
     const std::function<bool(const RenderProgress&)>& progressCallback)
@@ -2367,10 +2472,8 @@ RenderResult renderTimelineToFile(
         qBound(60, request.incrementalChunkFrames, 18000);
     const QByteArray signature =
         incrementalRenderSignature(request, targetFrames);
-    const QFileInfo outputInfo(request.outputPath);
-    const QString cacheRoot = outputInfo.dir().filePath(
-        outputInfo.completeBaseName() +
-        QStringLiteral(".jcut-render-cache"));
+    const QString cacheRoot =
+        incrementalRenderCacheRootForOutputPath(request.outputPath);
     const QString cacheDirectory =
         QDir(cacheRoot).filePath(QString::fromLatin1(signature.left(16)));
     if (!QDir().mkpath(cacheDirectory)) {
@@ -2409,7 +2512,7 @@ RenderResult renderTimelineToFile(
     QString manifestError;
     if (!writeIncrementalManifest(
             manifestPath, signature, targetFrames, totalFrames, chunks,
-            completed, result, &manifestError)) {
+            completed, result, -1, QString(), &manifestError)) {
         result.message = manifestError;
         return result;
     }
@@ -2480,10 +2583,11 @@ RenderResult renderTimelineToFile(
         RenderRequest chunkRequest = request;
         chunkRequest.incrementalExport = false;
         chunkRequest.losslessIntermediateAudio = true;
-        chunkRequest.createVideoFromImageSequence = true;
-        chunkRequest.imageSequenceFormat =
-            normalizedImageSequenceFormat(request.imageSequenceFormat);
-        chunkRequest.outputPath = chunk.path;
+        chunkRequest.createVideoFromImageSequence = false;
+        chunkRequest.imageSequenceFormat.clear();
+        const QString attemptPath = incrementalChunkAttemptPath(chunk);
+        QFile::remove(attemptPath);
+        chunkRequest.outputPath = attemptPath;
         chunkRequest.exportRanges = chunk.ranges;
         chunkRequest.exportStartFrame =
             chunk.ranges.constFirst().startFrame;
@@ -2550,6 +2654,11 @@ RenderResult renderTimelineToFile(
             rendererSession.renderer.get());
         accumulateIncrementalResult(&result, chunkResult);
         if (!chunkResult.success) {
+            const QString failedAttemptPath = incrementalChunkFailurePath(chunk);
+            QFile::remove(failedAttemptPath);
+            if (QFileInfo(attemptPath).isFile()) {
+                QFile::rename(attemptPath, failedAttemptPath);
+            }
             result.success = false;
             result.cancelled = chunkResult.cancelled;
             result.framesRendered =
@@ -2560,14 +2669,53 @@ RenderResult renderTimelineToFile(
                     .arg(chunk.index + 1)
                     .arg(chunks.size())
                     .arg(chunkResult.message);
+            QString failureDiagnosticError;
+            writeIncrementalChunkFailureDiagnostic(
+                chunk, failedAttemptPath, chunkResult,
+                &failureDiagnosticError);
+            QString failureManifestError;
+            writeIncrementalManifest(
+                manifestPath, signature, targetFrames, totalFrames, chunks,
+                completed, result, chunk.index, result.message,
+                &failureManifestError);
             return result;
         }
+        QString publishError;
+        if (!publishIncrementalEncodedChunk(
+                chunk, attemptPath, request, &publishError)) {
+            const QString failedAttemptPath = incrementalChunkFailurePath(chunk);
+            QFile::remove(failedAttemptPath);
+            if (QFileInfo(attemptPath).isFile()) {
+                QFile::rename(attemptPath, failedAttemptPath);
+            }
+            result.success = false;
+            result.cancelled = false;
+            result.framesRendered =
+                framesBeforeChunk + chunkResult.framesRendered;
+            result.elapsedMs = totalTimer.elapsed();
+            result.message =
+                QStringLiteral("Incremental chunk %1/%2 failed validation: %3")
+                    .arg(chunk.index + 1)
+                    .arg(chunks.size())
+                    .arg(publishError);
+            QString failureDiagnosticError;
+            writeIncrementalChunkFailureDiagnostic(
+                chunk, failedAttemptPath, result,
+                &failureDiagnosticError);
+            QString failureManifestError;
+            writeIncrementalManifest(
+                manifestPath, signature, targetFrames, totalFrames, chunks,
+                completed, result, chunk.index, result.message,
+                &failureManifestError);
+            return result;
+        }
+        QFile::remove(chunk.path + QStringLiteral(".failure.json"));
         completedFrames += chunk.frameCount;
         completed.insert(chunk.index);
         result.incrementalChunksCompleted = completed.size();
         if (!writeIncrementalManifest(
                 manifestPath, signature, targetFrames, totalFrames, chunks,
-                completed, result, &manifestError)) {
+                completed, result, -1, QString(), &manifestError)) {
             result.message = manifestError;
             result.framesRendered = completedFrames;
             result.elapsedMs = totalTimer.elapsed();

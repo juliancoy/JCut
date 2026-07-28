@@ -136,6 +136,20 @@ QWidget *InspectorPane::buildOutputTab()
     m_renderBackendCombo->setToolTip(
         QStringLiteral("Renderer used for final export. Vulkan is strict and fails if unavailable; preview rendering is configured separately."));
     m_renderUseProxiesCheckBox = new QCheckBox(QStringLiteral("Use Proxies For Render"), page);
+    m_incrementalRenderCheckBox = new QCheckBox(QStringLiteral("Incremental chunked render"), page);
+    m_incrementalRenderCheckBox->setChecked(true);
+    m_incrementalRenderCheckBox->setToolTip(
+        QStringLiteral("Render resumable encoded chunks and assemble them into the final video. Disable for one continuous export without chunk checkpoints."));
+    m_instagramSafeAreaGuidesCheckBox =
+        new QCheckBox(QStringLiteral("Render Instagram 250px safe-area guides"), page);
+    m_instagramSafeAreaGuidesCheckBox->setChecked(false);
+    m_instagramSafeAreaGuidesCheckBox->setToolTip(
+        QStringLiteral("Burn top and bottom guide lines 250 output pixels from the frame edge. Disabled is passthrough."));
+    m_alignmentGridGuidesCheckBox =
+        new QCheckBox(QStringLiteral("Render 3x3 alignment grid"), page);
+    m_alignmentGridGuidesCheckBox->setChecked(false);
+    m_alignmentGridGuidesCheckBox->setToolTip(
+        QStringLiteral("Burn 3x3 output-space alignment guide lines into export output. Disabled is passthrough."));
     m_renderCreateVideoFromSequenceCheckBox = new QCheckBox(QStringLiteral("Also Create Video From Sequence"), page);
     m_renderCreateVideoFromSequenceCheckBox->setChecked(true);
     m_renderCreateVideoFromSequenceCheckBox->setToolTip(QStringLiteral("Create a video file from the image sequence with audio"));
@@ -176,6 +190,14 @@ QWidget *InspectorPane::buildOutputTab()
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
+    m_renderCachePathLabel =
+        new QLabel(QStringLiteral("Render cache: choose a render output first."), page);
+    m_renderCachePathLabel->setWordWrap(true);
+    m_renderCachePathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_clearRenderCacheButton = new QPushButton(QStringLiteral("Clear Render Cache"), page);
+    m_clearRenderCacheButton->setToolTip(
+        QStringLiteral("Delete the incremental image-sequence cache for the current render output target."));
+    m_clearRenderCacheButton->setEnabled(false);
 
     auto rangeSection = createDisclosureSection(page, QStringLiteral("Export Range"), false);
     rangeSection.body->addWidget(m_outputRangeSummaryLabel);
@@ -188,10 +210,15 @@ QWidget *InspectorPane::buildOutputTab()
     auto settingsSection = createDisclosureSection(page, QStringLiteral("Render Settings"), true);
     settingsSection.body->addLayout(form);
     settingsSection.body->addWidget(m_renderUseProxiesCheckBox);
+    settingsSection.body->addWidget(m_incrementalRenderCheckBox);
+    settingsSection.body->addWidget(m_instagramSafeAreaGuidesCheckBox);
+    settingsSection.body->addWidget(m_alignmentGridGuidesCheckBox);
     settingsSection.body->addWidget(m_renderCreateVideoFromSequenceCheckBox);
 
     auto actionSection = createDisclosureSection(page, QStringLiteral("Render Action"), true);
     actionSection.body->addWidget(m_renderButton);
+    actionSection.body->addWidget(m_renderCachePathLabel);
+    actionSection.body->addWidget(m_clearRenderCacheButton);
 
     layout->addWidget(rangeSection.container);
     layout->addWidget(settingsSection.container);
@@ -221,6 +248,18 @@ QWidget *InspectorPane::buildPreviewTab()
     m_previewShowSpeakerTrackPointsCheckBox->setChecked(false);
     m_previewShowSpeakerTrackPointsCheckBox->setToolTip(
         QStringLiteral("Draw all speaker framing keyframe points on top of active clips."));
+
+    m_previewInstagramSafeAreaGuidesCheckBox =
+        new QCheckBox(QStringLiteral("Show Instagram 250px safe-area guides"), page);
+    m_previewInstagramSafeAreaGuidesCheckBox->setChecked(false);
+    m_previewInstagramSafeAreaGuidesCheckBox->setToolTip(
+        QStringLiteral("Preview-only top and bottom guide lines 250 output pixels from the frame edge."));
+
+    m_previewAlignmentGridGuidesCheckBox =
+        new QCheckBox(QStringLiteral("Show 3x3 alignment grid"), page);
+    m_previewAlignmentGridGuidesCheckBox->setChecked(false);
+    m_previewAlignmentGridGuidesCheckBox->setToolTip(
+        QStringLiteral("Preview-only 3x3 output-space alignment guide lines."));
 
     m_previewVulkanPresenterCombo = new QComboBox(page);
     m_previewVulkanPresenterCombo->addItem(QStringLiteral("Embedded In Preview Pane"), QStringLiteral("embedded"));
@@ -277,6 +316,8 @@ QWidget *InspectorPane::buildPreviewTab()
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
     layout->addWidget(m_previewShowSpeakerTrackPointsCheckBox);
+    layout->addWidget(m_previewInstagramSafeAreaGuidesCheckBox);
+    layout->addWidget(m_previewAlignmentGridGuidesCheckBox);
     layout->addLayout(vulkanPresenterForm);
     layout->addSpacing(12);
     layout->addWidget(zoomSectionLabel);

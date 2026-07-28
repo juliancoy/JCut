@@ -73,6 +73,10 @@ struct RenderFrameStageStats {
     qint64 renderMs = 0;
     qint64 decodeMs = 0;
     qint64 textureMs = 0;
+    qint64 layerPlanMs = 0;
+    qint64 textPrepMs = 0;
+    qint64 guideOverlayMs = 0;
+    qint64 gpuCompositeMs = 0;
     qint64 readbackMs = 0;
     qint64 convertMs = 0;
 };
@@ -112,12 +116,19 @@ void enqueueRenderSequenceLookahead(const RenderRequest& request,
                                     const QVector<TimelineClip>& orderedClips,
                                     editor::AsyncDecoder* asyncDecoder,
                                     const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
+void enqueueRenderMaskLookahead(const RenderRequest& request,
+                                int64_t timelineFrame,
+                                const QVector<TimelineClip>& orderedClips);
 void prewarmRenderSequenceSegment(const RenderRequest& request,
                                   int64_t segmentStartFrame,
                                   int64_t segmentEndFrame,
                                   const QVector<TimelineClip>& orderedClips,
                                   editor::AsyncDecoder* asyncDecoder,
                                   const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
+void prewarmRenderMaskSegment(const RenderRequest& request,
+                              int64_t segmentStartFrame,
+                              int64_t segmentEndFrame,
+                              const QVector<TimelineClip>& orderedClips);
 editor::FrameHandle decodeRenderFrame(const QString& path,
                                       int64_t frameNumber,
                                       QHash<QString, editor::DecoderContext*>& decoders,
@@ -129,7 +140,6 @@ QString avErrToString(int errnum);
 QRect fitRect(const QSize& source, const QSize& bounds);
 QRectF fitRectF(const QSize& source, const QSize& bounds);
 QRect coverRect(const QSize& source, const QSize& bounds);
-bool shouldDrawBlurredFillBackground(const QSize& source, const QSize& output);
 QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize);
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
                                                         int64_t timelineFrame,
@@ -238,6 +248,10 @@ struct OffscreenRenderContext {
     bool forceSoftwareDecode = false;
     bool preferHardwareFrames = false;
     bool externalVulkanOutput = false;
+    qint64* layerPlanMs = nullptr;
+    qint64* textPrepMs = nullptr;
+    qint64* guideOverlayMs = nullptr;
+    qint64* gpuCompositeMs = nullptr;
     QString* frameFailureReason = nullptr;
     OffscreenVulkanFrame* gpuPreviewFrame = nullptr;
     QString* gpuPreviewError = nullptr;
@@ -315,6 +329,10 @@ public:
                              bool forceSoftwareDecode = false,
                              bool preferHardwareFrames = false,
                              bool externalVulkanOutput = true,
+                             qint64* layerPlanMs = nullptr,
+                             qint64* textPrepMs = nullptr,
+                             qint64* guideOverlayMs = nullptr,
+                             qint64* gpuCompositeMs = nullptr,
                              OffscreenVulkanFrame* gpuPreviewFrame = nullptr,
                              QString* gpuPreviewError = nullptr)
     {
@@ -338,6 +356,10 @@ public:
                                                           forceSoftwareDecode,
                                                           preferHardwareFrames,
                                                           externalVulkanOutput,
+                                                          layerPlanMs,
+                                                          textPrepMs,
+                                                          guideOverlayMs,
+                                                          gpuCompositeMs,
                                                           nullptr,
                                                           gpuPreviewFrame,
                                                           gpuPreviewError},

@@ -2,9 +2,12 @@
 
 #include "core/image_buffer.h"
 #include "editor_shared_core.h"
+#include "editor_shared_render_sync.h"
 #include "transform_skip_aware_timing.h"
 
 #include <memory>
+
+#include <QSet>
 
 namespace editor {
 class FrameHandle;
@@ -30,7 +33,33 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
     const editor::FrameHandle& presentedFrame);
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferBlocking(
+    const TimelineClip& clip,
+    const editor::FrameHandle& presentedFrame);
 void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame);
+void prefetchClipMaskBuffers(const TimelineClip& clip,
+                             const editor::FrameHandle& presentedFrame);
+bool clipUsesRenderableSidecarMask(const TimelineClip& clip);
+bool visualClipActiveAtTimelineClock(const TimelineClip& clip,
+                                     const QVector<TimelineTrack>& tracks,
+                                     const RenderFrameClock& clock,
+                                     bool bypassGrading);
+int prefetchRenderableClipMaskBuffersForClock(
+    const QVector<TimelineClip>& clips,
+    const QVector<TimelineTrack>& tracks,
+    const QVector<RenderSyncMarker>& renderSyncMarkers,
+    const RenderFrameClock& clock,
+    QSet<QString>* nextWindowKeys = nullptr,
+    const QSet<QString>* previousWindowKeys = nullptr,
+    bool bypassGrading = false);
+int prefetchRenderableClipMaskBuffersAtTimelinePosition(
+    const QVector<TimelineClip>& clips,
+    const QVector<TimelineTrack>& tracks,
+    const QVector<RenderSyncMarker>& renderSyncMarkers,
+    qreal timelineFramePosition,
+    QSet<QString>* nextWindowKeys = nullptr,
+    const QSet<QString>* previousWindowKeys = nullptr,
+    bool bypassGrading = false);
 // Applies correction polygons that have already been filtered for the current
 // timeline position. The result is a grayscale mask with corrected regions
 // erased to zero, ready for either preview or export upload.

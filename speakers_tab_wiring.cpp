@@ -43,12 +43,12 @@ void SpeakersTab::wire()
                 ? m_deps.getSelectedClip() : nullptr;
             const bool hasGeneratedIntroductions =
                 selectedClip && selectedClip->speakerTitleEngineActive;
-            if (!m_updating && m_widgets.speakerOverlayCreateTitleClipsButton &&
+            if (m_widgets.speakerOverlayCreateTitleClipsButton &&
                 (m_widgets.speakerOverlayCreateTitleClipsButton->isChecked() ||
                  hasGeneratedIntroductions)) {
                 onSpeakerCreateTitleClipsClicked();
             }
-            if (!m_updating && m_deps.scheduleSaveState) {
+            if (m_deps.scheduleSaveState) {
                 m_deps.scheduleSaveState();
             }
         });
@@ -126,7 +126,6 @@ void SpeakersTab::wire()
                 &QCheckBox::toggled,
                 this,
                 [this](bool enabled) {
-                    if (m_updating) return;
                     if (enabled) {
                         onSpeakerCreateTitleClipsClicked();
                         const TimelineClip* updatedClip = m_deps.getSelectedClip
@@ -216,6 +215,12 @@ void SpeakersTab::wire()
         }
         if (m_widgets.speakerOverlayShowAtSectionEndCheckBox) {
             connect(m_widgets.speakerOverlayShowAtSectionEndCheckBox,
+                    &QCheckBox::toggled,
+                    this,
+                    [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });
+        }
+        if (m_widgets.speakerOverlayRespectSpeechFilterTimingCheckBox) {
+            connect(m_widgets.speakerOverlayRespectSpeechFilterTimingCheckBox,
                     &QCheckBox::toggled,
                     this,
                     [refreshEnabledFlyIn](bool) { refreshEnabledFlyIn(); });

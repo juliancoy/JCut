@@ -29,8 +29,6 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("source_tile");
     case ClipEffectPreset::Vulkan3DSynth:
         return QStringLiteral("vulkan_3d_synth");
-    case ClipEffectPreset::ProgressiveEdgeStretch:
-        return QStringLiteral("progressive_edge_stretch");
     case ClipEffectPreset::DifferenceMatte:
         return QStringLiteral("difference_matte");
     case ClipEffectPreset::TemporalEcho:
@@ -111,11 +109,6 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("vulkan_synth") ||
         normalized == QStringLiteral("image_synth")) {
         return ClipEffectPreset::Vulkan3DSynth;
-    }
-    if (normalized == QStringLiteral("progressive_edge_stretch") ||
-        normalized == QStringLiteral("progressive_stretch") ||
-        normalized == QStringLiteral("edge_stretch_progressive")) {
-        return ClipEffectPreset::ProgressiveEdgeStretch;
     }
     if (normalized == QStringLiteral("difference_matte") || normalized == QStringLiteral("difference")) {
         return ClipEffectPreset::DifferenceMatte;
@@ -1339,9 +1332,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             -360.0,
             obj.value(QStringLiteral("effectModulationPhaseDegrees")).toDouble(0.0),
             360.0);
-        clip.effectRows = qBound(1,
-                                 obj.value(QStringLiteral("effectRows")).toInt(32),
-                                 clip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
+        clip.effectRows = qBound(
+            1, obj.value(QStringLiteral("effectRows")).toInt(32), 96);
         clip.effectSpeed =
             qBound<qreal>(-8.0, obj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
         clip.effectScale =

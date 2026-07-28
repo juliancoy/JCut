@@ -110,7 +110,8 @@ VulkanResources::~VulkanResources()
 
 bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
                                  VkDevice device,
-                                 QVulkanDeviceFunctions* funcs)
+                                 QVulkanDeviceFunctions* funcs,
+                                 VkDescriptorSetLayout sharedDescriptorSetLayout)
 {
     destroy();
     if (!physicalDevice || !device) {
@@ -155,13 +156,19 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
-    descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutInfo.bindingCount = 5;
-    descriptorSetLayoutInfo.pBindings = bindings;
-    if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
-        destroy();
-        return false;
+    if (sharedDescriptorSetLayout != VK_NULL_HANDLE) {
+        m_descriptorSetLayout = sharedDescriptorSetLayout;
+        m_ownsDescriptorSetLayout = false;
+    } else {
+        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
+        descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorSetLayoutInfo.bindingCount = 5;
+        descriptorSetLayoutInfo.pBindings = bindings;
+        if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+        m_ownsDescriptorSetLayout = true;
     }
 
     VkDescriptorPoolSize poolSizes[2]{};
@@ -331,10 +338,11 @@ void VulkanResources::destroy()
     }
     m_descriptorSets.fill(VK_NULL_HANDLE);
     m_descriptorSetIndex = 0;
-    if (m_descriptorSetLayout != VK_NULL_HANDLE) {
+    if (m_descriptorSetLayout != VK_NULL_HANDLE && m_ownsDescriptorSetLayout) {
         vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
-        m_descriptorSetLayout = VK_NULL_HANDLE;
     }
+    m_descriptorSetLayout = VK_NULL_HANDLE;
+    m_ownsDescriptorSetLayout = false;
     if (m_sampler != VK_NULL_HANDLE) {
         vkDestroySampler(m_device, m_sampler, nullptr);
         m_sampler = VK_NULL_HANDLE;
@@ -822,6 +830,7 @@ bool VulkanResources::ensureRawMaskImage(const QSize& size)
 bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
 {
     if (bytes <= 0) {
+        m_lastError = QStringLiteral("staging_capacity_invalid_size");
         return false;
     }
     if (m_stagingBuffer != VK_NULL_HANDLE && m_stagingMemory != VK_NULL_HANDLE && m_stagingRing.capacity >= bytes) {
@@ -843,6 +852,8 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
+        m_lastError = QStringLiteral("staging_create_buffer_failed bytes=%1")
+                          .arg(static_cast<qulonglong>(bytes));
         return false;
     }
     VkMemoryRequirements bufferReq{};
@@ -851,6 +862,8 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
         bufferReq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (bufferMemType == UINT32_MAX) {
+        m_lastError = QStringLiteral("staging_memory_type_unavailable bytes=%1")
+                          .arg(static_cast<qulonglong>(bytes));
         if (m_stagingBuffer != VK_NULL_HANDLE) {
             vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
             m_stagingBuffer = VK_NULL_HANDLE;
@@ -862,6 +875,9 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
     bufferAlloc.allocationSize = bufferReq.size;
     bufferAlloc.memoryTypeIndex = bufferMemType;
     if (vkAllocateMemory(m_device, &bufferAlloc, nullptr, &m_stagingMemory) != VK_SUCCESS) {
+        m_lastError = QStringLiteral("staging_allocate_memory_failed bytes=%1 allocation=%2")
+                          .arg(static_cast<qulonglong>(bytes))
+                          .arg(static_cast<qulonglong>(bufferReq.size));
         if (m_stagingBuffer != VK_NULL_HANDLE) {
             vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
             m_stagingBuffer = VK_NULL_HANDLE;
@@ -869,6 +885,9 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
         return false;
     }
     if (vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) != VK_SUCCESS) {
+        m_lastError = QStringLiteral("staging_bind_memory_failed bytes=%1 allocation=%2")
+                          .arg(static_cast<qulonglong>(bytes))
+                          .arg(static_cast<qulonglong>(bufferReq.size));
         if (m_stagingMemory != VK_NULL_HANDLE) {
             vkFreeMemory(m_device, m_stagingMemory, nullptr);
             m_stagingMemory = VK_NULL_HANDLE;
@@ -889,6 +908,7 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
 
 bool VulkanResources::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
 {
+    m_lastError.clear();
     m_stagingRing.frameSlotCount = qMax<size_t>(1, frameSlotCount);
     m_stagingRing.frameSlot = frameSlot % m_stagingRing.frameSlotCount;
     // QVulkanWindow waits for the acquired swapchain image before calling
@@ -902,6 +922,10 @@ bool VulkanResources::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
     if (!checkedMul(static_cast<VkDeviceSize>(m_stagingRing.frameSlot),
                     slotBytes,
                     &m_stagingRing.writeOffset)) {
+        m_lastError = QStringLiteral("frame_upload_slot_offset_overflow slot=%1 slot_bytes=%2 slots=%3")
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlot))
+                          .arg(static_cast<qulonglong>(slotBytes))
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlotCount));
         return false;
     }
     if (m_maskView != VK_NULL_HANDLE && m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
@@ -913,6 +937,8 @@ bool VulkanResources::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
 bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize* offsetOut)
 {
     if (!offsetOut || bytes <= 0) {
+        m_lastError = QStringLiteral("staging_reserve_invalid_request bytes=%1")
+                          .arg(static_cast<qulonglong>(bytes));
         return false;
     }
     const VkDeviceSize safeAlignment = qMax<VkDeviceSize>(alignment, 4);
@@ -924,6 +950,10 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
     if (!checkedMul(static_cast<VkDeviceSize>(m_stagingRing.frameSlot % m_stagingRing.frameSlotCount),
                     slotBytes,
                     &slotBase)) {
+        m_lastError = QStringLiteral("staging_slot_base_overflow slot=%1 slot_bytes=%2 slots=%3")
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlot))
+                          .arg(static_cast<qulonglong>(slotBytes))
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlotCount));
         return false;
     }
     const VkDeviceSize slotCursor = m_stagingRing.writeOffset >= slotBase
@@ -933,6 +963,10 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
     VkDeviceSize requiredInSlot = 0;
     if (!alignUp(slotCursor, safeAlignment, &alignedCursor) ||
         !checkedAdd(alignedCursor, bytes, &requiredInSlot)) {
+        m_lastError = QStringLiteral("staging_slot_cursor_overflow cursor=%1 bytes=%2 alignment=%3")
+                          .arg(static_cast<qulonglong>(slotCursor))
+                          .arg(static_cast<qulonglong>(bytes))
+                          .arg(static_cast<qulonglong>(safeAlignment));
         return false;
     }
     if (requiredInSlot > slotBytes) {
@@ -945,22 +979,41 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
         VkDeviceSize requiredCapacity = 0;
         if (!checkedMul(slotBytes, slotCount, &requiredCapacity) ||
             !ensureStagingCapacity(requiredCapacity)) {
+            if (m_lastError.isEmpty()) {
+                m_lastError = QStringLiteral("staging_capacity_failed required=%1 slot_bytes=%2 slots=%3")
+                                  .arg(static_cast<qulonglong>(requiredCapacity))
+                                  .arg(static_cast<qulonglong>(slotBytes))
+                                  .arg(static_cast<qulonglong>(slotCount));
+            }
             return false;
         }
         m_stagingRing.frameSlotBytes = slotBytes;
         if (!checkedMul(static_cast<VkDeviceSize>(m_stagingRing.frameSlot), slotBytes, &m_stagingRing.writeOffset)) {
+            m_lastError = QStringLiteral("staging_write_offset_overflow slot=%1 slot_bytes=%2")
+                              .arg(static_cast<qulonglong>(m_stagingRing.frameSlot))
+                              .arg(static_cast<qulonglong>(slotBytes));
             return false;
         }
     } else {
         VkDeviceSize requiredCapacity = 0;
         if (!checkedMul(slotBytes, slotCount, &requiredCapacity) ||
             !ensureStagingCapacity(requiredCapacity)) {
+            if (m_lastError.isEmpty()) {
+                m_lastError = QStringLiteral("staging_capacity_failed required=%1 slot_bytes=%2 slots=%3")
+                                  .arg(static_cast<qulonglong>(requiredCapacity))
+                                  .arg(static_cast<qulonglong>(slotBytes))
+                                  .arg(static_cast<qulonglong>(slotCount));
+            }
             return false;
         }
     }
     VkDeviceSize offset = 0;
     if (!checkedMul(static_cast<VkDeviceSize>(m_stagingRing.frameSlot), m_stagingRing.frameSlotBytes, &slotBase) ||
         !checkedAdd(slotBase, alignedCursor, &offset)) {
+        m_lastError = QStringLiteral("staging_offset_overflow slot=%1 frame_slot_bytes=%2 cursor=%3")
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlot))
+                          .arg(static_cast<qulonglong>(m_stagingRing.frameSlotBytes))
+                          .arg(static_cast<qulonglong>(alignedCursor));
         return false;
     }
     VkDeviceSize uploadEnd = 0;
@@ -971,6 +1024,12 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
                     &slotEnd) ||
         uploadEnd > m_stagingRing.capacity ||
         uploadEnd > slotEnd) {
+        m_lastError = QStringLiteral("staging_upload_exceeds_slot offset=%1 bytes=%2 upload_end=%3 slot_end=%4 capacity=%5")
+                          .arg(static_cast<qulonglong>(offset))
+                          .arg(static_cast<qulonglong>(bytes))
+                          .arg(static_cast<qulonglong>(uploadEnd))
+                          .arg(static_cast<qulonglong>(slotEnd))
+                          .arg(static_cast<qulonglong>(m_stagingRing.capacity));
         return false;
     }
     m_stagingRing.writeOffset = uploadEnd;
@@ -981,14 +1040,23 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
 bool VulkanResources::writeStagingUpload(const void* data, VkDeviceSize bytes, VkDeviceSize* offsetOut)
 {
     if (!data || !offsetOut || bytes <= 0) {
+        m_lastError = QStringLiteral("staging_write_invalid_request bytes=%1")
+                          .arg(static_cast<qulonglong>(bytes));
         return false;
     }
     VkDeviceSize stagingOffset = 0;
     if (!reserveStagingUpload(bytes, 4, &stagingOffset)) {
+        if (m_lastError.isEmpty()) {
+            m_lastError = QStringLiteral("staging_reserve_failed bytes=%1")
+                              .arg(static_cast<qulonglong>(bytes));
+        }
         return false;
     }
     void* mapped = nullptr;
     if (vkMapMemory(m_device, m_stagingMemory, stagingOffset, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+        m_lastError = QStringLiteral("staging_map_failed offset=%1 bytes=%2")
+                          .arg(static_cast<qulonglong>(stagingOffset))
+                          .arg(static_cast<qulonglong>(bytes));
         return false;
     }
     std::memcpy(mapped, data, static_cast<size_t>(bytes));
@@ -1599,16 +1667,32 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer,
                                          const render_detail::OverlayImage& image)
 {
     if (!m_initialized || !commandBuffer || image.isNull()) {
+        m_lastError = QStringLiteral("overlay_upload_invalid_state initialized=%1 command_buffer=%2 image_null=%3")
+                          .arg(m_initialized ? 1 : 0)
+                          .arg(commandBuffer == VK_NULL_HANDLE ? 0 : 1)
+                          .arg(image.isNull() ? 1 : 0);
         return false;
     }
     const QSize size(image.width, image.height);
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(image.rgbaPremultiplied.size());
     if (!ensureTextureSize(size)) {
+        if (m_lastError.isEmpty()) {
+            m_lastError = QStringLiteral("overlay_texture_size_failed size=%1x%2 bytes=%3")
+                              .arg(size.width())
+                              .arg(size.height())
+                              .arg(static_cast<qulonglong>(bytes));
+        }
         return false;
     }
 
     VkDeviceSize stagingOffset = 0;
     if (!writeStagingUpload(image.rgbaPremultiplied.constData(), bytes, &stagingOffset)) {
+        if (m_lastError.isEmpty()) {
+            m_lastError = QStringLiteral("overlay_staging_write_failed size=%1x%2 bytes=%3")
+                              .arg(size.width())
+                              .arg(size.height())
+                              .arg(static_cast<qulonglong>(bytes));
+        }
         return false;
     }
 

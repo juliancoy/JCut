@@ -64,6 +64,9 @@ void EditorWindow::bindInspectorWidgets()
     m_trackCrossfadeButton = m_inspectorPane->trackCrossfadeButton();
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
+    const auto previewGuideControls = m_inspectorPane->previewGuideControls();
+    m_previewInstagramSafeAreaGuidesCheckBox = previewGuideControls.instagramSafeAreaGuides;
+    m_previewAlignmentGridGuidesCheckBox = previewGuideControls.alignmentGridGuides;
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
     m_previewGpuCombo = m_inspectorPane->previewGpuCombo();
     m_speakerShowContiguousSectionsCheckBox =
@@ -223,6 +226,12 @@ void EditorWindow::bindInspectorWidgets()
     m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
+    const auto outputRenderControls = m_inspectorPane->outputRenderControls();
+    m_incrementalRenderCheckBox = outputRenderControls.incrementalRender;
+    m_instagramSafeAreaGuidesCheckBox = outputRenderControls.instagramSafeAreaGuides;
+    m_alignmentGridGuidesCheckBox = outputRenderControls.alignmentGridGuides;
+    m_renderCachePathLabel = outputRenderControls.renderCachePath;
+    m_clearRenderCacheButton = outputRenderControls.clearRenderCache;
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
     m_outputLeadPrefetchEnabledCheckBox = m_inspectorPane->outputLeadPrefetchEnabledCheckBox();
     m_outputLeadPrefetchCountSpin = m_inspectorPane->outputLeadPrefetchCountSpin();
@@ -762,6 +771,24 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
+    if (m_previewInstagramSafeAreaGuidesCheckBox) {
+        connect(m_previewInstagramSafeAreaGuidesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setInstagramSafeAreaGuidesVisible(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
+    if (m_previewAlignmentGridGuidesCheckBox) {
+        connect(m_previewAlignmentGridGuidesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setAlignmentGridGuidesVisible(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
     if (m_speakerShowContiguousSectionsCheckBox) {
         connect(m_speakerShowContiguousSectionsCheckBox, &QCheckBox::toggled, this, [this]() {
             scheduleSaveState();
@@ -1281,13 +1308,6 @@ void EditorWindow::setupPreviewControls()
     });
 
     if (m_preview) {
-        m_preview->setBackgroundFillEffect(BackgroundFillEffect::None);
-        m_preview->setBackgroundFillOpacity(1.0);
-        m_preview->setBackgroundFillBrightness(0.0);
-        m_preview->setBackgroundFillSaturation(1.0);
-        m_preview->setBackgroundFillEdgePixels(1);
-        m_preview->setBackgroundFillEdgeProgressive(false);
-        m_preview->setBackgroundFillEdgePower(2.0);
     }
 
     if (m_inspectorPane->restartDecodersButton()) {

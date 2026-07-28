@@ -180,14 +180,6 @@ struct PreviewInteractionState {
     qreal currentFramePosition = 0.0;
     QSize outputSize = QSize(1080, 1920);
     QColor backgroundColor = QColor(Qt::black);
-    BackgroundFillEffect backgroundFillEffect{};
-    qreal backgroundFillOpacity = 1.0;
-    qreal backgroundFillBrightness = 0.0;
-    qreal backgroundFillSaturation = 1.0;
-    int backgroundFillEdgePixels = 1;
-    bool backgroundFillEdgeProgressive = false;
-    qreal backgroundFillEdgePower = 2.0;
-    QString backgroundFillStretchSourceClipId;
     int clipCount = 0;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
@@ -208,6 +200,8 @@ struct PreviewInteractionState {
     bool hideOutsideOutputWindow = false;
     qreal previewZoom = 1.0;
     QPointF previewPanOffset;
+    bool instagramSafeAreaGuides = false;
+    bool alignmentGridGuides = false;
     bool correctionDrawMode = false;
     bool transcriptOverlayInteractionEnabled = false;
     bool titleOverlayInteractionOnly = false;

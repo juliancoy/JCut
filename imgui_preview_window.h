@@ -20,6 +20,33 @@ struct Detection;
 class ImGuiPreviewWindow final {
 public:
     struct Impl;
+    struct RenderMonitorStatus {
+        int64_t framesCompleted = 0;
+        int64_t totalFrames = 0;
+        int segmentIndex = 0;
+        int segmentCount = 0;
+        int64_t timelineFrame = 0;
+        int64_t segmentStartFrame = 0;
+        int64_t segmentEndFrame = 0;
+        int incrementalChunksCompleted = 0;
+        int incrementalChunksTotal = 0;
+        int64_t incrementalFramesReused = 0;
+        int64_t elapsedMs = 0;
+        int64_t estimatedRemainingMs = -1;
+        int64_t renderStageMs = 0;
+        int64_t decodeStageMs = 0;
+        int64_t textureStageMs = 0;
+        int64_t compositeStageMs = 0;
+        int64_t readbackStageMs = 0;
+        int64_t encodeStageMs = 0;
+        bool usingGpu = false;
+        bool usingHardwareEncode = false;
+        bool createVideoFromImageSequence = false;
+        std::string encoderLabel;
+        std::string exportPipeline;
+        std::string gpuTransferLabel;
+        std::string cachePath;
+    };
 
     ImGuiPreviewWindow();
     ~ImGuiPreviewWindow();
@@ -74,6 +101,9 @@ public:
                       std::span<const jcut::facedetections::Detection> detections,
                       const jcut::core::RectF& roiRect,
                       int detectionCount);
+    bool presentRenderMonitorFrame(const render_detail::OffscreenVulkanFrame& frame,
+                                   const RenderMonitorStatus& status);
+    bool renderMonitorCancelRequested() const;
 
 private:
     void shutdown();

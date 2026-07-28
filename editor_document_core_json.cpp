@@ -846,22 +846,10 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             valueOr(exportRequest, "createVideoFromImageSequence", false);
         document->exportRequest.disableParallelImageWrite =
             valueOr(exportRequest, "disableParallelImageWrite", false);
-        document->exportRequest.backgroundFillEffect =
-            stringOr(exportRequest, "backgroundFillEffect", "none");
-        document->exportRequest.backgroundFillOpacity =
-            valueOr(exportRequest, "backgroundFillOpacity", 1.0);
-        document->exportRequest.backgroundFillBrightness =
-            valueOr(exportRequest, "backgroundFillBrightness", 0.0);
-        document->exportRequest.backgroundFillSaturation =
-            valueOr(exportRequest, "backgroundFillSaturation", 1.0);
-        document->exportRequest.backgroundFillEdgePixels =
-            valueOr(exportRequest, "backgroundFillEdgePixels", 1);
-        document->exportRequest.backgroundFillEdgeProgressive =
-            valueOr(exportRequest, "backgroundFillEdgeProgressive", false);
-        document->exportRequest.backgroundFillEdgePower =
-            valueOr(exportRequest, "backgroundFillEdgePower", 2.0);
-        document->exportRequest.backgroundFillStretchSourceClipId =
-            stringOr(exportRequest, "backgroundFillStretchSourceClipId");
+        document->exportRequest.instagramSafeAreaGuides =
+            valueOr(exportRequest, "instagramSafeAreaGuides", false);
+        document->exportRequest.alignmentGridGuides =
+            valueOr(exportRequest, "alignmentGridGuides", false);
         document->exportRequest.transcriptPrependMs =
             valueOr(exportRequest, "transcriptPrependMs", 150);
         document->exportRequest.transcriptPostpendMs =
@@ -951,22 +939,10 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
         valueOr(root, "createImageSequence", false);
     document->exportRequest.imageSequenceFormat =
         stringOr(root, "imageSequenceFormat");
-    document->exportRequest.backgroundFillEffect =
-        stringOr(root, "backgroundFillEffect", "none");
-    document->exportRequest.backgroundFillOpacity =
-        valueOr(root, "backgroundFillOpacity", 1.0);
-    document->exportRequest.backgroundFillBrightness =
-        valueOr(root, "backgroundFillBrightness", 0.0);
-    document->exportRequest.backgroundFillSaturation =
-        valueOr(root, "backgroundFillSaturation", 1.0);
-    document->exportRequest.backgroundFillEdgePixels =
-        valueOr(root, "backgroundFillEdgePixels", 1);
-    document->exportRequest.backgroundFillEdgeProgressive =
-        valueOr(root, "backgroundFillEdgeProgressive", false);
-    document->exportRequest.backgroundFillEdgePower =
-        valueOr(root, "backgroundFillEdgePower", 2.0);
-    document->exportRequest.backgroundFillStretchSourceClipId =
-        stringOr(root, "backgroundFillStretchSourceClipId");
+    document->exportRequest.instagramSafeAreaGuides =
+        valueOr(root, "instagramSafeAreaGuides", false);
+    document->exportRequest.alignmentGridGuides =
+        valueOr(root, "alignmentGridGuides", false);
     document->exportRequest.transcriptPrependMs =
         valueOr(root, "transcriptPrependMs", 150);
     document->exportRequest.transcriptPostpendMs =
@@ -1856,17 +1832,10 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["imageSequenceFormat"] = document.exportRequest.imageSequenceFormat.empty()
         ? std::string("jpeg")
         : document.exportRequest.imageSequenceFormat;
+    root["instagramSafeAreaGuides"] = document.exportRequest.instagramSafeAreaGuides;
+    root["alignmentGridGuides"] = document.exportRequest.alignmentGridGuides;
     root["gradingPreview"] = !document.exportRequest.bypassGrading;
     root["correctionsEnabled"] = document.exportRequest.correctionsEnabled;
-    root["backgroundFillEffect"] = document.exportRequest.backgroundFillEffect;
-    root["backgroundFillOpacity"] = document.exportRequest.backgroundFillOpacity;
-    root["backgroundFillBrightness"] = document.exportRequest.backgroundFillBrightness;
-    root["backgroundFillSaturation"] = document.exportRequest.backgroundFillSaturation;
-    root["backgroundFillEdgePixels"] = document.exportRequest.backgroundFillEdgePixels;
-    root["backgroundFillEdgeProgressive"] = document.exportRequest.backgroundFillEdgeProgressive;
-    root["backgroundFillEdgePower"] = document.exportRequest.backgroundFillEdgePower;
-    root["backgroundFillStretchSourceClipId"] =
-        document.exportRequest.backgroundFillStretchSourceClipId;
     root["transcriptPrependMs"] = document.exportRequest.transcriptPrependMs;
     root["transcriptPostpendMs"] = document.exportRequest.transcriptPostpendMs;
     root["transcriptOffsetMs"] = document.exportRequest.transcriptOffsetMs;
@@ -2005,47 +1974,6 @@ std::optional<EditorDocumentCore> editorDocumentCoreFromJson(
     if (document.exportRequest.outputFps <= 0.0) {
         document.exportRequest.outputFps = 30.0;
     }
-    std::string normalizedFill = document.exportRequest.backgroundFillEffect;
-    std::transform(
-        normalizedFill.begin(), normalizedFill.end(), normalizedFill.begin(),
-        [](unsigned char value) {
-            return value == '-' ? '_' : static_cast<char>(std::tolower(value));
-        });
-    const bool progressiveLegacyFill =
-        document.exportRequest.backgroundFillEdgeProgressive ||
-        normalizedFill == "progressive_edge_stretch" ||
-        normalizedFill == "progressive_stretch" ||
-        normalizedFill == "edge_stretch_progressive";
-    const bool legacyEdgeFill =
-        progressiveLegacyFill || normalizedFill == "edge_stretch";
-    for (EditorClip& clip : document.clips) {
-        const bool visualMedia =
-            (clip.mediaKind == "image" || clip.mediaKind == "video") &&
-            clip.clipRole == "media" && clip.videoEnabled;
-        if (clip.effectPreset == "progressive_edge_stretch" && visualMedia) {
-            clip.edgeFillEffect = "progressive_edge_stretch";
-            clip.edgeFillPixels = std::clamp(clip.effectRows, 1, 512);
-            clip.edgeFillPower = std::clamp(clip.effectScale, 0.25, 8.0);
-            clip.effectPreset = "none";
-        }
-        if (legacyEdgeFill && visualMedia && clip.edgeFillEffect == "none") {
-            clip.edgeFillEffect = progressiveLegacyFill
-                ? "progressive_edge_stretch"
-                : "edge_stretch";
-            clip.edgeFillPixels = std::clamp(
-                document.exportRequest.backgroundFillEdgePixels, 1, 512);
-            clip.edgeFillPower = std::clamp(
-                document.exportRequest.backgroundFillEdgePower, 0.25, 8.0);
-            clip.edgeFillOpacity = std::clamp(
-                document.exportRequest.backgroundFillOpacity, 0.0, 1.0);
-            clip.edgeFillBrightness = std::clamp(
-                document.exportRequest.backgroundFillBrightness, -1.0, 1.0);
-            clip.edgeFillSaturation = std::clamp(
-                document.exportRequest.backgroundFillSaturation, 0.0, 3.0);
-        }
-    }
-    document.exportRequest.backgroundFillEffect = "none";
-    document.exportRequest.backgroundFillEdgeProgressive = false;
     document.exportRequest.clipCount = document.clips.size();
     document.exportRequest.trackCount = document.tracks.size();
     document.exportRequest.renderSyncMarkerCount = document.renderSyncMarkers.size();

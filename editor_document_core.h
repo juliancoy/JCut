@@ -80,7 +80,7 @@ inline EditorAudioTreatment editorAudioTreatmentFromId(
 
 // Canonical persisted IDs shared with the Qt preset serializer. Commands still
 // preserve unknown IDs so newer projects remain forward-compatible.
-inline constexpr std::array<std::string_view, 35> kEditorEffectPresetIds = {
+inline constexpr std::array<std::string_view, 34> kEditorEffectPresetIds = {
     "none",
     "mirror_ring",
     "kaleidoscope",
@@ -95,7 +95,6 @@ inline constexpr std::array<std::string_view, 35> kEditorEffectPresetIds = {
     "ripple_shockwave",
     "displacement_map",
     "glass_refraction",
-    "progressive_edge_stretch",
     "temporal_echo",
     "slit_scan",
     "freeze_pattern",
@@ -120,7 +119,6 @@ inline constexpr std::array<std::string_view, 35> kEditorEffectPresetIds = {
 
 inline constexpr int kEditorEffectMinRows = 1;
 inline constexpr int kEditorEffectDefaultMaxRows = 96;
-inline constexpr int kEditorEffectProgressiveEdgeMaxRows = 512;
 inline constexpr double kEditorEffectMinSpeed = -8.0;
 inline constexpr double kEditorEffectMaxSpeed = 8.0;
 inline constexpr double kEditorEffectMinScale = 0.1;
@@ -128,9 +126,8 @@ inline constexpr double kEditorEffectMaxScale = 8.0;
 
 inline constexpr int editorEffectMaxRowsForPreset(std::string_view presetId)
 {
-    return presetId == "progressive_edge_stretch"
-        ? kEditorEffectProgressiveEdgeMaxRows
-        : kEditorEffectDefaultMaxRows;
+    (void)presetId;
+    return kEditorEffectDefaultMaxRows;
 }
 
 inline bool mediaKindMayContainAudio(const std::string& mediaKind,

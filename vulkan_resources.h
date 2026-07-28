@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QSize>
+#include <QString>
 #include <QVector>
 
 #include <vulkan/vulkan.h>
@@ -35,7 +36,8 @@ public:
 
     bool initialize(VkPhysicalDevice physicalDevice,
                     VkDevice device,
-                    QVulkanDeviceFunctions* funcs);
+                    QVulkanDeviceFunctions* funcs,
+                    VkDescriptorSetLayout sharedDescriptorSetLayout = VK_NULL_HANDLE);
     void destroy();
 
     bool ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer);
@@ -73,6 +75,7 @@ public:
     VkImage sampledImage() const { return m_textureImage; }
     VkImageView sampledImageView() const { return m_textureView; }
     VkImageLayout sampledImageLayout() const { return m_textureLayout; }
+    QString lastError() const { return m_lastError; }
 
 private:
     bool createTextureResources();
@@ -126,6 +129,7 @@ private:
 
     VkSampler m_sampler = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
+    bool m_ownsDescriptorSetLayout = false;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, kDescriptorSetCount> m_descriptorSets{};
     size_t m_descriptorSetIndex = 0;
@@ -223,4 +227,5 @@ private:
         VkImageView view = VK_NULL_HANDLE;
     };
     QVector<RetiredImageResource> m_retiredImageResources;
+    QString m_lastError;
 };

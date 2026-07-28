@@ -139,6 +139,7 @@ public:
 
 signals:
     void transcriptDocumentChanged();
+    void activeTranscriptSnapshotChanged();
     void speechFilterParametersChanged();
 
 private slots:

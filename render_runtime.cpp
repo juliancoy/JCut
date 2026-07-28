@@ -122,16 +122,10 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.correctionsEnabled = request.correctionsEnabled;
     qtRequest.createVideoFromImageSequence = request.createVideoFromImageSequence;
     qtRequest.disableParallelImageWrite = request.disableParallelImageWrite;
-    qtRequest.backgroundFillEffect =
-        backgroundFillEffectFromString(QString::fromStdString(request.backgroundFillEffect));
-    qtRequest.backgroundFillOpacity = qBound(0.0, request.backgroundFillOpacity, 1.0);
-    qtRequest.backgroundFillBrightness = qBound(-1.0, request.backgroundFillBrightness, 1.0);
-    qtRequest.backgroundFillSaturation = qBound(0.0, request.backgroundFillSaturation, 3.0);
-    qtRequest.backgroundFillEdgePixels = qBound(1, request.backgroundFillEdgePixels, 512);
-    qtRequest.backgroundFillEdgeProgressive = request.backgroundFillEdgeProgressive;
-    qtRequest.backgroundFillEdgePower = qBound(0.25, request.backgroundFillEdgePower, 8.0);
-    qtRequest.backgroundFillStretchSourceClipId =
-        QString::fromStdString(request.backgroundFillStretchSourceClipId).trimmed();
+    qtRequest.incrementalExport = request.incrementalExport;
+    qtRequest.incrementalChunkFrames = request.incrementalChunkFrames;
+    qtRequest.instagramSafeAreaGuides = request.instagramSafeAreaGuides;
+    qtRequest.alignmentGridGuides = request.alignmentGridGuides;
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;
     qtRequest.transcriptPostpendMs = request.transcriptPostpendMs;
     qtRequest.transcriptOffsetMs = request.transcriptOffsetMs;

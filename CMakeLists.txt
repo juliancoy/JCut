@@ -1197,6 +1197,7 @@ add_executable(editor
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
 )
 target_link_libraries(editor PRIVATE "$<LINK_GROUP:RESCAN,editor_core>")
+target_link_libraries(editor PRIVATE jcut_imgui_preview_support)
 if(TARGET CPPMonetize::cppmonetize)
     target_link_libraries(editor PRIVATE CPPMonetize::cppmonetize)
 endif()

@@ -38,11 +38,13 @@ private slots:
   void strictDisplayabilityDoesNotAcceptCpuFallback();
   void directPreviewDisablesCpuAndQtTextOverlayFallbacks();
   void directPreviewDrawsAudioOnlyTranscriptOverlaysAfterVideoLoop();
+  void exportUsesSharedTranscriptSourceResolution();
   void visibleDecodePriorityUsesTimelineDomain();
   void schedulingDiagnosticsExposeRequiredFields();
   void streamTimingDiagnosticsExposeClockDomains();
   void streamTimingDiagnosticsUseEffectiveProxyState();
   void timelineUseProxyMenuControlsEffectiveProxyState();
+  void timelineContextMenuControlsClipRenderVisibility();
   void pipelineDiagnosticsDefaultToCompactSnapshot();
   void playbackTelemetryUsesCanonicalAtomicsWithoutUiInvocation();
   void transportControlDoesNotCollectUiProfiles();
@@ -76,6 +78,7 @@ private slots:
   void exportRunsOffGuiThreadWhileDedicatedSurfacePresents();
   void renderSynchronizationWaitsAreBoundedAndDiagnosable();
   void incrementalExportCheckpointsAndLosslesslyRemuxes();
+  void outputTabClearsOnlyResolvedIncrementalRenderCacheRoot();
   void exportCompositionNeverPublishesPartialLayers();
 };
 
@@ -462,11 +465,18 @@ void TestDirectVulkanHandoffPipelineContract::
                surface.contains(QStringLiteral(
                    "effectivePlaybackLookaheadFrames()")) &&
                surface.contains(QStringLiteral(
-                   "prefetchClipMaskBuffers(")),
+                   "prefetchRenderableClipMaskBuffersForClock(")) &&
+               effects.contains(QStringLiteral(
+                   "prefetchRenderableClipMaskBuffersForClock(")) &&
+               effects.contains(QStringLiteral(
+                   "prefetchClipMaskBuffers(clip, qMax<int64_t>(0, mapping.sourceFrame))")),
            "mask-sidecar decoding must follow the configured video playback "
-           "window instead of starting only after a frame is presented");
+           "window through the shared preview/export prefetch path instead of "
+           "starting only after a frame is presented");
   QVERIFY2(surface.contains(QStringLiteral(
-               "m_maskPrefetchWindowKeys.contains(requestKey)")),
+               "&m_maskPrefetchWindowKeys")) &&
+               effects.contains(QStringLiteral(
+                   "previousWindowKeys->contains(requestKey)")),
            "the sliding mask window must not repeat filesystem work for frames "
            "that remain inside the playback lookahead");
   QVERIFY2(
@@ -1032,9 +1042,9 @@ void TestDirectVulkanHandoffPipelineContract::
 
   const QString textRenderer = readSourceFile(QStringLiteral("vulkan_text_renderer.cpp"));
   QVERIFY2(textRenderer.contains(QStringLiteral(
-               "m_atlasResources->setSampledImage(")) &&
+               "entry.resources->setSampledImage(")) &&
                textRenderer.contains(QStringLiteral(
-                   "m_atlasResources->sampledImageView()")),
+                   "entry.resources->sampledImageView()")),
            "an unchanged glyph atlas must still be rebound to the acquired frame's descriptor set");
 
   const QString preview = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
@@ -1166,7 +1176,7 @@ void TestDirectVulkanHandoffPipelineContract::
       textRenderer.contains(
           QStringLiteral("1,\n                                     &dynamicUniformOffset")) &&
           textRenderer.contains(
-              QStringLiteral("m_atlasResources->frameUniformDynamicOffset()")),
+              QStringLiteral("atlasResources->frameUniformDynamicOffset()")),
       "Vulkan text descriptor binds must provide the dynamic uniform offset "
       "required by the shared descriptor layout");
   QVERIFY2(
@@ -1178,6 +1188,33 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(textRenderer.contains(QStringLiteral("cachedResolvedFontFace")),
            "Vulkan text rendering must cache fontconfig face resolution "
            "outside the steady-state frame path");
+  const QString textRendererHeader =
+      readSourceFile(QStringLiteral("vulkan_text_renderer.h"));
+  QVERIFY2(
+      textRendererHeader.contains(QStringLiteral("QHash<QString, TitleLayoutCacheEntry> m_titleLayoutCache")) &&
+          textRenderer.contains(QStringLiteral("stableTitle.x = 0.0")) &&
+          textRenderer.contains(QStringLiteral("stableTitle.y = 0.0")) &&
+          textRenderer.contains(QStringLiteral("stableTitle.opacity = 1.0")) &&
+          textRenderer.contains(QStringLiteral("const QPointF animationOffset(title.x, title.y)")) &&
+          textRenderer.contains(QStringLiteral("withTitleOpacity")),
+      "animated title overlays must cache stable glyph/pattern/mesh layout "
+      "across fly-in/fade frames and apply position/opacity at draw time");
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(
+      textRendererHeader.contains(QStringLiteral("transcriptOverlayAtlasNeedsUpload")) &&
+          textRendererHeader.contains(QStringLiteral("titleOverlayAtlasNeedsUpload")) &&
+          textRendererHeader.contains(QStringLiteral("std::vector<GpuAtlasCacheEntry> m_gpuAtlasCache")) &&
+          textRenderer.contains(QStringLiteral("m_atlasResources->descriptorSetLayout()")) &&
+          textRenderer.contains(QStringLiteral("!atlasIsResident")) &&
+          exportBackend.contains(QStringLiteral("const bool atlasUploadRequired")) &&
+          exportBackend.contains(QStringLiteral("textRendererDrawRecorded && atlasUploadRequired")) &&
+          !exportBackend.contains(QStringLiteral(
+              "if (textRendererDrawRecorded) {\n"
+              "          if (!finishTextDrawBeforeAtlasMutation())")),
+      "offscreen export must not submit-and-wait between text overlays that "
+      "reuse any resident atlas; only a missing atlas upload may force the "
+      "text draw fence");
   QVERIFY2(
       textRenderer.contains(
           QStringLiteral("if (m_speakerLayoutCache.valid && "
@@ -1325,6 +1362,44 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(presenter.contains(QStringLiteral("\"text_draw\"")) ||
                presenter.contains(QStringLiteral("text_draw")),
            "presenter diagnostics must expose the transcript text draw stage");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    exportUsesSharedTranscriptSourceResolution() {
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!exportBackend.isEmpty(),
+           "offscreen_vulkan_renderer_backend.cpp must be readable");
+  const qsizetype resolverIndex =
+      exportBackend.indexOf(QStringLiteral("QString renderTranscriptPath"));
+  QVERIFY2(resolverIndex >= 0,
+           "offscreen Vulkan export must keep one local transcript resolver "
+           "entry point for subtitle and speaker-label paths");
+  const qsizetype resolverEnd =
+      exportBackend.indexOf(QStringLiteral("VkRect2D scissorFromRect"),
+                            resolverIndex);
+  QVERIFY2(resolverEnd > resolverIndex,
+           "offscreen Vulkan transcript resolver body must be bounded");
+  const QString resolverBody =
+      exportBackend.mid(resolverIndex, resolverEnd - resolverIndex);
+  QVERIFY2(resolverBody.contains(
+               QStringLiteral("activeTranscriptPathForClip(clip)")),
+           "offscreen Vulkan export must resolve subtitle transcripts through "
+           "the same clip-source helper as direct preview, including "
+           "audio-backed transcript overlays");
+  QVERIFY2(!resolverBody.contains(
+               QStringLiteral("activeTranscriptPathForClipFile(clip.filePath)")),
+           "offscreen Vulkan export must not fall back through clip.filePath; "
+           "that loses external-audio transcript source identity");
+
+  const QString previewBackend =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_transcript.cpp"));
+  QVERIFY2(!previewBackend.isEmpty(),
+           "direct_vulkan_preview_transcript.cpp must be readable");
+  QVERIFY2(previewBackend.contains(
+               QStringLiteral("activeTranscriptPathForClip(effectiveClip)")),
+           "direct Vulkan preview must use the shared transcript source "
+           "resolver that export is required to match");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -2058,12 +2133,19 @@ void TestDirectVulkanHandoffPipelineContract::
            "latestPresentedFrameImageForClip must be isolated before live pipeline snapshots");
 
   const QString body = surface.mid(start, end - start);
-  QVERIFY2(body.contains(QStringLiteral("m_lastPresentedFrameByClip.value(clipId)")),
-           "grading and diagnostics must read the actual last presented clip frame");
+  QVERIFY2(body.contains(QStringLiteral(
+               "clipSelectionContext(&*clipIt, m_interaction.clips).owner()")) &&
+               body.contains(QStringLiteral(
+                   "m_lastPresentedFrameByClip.value(mediaOwnerClipId)")),
+           "grading must read the selected clip's media owner so generated children "
+           "reuse their parent's actual presented frame");
   QVERIFY2(body.contains(QStringLiteral("frame.hasCpuImage()")),
-           "latest presented image must only expose materialized CPU-backed frames");
+           "latest presented image must keep the direct path for CPU-backed still frames");
   QVERIFY2(body.contains(QStringLiteral("return frame.cpuImage()")),
            "latest presented image must return the presented CPU frame image");
+  QVERIFY2(body.contains(QStringLiteral("render_detail::frameHandleToCpuImage(frame)")),
+           "paused grading histogram must materialize the selected presented hardware "
+           "video frame instead of returning an empty image");
   QVERIFY2(!body.contains(QStringLiteral("Q_UNUSED(clipId)")),
            "latest presented image must not be an empty stub");
 }
@@ -2319,6 +2401,34 @@ void TestDirectVulkanHandoffPipelineContract::
                    QStringLiteral("m_renderUseProxiesCheckBox->setChecked(enabled)")),
            "editor wiring must map the timeline proxy menu to the shared "
            "preview/export proxy checkbox");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    timelineContextMenuControlsClipRenderVisibility() {
+  const QString menu =
+      readSourceFile(QStringLiteral("timeline_widget_context_menu.cpp"));
+  QVERIFY2(!menu.isEmpty(),
+           "timeline_widget_context_menu.cpp must be readable");
+  QVERIFY2(menu.contains(QStringLiteral("Render Visible")) &&
+               menu.contains(QStringLiteral("renderVisibleAction->setCheckable(true)")) &&
+               menu.contains(QStringLiteral("renderVisibleAction->setChecked(m_clips[clipIndex].videoEnabled)")) &&
+               menu.contains(QStringLiteral("clip.videoEnabled = renderVisibleAction->isChecked()")),
+           "the clip context menu must expose render visibility as the "
+           "existing persisted videoEnabled flag used by preview and export");
+  QVERIFY2(menu.contains(QStringLiteral("clipHasVisuals(m_clips[clipIndex])")) &&
+               menu.contains(QStringLiteral("!m_clips[clipIndex].locked")) &&
+               menu.contains(QStringLiteral("if (clipsChanged) clipsChanged();")) &&
+               menu.contains(QStringLiteral("update();")),
+           "render visibility changes must be limited to editable visual clips "
+           "and immediately publish through the normal timeline change path");
+  const QString media =
+      readSourceFile(QStringLiteral("editor_shared_media.cpp"));
+  const QString gpu =
+      readSourceFile(QStringLiteral("render_gpu.cpp"));
+  QVERIFY2(media.contains(QStringLiteral("return clipHasVisuals(clip) && clip.videoEnabled")) &&
+               gpu.contains(QStringLiteral("clipContributesVisualMedia(clip, clips, tracks")),
+           "preview/export must consume the same videoEnabled visibility "
+           "contract instead of a separate UI-only hidden flag");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3372,24 +3482,24 @@ void TestDirectVulkanHandoffPipelineContract::
       "direct preview must sample video from the visual speed-through frame "
       "while driving generated effect motion from the raw speech-filter clock");
   QVERIFY2(
-      surface.contains(QStringLiteral("const qreal transformFramePosition = m_interaction.currentFramePosition")) &&
+      surface.contains(QStringLiteral("const qreal transformFramePosition = frameClocks.visualTimelineFrame")) &&
           surface.contains(QStringLiteral("transformFramePosition,\n            m_interaction.renderSyncMarkers")) &&
           surface.contains(QStringLiteral("evaluateClipSpeakerFramingEnabledAtPosition(clip, transformFramePosition")) &&
           surface.contains(QStringLiteral("evaluateClipSpeakerFramingTargetAtPosition(clip, transformFramePosition")),
       "direct preview must evaluate zoom/transform and speaker framing from "
-      "the raw speech-filter clock so room framing remains stable across jumps");
+      "the same projected visual timeline frame used for video sampling");
   QVERIFY2(
       exportSource.contains(QStringLiteral("&frameExportFaceTransformDiagnostics")) &&
           exportSource.contains(QStringLiteral("timelineFramePosition);")) &&
           renderInternal.contains(QStringLiteral("generatedEffectClockTimelineFrame")) &&
           renderInternal.contains(QStringLiteral("frame speed-through can move video across")) &&
           offscreen.contains(QStringLiteral("generatedEffectClockTimelineFrame")) &&
-          offscreen.contains(QStringLiteral("const qreal transformClockTimelineFrame = generatedEffectClockTimelineFrame")) &&
+          offscreen.contains(QStringLiteral("const qreal transformClockTimelineFrame = timelineFrame")) &&
           offscreen.contains(QStringLiteral("transformClockTimelineFrame,\n            request.renderSyncMarkers")) &&
           offscreen.contains(QStringLiteral("clipEffectPlaybackFramePosition(foregroundEffectClip, request.clips, generatedEffectClockTimelineFrame")),
       "export must carry a separate effect timeline frame so moving patterns "
-      "and transforms do not freeze or jump when visual sampling traverses a "
-      "speech-filter gap");
+      "do not freeze or jump when visual sampling traverses a speech-filter "
+      "gap, while transforms stay on the projected visual timeline frame");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3422,10 +3532,29 @@ void TestDirectVulkanHandoffPipelineContract::
 
   const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
   QVERIFY2(!exportSource.isEmpty(), "render_export.cpp must be readable");
-  QVERIFY2(exportSource.contains(QStringLiteral("playbackVisualTimelineFramePosition(timelineFramePosition")) &&
-               exportSource.contains(QStringLiteral("visualTimelineFramePosition")),
+  const QString playbackTiming =
+      readSourceFile(QStringLiteral("playback_timing_context.h"));
+  QVERIFY2(!playbackTiming.isEmpty(), "playback_timing_context.h must be readable");
+  QVERIFY2(playbackTiming.contains(QStringLiteral("struct PlaybackTimelineFrameClocks")) &&
+               playbackTiming.contains(QStringLiteral("playbackTimelineFrameClocks(")) &&
+               exportSource.contains(QStringLiteral("playbackTimelineFrameClocks(timelineFramePosition")) &&
+               exportSource.contains(QStringLiteral("frameClocks.visualTimelineFrame")) &&
+               surface.contains(QStringLiteral("playbackTimelineFrameClocks(m_interaction.currentFramePosition")),
            "export must render the smooth speed-through visual timeline frame, "
-           "not only the unwarped speech-filter playhead frame");
+           "not only the unwarped speech-filter playhead frame; preview and "
+           "export must use the shared clock-domain helper");
+  const qsizetype renderCall =
+      exportSource.indexOf(QStringLiteral("activeRenderer->renderFrameToOutput(request,"));
+  const qsizetype visualFrameArgument =
+      exportSource.indexOf(QStringLiteral("frameClocks.visualTimelineFrame,"), renderCall);
+  const qsizetype rawTransportArgument =
+      exportSource.indexOf(QStringLiteral("frameClocks.transportTimelineFrame,"), visualFrameArgument);
+  QVERIFY2(renderCall >= 0 &&
+               visualFrameArgument > renderCall &&
+               rawTransportArgument > visualFrameArgument,
+           "export must pass the same visual timeline frame used by preview "
+           "into the compositor while keeping the raw transport frame only for "
+           "generated effect phase");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3519,8 +3648,10 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
   const QString presenter =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
-  const QString exportPresenter =
-      readSourceFile(QStringLiteral("export_vulkan_preview_widget.cpp"));
+  const QString imguiPresenter =
+      readSourceFile(QStringLiteral("imgui_preview_window.cpp"));
+  const QString imguiPresenterHeader =
+      readSourceFile(QStringLiteral("imgui_preview_window.h"));
   const QString exportLoop =
       readSourceFile(QStringLiteral("render_export.cpp"));
   const QString exportUi =
@@ -3534,17 +3665,17 @@ void TestDirectVulkanHandoffPipelineContract::
                frameContract.contains(QStringLiteral("consumptionState")),
            "the GPU preview frame contract must identify both synchronization "
            "directions, generation, and non-blocking host acknowledgment");
-  QVERIFY2(producer.contains(QStringLiteral("m_previewSlots.resize(2)")) &&
+  QVERIFY2(producer.contains(QStringLiteral("m_previewSlots.resize(3)")) &&
                producer.contains(QStringLiteral("slot.readySemaphore")) &&
                producer.contains(QStringLiteral("slot.consumedSemaphore")) &&
                producer.contains(QStringLiteral(
                    "VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO")) &&
                producer.contains(QStringLiteral("VK_QUEUE_FAMILY_EXTERNAL")) &&
                producer.contains(QStringLiteral(
-                   "both optional preview slots are busy")) &&
+                   "all optional preview slots are busy")) &&
                producer.contains(QStringLiteral(
                    "completedGeneration.load")),
-           "the export renderer must own exactly two externally synchronized "
+           "the export renderer must own exactly three externally synchronized "
            "GPU preview images and drop updates instead of waiting for a busy "
            "optional consumer");
   QVERIFY2(presenter.contains(QStringLiteral("m_gpuExportPreviewSlots")) &&
@@ -3614,6 +3745,20 @@ void TestDirectVulkanHandoffPipelineContract::
                    "m_clipHandoffResources.clear()")),
            "device-level Vulkan resources must be retired exactly at device "
            "teardown");
+  const qsizetype hideEventStart =
+      presenter.indexOf(QStringLiteral("void hideEvent(QHideEvent* event) override"));
+  const qsizetype wheelEventStart =
+      presenter.indexOf(QStringLiteral("void wheelEvent(QWheelEvent* event) override"),
+                        hideEventStart);
+  const QString hideEventBody =
+      hideEventStart >= 0 && wheelEventStart > hideEventStart
+          ? presenter.mid(hideEventStart, wheelEventStart - hideEventStart)
+          : QString();
+  QVERIFY2(hideEventBody.contains(QStringLiteral("m_swapchainDirty = true")) &&
+               !hideEventBody.contains(QStringLiteral("cleanupSwapchain()")),
+           "embedded Vulkan export preview windows must not destroy the "
+           "swapchain from Qt hide events; QWindowContainer can hide the "
+           "native surface while the platform window is already tearing down");
   const QString frameImportContract =
       readSourceFile(QStringLiteral("core/offscreen_vulkan_frame.h"));
   const QString importer =
@@ -3628,6 +3773,11 @@ void TestDirectVulkanHandoffPipelineContract::
            "opaque-FD preview imports must preserve the producer allocation "
            "size, memory type, and exact image usage contract");
   QVERIFY2(exportLoop.contains(QStringLiteral("publishGpuPreview")) &&
+               !exportLoop.contains(QStringLiteral(
+                   "kGpuExportPreviewTargetIntervalMs")) &&
+               !exportLoop.contains(QStringLiteral("gpuPreviewDue")) &&
+               !exportLoop.contains(QStringLiteral(
+                   "(renderedFramesScheduled % 30) == 0")) &&
                producer.contains(QStringLiteral(
                    "publishLastFrameForGpuPreview(gpuPreviewFrame")) &&
                exportLoop.contains(QStringLiteral(
@@ -3650,18 +3800,49 @@ void TestDirectVulkanHandoffPipelineContract::
                    "clock.timelineSample >= clipTimelineEndSamples(clip)")),
            "incremental export must retain one headless Vulkan compositor "
            "across chunks and only build text for active timeline clips");
-  QVERIFY2(exportUi.contains(QStringLiteral(
+  QVERIFY2(!exportUi.contains(QStringLiteral(
                "new ExportVulkanPreviewWidget")) &&
-               exportUi.contains(QStringLiteral(
+               !exportUi.contains(QStringLiteral(
                    "renderPreviewWidget->setGpuPreviewFrame")) &&
+               !exportUi.contains(QStringLiteral("previewWidget")),
+           "the Qt export dialog must not embed a second Qt Vulkan render "
+           "window; export monitoring belongs to the Dear ImGui Vulkan "
+           "surface");
+  QVERIFY2(exportUi.contains(QStringLiteral(
+               "std::make_unique<ImGuiPreviewWindow>")) &&
                exportUi.contains(QStringLiteral(
-                   "renderPreviewWidget->clearPreview")) &&
-               exportPresenter.contains(QStringLiteral(
-                   "DirectVulkanPreviewPresenter")) &&
-               exportPresenter.contains(QStringLiteral(
-                   "setGpuExportPreviewFrame(frame)")),
-           "the export dialog must own a dedicated Vulkan window while "
-           "reusing the production preview presenter and GPU-only frame import");
+                   "presentRenderMonitorFrame")) &&
+               exportUi.contains(QStringLiteral(
+                   "renderMonitorCancelRequested")) &&
+               exportUi.contains(QStringLiteral(
+                   "effectiveRequest.gpuExportPreviewEnabled = "
+                   "imguiRenderMonitor != nullptr")) &&
+               imguiPresenterHeader.contains(QStringLiteral(
+                   "RenderMonitorStatus")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "std::array<RenderMonitorSlot, 3>")) &&
+               !imguiPresenter.contains(QStringLiteral(
+                   "pumpEvents();\n    if (!isActive())")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "consumeRenderMonitorExportFrame")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "waitForReady.pWaitSemaphores = &slot.ready")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "signal.pSignalSemaphores = &slot.consumed")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "completedGeneration.store")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "importExternalFrame(frame")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "ImVec2(0.0f, 0.0f),\n                 ImVec2(1.0f, 1.0f)")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "JCut Render Monitor")),
+           "the export UI must provide an optional Dear ImGui Vulkan render "
+           "monitor that consumes the same synchronized GPU handoff frame "
+           "upright and remains a monitor/control surface, not a second "
+           "renderer");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3681,9 +3862,13 @@ void TestDirectVulkanHandoffPipelineContract::
            "renderTimelineFromOutputRequest must be readable");
   QVERIFY2(method.contains(QStringLiteral("QtConcurrent::run")) &&
                method.contains(QStringLiteral("QFutureWatcher<RenderResult>")) &&
+               source.contains(QStringLiteral("ScopedRenderWorkerThreadName")) &&
+               source.contains(QStringLiteral("\"jcut-render\"")) &&
+               source.contains(QStringLiteral("JCut Render Export")) &&
                method.contains(QStringLiteral("renderEventLoop.exec()")),
            "the export engine must run on a worker while the GUI event loop "
-           "continues driving the dedicated export Vulkan swapchain");
+           "continues driving render progress and the Dear ImGui monitor; "
+           "the worker must be named for profiler diagnostics");
   QVERIFY2(method.contains(QStringLiteral("Qt::BlockingQueuedConnection")) &&
                method.contains(QStringLiteral("progress.releaseGpuPreview")) &&
                method.contains(QStringLiteral(
@@ -3723,16 +3908,59 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
   const QString neutral =
       readSourceFile(QStringLiteral("vulkan_compositor_core.cpp"));
+  const QString renderInternal =
+      readSourceFile(QStringLiteral("render_internal.h"));
+  const QString renderStats =
+      readSourceFile(QStringLiteral("render_stats.cpp"));
+  const QString exportSource =
+      readSourceFile(QStringLiteral("render_export.cpp"));
 
   QVERIFY2(exportBackend.contains(QStringLiteral(
                "kExportGpuFenceTimeoutNs")) &&
                exportBackend.contains(QStringLiteral(
                    "[vulkan-sync-timeout] stage=export_frame_slot")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_layer_build__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_decode_wait__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_mask_resolve__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_text_inputs__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_guide_prepare__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "__render_frame_vulkan_composite_submit__")) &&
+               exportBackend.contains(QStringLiteral(
+                   "finishLastFrameToNv12*() waits only when the specific slot's output")) &&
+               exportBackend.contains(QStringLiteral(
+                   "if (!submitActiveSlot()) {\n      return false;\n    }\n    m_commandBufferOpenForConversion = false;\n    pendingSlots->push_back(m_activeSlotIndex);")) &&
+               !exportBackend.contains(QStringLiteral(
+                   "The color and NV12 attachments are shared across frame slots")) &&
                !exportBackend.contains(QStringLiteral(
                    "vkWaitForFences(m_device, 1, &slot.fence, VK_TRUE, "
                    "UINT64_MAX)")),
            "export frame ownership waits must be bounded and identify the "
-           "stalled slot and preview synchronization state");
+           "stalled slot and preview synchronization state; renderFrame must "
+           "publish substage timings, and NV12 conversion must submit "
+           "asynchronously and defer the slot wait until encoder consumption");
+  QVERIFY2(renderInternal.contains(QStringLiteral("qint64* layerPlanMs = nullptr")) &&
+               renderInternal.contains(QStringLiteral("qint64* textPrepMs = nullptr")) &&
+               renderInternal.contains(QStringLiteral("qint64* guideOverlayMs = nullptr")) &&
+               renderInternal.contains(QStringLiteral("qint64* gpuCompositeMs = nullptr")) &&
+               renderStats.contains(QStringLiteral("layer_plan_ms")) &&
+               renderStats.contains(QStringLiteral("text_prep_ms")) &&
+               renderStats.contains(QStringLiteral("guide_overlay_ms")) &&
+               renderStats.contains(QStringLiteral("gpu_composite_ms")) &&
+               exportSource.contains(QStringLiteral("&frameLayerPlanMs")) &&
+               exportSource.contains(QStringLiteral("&frameTextPrepMs")) &&
+               exportSource.contains(QStringLiteral("&frameGuideOverlayMs")) &&
+               exportSource.contains(QStringLiteral("&frameGpuCompositeMs")) &&
+               exportSource.contains(QStringLiteral("pending.frameLayerPlanMs")) &&
+               exportSource.contains(QStringLiteral("pending.frameGpuCompositeMs")),
+           "renderFrame substage timings must be exposed through the compositor "
+           "contract, collected by export, and published in worst-frame "
+           "diagnostics instead of remaining backend-only counters");
   QVERIFY2(preview.contains(QStringLiteral(
                "kPreviewGpuWaitTimeoutNs")) &&
                preview.contains(QStringLiteral(
@@ -3751,11 +3979,30 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     incrementalExportCheckpointsAndLosslesslyRemuxes() {
   const QString contract = readSourceFile(QStringLiteral("render.h"));
+  const QString coreContract =
+      readSourceFile(QStringLiteral("render_contract_types.h"));
   const QString implementation =
       readSourceFile(QStringLiteral("render_export.cpp"));
+  const QString backend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString outputTab = readSourceFile(QStringLiteral("output_tab.cpp"));
+  const QString inspector =
+      readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
+  const QString inspectorHeader =
+      readSourceFile(QStringLiteral("inspector_pane.h"));
+  const QString runtime = readSourceFile(QStringLiteral("render_runtime.cpp"));
+  const QString compat = readSourceFile(QStringLiteral("render_qt_compat.cpp"));
+  const QString preview =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString editor = readSourceFile(QStringLiteral("editor.cpp"));
+  const QString projectState =
+      readSourceFile(QStringLiteral("project_state.cpp"));
 
   QVERIFY2(contract.contains(QStringLiteral("bool incrementalExport = true")) &&
+               coreContract.contains(QStringLiteral("bool incrementalExport = true")) &&
                contract.contains(
+                   QStringLiteral("int incrementalChunkFrames = 900")) &&
+               coreContract.contains(
                    QStringLiteral("int incrementalChunkFrames = 900")) &&
                contract.contains(
                    QStringLiteral("incrementalFramesReused")) &&
@@ -3763,10 +4010,56 @@ void TestDirectVulkanHandoffPipelineContract::
                    QStringLiteral("incrementalCachePath")),
            "encoded exports must enable resumable checkpointing by default "
            "and expose reuse diagnostics");
+  QVERIFY2(inspector.contains(QStringLiteral("Incremental chunked render")) &&
+               inspector.contains(QStringLiteral("m_incrementalRenderCheckBox->setChecked(true)")) &&
+               outputTab.contains(QStringLiteral("request.incrementalExport")) &&
+               outputTab.contains(QStringLiteral("m_widgets.incrementalRenderCheckBox->isChecked()")) &&
+               runtime.contains(QStringLiteral("qtRequest.incrementalExport = request.incrementalExport")) &&
+               compat.contains(QStringLiteral("core.incrementalExport = request.incrementalExport")),
+           "the Output tab must expose an explicit chunk/no-chunk control and "
+           "carry it through the core and Qt render request contracts");
+  QVERIFY2(contract.contains(QStringLiteral("bool instagramSafeAreaGuides = false")) &&
+               contract.contains(QStringLiteral("bool alignmentGridGuides = false")) &&
+               coreContract.contains(QStringLiteral("bool instagramSafeAreaGuides = false")) &&
+               coreContract.contains(QStringLiteral("bool alignmentGridGuides = false")) &&
+               inspector.contains(QStringLiteral("Render Instagram 250px safe-area guides")) &&
+               inspector.contains(QStringLiteral("Render 3x3 alignment grid")) &&
+               inspector.contains(QStringLiteral("Show Instagram 250px safe-area guides")) &&
+               inspector.contains(QStringLiteral("Show 3x3 alignment grid")) &&
+               inspectorHeader.contains(QStringLiteral("PreviewGuideControls")) &&
+               inspectorHeader.contains(QStringLiteral("OutputRenderControls")) &&
+               !inspectorHeader.contains(QStringLiteral("previewInstagramSafeAreaGuidesCheckBox()")) &&
+               !inspectorHeader.contains(QStringLiteral("previewAlignmentGridGuidesCheckBox()")) &&
+               outputTab.contains(QStringLiteral("request.instagramSafeAreaGuides")) &&
+               outputTab.contains(QStringLiteral("request.alignmentGridGuides")) &&
+               !outputTab.contains(QStringLiteral("setInstagramSafeAreaGuidesVisible")) &&
+               !outputTab.contains(QStringLiteral("setAlignmentGridGuidesVisible")) &&
+               runtime.contains(QStringLiteral("qtRequest.instagramSafeAreaGuides = request.instagramSafeAreaGuides")) &&
+               runtime.contains(QStringLiteral("qtRequest.alignmentGridGuides = request.alignmentGridGuides")) &&
+               compat.contains(QStringLiteral("core.instagramSafeAreaGuides = request.instagramSafeAreaGuides")) &&
+               compat.contains(QStringLiteral("core.alignmentGridGuides = request.alignmentGridGuides")) &&
+               backend.contains(QStringLiteral("placementGuideOverlay(request.outputSize")) &&
+               backend.contains(QStringLiteral("if (request.instagramSafeAreaGuides || request.alignmentGridGuides)")) &&
+               preview.contains(QStringLiteral("drawOutputPlacementGuides")) &&
+               preview.contains(QStringLiteral("state->instagramSafeAreaGuides")) &&
+               preview.contains(QStringLiteral("state->alignmentGridGuides")) &&
+               editor.contains(QStringLiteral("setInstagramSafeAreaGuidesVisible(previewInstagramSafeAreaGuides)")) &&
+               editor.contains(QStringLiteral("setAlignmentGridGuidesVisible(previewAlignmentGridGuides)")) &&
+               projectState.contains(QStringLiteral("previewInstagramSafeAreaGuides")) &&
+               projectState.contains(QStringLiteral("previewAlignmentGridGuides")),
+           "Instagram safe-area and 3x3 alignment guides must be explicit "
+           "render-pipeline options: disabled defaults are passthrough, Output "
+           "controls carry them into export, Preview controls are independently "
+           "grouped, persisted, and drive only the Vulkan preview pass, and export "
+           "composites them as an output-space layer");
   QVERIFY2(implementation.contains(QStringLiteral(
                "incrementalRenderSignature")) &&
                implementation.contains(QStringLiteral(
-                   "kIncrementalRenderSchema = 3")) &&
+                   "kIncrementalRenderSchema = 4")) &&
+               implementation.contains(QStringLiteral(
+                   "\"checkpointMode\"")) &&
+               implementation.contains(QStringLiteral(
+                   "\"encoded-chunk\"")) &&
                implementation.contains(QStringLiteral(
                    "editor::clipToJson(clip)")) &&
                implementation.contains(QStringLiteral(
@@ -3776,6 +4069,13 @@ void TestDirectVulkanHandoffPipelineContract::
                    "QCryptographicHash::Sha256")),
            "chunk reuse must be keyed by a deterministic render/timeline/media "
            "signature");
+  QVERIFY2(implementation.contains(QStringLiteral(
+               "#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1")) ||
+               backend.contains(QStringLiteral(
+                   "#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1")),
+           "offscreen Vulkan/CUDA export teardown must follow the existing "
+           "driver-safe policy and must not block export completion in "
+           "cuDestroyExternalMemory");
   QVERIFY2(implementation.contains(QStringLiteral("QSaveFile")) &&
                implementation.contains(QStringLiteral("manifest.json")) &&
                implementation.contains(QStringLiteral(
@@ -3783,11 +4083,26 @@ void TestDirectVulkanHandoffPipelineContract::
                implementation.contains(QStringLiteral(
                    "reusableChunksFromManifest")) &&
                implementation.contains(QStringLiteral(
-                   "hasCompleteIncrementalImageChunk")) &&
+                   "hasCompleteIncrementalEncodedChunk")) &&
                implementation.contains(QStringLiteral(
-                   "saveImageAtomically")),
-           "an image-sequence chunk must become reusable only after every "
-           "frame and its manifest are atomically checkpointed");
+                   "encodedVideoFrameCount")) &&
+               implementation.contains(QStringLiteral(
+                   "incrementalChunkAttemptPath")) &&
+               implementation.contains(QStringLiteral(
+                   "publishIncrementalEncodedChunk")) &&
+               implementation.contains(QStringLiteral(
+                   "writeIncrementalChunkFailureDiagnostic")) &&
+               implementation.contains(QStringLiteral(
+                   "lastFailure")) &&
+               implementation.contains(QStringLiteral(
+                   "chunkRequest.outputPath = attemptPath")) &&
+               implementation.contains(QStringLiteral(
+                   "std::rename(attemptName.constData(), chunkName.constData())")),
+           "an encoded chunk must become reusable only after the chunk file "
+           "exists, has the expected video frame count, has been atomically "
+           "published from a temporary attempt path, and its manifest is "
+           "atomically checkpointed; failed attempts must leave diagnostics "
+           "without poisoning the reusable chunk filename");
   QVERIFY2(implementation.contains(QStringLiteral(
                "progress.elapsedMs = totalTimer.elapsed()")) &&
                implementation.contains(QStringLiteral(
@@ -3803,23 +4118,50 @@ void TestDirectVulkanHandoffPipelineContract::
                implementation.contains(QStringLiteral(
                    "chunkRequest.losslessIntermediateAudio = true")) &&
                implementation.contains(QStringLiteral(
-                   "chunkRequest.createVideoFromImageSequence = true")),
+                   "chunkRequest.createVideoFromImageSequence = false")) &&
+               implementation.contains(QStringLiteral(
+                   "chunkRequest.imageSequenceFormat.clear()")),
            "every chunk must reuse the canonical renderer with unchanged "
-           "export-range boundaries, lossless checkpoint audio, and an "
-           "intermediate image sequence");
+           "export-range boundaries, encoded GPU/NVENC video checkpoints, "
+           "lossless intermediate audio, and no CPU image sequence");
   QVERIFY2(implementation.contains(QStringLiteral(
                "QStringLiteral(\"concat\")")) &&
-               implementation.contains(QStringLiteral(
+               !implementation.contains(QStringLiteral(
                    "QStringLiteral(\"frames.txt\")")) &&
                implementation.contains(QStringLiteral(
                    "QStringLiteral(\"0:v:0\")")) &&
+               implementation.contains(QStringLiteral(
+                   "QStringLiteral(\"-c:v\"), QStringLiteral(\"copy\")")) &&
+               implementation.contains(QStringLiteral(
+                   "QStringLiteral(\"-c:a\")")) &&
                implementation.contains(QStringLiteral(
                    "QStringLiteral(\".assembling.\")")) &&
                implementation.contains(QStringLiteral(
                    "std::rename(assemblingName.constData(), "
                    "outputName.constData())")),
-           "final assembly must encode the definitive checkpoint images into "
-           "a temporary output before atomically publishing it");
+           "final assembly must stream-copy definitive encoded chunks into a "
+           "temporary output before atomically publishing it");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    outputTabClearsOnlyResolvedIncrementalRenderCacheRoot() {
+  const QString contract = readSourceFile(QStringLiteral("render.h"));
+  const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
+  const QString outputTab = readSourceFile(QStringLiteral("output_tab.cpp"));
+  const QString inspector = readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
+
+  QVERIFY2(contract.contains(QStringLiteral("incrementalRenderCacheRootForOutputPath")) &&
+               exportSource.contains(QStringLiteral("incrementalRenderCacheRootForOutputPath(request.outputPath)")),
+           "the Output tab and export must share the same incremental render cache root contract");
+  QVERIFY2(inspector.contains(QStringLiteral("Clear Render Cache")) &&
+               outputTab.contains(QStringLiteral("onClearRenderCacheClicked")) &&
+               outputTab.contains(QStringLiteral("isSafeRenderCacheRoot")) &&
+               outputTab.contains(QStringLiteral(".jcut-render-cache")) &&
+               outputTab.contains(QStringLiteral("removeRecursively")),
+           "the Output tab must expose guarded clearing of only the resolved .jcut-render-cache directory");
+  QVERIFY2(outputTab.contains(QStringLiteral("QMessageBox::question")) &&
+               outputTab.contains(QStringLiteral("m_widgets.clearRenderCacheButton->setEnabled(exists)")),
+           "cache clearing must require confirmation and stay disabled when no cache exists");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3827,17 +4169,83 @@ void TestDirectVulkanHandoffPipelineContract::
   const QString backend =
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
   const QString decode = readSourceFile(QStringLiteral("render_decode.cpp"));
+  const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
   const QString effects =
       readSourceFile(QStringLiteral("editor_shared_effects.cpp"));
+  const QString titleMesh =
+      readSourceFile(QStringLiteral("title_mesh_extrusion.cpp"));
+  const QString textRenderer =
+      readSourceFile(QStringLiteral("vulkan_text_renderer.cpp"));
+  const QString vulkanResources =
+      readSourceFile(QStringLiteral("vulkan_resources.cpp"));
 
   QVERIFY2(backend.contains(QStringLiteral(
-               "rawClipMaskImageBlocking(matteOwner, frame)")) &&
+               "rawClipMaskBuffer(matteOwner, frame)")) &&
+               exportSource.contains(QStringLiteral(
+                   "renderedFrame.failureReason.trimmed()")) &&
+               exportSource.contains(QStringLiteral(
+                   "Failed to render Vulkan timeline frame %1: %2")) &&
+               backend.contains(QStringLiteral(
+                   "activeTextFrameSlot")) &&
+               backend.contains(QStringLiteral(
+                   "m_transcriptTextRenderer->beginFrameUploads(activeTextFrameSlot")) &&
+               backend.contains(QStringLiteral(
+                   "m_speakerTextRenderer->beginFrameUploads(activeTextFrameSlot")) &&
+               textRenderer.contains(QStringLiteral(
+                   "resources->lastError().trimmed()")) &&
+               textRenderer.contains(QStringLiteral(
+                   "text_atlas_upload_failed: %1")) &&
+               vulkanResources.contains(QStringLiteral(
+                   "staging_upload_exceeds_slot")) &&
+               vulkanResources.contains(QStringLiteral(
+                   "overlay_staging_write_failed")) &&
+               backend.contains(QStringLiteral(
+                   "rawClipMaskBufferBlocking(matteOwner, frame)")) &&
+               backend.contains(QStringLiteral(
+                   "VK_FORMAT_R8_UNORM")) &&
+               backend.contains(QStringLiteral(
+                   "writeImageBufferToStagingTopLeft(maskUpload")) &&
+               decode.contains(QStringLiteral(
+                   "enqueueRenderMaskLookahead")) &&
+               decode.contains(QStringLiteral(
+                   "prewarmRenderMaskSegment")) &&
+               decode.contains(QStringLiteral(
+                   "prefetchRenderableClipMaskBuffersAtTimelinePosition")) &&
+               effects.contains(QStringLiteral(
+                   "visualClipActiveAtTimelineClock")) &&
+               effects.contains(QStringLiteral(
+                   "clipUsesRenderableSidecarMask")) &&
                effects.contains(QStringLiteral(
                    "cache.loadCompleted.wait(lock")) &&
                effects.contains(QStringLiteral(
-                   "storeRawMaskDecodeResult")),
-           "export masks must synchronously resolve their pixels instead of "
-           "racing the preview mask loader");
+                   "storeRawMaskDecodeResult")) &&
+               effects.contains(QStringLiteral(
+                   "2ull * 1024ull * 1024ull * 1024ull")),
+           "export masks must use the shared raw-mask cache with export "
+           "lookahead, block only on a missing definitive frame, and stage "
+           "cached Gray8 masks without expanding them to RGBA first");
+  QVERIFY2(backend.contains(QStringLiteral("QStringList subtitleFailures")) &&
+               backend.contains(QStringLiteral("&subtitleFailures")) &&
+               backend.contains(QStringLiteral(
+                   "Vulkan export refused to drop subtitle overlay(s)")) &&
+               backend.contains(QStringLiteral(
+                   "transcript text renderer is unavailable")) &&
+               backend.contains(QStringLiteral(
+                   "m_transcriptTextRenderer->lastFailureReason()")) &&
+               backend.contains(QStringLiteral(
+                   "const bool transcriptDrawn")) &&
+               backend.contains(QStringLiteral(
+                   "clip %1 has transcript overlay enabled but no active transcript path")) &&
+               backend.contains(QStringLiteral(
+                   "has no readable sections")) &&
+               !backend.contains(QStringLiteral(
+                   "prepareTranscriptOverlayAtlas(\n"
+                   "                m_commandBuffer, m_outputSize, text.clip, text.layout,\n"
+                   "                text.outputRect, text.speakerTitle)) {\n"
+                   "          continue;")),
+           "export subtitles must be definitive: an expected subtitle overlay "
+           "must be drawn or fail the frame with a diagnostic, never silently "
+           "continued past");
   QVERIFY2(backend.contains(QStringLiteral(
                "Vulkan export refused an incomplete composition")) &&
                backend.contains(QStringLiteral(
@@ -3854,6 +4262,25 @@ void TestDirectVulkanHandoffPipelineContract::
                    "return retryDecoder->decodeFrame(frameNumber)")),
            "a transient decoder failure must receive one clean reopen retry "
            "before the render is stopped");
+  QVERIFY2(backend.contains(QStringLiteral(
+               "const bool titleClip = clip.mediaType == ClipMediaType::Title")) &&
+               backend.contains(QStringLiteral(
+                   "const TimelineClip &activeRangeClip = titleClip ? clip : timingSource")) &&
+               backend.contains(QStringLiteral(
+                   "titleClip ? clip : clipWithResolvedTimingOwner")) &&
+               backend.contains(QStringLiteral(
+                   "if (titleClip)")),
+           "generated speaker-title clips must be evaluated against their own "
+           "timeline interval and effects, not the linked media source; "
+           "otherwise the first animated title can persist and later titles "
+           "can be skipped in export");
+  QVERIFY2(titleMesh.contains(QStringLiteral("cachedFontData")) &&
+               titleMesh.contains(QStringLiteral("FT_New_Memory_Face")) &&
+               titleMesh.contains(QStringLiteral("QHash<QString, QByteArray> cache")) &&
+               !titleMesh.contains(QStringLiteral("FT_New_Face(library, fontPath")),
+           "3D title mesh generation must cache resolved font bytes and build "
+           "FreeType memory faces instead of reopening the font file during "
+           "render-frame composition");
 }
 
 QTEST_MAIN(TestDirectVulkanHandoffPipelineContract)

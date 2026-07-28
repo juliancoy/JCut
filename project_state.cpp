@@ -784,6 +784,18 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
+    root[QStringLiteral("previewInstagramSafeAreaGuides")] =
+        m_previewInstagramSafeAreaGuidesCheckBox
+            ? m_previewInstagramSafeAreaGuidesCheckBox->isChecked()
+            : false;
+    root[QStringLiteral("previewAlignmentGridGuides")] =
+        m_previewAlignmentGridGuidesCheckBox
+            ? m_previewAlignmentGridGuidesCheckBox->isChecked()
+            : false;
+    root[QStringLiteral("instagramSafeAreaGuides")] =
+        m_instagramSafeAreaGuidesCheckBox ? m_instagramSafeAreaGuidesCheckBox->isChecked() : false;
+    root[QStringLiteral("alignmentGridGuides")] =
+        m_alignmentGridGuidesCheckBox ? m_alignmentGridGuidesCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
         m_speakerShowFaceDetectionsBoxesCheckBox ? m_speakerShowFaceDetectionsBoxesCheckBox->isChecked() : false;
     root[QStringLiteral("speakerShowContiguousTranscriptSections")] =
@@ -796,7 +808,7 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
     if (m_inspectorPane) {
         QJsonObject settings;
-        settings[QStringLiteral("version")] = 1;
+        settings[QStringLiteral("version")] = 2;
         auto combo = [](QComboBox* widget) { return widget ? widget->currentData().toInt() : 0; };
         auto decimal = [](QDoubleSpinBox* widget, double fallback) { return widget ? widget->value() : fallback; };
         auto integer = [](QSpinBox* widget, int fallback) { return widget ? widget->value() : fallback; };
@@ -807,6 +819,10 @@ QJsonObject EditorWindow::buildStateJson() const
             m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox()
                 ? m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox()->isChecked()
                 : false;
+        settings[QStringLiteral("respectSpeechFilterTiming")] =
+            m_inspectorPane->speakerOverlayRespectSpeechFilterTimingCheckBox()
+                ? m_inspectorPane->speakerOverlayRespectSpeechFilterTimingCheckBox()->isChecked()
+                : true;
         settings[QStringLiteral("cadenceSeconds")] =
             decimal(m_inspectorPane->speakerOverlayCadenceSpin(), 0.0);
         settings[QStringLiteral("flyTimeSeconds")] = decimal(m_inspectorPane->speakerOverlayFlyInTimeSpin(), 0.35);

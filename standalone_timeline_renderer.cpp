@@ -1647,33 +1647,22 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
     const double centerY = outputSize.height * 0.5;
     const double halfWidth = source.size.width * 0.5;
     const double halfHeight = source.size.height * 0.5;
-    const bool legacyProgressivePreset =
-        clip.effectPreset == "progressive_edge_stretch";
     const bool progressive =
-        legacyProgressivePreset ||
         clip.edgeFillEffect == "progressive_edge_stretch";
     const bool bidirectional =
-        !legacyProgressivePreset &&
         clip.edgeFillEffect == "progressive_bidirectional_edge_stretch";
-    const bool tile = !legacyProgressivePreset && clip.edgeFillEffect == "tile";
-    const bool mirror = !legacyProgressivePreset && clip.edgeFillEffect == "mirror";
+    const bool tile = clip.edgeFillEffect == "tile";
+    const bool mirror = clip.edgeFillEffect == "mirror";
     const double bandPixels = std::clamp(
-        static_cast<double>(legacyProgressivePreset
-                                ? clip.effectRows
-                                : clip.edgeFillPixels),
+        static_cast<double>(clip.edgeFillPixels),
         1.0, 512.0);
-    const double power = std::max(
-        0.25,
-        legacyProgressivePreset ? clip.effectScale : clip.edgeFillPower);
-    const double fillOpacity = legacyProgressivePreset
-        ? 1.0
-        : std::clamp(clip.edgeFillOpacity, 0.0, 1.0);
-    const double fillBrightness = legacyProgressivePreset
-        ? 0.0
-        : std::clamp(clip.edgeFillBrightness, -1.0, 1.0);
-    const double fillSaturation = legacyProgressivePreset
-        ? 1.0
-        : std::clamp(clip.edgeFillSaturation, 0.0, 3.0);
+    const double power = std::max(0.25, clip.edgeFillPower);
+    const double fillOpacity =
+        std::clamp(clip.edgeFillOpacity, 0.0, 1.0);
+    const double fillBrightness =
+        std::clamp(clip.edgeFillBrightness, -1.0, 1.0);
+    const double fillSaturation =
+        std::clamp(clip.edgeFillSaturation, 0.0, 3.0);
     if (bidirectional) {
         blitImage(source, &result,
                   static_cast<int>(std::lround(left)),
@@ -1715,6 +1704,7 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
             double bidirectionalPolarX = 0.0;
             double bidirectionalPolarY = 0.0;
             double bidirectionalSampleRadius = 0.0;
+            double bidirectionalAngularStep = 0.0;
             if (tile || mirror) {
                 const auto wrap = [](double value) {
                     return value - std::floor(value);
@@ -1739,16 +1729,29 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
                 const double boundaryPixelRadius = std::hypot(
                     directionX * halfWidth,
                     directionY * halfHeight);
-                const double coreRadius = std::clamp(
-                    1.0 - bandPixels / std::max(1.0, boundaryPixelRadius),
-                    0.05,
-                    0.995);
-                if (radialScale <= coreRadius) {
-                    continue;
-                }
                 const double canvasRadius = std::max(
                     radialScale,
                     radialScale * canvasScale);
+                const double automaticBandFraction = std::clamp(
+                    (canvasRadius - 1.0) / 24.0,
+                    0.0,
+                    0.2);
+                const double effectiveBandPixels = std::max(
+                    bandPixels,
+                    boundaryPixelRadius * automaticBandFraction);
+                const double coreRadius = std::clamp(
+                    1.0 - effectiveBandPixels /
+                        std::max(1.0, boundaryPixelRadius),
+                    0.05,
+                    0.995);
+                bidirectionalAngularStep = std::clamp(
+                    std::max(1.0, effectiveBandPixels * 0.25) /
+                        std::max(1.0, boundaryPixelRadius),
+                    0.001,
+                    0.12);
+                if (radialScale <= coreRadius) {
+                    continue;
+                }
                 const double stretch = std::clamp(
                     (radialScale - coreRadius) /
                         std::max(0.0001, canvasRadius - coreRadius),
@@ -1781,13 +1784,7 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
                 source,
                 (sourceX + 0.5) / source.size.width,
                 (sourceY + 0.5) / source.size.height);
-            const double minClipPixels =
-                std::min(source.size.width, source.size.height);
-            if (bidirectional && minClipPixels < 128.0) {
-                const double angularStep = std::clamp(
-                    2.0 / std::max(1.0, minClipPixels),
-                    0.0,
-                    0.18);
+            if (bidirectional && bidirectionalSampleRadius > 0.0) {
                 const auto sampleRing = [&](double angle) {
                     const double cosine = std::cos(angle);
                     const double sine = std::sin(angle);
@@ -1804,15 +1801,37 @@ ImageBuffer renderEdgeStretchEffect(const ImageBuffer& source,
                         0.5 + (polarX / norm) * bidirectionalSampleRadius * 0.5,
                         0.5 + (polarY / norm) * bidirectionalSampleRadius * 0.5);
                 };
-                const auto positive = sampleRing(angularStep);
-                const auto negative = sampleRing(-angularStep);
-                const auto positiveWide = sampleRing(2.0 * angularStep);
-                const auto negativeWide = sampleRing(-2.0 * angularStep);
-                for (int channel = 0; channel < 4; ++channel) {
-                    color[channel] =
-                        color[channel] * 0.4 +
-                        (positive[channel] + negative[channel]) * 0.2 +
-                        (positiveWide[channel] + negativeWide[channel]) * 0.1;
+                const std::array<std::array<double, 4>, 5> samples{
+                    color,
+                    sampleRing(bidirectionalAngularStep),
+                    sampleRing(-bidirectionalAngularStep),
+                    sampleRing(2.0 * bidirectionalAngularStep),
+                    sampleRing(-2.0 * bidirectionalAngularStep)};
+                constexpr std::array<double, 5> weights{
+                    0.4, 0.2, 0.2, 0.1, 0.1};
+                color.fill(0.0);
+                for (std::size_t sampleIndex = 0;
+                     sampleIndex < samples.size();
+                     ++sampleIndex) {
+                    double sampleAlpha = samples[sampleIndex][3];
+                    if (sampleAlpha <= 0.0001 &&
+                        std::max({samples[sampleIndex][0],
+                                  samples[sampleIndex][1],
+                                  samples[sampleIndex][2]}) > 0.0001) {
+                        sampleAlpha = 1.0;
+                    }
+                    color[3] += sampleAlpha * weights[sampleIndex];
+                    for (int channel = 0; channel < 3; ++channel) {
+                        color[channel] +=
+                            samples[sampleIndex][channel] *
+                            sampleAlpha *
+                            weights[sampleIndex];
+                    }
+                }
+                if (color[3] > 0.0001) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        color[channel] /= color[3];
+                    }
                 }
             }
             const double luma =
@@ -2084,6 +2103,8 @@ ImageBuffer renderStandalonePixelEffect(const ImageBuffer& source,
     if (input.empty()) return output;
     constexpr double kTwoPi = 6.28318530718;
     const double strength = std::clamp(clip.effectScale, 0.1, 8.0);
+    const double count = std::clamp(static_cast<double>(clip.effectRows), 1.0, 96.0);
+    const double geometry = std::clamp(clip.tilingSpacing, 0.1, 8.0);
     const double radius = std::clamp(static_cast<double>(clip.effectRows), 1.0, 4.0);
     const double effectFrame = localFrame * std::clamp(clip.effectSpeed, -8.0, 8.0);
     for (int y = 0; y < outputSize.height; ++y) {
@@ -2097,16 +2118,21 @@ ImageBuffer renderStandalonePixelEffect(const ImageBuffer& source,
             const double distance = std::hypot(px, py);
             const double angle = std::atan2(py, px);
             if (clip.effectPreset == "mirror_ring") {
-                constexpr double sectors = 12.0;
+                const double sectors = std::clamp(std::round(count), 2.0, 96.0);
                 const double wedge = kTwoPi / sectors;
                 const double folded = std::abs(
-                    std::fmod(angle + wedge * 0.5 + kTwoPi * 8.0, wedge) - wedge * 0.5);
-                const double radial = mirroredCoordinate(distance * 2.0) * 0.5;
+                    fractValue((angle + effectFrame * 0.01 + wedge * 0.5) /
+                               wedge) *
+                        wedge -
+                    wedge * 0.5);
+                const double radial =
+                    mirroredCoordinate(distance * 2.0 * geometry / strength) * 0.5;
                 sampleU = 0.5 + std::cos(folded) * radial;
                 sampleV = 0.5 + std::sin(folded) * radial;
             } else if (clip.effectPreset == "tessellation") {
-                const double tileX = u * 6.0;
-                const double tileY = v * 6.0;
+                const double tileScale = count / strength;
+                const double tileX = u * tileScale;
+                const double tileY = v * tileScale;
                 const double cellX = std::floor(tileX);
                 const double cellY = std::floor(tileY);
                 double localX = fractValue(tileX);
@@ -2117,26 +2143,43 @@ ImageBuffer renderStandalonePixelEffect(const ImageBuffer& source,
                     localX = 1.0 - localY;
                     localY = 1.0 - oldX;
                 }
-                sampleU = localX + 0.5 * localY;
-                sampleV = 0.86602540378 * localY;
+                sampleU = localX + 0.5 * localY * geometry;
+                sampleV = 0.86602540378 * localY / geometry;
             } else if (clip.effectPreset == "kaleidoscope") {
-                const double wedge = kTwoPi / 16.0;
+                const double sectors = std::clamp(std::round(count), 2.0, 96.0);
+                const double wedge = kTwoPi / sectors;
                 const double folded = std::abs(
-                    std::fmod(angle + wedge * 0.5 + kTwoPi * 8.0, wedge) - wedge * 0.5);
-                sampleU = 0.5 + std::cos(folded) * distance;
-                sampleV = 0.5 + std::sin(folded) * distance;
+                    fractValue((angle + effectFrame * 0.01 + wedge * 0.5) /
+                               wedge) *
+                        wedge -
+                    wedge * 0.5);
+                const double radial = distance * geometry / strength;
+                sampleU = 0.5 + std::cos(folded) * radial;
+                sampleV = 0.5 + std::sin(folded) * radial;
             } else if (clip.effectPreset == "hexagonal_prism") {
-                const double gridX = u * 5.0 - v * 2.5;
-                const double gridY = v * 5.0 * 0.8660254;
+                const double phase = effectFrame * 0.01;
+                const double rotatedX =
+                    std::cos(phase) * px - std::sin(phase) * py;
+                const double rotatedY =
+                    std::sin(phase) * px + std::cos(phase) * py;
+                const double gridU = rotatedX * (count / strength) + 0.5;
+                const double gridV = rotatedY * (count / strength) + 0.5;
+                const double gridX = gridU - gridV * 0.5;
+                const double gridY = gridV * 0.8660254;
                 const double hx = std::abs(fractValue(gridX) - 0.5);
                 const double hy = std::abs(fractValue(gridY) - 0.5);
-                sampleU = 0.5 + (hx + hy * 0.5) * 0.85;
-                sampleV = 0.5 + hy * 0.85;
+                sampleU = 0.5 + (hx + hy * 0.5 * geometry) * 0.85;
+                sampleV = 0.5 + hy / geometry * 0.85;
             } else if (clip.effectPreset == "droste") {
                 const double r = std::max(distance, 0.0001);
-                const double a = angle + std::log(r) * 0.7;
-                const double rr = std::exp(fractValue(std::log(r) / std::log(2.0)) *
-                                           std::log(2.0)) * 0.24;
+                const double recursionBase =
+                    std::clamp(1.15 + count * 0.035, 1.2, 4.5);
+                const double a =
+                    angle + std::log(r) * geometry + effectFrame * 0.01;
+                const double rr =
+                    std::exp(fractValue(std::log(r) / std::log(recursionBase)) *
+                             std::log(recursionBase)) *
+                    (0.24 * strength);
                 sampleU = 0.5 + std::cos(a) * rr;
                 sampleV = 0.5 + std::sin(a) * rr;
             } else if (clip.effectPreset == "polar_tunnel") {
@@ -2146,14 +2189,35 @@ ImageBuffer renderStandalonePixelEffect(const ImageBuffer& source,
                 sampleU = fractValue(angle / kTwoPi + 0.5);
                 sampleV = std::clamp(1.15 - distance * 1.75, 0.0, 1.0);
             } else if (clip.effectPreset == "infinite_mirror") {
-                const double band = fractValue(-std::log2(
-                    std::max(std::max(std::abs(px), std::abs(py)), 0.001)));
-                const double length = std::hypot(px + 0.0001, py + 0.0001);
-                sampleU = 0.5 + (px + 0.0001) / length * band * 0.48;
-                sampleV = 0.5 + (py + 0.0001) / length * band * 0.48;
+                const double phase = effectFrame * 0.01;
+                const double rotatedX =
+                    std::cos(phase) * px - std::sin(phase) * py;
+                const double rotatedY =
+                    std::sin(phase) * px + std::cos(phase) * py;
+                const double recursionBase =
+                    std::clamp(1.15 + count * 0.035, 1.2, 4.5);
+                const double band = fractValue(
+                    -std::log(std::max(std::max(std::abs(rotatedX),
+                                                std::abs(rotatedY)),
+                                       0.001)) /
+                    std::log(recursionBase) * geometry);
+                const double length =
+                    std::hypot(rotatedX + 0.0001, rotatedY + 0.0001);
+                const double extent = std::clamp(0.48 * strength, 0.05, 1.5);
+                sampleU = 0.5 + (rotatedX + 0.0001) / length * band * extent;
+                sampleV = 0.5 + (rotatedY + 0.0001) / length * band * extent;
             } else if (clip.effectPreset == "quad_mirror") {
-                sampleU = 0.5 + std::abs(px);
-                sampleV = 0.5 + std::abs(py);
+                const double phase = effectFrame * 0.01;
+                const double rotatedX =
+                    (std::cos(phase) * px - std::sin(phase) * py) *
+                    (count / strength);
+                const double rotatedY =
+                    (std::sin(phase) * px + std::cos(phase) * py) *
+                    (count / strength);
+                sampleU = 0.5 +
+                    std::abs(mirroredCoordinate(rotatedX) - 0.5) * geometry;
+                sampleV = 0.5 +
+                    std::abs(mirroredCoordinate(rotatedY) - 0.5) * geometry;
             } else if (clip.effectPreset == "slit_scan") {
                 const double band = std::floor(v * 96.0);
                 sampleU = mirroredCoordinate(u + std::sin(band * 0.37) * 0.22);
@@ -4005,8 +4069,7 @@ public:
                     decoded, clip, effectFrame, request.outputSize);
             }
             if (clip.mediaKind != "title" &&
-                (clip.edgeFillEffect != "none" ||
-                 clip.effectPreset == "progressive_edge_stretch")) {
+                clip.edgeFillEffect != "none") {
                 decoded = renderEdgeStretchEffect(
                     decoded, clip, request.outputSize);
             }

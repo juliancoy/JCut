@@ -6,8 +6,10 @@
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
 #include "editor_shared_render_sync.h"
+#include "editor_shared_timing.h"
 #include "editor_shared_transcript.h"
 #include "mask_sidecar.h"
+#include "media_pipeline_shared.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QCache>
@@ -228,7 +230,7 @@ QMutex& preparedMaskCacheMutex()
 }
 
 struct RawMaskCacheCore {
-    static constexpr std::size_t kMaximumBytes = 256ull * 1024ull * 1024ull;
+    static constexpr std::size_t kMaximumBytes = 2ull * 1024ull * 1024ull * 1024ull;
 
     std::mutex mutex;
     std::condition_variable loadCompleted;
@@ -1031,6 +1033,15 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
         maskFramePathForPresentedFrame(clip, presentedFrame));
 }
 
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferBlocking(
+    const TimelineClip& clip,
+    const editor::FrameHandle& presentedFrame)
+{
+    return rawClipMaskBufferForPath(
+        maskFramePathForPresentedFrame(clip, presentedFrame),
+        true);
+}
+
 void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame)
 {
     if (clip.maskFramesDir.trimmed().isEmpty()) {
@@ -1044,6 +1055,122 @@ void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame)
     for (const auto& path : paths) {
         rawClipMaskBufferForPath(QString::fromStdString(path.string()));
     }
+}
+
+void prefetchClipMaskBuffers(const TimelineClip& clip,
+                             const editor::FrameHandle& presentedFrame)
+{
+    rawClipMaskBufferForPath(maskFramePathForPresentedFrame(clip, presentedFrame));
+}
+
+bool clipUsesRenderableSidecarMask(const TimelineClip& clip)
+{
+    if (!clip.maskEnabled || clip.maskFramesDir.trimmed().isEmpty()) {
+        return false;
+    }
+    return clip.clipRole == ClipRole::MaskMatte ||
+           clip.maskShowOnly ||
+           clip.maskForegroundLayerEnabled ||
+           clip.maskRepeatEnabled;
+}
+
+bool visualClipActiveAtTimelineClock(const TimelineClip& clip,
+                                     const QVector<TimelineTrack>& tracks,
+                                     const RenderFrameClock& clock,
+                                     bool bypassGrading)
+{
+    const int64_t clipStartSample = clipTimelineStartSamples(clip);
+    const int64_t clipEndSample = clipTimelineEndSamples(clip);
+    return clipVisualPlaybackEnabled(clip, tracks) &&
+           clock.timelineSample >= clipStartSample &&
+           clock.timelineSample < clipEndSample &&
+           editor::clipIsActiveAtTimelineFrame(
+               clip, tracks, clock.timelineFramePosition, bypassGrading);
+}
+
+int prefetchRenderableClipMaskBuffersForClock(
+    const QVector<TimelineClip>& clips,
+    const QVector<TimelineTrack>& tracks,
+    const QVector<RenderSyncMarker>& renderSyncMarkers,
+    const RenderFrameClock& clock,
+    QSet<QString>* nextWindowKeys,
+    const QSet<QString>* previousWindowKeys,
+    bool bypassGrading)
+{
+    int submitted = 0;
+    for (const TimelineClip& clip : clips) {
+        if (!clipUsesRenderableSidecarMask(clip) ||
+            !clipVisualPlaybackEnabled(clip, tracks)) {
+            continue;
+        }
+
+        const TimelineClip* mediaOwner = &clip;
+        if (clip.clipRole == ClipRole::MaskMatte) {
+            mediaOwner = clipParent(clip, clips);
+            if (!mediaOwner ||
+                mediaOwner->clipRole != ClipRole::Media ||
+                mediaOwner->mediaType != ClipMediaType::Video ||
+                mediaOwner->filePath.trimmed().isEmpty()) {
+                continue;
+            }
+            const TimelineClip& timingSource =
+                resolvedClipTimingSource(clip, clips);
+            if (clock.timelineFramePosition < timingSource.startFrame ||
+                clock.timelineFramePosition >=
+                    timingSource.startFrame + timingSource.durationFrames) {
+                continue;
+            }
+        } else if (!visualClipActiveAtTimelineClock(
+                       clip, tracks, clock, bypassGrading)) {
+            continue;
+        }
+
+        const ClipFrameMapping mapping =
+            mediaOwner->mediaType == ClipMediaType::Image
+                ? ClipFrameMapping{clock, 0, 0.0, 0, 0}
+                : clipFrameMappingForClock(
+                      *mediaOwner, clips, clock, renderSyncMarkers);
+        if (mapping.sourceFrame < 0) {
+            continue;
+        }
+
+        const QString requestKey =
+            QStringLiteral("%1\x1f%2\x1f%3")
+                .arg(clip.id, clip.maskFramesDir)
+                .arg(mapping.sourceFrame);
+        if (nextWindowKeys) {
+            if (nextWindowKeys->contains(requestKey)) {
+                continue;
+            }
+            nextWindowKeys->insert(requestKey);
+        }
+        if (previousWindowKeys && previousWindowKeys->contains(requestKey)) {
+            continue;
+        }
+
+        prefetchClipMaskBuffers(clip, qMax<int64_t>(0, mapping.sourceFrame));
+        ++submitted;
+    }
+    return submitted;
+}
+
+int prefetchRenderableClipMaskBuffersAtTimelinePosition(
+    const QVector<TimelineClip>& clips,
+    const QVector<TimelineTrack>& tracks,
+    const QVector<RenderSyncMarker>& renderSyncMarkers,
+    qreal timelineFramePosition,
+    QSet<QString>* nextWindowKeys,
+    const QSet<QString>* previousWindowKeys,
+    bool bypassGrading)
+{
+    return prefetchRenderableClipMaskBuffersForClock(
+        clips,
+        tracks,
+        renderSyncMarkers,
+        renderFrameClockForTimelinePosition(timelineFramePosition),
+        nextWindowKeys,
+        previousWindowKeys,
+        bypassGrading);
 }
 
 QImage rawClipMaskImage(const TimelineClip& clip, int64_t sourceFrame)
@@ -1062,10 +1189,7 @@ QImage rawClipMaskImageBlocking(
     const TimelineClip& clip,
     const editor::FrameHandle& presentedFrame)
 {
-    return qtImageFromCoreBuffer(
-        rawClipMaskBufferForPath(
-            maskFramePathForPresentedFrame(clip, presentedFrame),
-            true));
+    return qtImageFromCoreBuffer(rawClipMaskBufferBlocking(clip, presentedFrame));
 }
 
 QImage applyCorrectionPolygonsToMaskImage(

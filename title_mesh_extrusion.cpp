@@ -1,6 +1,9 @@
 #include "title_mesh_extrusion.h"
 
+#include <QFile>
 #include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
 
 #include <algorithm>
 #include <array>
@@ -163,9 +166,22 @@ void addQuad(QVector<TitleMeshVertex>* vertices,
 
 QString resolveFont(const QString& family, bool bold)
 {
+    static QMutex mutex;
+    static QHash<QString, QString> cache;
+    const QString normalizedFamily =
+        family.trimmed().isEmpty() ? QStringLiteral("DejaVu Sans") : family.trimmed();
+    const QString key = normalizedFamily + QLatin1Char('|') +
+        (bold ? QLatin1String("bold") : QLatin1String("regular"));
+    {
+        QMutexLocker locker(&mutex);
+        const auto it = cache.constFind(key);
+        if (it != cache.constEnd()) {
+            return it.value();
+        }
+    }
     FcPattern* pattern = FcPatternCreate();
     if (!pattern) return {};
-    const QByteArray name = (family.trimmed().isEmpty() ? QStringLiteral("DejaVu Sans") : family).toUtf8();
+    const QByteArray name = normalizedFamily.toUtf8();
     FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(name.constData()));
     FcPatternAddInteger(pattern, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
     FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
@@ -178,7 +194,36 @@ QString resolveFont(const QString& family, bool bold)
     const QString path = FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch
         ? QString::fromUtf8(reinterpret_cast<const char*>(file)) : QString();
     FcPatternDestroy(match);
+    {
+        QMutexLocker locker(&mutex);
+        cache.insert(key, path);
+    }
     return path;
+}
+
+QByteArray cachedFontData(const QString& path)
+{
+    static QMutex mutex;
+    static QHash<QString, QByteArray> cache;
+    {
+        QMutexLocker locker(&mutex);
+        const auto it = cache.constFind(path);
+        if (it != cache.constEnd()) {
+            return it.value();
+        }
+    }
+    QFile file(path);
+    const QByteArray loaded =
+        file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+    {
+        QMutexLocker locker(&mutex);
+        const auto existing = cache.constFind(path);
+        if (existing != cache.constEnd()) {
+            return existing.value();
+        }
+        cache.insert(path, loaded);
+    }
+    return loaded;
 }
 
 } // namespace
@@ -191,8 +236,14 @@ QVector<TitleMeshVertex> buildExtrudedTitleMesh(const QString& text,
     FT_Library library = nullptr;
     FT_Face face = nullptr;
     const QString fontPath = resolveFont(options.fontFamily, options.bold);
-    if (text.trimmed().isEmpty() || fontPath.isEmpty() || FT_Init_FreeType(&library) != 0 ||
-        FT_New_Face(library, fontPath.toUtf8().constData(), 0, &face) != 0) {
+    const QByteArray fontData = cachedFontData(fontPath);
+    if (text.trimmed().isEmpty() || fontPath.isEmpty() || fontData.isEmpty() ||
+        FT_Init_FreeType(&library) != 0 ||
+        FT_New_Memory_Face(library,
+                           reinterpret_cast<const FT_Byte*>(fontData.constData()),
+                           static_cast<FT_Long>(fontData.size()),
+                           0,
+                           &face) != 0) {
         if (errorMessage) *errorMessage = QStringLiteral("title_mesh_font_load_failed");
         if (library) FT_Done_FreeType(library);
         return vertices;

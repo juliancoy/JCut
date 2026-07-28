@@ -5516,26 +5516,19 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     request.outputSize = QSize(1280, 720);
     request.outputFps = 60.0;
     request.playbackSpeed = 1.75;
-    request.backgroundFillOpacity = 0.42;
-    request.backgroundFillBrightness = -0.15;
-    request.backgroundFillSaturation = 1.25;
-    request.backgroundFillEdgePixels = 32;
-    request.backgroundFillEdgeProgressive = true;
-    request.backgroundFillEdgePower = 3.5;
-    request.backgroundFillStretchSourceClipId = QStringLiteral("clip-selected");
+    request.incrementalExport = false;
+    request.incrementalChunkFrames = 1234;
+    request.instagramSafeAreaGuides = true;
+    request.alignmentGridGuides = true;
 
     const jcut::render::RenderRequestCore core = jcut::render::toCoreRenderRequest(request);
 
     QCOMPARE(core.outputFps, 60.0);
     QCOMPARE(core.playbackSpeed, 1.75);
-    QCOMPARE(core.backgroundFillOpacity, 0.42);
-    QCOMPARE(core.backgroundFillBrightness, -0.15);
-    QCOMPARE(core.backgroundFillSaturation, 1.25);
-    QCOMPARE(core.backgroundFillEdgePixels, 32);
-    QCOMPARE(core.backgroundFillEdgeProgressive, true);
-    QCOMPARE(core.backgroundFillEdgePower, 3.5);
-    QCOMPARE(QString::fromStdString(core.backgroundFillStretchSourceClipId),
-             QStringLiteral("clip-selected"));
+    QCOMPARE(core.incrementalExport, false);
+    QCOMPARE(core.incrementalChunkFrames, 1234);
+    QCOMPARE(core.instagramSafeAreaGuides, true);
+    QCOMPARE(core.alignmentGridGuides, true);
 }
 
 void TestEditorRuntime::testQtBridgeBuildsDocumentCore()
@@ -5796,14 +5789,8 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     original.clips.front().audioDynamics.compressorEnabled = true;
     original.clips.front().audioDynamics.compressorRatio = 2.5;
     original.clips.front().speakerSectionMinimumWords = 37;
-    original.exportRequest.backgroundFillEffect = "blur";
-    original.exportRequest.backgroundFillOpacity = 0.42;
-    original.exportRequest.backgroundFillBrightness = -0.2;
-    original.exportRequest.backgroundFillSaturation = 1.4;
-    original.exportRequest.backgroundFillEdgePixels = 24;
-    original.exportRequest.backgroundFillEdgeProgressive = true;
-    original.exportRequest.backgroundFillEdgePower = 3.5;
-    original.exportRequest.backgroundFillStretchSourceClipId = "imgui-clip-1";
+    original.exportRequest.instagramSafeAreaGuides = true;
+    original.exportRequest.alignmentGridGuides = true;
     original.exportRequest.transcriptPrependMs = 210;
     original.exportRequest.transcriptPostpendMs = 95;
     original.exportRequest.transcriptOffsetMs = -30;
@@ -5833,17 +5820,8 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.outputSize.width, original.exportRequest.outputSize.width);
     QCOMPARE(reparsed->exportRequest.outputSize.height, original.exportRequest.outputSize.height);
     QCOMPARE(reparsed->exportRequest.playbackSpeed, original.exportRequest.playbackSpeed);
-    QCOMPARE(QString::fromStdString(reparsed->exportRequest.backgroundFillEffect),
-             QStringLiteral("none"));
-    QCOMPARE(reparsed->exportRequest.backgroundFillOpacity, 0.42);
-    QCOMPARE(reparsed->exportRequest.backgroundFillBrightness, -0.2);
-    QCOMPARE(reparsed->exportRequest.backgroundFillSaturation, 1.4);
-    QCOMPARE(reparsed->exportRequest.backgroundFillEdgePixels, 24);
-    QCOMPARE(reparsed->exportRequest.backgroundFillEdgeProgressive, false);
-    QCOMPARE(reparsed->exportRequest.backgroundFillEdgePower, 3.5);
-    QCOMPARE(QString::fromStdString(
-                 reparsed->exportRequest.backgroundFillStretchSourceClipId),
-             QStringLiteral("imgui-clip-1"));
+    QCOMPARE(reparsed->exportRequest.instagramSafeAreaGuides, true);
+    QCOMPARE(reparsed->exportRequest.alignmentGridGuides, true);
     QCOMPARE(reparsed->exportRequest.transcriptPrependMs, 210);
     QCOMPARE(reparsed->exportRequest.transcriptPostpendMs, 95);
     QCOMPARE(reparsed->exportRequest.transcriptOffsetMs, -30);

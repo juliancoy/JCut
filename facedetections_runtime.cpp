@@ -172,6 +172,7 @@ bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
                                                  &compositeMs,
                                                  &readbackMs,
                                                  nullptr,
+                                                 nullptr,
                                                  nullptr)) {
         provider->failed = true;
         provider->failureReason = errorMessage && !errorMessage->isEmpty()

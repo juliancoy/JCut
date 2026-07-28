@@ -683,6 +683,27 @@ void TestPlaybackPolicy::testSpeakerTitleRegenerationBypassesFullTimelineReset()
                  "scheduleSpeakerTitleRegeneration(); };")),
              "speaker-title parameter edits must route through the debounce "
              "boundary");
+    const QString speakersTab =
+        readSourceFile(QStringLiteral("speakers_tab.cpp"));
+    const QString transcriptTabHeader =
+        readSourceFile(QStringLiteral("transcript_tab.h"));
+    QVERIFY2(
+        speakersTab.contains(QStringLiteral(
+            "void SpeakersTab::refreshSpeakerTitleControlState()")) &&
+            speakersTab.contains(QStringLiteral(
+                "m_speakerDeps.getActiveTranscriptSnapshot")) &&
+            speakersTab.contains(QStringLiteral(
+                "control->setChecked(clip && clip->speakerTitleEngineActive)")) &&
+            transcriptTabHeader.contains(QStringLiteral(
+                "void activeTranscriptSnapshotChanged();")) &&
+            editorTabs.contains(QStringLiteral(
+                "&TranscriptTab::activeTranscriptSnapshotChanged")) &&
+            !speakersTab.contains(QStringLiteral(
+                "m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(\n"
+                "            canRunClipActions")),
+        "Transcript-hosted speaker-title controls must derive state from the "
+        "active Transcript snapshot and selected source clip, not from the "
+        "hidden Speakers-tab refresh session");
 }
 
 QTEST_MAIN(TestPlaybackPolicy)

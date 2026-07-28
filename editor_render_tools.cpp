@@ -1,7 +1,7 @@
 #include "editor.h"
 
 #include "background_fill_effect.h"
-#include "export_vulkan_preview_widget.h"
+#include "imgui_preview_window.h"
 #include "speaker_export_harness.h"
 #include "speaker_section_export_core.h"
 
@@ -29,16 +29,72 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <array>
 #include <cmath>
 #include <optional>
+
+#ifdef Q_OS_LINUX
+#include <pthread.h>
+#endif
 
 using namespace editor;
 
 namespace {
+
+class ScopedRenderWorkerThreadName {
+public:
+    explicit ScopedRenderWorkerThreadName(const char* osThreadName,
+                                          const QString& qtThreadName)
+        : m_thread(QThread::currentThread()),
+          m_previousQtName(m_thread ? m_thread->objectName() : QString())
+    {
+#ifdef Q_OS_LINUX
+        if (pthread_getname_np(pthread_self(),
+                               m_previousOsName.data(),
+                               m_previousOsName.size()) == 0) {
+            m_hasPreviousOsName = true;
+        }
+#endif
+        if (m_thread) {
+            m_thread->setObjectName(qtThreadName);
+        }
+#ifdef Q_OS_LINUX
+        if (osThreadName && *osThreadName) {
+            pthread_setname_np(pthread_self(), osThreadName);
+        }
+#else
+        Q_UNUSED(osThreadName);
+#endif
+    }
+
+    ~ScopedRenderWorkerThreadName()
+    {
+        if (m_thread) {
+            m_thread->setObjectName(m_previousQtName);
+        }
+#ifdef Q_OS_LINUX
+        if (m_hasPreviousOsName) {
+            pthread_setname_np(pthread_self(), m_previousOsName.data());
+        }
+#endif
+    }
+
+    ScopedRenderWorkerThreadName(const ScopedRenderWorkerThreadName&) = delete;
+    ScopedRenderWorkerThreadName& operator=(const ScopedRenderWorkerThreadName&) = delete;
+
+private:
+    QThread* m_thread = nullptr;
+    QString m_previousQtName;
+#ifdef Q_OS_LINUX
+    std::array<char, 16> m_previousOsName{};
+    bool m_hasPreviousOsName = false;
+#endif
+};
 
 QString sanitizedExportBaseName(QString value, const QString& fallback)
 {
@@ -581,13 +637,15 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         : 1.0;
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
-    request.backgroundFillEffect = BackgroundFillEffect::None;
-    request.backgroundFillOpacity = 1.0;
-    request.backgroundFillBrightness = 0.0;
-    request.backgroundFillSaturation = 1.0;
-    request.backgroundFillEdgePixels = 1;
-    request.backgroundFillEdgeProgressive = false;
-    request.backgroundFillEdgePower = 2.0;
+    request.incrementalExport =
+        !m_incrementalRenderCheckBox ||
+        m_incrementalRenderCheckBox->isChecked();
+    request.instagramSafeAreaGuides =
+        m_instagramSafeAreaGuidesCheckBox &&
+        m_instagramSafeAreaGuidesCheckBox->isChecked();
+    request.alignmentGridGuides =
+        m_alignmentGridGuidesCheckBox &&
+        m_alignmentGridGuidesCheckBox->isChecked();
     // Speaker introductions are rendered exclusively as transcript-owned
     // title clips. The retired current-speaker overlay must never enter export.
     request.showCurrentSpeakerName = false;
@@ -864,11 +922,6 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         renderSourcesList->setMinimumHeight(140);
         renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
 
-        auto* renderPreviewWidget =
-            new ExportVulkanPreviewWidget(progressDialog);
-        renderPreviewWidget->setMinimumWidth(
-            verticalRenderOutput ? 360 : 480);
-
         if (verticalRenderOutput) {
             auto *contentRow = new QHBoxLayout;
             contentRow->setSpacing(12);
@@ -879,11 +932,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             leftColumn->addWidget(renderSourcesLabel);
             leftColumn->addWidget(renderSourcesList, 1);
 
-            contentRow->addLayout(leftColumn, 3);
-            contentRow->addWidget(renderPreviewWidget, 2);
+            contentRow->addLayout(leftColumn, 1);
             progressLayout->addLayout(contentRow);
         } else {
-            progressLayout->addWidget(renderPreviewWidget);
             progressLayout->addWidget(renderStatusLabel);
             progressLayout->addWidget(renderSourcesLabel);
             progressLayout->addWidget(renderSourcesList);
@@ -906,7 +957,6 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         localControls.statusLabel = renderStatusLabel;
         localControls.sourcesList = renderSourcesList;
         localControls.progressBar = renderProgressBar;
-        localControls.previewWidget = renderPreviewWidget;
         localControls.cancelled = &localRenderCancelled;
         progressControls = &localControls;
         progressDialog->show();
@@ -916,28 +966,6 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     QLabel* renderStatusLabel = progressControls->statusLabel;
     QPlainTextEdit* renderSourcesList = progressControls->sourcesList;
     QProgressBar* renderProgressBar = progressControls->progressBar;
-    ExportVulkanPreviewWidget* renderPreviewWidget =
-        progressControls->previewWidget;
-    effectiveRequest.gpuExportPreviewEnabled =
-        renderPreviewWidget != nullptr;
-    if (renderPreviewWidget) {
-        effectiveRequest.gpuExportPreviewReady =
-            std::make_shared<std::atomic_bool>(false);
-        auto* previewReadyTimer = new QTimer(progressDialog);
-        previewReadyTimer->setInterval(16);
-        QObject::connect(
-            previewReadyTimer, &QTimer::timeout, progressDialog,
-            [renderPreviewWidget,
-             ready = effectiveRequest.gpuExportPreviewReady,
-             previewReadyTimer]() {
-                if (!renderPreviewWidget->isReady()) {
-                    return;
-                }
-                ready->store(true, std::memory_order_release);
-                previewReadyTimer->stop();
-            });
-        previewReadyTimer->start();
-    }
     std::atomic_bool* renderCancelled =
         progressControls->cancelled ? progressControls->cancelled
                                     : &localRenderCancelled;
@@ -953,6 +981,33 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     }
     if (progressDialog) {
         progressDialog->show();
+    }
+
+    std::unique_ptr<ImGuiPreviewWindow> imguiRenderMonitor;
+    if (qEnvironmentVariableIsEmpty("JCUT_DISABLE_IMGUI_RENDER_MONITOR")) {
+        imguiRenderMonitor = std::make_unique<ImGuiPreviewWindow>();
+        const jcut::core::SizeI monitorSize{
+            qMax(640, effectiveRequest.outputSize.width() / 2),
+            qMax(360, effectiveRequest.outputSize.height() / 2)};
+        if (imguiRenderMonitor->initialize("JCut Render Monitor",
+                                           monitorSize)) {
+            imguiRenderMonitor->setWindowTitle("JCut Render Monitor");
+            imguiRenderMonitor->setStatusText(
+                "GPU export monitor. The render remains headless; this "
+                "window only consumes optional double-buffered Vulkan frames.");
+        } else {
+            qWarning().noquote()
+                << QStringLiteral(
+                       "Dear ImGui render monitor unavailable: %1")
+                       .arg(QString::fromStdString(
+                           imguiRenderMonitor->failureReason()));
+            imguiRenderMonitor.reset();
+        }
+    }
+    effectiveRequest.gpuExportPreviewEnabled = imguiRenderMonitor != nullptr;
+    if (effectiveRequest.gpuExportPreviewEnabled) {
+        effectiveRequest.gpuExportPreviewReady =
+            std::make_shared<std::atomic_bool>(true);
     }
 
     const QString outputPath = effectiveRequest.outputPath;
@@ -1182,27 +1237,67 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     QElapsedTimer progressUiTimer;
     progressUiTimer.start();
     qint64 lastProgressUiUpdateMs = -1000;
+    ImGuiPreviewWindow* imguiRenderMonitorPtr = imguiRenderMonitor.get();
     const auto handleProgress =
-        [this, renderStatusLabel, renderProgressBar, renderPreviewWidget,
-         renderSourcesList, renderCancelled,
+        [this, renderStatusLabel, renderProgressBar, renderSourcesList,
+         renderCancelled,
          formatEta, stageSummary, renderProfileFromProgress, outputPath,
-         activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs]
+         activeRenderSourcesText, &progressUiTimer, &lastProgressUiUpdateMs,
+         imguiRenderMonitorPtr, createVideoFromImageSequence =
+             effectiveRequest.createVideoFromImageSequence]
         (const RenderProgress &progress)
         {
             const qint64 nowMs = progressUiTimer.elapsed();
             if (progress.releaseGpuPreview) {
-                if (renderPreviewWidget) {
-                    renderPreviewWidget->clearPreview();
-                }
                 return true;
             }
-            if (progress.gpuPreviewFrame.valid && renderPreviewWidget) {
-                renderPreviewWidget->setGpuPreviewFrame(
-                    progress.gpuPreviewFrame);
+            if (progress.gpuPreviewFrame.valid && imguiRenderMonitorPtr) {
+                ImGuiPreviewWindow::RenderMonitorStatus monitorStatus;
+                monitorStatus.framesCompleted = progress.framesCompleted;
+                monitorStatus.totalFrames = progress.totalFrames;
+                monitorStatus.segmentIndex = progress.segmentIndex;
+                monitorStatus.segmentCount = progress.segmentCount;
+                monitorStatus.timelineFrame = progress.timelineFrame;
+                monitorStatus.segmentStartFrame = progress.segmentStartFrame;
+                monitorStatus.segmentEndFrame = progress.segmentEndFrame;
+                monitorStatus.incrementalChunksCompleted =
+                    progress.incrementalChunksCompleted;
+                monitorStatus.incrementalChunksTotal =
+                    progress.incrementalChunksTotal;
+                monitorStatus.incrementalFramesReused =
+                    progress.incrementalFramesReused;
+                monitorStatus.elapsedMs = progress.elapsedMs;
+                monitorStatus.estimatedRemainingMs =
+                    progress.estimatedRemainingMs;
+                monitorStatus.renderStageMs = progress.renderStageMs;
+                monitorStatus.decodeStageMs = progress.renderDecodeStageMs;
+                monitorStatus.textureStageMs = progress.renderTextureStageMs;
+                monitorStatus.compositeStageMs =
+                    progress.renderCompositeStageMs;
+                monitorStatus.readbackStageMs = progress.gpuReadbackMs;
+                monitorStatus.encodeStageMs = progress.encodeStageMs;
+                monitorStatus.usingGpu = progress.usingGpu;
+                monitorStatus.usingHardwareEncode =
+                    progress.usingHardwareEncode;
+                monitorStatus.createVideoFromImageSequence =
+                    createVideoFromImageSequence;
+                monitorStatus.encoderLabel =
+                    progress.encoderLabel.toStdString();
+                monitorStatus.exportPipeline =
+                    progress.exportPipeline.toStdString();
+                monitorStatus.gpuTransferLabel =
+                    progress.gpuTransferLabel.toStdString();
+                monitorStatus.cachePath =
+                    progress.incrementalCachePath.toStdString();
+                imguiRenderMonitorPtr->presentRenderMonitorFrame(
+                    progress.gpuPreviewFrame,
+                    monitorStatus);
             }
             const bool cancelled =
                 renderCancelled &&
-                renderCancelled->load(std::memory_order_relaxed);
+                (renderCancelled->load(std::memory_order_relaxed) ||
+                 (imguiRenderMonitorPtr &&
+                  imguiRenderMonitorPtr->renderMonitorCancelRequested()));
             const bool finalProgress =
                 progress.totalFrames > 0 && progress.framesCompleted >= progress.totalFrames;
             const bool updateUi =
@@ -1312,6 +1407,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                      &renderEventLoop, &QEventLoop::quit);
     renderWatcher.setFuture(QtConcurrent::run(
         [this, effectiveRequest, progressDispatch, renderCancelled]() {
+            const ScopedRenderWorkerThreadName renderWorkerName(
+                "jcut-render",
+                QStringLiteral("JCut Render Export"));
             return renderTimelineToFile(
                 effectiveRequest,
                 [this, progressDispatch,
@@ -1385,9 +1483,6 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         }));
     renderEventLoop.exec();
     const RenderResult result = renderWatcher.result();
-    if (renderPreviewWidget) {
-        renderPreviewWidget->clearPreview();
-    }
     progressDispatch->handler = {};
     {
         std::lock_guard<std::mutex> lock(progressDispatch->mutex);
@@ -1852,10 +1947,6 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     renderSourcesList->setMinimumHeight(120);
     renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
 
-    auto* renderPreviewWidget =
-        new ExportVulkanPreviewWidget(&bulkDialog);
-    renderPreviewWidget->setMinimumWidth(420);
-
     auto* jobTable = new QTableWidget(jobs.size(), 4, &bulkDialog);
     jobTable->setHorizontalHeaderLabels({
         QStringLiteral("#"),
@@ -1904,8 +1995,7 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     leftColumn->addWidget(renderStatusLabel);
     leftColumn->addWidget(renderSourcesLabel);
     leftColumn->addWidget(renderSourcesList, 1);
-    contentRow->addLayout(leftColumn, 3);
-    contentRow->addWidget(renderPreviewWidget, 2);
+    contentRow->addLayout(leftColumn, 1);
     bulkLayout->addLayout(contentRow);
     bulkLayout->addWidget(jobTable, 1);
 
@@ -1930,7 +2020,6 @@ void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<Spe
     bulkControls.statusLabel = renderStatusLabel;
     bulkControls.sourcesList = renderSourcesList;
     bulkControls.progressBar = renderProgressBar;
-    bulkControls.previewWidget = renderPreviewWidget;
     bulkControls.cancelled = &bulkCancelled;
     bulkControls.closeOnFinish = false;
     bulkDialog.show();

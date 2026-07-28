@@ -1147,7 +1147,6 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("directional_trim_ticker"));
     roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
     roundTripPreset(ClipEffectPreset::Vulkan3DSynth, QStringLiteral("vulkan_3d_synth"));
-    roundTripPreset(ClipEffectPreset::ProgressiveEdgeStretch, QStringLiteral("progressive_edge_stretch"));
     roundTripPreset(ClipEffectPreset::DifferenceMatte, QStringLiteral("difference_matte"));
     roundTripPreset(ClipEffectPreset::TemporalEcho, QStringLiteral("temporal_echo"));
     roundTripPreset(ClipEffectPreset::MirrorRing, QStringLiteral("mirror_ring"));
@@ -1197,7 +1196,6 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::DirectionalTrimTicker,
         ClipEffectPreset::SourceTile,
         ClipEffectPreset::Vulkan3DSynth,
-        ClipEffectPreset::ProgressiveEdgeStretch,
         ClipEffectPreset::DifferenceMatte,
         ClipEffectPreset::TemporalEcho,
         ClipEffectPreset::MirrorRing,
@@ -1233,7 +1231,6 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::NewsLogoTicker));
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::SourceTile));
     QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::Vulkan3DSynth));
-    QVERIFY(effectPresetUsesDirectionalControl(ClipEffectPreset::ProgressiveEdgeStretch));
     QVERIFY(!effectPresetUsesDirectionalControl(ClipEffectPreset::FreezePattern));
     QVERIFY(effectPresetUsesTilingControls(ClipEffectPreset::SourceTile));
     QVERIFY(!effectPresetUsesTilingControls(ClipEffectPreset::Vulkan3DSynth));
@@ -1255,6 +1252,21 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[1], 3.0f);
     QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[2], 18.0f);
     QCOMPARE(neonPlan.generatedDraws.constFirst().effectParams[3], 1.75f);
+
+    parameterized.effectPreset = ClipEffectPreset::MirrorRing;
+    parameterized.effectRows = 18;
+    parameterized.effectScale = 1.6;
+    parameterized.effectSpeed = -0.5;
+    parameterized.tilingSpacing = 2.25;
+    const auto mirrorPlan = render_detail::vulkanEffectPipelinePlan(
+        parameterized, QRectF(0, 0, 1920, 1080), QSize(1920, 1080), 20.0, 12.0);
+    QVERIFY(mirrorPlan.usesGeneratedDraws());
+    QCOMPARE(mirrorPlan.generatedDraws.constFirst().shaderMode,
+             render_detail::kVulkanEffectModeMirrorRing);
+    QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[0], 1.6f);
+    QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[1], 18.0f);
+    QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[2], -6.0f);
+    QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[3], 2.25f);
 }
 
 void TestEffectPresets::trackEffectSettingsDoNotLeakIntoChildClips()
@@ -1876,6 +1888,7 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
 
     SpeakerTitleFlyInSettings rightFly;
     rightFly.style = SpeakerTitleFlyInStyle::SlideFromRight;
+    rightFly.respectSpeechFilterTiming = false;
     rightFly.titleStartDelayFrames = 0;
     rightFly.titleDurationFrames = 120;
     rightFly.flyInFrames = 12;
@@ -1889,6 +1902,7 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
         4,
         rightFly);
     QCOMPARE(rightTitles.constFirst().titleKeyframes.size(), 4);
+    QVERIFY(!rightTitles.constFirst().effectSkipAwareTiming);
     QCOMPARE(rightTitles.constFirst().titleKeyframes.at(1).frame, int64_t(12));
     QVERIFY(rightTitles.constFirst().titleKeyframes.constFirst().translationX >
             rightTitles.constFirst().titleKeyframes.at(1).translationX);
@@ -1938,7 +1952,7 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
             QVector<TranscriptSection>{repeatedSection},
             4,
             repeatedSettings);
-    QCOMPARE(repeatedTitles.size(), 7);
+    QCOMPARE(repeatedTitles.size(), 6);
     QVector<int64_t> repeatedStarts;
     for (const TimelineClip& titleClip : repeatedTitles) {
         repeatedStarts.push_back(titleClip.startFrame);
@@ -1946,7 +1960,9 @@ void TestEffectPresets::speakerTitleFactoryBuildsLowerThirdsForSpeakerChanges()
     }
     QCOMPARE(
         repeatedStarts,
-        QVector<int64_t>({100, 181, 220, 300, 340, 371, 460}));
+        QVector<int64_t>({100, 181, 220, 300, 371, 420}));
+    QCOMPARE(repeatedTitles.constLast().titleKeyframes.constFirst().text,
+             QStringLiteral("John Roe\nProducer"));
 }
 
 void TestEffectPresets::speakerTitleFlyInsApplyToSourceClipKeyframes()
@@ -2389,6 +2405,11 @@ void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
     QCOMPARE(after.vulkan3DPitchDegrees, 30.0);
     QCOMPARE(after.vulkan3DRollDegrees, 40.0);
     QCOMPARE(after.x - before.x, 1.0);
+
+    clip.effectSkipAwareTiming = false;
+    const EvaluatedTitle unsynchronized =
+        evaluateTitleAtTimelinePosition(clip, 20.0, timing);
+    QCOMPARE(unsynchronized.x, 20.0);
 }
 
 void TestEffectPresets::temporalEffectsStayOnRawClockDuringVisualSpeedThrough()

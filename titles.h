@@ -71,6 +71,11 @@ EvaluatedTitle evaluateTitleAtTimelinePosition(const TimelineClip& clip,
                                                qreal timelineFramePosition,
                                                const PlaybackTimingContext& timing);
 EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacityMultiplier);
+EvaluatedTitle prepareRenderableTitleForVulkanText(const TimelineClip& clip,
+                                                   qreal timelineFramePosition,
+                                                   const PlaybackTimingContext& timing,
+                                                   qreal opacityMultiplier,
+                                                   const QSize& outputSize);
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale = 1.0);
 EvaluatedTitle fitTitleToOutput(const EvaluatedTitle& title,
                                 const QSize& outputSize,

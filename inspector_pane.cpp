@@ -684,9 +684,6 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectPresetCombo = new QComboBox(page);
     QString previousGroup;
     for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
-        if (option.preset == ClipEffectPreset::ProgressiveEdgeStretch) {
-            continue;
-        }
         if (option.group != previousGroup) {
             if (!previousGroup.isEmpty()) {
                 m_effectPresetCombo->insertSeparator(m_effectPresetCombo->count());
@@ -2221,6 +2218,11 @@ QWidget *InspectorPane::buildSpeakersTab()
         new QCheckBox(QStringLiteral("Also show near section end"), page);
     m_speakerOverlayShowAtSectionEndCheckBox->setToolTip(
         QStringLiteral("Generate another title ending with each contiguous speaker section."));
+    m_speakerOverlayRespectSpeechFilterTimingCheckBox =
+        new QCheckBox(QStringLiteral("Respect Speech Filter Timing"), page);
+    m_speakerOverlayRespectSpeechFilterTimingCheckBox->setChecked(true);
+    m_speakerOverlayRespectSpeechFilterTimingCheckBox->setToolTip(
+        QStringLiteral("Advance fly-in and fly-out animation in playable Speech Filter time, without jumping across removed gaps."));
     m_speakerOverlayCadenceSpin = makeFlyInSecondsSpin(
         0.0,
         0.0,
@@ -2920,6 +2922,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerOverlayFlyInForm->addRow(QStringLiteral("Delay"), m_speakerOverlayFlyInDelaySpin);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Duration"), m_speakerOverlayFlyInDurationSpin);
     speakerOverlayFlyInForm->addRow(m_speakerOverlayShowAtSectionEndCheckBox);
+    speakerOverlayFlyInForm->addRow(m_speakerOverlayRespectSpeechFilterTimingCheckBox);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Repeat Cadence"), m_speakerOverlayCadenceSpin);
     speakerOverlayFlyInForm->addRow(QStringLiteral("Fly Time"), m_speakerOverlayFlyInTimeSpin);
     auto *wrapRadiusLabel = new QLabel(QStringLiteral("Wrap Radius"), speakerOverlayFlyInGroup);

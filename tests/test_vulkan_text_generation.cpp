@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include "titles.h"
 #include "vulkan_text_renderer.h"
 #include "title_mesh_extrusion.h"
 #include "title_3d_projection_core.h"
@@ -24,6 +25,7 @@ private slots:
     void transcriptOverlaySeparatesAtlasKeyFromActiveWordLayout();
     void transcriptOverlayKeepsFirstLineStableAcrossLineCounts();
     void emptyInputsDoNotGenerateText();
+    void titlePreparationIsSharedForPreviewAndExportInputs();
     void titleContourMeshHasFrontBackSideAndBevelGeometry();
     void neutralTitleProjectionMatchesQtVulkanMvp();
 };
@@ -479,6 +481,65 @@ void TestVulkanTextGeneration::emptyInputsDoNotGenerateText()
 
     QVERIFY(!renderer.buildTranscriptOverlayLayoutForTesting(
         QSize(1080, 1920), transcriptClip(), TranscriptOverlayLayout{}, QRectF(0, 0, 900, 220), QString()).valid);
+}
+
+void TestVulkanTextGeneration::titlePreparationIsSharedForPreviewAndExportInputs()
+{
+    TimelineClip clip;
+    clip.mediaType = ClipMediaType::Title;
+    clip.startFrame = 100;
+    clip.durationFrames = 120;
+    clip.sourceDurationFrames = 120;
+
+    TimelineClip::TitleKeyframe keyframe;
+    keyframe.frame = 0;
+    keyframe.text = QStringLiteral("Shared Vulkan Title");
+    keyframe.fontSize = 80.0;
+    keyframe.autoFitToOutput = true;
+    keyframe.opacity = 0.8;
+    keyframe.translationX = 12.0;
+    keyframe.translationY = -20.0;
+    keyframe.vulkan3DEnabled = true;
+    keyframe.vulkan3DExtrudeEnabled = true;
+    keyframe.vulkan3DExtrudeDepth = 12.0;
+    clip.titleKeyframes.push_back(keyframe);
+
+    PlaybackTimingContext timing;
+    const QSize outputSize(1080, 1920);
+    const qreal timelineFrame = 115.0;
+    const qreal opacityMultiplier = 0.5;
+
+    const EvaluatedTitle prepared = prepareRenderableTitleForVulkanText(
+        clip,
+        timelineFrame,
+        timing,
+        opacityMultiplier,
+        outputSize);
+    const EvaluatedTitle manual = fitTitleToOutput(
+        composeTitleWithOpacity(
+            evaluateTitleAtTimelinePosition(clip, timelineFrame, timing),
+            opacityMultiplier),
+        outputSize);
+
+    QVERIFY(prepared.valid);
+    QCOMPARE(prepared.text, manual.text);
+    QCOMPARE(prepared.x, manual.x);
+    QCOMPARE(prepared.y, manual.y);
+    QCOMPARE(prepared.fontFamily, manual.fontFamily);
+    QCOMPARE(prepared.vulkan3DEnabled, manual.vulkan3DEnabled);
+    QCOMPARE(prepared.vulkan3DExtrudeEnabled, manual.vulkan3DExtrudeEnabled);
+    QCOMPARE(prepared.vulkan3DExtrudeDepth, manual.vulkan3DExtrudeDepth);
+    QVERIFY(std::abs(prepared.opacity - 0.4) < 0.001);
+    QCOMPARE(prepared.fontSize, manual.fontSize);
+
+    clip.titleKeyframes[0].text = QStringLiteral("   ");
+    const EvaluatedTitle blank = prepareRenderableTitleForVulkanText(
+        clip,
+        timelineFrame,
+        timing,
+        1.0,
+        outputSize);
+    QVERIFY(!blank.valid);
 }
 
 void TestVulkanTextGeneration::titleContourMeshHasFrontBackSideAndBevelGeometry()

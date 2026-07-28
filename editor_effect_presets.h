@@ -49,6 +49,7 @@ struct SpeakerTitleFlyInSettings {
     int64_t titleDurationFrames = kTimelineFps * 3;
     int64_t titleStartDelayFrames = (kTimelineFps * 35 + 50) / 100;
     bool showAtSectionEnd = false;
+    bool respectSpeechFilterTiming = true;
     int64_t cadenceFrames = 0;
     int64_t flyInFrames = (kTimelineFps * 35 + 50) / 100;
     int64_t flyOutFrames = (kTimelineFps * 45 + 50) / 100;

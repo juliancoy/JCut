@@ -166,10 +166,27 @@ bool speakerMaskDilationPreset(ClipEffectPreset preset)
            preset == ClipEffectPreset::SpeakerMaskDilationRings;
 }
 
+bool mirrorGeometryPreset(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::MirrorRing:
+    case ClipEffectPreset::Kaleidoscope:
+    case ClipEffectPreset::QuadMirror:
+    case ClipEffectPreset::InfiniteMirror:
+    case ClipEffectPreset::Tessellation:
+    case ClipEffectPreset::HexagonalPrism:
+    case ClipEffectPreset::Droste:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                                      ClipEffectPreset preset,
                                      const QString& modulationMode)
 {
+    const bool mirrorGeometry = mirrorGeometryPreset(preset);
     const bool commonParameters =
         preset == ClipEffectPreset::NewsLogoTicker ||
         preset == ClipEffectPreset::PersonOrbit ||
@@ -179,20 +196,31 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         preset == ClipEffectPreset::DirectionalTrimTicker ||
         preset == ClipEffectPreset::SourceTile ||
         preset == ClipEffectPreset::Vulkan3DSynth ||
-        preset == ClipEffectPreset::ProgressiveEdgeStretch ||
         preset == ClipEffectPreset::SobelEdges ||
         preset == ClipEffectPreset::NeonGlow ||
-        speakerMaskDilationPreset(preset);
+        speakerMaskDilationPreset(preset) ||
+        mirrorGeometry;
     const bool edge = preset == ClipEffectPreset::SobelEdges;
     const bool neon = preset == ClipEffectPreset::NeonGlow;
     const bool speakerMask = speakerMaskDilationPreset(preset);
     const bool difference = preset == ClipEffectPreset::DifferenceMatte;
     const bool echo = preset == ClipEffectPreset::TemporalEcho;
-    const bool tiling = preset == ClipEffectPreset::SourceTile ||
-                        preset == ClipEffectPreset::Tessellation ||
-                        preset == ClipEffectPreset::HexagonalPrism || speakerMask;
+    const bool tiling = preset == ClipEffectPreset::SourceTile;
+    const bool spacing = tiling || mirrorGeometry || speakerMask;
+    const bool sectorEffect =
+        preset == ClipEffectPreset::MirrorRing ||
+        preset == ClipEffectPreset::Kaleidoscope;
+    const bool recursionEffect =
+        preset == ClipEffectPreset::Droste ||
+        preset == ClipEffectPreset::InfiniteMirror;
+    const bool cellEffect =
+        preset == ClipEffectPreset::QuadMirror ||
+        preset == ClipEffectPreset::Tessellation ||
+        preset == ClipEffectPreset::HexagonalPrism;
     if (widgets.effectRowsSpin) {
-        widgets.effectRowsSpin->setRange(1, edge || neon ? 4 : (speakerMask ? 8 : 96));
+        widgets.effectRowsSpin->setRange(
+            sectorEffect ? 2 : 1,
+            edge || neon ? 4 : (speakerMask ? 8 : 96));
     }
     if (widgets.effectScaleSpin) {
         widgets.effectScaleSpin->setRange(0.1, speakerMask ? 1.0 : 8.0);
@@ -201,22 +229,56 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                       edge ? QStringLiteral("Sample radius")
                            : neon ? QStringLiteral("Glow radius")
                                   : speakerMask ? QStringLiteral("Dilation radius")
+                                                : sectorEffect ? QStringLiteral("Mirror sectors")
+                                                : recursionEffect ? QStringLiteral("Recursion density")
+                                                : cellEffect ? QStringLiteral("Cells across")
                                                 : QStringLiteral("Copies"));
     setFormFieldLabel(widgets.effectSpeedSpin,
                       neon ? QStringLiteral("Hue speed")
                            : speakerMask ? QStringLiteral("Color cycle speed")
+                                        : mirrorGeometry ? QStringLiteral("Rotation speed")
                                          : QStringLiteral("Speed"));
     setFormFieldLabel(widgets.effectScaleSpin,
                       edge ? QStringLiteral("Edge strength")
                            : neon ? QStringLiteral("Glow intensity")
                                   : speakerMask ? QStringLiteral("Opacity")
+                                                : mirrorGeometry ? QStringLiteral("Output grain size")
                                                 : QStringLiteral("Scale"));
     setFormFieldLabel(widgets.tilingSpacingSpin,
-                      speakerMask ? QStringLiteral("Color spacing") : QStringLiteral("Spacing"));
+                      speakerMask ? QStringLiteral("Color spacing")
+                                  : recursionEffect ? QStringLiteral("Recursion spacing")
+                                  : mirrorGeometry ? QStringLiteral("Geometry amount")
+                                                   : QStringLiteral("Spacing"));
+    if (mirrorGeometry) {
+        if (widgets.effectRowsSpin) {
+            widgets.effectRowsSpin->setToolTip(
+                sectorEffect
+                    ? QStringLiteral("Number of mirrored angular sectors.")
+                    : recursionEffect
+                          ? QStringLiteral("Density of nested recursive bands.")
+                          : QStringLiteral("Number of repeated mirror cells across the output."));
+        }
+        if (widgets.effectScaleSpin) {
+            widgets.effectScaleSpin->setToolTip(
+                QStringLiteral("Size of the sampled source grain. Higher values produce larger image features."));
+        }
+        if (widgets.effectSpeedSpin) {
+            widgets.effectSpeedSpin->setToolTip(
+                QStringLiteral("Rotation rate. Negative values reverse direction; zero holds the geometry still."));
+        }
+        if (widgets.tilingSpacingSpin) {
+            widgets.tilingSpacingSpin->setToolTip(
+                recursionEffect
+                    ? QStringLiteral("Spacing and twist between recursive levels.")
+                    : QStringLiteral("Strength of the radial or cell geometry."));
+        }
+    }
     setFormFieldVisible(widgets.effectRowsSpin, commonParameters);
     setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge);
     setFormFieldVisible(widgets.effectScaleSpin, commonParameters);
-    setFormFieldVisible(widgets.effectAlternateDirectionCheck, commonParameters && !edge && !neon && !speakerMask);
+    setFormFieldVisible(widgets.effectAlternateDirectionCheck,
+                        commonParameters && !edge && !neon && !speakerMask &&
+                            !mirrorGeometry);
     const bool steadyIncrease =
         modulationMode == QStringLiteral("steady_increase");
     setFormFieldVisible(
@@ -230,7 +292,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     setFormFieldVisible(widgets.temporalEchoSpacingSpin, echo);
     setFormFieldVisible(widgets.temporalEchoDecaySpin, echo);
     setFormFieldVisible(widgets.tilingPatternCombo, tiling);
-    setFormFieldVisible(widgets.tilingSpacingSpin, tiling);
+    setFormFieldVisible(widgets.tilingSpacingSpin, spacing);
     setFormFieldVisible(widgets.tilingWrapCheck, tiling);
 }
 }
@@ -440,31 +502,26 @@ void EffectsTab::refresh()
         const ClipEffectPreset trackPreset =
             selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None;
         const bool trackEffectActive = selectedTrack && trackPreset != ClipEffectPreset::None;
-        const bool progressiveEdgePreset = trackPreset == ClipEffectPreset::ProgressiveEdgeStretch;
         if (m_widgets.effectRowsSpin) {
             m_widgets.effectRowsSpin->setValue(selectedTrack ? selectedTrack->effectRows : 32);
             m_widgets.effectRowsSpin->setEnabled(trackEffectActive);
-            m_widgets.effectRowsSpin->setSuffix(progressiveEdgePreset ? QStringLiteral(" px") : QString());
+            m_widgets.effectRowsSpin->setSuffix(QString());
             m_widgets.effectRowsSpin->setToolTip(
-                progressiveEdgePreset
-                    ? QStringLiteral("Width of the source edge-pixel band used by progressive edge stretch.")
-                    : QStringLiteral("Rows, copies, or repeat steps."));
+                QStringLiteral("Rows, copies, or repeat steps."));
         }
         if (m_widgets.effectSpeedSpin) {
             m_widgets.effectSpeedSpin->setValue(selectedTrack ? selectedTrack->effectSpeed : 1.0);
-            m_widgets.effectSpeedSpin->setEnabled(trackEffectActive && !progressiveEdgePreset);
+            m_widgets.effectSpeedSpin->setEnabled(trackEffectActive);
         }
         if (m_widgets.effectScaleSpin) {
             m_widgets.effectScaleSpin->setValue(selectedTrack ? selectedTrack->effectScale : 1.0);
             m_widgets.effectScaleSpin->setEnabled(trackEffectActive);
             m_widgets.effectScaleSpin->setToolTip(
-                progressiveEdgePreset
-                    ? QStringLiteral("Curve power for the progressive transition from clip edge to canvas edge.")
-                    : QStringLiteral("Scale multiplier for the selected effect."));
+                QStringLiteral("Scale multiplier for the selected effect."));
         }
         if (m_widgets.effectAlternateDirectionCheck) {
             m_widgets.effectAlternateDirectionCheck->setChecked(!selectedTrack || selectedTrack->effectAlternateDirection);
-            m_widgets.effectAlternateDirectionCheck->setEnabled(trackEffectActive && !progressiveEdgePreset);
+            m_widgets.effectAlternateDirectionCheck->setEnabled(trackEffectActive);
         }
         if (m_widgets.effectSpeechSyncCheck) {
             m_widgets.effectSpeechSyncCheck->setChecked(false);
@@ -702,37 +759,32 @@ void EffectsTab::refresh()
                                     clip->mediaType == ClipMediaType::Video;
     const ClipEffectPreset clipPreset = clip->effectPreset;
     const bool imagePresetActive = clipPreset != ClipEffectPreset::None;
-    const bool progressiveEdgePreset = clipPreset == ClipEffectPreset::ProgressiveEdgeStretch;
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
     }
     if (m_widgets.effectRowsSpin) {
         m_widgets.effectRowsSpin->setEnabled(imagePresetCapable && imagePresetActive);
-        m_widgets.effectRowsSpin->setSuffix(progressiveEdgePreset ? QStringLiteral(" px") : QString());
+        m_widgets.effectRowsSpin->setSuffix(QString());
         m_widgets.effectRowsSpin->setToolTip(
-            progressiveEdgePreset
-                ? QStringLiteral("Width of the source edge-pixel band used by progressive edge stretch.")
-                : QStringLiteral("Rows, copies, or repeat steps."));
+            QStringLiteral("Rows, copies, or repeat steps."));
     }
     if (m_widgets.effectSpeedSpin) {
-        m_widgets.effectSpeedSpin->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
+        m_widgets.effectSpeedSpin->setEnabled(imagePresetCapable && imagePresetActive);
     }
     if (m_widgets.effectScaleSpin) {
         m_widgets.effectScaleSpin->setEnabled(imagePresetCapable && imagePresetActive);
         m_widgets.effectScaleSpin->setToolTip(
-            progressiveEdgePreset
-                ? QStringLiteral("Curve power for the progressive transition from clip edge to canvas edge.")
-                : QStringLiteral("Scale multiplier for the selected effect."));
+            QStringLiteral("Scale multiplier for the selected effect."));
     }
     if (m_widgets.effectAlternateDirectionCheck) {
-        m_widgets.effectAlternateDirectionCheck->setEnabled(imagePresetCapable && imagePresetActive && !progressiveEdgePreset);
+        m_widgets.effectAlternateDirectionCheck->setEnabled(imagePresetCapable && imagePresetActive);
     }
     if (m_widgets.effectSpeechSyncCheck) {
         const bool steadyIncrease =
             clip->effectModulationMode == QStringLiteral("steady_increase");
         m_widgets.effectSpeechSyncCheck->setEnabled(
             imagePresetCapable && imagePresetActive &&
-            (steadyIncrease || !progressiveEdgePreset));
+            steadyIncrease || imagePresetActive);
     }
     if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setEnabled(imagePresetActive);
     if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setEnabled(imagePresetActive);
@@ -856,7 +908,7 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             if (preset != previousPreset) {
                 restoreEffectParameters(clip, clip.effectParameterSets.value(presetParameterKey(preset)).toObject());
             } else {
-            clip.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
+            clip.effectRows = qBound(1, rows, 96);
             clip.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             clip.effectScale = qBound<qreal>(0.1, scale, 8.0);
             clip.effectAlternateDirection = alternate;
@@ -881,7 +933,7 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             if (preset != previousPreset) {
                 restoreEffectParameters(track, track.effectParameterSets.value(presetParameterKey(preset)).toObject());
             } else {
-            track.effectRows = qBound(1, rows, preset == ClipEffectPreset::ProgressiveEdgeStretch ? 512 : 96);
+            track.effectRows = qBound(1, rows, 96);
             track.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
             track.effectScale = qBound<qreal>(0.1, scale, 8.0);
             track.effectAlternateDirection = alternate;

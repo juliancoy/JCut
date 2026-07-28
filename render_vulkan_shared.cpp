@@ -125,7 +125,7 @@ QVector<QRectF> VulkanEffectPipelinePlan::generatedDrawRects() const
     return rects;
 }
 
-bool vulkanClipSupportsProgressiveEdgeStretchSource(const TimelineClip& clip)
+bool vulkanClipSupportsBackgroundFillSource(const TimelineClip& clip)
 {
     if (clip.clipRole != ClipRole::Media) {
         return false;
@@ -135,20 +135,6 @@ bool vulkanClipSupportsProgressiveEdgeStretchSource(const TimelineClip& clip)
         return false;
     }
     return !playbackMediaPathForClip(clip).trimmed().isEmpty();
-}
-
-VulkanProgressiveEdgeStretchLayerPolicy vulkanProgressiveEdgeStretchLayerPolicy(
-    const TimelineClip& clip,
-    const QVector<TimelineTrack>& tracks)
-{
-    VulkanProgressiveEdgeStretchLayerPolicy policy;
-    const TimelineClip effectiveClip =
-        tracks.isEmpty() ? clip : clipWithTrackEffectSettings(clip, tracks);
-    policy.presetActive =
-        effectiveClip.effectPreset == ClipEffectPreset::ProgressiveEdgeStretch;
-    policy.sourceEligible = vulkanClipSupportsProgressiveEdgeStretchSource(clip);
-    policy.drawBackground = policy.presetActive && policy.sourceEligible;
-    return policy;
 }
 
 VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
@@ -376,6 +362,14 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         pass.shaderMode = clip.effectPreset == ClipEffectPreset::MirrorRing
             ? kVulkanEffectModeMirrorRing
             : kVulkanEffectModeTessellation;
+        pass.effectParams[0] =
+            static_cast<float>(qBound<qreal>(0.1, clip.effectScale, 8.0));
+        pass.effectParams[1] =
+            static_cast<float>(qBound(1, clip.effectRows, 96));
+        pass.effectParams[2] = static_cast<float>(
+            temporalFrame * qBound<qreal>(-8.0, clip.effectSpeed, 8.0));
+        pass.effectParams[3] =
+            static_cast<float>(qBound<qreal>(0.1, clip.tilingSpacing, 8.0));
         draws.push_back(pass);
     } else if (const float shaderMode = shaderModeForSinglePassPreset(clip.effectPreset);
                shaderMode >= 0.0f) {
@@ -631,6 +625,16 @@ VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingK
     return state;
 }
 
+VulkanGradePayload vulkanGradePayloadForGrade(
+    const TimelineClip::GradingKeyframe& grade)
+{
+    VulkanGradePayload payload;
+    payload.effects = vulkanDrawEffectStateForGrade(grade);
+    payload.curveLutApplied = gradingUsesCurveLut(grade);
+    payload.curveLutRgba = vulkanCurveLutRgbaBytes(grade);
+    return payload;
+}
+
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity)
 {
     return vulkanBackgroundFillEffectState(BackgroundFillEffect::BlurCover,
@@ -644,7 +648,6 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
                                                       float brightness,
                                                       float saturation,
                                                       int edgePixels,
-                                                      bool progressiveEdge,
                                                       float edgePower,
                                                       const QRectF& validTextureRectNorm,
                                                       const VulkanBackgroundFillMapping& mapping)
@@ -659,7 +662,6 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
         effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch ||
         effect == BackgroundFillEffect::Tile ||
         effect == BackgroundFillEffect::Mirror) {
-        Q_UNUSED(progressiveEdge);
         const bool progressive = effect == BackgroundFillEffect::ProgressiveEdgeStretch;
         const bool bidirectional =
             effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;

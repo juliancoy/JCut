@@ -131,6 +131,12 @@ struct VulkanDrawEffectState {
     float highlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
+struct VulkanGradePayload {
+    VulkanDrawEffectState effects;
+    QByteArray curveLutRgba;
+    bool curveLutApplied = false;
+};
+
 struct VulkanBackgroundFillMapping {
     float centerXNorm = 0.5f;
     float centerYNorm = 0.5f;
@@ -141,17 +147,7 @@ struct VulkanBackgroundFillMapping {
     float rotationRadians = 0.0f;
 };
 
-bool vulkanClipSupportsProgressiveEdgeStretchSource(const TimelineClip& clip);
-
-struct VulkanProgressiveEdgeStretchLayerPolicy {
-    bool presetActive = false;
-    bool sourceEligible = false;
-    bool drawBackground = false;
-};
-
-VulkanProgressiveEdgeStretchLayerPolicy vulkanProgressiveEdgeStretchLayerPolicy(
-    const TimelineClip& clip,
-    const QVector<TimelineTrack>& tracks);
+bool vulkanClipSupportsBackgroundFillSource(const TimelineClip& clip);
 
 VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QTransform& sourceToOutput,
@@ -163,6 +159,8 @@ VulkanBackgroundFillMapping vulkanBackgroundFillMapping(
     const QRectF& outputRect);
 
 VulkanDrawEffectState vulkanDrawEffectStateForGrade(const TimelineClip::GradingKeyframe& grade);
+VulkanGradePayload vulkanGradePayloadForGrade(
+    const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
                                                       const VulkanDrawEffectState& baseEffects,
@@ -170,7 +168,6 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
                                                       float brightness = 0.0f,
                                                       float saturation = 1.0f,
                                                       int edgePixels = 1,
-                                                      bool progressiveEdge = false,
                                                       float edgePower = 2.0f,
                                                       const QRectF& validTextureRectNorm = QRectF(0.0, 0.0, 1.0, 1.0),
                                                       const VulkanBackgroundFillMapping& mapping = VulkanBackgroundFillMapping{});

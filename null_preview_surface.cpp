@@ -82,15 +82,9 @@ void NullPreviewSurface::setCorrectionsEnabled(bool enabled) { m_correctionsEnab
 void NullPreviewSurface::setShowCorrectionOverlays(bool show) { m_showCorrectionOverlays = show; requestRepaint(); }
 void NullPreviewSurface::setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; requestRepaint(); }
 void NullPreviewSurface::setBackgroundColor(const QColor& color) { m_backgroundColor = color; requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillEffect(BackgroundFillEffect) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillOpacity(qreal) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillBrightness(qreal) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillSaturation(qreal) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillEdgePixels(int) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillEdgeProgressive(bool) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillEdgePower(qreal) { requestRepaint(); }
-void NullPreviewSurface::setBackgroundFillStretchSourceClipId(const QString&) { requestRepaint(); }
 void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal>(0.1, zoom); requestRepaint(); }
+void NullPreviewSurface::setInstagramSafeAreaGuidesVisible(bool visible) { m_instagramSafeAreaGuides = visible; requestRepaint(); }
+void NullPreviewSurface::setAlignmentGridGuidesVisible(bool visible) { m_alignmentGridGuides = visible; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }
 void NullPreviewSurface::setShowRawDetections(bool show) { m_showRawDetections = show; requestRepaint(); }

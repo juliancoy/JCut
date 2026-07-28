@@ -6,6 +6,7 @@
 #include "external/imgui/backends/imgui_impl_vulkan.h"
 #include "render_internal.h"
 #include "timeline_fps.h"
+#include "vulkan_external_frame_import_core.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_zero_copy_face_detector.h"
 
@@ -17,6 +18,7 @@
 #include <QString>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -155,6 +157,26 @@ std::string trimCopy(const std::string& value)
     return value.substr(begin, end - begin + 1);
 }
 
+std::string formatDurationMs(int64_t value)
+{
+    if (value < 0) {
+        return "--";
+    }
+    const int64_t totalSeconds = value / 1000;
+    const int64_t seconds = totalSeconds % 60;
+    const int64_t minutes = (totalSeconds / 60) % 60;
+    const int64_t hours = totalSeconds / 3600;
+    if (hours > 0) {
+        return formatString("%lld:%02lld:%02lld",
+                            static_cast<long long>(hours),
+                            static_cast<long long>(minutes),
+                            static_cast<long long>(seconds));
+    }
+    return formatString("%lld:%02lld",
+                        static_cast<long long>(minutes),
+                        static_cast<long long>(seconds));
+}
+
 } // namespace
 
 struct ImGuiPreviewWindow::Impl {
@@ -180,8 +202,17 @@ struct ImGuiPreviewWindow::Impl {
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     ImGui_ImplVulkanH_Window windowData{};
+    PFN_vkImportSemaphoreFdKHR importSemaphoreFd = nullptr;
 
     jcut::vulkan_detector::VulkanDetectorFrameHandoff frameHandoff;
+    struct RenderMonitorSlot {
+        std::unique_ptr<jcut::vulkan_import::VulkanExternalFrameImportCore> importer;
+        VkSemaphore ready = VK_NULL_HANDLE;
+        VkSemaphore consumed = VK_NULL_HANDLE;
+        std::uint64_t producerSessionId = 0;
+        bool initialized = false;
+    };
+    std::array<RenderMonitorSlot, 3> renderMonitorSlots;
     VkImageView boundImageView = VK_NULL_HANDLE;
     VkImageLayout boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     jcut::core::SizeI boundImageSize;
@@ -210,6 +241,7 @@ struct ImGuiPreviewWindow::Impl {
     double lastUiTickSec = 0.0;
     double previewFrameAccumulator = 0.0;
     bool redrawRequested = true;
+    bool renderMonitorCancelRequested = false;
 };
 
 ImGuiPreviewWindow::ImGuiPreviewWindow()
@@ -418,6 +450,12 @@ bool createDevice(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
     if (tryEnable(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, false)) {
         extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
     }
+    if (tryEnable(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME, false)) {
+        extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+    }
+    if (tryEnable(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, false)) {
+        extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+    }
 #endif
     if (tryEnable(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, false)) {
         extensions.push_back(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME);
@@ -456,6 +494,9 @@ bool createDevice(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
         return false;
     }
     vkGetDeviceQueue(impl->device, impl->queueFamily, 0, &impl->queue);
+    impl->importSemaphoreFd =
+        reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(impl->device, "vkImportSemaphoreFdKHR"));
     return true;
 }
 
@@ -550,6 +591,20 @@ void cleanupVulkan(ImGuiPreviewWindow::Impl* impl)
     if (impl->device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(impl->device);
     }
+    for (ImGuiPreviewWindow::Impl::RenderMonitorSlot& slot :
+         impl->renderMonitorSlots) {
+        if (slot.importer) {
+            slot.importer->release();
+            slot.importer.reset();
+        }
+        if (slot.ready != VK_NULL_HANDLE) {
+            vkDestroySemaphore(impl->device, slot.ready, nullptr);
+        }
+        if (slot.consumed != VK_NULL_HANDLE) {
+            vkDestroySemaphore(impl->device, slot.consumed, nullptr);
+        }
+        slot = {};
+    }
     if (impl->textureSet != VK_NULL_HANDLE) {
         ImGui_ImplVulkan_RemoveTexture(impl->textureSet);
         impl->textureSet = VK_NULL_HANDLE;
@@ -590,9 +645,173 @@ void cleanupVulkan(ImGuiPreviewWindow::Impl* impl)
     impl->physicalDevice = VK_NULL_HANDLE;
     impl->queueFamily = UINT32_MAX;
     impl->queue = VK_NULL_HANDLE;
+    impl->importSemaphoreFd = nullptr;
     impl->boundImageView = VK_NULL_HANDLE;
     impl->boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     impl->boundImageSize = {};
+}
+
+bool consumeRenderMonitorExportFrame(
+    ImGuiPreviewWindow::Impl* impl,
+    const render_detail::OffscreenVulkanFrame& frame,
+    jcut::vulkan_import::ExternalImage* imageOut,
+    std::string* errorOut)
+{
+    if (imageOut) {
+        *imageOut = {};
+    }
+    if (!impl || impl->device == VK_NULL_HANDLE ||
+        impl->queue == VK_NULL_HANDLE ||
+        impl->queueFamily == UINT32_MAX) {
+        if (errorOut) {
+            *errorOut = "Dear ImGui render monitor Vulkan device is unavailable.";
+        }
+        return false;
+    }
+    if (!frame.valid || frame.bufferIndex >= impl->renderMonitorSlots.size()) {
+        if (errorOut) {
+            *errorOut = "Dear ImGui render monitor received an invalid export frame slot.";
+        }
+        return false;
+    }
+    if (!impl->importSemaphoreFd) {
+        if (errorOut) {
+            *errorOut =
+                "Dear ImGui render monitor Vulkan device cannot import external semaphore FDs.";
+        }
+        return false;
+    }
+
+    ImGuiPreviewWindow::Impl::RenderMonitorSlot& slot =
+        impl->renderMonitorSlots[frame.bufferIndex];
+    const auto resetSlot = [&]() {
+        if (slot.importer) {
+            slot.importer->release();
+            slot.importer.reset();
+        }
+        if (slot.ready != VK_NULL_HANDLE) {
+            vkDestroySemaphore(impl->device, slot.ready, nullptr);
+        }
+        if (slot.consumed != VK_NULL_HANDLE) {
+            vkDestroySemaphore(impl->device, slot.consumed, nullptr);
+        }
+        slot = {};
+    };
+    if (slot.initialized &&
+        slot.producerSessionId != frame.producerSessionId) {
+        vkQueueWaitIdle(impl->queue);
+        resetSlot();
+    }
+
+    if (!slot.initialized) {
+        if (frame.readySemaphoreFd < 0 || frame.consumedSemaphoreFd < 0) {
+            if (errorOut) {
+                *errorOut =
+                    "Dear ImGui render monitor received a new export slot without semaphore FDs.";
+            }
+            return false;
+        }
+        slot.importer =
+            std::make_unique<jcut::vulkan_import::VulkanExternalFrameImportCore>();
+        const jcut::vulkan_import::DeviceContext context{
+            impl->physicalDevice,
+            impl->device,
+            impl->queue,
+            impl->queueFamily};
+        if (!slot.importer->initialize(context, errorOut)) {
+            close(frame.readySemaphoreFd);
+            close(frame.consumedSemaphoreFd);
+            resetSlot();
+            return false;
+        }
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(impl->device, &semaphoreInfo, nullptr,
+                              &slot.ready) != VK_SUCCESS ||
+            vkCreateSemaphore(impl->device, &semaphoreInfo, nullptr,
+                              &slot.consumed) != VK_SUCCESS) {
+            close(frame.readySemaphoreFd);
+            close(frame.consumedSemaphoreFd);
+            resetSlot();
+            if (errorOut) {
+                *errorOut =
+                    "Dear ImGui render monitor failed to create imported export semaphores.";
+            }
+            return false;
+        }
+
+        VkImportSemaphoreFdInfoKHR import{};
+        import.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
+        import.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        import.semaphore = slot.ready;
+        import.fd = frame.readySemaphoreFd;
+        if (impl->importSemaphoreFd(impl->device, &import) != VK_SUCCESS) {
+            close(frame.readySemaphoreFd);
+            close(frame.consumedSemaphoreFd);
+            resetSlot();
+            if (errorOut) {
+                *errorOut =
+                    "Dear ImGui render monitor failed to import ready semaphore FD.";
+            }
+            return false;
+        }
+        import.semaphore = slot.consumed;
+        import.fd = frame.consumedSemaphoreFd;
+        if (impl->importSemaphoreFd(impl->device, &import) != VK_SUCCESS) {
+            close(frame.consumedSemaphoreFd);
+            resetSlot();
+            if (errorOut) {
+                *errorOut =
+                    "Dear ImGui render monitor failed to import consumed semaphore FD.";
+            }
+            return false;
+        }
+        slot.producerSessionId = frame.producerSessionId;
+        slot.initialized = true;
+    }
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo waitForReady{};
+    waitForReady.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    waitForReady.waitSemaphoreCount = 1;
+    waitForReady.pWaitSemaphores = &slot.ready;
+    waitForReady.pWaitDstStageMask = &waitStage;
+    if (vkQueueSubmit(impl->queue, 1, &waitForReady, VK_NULL_HANDLE) !=
+        VK_SUCCESS) {
+        if (errorOut) {
+            *errorOut =
+                "Dear ImGui render monitor failed to wait for the exported frame.";
+        }
+        return false;
+    }
+
+    const auto signalConsumed = [&]() -> bool {
+        VkSubmitInfo signal{};
+        signal.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        signal.signalSemaphoreCount = 1;
+        signal.pSignalSemaphores = &slot.consumed;
+        const bool submitted =
+            vkQueueSubmit(impl->queue, 1, &signal, VK_NULL_HANDLE) ==
+            VK_SUCCESS;
+        if (submitted && frame.consumptionState) {
+            frame.consumptionState->completedGeneration.store(
+                frame.generation, std::memory_order_release);
+        }
+        return submitted;
+    };
+
+    if (!slot.importer ||
+        !slot.importer->importExternalFrame(frame, errorOut) ||
+        !slot.importer->finishPendingCopy(nullptr, errorOut)) {
+        signalConsumed();
+        return false;
+    }
+    signalConsumed();
+    if (imageOut) {
+        *imageOut = slot.importer->externalImage();
+    }
+    return imageOut && imageOut->imageView != VK_NULL_HANDLE &&
+        imageOut->size.valid();
 }
 
 bool ensureVulkanReady(ImGuiPreviewWindow::Impl* impl,
@@ -1126,7 +1345,6 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
                                       int detectionCount)
 {
     m_impl->updatePending = true;
-    pumpEvents();
     if (!isActive()) {
         m_impl->updatePending = false;
         return false;
@@ -1192,7 +1410,6 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
     ImGui::Begin("JCut FaceDetections Preview", nullptr, flags);
     ImGui::TextUnformatted(m_impl->windowTitle.c_str());
     if (!trimCopy(m_impl->statusText).empty()) {
@@ -1501,6 +1718,184 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     m_impl->redrawRequested = false;
     m_impl->updatePending = false;
     return true;
+}
+
+bool ImGuiPreviewWindow::presentRenderMonitorFrame(
+    const render_detail::OffscreenVulkanFrame& frame,
+    const RenderMonitorStatus& status)
+{
+    m_impl->updatePending = true;
+    if (!isActive()) {
+        m_impl->updatePending = false;
+        return false;
+    }
+    if (!frame.valid || frame.imageView == VK_NULL_HANDLE || !frame.size.valid()) {
+        m_impl->updatePending = false;
+        return false;
+    }
+
+    std::string error;
+    if (!ensureVulkanReady(m_impl.get(), VK_NULL_HANDLE, &error)) {
+        markFailure(error);
+        m_impl->updatePending = false;
+        return false;
+    }
+    rebuildSwapchainIfNeeded(m_impl.get());
+
+    jcut::vulkan_import::ExternalImage external;
+    std::string handoffError;
+    if (!consumeRenderMonitorExportFrame(
+            m_impl.get(), frame, &external, &handoffError)) {
+        markFailure(handoffError);
+        m_impl->updatePending = false;
+        return false;
+    }
+    if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
+        markFailure("Dear ImGui render monitor received an invalid imported Vulkan image.");
+        m_impl->updatePending = false;
+        return false;
+    }
+
+    if (m_impl->textureSet == VK_NULL_HANDLE ||
+        m_impl->boundImageView != external.imageView ||
+        m_impl->boundImageLayout != external.imageLayout) {
+        if (m_impl->textureSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(m_impl->textureSet);
+            m_impl->textureSet = VK_NULL_HANDLE;
+        }
+        m_impl->textureSet =
+            ImGui_ImplVulkan_AddTexture(m_impl->sampler,
+                                        external.imageView,
+                                        external.imageLayout);
+        if (m_impl->textureSet == VK_NULL_HANDLE) {
+            markFailure("Failed to bind exported Vulkan frame into Dear ImGui.");
+            m_impl->updatePending = false;
+            return false;
+        }
+        m_impl->boundImageView = external.imageView;
+        m_impl->boundImageLayout = external.imageLayout;
+    }
+    m_impl->boundImageSize = external.size;
+
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
+    ImGui::Begin("JCut Render Monitor", nullptr, flags);
+    ImGui::TextUnformatted(m_impl->windowTitle.empty()
+                               ? "JCut Render Monitor"
+                               : m_impl->windowTitle.c_str());
+    if (!trimCopy(m_impl->statusText).empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", m_impl->statusText.c_str());
+    }
+    ImGui::Separator();
+
+    const int64_t totalFrames = std::max<int64_t>(1, status.totalFrames);
+    const int64_t completedFrames =
+        std::clamp<int64_t>(status.framesCompleted, 0, totalFrames);
+    const float fraction =
+        static_cast<float>(completedFrames) / static_cast<float>(totalFrames);
+    const std::string progressTitle =
+        formatString("Export %.1f%%", fraction * 100.0f);
+    const std::string progressDetail =
+        formatString("%lld / %lld frames   timeline %lld   ETA %s",
+                     static_cast<long long>(completedFrames),
+                     static_cast<long long>(totalFrames),
+                     static_cast<long long>(status.timelineFrame),
+                     formatDurationMs(status.estimatedRemainingMs).c_str());
+    drawAnimatedProgressBar("render_monitor_progress",
+                            fraction,
+                            progressTitle,
+                            progressDetail);
+
+    if (ImGui::Button("Cancel Render")) {
+        m_impl->renderMonitorCancelRequested = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("Elapsed %s", formatDurationMs(status.elapsedMs).c_str());
+    ImGui::SameLine();
+    ImGui::Text("Segment %d / %d",
+                status.segmentIndex,
+                std::max(1, status.segmentCount));
+    if (status.incrementalChunksTotal > 0) {
+        ImGui::Text("Incremental chunks: %d / %d   reused frames: %lld",
+                    status.incrementalChunksCompleted,
+                    status.incrementalChunksTotal,
+                    static_cast<long long>(status.incrementalFramesReused));
+    }
+    if (!status.cachePath.empty()) {
+        ImGui::TextWrapped("Cache: %s", status.cachePath.c_str());
+    }
+    ImGui::Separator();
+    ImGui::Columns(2, "render_monitor_stats", false);
+    ImGui::TextUnformatted("Pipeline");
+    ImGui::Text("Renderer: %s", status.usingGpu ? "Vulkan" : "CPU");
+    ImGui::Text("Encoder: %s",
+                status.encoderLabel.empty() ? "unknown"
+                                            : status.encoderLabel.c_str());
+    ImGui::Text("Hardware encode: %s",
+                status.usingHardwareEncode ? "yes" : "no");
+    ImGui::Text("Transfer: %s",
+                status.gpuTransferLabel.empty()
+                    ? "unknown"
+                    : status.gpuTransferLabel.c_str());
+    ImGui::Text("Image sequence: %s",
+                status.createVideoFromImageSequence ? "yes" : "no");
+    ImGui::NextColumn();
+    ImGui::TextUnformatted("Cumulative stage time");
+    ImGui::Text("Render: %.2fs", status.renderStageMs / 1000.0);
+    ImGui::Text("Decode: %.2fs", status.decodeStageMs / 1000.0);
+    ImGui::Text("Texture: %.2fs", status.textureStageMs / 1000.0);
+    ImGui::Text("Composite: %.2fs", status.compositeStageMs / 1000.0);
+    ImGui::Text("Readback: %.2fs", status.readbackStageMs / 1000.0);
+    ImGui::Text("Encode: %.2fs", status.encodeStageMs / 1000.0);
+    ImGui::Columns(1);
+    ImGui::Separator();
+
+    const ImVec2 imageAvail = ImGui::GetContentRegionAvail();
+    const ImVec2 fitted = fitImageIntoRegion(external.size, imageAvail);
+    const float offsetX = std::max(0.0f, (imageAvail.x - fitted.x) * 0.5f);
+    if (offsetX > 0.0f) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offsetX);
+    }
+    ImGui::Image(m_impl->textureSet,
+                 fitted,
+                 ImVec2(0.0f, 0.0f),
+                 ImVec2(1.0f, 1.0f));
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+
+    ImGui::Render();
+    ImDrawData* drawData = ImGui::GetDrawData();
+    const bool minimized =
+        drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f;
+    if (!minimized) {
+        frameRender(m_impl.get(), drawData);
+        framePresent(m_impl.get());
+    }
+
+    m_impl->lastPresentedSourceFrame = status.timelineFrame;
+    m_impl->redrawRequested = false;
+    m_impl->updatePending = false;
+    return true;
+}
+
+bool ImGuiPreviewWindow::renderMonitorCancelRequested() const
+{
+    return m_impl && m_impl->renderMonitorCancelRequested;
 }
 
 void ImGuiPreviewWindow::shutdown()

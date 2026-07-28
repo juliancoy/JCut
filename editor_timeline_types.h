@@ -49,7 +49,6 @@ enum class ClipEffectPreset {
     DirectionalTrimTicker,
     SourceTile,
     Vulkan3DSynth,
-    ProgressiveEdgeStretch,
     DifferenceMatte,
     TemporalEcho,
     MirrorRing,

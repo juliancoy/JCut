@@ -4,6 +4,8 @@
 #include "titles.h"
 
 #include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -992,12 +994,33 @@ void setOverlayRenderBackendForTesting(OverlayRenderBackend* backend)
 
 TitleLayoutMetrics measureOverlayTitleLayout(const EvaluatedTitle& title, qreal fontScale)
 {
+    static QMutex cacheMutex;
+    static QHash<QString, TitleLayoutMetrics> cache;
+    const qreal effectiveScale = qMax<qreal>(0.001, fontScale);
+    const QString cacheKey =
+        title.text + QLatin1Char('|') +
+        title.fontFamily + QLatin1Char('|') +
+        QString::number(title.bold ? 1 : 0) + QLatin1Char('|') +
+        QString::number(title.italic ? 1 : 0) + QLatin1Char('|') +
+        QString::number(title.fontSize, 'f', 4) + QLatin1Char('|') +
+        QString::number(effectiveScale, 'f', 6) + QLatin1Char('|') +
+        QString::number(title.windowWidth, 'f', 4) + QLatin1Char('|') +
+        QString::number(title.windowPadding, 'f', 4);
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto cached = cache.constFind(cacheKey);
+        if (cached != cache.constEnd()) {
+            return cached.value();
+        }
+    }
+
     TitleLayoutMetrics result;
     const QStringList lines = title.text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
     result.lineCount = qMax(1, lines.size());
     FT_Face face = nullptr;
     FontMetricsData metrics;
-    const int pixelSize = qMax(1, static_cast<int>(std::round(title.fontSize * qMax<qreal>(0.001, fontScale))));
+    const int pixelSize =
+        qMax(1, static_cast<int>(std::round(title.fontSize * effectiveScale)));
     if (!loadFontFace(title.fontFamily, title.bold, title.italic, pixelSize, &face, &metrics)) {
         return result;
     }
@@ -1013,8 +1036,15 @@ TitleLayoutMetrics measureOverlayTitleLayout(const EvaluatedTitle& title, qreal 
     }
     if (title.windowWidth > 0.0) {
         result.width = qMax(result.width,
-                            title.windowWidth * qMax<qreal>(0.001, fontScale) -
-                                (qMax<qreal>(0.0, title.windowPadding) * qMax<qreal>(0.001, fontScale) * 2.0));
+                            title.windowWidth * effectiveScale -
+                                (qMax<qreal>(0.0, title.windowPadding) * effectiveScale * 2.0));
+    }
+    {
+        QMutexLocker locker(&cacheMutex);
+        if (cache.size() >= 1024) {
+            cache.clear();
+        }
+        cache.insert(cacheKey, result);
     }
     return result;
 }

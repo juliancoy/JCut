@@ -48,8 +48,13 @@ public:
         QSpinBox* autosaveMaxBackupsSpin = nullptr;
         QSpinBox* historyMaxEntriesSpin = nullptr;
         QSpinBox* historyMaxMegabytesSpin = nullptr;
+        QCheckBox* incrementalRenderCheckBox = nullptr;
+        QCheckBox* instagramSafeAreaGuidesCheckBox = nullptr;
+        QCheckBox* alignmentGridGuidesCheckBox = nullptr;
         QCheckBox* createImageSequenceCheckBox = nullptr;
         QComboBox* imageSequenceFormatCombo = nullptr;
+        QLabel* renderCachePathLabel = nullptr;
+        QPushButton* clearRenderCacheButton = nullptr;
         QPushButton* renderButton = nullptr;
     };
 
@@ -113,10 +118,12 @@ private slots:
     void onAutosaveMaxBackupsChanged(int value);
     void onHistoryMaxEntriesChanged(int value);
     void onHistoryMaxMegabytesChanged(int value);
+    void onClearRenderCacheClicked();
     void onRenderClicked();
 
 private:
     void updateRangeSummary();
+    void updateRenderCacheStatus();
     void updateRenderButtonState();
 
     Widgets m_widgets;

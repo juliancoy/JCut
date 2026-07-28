@@ -277,7 +277,13 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(const EditorClip& sourceClip,
         std::int64_t startFrame = 0;
         int priority = 0;
     };
+    struct SpeakerRun {
+        std::string speakerId;
+        std::int64_t startFrame = 0;
+        std::int64_t endFrame = 0;
+    };
     std::vector<TitleEvent> events;
+    std::vector<SpeakerRun> speakerRuns;
     std::size_t runStart = 0;
     for (std::size_t index = 1; index <= keptRows.size(); ++index) {
         const bool runEnded = index == keptRows.size() || keptRows[index].speakerId != keptRows[runStart].speakerId;
@@ -285,6 +291,11 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(const EditorClip& sourceClip,
             continue;
         const TranscriptRow& first = keptRows[runStart];
         const std::int64_t runStartFrame = timelineFrameForSource(first.sourceStartFrame);
+        const std::int64_t runEndFrame =
+            index < keptRows.size()
+                ? timelineFrameForSource(keptRows[index].sourceStartFrame)
+                : timelineEnd;
+        speakerRuns.push_back({first.speakerId, runStartFrame, runEndFrame});
         events.push_back({first.speakerId, runStartFrame, 2});
         if (settings.showAtSectionEnd) {
             std::int64_t runEndSourceFrame = first.sourceEndFrame;
@@ -302,23 +313,18 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(const EditorClip& sourceClip,
     }
     const std::int64_t cadence = std::max<std::int64_t>(0, settings.cadenceFrames);
     if (cadence > 0) {
-        std::ptrdiff_t rowIndex = -1;
-        for (std::int64_t cadenceFrame = sourceClip.startFrame + cadence; cadenceFrame < timelineEnd;
-             cadenceFrame += cadence) {
-            const std::int64_t cadenceSourceFrame =
-                sourceStart + static_cast<std::int64_t>(std::llround((cadenceFrame - sourceClip.startFrame) * rate));
-            while (rowIndex + 1 < static_cast<std::ptrdiff_t>(keptRows.size()) &&
-                   keptRows[static_cast<std::size_t>(rowIndex + 1)].sourceStartFrame <= cadenceSourceFrame) {
-                ++rowIndex;
-            }
-            if (rowIndex < 0)
-                continue;
-            const bool titleAlreadyScheduled =
-                std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
-                    return cadenceFrame >= event.startFrame && cadenceFrame < event.startFrame + titleDuration;
-                });
-            if (!titleAlreadyScheduled) {
-                events.push_back({keptRows[static_cast<std::size_t>(rowIndex)].speakerId, cadenceFrame, 1});
+        for (const SpeakerRun& run : speakerRuns) {
+            for (std::int64_t cadenceFrame = run.startFrame + cadence;
+                 cadenceFrame < run.endFrame;
+                 cadenceFrame += cadence) {
+                const bool titleAlreadyScheduled =
+                    std::any_of(events.cbegin(), events.cend(), [&](const TitleEvent& event) {
+                        return cadenceFrame >= event.startFrame &&
+                               cadenceFrame < event.startFrame + titleDuration;
+                    });
+                if (!titleAlreadyScheduled) {
+                    events.push_back({run.speakerId, cadenceFrame, 1});
+                }
             }
         }
     }
@@ -362,6 +368,7 @@ std::vector<EditorClip> makeSpeakerTitleClipsCore(const EditorClip& sourceClip,
         titleClip.audioEnabled = false;
         titleClip.audioPresenceKnown = true;
         titleClip.hasAudio = false;
+        titleClip.effectSkipAwareTiming = settings.respectSpeechFilterTiming;
         titleClip.clipRole = "speaker_title";
         titleClip.linkedSourceClipId = sourceClip.persistentId;
         titleClip.syncLockedToSource = true;

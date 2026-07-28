@@ -112,8 +112,15 @@ EvaluatedTitle evaluateTitleAtTimelinePosition(const TimelineClip& clip,
                                                qreal timelineFramePosition,
                                                const PlaybackTimingContext& timing)
 {
-    const qreal animationFrame = clipPlaybackFramePositionForTimelineFrame(
-        clip, timelineFramePosition, timing);
+    const qreal animationFrame =
+        clip.effectSkipAwareTiming
+            ? clipPlaybackFramePositionForTimelineFrame(
+                  clip, timelineFramePosition, timing)
+            : qBound<qreal>(
+                  0.0,
+                  timelineFramePosition - static_cast<qreal>(clip.startFrame),
+                  static_cast<qreal>(qMax<int64_t>(
+                      0, clip.durationFrames - 1)));
     return evaluateTitleAtLocalFrame(clip, animationFrame);
 }
 
@@ -125,6 +132,25 @@ EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacit
     }
     composed.opacity = qBound<qreal>(0.0, composed.opacity * opacityMultiplier, 1.0);
     return composed;
+}
+
+EvaluatedTitle prepareRenderableTitleForVulkanText(const TimelineClip& clip,
+                                                   qreal timelineFramePosition,
+                                                   const PlaybackTimingContext& timing,
+                                                   qreal opacityMultiplier,
+                                                   const QSize& outputSize)
+{
+    const EvaluatedTitle evaluated =
+        evaluateTitleAtTimelinePosition(clip, timelineFramePosition, timing);
+    EvaluatedTitle prepared = fitTitleToOutput(
+        composeTitleWithOpacity(evaluated, opacityMultiplier),
+        outputSize);
+    if (!prepared.valid ||
+        prepared.text.trimmed().isEmpty() ||
+        prepared.opacity <= 0.001) {
+        prepared.valid = false;
+    }
+    return prepared;
 }
 
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale)

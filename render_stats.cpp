@@ -168,6 +168,10 @@ QJsonObject buildWorstFrameTable(const QVector<RenderFrameStageStats>& worstFram
         QStringLiteral("render_ms"),
         QStringLiteral("decode_ms"),
         QStringLiteral("texture_ms"),
+        QStringLiteral("layer_plan_ms"),
+        QStringLiteral("text_prep_ms"),
+        QStringLiteral("guide_overlay_ms"),
+        QStringLiteral("gpu_composite_ms"),
         QStringLiteral("readback_ms"),
         QStringLiteral("convert_ms")
     };
@@ -180,6 +184,10 @@ QJsonObject buildWorstFrameTable(const QVector<RenderFrameStageStats>& worstFram
             {QStringLiteral("render_ms"), stats.renderMs},
             {QStringLiteral("decode_ms"), stats.decodeMs},
             {QStringLiteral("texture_ms"), stats.textureMs},
+            {QStringLiteral("layer_plan_ms"), stats.layerPlanMs},
+            {QStringLiteral("text_prep_ms"), stats.textPrepMs},
+            {QStringLiteral("guide_overlay_ms"), stats.guideOverlayMs},
+            {QStringLiteral("gpu_composite_ms"), stats.gpuCompositeMs},
             {QStringLiteral("readback_ms"), stats.readbackMs},
             {QStringLiteral("convert_ms"), stats.convertMs}
         });

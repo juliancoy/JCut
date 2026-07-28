@@ -1104,14 +1104,12 @@ void SpeakersTab::showNoTranscriptState(const TimelineClip* clip, const QString&
     if (m_widgets.speakerCreateTitleClipsButton) {
         m_widgets.speakerCreateTitleClipsButton->setEnabled(false);
     }
-    if (m_widgets.speakerOverlayCreateTitleClipsButton) {
-        m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(false);
-    }
 
     setTableMessage(m_widgets.speakersTable, 7, message);
     setTableMessage(m_widgets.speakerSectionsTable, SpeakerSectionColumnCount, message);
     syncSpeakerListMode();
     m_updating = false;
+    refreshSpeakerTitleControlState();
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
 }
@@ -1339,6 +1337,9 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
     flyInSettings.showAtSectionEnd =
         m_widgets.speakerOverlayShowAtSectionEndCheckBox &&
         m_widgets.speakerOverlayShowAtSectionEndCheckBox->isChecked();
+    flyInSettings.respectSpeechFilterTiming =
+        !m_widgets.speakerOverlayRespectSpeechFilterTimingCheckBox ||
+        m_widgets.speakerOverlayRespectSpeechFilterTimingCheckBox->isChecked();
     if (m_widgets.speakerOverlayCadenceSpin) {
         flyInSettings.cadenceFrames = qMax<int64_t>(
             0,
@@ -1478,7 +1479,7 @@ void SpeakersTab::onSpeakerCreateTitleClipsClicked()
 
 void SpeakersTab::scheduleSpeakerTitleRegeneration()
 {
-    if (m_updating || !m_widgets.speakerOverlayCreateTitleClipsButton) {
+    if (!m_widgets.speakerOverlayCreateTitleClipsButton) {
         return;
     }
     const TimelineClip* selectedClip = m_deps.getSelectedClip
@@ -1518,9 +1519,63 @@ bool SpeakersTab::activeCutMutable() const
            originalTranscriptPathForClip(m_transcriptSession.clipFilePath());
 }
 
+void SpeakersTab::refreshSpeakerTitleControlState()
+{
+    QCheckBox* control = m_widgets.speakerOverlayCreateTitleClipsButton;
+    if (!control) {
+        return;
+    }
+
+    const TimelineClip* clip =
+        m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    QString transcriptPath;
+    QJsonDocument transcriptDocument;
+    const bool hasTranscript =
+        clip && m_speakerDeps.getActiveTranscriptSnapshot &&
+        m_speakerDeps.getActiveTranscriptSnapshot(
+            &transcriptPath, &transcriptDocument) &&
+        !transcriptPath.trimmed().isEmpty() &&
+        transcriptDocument.isObject();
+    const bool mutableCut =
+        hasTranscript &&
+        QFileInfo(transcriptPath).absoluteFilePath() !=
+            QFileInfo(originalTranscriptPathForClip(clip->filePath)).absoluteFilePath();
+    const bool mutationAvailable =
+        static_cast<bool>(m_speakerDeps.updateClipById) &&
+        static_cast<bool>(m_speakerDeps.replaceSpeakerTitleClips);
+    const bool enabled = clip && hasTranscript && mutableCut && mutationAvailable;
+
+    control->setEnabled(enabled);
+    {
+        QSignalBlocker blocker(control);
+        control->setChecked(clip && clip->speakerTitleEngineActive);
+    }
+
+    QString tooltip;
+    if (!clip) {
+        tooltip = QStringLiteral(
+            "Select a transcript-backed source clip.");
+    } else if (!hasTranscript) {
+        tooltip = QStringLiteral(
+            "Load a transcript document for the selected source clip.");
+    } else if (!mutableCut) {
+        tooltip = QStringLiteral(
+            "Create or select an editable transcript cut first.");
+    } else if (!mutationAvailable) {
+        tooltip = QStringLiteral(
+            "Timeline title generation is unavailable.");
+    } else {
+        tooltip = QStringLiteral(
+            "Generate transcript-linked title events for speaker introductions. "
+            "Turn off to remove those child events.");
+    }
+    control->setToolTip(tooltip);
+}
+
 void SpeakersTab::refresh()
 {
     m_updating = true;
+    refreshSpeakerTitleControlState();
     hideSpeakerAvatarHoverPreview();
     const QString selectedSpeakerBeforeClear = selectedSpeakerId();
     const QString preferredSpeakerId =
@@ -3620,13 +3675,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerCreateTitleClipsButton->setEnabled(
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
     }
-    if (m_widgets.speakerOverlayCreateTitleClipsButton) {
-        m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(
-            canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
-        QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
-        m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
-            selectedClip && selectedClip->speakerTitleEngineActive);
-    }
+    refreshSpeakerTitleControlState();
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);
     }
@@ -4035,13 +4084,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabelFast()
         m_widgets.speakerCreateTitleClipsButton->setEnabled(
             canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
     }
-    if (m_widgets.speakerOverlayCreateTitleClipsButton) {
-        m_widgets.speakerOverlayCreateTitleClipsButton->setEnabled(
-            canRunClipActions && static_cast<bool>(m_speakerDeps.updateClipById));
-        QSignalBlocker blocker(m_widgets.speakerOverlayCreateTitleClipsButton);
-        m_widgets.speakerOverlayCreateTitleClipsButton->setChecked(
-            selectedClip && selectedClip->speakerTitleEngineActive);
-    }
+    refreshSpeakerTitleControlState();
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setEnabled(hasClip && hasTranscript);
     }

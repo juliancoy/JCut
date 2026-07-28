@@ -269,6 +269,7 @@ struct TranscriptInspectorCache {
     double speakerTitleDurationSeconds = 3.0;
     double speakerTitleDelaySeconds = 0.35;
     bool speakerTitleShowAtSectionEnd = false;
+    bool speakerTitleRespectSpeechFilterTiming = true;
     double speakerTitleCadenceSeconds = 0.0;
     double speakerTitleFlySeconds = 0.35;
     bool speakerTitleShowOrganization = true;
@@ -9584,6 +9585,17 @@ bool effectPresetIsSpeakerMask(std::string_view presetId)
         presetId == "speaker_mask_dilation_rings";
 }
 
+bool effectPresetIsMirrorGeometry(std::string_view presetId)
+{
+    return presetId == "mirror_ring" ||
+        presetId == "kaleidoscope" ||
+        presetId == "quad_mirror" ||
+        presetId == "infinite_mirror" ||
+        presetId == "tessellation" ||
+        presetId == "hexagonal_prism" ||
+        presetId == "droste";
+}
+
 bool effectPresetUsesCommonNeutralParameters(std::string_view presetId)
 {
     return presetId == "news_logo_ticker" ||
@@ -9594,17 +9606,21 @@ bool effectPresetUsesCommonNeutralParameters(std::string_view presetId)
         presetId == "directional_trim_ticker" ||
         presetId == "source_tile" ||
         presetId == "vulkan_3d_synth" ||
-        presetId == "progressive_edge_stretch" ||
         presetId == "sobel_edges" ||
         presetId == "neon_glow" ||
+        effectPresetIsMirrorGeometry(presetId) ||
         effectPresetIsSpeakerMask(presetId);
 }
 
 bool effectPresetUsesTilingParameters(std::string_view presetId)
 {
-    return presetId == "source_tile" ||
-        presetId == "tessellation" ||
-        presetId == "hexagonal_prism" ||
+    return presetId == "source_tile";
+}
+
+bool effectPresetUsesSpacingParameter(std::string_view presetId)
+{
+    return effectPresetUsesTilingParameters(presetId) ||
+        effectPresetIsMirrorGeometry(presetId) ||
         effectPresetIsSpeakerMask(presetId);
 }
 
@@ -11608,9 +11624,6 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             if (ImGui::BeginCombo("Preset", presetLabel.c_str())) {
                 for (const std::string_view optionId : jcut::kEditorEffectPresetIds) {
-                    if (optionId == "progressive_edge_stretch") {
-                        continue;
-                    }
                     const bool selected = presetId == optionId;
                     const std::string optionLabel = effectPresetDisplayName(optionId);
                     if (ImGui::Selectable(optionLabel.c_str(), selected)) {
@@ -11627,7 +11640,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             const bool edge = presetId == "sobel_edges";
             const bool neon = presetId == "neon_glow";
             const bool speakerMask = effectPresetIsSpeakerMask(presetId);
-            const bool progressiveEdge = presetId == "progressive_edge_stretch";
+            const bool mirrorGeometry = effectPresetIsMirrorGeometry(presetId);
+            const bool sectorEffect =
+                presetId == "mirror_ring" || presetId == "kaleidoscope";
+            const bool recursionEffect =
+                presetId == "droste" || presetId == "infinite_mirror";
             const bool commonParameters =
                 effectPresetUsesCommonNeutralParameters(presetId);
             const int contextualMaxRows = edge || neon
@@ -11685,7 +11702,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                            ? "Glow Radius"
                            : (speakerMask
                                   ? "Dilation Radius"
-                                  : (progressiveEdge ? "Edge Width" : "Copies")));
+                                  : (sectorEffect
+                                         ? "Mirror Sectors"
+                                         : (recursionEffect
+                                                ? "Recursion Density"
+                                                : (mirrorGeometry
+                                                       ? "Cells Across"
+                                                       : "Copies")))));
                 effectChanged |= ImGui::SliderInt(
                     rowsLabel,
                     &rows,
@@ -11696,8 +11719,9 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 if (!edge) {
                     const char* speedLabel = neon
                         ? "Hue Speed"
-                        : (speakerMask ? "Color Cycle Speed" : "Speed");
-                    ImGui::BeginDisabled(progressiveEdge);
+                        : (speakerMask
+                               ? "Color Cycle Speed"
+                               : (mirrorGeometry ? "Rotation Speed" : "Speed"));
                     effectChanged |= ImGui::SliderFloat(
                         speedLabel,
                         &speed,
@@ -11705,7 +11729,6 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                         static_cast<float>(jcut::kEditorEffectMaxSpeed),
                         "%.2f");
                     beginRuntimeHistoryTransactionForLastItem(shellState);
-                    ImGui::EndDisabled();
                 }
 
                 const char* scaleLabel = edge
@@ -11714,7 +11737,9 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                            ? "Glow Intensity"
                            : (speakerMask
                                   ? "Opacity"
-                                  : (progressiveEdge ? "Curve Power" : "Scale")));
+                                  : (mirrorGeometry
+                                         ? "Output Grain Size"
+                                         : "Scale")));
                 effectChanged |= ImGui::SliderFloat(
                     scaleLabel,
                     &scale,
@@ -11723,11 +11748,9 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     "%.2f");
                 beginRuntimeHistoryTransactionForLastItem(shellState);
 
-                if (!edge && !neon && !speakerMask) {
-                    ImGui::BeginDisabled(progressiveEdge);
+                if (!edge && !neon && !speakerMask && !mirrorGeometry) {
                     effectChanged |= ImGui::Checkbox(
                         "Alternate Direction", &alternate);
-                    ImGui::EndDisabled();
                 }
             }
             if (presetId == "difference_matte") {
@@ -11782,6 +11805,18 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     "Tiling Spacing", &tilingSpacing, 0.1f, 8.0f, "%.2f");
                 beginRuntimeHistoryTransactionForLastItem(shellState);
                 effectChanged |= ImGui::Checkbox("Wrap Across Bounds", &tilingWrap);
+            }
+            if (effectPresetUsesSpacingParameter(presetId) &&
+                !effectPresetUsesTilingParameters(presetId)) {
+                effectChanged |= ImGui::SliderFloat(
+                    recursionEffect
+                        ? "Recursion Spacing"
+                        : (mirrorGeometry ? "Geometry Amount" : "Color Spacing"),
+                    &tilingSpacing,
+                    0.1f,
+                    8.0f,
+                    "%.2f");
+                beginRuntimeHistoryTransactionForLastItem(shellState);
             }
             ImGui::SeparatorText("Effect Animation");
             effectChanged |= ImGui::Checkbox(
@@ -11853,7 +11888,7 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             }
             const bool movingPresetTranscriptTiming =
                 commonParameters && !edge && !neon && !speakerMask &&
-                !progressiveEdge;
+                true;
             if (effectModulationMode == "steady_increase" ||
                 movingPresetTranscriptTiming) {
                 effectChanged |= ImGui::Checkbox(
@@ -15271,6 +15306,9 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                     ImGui::Checkbox(
                         "Also show near section end",
                         &cache.speakerTitleShowAtSectionEnd);
+                    ImGui::Checkbox(
+                        "Respect Speech Filter Timing",
+                        &cache.speakerTitleRespectSpeechFilterTiming);
                     ImGui::SetNextItemWidth(120.0f);
                     ImGui::InputDouble(
                         "Repeat Cadence Seconds (0 = off)",
@@ -15303,6 +15341,8 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                                 cache.speakerTitleDelaySeconds * 30.0));
                         settings.showAtSectionEnd =
                             cache.speakerTitleShowAtSectionEnd;
+                        settings.respectSpeechFilterTiming =
+                            cache.speakerTitleRespectSpeechFilterTiming;
                         settings.cadenceFrames =
                             std::max<std::int64_t>(0, std::llround(
                                 cache.speakerTitleCadenceSeconds * 30.0));

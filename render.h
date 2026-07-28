@@ -86,15 +86,9 @@ struct RenderRequest {
     std::shared_ptr<std::atomic_bool> gpuExportPreviewReady;
     bool incrementalExport = true;
     int incrementalChunkFrames = 900;
+    bool instagramSafeAreaGuides = false;
+    bool alignmentGridGuides = false;
     bool losslessIntermediateAudio = false;
-    BackgroundFillEffect backgroundFillEffect{};
-    qreal backgroundFillOpacity = 1.0;
-    qreal backgroundFillBrightness = 0.0;
-    qreal backgroundFillSaturation = 1.0;
-    int backgroundFillEdgePixels = 1;
-    bool backgroundFillEdgeProgressive = false;
-    qreal backgroundFillEdgePower = 2.0;
-    QString backgroundFillStretchSourceClipId;
     bool suppressCompletionDialog = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;
@@ -172,3 +166,5 @@ struct RenderResult {
 
 RenderResult renderTimelineToFile(const RenderRequest& request,
                                   const std::function<bool(const RenderProgress&)>& progressCallback = {});
+
+QString incrementalRenderCacheRootForOutputPath(const QString& outputPath);

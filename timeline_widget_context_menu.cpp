@@ -231,6 +231,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* deleteAction = nullptr;
     QAction* copyTitleAction = nullptr;
     QAction* copyClipNameAction = nullptr;
+    QAction* renderVisibleAction = nullptr;
     QAction* gradingAction = nullptr;
     QAction* resetGradingAction = nullptr;
     QAction* scaleToFillAction = nullptr;
@@ -299,6 +300,14 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         deleteAction = menu.addAction(QStringLiteral("Delete"));
         copyTitleAction = menu.addAction(QStringLiteral("Copy title"));
         copyClipNameAction = menu.addAction(QStringLiteral("Copy Clip Name"));
+        renderVisibleAction = menu.addAction(QStringLiteral("Render Visible"));
+        renderVisibleAction->setCheckable(true);
+        renderVisibleAction->setChecked(m_clips[clipIndex].videoEnabled);
+        renderVisibleAction->setEnabled(
+            clipHasVisuals(m_clips[clipIndex]) &&
+            !m_clips[clipIndex].locked);
+        renderVisibleAction->setToolTip(
+            QStringLiteral("When unchecked, this clip is invisible in preview and export while its audio settings remain unchanged."));
         gradingAction = menu.addAction(QStringLiteral("Grading..."));
         resetGradingAction = menu.addAction(QStringLiteral("Reset Grading"));
         refreshMetadataAction = menu.addAction(QStringLiteral("Refresh"));
@@ -610,6 +619,18 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         if (clipIndex >= 0) {
             if (QClipboard* clipboard = QApplication::clipboard()) {
                 clipboard->setText(m_clips[clipIndex].label);
+            }
+        }
+        return;
+    }
+
+    if (selected == renderVisibleAction) {
+        if (clipIndex >= 0) {
+            TimelineClip& clip = m_clips[clipIndex];
+            if (!clip.locked && clipHasVisuals(clip)) {
+                clip.videoEnabled = renderVisibleAction->isChecked();
+                if (clipsChanged) clipsChanged();
+                update();
             }
         }
         return;

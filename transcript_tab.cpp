@@ -1051,6 +1051,7 @@ void TranscriptTab::refresh()
         }
         refreshScriptVersionSelector(QString(), QString());
         m_updating = false;
+        emit activeTranscriptSnapshotChanged();
         return;
     }
 

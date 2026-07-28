@@ -73,7 +73,6 @@
 #include <mutex>
 
 class MaskTab;
-class ExportVulkanPreviewWidget;
 
 namespace editor {
 
@@ -265,7 +264,6 @@ private:
         QLabel* statusLabel = nullptr;
         QPlainTextEdit* sourcesList = nullptr;
         QProgressBar* progressBar = nullptr;
-        ExportVulkanPreviewWidget* previewWidget = nullptr;
         std::atomic_bool* cancelled = nullptr;
         bool closeOnFinish = true;
     };
@@ -503,6 +501,8 @@ private:
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
+    QCheckBox *m_previewInstagramSafeAreaGuidesCheckBox = nullptr;
+    QCheckBox *m_previewAlignmentGridGuidesCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
     QComboBox *m_previewGpuCombo = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
@@ -602,6 +602,11 @@ private:
     QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
+    QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;
+    QLabel *m_renderCachePathLabel = nullptr;
+    QPushButton *m_clearRenderCacheButton = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
     QCheckBox *m_outputLeadPrefetchEnabledCheckBox = nullptr;
     QSpinBox *m_outputLeadPrefetchCountSpin = nullptr;

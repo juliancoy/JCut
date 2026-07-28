@@ -1,6 +1,7 @@
 #include "render_internal.h"
 #include "decoder_context.h"
 #include "cpu_overlay_render_backend.h"
+#include "editor_shared_effects.h"
 
 #include <QFileInfo>
 #include <QPainter>
@@ -84,6 +85,32 @@ void enqueueRenderSequenceLookahead(const RenderRequest& request,
     }
 }
 
+void enqueueRenderMaskLookahead(const RenderRequest& request,
+                                int64_t timelineFrame,
+                                const QVector<TimelineClip>& orderedClips)
+{
+    if (!editor::debugLeadPrefetchEnabled()) {
+        return;
+    }
+    const int lookaheadFrames = qMax(editor::debugLeadPrefetchCount(),
+                                     editor::debugPlaybackWindowAhead());
+    const QVector<int64_t> futureTimelineFrames =
+        editor::collectLookaheadTimelineFrames(timelineFrame,
+                                               lookaheadFrames,
+                                               1,
+                                               {});
+    for (int64_t futureTimelineFrame : futureTimelineFrames) {
+        prefetchRenderableClipMaskBuffersAtTimelinePosition(
+            orderedClips,
+            request.tracks,
+            request.renderSyncMarkers,
+            static_cast<qreal>(futureTimelineFrame),
+            nullptr,
+            nullptr,
+            request.bypassGrading);
+    }
+}
+
 void prewarmRenderSequenceSegment(const RenderRequest& request,
                                   int64_t segmentStartFrame,
                                   int64_t segmentEndFrame,
@@ -127,6 +154,36 @@ void prewarmRenderSequenceSegment(const RenderRequest& request,
                                        editor::DecodeRequestKind::Prefetch,
                                        {});
         }
+    }
+}
+
+void prewarmRenderMaskSegment(const RenderRequest& request,
+                              int64_t segmentStartFrame,
+                              int64_t segmentEndFrame,
+                              const QVector<TimelineClip>& orderedClips)
+{
+    if (!editor::debugLeadPrefetchEnabled()) {
+        return;
+    }
+    const int prewarmFrames = qMax(editor::debugPlaybackWindowAhead() * 2,
+                                   editor::debugLeadPrefetchCount() * 4);
+    const int lookaheadFrames = static_cast<int>(
+        qMin<int64_t>(segmentEndFrame - segmentStartFrame + 1,
+                      qMax<int64_t>(1, prewarmFrames)));
+    const QVector<int64_t> prewarmTimelineFrames =
+        editor::collectLookaheadTimelineFrames(segmentStartFrame - 1,
+                                               lookaheadFrames,
+                                               1,
+                                               {});
+    for (int64_t prewarmTimelineFrame : prewarmTimelineFrames) {
+        prefetchRenderableClipMaskBuffersAtTimelinePosition(
+            orderedClips,
+            request.tracks,
+            request.renderSyncMarkers,
+            static_cast<qreal>(prewarmTimelineFrame),
+            nullptr,
+            nullptr,
+            request.bypassGrading);
     }
 }
 
@@ -257,15 +314,6 @@ QRect coverRect(const QSize& source, const QSize& bounds)
                  (bounds.height() - height) / 2,
                  width,
                  height);
-}
-
-bool shouldDrawBlurredFillBackground(const QSize& source, const QSize& output)
-{
-    if (!source.isValid() || source.isEmpty() || !output.isValid() || output.isEmpty()) {
-        return false;
-    }
-    const QRect fitted = fitRect(source, output);
-    return fitted.width() < output.width() || fitted.height() < output.height();
 }
 
 QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize)

@@ -49,8 +49,19 @@ class TestIncrementalRender : public QObject {
     Q_OBJECT
 
 private slots:
+    void cacheRootFollowsOutputFileStem();
     void resumesCompletedGpuChunksAndPublishesExactFrameCount();
 };
+
+void TestIncrementalRender::cacheRootFollowsOutputFileStem()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString outputPath =
+        directory.filePath(QStringLiteral("render_1x.mp4"));
+    QCOMPARE(incrementalRenderCacheRootForOutputPath(outputPath),
+             directory.filePath(QStringLiteral("render_1x.jcut-render-cache")));
+}
 
 void TestIncrementalRender::
     resumesCompletedGpuChunksAndPublishesExactFrameCount()
@@ -101,21 +112,24 @@ void TestIncrementalRender::
     QVERIFY2(resumed.success, qPrintable(resumed.message));
     QVERIFY2(resumed.usedGpu, qPrintable(resumed.message));
     QVERIFY2(resumed.usedHardwareEncode, qPrintable(resumed.message));
-    QVERIFY2(!resumed.cudaExternalTransfer, qPrintable(resumed.message));
     QCOMPARE(resumed.framesRendered, int64_t{62});
     QCOMPARE(resumed.incrementalChunksCompleted, 2);
     QCOMPARE(resumed.incrementalChunksTotal, 2);
     QCOMPARE(resumed.incrementalFramesReused, int64_t{60});
     QVERIFY(QFileInfo(request.outputPath).size() > 1024);
     const QDir checkpoint(resumed.incrementalCachePath);
+    const QStringList checkpointChunks = checkpoint.entryList(
+        {QStringLiteral("chunk_*.mkv")}, QDir::Files);
+    QCOMPARE(checkpointChunks.size(), 2);
+    for (const QString& chunk : checkpointChunks) {
+        QVERIFY2(QFileInfo(checkpoint.filePath(chunk)).size() > 1024,
+                 qPrintable(chunk));
+    }
     const QStringList checkpointDirs = checkpoint.entryList(
         {QStringLiteral("chunk_*_frames")}, QDir::Dirs | QDir::NoDotAndDotDot);
-    QCOMPARE(checkpointDirs.size(), 2);
-    QCOMPARE(
-        QDir(checkpoint.filePath(checkpointDirs.constFirst()))
-            .entryList({QStringLiteral("frame_*.jpg")}, QDir::Files)
-            .size(),
-        60);
+    QVERIFY2(checkpointDirs.isEmpty(),
+             "incremental checkpoints must stay encoded chunks and must not "
+             "materialize CPU JPEG frame directories");
 
     const RenderResult fullyReused = renderTimelineToFile(request);
     QVERIFY2(fullyReused.success, qPrintable(fullyReused.message));

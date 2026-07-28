@@ -5,8 +5,10 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSpinBox>
 
 namespace {
 
@@ -91,6 +93,7 @@ class TestEffectsTab final : public QObject
 private slots:
     void effectEnableButtonsEditTheSelectedClipAtThePlayhead();
     void dynamicControlsPersistIndependentPerClipParameters();
+    void mirrorGeometryControlsExposeSpecificParameters();
 };
 
 void TestEffectsTab::effectEnableButtonsEditTheSelectedClipAtThePlayhead()
@@ -186,6 +189,80 @@ void TestEffectsTab::dynamicControlsPersistIndependentPerClipParameters()
     QVERIFY(clip.effectSkipAwareTiming);
     QVERIFY(!controls.modulationRate.isEnabled());
     QVERIFY(!controls.modulationPhase.isEnabled());
+}
+
+void TestEffectsTab::mirrorGeometryControlsExposeSpecificParameters()
+{
+    TimelineClip clip = makeClip();
+    clip.effectPreset = ClipEffectPreset::MirrorRing;
+    clip.effectRows = 18;
+    clip.effectScale = 1.75;
+    clip.effectSpeed = -0.5;
+    clip.tilingSpacing = 2.25;
+
+    QWidget root;
+    QFormLayout form(&root);
+    QLabel path;
+    QComboBox preset;
+    QSpinBox rows;
+    QDoubleSpinBox speed;
+    QDoubleSpinBox scale;
+    QDoubleSpinBox geometry;
+    QCheckBox alternate;
+    QComboBox tilingPattern;
+    QCheckBox tilingWrap;
+    speed.setRange(-8.0, 8.0);
+    scale.setRange(0.1, 8.0);
+    geometry.setRange(0.1, 8.0);
+    preset.addItem(QStringLiteral("Mirror Ring"),
+                   static_cast<int>(ClipEffectPreset::MirrorRing));
+    form.addRow(QStringLiteral("Preset"), &preset);
+    form.addRow(QStringLiteral("Copies"), &rows);
+    form.addRow(QStringLiteral("Speed"), &speed);
+    form.addRow(QStringLiteral("Scale"), &scale);
+    form.addRow(QStringLiteral("Alternate"), &alternate);
+    form.addRow(QStringLiteral("Pattern"), &tilingPattern);
+    form.addRow(QStringLiteral("Spacing"), &geometry);
+    form.addRow(QStringLiteral("Wrap"), &tilingWrap);
+
+    EffectsTab::Widgets widgets;
+    widgets.effectsPathLabel = &path;
+    widgets.effectPresetCombo = &preset;
+    widgets.effectRowsSpin = &rows;
+    widgets.effectSpeedSpin = &speed;
+    widgets.effectScaleSpin = &scale;
+    widgets.effectAlternateDirectionCheck = &alternate;
+    widgets.tilingPatternCombo = &tilingPattern;
+    widgets.tilingSpacingSpin = &geometry;
+    widgets.tilingWrapCheck = &tilingWrap;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+
+    EffectsTab tab(widgets, deps);
+    tab.refresh();
+
+    QCOMPARE(rows.value(), 18);
+    QCOMPARE(scale.value(), 1.75);
+    QCOMPARE(speed.value(), -0.5);
+    QCOMPARE(geometry.value(), 2.25);
+    QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&rows))->text(),
+             QStringLiteral("Mirror sectors"));
+    QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&scale))->text(),
+             QStringLiteral("Output grain size"));
+    QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&speed))->text(),
+             QStringLiteral("Rotation speed"));
+    QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&geometry))->text(),
+             QStringLiteral("Geometry amount"));
+    QVERIFY(!rows.isHidden());
+    QVERIFY(!scale.isHidden());
+    QVERIFY(!speed.isHidden());
+    QVERIFY(!geometry.isHidden());
+    QVERIFY(tilingPattern.isHidden());
+    QVERIFY(tilingWrap.isHidden());
+    QVERIFY(alternate.isHidden());
 }
 
 QTEST_MAIN(TestEffectsTab)

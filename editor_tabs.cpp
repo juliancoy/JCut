@@ -1099,7 +1099,9 @@ void EditorWindow::createOutputTab()
             m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
             m_inspectorPane ? m_inspectorPane->historyMaxEntriesSpin() : nullptr,
             m_inspectorPane ? m_inspectorPane->historyMaxMegabytesSpin() : nullptr,
-            m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
+            m_incrementalRenderCheckBox, m_instagramSafeAreaGuidesCheckBox,
+            m_alignmentGridGuidesCheckBox, m_createImageSequenceCheckBox, m_imageSequenceFormatCombo,
+            m_renderCachePathLabel, m_clearRenderCacheButton, m_renderButton},
         OutputTab::Dependencies{
             [this]() { return m_timeline != nullptr; },
             [this]() { return m_timeline && !m_timeline->clips().isEmpty(); },
@@ -1459,6 +1461,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerOverlayFlyInDelaySpin(),
             m_inspectorPane->speakerOverlayFlyInDurationSpin(),
             m_inspectorPane->speakerOverlayShowAtSectionEndCheckBox(),
+            m_inspectorPane->speakerOverlayRespectSpeechFilterTimingCheckBox(),
             m_inspectorPane->speakerOverlayCadenceSpin(),
             m_inspectorPane->speakerOverlayFlyInTimeSpin(),
             m_inspectorPane->speakerOverlayWrapRadiusSpin(),
@@ -1658,6 +1661,14 @@ void EditorWindow::createSpeakersTab()
                     m_audioEngine->setBackgroundDecodeSuppressed(suppressed);
                 }
             }});
+    connect(m_transcriptTab.get(),
+            &TranscriptTab::activeTranscriptSnapshotChanged,
+            this,
+            [this]() {
+                if (m_speakersTab) {
+                    m_speakersTab->refreshSpeakerTitleControlState();
+                }
+            });
     m_speakersTab->wire();
     if (m_inspectorPane) {
         if (SpeakersTable* speakersTable =

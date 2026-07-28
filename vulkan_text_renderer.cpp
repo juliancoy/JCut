@@ -945,11 +945,17 @@ void VulkanTextRenderer::destroy()
     m_titleMeshBufferCapacity = 0;
     m_titleMeshBufferKey.clear();
     m_pipeline.reset();
+    m_gpuAtlasCache.clear();
+    m_activeAtlasResources = nullptr;
     m_atlasResources.reset();
+    m_frameUploadSlot = 0;
+    m_frameUploadSlotCount = VulkanResources::kDescriptorSetCount;
+    m_gpuAtlasUseSerial = 0;
     m_uploadedAtlasKey.clear();
     m_speakerLayoutCache = SpeakerLayoutCache{};
     m_transcriptLayoutCache = TranscriptLayoutCache{};
-    m_titleLayoutCache = TitleLayoutCache{};
+    m_titleLayoutCache.clear();
+    m_titleLayoutCacheUseSerial = 0;
     m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_funcs = nullptr;
@@ -997,7 +1003,21 @@ bool VulkanTextRenderer::isReady() const
 
 bool VulkanTextRenderer::beginFrameUploads(size_t frameSlot, size_t frameSlotCount)
 {
-    return m_atlasResources && m_atlasResources->beginFrameUploads(frameSlot, frameSlotCount);
+    if (!m_atlasResources) {
+        return false;
+    }
+    m_frameUploadSlot = frameSlot;
+    m_frameUploadSlotCount = qMax<size_t>(1, frameSlotCount);
+    if (!m_atlasResources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
+        return false;
+    }
+    for (GpuAtlasCacheEntry& entry : m_gpuAtlasCache) {
+        if (!entry.resources ||
+            !entry.resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool VulkanTextRenderer::fail(const QString& reason) const
@@ -1903,21 +1923,65 @@ bool VulkanTextRenderer::ensureAtlasUploaded(VkCommandBuffer commandBuffer, cons
     if (!m_atlasResources || atlas.key.isEmpty()) {
         return fail(QStringLiteral("text_atlas_invalid"));
     }
-    if (m_uploadedAtlasKey == atlas.key) {
-        // beginFrameUploads() selects the descriptor owned by the acquired
-        // swapchain image. Rebind the persistent atlas for that set even when
-        // no pixels changed; otherwise only the set used for the original
-        // upload is valid and the remaining sets still sample the undefined
-        // placeholder texture.
-        return m_atlasResources->setSampledImage(
-            m_atlasResources->sampledImageView(),
-            m_atlasResources->sampledImageLayout());
+    for (GpuAtlasCacheEntry& entry : m_gpuAtlasCache) {
+        if (entry.key == atlas.key && entry.resources) {
+            entry.lastUseSerial = ++m_gpuAtlasUseSerial;
+            m_activeAtlasResources = entry.resources.get();
+            m_uploadedAtlasKey = atlas.key;
+            // beginFrameUploads() selects the descriptor owned by the acquired
+            // swapchain/export frame slot. Rebind the persistent atlas for
+            // that set even when no pixels changed; the other descriptor sets
+            // may belong to in-flight frames.
+            return entry.resources->setSampledImage(entry.resources->sampledImageView(),
+                                                    entry.resources->sampledImageLayout());
+        }
     }
-    if (!m_atlasResources->uploadImageTexture(commandBuffer, atlas.image)) {
-        return fail(QStringLiteral("text_atlas_upload_failed"));
+
+    auto resources = std::make_unique<VulkanResources>();
+    if (!resources->initialize(m_physicalDevice,
+                               m_device,
+                               m_funcs,
+                               m_atlasResources->descriptorSetLayout()) ||
+        !resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
+        const QString resourceFailure = resources->lastError().trimmed();
+        return fail(resourceFailure.isEmpty()
+                        ? QStringLiteral("text_atlas_resource_create_failed")
+                        : QStringLiteral("text_atlas_resource_create_failed: %1")
+                              .arg(resourceFailure));
     }
+    if (!resources->uploadImageTexture(commandBuffer, atlas.image)) {
+        const QString resourceFailure = resources->lastError().trimmed();
+        return fail(resourceFailure.isEmpty()
+                        ? QStringLiteral("text_atlas_upload_failed")
+                        : QStringLiteral("text_atlas_upload_failed: %1")
+                              .arg(resourceFailure));
+    }
+    m_gpuAtlasCache.push_back(GpuAtlasCacheEntry{
+        atlas.key,
+        std::move(resources),
+        ++m_gpuAtlasUseSerial,
+    });
+    m_activeAtlasResources = m_gpuAtlasCache.back().resources.get();
     m_uploadedAtlasKey = atlas.key;
     return true;
+}
+
+bool VulkanTextRenderer::atlasIsResident(const QString& atlasKey) const
+{
+    if (atlasKey.isEmpty()) {
+        return false;
+    }
+    for (const GpuAtlasCacheEntry& entry : m_gpuAtlasCache) {
+        if (entry.key == atlasKey && entry.resources) {
+            return true;
+        }
+    }
+    return false;
+}
+
+VulkanResources* VulkanTextRenderer::activeAtlasResources() const
+{
+    return m_activeAtlasResources ? m_activeAtlasResources : m_atlasResources.get();
 }
 
 const VulkanTextRenderer::SpeakerLayoutCache* VulkanTextRenderer::speakerLabelLayout(
@@ -1995,15 +2059,15 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
     const QSize& outputSize,
     const EvaluatedTitle& title) const
 {
+    // Title animation state is deliberately excluded here. The glyph atlas,
+    // pattern tiles, window geometry, and mesh vertices are stable across
+    // fly-in/fade frames; position and opacity are applied at draw time.
     const QString layoutMaterial =
         QStringLiteral("title-layout-v1|") +
         QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
         title.text + QLatin1Char('|') +
         title.fontFamily + QLatin1Char('|') +
         QString::number(title.fontSize, 'f', 3) + QLatin1Char('|') +
-        QString::number(title.x, 'f', 3) + QLatin1Char('|') +
-        QString::number(title.y, 'f', 3) + QLatin1Char('|') +
-        QString::number(title.opacity, 'f', 3) + QLatin1Char('|') +
         QString::number(title.bold ? 1 : 0) + QLatin1Char('|') +
         QString::number(static_cast<quint32>(title.color.rgba())) + QLatin1Char('|') +
         title.logoPath + QLatin1Char('|') +
@@ -2033,14 +2097,20 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
         QString::number(title.dropShadowOffsetY, 'f', 3);
     const QString layoutKey =
         QString::fromLatin1(QCryptographicHash::hash(layoutMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
-    if (m_titleLayoutCache.valid && m_titleLayoutCache.layoutKey == layoutKey) {
-        return &m_titleLayoutCache;
+    if (auto it = m_titleLayoutCache.find(layoutKey); it != m_titleLayoutCache.end()) {
+        it->lastUseSerial = ++m_titleLayoutCacheUseSerial;
+        return &it->layout;
     }
+
+    EvaluatedTitle stableTitle = title;
+    stableTitle.x = 0.0;
+    stableTitle.y = 0.0;
+    stableTitle.opacity = 1.0;
 
     TitleLayoutCache rebuilt;
     rebuilt.layoutKey = layoutKey;
     rebuilt.valid = buildTitleAtlasAndLayout(outputSize,
-                                             title,
+                                             stableTitle,
                                              &rebuilt.atlas,
                                              &rebuilt.glyphs,
                                              &rebuilt.backgrounds,
@@ -2065,20 +2135,35 @@ const VulkanTextRenderer::TitleLayoutCache* VulkanTextRenderer::titleOverlayLayo
             QString::number(meshOptions.bevelScale, 'f', 3);
         rebuilt.meshKey = QString::fromLatin1(
             QCryptographicHash::hash(meshMaterial.toUtf8(), QCryptographicHash::Sha1).toHex());
-        if (m_titleLayoutCache.valid && m_titleLayoutCache.meshKey == rebuilt.meshKey) {
-            rebuilt.meshVertices = m_titleLayoutCache.meshVertices;
-        } else {
-            rebuilt.meshVertices =
-                buildExtrudedTitleMesh(title.text, meshOptions, nullptr);
+        for (auto it = m_titleLayoutCache.cbegin(); it != m_titleLayoutCache.cend(); ++it) {
+            if (it->layout.valid && it->layout.meshKey == rebuilt.meshKey) {
+                rebuilt.meshVertices = it->layout.meshVertices;
+                break;
+            }
+        }
+        if (rebuilt.meshVertices.isEmpty()) {
+            rebuilt.meshVertices = buildExtrudedTitleMesh(title.text, meshOptions, nullptr);
         }
     }
     rebuilt.atlasKey = rebuilt.atlas.key;
     if (!rebuilt.valid) {
-        m_titleLayoutCache = TitleLayoutCache{};
         return nullptr;
     }
-    m_titleLayoutCache = rebuilt;
-    return &m_titleLayoutCache;
+    constexpr qsizetype kMaxTitleLayoutCacheEntries = 32;
+    while (m_titleLayoutCache.size() >= kMaxTitleLayoutCacheEntries) {
+        auto oldest = m_titleLayoutCache.begin();
+        for (auto it = m_titleLayoutCache.begin(); it != m_titleLayoutCache.end(); ++it) {
+            if (it->lastUseSerial < oldest->lastUseSerial) {
+                oldest = it;
+            }
+        }
+        m_titleLayoutCache.erase(oldest);
+    }
+    TitleLayoutCacheEntry entry;
+    entry.layout = std::move(rebuilt);
+    entry.lastUseSerial = ++m_titleLayoutCacheUseSerial;
+    auto inserted = m_titleLayoutCache.insert(layoutKey, std::move(entry));
+    return &inserted->layout;
 }
 
 void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
@@ -2087,7 +2172,8 @@ void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
                                    const QRectF& uv,
                                    const QColor& color)
 {
-    if (!isReady() || !color.isValid() || color.alpha() <= 0 || rect.isEmpty()) {
+    VulkanResources* atlasResources = activeAtlasResources();
+    if (!isReady() || !atlasResources || !color.isValid() || color.alpha() <= 0 || rect.isEmpty()) {
         return;
     }
     VkViewport viewport{};
@@ -2123,8 +2209,8 @@ void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
     m_pipeline->bindAndDraw(commandBuffer,
                             viewport,
                             scissor,
-                            m_atlasResources->descriptorSet(),
-                            m_atlasResources->frameUniformDynamicOffset(),
+                            atlasResources->descriptorSet(),
+                            atlasResources->frameUniformDynamicOffset(),
                             push);
 }
 
@@ -2137,7 +2223,8 @@ void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
                                           qreal patternScale,
                                           const QRectF& patternUv)
 {
-    if (!isReady() || !color.isValid() || color.alpha() <= 0 || !mvp) {
+    VulkanResources* atlasResources = activeAtlasResources();
+    if (!isReady() || !atlasResources || !color.isValid() || color.alpha() <= 0 || !mvp) {
         return;
     }
     VkViewport viewport{};
@@ -2174,8 +2261,8 @@ void VulkanTextRenderer::drawGlyphWithMvp(VkCommandBuffer commandBuffer,
     m_pipeline->bindAndDraw(commandBuffer,
                             viewport,
                             scissor,
-                            m_atlasResources->descriptorSet(),
-                            m_atlasResources->frameUniformDynamicOffset(),
+                            atlasResources->descriptorSet(),
+                            atlasResources->frameUniformDynamicOffset(),
                             push);
 }
 
@@ -2186,7 +2273,8 @@ bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
                                        const EvaluatedTitle& title,
                                        const TitleLayoutCache& layout)
 {
-    if (layout.meshVertices.isEmpty()) return false;
+    VulkanResources* atlasResources = activeAtlasResources();
+    if (!atlasResources || layout.meshVertices.isEmpty()) return false;
     EvaluatedTitle meshTitle = title;
     if (std::abs(meshTitle.vulkan3DYawDegrees) < 0.001 &&
         std::abs(meshTitle.vulkan3DPitchDegrees) < 0.001 &&
@@ -2246,8 +2334,9 @@ bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
     scissor.extent = {static_cast<uint32_t>(qMax(1, swapSize.width())), static_cast<uint32_t>(qMax(1, swapSize.height()))};
     const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
     const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
-    const QPointF center(outputTargetRect.left() + layout.center.x() * scaleX,
-                         outputTargetRect.top() + layout.center.y() * scaleY);
+    const QPointF animatedCenter = layout.center + QPointF(title.x, title.y);
+    const QPointF center(outputTargetRect.left() + animatedCenter.x() * scaleX,
+                         outputTargetRect.top() + animatedCenter.y() * scaleY);
     VulkanTextPipeline::Push push{};
     mvpForTitleMesh(center, meshTitle.fontSize * scaleY, swapSize, meshTitle, push.mvp);
     const QColor color = title.color.isValid() ? title.color : QColor(Qt::white);
@@ -2259,8 +2348,8 @@ bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
     m_pipeline->bindAndDrawMesh(commandBuffer,
                                 viewport,
                                 scissor,
-                                m_atlasResources->descriptorSet(),
-                                m_atlasResources->frameUniformDynamicOffset(),
+                                atlasResources->descriptorSet(),
+                                atlasResources->frameUniformDynamicOffset(),
                                 m_titleMeshBuffer,
                                 static_cast<uint32_t>(layout.meshVertices.size()),
                                 push);
@@ -2406,6 +2495,14 @@ bool VulkanTextRenderer::prepareSpeakerLabelAtlas(VkCommandBuffer commandBuffer,
     return true;
 }
 
+bool VulkanTextRenderer::speakerLabelAtlasNeedsUpload(
+    const QSize& outputSize,
+    const render_detail::SpeakerLabelOverlaySpec& spec) const
+{
+    const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec);
+    return !layout || !atlasIsResident(layout->atlas.key);
+}
+
 bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                                const QSize& swapSize,
                                                const QSize& outputSize,
@@ -2502,6 +2599,18 @@ bool VulkanTextRenderer::prepareTranscriptOverlayAtlas(VkCommandBuffer commandBu
     return true;
 }
 
+bool VulkanTextRenderer::transcriptOverlayAtlasNeedsUpload(
+    const QSize& outputSize,
+    const TimelineClip& clip,
+    const TranscriptOverlayLayout& layout,
+    const QRectF& outputRect,
+    const QString& speakerTitle) const
+{
+    const TranscriptLayoutCache* cachedLayout =
+        transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
+    return !cachedLayout || !atlasIsResident(cachedLayout->atlas.key);
+}
+
 bool VulkanTextRenderer::prepareTitleOverlayAtlas(VkCommandBuffer commandBuffer,
                                                   const QSize& outputSize,
                                                   const EvaluatedTitle& title)
@@ -2525,6 +2634,14 @@ bool VulkanTextRenderer::prepareTitleOverlayAtlas(VkCommandBuffer commandBuffer,
     return true;
 }
 
+bool VulkanTextRenderer::titleOverlayAtlasNeedsUpload(
+    const QSize& outputSize,
+    const EvaluatedTitle& title) const
+{
+    const TitleLayoutCache* layout = titleOverlayLayout(outputSize, title);
+    return !layout || !atlasIsResident(layout->atlas.key);
+}
+
 bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                                             const QSize& swapSize,
                                             const QSize& outputSize,
@@ -2546,6 +2663,12 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
 
     const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
     const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
+    const QPointF animationOffset(title.x, title.y);
+    const qreal titleOpacity = qBound<qreal>(0.0, title.opacity, 1.0);
+    auto withTitleOpacity = [&](QColor color) {
+        color.setAlphaF(qBound<qreal>(0.0, color.alphaF() * titleOpacity, 1.0));
+        return color;
+    };
     auto mapPoint = [&](const QPointF& point) {
         return QPointF(outputTargetRect.left() + point.x() * scaleX,
                        outputTargetRect.top() + point.y() * scaleY);
@@ -2557,15 +2680,19 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                       rect.height() * scaleY);
     };
 
-    const QPointF mappedCenter = mapPoint(layout->center);
+    const QPointF mappedCenter = mapPoint(layout->center + animationOffset);
     for (const TranscriptBackground& background : layout->backgrounds) {
         float mvp[16];
-        mvpForTitle3DRect(mapRect(background.rect), mappedCenter, swapSize, title, mvp);
+        mvpForTitle3DRect(mapRect(background.rect.translated(animationOffset)),
+                          mappedCenter,
+                          swapSize,
+                          title,
+                          mvp);
         drawGlyphWithMvp(commandBuffer,
                          swapSize,
                          mvp,
                          background.uv.isEmpty() ? layout->atlas.solidUv : background.uv,
-                         background.color,
+                         withTitleOpacity(background.color),
                          background.materialStyle,
                          background.patternScale,
                          background.patternUv);
@@ -2602,7 +2729,8 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                                              side.alphaF() * (0.76 + title.vulkan3DBevelScale * 0.10),
                                              0.96));
                 const QRectF extrudedRect =
-                    mapRect(glyph.rect.translated(layerOffset, layerOffset * 0.58));
+                    mapRect(glyph.rect.translated(animationOffset)
+                                 .translated(layerOffset, layerOffset * 0.58));
                 const QRectF sideUv = !stackedCopies &&
                         layer <= bevelLayers && !glyph.erodedUv.isEmpty()
                     ? glyph.erodedUv : glyph.uv;
@@ -2612,7 +2740,7 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                                  swapSize,
                                  mvp,
                                  sideUv,
-                                 side,
+                                 withTitleOpacity(side),
                                  0,
                                  1.0,
                                  layout->atlas.solidUv);
@@ -2622,12 +2750,16 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
     for (const LaidOutGlyph& glyph : layout->glyphs) {
         if (meshDrawn && glyph.extrudable) continue;
         float mvp[16];
-        mvpForTitle3DRect(mapRect(glyph.rect), mappedCenter, swapSize, title, mvp);
+        mvpForTitle3DRect(mapRect(glyph.rect.translated(animationOffset)),
+                          mappedCenter,
+                          swapSize,
+                          title,
+                          mvp);
         drawGlyphWithMvp(commandBuffer,
                          swapSize,
                          mvp,
                          glyph.uv,
-                         glyph.color,
+                         withTitleOpacity(glyph.color),
                          glyph.materialStyle,
                          glyph.patternScale,
                          glyph.patternUv);

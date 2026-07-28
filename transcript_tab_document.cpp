@@ -574,6 +574,7 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
                 ? QStringLiteral("Drag rows to change render order.")
                 : QStringLiteral("Switch speaker filter to All Speakers to reorder rows."));
     }
+    emit activeTranscriptSnapshotChanged();
 }
 
 void TranscriptTab::rebuildWordEditIndex(const QVector<TranscriptRow>& rows)

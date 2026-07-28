@@ -20,6 +20,7 @@
 #include "render_internal.h"
 #include "titles.h"
 #include "vulkan_audio_tab.h"
+#include "vulkan_clear_helpers.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
 #include "vulkan_external_frame_import_core.h"
@@ -77,6 +78,61 @@ constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
 constexpr std::uint64_t kPreviewGpuWaitTimeoutNs = 1'000'000'000ull;
 
 using namespace jcut::direct_vulkan_preview;
+
+VkClearValue guideClearValue(float r, float g, float b, float a = 1.0f)
+{
+    VkClearValue value{};
+    value.color.float32[0] = r;
+    value.color.float32[1] = g;
+    value.color.float32[2] = b;
+    value.color.float32[3] = a;
+    return value;
+}
+
+void drawOutputPlacementGuides(QVulkanDeviceFunctions* funcs,
+                               VkCommandBuffer commandBuffer,
+                               const QSize& swapSize,
+                               const QSize& outputSize,
+                               const QRectF& compositeRect,
+                               bool instagramSafeAreaGuides,
+                               bool alignmentGridGuides)
+{
+    if (!funcs || commandBuffer == VK_NULL_HANDLE || compositeRect.isEmpty() ||
+        (!instagramSafeAreaGuides && !alignmentGridGuides)) {
+        return;
+    }
+
+    const qreal linePx = qMax<qreal>(
+        1.0, qMin(compositeRect.width(), compositeRect.height()) / 540.0);
+    auto drawLineRect = [&](const QRectF& rect, const VkClearValue& value) {
+        const QRectF bounded = rect.intersected(compositeRect);
+        if (bounded.width() <= 0.0 || bounded.height() <= 0.0) {
+            return;
+        }
+        clearRect(funcs, commandBuffer, value, clearRectFromQRect(bounded, swapSize));
+    };
+
+    if (alignmentGridGuides) {
+        const VkClearValue grid = guideClearValue(0.50f, 0.82f, 1.00f);
+        for (int i = 1; i <= 2; ++i) {
+            const qreal fraction = static_cast<qreal>(i) / 3.0;
+            const qreal x = compositeRect.left() + compositeRect.width() * fraction;
+            const qreal y = compositeRect.top() + compositeRect.height() * fraction;
+            drawLineRect(QRectF(x - linePx * 0.5, compositeRect.top(), linePx, compositeRect.height()), grid);
+            drawLineRect(QRectF(compositeRect.left(), y - linePx * 0.5, compositeRect.width(), linePx), grid);
+        }
+    }
+
+    if (instagramSafeAreaGuides) {
+        const int safeHeight = qMax(1, outputSize.height());
+        const qreal safeInset = qMin<qreal>(250.0, static_cast<qreal>(safeHeight) * 0.5);
+        const qreal topY = compositeRect.top() + compositeRect.height() * (safeInset / safeHeight);
+        const qreal bottomY = compositeRect.bottom() - compositeRect.height() * (safeInset / safeHeight);
+        const VkClearValue safe = guideClearValue(1.00f, 0.84f, 0.25f);
+        drawLineRect(QRectF(compositeRect.left(), topY - linePx, compositeRect.width(), linePx * 2.0), safe);
+        drawLineRect(QRectF(compositeRect.left(), bottomY - linePx, compositeRect.width(), linePx * 2.0), safe);
+    }
+}
 
 bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& transient,
                                         PreviewDragMode dragMode,
@@ -197,15 +253,8 @@ private:
         std::shared_ptr<ClipHandoffResources> resources;
         int framesRemaining = 0;
     };
-    struct TitleOverlayResources {
-        std::unique_ptr<VulkanResources> resources;
-        QString textureKey;
-        bool textureReady = false;
-    };
     ClipHandoffResources* ensureClipHandoffResources(const QString& clipId);
-    TitleOverlayResources* ensureTitleOverlayResources(const QString& clipId);
     void pruneClipHandoffResources(const QSet<QString>& activeClipIds);
-    void pruneTitleOverlayResources(const QSet<QString>& activeClipIds);
     void advanceRetiredClipHandoffResources();
     void releaseClipHandoffResources(const std::shared_ptr<ClipHandoffResources>& resources);
     void updateClipHandoffResourceStats();
@@ -234,7 +283,6 @@ private:
     std::unique_ptr<VulkanTextRenderer> m_temporalDebugTextRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources;
-    QHash<QString, std::shared_ptr<TitleOverlayResources>> m_titleOverlayResources;
     QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources;
     QString m_playbackStatusOverlayTextureKey;
     QString m_lastPreparedTextKey;
@@ -255,6 +303,11 @@ private:
     VkFormat m_compositeDepthFormat = VK_FORMAT_UNDEFINED;
     std::array<GpuExportPreviewSlot, 2> m_gpuExportPreviewSlots;
     int m_gpuExportPreviewCurrentSlot = -1;
+    std::shared_ptr<render_detail::OffscreenVulkanFrameConsumptionState>
+        m_pendingGpuExportPreviewConsumptionState;
+    quint64 m_pendingGpuExportPreviewGeneration = 0;
+    int m_pendingGpuExportPreviewSlot = -1;
+    std::uint64_t m_pendingGpuExportPreviewProducerSessionId = 0;
     PFN_vkImportSemaphoreFdKHR m_importSemaphoreFd = nullptr;
 };
 
@@ -330,7 +383,11 @@ public:
     VkFormat depthStencilFormat() const { return m_depthStencilFormat; }
     VkFormat colorFormat() const { return m_colorFormat; }
     bool audioPipelineEnabled() const { return m_enableAudioPipeline; }
-    void frameReady();
+    bool frameReady();
+    void signalSemaphoreWhenFrameCompletes(VkSemaphore semaphore)
+    {
+        m_frameCompletionSemaphore = semaphore;
+    }
 
     void setInteractionCallbacks(std::function<void(const QString&)> selectionRequested,
                                  std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
@@ -484,7 +541,13 @@ protected:
             m_updateDirty = hadOutstandingUpdate;
             m_updateRequestMs = -1;
             m_updateDeferredWhileNotExposed = hadOutstandingUpdate;
-            cleanupSwapchain();
+            // Do not destroy the swapchain from Qt's hide/unexpose path.
+            // QWindowContainer can hide the embedded native Vulkan window while
+            // its platform surface is already mid-teardown; destroying the
+            // swapchain from that callback has been observed to crash inside
+            // NVIDIA's driver. Mark dirty and rebuild on the next expose, or
+            // retire resources from cleanupDevice() during actual destruction.
+            m_swapchainDirty = true;
             return;
         }
         if (m_active) {
@@ -515,7 +578,14 @@ protected:
     void hideEvent(QHideEvent* event) override
     {
         QWindow::hideEvent(event);
-        cleanupSwapchain();
+        m_scheduledWhileExposed = false;
+        m_updateRequestMs = -1;
+        m_updateDirty = false;
+        m_updateDeferredWhileNotExposed = false;
+        // See exposeEvent(!isExposed): hide can be delivered during
+        // QWindowContainer/native-surface teardown, so defer Vulkan swapchain
+        // destruction until the next exposed rebuild or device cleanup.
+        m_swapchainDirty = true;
     }
 
     void wheelEvent(QWheelEvent* event) override
@@ -1546,6 +1616,7 @@ private:
     std::vector<FrameResources> m_frames;
     VkFramebuffer m_currentFramebuffer = VK_NULL_HANDLE;
     VkCommandBuffer m_currentCommandBuffer = VK_NULL_HANDLE;
+    VkSemaphore m_frameCompletionSemaphore = VK_NULL_HANDLE;
     editor::PresentationMissTracker m_presentationMissTracker;
     DirectVulkanPreviewRenderer* m_renderer = nullptr;
     QVector<render_detail::OffscreenVulkanFrame> m_gpuExportPreviewFrames;
@@ -2276,21 +2347,22 @@ void DirectVulkanPreviewWindow::renderNow()
         (m_currentFrameSlot + 1) % std::max(1, static_cast<int>(m_frames.size()));
 }
 
-void DirectVulkanPreviewWindow::frameReady()
+bool DirectVulkanPreviewWindow::frameReady()
 {
     if (m_frameSubmitted ||
         m_device == VK_NULL_HANDLE ||
         m_currentCommandBuffer == VK_NULL_HANDLE ||
         m_frames.empty()) {
-        return;
+        return false;
     }
     FrameResources& frame =
         m_frames[static_cast<size_t>(
             m_currentFrameSlot % static_cast<int>(m_frames.size()))];
     if (vkEndCommandBuffer(m_currentCommandBuffer) != VK_SUCCESS) {
+        m_frameCompletionSemaphore = VK_NULL_HANDLE;
         markFailure(QStringLiteral(
             "Failed to finalize Vulkan command buffer for direct preview."));
-        return;
+        return false;
     }
 
     VkPipelineStageFlags waitStage =
@@ -2302,17 +2374,23 @@ void DirectVulkanPreviewWindow::frameReady()
     submitInfo.pWaitDstStageMask = &waitStage;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &m_currentCommandBuffer;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &frame.renderCompleteSemaphore;
+    const std::array<VkSemaphore, 2> signalSemaphores{
+        frame.renderCompleteSemaphore,
+        m_frameCompletionSemaphore};
+    submitInfo.signalSemaphoreCount =
+        m_frameCompletionSemaphore == VK_NULL_HANDLE ? 1u : 2u;
+    submitInfo.pSignalSemaphores = signalSemaphores.data();
     if (QVulkanInstance* instance = vulkanInstance()) {
         instance->presentAboutToBeQueued(this);
     }
     if (vkQueueSubmit(
             m_graphicsQueue, 1, &submitInfo, frame.inFlightFence) != VK_SUCCESS) {
+        m_frameCompletionSemaphore = VK_NULL_HANDLE;
         markFailure(QStringLiteral(
             "Failed to submit a Vulkan frame for direct preview."));
-        return;
+        return false;
     }
+    m_frameCompletionSemaphore = VK_NULL_HANDLE;
 
     uint32_t imageIndex =
         static_cast<uint32_t>(std::max(0, m_currentSwapchainImageIndex));
@@ -2336,9 +2414,10 @@ void DirectVulkanPreviewWindow::frameReady()
     } else if (presentResult != VK_SUCCESS) {
         markFailure(QStringLiteral(
             "Failed to present a Vulkan frame for direct preview."));
-        return;
+        return true;
     }
     m_frameSubmitted = true;
+    return true;
 }
 
 void DirectVulkanPreviewRenderer::initResources()
@@ -2491,7 +2570,6 @@ void DirectVulkanPreviewRenderer::releaseDeviceResources()
         releaseClipHandoffResources(retired.resources);
     }
     m_clipHandoffResources.clear();
-    m_titleOverlayResources.clear();
     m_retiredClipHandoffResources.clear();
     m_playbackStatusOverlayResources.reset();
     m_playbackStatusOverlayTextureKey.clear();
@@ -2552,32 +2630,6 @@ DirectVulkanPreviewRenderer::ensureClipHandoffResources(const QString& clipId)
     return raw;
 }
 
-DirectVulkanPreviewRenderer::TitleOverlayResources*
-DirectVulkanPreviewRenderer::ensureTitleOverlayResources(const QString& clipId)
-{
-    if (clipId.trimmed().isEmpty() || !m_window || !m_devFuncs) {
-        return nullptr;
-    }
-    auto existing = m_titleOverlayResources.find(clipId);
-    if (existing != m_titleOverlayResources.end()) {
-        return existing.value().get();
-    }
-
-    auto resources = std::make_shared<TitleOverlayResources>();
-    resources->resources = std::make_unique<VulkanResources>();
-    if (!resources->resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
-        if (m_owner) {
-            m_owner->markFailure(QStringLiteral("Failed to initialize direct preview title overlay resources for %1.")
-                                     .arg(clipId));
-        }
-        return nullptr;
-    }
-
-    TitleOverlayResources* raw = resources.get();
-    m_titleOverlayResources.insert(clipId, resources);
-    return raw;
-}
-
 void DirectVulkanPreviewRenderer::pruneClipHandoffResources(const QSet<QString>& activeClipIds)
 {
     for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end();) {
@@ -2594,17 +2646,6 @@ void DirectVulkanPreviewRenderer::pruneClipHandoffResources(const QSet<QString>&
         it = m_clipHandoffResources.erase(it);
     }
     updateClipHandoffResourceStats();
-}
-
-void DirectVulkanPreviewRenderer::pruneTitleOverlayResources(const QSet<QString>& activeClipIds)
-{
-    for (auto it = m_titleOverlayResources.begin(); it != m_titleOverlayResources.end();) {
-        if (activeClipIds.contains(it.key())) {
-            ++it;
-        } else {
-            it = m_titleOverlayResources.erase(it);
-        }
-    }
 }
 
 void DirectVulkanPreviewRenderer::advanceRetiredClipHandoffResources()
@@ -3291,15 +3332,21 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
             return false;
         }
 
-        const auto signalConsumed = [this, &slot]() {
+        const auto signalConsumed = [this, &slot, &frame]() {
             VkSubmitInfo signal{};
             signal.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
             signal.signalSemaphoreCount = 1;
             signal.pSignalSemaphores = &slot.consumed;
-            return vkQueueSubmit(m_window->graphicsQueue(),
-                                 1,
-                                 &signal,
-                                 VK_NULL_HANDLE) == VK_SUCCESS;
+            const bool submitted =
+                vkQueueSubmit(m_window->graphicsQueue(),
+                              1,
+                              &signal,
+                              VK_NULL_HANDLE) == VK_SUCCESS;
+            if (submitted && frame.consumptionState) {
+                frame.consumptionState->completedGeneration.store(
+                    frame.generation, std::memory_order_release);
+            }
+            return submitted;
         };
         std::string error;
         if (!slot.importer->importExternalFrame(frame, &error) ||
@@ -3311,37 +3358,31 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
                        .arg(QString::fromStdString(error));
             return false;
         }
-        if (!signalConsumed()) {
-            return false;
-        }
-        if (frame.consumptionState) {
-            frame.consumptionState->completedGeneration.store(
-                frame.generation, std::memory_order_release);
-        }
-        if (frame.generation == 1) {
-            qInfo().noquote()
-                << QStringLiteral(
-                       "[render-export-preview] consumed GPU slot=%1 "
-                       "producer_session=%2")
-                       .arg(slotIndex)
-                       .arg(frame.producerSessionId);
-        }
         m_resources->beginFrameUploads(
             static_cast<size_t>(qMax(0, m_window->currentFrame())),
             static_cast<size_t>(
                 qMax(1, m_window->concurrentFrameCount())));
         if (!m_resources->ensureCheckerTextureUploaded(commandBuffer) ||
             !m_resources->ensureAuxiliaryImagesReadable(commandBuffer)) {
+            signalConsumed();
             return false;
         }
         const jcut::vulkan_import::ExternalImage image =
             slot.importer->externalImage();
         if (!m_resources->setSampledImage(
                 image.imageView, image.imageLayout)) {
+            signalConsumed();
             return false;
         }
         slot.generation = frame.generation;
         m_gpuExportPreviewCurrentSlot = slotIndex;
+        m_window->signalSemaphoreWhenFrameCompletes(slot.consumed);
+        m_pendingGpuExportPreviewConsumptionState =
+            frame.consumptionState;
+        m_pendingGpuExportPreviewGeneration = frame.generation;
+        m_pendingGpuExportPreviewSlot = slotIndex;
+        m_pendingGpuExportPreviewProducerSessionId =
+            frame.producerSessionId;
     }
     if (m_gpuExportPreviewCurrentSlot < 0) {
         return false;
@@ -3405,6 +3446,10 @@ void DirectVulkanPreviewRenderer::destroyGpuExportPreviewResources()
         slot = {};
     }
     m_gpuExportPreviewCurrentSlot = -1;
+    m_pendingGpuExportPreviewConsumptionState.reset();
+    m_pendingGpuExportPreviewGeneration = 0;
+    m_pendingGpuExportPreviewSlot = -1;
+    m_pendingGpuExportPreviewProducerSessionId = 0;
 }
 
 void DirectVulkanPreviewRenderer::clearGpuExportPreview()
@@ -3441,7 +3486,24 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     VkCommandBuffer cb = m_window->currentCommandBuffer();
     if (renderGpuExportPreview(cb)) {
         m_owner->markPresented();
-        m_window->frameReady();
+        const bool submitted = m_window->frameReady();
+        if (submitted && m_pendingGpuExportPreviewConsumptionState) {
+            m_pendingGpuExportPreviewConsumptionState->completedGeneration.store(
+                m_pendingGpuExportPreviewGeneration,
+                std::memory_order_release);
+            if (m_pendingGpuExportPreviewGeneration == 1) {
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "[render-export-preview] consumed GPU slot=%1 "
+                           "producer_session=%2")
+                           .arg(m_pendingGpuExportPreviewSlot)
+                           .arg(m_pendingGpuExportPreviewProducerSessionId);
+            }
+        }
+        m_pendingGpuExportPreviewConsumptionState.reset();
+        m_pendingGpuExportPreviewGeneration = 0;
+        m_pendingGpuExportPreviewSlot = -1;
+        m_pendingGpuExportPreviewProducerSessionId = 0;
         m_owner->markPreviewUpdateDelivered();
         if (m_owner->hasGpuExportPreviewFrames()) {
             m_owner->schedulePreviewUpdate();
@@ -3516,6 +3578,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         VkFormat format = VK_FORMAT_UNDEFINED;
     } decoderReadbackCandidate;
     QHash<QString, DirectVulkanFrameHandoffPipeline::Result> frameHandoffResults;
+    QHash<QString, render_detail::VulkanGradePayload> gradePayloads;
     QHash<QString, bool> curveLutUploadResults;
     QHash<QString, bool> maskCurveLutUploadResults;
     QHash<QString, bool> maskUploadResults;
@@ -3527,14 +3590,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         QRectF bounds;
         bool ready = false;
     };
-    struct PreparedTitleOverlay {
-        VulkanResources* resources = nullptr;
-        QString clipId;
-        QRectF bounds;
-        bool ready = false;
-    };
     PreparedTranscriptOverlayMap preparedTranscriptOverlays;
-    QHash<QString, PreparedTitleOverlay> preparedTitleOverlays;
     QHash<QString, EvaluatedTitle> prepared3DTitleOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     qint64 mediaOwnerHandoffAttemptCount = 0;
@@ -3728,6 +3784,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             for (const int statusIndex : entry.consumerStatusIndices) {
                 const VulkanPreviewClipFrameStatus& status =
                     state->vulkanFrameStatuses.at(statusIndex);
+                const render_detail::VulkanGradePayload gradePayload =
+                    render_detail::vulkanGradePayloadForGrade(status.grading);
+                gradePayloads.insert(status.clipId, gradePayload);
                 const QString mediaOwnerId = entry.mediaOwnerClipId;
             // A virtual mask child may reuse the parent's decoded image, but
             // it must own a descriptor set so its mask and curve bindings
@@ -3854,9 +3913,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         secondaryResult = {};
                     }
                     frameHandoffResults.insert(secondaryHandoffKey, secondaryResult);
-                    if (!status.maskClipSource && status.curveLutApplied) {
-                        const QByteArray secondaryCurveLut =
-                            curveLutRgbaBytes(status.grading);
+                    if (!status.maskClipSource &&
+                        gradePayload.curveLutApplied) {
+                        const QByteArray& secondaryCurveLut =
+                            gradePayload.curveLutRgba;
                         if (!secondaryCurveLut.isEmpty()) {
                             frameCrossfadeCurveLutUploadResults.insert(
                                 status.clipId,
@@ -3898,7 +3958,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
                 }
             }
-            const QByteArray curveLut = curveLutRgbaBytes(status.grading);
+            const QByteArray& curveLut = gradePayload.curveLutRgba;
             if (!status.maskClipSource && !curveLut.isEmpty()) {
                 const bool uploaded =
                     handoffResources->resources->uploadCurveLut(cb, curveLut);
@@ -3957,7 +4017,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         int titlePreparedCount = 0;
         QString lastTitleSkipReason;
         QString lastTitleClipId;
-        const int64_t titleFrame = static_cast<int64_t>(std::floor(state->currentFramePosition));
         for (const TimelineClip& clip : state->clips) {
             if (clip.titleKeyframes.isEmpty()) {
                 continue;
@@ -3988,95 +4047,21 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 lastTitleSkipReason = QStringLiteral("title_zero_opacity");
                 continue;
             }
-            const EvaluatedTitle evaluatedTitle = evaluateTitleAtTimelinePosition(
-                clip, state->currentFramePosition, state->playbackTiming);
-            const EvaluatedTitle title = fitTitleToOutput(
-                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity)),
+            const EvaluatedTitle title = prepareRenderableTitleForVulkanText(
+                clip,
+                state->currentFramePosition,
+                state->playbackTiming,
+                static_cast<qreal>(effects.grading.opacity),
                 state->outputSize);
-            if (!title.valid || title.text.trimmed().isEmpty() || title.opacity <= 0.001) {
+            if (!title.valid) {
                 lastTitleSkipReason = QStringLiteral("title_evaluated_invisible");
                 continue;
             }
-            {
-                prepared3DTitleOverlays.insert(clip.id, title);
-                ++titlePreparedCount;
-                lastTitleSkipReason.clear();
-                continue;
-            }
-            TitleOverlayResources* titleResources = ensureTitleOverlayResources(clip.id);
-            if (!titleResources || !titleResources->resources || !titleResources->resources->isReady()) {
-                lastTitleSkipReason = QStringLiteral("title_resources_unavailable");
-                continue;
-            }
-            const QString textureKey = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18|%19|%20|%21|%22|%23|%24|%25|%26|%27")
-                                           .arg(clip.id)
-                                           .arg(titleFrame)
-                                           .arg(title.text)
-                                           .arg(QString::number(title.x, 'f', 3))
-                                           .arg(QString::number(title.y, 'f', 3))
-                                           .arg(QString::number(title.opacity, 'f', 3))
-                                           .arg(QString::number(effects.grading.opacity, 'f', 3))
-                                           .arg(QString::number(title.fontSize, 'f', 3))
-                                           .arg(title.fontFamily)
-                                           .arg(title.bold ? 1 : 0)
-                                           .arg(title.italic ? 1 : 0)
-                                           .arg(title.color.rgba(), 0, 16)
-                                           .arg(static_cast<int>(title.textMaterialStyle))
-                                           .arg(title.textPatternImagePath)
-                                           .arg(QString::number(title.textPatternScale, 'f', 3))
-                                           .arg(title.dropShadowEnabled ? 1 : 0)
-                                           .arg(title.dropShadowColor.rgba(), 0, 16)
-                                           .arg(QString::number(title.dropShadowOpacity, 'f', 3))
-                                           .arg(QString::number(title.dropShadowOffsetX, 'f', 3))
-                                           .arg(QString::number(title.dropShadowOffsetY, 'f', 3))
-                                           .arg(title.windowEnabled ? 1 : 0)
-                                           .arg(title.windowColor.rgba(), 0, 16)
-                                           .arg(QString::number(title.windowOpacity, 'f', 3))
-                                           .arg(QString::number(title.windowPadding, 'f', 3))
-                                           .arg(title.windowFrameEnabled ? 1 : 0)
-                                           .arg(title.windowFrameColor.rgba(), 0, 16)
-                                           .arg(QString::number(title.windowFrameWidth, 'f', 3));
-            bool textureReady = titleResources->textureReady &&
-                                titleResources->textureKey == textureKey;
-            if (!titleResources->resources->beginFrameUploads(
-                    swapchainImageIndex,
-                    qMax<size_t>(VulkanResources::kDescriptorSetCount,
-                                 static_cast<size_t>(swapchainImageIndex) + 1))) {
-                lastTitleSkipReason = QStringLiteral("title_upload_frame_slot_unavailable");
-                continue;
-            }
-            if (!textureReady) {
-                const render_detail::OverlayImage titleImage =
-                    render_detail::overlayRenderBackend().renderTitleOverlay(
-                        state->outputSize,
-                        title,
-                        state->outputSize);
-                textureReady = !titleImage.isNull() &&
-                               titleResources->resources->uploadImageTexture(cb, titleImage);
-                titleResources->textureReady = textureReady;
-                titleResources->textureKey = textureReady ? textureKey : QString();
-            } else {
-                textureReady = titleResources->resources->setSampledImage(
-                    titleResources->resources->sampledImageView(),
-                    titleResources->resources->sampledImageLayout());
-            }
-            titleResources->resources->ensureAuxiliaryImagesReadable(cb);
-            if (!textureReady ||
-                titleResources->resources->descriptorSet() == VK_NULL_HANDLE) {
-                lastTitleSkipReason = QStringLiteral("title_texture_upload_failed");
-                continue;
-            }
-            preparedTitleOverlays.insert(
-                clip.id,
-                PreparedTitleOverlay{
-                    titleResources->resources.get(),
-                    clip.id,
-                    QRectF(QPointF(0.0, 0.0), QSizeF(state->outputSize)),
-                    true});
+            prepared3DTitleOverlays.insert(clip.id, title);
             ++titlePreparedCount;
             lastTitleSkipReason.clear();
+            continue;
         }
-        pruneTitleOverlayResources(activeTitleClipIds);
         if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
             stats->titleCandidateCount = titleCandidateCount;
             stats->titlePreparedCount = titlePreparedCount;
@@ -4258,12 +4243,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     if (m_owner->stats()) {
         const qint64 textAttemptCount =
             preparedTranscriptOverlays.size() +
-            preparedTitleOverlays.size() + prepared3DTitleOverlays.size() +
+            prepared3DTitleOverlays.size() +
             ((preparedSpeakerSpec.showName || preparedSpeakerSpec.showOrganization) ? 1 : 0) +
             (!preparedTemporalDebugSpec.organization.trimmed().isEmpty() ? 1 : 0);
         const qint64 textSuccessCount =
             preparedTranscriptAtlasClipIds.size() +
-            preparedTitleOverlays.size() + prepared3DTitleOverlays.size() +
+            prepared3DTitleOverlays.size() +
             (preparedSpeakerLabel ? 1 : 0) +
             (preparedTemporalDebugLabel ? 1 : 0);
         editor::accumulatePlaybackStageMetric(&m_owner->stats()->textPrepStageMetric,
@@ -4277,7 +4262,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           : QStringLiteral("text_not_requested"),
                                       QStringLiteral("transcript=%1 title=%2 speaker=%3 debug=%4 cache_hit=%5")
                                           .arg(preparedTranscriptAtlasClipIds.size())
-                                          .arg(preparedTitleOverlays.size() + prepared3DTitleOverlays.size())
+                                          .arg(prepared3DTitleOverlays.size())
                                           .arg(preparedSpeakerLabel ? 1 : 0)
                                           .arg(preparedTemporalDebugLabel ? 1 : 0)
                                           .arg(textPrepCacheHit ? 1 : 0));
@@ -4338,51 +4323,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (drawn && m_owner && m_owner->stats()) ++m_owner->stats()->titleDrawnCount;
             return drawn;
         }
-        const auto titleIt = preparedTitleOverlays.constFind(clipId);
-        if (titleIt == preparedTitleOverlays.constEnd() ||
-            !titleIt.value().ready ||
-            !titleIt.value().resources ||
-            titleIt.value().resources->descriptorSet() == VK_NULL_HANDLE ||
-            !m_pipeline ||
-            !m_pipeline->isReady()) {
-            return false;
-        }
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(std::max(1, swapSize.width()));
-        viewport.height = static_cast<float>(std::max(1, swapSize.height()));
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        PreviewClipGeometry titleGeometry;
-        titleGeometry.localRect = QRectF(-compositeRect.width() / 2.0,
-                                         -compositeRect.height() / 2.0,
-                                         compositeRect.width(),
-                                         compositeRect.height());
-        titleGeometry.clipToScreen.translate(compositeRect.center().x(), compositeRect.center().y());
-        titleGeometry.bounds = compositeRect;
-        VulkanPipeline::Push titlePush{};
-        mvpForVulkanClipTransform(titleGeometry.clipToScreen,
-                                  titleGeometry.localRect,
-                                  swapSize,
-                                  titlePush.mvp);
-        VkRect2D titleScissor{};
-        if (state && state->hideOutsideOutputWindow) {
-            titleScissor = scissorFromQRect(compositeRect, swapSize);
-        } else {
-            titleScissor.offset = {0, 0};
-            titleScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
-                                   static_cast<uint32_t>(std::max(1, swapSize.height()))};
-        }
-        m_pipeline->bindAndDraw(cb,
-                                viewport,
-                                titleScissor,
-                                titleIt.value().resources->descriptorSet(),
-                                titlePush);
-        if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
-            ++stats->titleDrawnCount;
-        }
-        return true;
+        return false;
     };
     QSet<QString> drawnTranscriptOverlayClipIds;
     auto drawPreparedTranscriptOverlayForClip = [&](const QString& clipId, const QRectF& compositeRect) -> bool {
@@ -4472,7 +4413,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                  state->previewPanOffset);
         const QRectF compositeRect = viewTransform.targetRect();
         const QPointF previewScale = viewTransform.outputScale();
-        bool backgroundFilled = false;
         finalCompositeRect = compositeRect;
         struct PendingMaskForegroundDraw {
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
@@ -4609,38 +4549,20 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         state->renderSyncMarkers,
                         state->playbackTiming),
                     state->clips);
-                const render_detail::VulkanProgressiveEdgeStretchLayerPolicy progressiveStretchPolicy =
-                    render_detail::vulkanProgressiveEdgeStretchLayerPolicy(clip, state->tracks);
-                const bool progressiveEdgeStretchEffect =
-                    progressiveStretchPolicy.drawBackground &&
-                    !(status && status->maskClipSource);
                 const bool clipEdgeFillEffect =
                     effectClip.edgeFillEffect != BackgroundFillEffect::None &&
-                    progressiveStretchPolicy.sourceEligible &&
+                    render_detail::vulkanClipSupportsBackgroundFillSource(clip) &&
                     !(status && status->maskClipSource);
-                const bool clipOwnedEdgeFill =
-                    progressiveEdgeStretchEffect || clipEdgeFillEffect;
+                const bool progressiveStretchOwnsClipBackground =
+                    clipEdgeFillEffect &&
+                    (effectClip.edgeFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+                     effectClip.edgeFillEffect ==
+                         BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch);
                 PendingMaskForegroundDraw bidirectionalEdgeDraw;
                 bool bidirectionalEdgeDrawPending = false;
-                const BackgroundFillEffect fillEffect = state->backgroundFillEffect;
-                const bool progressiveStretchOwnsClipBackground = progressiveEdgeStretchEffect;
-                const bool globalProgressiveFillSelected =
-                    fillEffect == BackgroundFillEffect::ProgressiveEdgeStretch;
-                const bool shouldDrawBackgroundFill =
-                    clipOwnedEdgeFill ||
-                    (fillEffect != BackgroundFillEffect::None &&
-                     !globalProgressiveFillSelected &&
-                     render_detail::shouldDrawBlurredFillBackground(
-                         frameSize.isValid() ? frameSize : clip.sourceFrameSize,
-                         state->outputSize));
-                if ((clipOwnedEdgeFill || !backgroundFilled) &&
-                    shouldDrawBackgroundFill) {
+                if (clipEdgeFillEffect) {
                     const BackgroundFillEffect effectiveFillEffect =
-                        progressiveEdgeStretchEffect
-                            ? BackgroundFillEffect::ProgressiveEdgeStretch
-                            : clipEdgeFillEffect
-                            ? effectClip.edgeFillEffect
-                            : fillEffect;
+                        effectClip.edgeFillEffect;
                     const bool fullCanvasFill =
                         effectiveFillEffect == BackgroundFillEffect::EdgeStretch ||
                         effectiveFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
@@ -4690,8 +4612,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         renderClipGeometry.bounds =
                             renderClipGeometry.clipToScreen.mapRect(renderClipGeometry.localRect);
                     }
-                    const render_detail::VulkanDrawEffectState baseEffects =
-                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
+                    const render_detail::VulkanGradePayload gradePayload =
+                        gradePayloads.value(status->clipId);
+                    const render_detail::VulkanDrawEffectState& baseEffects =
+                        gradePayload.effects;
                     VulkanPipeline::Push backgroundPush{};
                     // Progressive edge stretch is a clip effect, but its scan
                     // and edge band are defined in render/output pixels.  The
@@ -4712,40 +4636,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                               swapSize,
                                               backgroundPush.mvp);
                     const int edgePixels =
-                        progressiveEdgeStretchEffect
-                            ? qBound(1, effectClip.effectRows, 512)
-                            : clipEdgeFillEffect
-                            ? qBound(1, effectClip.edgeFillPixels, 512)
-                            : state->backgroundFillEdgePixels;
+                        qBound(1, effectClip.edgeFillPixels, 512);
                     const qreal edgePower =
-                        progressiveEdgeStretchEffect
-                            ? qBound<qreal>(0.25, effectClip.effectScale, 8.0)
-                            : clipEdgeFillEffect
-                            ? qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0)
-                            : state->backgroundFillEdgePower;
-                    float backgroundFillOpacity =
-                        static_cast<float>(state->backgroundFillOpacity);
-                    float backgroundFillBrightness =
-                        static_cast<float>(state->backgroundFillBrightness);
-                    float backgroundFillSaturation =
-                        static_cast<float>(state->backgroundFillSaturation);
-                    if (clipEdgeFillEffect) {
-                        backgroundFillOpacity =
-                            static_cast<float>(effectClip.edgeFillOpacity);
-                        backgroundFillBrightness =
-                            static_cast<float>(effectClip.edgeFillBrightness);
-                        backgroundFillSaturation =
-                            static_cast<float>(effectClip.edgeFillSaturation);
-                    }
+                        qBound<qreal>(0.25, effectClip.edgeFillPower, 8.0);
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
                             effectiveFillEffect,
                             baseEffects,
-                            backgroundFillOpacity,
-                            backgroundFillBrightness,
-                            backgroundFillSaturation,
+                            static_cast<float>(effectClip.edgeFillOpacity),
+                            static_cast<float>(effectClip.edgeFillBrightness),
+                            static_cast<float>(effectClip.edgeFillSaturation),
                             edgePixels,
-                            state->backgroundFillEdgeProgressive,
                             static_cast<float>(edgePower),
                             status->frame.validTextureRectNormalized(),
                             progressiveRenderSpaceFill
@@ -4797,9 +4698,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                 backgroundPush,
                                                 backgroundFrameUniformOffset);
                     }
-                    if (!clipOwnedEdgeFill) {
-                        backgroundFilled = true;
-                    }
                 }
                 VulkanPipeline::Push push{};
                 mvpForVulkanClipTransform(effectiveClipGeometry.clipToScreen,
@@ -4807,8 +4705,10 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           swapSize,
                                           push.mvp);
                 if (status) {
-                    const render_detail::VulkanDrawEffectState effects =
-                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
+                    const render_detail::VulkanGradePayload gradePayload =
+                        gradePayloads.value(status->clipId);
+                    const render_detail::VulkanDrawEffectState& effects =
+                        gradePayload.effects;
                     push.brightness = effects.brightness;
                     push.contrast = effects.contrast;
                     push.saturation = effects.saturation;
@@ -4822,7 +4722,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     push.highlights[0] = effects.highlights[0];
                     push.highlights[1] = effects.highlights[1];
                     push.highlights[2] = effects.highlights[2];
-                    push.shadows[3] = status->curveLutApplied
+                    push.shadows[3] = gradePayload.curveLutApplied
                         ? render_detail::kVulkanEffectModeCurve
                         : render_detail::kVulkanEffectModeNormal;
                     push.midtones[3] = static_cast<float>(std::max<qreal>(0.0, status->maskFeather));
@@ -5252,13 +5152,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 ++fallbackTitleDrawCount;
             }
         }
-        for (auto it = preparedTitleOverlays.cbegin(); it != preparedTitleOverlays.cend(); ++it) {
-            if (!drawnTitleOverlayClipIds.contains(it.key()) &&
-                drawPreparedTitleOverlayForClip(it.key(), compositeRect)) {
-                drawnTitleOverlayClipIds.insert(it.key());
-                ++fallbackTitleDrawCount;
-            }
-        }
         for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
             if (!drawnTranscriptOverlayClipIds.contains(it.key())) {
                 if (drawPreparedTranscriptOverlayForClip(it.key(), compositeRect)) {
@@ -5269,7 +5162,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         if (m_owner->stats()) {
             const qint64 transcriptDrawAttempts = preparedTranscriptAtlasClipIds.size();
             const qint64 transcriptDrawSuccesses = drawnTranscriptOverlayClipIds.size();
-            const qint64 titleDrawAttempts = preparedTitleOverlays.size() + prepared3DTitleOverlays.size();
+            const qint64 titleDrawAttempts = prepared3DTitleOverlays.size();
             const qint64 titleDrawSuccesses = drawnTitleOverlayClipIds.size();
             m_owner->stats()->transcriptDrawnCount = static_cast<int>(transcriptDrawSuccesses);
             m_owner->stats()->titleDrawnCount = static_cast<int>(titleDrawSuccesses);
@@ -5311,6 +5204,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                          preparedTemporalDebugSpec);
         }
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
+        drawOutputPlacementGuides(m_devFuncs,
+                                  cb,
+                                  swapSize,
+                                  state->outputSize,
+                                  compositeRect,
+                                  state->instagramSafeAreaGuides,
+                                  state->alignmentGridGuides);
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);
         for (const VulkanPreviewFacestreamOverlay& overlay : state->facedetectionsOverlays) {
             const auto it = activeClipGeometry.constFind(overlay.clipId);

@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -112,6 +113,9 @@ public:
     bool prepareSpeakerLabelAtlas(VkCommandBuffer commandBuffer,
                                   const QSize& outputSize,
                                   const render_detail::SpeakerLabelOverlaySpec& spec);
+    bool speakerLabelAtlasNeedsUpload(
+        const QSize& outputSize,
+        const render_detail::SpeakerLabelOverlaySpec& spec) const;
     bool drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                const QSize& swapSize,
                                const QSize& outputSize,
@@ -126,6 +130,11 @@ public:
                                        const TranscriptOverlayLayout& layout,
                                        const QRectF& outputRect,
                                        const QString& speakerTitle);
+    bool transcriptOverlayAtlasNeedsUpload(const QSize& outputSize,
+                                           const TimelineClip& clip,
+                                           const TranscriptOverlayLayout& layout,
+                                           const QRectF& outputRect,
+                                           const QString& speakerTitle) const;
     bool drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                             const QSize& swapSize,
                             const QSize& outputSize,
@@ -134,6 +143,8 @@ public:
     bool prepareTitleOverlayAtlas(VkCommandBuffer commandBuffer,
                                   const QSize& outputSize,
                                   const EvaluatedTitle& title);
+    bool titleOverlayAtlasNeedsUpload(const QSize& outputSize,
+                                      const EvaluatedTitle& title) const;
     VulkanTextLayoutDebug buildSpeakerLabelLayoutForTesting(
         const QSize& outputSize,
         const render_detail::SpeakerLabelOverlaySpec& spec) const;
@@ -211,6 +222,10 @@ private:
         QString meshKey;
         QVector<TitleMeshVertex> meshVertices;
     };
+    struct TitleLayoutCacheEntry {
+        TitleLayoutCache layout;
+        quint64 lastUseSerial = 0;
+    };
 
     bool buildAtlasAndLayout(const QSize& outputSize,
                              const render_detail::SpeakerLabelOverlaySpec& spec,
@@ -255,6 +270,8 @@ private:
     const TitleLayoutCache* titleOverlayLayout(const QSize& outputSize,
                                                const EvaluatedTitle& title) const;
     bool ensureAtlasUploaded(VkCommandBuffer commandBuffer, const Atlas& atlas);
+    bool atlasIsResident(const QString& atlasKey) const;
+    VulkanResources* activeAtlasResources() const;
     bool fail(const QString& reason) const;
     void drawGlyph(VkCommandBuffer commandBuffer,
                    const QSize& swapSize,
@@ -289,11 +306,22 @@ private:
     QVulkanDeviceFunctions* m_funcs = nullptr;
     std::unique_ptr<VulkanResources> m_atlasResources;
     std::unique_ptr<VulkanTextPipeline> m_pipeline;
+    struct GpuAtlasCacheEntry {
+        QString key;
+        std::unique_ptr<VulkanResources> resources;
+        quint64 lastUseSerial = 0;
+    };
+    std::vector<GpuAtlasCacheEntry> m_gpuAtlasCache;
+    VulkanResources* m_activeAtlasResources = nullptr;
+    size_t m_frameUploadSlot = 0;
+    size_t m_frameUploadSlotCount = VulkanResources::kDescriptorSetCount;
+    quint64 m_gpuAtlasUseSerial = 0;
     QString m_uploadedAtlasKey;
     mutable QString m_lastFailureReason;
     mutable SpeakerLayoutCache m_speakerLayoutCache;
     mutable TranscriptLayoutCache m_transcriptLayoutCache;
-    mutable TitleLayoutCache m_titleLayoutCache;
+    mutable QHash<QString, TitleLayoutCacheEntry> m_titleLayoutCache;
+    mutable quint64 m_titleLayoutCacheUseSerial = 0;
     VkBuffer m_titleMeshBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_titleMeshMemory = VK_NULL_HANDLE;
     VkDeviceSize m_titleMeshBufferCapacity = 0;

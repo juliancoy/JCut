@@ -23,6 +23,7 @@ struct SpeakerTitleFlyInSettingsCore {
     std::int64_t titleDurationFrames = 90;
     std::int64_t titleStartDelayFrames = 11;
     bool showAtSectionEnd = false;
+    bool respectSpeechFilterTiming = true;
     std::int64_t cadenceFrames = 0;
     std::int64_t flyInFrames = 11;
     std::int64_t flyOutFrames = 14;
