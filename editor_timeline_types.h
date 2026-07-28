@@ -90,7 +90,15 @@ enum class ClipRole {
     MaskMatte,
     EffectSynth,
     SpeakerTitle,
+    TranscriptSubtitle,
 };
+
+inline bool isOwnedGeneratedClipRole(ClipRole role)
+{
+    return role == ClipRole::MaskMatte ||
+        role == ClipRole::SpeakerTitle ||
+        role == ClipRole::TranscriptSubtitle;
+}
 
 struct TimelineClip {
     static constexpr int kAutomaticZLevel = std::numeric_limits<int>::min();

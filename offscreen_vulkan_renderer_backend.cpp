@@ -5047,7 +5047,9 @@ public:
         continue;
       }
       const ClipFrameMapping mapping =
-          clipFrameMappingForClock(clip, clock, request.renderSyncMarkers);
+          clipFrameMappingForClock(
+              clip, request.clips, clock,
+              request.renderSyncMarkers);
       const TranscriptOverlayLayout layout =
           transcriptOverlayLayoutAtSourceFrame(
               clip,

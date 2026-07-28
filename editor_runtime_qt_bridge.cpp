@@ -45,6 +45,8 @@ std::string clipRoleName(ClipRole role)
         return "effect_synth";
     case ClipRole::SpeakerTitle:
         return "speaker_title";
+    case ClipRole::TranscriptSubtitle:
+        return "transcript_subtitle";
     case ClipRole::Media:
     default:
         return "media";

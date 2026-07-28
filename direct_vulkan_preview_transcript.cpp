@@ -41,10 +41,13 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
         runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
     const bool usePresentedFrame =
         status && status->hasFrame && status->presentedSourceFrame >= 0;
+    const TimelineClip timingClip =
+        clipWithResolvedTimingOwner(
+            effectiveClip, state->clips);
     const int64_t sourceFrame =
         usePresentedFrame
             ? transcriptFrameForClipSourceFrame(effectiveClip, status->presentedSourceFrame)
-            : transcriptFrameForClipAtTimelineSample(effectiveClip,
+            : transcriptFrameForClipAtTimelineSample(timingClip,
                                                      samplePosition,
                                                      state->renderSyncMarkers);
     const TranscriptOverlayTiming timing{
@@ -135,6 +138,10 @@ PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInte
                                              state->previewPanOffset);
 
     for (const TimelineClip& clip : state->clips) {
+        if (clipHasTranscriptSubtitleChild(
+                clip, state->clips)) {
+            continue;
+        }
         const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
         const bool statusDrawable = status && status->active && !status->drawSuppressed;
         const int64_t clipStartSample = clipTimelineStartSamples(clip);

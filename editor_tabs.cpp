@@ -194,7 +194,9 @@ const TimelineClip* transcriptOwnerForSelection(const TimelineWidget* timeline)
         return nullptr;
     }
     const TimelineClip* selected = timeline->selectedClip();
-    if (!selected || selected->clipRole != ClipRole::SpeakerTitle) {
+    if (!selected ||
+        (selected->clipRole != ClipRole::SpeakerTitle &&
+         selected->clipRole != ClipRole::TranscriptSubtitle)) {
         return selected;
     }
     return clipSelectionContext(selected, timeline->clips()).owner();

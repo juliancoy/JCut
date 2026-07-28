@@ -488,7 +488,8 @@ struct EditorClip {
     bool tilingWrap = true;
     std::vector<EditorCorrectionPolygon> correctionPolygons;
     // Known values match clip_serialization.cpp: media, mask_matte,
-    // effect_synth, and speaker_title. Unknown future values remain opaque.
+    // effect_synth, speaker_title, and transcript_subtitle. Unknown future
+    // values remain opaque.
     // Keep these at the end so existing aggregate initializers stay compatible.
     std::string clipRole = "media";
     std::string linkedSourceClipId;
@@ -617,6 +618,10 @@ inline std::string canonicalEditorClipRole(std::string_view value)
         normalized == "speaker_lower_third") {
         return "speaker_title";
     }
+    if (normalized == "transcript_subtitle" || normalized == "subtitle" ||
+        normalized == "transcript_overlay") {
+        return "transcript_subtitle";
+    }
     if (normalized.empty() || normalized == "media") {
         return "media";
     }
@@ -629,7 +634,8 @@ inline std::string editorClipRoleForStorage(std::string_view value)
     const std::string rawRole = trimmedEditorClipId(value);
     const std::string canonicalRole = canonicalEditorClipRole(rawRole);
     if (canonicalRole == "media" || canonicalRole == "mask_matte" ||
-        canonicalRole == "effect_synth" || canonicalRole == "speaker_title") {
+        canonicalRole == "effect_synth" || canonicalRole == "speaker_title" ||
+        canonicalRole == "transcript_subtitle") {
         return canonicalRole;
     }
     // Do not collapse a role introduced by a newer Qt build into media.
@@ -641,15 +647,21 @@ inline bool isTranscriptGeneratedEditorTitle(const EditorClip& clip)
     return canonicalEditorClipRole(clip.clipRole) == "speaker_title";
 }
 
+inline bool isTranscriptGeneratedEditorSubtitle(const EditorClip& clip)
+{
+    return canonicalEditorClipRole(clip.clipRole) == "transcript_subtitle";
+}
+
 inline bool isOwnedGeneratedEditorClip(const EditorClip& clip)
 {
     const std::string role = canonicalEditorClipRole(clip.clipRole);
-    return role == "mask_matte" || role == "speaker_title";
+    return role == "mask_matte" || role == "speaker_title" ||
+        role == "transcript_subtitle";
 }
 
-// Qt assigns render-sync decisions made on a generated mask layer to the
-// linked media source. Keep the same rule in one neutral helper so loading,
-// commands, and either shell cannot create competing parent/child decisions.
+// Generated followers share their media timing with the linked source. Keep
+// render-sync decisions on that canonical owner so parent and child cannot
+// acquire competing clocks.
 inline std::string editorRenderSyncOwnerClipId(
     const EditorDocumentCore& document,
     std::string_view clipId)
@@ -662,7 +674,10 @@ inline std::string editorRenderSyncOwnerClipId(
         if (trimmedEditorClipId(clip.persistentId) != normalizedId) {
             continue;
         }
-        if (canonicalEditorClipRole(clip.clipRole) == "mask_matte") {
+        const std::string role =
+            canonicalEditorClipRole(clip.clipRole);
+        if (role == "mask_matte" ||
+            role == "transcript_subtitle") {
             const std::string linkedSourceId =
                 trimmedEditorClipId(clip.linkedSourceClipId);
             if (!linkedSourceId.empty()) {

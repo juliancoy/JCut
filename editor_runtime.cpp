@@ -706,6 +706,160 @@ int nextClipId(const std::vector<jcut::EditorClip>& clips)
     return nextId;
 }
 
+void synchronizeTranscriptSubtitleChildren(
+    jcut::EditorDocumentCore* document)
+{
+    if (!document) {
+        return;
+    }
+
+    std::unordered_map<std::string, bool>
+        sourceOverlayEnabledById;
+    for (const jcut::EditorClip& clip : document->clips) {
+        if (jcut::canonicalEditorClipRole(
+                clip.clipRole) == "media") {
+            const std::string sourceId =
+                jcut::trimmedEditorClipId(clip.persistentId);
+            if (!sourceId.empty()) {
+                sourceOverlayEnabledById.emplace(
+                    sourceId,
+                    clip.transcriptOverlay.enabled);
+            }
+        }
+    }
+
+    std::unordered_set<std::string> retainedSubtitleParents;
+    document->clips.erase(
+        std::remove_if(
+            document->clips.begin(),
+            document->clips.end(),
+            [&](const jcut::EditorClip& clip) {
+                if (!jcut::isTranscriptGeneratedEditorSubtitle(
+                        clip)) {
+                    return false;
+                }
+                const std::string parentId =
+                    jcut::trimmedEditorClipId(
+                        clip.linkedSourceClipId);
+                const auto source =
+                    sourceOverlayEnabledById.find(parentId);
+                if (source ==
+                        sourceOverlayEnabledById.end() ||
+                    !source->second) {
+                    return true;
+                }
+                return !retainedSubtitleParents.insert(
+                            parentId)
+                            .second;
+            }),
+        document->clips.end());
+
+    std::vector<std::string> sourceIds;
+    sourceIds.reserve(document->clips.size());
+    for (const jcut::EditorClip& clip : document->clips) {
+        if (jcut::canonicalEditorClipRole(
+                clip.clipRole) == "media") {
+            const std::string sourceId =
+                jcut::trimmedEditorClipId(clip.persistentId);
+            if (!sourceId.empty()) {
+                sourceIds.push_back(sourceId);
+            }
+        }
+    }
+
+    for (const std::string& sourceId : sourceIds) {
+        const auto sourceIt = std::find_if(
+            document->clips.cbegin(),
+            document->clips.cend(),
+            [&](const jcut::EditorClip& clip) {
+                return jcut::canonicalEditorClipRole(
+                           clip.clipRole) == "media" &&
+                    jcut::trimmedEditorClipId(
+                        clip.persistentId) == sourceId;
+            });
+        if (sourceIt == document->clips.cend()) {
+            continue;
+        }
+        const jcut::EditorClip source = *sourceIt;
+        if (!source.transcriptOverlay.enabled) {
+            continue;
+        }
+
+        jcut::EditorClip* child = nullptr;
+        const auto existingChild = std::find_if(
+            document->clips.begin(),
+            document->clips.end(),
+            [&](const jcut::EditorClip& clip) {
+                return jcut::isTranscriptGeneratedEditorSubtitle(
+                           clip) &&
+                    jcut::trimmedEditorClipId(
+                        clip.linkedSourceClipId) == sourceId;
+            });
+        if (existingChild != document->clips.end()) {
+            child = &*existingChild;
+        } else {
+            jcut::EditorClip generated;
+            generated.id = nextClipId(document->clips);
+            generated.persistentId = uniquePersistentClipId(
+                document->clips, generated.id);
+            generated.trackId = source.trackId;
+            document->clips.push_back(std::move(generated));
+            child = &document->clips.back();
+        }
+
+        const int childId = child->id;
+        const int childTrackId = child->trackId;
+        const std::string childPersistentId =
+            child->persistentId;
+        const int childZLevel = child->zLevel;
+        const bool childZLevelUserSet =
+            child->zLevelUserSet;
+        *child = source;
+        child->id = childId;
+        child->persistentId = childPersistentId;
+        child->trackId = childTrackId;
+        child->clipRole = "transcript_subtitle";
+        child->label = "Transcript Subtitles";
+        child->linkedSourceClipId = sourceId;
+        child->syncLockedToSource = true;
+        child->sourceTransformLocked = true;
+        child->locked = true;
+        child->selected = false;
+        child->videoEnabled = false;
+        child->audioEnabled = false;
+        child->audioPresenceKnown = true;
+        child->hasAudio = true;
+        child->titleKeyframes.clear();
+        if (childZLevelUserSet) {
+            child->zLevel = childZLevel;
+            child->zLevelUserSet = true;
+        }
+
+        jcut::EditorTrack* lane =
+            findTrack(&document->tracks, child->trackId);
+        if (!lane || !jcut::isGeneratedEditorChildTrack(*lane) ||
+            jcut::trimmedEditorClipId(lane->childClipId) !=
+                childPersistentId) {
+            jcut::EditorTrack generatedTrack;
+            generatedTrack.id = nextTrackId(document->tracks);
+            generatedTrack.height = 44;
+            generatedTrack.audioEnabled = false;
+            generatedTrack.audioWaveformVisible = false;
+            document->tracks.push_back(std::move(generatedTrack));
+            lane = &document->tracks.back();
+            child->trackId = lane->id;
+        }
+        lane->generatedChildTrack = true;
+        lane->parentClipId = sourceId;
+        lane->childClipId = childPersistentId;
+        lane->label = "↳ Transcript • Subtitles";
+        lane->height = std::clamp(
+            lane->height, jcut::kEditorTrackMinHeight, 56);
+        lane->audioEnabled = false;
+        lane->audioWaveformVisible = false;
+    }
+}
+
 void ensureMediaItemForClip(jcut::EditorDocumentCore* document,
                             const std::string& sourcePath,
                             const std::string& label,
@@ -1636,6 +1790,7 @@ bool reconcilesGeneratedTrackTopology(const jcut::EditorCommand& command)
                 std::is_same_v<T, jcut::RefreshClipMetadataCommand> ||
                 std::is_same_v<T, jcut::MaterializeMaskMatteCommand> ||
                 std::is_same_v<T, jcut::ReplaceSpeakerTitleClipsCommand> ||
+                std::is_same_v<T, jcut::SetClipTranscriptOverlayCommand> ||
                 std::is_same_v<T, jcut::SetClipLabelCommand>;
         },
         command);
@@ -1650,6 +1805,7 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
     if (!document) {
         return;
     }
+    synchronizeTranscriptSubtitleChildren(document);
     normalizeSpeakerTitleParentBounds(document);
 
     struct ChildBinding {
@@ -1909,7 +2065,8 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
             const std::string role = canonicalEditorClipRole(
                 document->clips[childIt->second].clipRole);
             opaqueFutureBinding = role != "media" && role != "mask_matte" &&
-                role != "effect_synth" && role != "speaker_title";
+                role != "effect_synth" && role != "speaker_title" &&
+                role != "transcript_subtitle";
         }
         if (opaqueFutureBinding) {
             continue;
@@ -1933,6 +2090,15 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
                     document->clips[clipIndex]);
             });
         if (speakerTitleLane) {
+            continue;
+        }
+        const bool subtitleLane = std::all_of(
+            occupants.begin(), occupants.end(),
+            [&](std::size_t clipIndex) {
+                return isTranscriptGeneratedEditorSubtitle(
+                    document->clips[clipIndex]);
+            });
+        if (subtitleLane) {
             continue;
         }
 
@@ -2135,6 +2301,13 @@ void reconcileEditorGeneratedChildTracks(EditorDocumentCore* document)
                 if (isGeneratedEditorChildTrack(track) &&
                     trimmedEditorClipId(track.parentClipId) ==
                         group.parentId &&
+                    std::any_of(
+                        currentOccupantsByTrackId[track.id].begin(),
+                        currentOccupantsByTrackId[track.id].end(),
+                        [&](std::size_t occupantIndex) {
+                            return isTranscriptGeneratedEditorTitle(
+                                document->clips[occupantIndex]);
+                        }) &&
                     claimedSpeakerTrackIds.find(track.id) ==
                         claimedSpeakerTrackIds.end()) {
                     group.laneTrackId = track.id;
@@ -5019,6 +5192,10 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                 if (!clip) {
                     return {false, "clip not found"};
+                }
+                if (isTranscriptGeneratedEditorSubtitle(*clip)) {
+                    return {false,
+                            "generated subtitles must be changed through their source transcript"};
                 }
                 clip->transcriptOverlay = typedCommand.overlay;
                 clip->transcriptOverlay.backgroundOpacity =

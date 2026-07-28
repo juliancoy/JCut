@@ -70,6 +70,9 @@ ClipRole clipRoleFromCore(const std::string& role)
     if (canonical == "speaker_title") {
         return ClipRole::SpeakerTitle;
     }
+    if (canonical == "transcript_subtitle") {
+        return ClipRole::TranscriptSubtitle;
+    }
     return ClipRole::Media;
 }
 

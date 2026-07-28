@@ -271,6 +271,8 @@ QString clipRoleToJson(ClipRole role)
         return QStringLiteral("effect_synth");
     case ClipRole::SpeakerTitle:
         return QStringLiteral("speaker_title");
+    case ClipRole::TranscriptSubtitle:
+        return QStringLiteral("transcript_subtitle");
     case ClipRole::Media:
     default:
         return QStringLiteral("media");
@@ -294,6 +296,11 @@ ClipRole clipRoleFromJson(const QString& value)
         normalized == QStringLiteral("lower_third") ||
         normalized == QStringLiteral("speaker_lower_third")) {
         return ClipRole::SpeakerTitle;
+    }
+    if (normalized == QStringLiteral("transcript_subtitle") ||
+        normalized == QStringLiteral("subtitle") ||
+        normalized == QStringLiteral("transcript_overlay")) {
+        return ClipRole::TranscriptSubtitle;
     }
     return ClipRole::Media;
 }

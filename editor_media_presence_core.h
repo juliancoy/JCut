@@ -21,6 +21,9 @@ inline bool editorMediaKindHasVisualsCore(
 inline bool editorClipHasVisualsCore(
     const EditorClip& clip) noexcept
 {
+    if (isTranscriptGeneratedEditorSubtitle(clip)) {
+        return true;
+    }
     if (editorMediaKindHasVisualsCore(clip.mediaKind)) {
         return true;
     }

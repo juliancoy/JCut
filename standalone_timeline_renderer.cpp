@@ -4463,6 +4463,25 @@ private:
         const TimelineRenderRequest& request)
     {
         ImageBuffer overlay;
+        const auto hasGeneratedSubtitleChild =
+            [&](const EditorClip& parent) {
+                if (canonicalEditorClipRole(parent.clipRole) !=
+                        "media" ||
+                    parent.persistentId.empty()) {
+                    return false;
+                }
+                return std::any_of(
+                    request.document.clips.cbegin(),
+                    request.document.clips.cend(),
+                    [&](const EditorClip& child) {
+                        return isTranscriptGeneratedEditorSubtitle(
+                                   child) &&
+                            trimmedEditorClipId(
+                                child.linkedSourceClipId) ==
+                                trimmedEditorClipId(
+                                    parent.persistentId);
+                    });
+            };
         for (const EditorClip& clip :
              request.document.clips) {
             const double clipStart =
@@ -4471,7 +4490,16 @@ private:
                 static_cast<double>(
                     clip.startFrame +
                     std::max(1, clip.durationFrames));
-            if (!clip.transcriptOverlay.enabled ||
+            const auto track = std::find_if(
+                request.document.tracks.cbegin(),
+                request.document.tracks.cend(),
+                [&](const EditorTrack& candidate) {
+                    return candidate.id == clip.trackId;
+                });
+            if (hasGeneratedSubtitleChild(clip) ||
+                (track != request.document.tracks.cend() &&
+                 track->visualMode == 2) ||
+                !clip.transcriptOverlay.enabled ||
                 request.timelineFrame < clipStart ||
                 request.timelineFrame >= clipEnd ||
                 (clip.mediaKind != "audio" &&

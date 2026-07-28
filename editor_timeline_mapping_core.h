@@ -24,9 +24,12 @@ inline std::int64_t adjustedEditorClipLocalFrame(
 {
     std::int64_t localFrame = std::max<std::int64_t>(
         0, timelineFrame - clip.startFrame);
+    const std::string timingOwnerId =
+        editorRenderSyncOwnerClipId(
+            document, clip.persistentId);
     for (const EditorRenderSyncMarker& marker :
          document.renderSyncMarkers) {
-        if (marker.clipId != clip.persistentId ||
+        if (marker.clipId != timingOwnerId ||
             marker.frame >= timelineFrame) {
             continue;
         }

@@ -46,6 +46,7 @@ public:
                             const jcut::core::ImageBuffer& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const render_detail::OverlayImage& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image);
+    void releaseUploadStaging();
     bool uploadMaskTexture(VkCommandBuffer commandBuffer,
                            const jcut::core::ImageBuffer& image);
     bool uploadMaskTexture(VkCommandBuffer commandBuffer,

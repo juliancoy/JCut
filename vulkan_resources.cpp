@@ -19,6 +19,28 @@ constexpr uint32_t kCurveLutHeight = 1;
 constexpr VkDeviceSize kCurveLutBytes = static_cast<VkDeviceSize>(kCurveLutWidth * kCurveLutHeight * 4);
 constexpr size_t kFrameUniformRingCount = 4096;
 
+QString vkResultName(VkResult result)
+{
+    switch (result) {
+    case VK_SUCCESS:
+        return QStringLiteral("VK_SUCCESS");
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+        return QStringLiteral("VK_ERROR_OUT_OF_HOST_MEMORY");
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        return QStringLiteral("VK_ERROR_OUT_OF_DEVICE_MEMORY");
+    case VK_ERROR_INITIALIZATION_FAILED:
+        return QStringLiteral("VK_ERROR_INITIALIZATION_FAILED");
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:
+        return QStringLiteral("VK_ERROR_FORMAT_NOT_SUPPORTED");
+    case VK_ERROR_FRAGMENTATION:
+        return QStringLiteral("VK_ERROR_FRAGMENTATION");
+    case VK_ERROR_TOO_MANY_OBJECTS:
+        return QStringLiteral("VK_ERROR_TOO_MANY_OBJECTS");
+    default:
+        return QStringLiteral("VkResult(%1)").arg(static_cast<int>(result));
+    }
+}
+
 void nameVulkanImage(VkDevice device, VkImage image, const QByteArray& name)
 {
     if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE ||
@@ -546,6 +568,19 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
 bool VulkanResources::createTextureImage(const QSize& size)
 {
     if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+        m_lastError = QStringLiteral("texture_invalid_size size=%1x%2")
+                          .arg(size.width())
+                          .arg(size.height());
+        return false;
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+    if (static_cast<uint32_t>(size.width()) > properties.limits.maxImageDimension2D ||
+        static_cast<uint32_t>(size.height()) > properties.limits.maxImageDimension2D) {
+        m_lastError = QStringLiteral("texture_size_exceeds_device_limit size=%1x%2 maxImageDimension2D=%3")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(properties.limits.maxImageDimension2D);
         return false;
     }
     retireTextureImage();
@@ -564,7 +599,13 @@ bool VulkanResources::createTextureImage(const QSize& size)
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateImage(m_device, &imageInfo, nullptr, &m_textureImage) != VK_SUCCESS) {
+    const VkResult createResult =
+        vkCreateImage(m_device, &imageInfo, nullptr, &m_textureImage);
+    if (createResult != VK_SUCCESS) {
+        m_lastError = QStringLiteral("texture_create_image_failed size=%1x%2 result=%3")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(vkResultName(createResult));
         return false;
     }
 
@@ -572,6 +613,11 @@ bool VulkanResources::createTextureImage(const QSize& size)
     vkGetImageMemoryRequirements(m_device, m_textureImage, &imageReq);
     const uint32_t imageMemType = findMemoryType(imageReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (imageMemType == UINT32_MAX) {
+        m_lastError = QStringLiteral("texture_memory_type_unavailable size=%1x%2 memoryTypeBits=0x%3 allocation=%4")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(QString::number(imageReq.memoryTypeBits, 16))
+                          .arg(static_cast<qulonglong>(imageReq.size));
         destroyTextureImage();
         return false;
     }
@@ -579,11 +625,27 @@ bool VulkanResources::createTextureImage(const QSize& size)
     imageAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     imageAlloc.allocationSize = imageReq.size;
     imageAlloc.memoryTypeIndex = imageMemType;
-    if (vkAllocateMemory(m_device, &imageAlloc, nullptr, &m_textureMemory) != VK_SUCCESS) {
+    const VkResult allocateResult =
+        vkAllocateMemory(m_device, &imageAlloc, nullptr, &m_textureMemory);
+    if (allocateResult != VK_SUCCESS) {
+        m_lastError = QStringLiteral("texture_allocate_memory_failed size=%1x%2 allocation=%3 memoryType=%4 result=%5")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(static_cast<qulonglong>(imageReq.size))
+                          .arg(imageMemType)
+                          .arg(vkResultName(allocateResult));
         destroyTextureImage();
         return false;
     }
-    if (vkBindImageMemory(m_device, m_textureImage, m_textureMemory, 0) != VK_SUCCESS) {
+    const VkResult bindResult =
+        vkBindImageMemory(m_device, m_textureImage, m_textureMemory, 0);
+    if (bindResult != VK_SUCCESS) {
+        m_lastError = QStringLiteral("texture_bind_memory_failed size=%1x%2 allocation=%3 memoryType=%4 result=%5")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(static_cast<qulonglong>(imageReq.size))
+                          .arg(imageMemType)
+                          .arg(vkResultName(bindResult));
         destroyTextureImage();
         return false;
     }
@@ -596,7 +658,13 @@ bool VulkanResources::createTextureImage(const QSize& size)
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_textureView) != VK_SUCCESS) {
+    const VkResult viewResult =
+        vkCreateImageView(m_device, &viewInfo, nullptr, &m_textureView);
+    if (viewResult != VK_SUCCESS) {
+        m_lastError = QStringLiteral("texture_create_image_view_failed size=%1x%2 result=%3")
+                          .arg(size.width())
+                          .arg(size.height())
+                          .arg(vkResultName(viewResult));
         destroyTextureImage();
         return false;
     }
@@ -1750,6 +1818,28 @@ bool VulkanResources::setSampledImage(VkImageView imageView, VkImageLayout image
     write.pImageInfo = &imageInfoDesc;
     vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
     return true;
+}
+
+void VulkanResources::releaseUploadStaging()
+{
+    if (m_stagingBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
+        m_stagingBuffer = VK_NULL_HANDLE;
+    }
+    if (m_stagingMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, m_stagingMemory, nullptr);
+        m_stagingMemory = VK_NULL_HANDLE;
+    }
+    for (RetiredStagingBuffer& retired : m_retiredStagingBuffers) {
+        if (retired.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(m_device, retired.buffer, nullptr);
+        }
+        if (retired.memory != VK_NULL_HANDLE) {
+            vkFreeMemory(m_device, retired.memory, nullptr);
+        }
+    }
+    m_retiredStagingBuffers.clear();
+    m_stagingRing.reset();
 }
 
 bool VulkanResources::uploadMaskTexture(VkCommandBuffer commandBuffer, const QImage& image)

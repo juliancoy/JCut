@@ -553,7 +553,8 @@ bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
 }
 
 bool clipHasVisuals(const TimelineClip& clip) {
-    return clip.mediaType == ClipMediaType::Image ||
+    return clip.clipRole == ClipRole::TranscriptSubtitle ||
+           clip.mediaType == ClipMediaType::Image ||
            clip.mediaType == ClipMediaType::Video ||
            clip.mediaType == ClipMediaType::Title ||
            clip.sourceKind == MediaSourceKind::ImageSequence;
@@ -724,6 +725,22 @@ bool clipIsChildOf(const TimelineClip& child, const TimelineClip& parent) {
     return child.clipRole != ClipRole::Media &&
            !parent.id.trimmed().isEmpty() &&
            child.linkedSourceClipId.trimmed() == parent.id.trimmed();
+}
+
+bool clipHasTranscriptSubtitleChild(
+    const TimelineClip& parent,
+    const QVector<TimelineClip>& clips) {
+    if (parent.clipRole != ClipRole::Media ||
+        parent.id.trimmed().isEmpty()) {
+        return false;
+    }
+    return std::any_of(
+        clips.cbegin(), clips.cend(),
+        [&](const TimelineClip& child) {
+            return child.clipRole ==
+                    ClipRole::TranscriptSubtitle &&
+                clipIsChildOf(child, parent);
+        });
 }
 
 const TimelineClip* clipParent(const TimelineClip& child,

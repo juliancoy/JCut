@@ -446,10 +446,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* lockAction = nullptr;
     QAction* unlockAction = nullptr;
     if (clipIndex >= 0) {
-        if (m_clips[clipIndex].clipRole == ClipRole::MaskMatte ||
-            m_clips[clipIndex].clipRole == ClipRole::SpeakerTitle) {
+        if (isOwnedGeneratedClipRole(
+                m_clips[clipIndex].clipRole)) {
             QAction* sourceLockAction = menu.addAction(
-                m_clips[clipIndex].clipRole == ClipRole::SpeakerTitle
+                (m_clips[clipIndex].clipRole == ClipRole::SpeakerTitle ||
+                 m_clips[clipIndex].clipRole ==
+                     ClipRole::TranscriptSubtitle)
                     ? QStringLiteral("Generated from Transcript")
                     : QStringLiteral("Locked to Source"));
             sourceLockAction->setEnabled(false);
@@ -996,8 +998,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == unlockAction) {
-        if (m_clips[clipIndex].clipRole != ClipRole::MaskMatte &&
-            m_clips[clipIndex].clipRole != ClipRole::SpeakerTitle) {
+        if (!isOwnedGeneratedClipRole(
+                m_clips[clipIndex].clipRole)) {
             m_clips[clipIndex].locked = false;
         }
         update();

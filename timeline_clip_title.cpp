@@ -88,6 +88,8 @@ QString badgeFor(const TimelineClip& clip, int maskChildCount)
         return QStringLiteral("FX");
     case ClipRole::SpeakerTitle:
         return QStringLiteral("TITLE");
+    case ClipRole::TranscriptSubtitle:
+        return QStringLiteral("SUBTITLES");
     case ClipRole::Media:
         break;
     }

@@ -185,7 +185,9 @@ TimelineClip clipWithTransientTranscriptOverride(const PreviewInteractionState* 
 {
     if (!state ||
         !state->transient.transcriptOverrideActive ||
-        state->transient.transcriptOverrideClipId != clip.id) {
+        (state->transient.transcriptOverrideClipId != clip.id &&
+         state->transient.transcriptOverrideClipId !=
+             clip.linkedSourceClipId.trimmed())) {
         return clip;
     }
 

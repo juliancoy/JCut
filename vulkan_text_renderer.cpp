@@ -34,6 +34,8 @@ using jcut::vulkan::clearRectFromQRect;
 constexpr int kAtlasSize = 2048;
 constexpr int kGlyphPadding = 2;
 constexpr uint32_t kTextPushSize = sizeof(VulkanTextPipeline::Push);
+constexpr size_t kMaxResidentGpuTextAtlases = 8;
+constexpr qsizetype kMaxResidentGpuTextAtlasBytes = 128 * 1024 * 1024;
 
 struct FreeTypeLibrary {
     FT_Library library = nullptr;
@@ -1012,8 +1014,14 @@ bool VulkanTextRenderer::beginFrameUploads(size_t frameSlot, size_t frameSlotCou
         return false;
     }
     for (GpuAtlasCacheEntry& entry : m_gpuAtlasCache) {
-        if (!entry.resources ||
-            !entry.resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
+        if (!entry.resources) {
+            return false;
+        }
+        if (entry.stagingReleaseEligible && entry.uploadFrameSlot == m_frameUploadSlot) {
+            entry.resources->releaseUploadStaging();
+            entry.stagingReleaseEligible = false;
+        }
+        if (!entry.resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
             return false;
         }
     }
@@ -1937,32 +1945,99 @@ bool VulkanTextRenderer::ensureAtlasUploaded(VkCommandBuffer commandBuffer, cons
         }
     }
 
-    auto resources = std::make_unique<VulkanResources>();
-    if (!resources->initialize(m_physicalDevice,
-                               m_device,
-                               m_funcs,
-                               m_atlasResources->descriptorSetLayout()) ||
-        !resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
-        const QString resourceFailure = resources->lastError().trimmed();
-        return fail(resourceFailure.isEmpty()
-                        ? QStringLiteral("text_atlas_resource_create_failed")
-                        : QStringLiteral("text_atlas_resource_create_failed: %1")
-                              .arg(resourceFailure));
+    auto residentAtlasBytes = [&]() {
+        qsizetype bytes = 0;
+        for (const GpuAtlasCacheEntry& entry : m_gpuAtlasCache) {
+            bytes += qMax<qsizetype>(0, entry.bytes);
+        }
+        return bytes;
+    };
+    auto evictOldestAtlas = [&]() {
+        auto oldest = m_gpuAtlasCache.end();
+        for (auto it = m_gpuAtlasCache.begin(); it != m_gpuAtlasCache.end(); ++it) {
+            if (it->key == atlas.key) {
+                continue;
+            }
+            if (oldest == m_gpuAtlasCache.end() ||
+                it->lastUseSerial < oldest->lastUseSerial) {
+                oldest = it;
+            }
+        }
+        if (oldest == m_gpuAtlasCache.end()) {
+            return false;
+        }
+        if (m_activeAtlasResources == oldest->resources.get()) {
+            m_activeAtlasResources = nullptr;
+        }
+        if (m_uploadedAtlasKey == oldest->key) {
+            m_uploadedAtlasKey.clear();
+        }
+        m_gpuAtlasCache.erase(oldest);
+        return true;
+    };
+    auto pruneResidentAtlasCache = [&]() {
+        while ((m_gpuAtlasCache.size() > kMaxResidentGpuTextAtlases ||
+                residentAtlasBytes() > kMaxResidentGpuTextAtlasBytes) &&
+               evictOldestAtlas()) {
+        }
+    };
+    auto makeRoomForNewAtlas = [&]() {
+        while ((m_gpuAtlasCache.size() >= kMaxResidentGpuTextAtlases ||
+                residentAtlasBytes() >= kMaxResidentGpuTextAtlasBytes) &&
+               evictOldestAtlas()) {
+        }
+    };
+    auto createAndUpload = [&]() -> std::unique_ptr<VulkanResources> {
+        auto resources = std::make_unique<VulkanResources>();
+        if (!resources->initialize(m_physicalDevice,
+                                   m_device,
+                                   m_funcs,
+                                   m_atlasResources->descriptorSetLayout()) ||
+            !resources->beginFrameUploads(m_frameUploadSlot, m_frameUploadSlotCount)) {
+            const QString resourceFailure = resources->lastError().trimmed();
+            fail(resourceFailure.isEmpty()
+                     ? QStringLiteral("text_atlas_resource_create_failed")
+                     : QStringLiteral("text_atlas_resource_create_failed: %1")
+                           .arg(resourceFailure));
+            return nullptr;
+        }
+        if (!resources->uploadImageTexture(commandBuffer, atlas.image)) {
+            const QString resourceFailure = resources->lastError().trimmed();
+            fail(resourceFailure.isEmpty()
+                     ? QStringLiteral("text_atlas_upload_failed")
+                     : QStringLiteral("text_atlas_upload_failed: %1")
+                           .arg(resourceFailure));
+            return nullptr;
+        }
+        return resources;
+    };
+
+    makeRoomForNewAtlas();
+    std::unique_ptr<VulkanResources> resources = createAndUpload();
+    if (!resources && !m_gpuAtlasCache.empty()) {
+        const QString firstFailure = m_lastFailureReason;
+        vkDeviceWaitIdle(m_device);
+        while (evictOldestAtlas()) {
+        }
+        resources = createAndUpload();
+        if (!resources && !firstFailure.isEmpty() && !m_lastFailureReason.contains(firstFailure)) {
+            m_lastFailureReason += QStringLiteral("; first_attempt=%1").arg(firstFailure);
+        }
     }
-    if (!resources->uploadImageTexture(commandBuffer, atlas.image)) {
-        const QString resourceFailure = resources->lastError().trimmed();
-        return fail(resourceFailure.isEmpty()
-                        ? QStringLiteral("text_atlas_upload_failed")
-                        : QStringLiteral("text_atlas_upload_failed: %1")
-                              .arg(resourceFailure));
+    if (!resources) {
+        return false;
     }
     m_gpuAtlasCache.push_back(GpuAtlasCacheEntry{
         atlas.key,
         std::move(resources),
+        atlas.image.rgbaPremultiplied.size(),
         ++m_gpuAtlasUseSerial,
+        m_frameUploadSlot,
+        true,
     });
     m_activeAtlasResources = m_gpuAtlasCache.back().resources.get();
     m_uploadedAtlasKey = atlas.key;
+    pruneResidentAtlasCache();
     return true;
 }
 

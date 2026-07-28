@@ -48,6 +48,8 @@ bool clipProvidesMediaForVisibleMaskMatte(const TimelineClip& source,
                                           const QVector<TimelineClip>& clips,
                                           const QVector<TimelineTrack>& tracks);
 bool clipIsChildOf(const TimelineClip& child, const TimelineClip& parent);
+bool clipHasTranscriptSubtitleChild(const TimelineClip& parent,
+                                    const QVector<TimelineClip>& clips);
 const TimelineClip* clipParent(const TimelineClip& child,
                                const QVector<TimelineClip>& clips);
 ClipSelectionContext clipSelectionContext(const TimelineClip* selected,

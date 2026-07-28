@@ -219,8 +219,7 @@ void normalizeSpeakerTitleParentBounds(
     };
     QHash<QString, ParentRange> parentRanges;
     for (const TimelineClip& clip : std::as_const(*clips)) {
-        if (clip.clipRole == ClipRole::MaskMatte ||
-            clip.clipRole == ClipRole::SpeakerTitle) {
+        if (isOwnedGeneratedClipRole(clip.clipRole)) {
             continue;
         }
         const QString clipId = clip.id.trimmed();
@@ -662,8 +661,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
                 continue;
             }
             hasOwnedOccupant = true;
-            if (clip.clipRole != ClipRole::MaskMatte &&
-                clip.clipRole != ClipRole::SpeakerTitle) {
+            if (!isOwnedGeneratedClipRole(clip.clipRole)) {
                 containsOnlyOwnedChildren = false;
                 break;
             }
@@ -736,8 +734,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
         int recoveredTrackIndex = -1;
         for (TimelineClip& clip : m_clips) {
             if (clip.trackIndex != trackIndex || clip.id.trimmed() == designatedChildId ||
-                clip.clipRole == ClipRole::MaskMatte ||
-                clip.clipRole == ClipRole::SpeakerTitle) {
+                isOwnedGeneratedClipRole(clip.clipRole)) {
                 continue;
             }
             if (recoveredTrackIndex < 0) {
@@ -759,8 +756,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     // sidecar's row, while distinct sidecars remain independently visible.
     QHash<QString, int> sourceTrackById;
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        if (clip.clipRole != ClipRole::MaskMatte &&
-            clip.clipRole != ClipRole::SpeakerTitle &&
+        if (!isOwnedGeneratedClipRole(clip.clipRole) &&
             !clip.id.trimmed().isEmpty()) {
             sourceTrackById.insert(clip.id.trimmed(), clip.trackIndex);
         }
@@ -945,8 +941,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     };
     QHash<QString, int> currentSourceTrackById;
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        if (clip.clipRole != ClipRole::MaskMatte &&
-            clip.clipRole != ClipRole::SpeakerTitle &&
+        if (!isOwnedGeneratedClipRole(clip.clipRole) &&
             !clip.id.trimmed().isEmpty()) {
             currentSourceTrackById.insert(
                 clip.id.trimmed(), clip.trackIndex);
@@ -1053,6 +1048,15 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
                 if (track.generatedChildTrack &&
                     track.parentClipId.trimmed() ==
                         group.parentId &&
+                    std::any_of(
+                        m_clips.cbegin(),
+                        m_clips.cend(),
+                        [&](const TimelineClip& occupant) {
+                            return occupant.trackIndex ==
+                                    trackIndex &&
+                                occupant.clipRole ==
+                                    ClipRole::SpeakerTitle;
+                        }) &&
                     !claimedSpeakerTitleTracks.contains(
                         trackIndex)) {
                     group.childTrackIndex = trackIndex;
@@ -1138,8 +1142,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
 
     currentSourceTrackById.clear();
     for (const TimelineClip& clip : std::as_const(m_clips)) {
-        if (clip.clipRole != ClipRole::MaskMatte &&
-            clip.clipRole != ClipRole::SpeakerTitle &&
+        if (!isOwnedGeneratedClipRole(clip.clipRole) &&
             !clip.id.trimmed().isEmpty()) {
             currentSourceTrackById.insert(
                 clip.id.trimmed(), clip.trackIndex);
@@ -1466,7 +1469,8 @@ void TimelineWidget::setSelectedTrackIndex(int trackIndex) {
 bool TimelineWidget::updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater) {
     for (TimelineClip& clip : m_clips) {
         if (clip.id == clipId) {
-            if (clip.clipRole == ClipRole::SpeakerTitle) {
+            if (clip.clipRole == ClipRole::SpeakerTitle ||
+                clip.clipRole == ClipRole::TranscriptSubtitle) {
                 return false;
             }
             invalidateHoveredClipToolTipCache();
@@ -1532,8 +1536,7 @@ QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
             expanded = false;
             for (const TimelineClip& clip : m_clips) {
                 if (!closure.contains(clip.id) ||
-                    (clip.clipRole != ClipRole::MaskMatte &&
-                     clip.clipRole != ClipRole::SpeakerTitle)) {
+                    !isOwnedGeneratedClipRole(clip.clipRole)) {
                     continue;
                 }
                 const QString parentId = clip.linkedSourceClipId.trimmed();
@@ -1549,8 +1552,7 @@ QSet<QString> TimelineWidget::ownershipClosure(const QSet<QString>& clipIds,
     while (expanded) {
         expanded = false;
         for (const TimelineClip& clip : m_clips) {
-            if ((clip.clipRole != ClipRole::MaskMatte &&
-                 clip.clipRole != ClipRole::SpeakerTitle) ||
+            if (!isOwnedGeneratedClipRole(clip.clipRole) ||
                 closure.contains(clip.id)) {
                 continue;
             }
@@ -1570,7 +1572,8 @@ QString TimelineWidget::renderSyncOwnerClipId(const QString& clipId) const
         if (clip.id.trimmed() != normalizedId) {
             continue;
         }
-        if (clip.clipRole == ClipRole::MaskMatte) {
+        if (clip.clipRole == ClipRole::MaskMatte ||
+            clip.clipRole == ClipRole::TranscriptSubtitle) {
             const QString parentId = clip.linkedSourceClipId.trimmed();
             if (!parentId.isEmpty()) {
                 return parentId;
@@ -1753,8 +1756,7 @@ bool TimelineWidget::deleteClipById(const QString& clipId) {
             continue;
         }
         if (m_clips[i].locked ||
-            m_clips[i].clipRole == ClipRole::MaskMatte ||
-            m_clips[i].clipRole == ClipRole::SpeakerTitle) {
+            isOwnedGeneratedClipRole(m_clips[i].clipRole)) {
             return false;
         }
         const QSet<QString> removedIds = ownershipClosure(QSet<QString>{clipId}, false);
@@ -1801,8 +1803,7 @@ bool TimelineWidget::deleteSelectedClip() {
         }
 
         if (m_clips[i].locked ||
-            m_clips[i].clipRole == ClipRole::MaskMatte ||
-            m_clips[i].clipRole == ClipRole::SpeakerTitle) {
+            isOwnedGeneratedClipRole(m_clips[i].clipRole)) {
             return false;
         }
 
@@ -1879,8 +1880,7 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
                 continue;
             }
             if (clip.locked ||
-                clip.clipRole == ClipRole::MaskMatte ||
-                clip.clipRole == ClipRole::SpeakerTitle ||
+                isOwnedGeneratedClipRole(clip.clipRole) ||
                 frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
                 break;
             }
@@ -1896,8 +1896,7 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
             // would invalidate clip references.
             QVector<TimelineClip> ownedChildren;
             for (const TimelineClip& candidate : std::as_const(m_clips)) {
-                if ((candidate.clipRole == ClipRole::MaskMatte ||
-                     candidate.clipRole == ClipRole::SpeakerTitle) &&
+                if (isOwnedGeneratedClipRole(candidate.clipRole) &&
                     candidate.linkedSourceClipId.trimmed() ==
                         clip.id.trimmed()) {
                     ownedChildren.push_back(candidate);
@@ -2444,8 +2443,7 @@ bool TimelineWidget::nudgeSelectedClip(int direction) {
         }
 
         if (clip.locked ||
-            clip.clipRole == ClipRole::MaskMatte ||
-            clip.clipRole == ClipRole::SpeakerTitle) {
+            isOwnedGeneratedClipRole(clip.clipRole)) {
             return false;
         }
 

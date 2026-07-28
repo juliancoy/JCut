@@ -80,6 +80,7 @@ private slots:
     void loadingTimelineUsesOneChildTrackPerSidecar();
     void loadingTimelineRecoversParentStrandedOnDuplicateMaskTrack();
     void transcriptTitlesReconcileToImmutableGeneratedChildTrack();
+    void transcriptSubtitlesRemainAnImmutableGeneratedChildTrack();
     void clipClipboardPreservesRelativeLayoutAndUsesFreshIds();
     void cutClipboardRemovesAndRestoresSelection();
     void updatingParentTimingPropagatesToMaskChild();
@@ -288,6 +289,84 @@ void TestMediaDragDrop::transcriptTitlesReconcileToImmutableGeneratedChildTrack(
                 int64_t{80});
         }
     }
+}
+
+void TestMediaDragDrop::transcriptSubtitlesRemainAnImmutableGeneratedChildTrack()
+{
+    TimelineTrack sourceTrack;
+    sourceTrack.name = QStringLiteral("Transcript");
+    TimelineTrack subtitleTrack;
+    subtitleTrack.name =
+        QStringLiteral("↳ Transcript • Subtitles");
+    subtitleTrack.generatedChildTrack = true;
+    subtitleTrack.parentClipId =
+        QStringLiteral("transcript-source");
+    subtitleTrack.childClipId =
+        QStringLiteral("transcript-subtitles");
+
+    TimelineClip source;
+    source.id = QStringLiteral("transcript-source");
+    source.label = QStringLiteral("Interview");
+    source.mediaType = ClipMediaType::Video;
+    source.trackIndex = 0;
+    source.startFrame = 25;
+    source.durationFrames = 300;
+    source.transcriptOverlay.enabled = true;
+
+    TimelineClip subtitles = source;
+    subtitles.id = QStringLiteral(
+        "transcript-subtitles");
+    subtitles.label =
+        QStringLiteral("Transcript Subtitles");
+    subtitles.clipRole =
+        ClipRole::TranscriptSubtitle;
+    subtitles.linkedSourceClipId = source.id;
+    subtitles.syncLockedToSource = true;
+    subtitles.sourceTransformLocked = true;
+    subtitles.locked = true;
+    subtitles.videoEnabled = false;
+    subtitles.audioEnabled = false;
+    subtitles.hasAudio = true;
+    subtitles.trackIndex = 1;
+
+    TimelineWidget timeline;
+    timeline.setTracks({sourceTrack, subtitleTrack});
+    timeline.setClips({source, subtitles});
+
+    QCOMPARE(timeline.tracks().size(), 2);
+    QVERIFY(timeline.tracks().at(1)
+                .generatedChildTrack);
+    QCOMPARE(timeline.tracks().at(1).parentClipId,
+             source.id);
+    QCOMPARE(timeline.tracks().at(1).childClipId,
+             subtitles.id);
+    const TimelineClip* storedSubtitle =
+        clipById(timeline, subtitles.id);
+    QVERIFY(storedSubtitle);
+    QCOMPARE(storedSubtitle->trackIndex, 1);
+    QCOMPARE(storedSubtitle->startFrame,
+             source.startFrame);
+    QCOMPARE(storedSubtitle->durationFrames,
+             source.durationFrames);
+    QVERIFY(!timeline.updateClipById(
+        subtitles.id,
+        [](TimelineClip& clip) {
+            clip.durationFrames = 1;
+        }));
+    QVERIFY(!timeline.deleteClipById(
+        subtitles.id));
+    QVERIFY(timeline.setClipZLevel(
+        subtitles.id, 125, false));
+    QCOMPARE(
+        clipById(timeline, subtitles.id)->zLevel,
+        125);
+
+    timeline.setRenderSyncMarkers(
+        {{subtitles.id, 80,
+          RenderSyncAction::SkipFrame, 1}});
+    QCOMPARE(
+        timeline.renderSyncMarkers().constFirst().clipId,
+        source.id);
 }
 
 void TestMediaDragDrop::loadingTimelineRemovesDuplicateGeneratedMaskTracks()

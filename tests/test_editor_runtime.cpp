@@ -13,6 +13,7 @@
 #include "../editor_shared_render_sync.h"
 #include "../editor_shared_timing.h"
 #include "../render.h"
+#include "../render_internal.h"
 #include "../render_qt_compat.h"
 #include "../preview_resize_core.h"
 #include "../timeline_snap_core.h"
@@ -2957,7 +2958,7 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
-    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(35));
+    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(34));
     QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane.cpp"));
     QVERIFY(inspector.open(QIODevice::ReadOnly));
     const QString inspectorSource = QString::fromUtf8(inspector.readAll());
@@ -3000,7 +3001,10 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
             "progressive_edge_stretch", 999, -3.25, 0.01, true}});
     QVERIFY2(reverseMotion.applied, reverseMotion.message.c_str());
     const jcut::EditorClip reverseClip = runtime.snapshot().clips.front();
-    QCOMPARE(reverseClip.effectRows, jcut::kEditorEffectProgressiveEdgeMaxRows);
+    QCOMPARE(
+        reverseClip.effectRows,
+        jcut::editorEffectMaxRowsForPreset(
+            "progressive_edge_stretch"));
     QCOMPARE(reverseClip.effectSpeed, -3.25);
     QCOMPARE(reverseClip.effectScale, jcut::kEditorEffectMinScale);
 
@@ -3542,6 +3546,47 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(QString::fromStdString(stored.highlightColor), QStringLiteral("#fedcba"));
     QCOMPARE(QString::fromStdString(stored.highlightTextColor), QStringLiteral("#0f1e2d"));
 
+    const jcut::EditorDocumentCore generatedSnapshot =
+        runtime.snapshot();
+    const auto subtitle = std::find_if(
+        generatedSnapshot.clips.cbegin(),
+        generatedSnapshot.clips.cend(),
+        [](const jcut::EditorClip& clip) {
+            return jcut::isTranscriptGeneratedEditorSubtitle(
+                clip);
+        });
+    QVERIFY(subtitle != generatedSnapshot.clips.cend());
+    QCOMPARE(subtitle->linkedSourceClipId,
+             generatedSnapshot.clips.front().persistentId);
+    QCOMPARE(subtitle->startFrame,
+             generatedSnapshot.clips.front().startFrame);
+    QCOMPARE(subtitle->durationFrames,
+             generatedSnapshot.clips.front().durationFrames);
+    QVERIFY(subtitle->locked);
+    QVERIFY(subtitle->syncLockedToSource);
+    QVERIFY(subtitle->transcriptOverlay.enabled);
+    const auto subtitleTrack = std::find_if(
+        generatedSnapshot.tracks.cbegin(),
+        generatedSnapshot.tracks.cend(),
+        [&](const jcut::EditorTrack& track) {
+            return track.id == subtitle->trackId;
+        });
+    QVERIFY(subtitleTrack != generatedSnapshot.tracks.cend());
+    QVERIFY(subtitleTrack->generatedChildTrack);
+    QCOMPARE(subtitleTrack->parentClipId,
+             generatedSnapshot.clips.front().persistentId);
+    QCOMPARE(subtitleTrack->childClipId,
+             subtitle->persistentId);
+    QCOMPARE(QString::fromStdString(subtitleTrack->label),
+             QStringLiteral("↳ Transcript • Subtitles"));
+    QCOMPARE(
+        runtime.execute(
+            jcut::EditorCommand{
+                jcut::SetClipTranscriptOverlayCommand{
+                    subtitle->id, overlay}})
+            .applied,
+        false);
+
     std::string error;
     const std::optional<jcut::EditorDocumentCore> reparsed =
         jcut::editorDocumentCoreFromJson(jcut::toJson(runtime.snapshot()), &error);
@@ -3614,11 +3659,48 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(renderOverlay.backgroundColor, QColor(QStringLiteral("#abcdef")));
     QCOMPARE(renderOverlay.highlightColor, QColor(QStringLiteral("#fedcba")));
     QCOMPARE(renderOverlay.highlightTextColor, QColor(QStringLiteral("#0f1e2d")));
+    const QVector<TimelineClip> qtRenderClips(
+        renderData.clips.cbegin(),
+        renderData.clips.cend());
+    const QVector<TimelineTrack> qtRenderTracks(
+        renderData.tracks.cbegin(),
+        renderData.tracks.cend());
+    const QVector<TimelineClip> overlayClips =
+        render_detail::sortedTranscriptOverlayClips(
+            qtRenderClips, qtRenderTracks);
+    QCOMPARE(
+        std::count_if(
+            overlayClips.cbegin(), overlayClips.cend(),
+            [](const TimelineClip& clip) {
+                return clip.clipRole ==
+                    ClipRole::TranscriptSubtitle;
+            }),
+        1);
+    QCOMPARE(
+        std::count_if(
+            overlayClips.cbegin(), overlayClips.cend(),
+            [](const TimelineClip& clip) {
+                return clip.clipRole ==
+                        ClipRole::Media &&
+                    clip.transcriptOverlay.enabled;
+            }),
+        0);
 
     applyCommand(runtime, jcut::UndoCommand{});
     QVERIFY(jcut::toJson(runtime.snapshot()) == before);
     applyCommand(runtime, jcut::RedoCommand{});
     QCOMPARE(runtime.snapshot().clips.front().transcriptOverlay.fontPointSize, 58);
+    const jcut::EditorDocumentCore redoneSnapshot =
+        runtime.snapshot();
+    QCOMPARE(
+        std::count_if(
+            redoneSnapshot.clips.cbegin(),
+            redoneSnapshot.clips.cend(),
+            [](const jcut::EditorClip& clip) {
+                return jcut::isTranscriptGeneratedEditorSubtitle(
+                    clip);
+            }),
+        1);
 }
 
 void TestEditorRuntime::testClipKeyframeRemovalIsChannelScopedAndUndoable()

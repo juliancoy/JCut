@@ -37,8 +37,7 @@ bool TimelineWidget::cutSelectedClips()
         if (!m_clipSelection.ids.contains(clip.id)) {
             continue;
         }
-        if (clip.clipRole == ClipRole::MaskMatte ||
-            clip.clipRole == ClipRole::SpeakerTitle) {
+        if (isOwnedGeneratedClipRole(clip.clipRole)) {
             // A selected child is valid only as an explicitly selected
             // descendant of its selected parent. Copy/cut still expands the
             // complete ownership closure; a child alone remains non-cuttable.

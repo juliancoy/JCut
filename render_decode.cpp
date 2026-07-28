@@ -27,6 +27,9 @@ QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& 
                                                    const QVector<TimelineTrack>& tracks) {
     QVector<TimelineClip> overlayClips;
     for (const TimelineClip& clip : clips) {
+        if (clipHasTranscriptSubtitleChild(clip, clips)) {
+            continue;
+        }
         const bool visual = clipVisualPlaybackEnabled(clip, tracks);
         const bool transcriptOverlay =
             (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) &&

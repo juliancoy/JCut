@@ -1205,6 +1205,16 @@ void TestDirectVulkanHandoffPipelineContract::
       textRendererHeader.contains(QStringLiteral("transcriptOverlayAtlasNeedsUpload")) &&
           textRendererHeader.contains(QStringLiteral("titleOverlayAtlasNeedsUpload")) &&
           textRendererHeader.contains(QStringLiteral("std::vector<GpuAtlasCacheEntry> m_gpuAtlasCache")) &&
+          textRendererHeader.contains(QStringLiteral("qsizetype bytes = 0")) &&
+          textRendererHeader.contains(QStringLiteral("uploadFrameSlot")) &&
+          textRendererHeader.contains(QStringLiteral("stagingReleaseEligible")) &&
+          readSourceFile(QStringLiteral("vulkan_resources.h")).contains(QStringLiteral("releaseUploadStaging")) &&
+          textRenderer.contains(QStringLiteral("kMaxResidentGpuTextAtlases")) &&
+          textRenderer.contains(QStringLiteral("kMaxResidentGpuTextAtlasBytes")) &&
+          textRenderer.contains(QStringLiteral("makeRoomForNewAtlas")) &&
+          textRenderer.contains(QStringLiteral("entry.resources->releaseUploadStaging()")) &&
+          textRenderer.contains(QStringLiteral("vkDeviceWaitIdle(m_device)")) &&
+          textRenderer.contains(QStringLiteral("first_attempt=%1")) &&
           textRenderer.contains(QStringLiteral("m_atlasResources->descriptorSetLayout()")) &&
           textRenderer.contains(QStringLiteral("!atlasIsResident")) &&
           exportBackend.contains(QStringLiteral("const bool atlasUploadRequired")) &&
@@ -1215,6 +1225,15 @@ void TestDirectVulkanHandoffPipelineContract::
       "offscreen export must not submit-and-wait between text overlays that "
       "reuse any resident atlas; only a missing atlas upload may force the "
       "text draw fence");
+  const QString vulkanResources = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  QVERIFY2(vulkanResources.contains(QStringLiteral("texture_size_exceeds_device_limit")) &&
+               vulkanResources.contains(QStringLiteral("texture_create_image_failed")) &&
+               vulkanResources.contains(QStringLiteral("texture_allocate_memory_failed")) &&
+               vulkanResources.contains(QStringLiteral("texture_bind_memory_failed")) &&
+               vulkanResources.contains(QStringLiteral("texture_create_image_view_failed")),
+           "large subtitle atlas uploads must report the exact Vulkan texture "
+           "allocation failure instead of only the generic overlay texture size "
+           "wrapper");
   QVERIFY2(
       textRenderer.contains(
           QStringLiteral("if (m_speakerLayoutCache.valid && "

@@ -309,7 +309,10 @@ private:
     struct GpuAtlasCacheEntry {
         QString key;
         std::unique_ptr<VulkanResources> resources;
+        qsizetype bytes = 0;
         quint64 lastUseSerial = 0;
+        size_t uploadFrameSlot = 0;
+        bool stagingReleaseEligible = false;
     };
     std::vector<GpuAtlasCacheEntry> m_gpuAtlasCache;
     VulkanResources* m_activeAtlasResources = nullptr;
