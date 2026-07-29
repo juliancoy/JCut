@@ -13,6 +13,7 @@
 class QComboBox;
 class QSpinBox;
 class QTimer;
+namespace editor::masks { struct FuzzyRemoveResult; }
 
 class MaskTab : public QObject
 {
@@ -27,6 +28,10 @@ public:
         QComboBox* sidecarCombo = nullptr;
         QPushButton* browseButton = nullptr;
         QPushButton* newPromptButton = nullptr;
+        QPushButton* fuzzyRemoveButton = nullptr;
+        QSpinBox* fuzzySpatialReachSpin = nullptr;
+        QSpinBox* fuzzyTemporalReachSpin = nullptr;
+        QLabel* fuzzyStatusLabel = nullptr;
         QSpinBox* zLevelSpin = nullptr;
         QDoubleSpinBox* featherSpin = nullptr;
         QComboBox* featherFalloffCombo = nullptr;
@@ -63,6 +68,7 @@ public:
         std::function<QString(const QString&, const QString&)> materializeMaskMatteForSidecar;
         std::function<void(const QString&)> selectClipById;
         std::function<bool()> isMaskInspectorActive;
+        std::function<void(bool)> setMaskFuzzyRemoveMode;
     };
 
     explicit MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -70,6 +76,11 @@ public:
     void wire();
     void refresh();
     void apply(bool pushHistory = false, bool zLevelEdited = false);
+    void handlePreviewPoint(const QString& clipId,
+                            int64_t sourceFrame,
+                            int64_t sourcePresentationTimestamp,
+                            qreal xNorm,
+                            qreal yNorm);
 
 private:
     void scheduleTreatmentEdit(bool zLevelEdited = false);

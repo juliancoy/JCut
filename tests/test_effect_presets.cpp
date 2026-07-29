@@ -61,6 +61,7 @@ private slots:
     void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
     void correctionPolygonsEncodeGpuMaskStorage();
+    void vulkanRenderLayerPacketKeepsCanonicalPayloads();
     void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
     void neutralMaskSidecarDiscoveryMatchesQtIdentityAndReadiness();
     void neutralMaskFrameMapValidatesOrdinalSidecarsAndSourceIdentity();
@@ -375,7 +376,7 @@ void TestEffectPresets::correctionPolygonsEncodeGpuMaskStorage()
         {0.0, 0.0}, {0.25, 0.0}, {0.25, 0.25}, {0.0, 0.25}};
 
     const QByteArray storage =
-        vulkanMaskCorrectionStorageData({active, disabled});
+        render_detail::vulkanMaskCorrectionStorageData({active, disabled});
     QCOMPARE(storage.size(), 6 * 4 * static_cast<int>(sizeof(float)));
     const auto* entries = reinterpret_cast<const float*>(storage.constData());
     QCOMPARE(entries[0], 1.0f);
@@ -386,10 +387,62 @@ void TestEffectPresets::correctionPolygonsEncodeGpuMaskStorage()
     QCOMPARE(entries[20], 0.25f);
     QCOMPARE(entries[21], 0.75f);
 
-    const QByteArray emptyStorage = vulkanMaskCorrectionStorageData({});
+    const QByteArray emptyStorage =
+        render_detail::vulkanMaskCorrectionStorageData({});
     QCOMPARE(emptyStorage.size(), 4 * static_cast<int>(sizeof(float)));
     QCOMPARE(reinterpret_cast<const float*>(emptyStorage.constData())[0],
              0.0f);
+}
+
+void TestEffectPresets::vulkanRenderLayerPacketKeepsCanonicalPayloads()
+{
+    render_detail::VulkanRenderLayerPacket packet;
+    packet.clipId = QStringLiteral("visual");
+    packet.mediaOwnerClipId = QStringLiteral("media");
+    packet.timingOwnerClipId = QStringLiteral("timing");
+    packet.effectsOwnerClipId = QStringLiteral("effects");
+    packet.matteOwnerClipId = QStringLiteral("matte");
+
+    TimelineClip::GradingKeyframe grade;
+    grade.brightness = 0.25;
+    grade.contrast = 1.4;
+    grade.saturation = 0.75;
+    grade.opacity = 0.6;
+    packet.setGrading(grade);
+    QCOMPARE(packet.grading.brightness, grade.brightness);
+    QCOMPARE(packet.gradePayload.effects.brightness, 0.25f);
+    QCOMPARE(packet.gradePayload.effects.contrast, 1.4f);
+    QCOMPARE(packet.gradePayload.effects.saturation, 0.75f);
+    QCOMPARE(packet.gradePayload.effects.opacity, 0.6f);
+
+    TimelineClip::CorrectionPolygon correction;
+    correction.pointsNormalized = {
+        {0.1, 0.1}, {0.4, 0.1}, {0.4, 0.4}, {0.1, 0.4}};
+    packet.setCorrectionPolygons({correction});
+    QCOMPARE(packet.correctionPolygonCount, 1);
+    QCOMPARE(packet.correctionPolygons.size(), 1);
+    QVERIFY(!packet.maskCorrectionStorage.isEmpty());
+    QCOMPARE(
+        reinterpret_cast<const float*>(
+            packet.maskCorrectionStorage.constData())[0],
+        1.0f);
+
+    render_detail::VulkanRenderTranscriptInput transcript;
+    transcript.clip.id = QStringLiteral("subtitle");
+    transcript.outputRect = QRectF(20.0, 30.0, 400.0, 100.0);
+    packet.textInputs.transcripts.push_back(transcript);
+    QCOMPARE(packet.textInputs.transcripts.constFirst().clip.id,
+             QStringLiteral("subtitle"));
+
+    TimelineClip generatedClip;
+    generatedClip.effectPreset = ClipEffectPreset::SourceTile;
+    generatedClip.effectRows = 2;
+    packet.effectPlan = render_detail::vulkanEffectPipelinePlan(
+        generatedClip,
+        QRectF(0.0, 0.0, 640.0, 360.0),
+        QSize(320, 180),
+        0.0);
+    QVERIFY(packet.effectPlan.usesGeneratedDraws());
 }
 
 void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()

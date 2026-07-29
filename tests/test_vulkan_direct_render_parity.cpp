@@ -49,10 +49,16 @@ private slots:
         QVERIFY2(exportRenderer.open(QIODevice::ReadOnly),
                  "Unable to open offscreen Vulkan renderer source.");
         const QString exportSource = QString::fromUtf8(exportRenderer.readAll());
-        QVERIFY(exportSource.contains(QStringLiteral(
+        QFile maskPreprocessor(
+            QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.cpp"));
+        QVERIFY2(maskPreprocessor.open(QIODevice::ReadOnly),
+                 "Unable to open shared Vulkan mask preprocessor source.");
+        const QString maskPreprocessorSource =
+            QString::fromUtf8(maskPreprocessor.readAll());
+        QVERIFY(maskPreprocessorSource.contains(QStringLiteral(
             "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")));
         QVERIFY(exportSource.contains(QStringLiteral(
-            "vulkanMaskCorrectionStorageData")));
+            "m_maskPreprocessor.record(")));
         QVERIFY(!exportSource.contains(QStringLiteral(
             "rgbaMaskImageForUpload")));
     }
@@ -501,9 +507,13 @@ private slots:
                 "const BackgroundFillEffect effectiveFillEffect =")) &&
                 source.contains(QStringLiteral("effectClip.edgeFillEffect")),
             "Direct Vulkan presenter must use the selected clip's Edge Fill.");
-        QVERIFY2(source.contains(QStringLiteral("vulkanGradePayloadForGrade(status.grading)")),
-                 "Direct Vulkan presenter must derive foreground and background "
-                 "from the canonical complete grading payload.");
+        QVERIFY2(
+            source.contains(QStringLiteral(
+                "status.gradePayload")) &&
+                !source.contains(QStringLiteral(
+                    "vulkanGradePayloadForGrade(status.grading)")),
+            "Direct Vulkan presenter must consume the canonical complete "
+            "grading payload prepared by the shared layer packet.");
         QVERIFY2(source.contains(QStringLiteral("baseEffects.shadows")) &&
                      source.contains(QStringLiteral("baseEffects.midtones")) &&
                      source.contains(QStringLiteral("baseEffects.highlights")) &&
@@ -573,9 +583,9 @@ private slots:
                  "Offscreen renderer must pass background grading through per-draw dynamic uniforms.");
         QVERIFY2(
             offscreenSource.contains(QStringLiteral(
-                "backgroundLayer.curveLutRgba = gradePayload.curveLutRgba")) &&
+                "backgroundLayer.gradePayload = layer.gradePayload")) &&
                 offscreenSource.contains(QStringLiteral(
-                    "backgroundLayer.curveLutApplied = gradePayload.curveLutApplied")),
+                    "backgroundLayer.gradePayload.effects = backgroundEffects")),
             "Offscreen fill layers must inherit the source clip's complete "
             "curve-LUT payload.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("if (layer.maskTextureEnabled &&")),

@@ -6,6 +6,7 @@
 #include "playback_timing_context.h"
 #include "preview_surface.h"
 #include "editor_shared.h"
+#include "render_vulkan_shared.h"
 
 #include <QColor>
 #include <QImage>
@@ -54,18 +55,13 @@ struct PreviewInteractionTransientState {
     QPointF lastMousePos = QPointF(-10000.0, -10000.0);
 };
 
-struct VulkanPreviewClipFrameStatus {
-    QString clipId;
-    QString mediaOwnerClipId;
-    QString timingOwnerClipId;
-    QString effectsOwnerClipId;
-    QString matteOwnerClipId;
+struct VulkanPreviewClipFrameStatus
+    : public render_detail::VulkanRenderLayerPacket {
     QString label;
     QString decodePath;
     QString frameSelection;
     int64_t requestedSourceFrame = -1;
     int64_t presentedSourceFrame = -1;
-    QSize frameSize;
     bool active = false;
     bool exact = false;
     bool hasFrame = false;
@@ -82,7 +78,6 @@ struct VulkanPreviewClipFrameStatus {
     bool correctionsEnabled = true;
     bool correctionsApplied = false;
     bool correctionsSupported = false;
-    bool curveLutApplied = false;
     bool curveLutSupported = false;
     bool gradingShaderActive = false;
     bool speakerFramingEnabled = false;
@@ -98,45 +93,8 @@ struct VulkanPreviewClipFrameStatus {
     qreal speakerFramingTargetX = 0.0;
     qreal speakerFramingTargetY = 0.0;
     qreal speakerFramingTargetBox = -1.0;
-    int correctionPolygonCount = 0;
-    QVector<TimelineClip::CorrectionPolygon> correctionPolygons;
-    qreal maskFeather = 0.0;
-    qreal maskFeatherGamma = 1.0;
-    int maskFeatherFalloff = 0;
-    bool maskInvert = false;
-    qreal maskErode = 0.0;
-    qreal maskDilate = 0.0;
-    qreal maskBlur = 0.0;
-    bool maskTextureEnabled = false;
-    bool maskClipSource = false;
-    bool maskForegroundLayerEnabled = false;
-    bool maskShowOnly = false;
-    bool maskGradeEnabled = false;
-    qreal maskOpacity = 1.0;
-    bool maskDropShadowEnabled = false;
-    qreal maskDropShadowRadius = 12.0;
-    qreal maskDropShadowOffsetX = 0.0;
-    qreal maskDropShadowOffsetY = 4.0;
-    qreal maskDropShadowOpacity = 0.45;
-    qreal maskGradeBrightness = 0.0;
-    qreal maskGradeContrast = 1.0;
-    qreal maskGradeSaturation = 1.0;
-    TimelineClip::GradingKeyframe maskGrade;
-    bool maskCurveLutApplied = false;
-    std::shared_ptr<const jcut::core::ImageBuffer> maskBuffer;
-    QRect targetRect;
-    QRect fittedRect;
-    TimelineClip::TransformKeyframe transform;
-    TimelineClip::GradingKeyframe grading;
     QString missingReason;
     QString effectsPath;
-    editor::FrameHandle frame;
-    bool differenceMatteEnabled = false;
-    qreal differenceThreshold = 0.10;
-    qreal differenceSoftness = 0.05;
-    editor::FrameHandle differenceReferenceFrame;
-    QVector<editor::FrameHandle> temporalEchoFrames;
-    qreal temporalEchoDecay = 0.65;
     qreal visualTimelineFramePosition = 0.0;
     bool frameCrossfadeActive = false;
     int64_t frameCrossfadeTimelineFrame = -1;
@@ -146,6 +104,7 @@ struct VulkanPreviewClipFrameStatus {
     QSize frameCrossfadeFrameSize;
     editor::FrameHandle frameCrossfadeFrame;
     std::shared_ptr<const jcut::core::ImageBuffer> frameCrossfadeMaskBuffer;
+    QString frameCrossfadeMaskIdentity;
     bool frameCrossfadeMaskTextureEnabled = false;
     bool externalVulkanFrame = false;
     bool sampledFramePregraded = false;
@@ -204,6 +163,7 @@ struct PreviewInteractionState {
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
     bool correctionDrawMode = false;
+    bool maskFuzzyRemoveMode = false;
     bool transcriptOverlayInteractionEnabled = false;
     bool titleOverlayInteractionOnly = false;
     bool faceStreamAssignmentInteractionEnabled = false;

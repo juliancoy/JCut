@@ -1,13 +1,74 @@
 #include "../audio_engine.h"
 #include "../audio_clip_fade.h"
 #include "../audio_mix_readiness.h"
+#include "../capabilities_detector.h"
 #include "../render_internal.h"
 
 #include <QtTest/QtTest>
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
+#include <future>
 #include <thread>
+
+namespace {
+
+int countBackendCallbacks(void* output,
+                          void*,
+                          unsigned int frameCount,
+                          double,
+                          unsigned int,
+                          void* userData) {
+  auto* callbackCount = static_cast<std::atomic<int>*>(userData);
+  callbackCount->fetch_add(1, std::memory_order_relaxed);
+  if (output) {
+    std::memset(output, 0,
+                static_cast<size_t>(frameCount) * 2 * sizeof(int16_t));
+  }
+  return 0;
+}
+
+class BlockingStopAudioBackend final : public AudioOutputBackend {
+public:
+  bool initialize(const AudioOutputBackendConfig&) override {
+    m_open = true;
+    m_running = true;
+    return true;
+  }
+  void shutdown() override {
+    m_open = false;
+    m_running = false;
+  }
+  bool start() override {
+    m_running = true;
+    return true;
+  }
+  bool stop(bool) override {
+    ++stopCalls;
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    m_running = false;
+    return true;
+  }
+  bool isOpen() const override { return m_open; }
+  bool isRunning() const override { return m_running; }
+  bool supportsSeamlessReprime() const override { return true; }
+  int64_t latencyFrames() const override { return 0; }
+  uint64_t connectionRevision() const override {
+    return revision.load(std::memory_order_acquire);
+  }
+  AudioOutputBackendInfo info() const override { return {}; }
+  std::string lastError() const override { return {}; }
+
+  std::atomic<int> stopCalls{0};
+  std::atomic<uint64_t> revision{1};
+
+private:
+  std::atomic<bool> m_open{false};
+  std::atomic<bool> m_running{false};
+};
+
+} // namespace
 
 // Multi-stream mix readiness policy (TIME.md "Multi-Stream Audio Readiness"):
 // a starved clip degrades per-clip instead of stalling ready clips, and the
@@ -33,6 +94,10 @@ private slots:
   void testOutputStreamStartWaitsForPrimeBuffer();
   void testPendingOutputRebasePreservesExactSampleAndIsOneShot();
   void testAudioFollowerSnapshotIsCoherent();
+  void testCapabilitiesRankNativeBackendBeforePortableFallback();
+  void testSeamlessBackendSeekNeverCallsBlockingDeviceStop();
+  void testRecoveredBackendRebasesToAuthoritativeTransport();
+  void testDetectedBackendDrivesLiveCallbackWhenDeviceIsAvailable();
 
 private:
   static TimelineClip makeAudioClip(const QString &id, const QString &path,
@@ -217,6 +282,110 @@ void TestAudioMixPolicy::testAudioFollowerSnapshotIsCoherent() {
   }
   writer.join();
   QVERIFY(!mismatch.load());
+}
+
+void TestAudioMixPolicy::
+testCapabilitiesRankNativeBackendBeforePortableFallback() {
+  const RuntimeCapabilities capabilities = detectRuntimeCapabilities();
+  QVERIFY(!capabilities.audioOutputBackends.empty());
+  const auto rtaudio = std::find_if(
+      capabilities.audioOutputBackends.cbegin(),
+      capabilities.audioOutputBackends.cend(),
+      [](const AudioOutputBackendCapability& candidate) {
+        return candidate.kind == AudioOutputBackendKind::RtAudio;
+      });
+  QVERIFY(rtaudio != capabilities.audioOutputBackends.cend());
+  QVERIFY(rtaudio->compiled);
+  QVERIFY(rtaudio->operatingSystemSupported);
+
+#if defined(__linux__)
+  QCOMPARE(capabilities.operatingSystem, std::string("linux"));
+  QCOMPARE(capabilities.audioOutputBackends.front().kind,
+           AudioOutputBackendKind::PipeWire);
+#if defined(JCUT_HAVE_PIPEWIRE) && JCUT_HAVE_PIPEWIRE
+  QVERIFY(capabilities.audioOutputBackends.front().compiled);
+#endif
+#endif
+}
+
+void TestAudioMixPolicy::
+testSeamlessBackendSeekNeverCallsBlockingDeviceStop() {
+  AudioEngine engine;
+  auto backend = std::make_unique<BlockingStopAudioBackend>();
+  BlockingStopAudioBackend* backendPtr = backend.get();
+  QVERIFY(backend->initialize({}));
+  engine.m_outputBackend = std::move(backend);
+  engine.m_playing.store(true);
+
+  const auto started = std::chrono::steady_clock::now();
+  engine.seekToTimelineSample(48000);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  QCOMPARE(backendPtr->stopCalls.load(), 0);
+  QVERIFY(elapsed < std::chrono::milliseconds(100));
+  QCOMPARE(engine.m_audioClockSample.load(), int64_t{48000});
+  QVERIFY(engine.m_outputStartPending.load());
+  engine.m_outputBackend->shutdown();
+}
+
+void TestAudioMixPolicy::
+testRecoveredBackendRebasesToAuthoritativeTransport() {
+  AudioEngine engine;
+  auto backend = std::make_unique<BlockingStopAudioBackend>();
+  BlockingStopAudioBackend* backendPtr = backend.get();
+  QVERIFY(backend->initialize({}));
+  engine.m_outputBackend = std::move(backend);
+  engine.m_lastObservedBackendConnectionRevision.store(1);
+  engine.m_timelineSampleCursor = 1000;
+  engine.m_audioClockSample.store(1000);
+  const std::array<int16_t, 4> stale{{1, 2, 3, 4}};
+  QCOMPARE(engine.m_ringBuffer.write(stale.data(), stale.size()),
+           stale.size());
+  const uint64_t generation = engine.m_mixGeneration;
+
+  backendPtr->revision.store(2);
+  engine.setAuthoritativeTransportSample(96000);
+
+  QCOMPARE(engine.m_timelineSampleCursor, int64_t{96000});
+  QCOMPARE(engine.m_audioClockSample.load(), int64_t{96000});
+  QCOMPARE(engine.m_ringBufferEndSample.load(), int64_t{96000});
+  QCOMPARE(engine.m_ringBuffer.available(), size_t{0});
+  QCOMPARE(engine.m_mixGeneration, generation + 1);
+  QCOMPARE(engine.m_lastObservedBackendConnectionRevision.load(),
+           uint64_t{2});
+  engine.m_outputBackend->shutdown();
+}
+
+void TestAudioMixPolicy::
+testDetectedBackendDrivesLiveCallbackWhenDeviceIsAvailable() {
+  std::atomic<int> callbackCount{0};
+  const AudioOutputBackendConfig config{
+      48000, 2, 1024, &countBackendCallbacks, &callbackCount};
+  AudioOutputBackendSelection selection =
+      selectBestAudioOutputBackend(config);
+  if (!selection.backend) {
+    QSKIP("No live audio output is available in this test environment");
+  }
+
+  QVERIFY(!selection.selectedId.empty());
+  QVERIFY(!selection.probes.empty());
+  QVERIFY(selection.probes.back().available);
+  QCOMPARE(selection.probes.back().capability.id, selection.selectedId);
+  QVERIFY(selection.backend->isOpen());
+  QVERIFY(selection.backend->start());
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (callbackCount.load(std::memory_order_relaxed) == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  QVERIFY2(callbackCount.load(std::memory_order_relaxed) > 0,
+           qPrintable(QStringLiteral("%1 backend produced no callback: %2")
+                          .arg(QString::fromStdString(selection.selectedId),
+                               QString::fromStdString(
+                                   selection.backend->lastError()))));
+  QVERIFY(selection.backend->stop(false));
+  selection.backend->shutdown();
 }
 
 void TestAudioMixPolicy::testStarvedClipDoesNotBlockReadyClip() {

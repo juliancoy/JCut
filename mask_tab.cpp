@@ -2,13 +2,16 @@
 #include "editor_effect_presets.h"
 #include "editor_tab_edit_effects.h"
 #include "mask_sidecar.h"
+#include "mask_fuzzy_remove.h"
 
 #include <QComboBox>
+#include <QFutureWatcher>
 #include <QDir>
 #include <QFileInfo>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
+#include <QtConcurrent>
 
 #include <algorithm>
 
@@ -140,6 +143,16 @@ void MaskTab::wire()
             }
         });
     }
+    if (m_widgets.fuzzyRemoveButton) {
+        connect(m_widgets.fuzzyRemoveButton, &QPushButton::toggled, this, [this](bool armed) {
+            if (m_deps.setMaskFuzzyRemoveMode) m_deps.setMaskFuzzyRemoveMode(armed);
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(
+                    armed ? QStringLiteral("Click the unwanted mask foreground in the preview.")
+                          : QString());
+            }
+        });
+    }
     if (m_widgets.zLevelSpin) {
         connect(m_widgets.zLevelSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, [this](int) { scheduleTreatmentEdit(true); });
@@ -186,6 +199,79 @@ void MaskTab::wire()
     connectApply(m_widgets.shadowOpacitySpin);
 }
 
+void MaskTab::handlePreviewPoint(const QString& clipId,
+                                 int64_t sourceFrame,
+                                 int64_t sourcePresentationTimestamp,
+                                 qreal xNorm,
+                                 qreal yNorm)
+{
+    const TimelineClip* selected = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!selected || selected->id != clipId ||
+        selected->clipRole != ClipRole::MaskMatte ||
+        !m_widgets.fuzzyRemoveButton || !m_widgets.fuzzyRemoveButton->isChecked()) {
+        return;
+    }
+    const QString selectedId = selected->id;
+    editor::masks::FuzzyRemoveRequest request;
+    request.sourceDirectory = selected->maskFramesDir;
+    request.sourceMediaPath = selected->filePath;
+    request.sourceFrame = sourceFrame;
+    request.sourcePresentationTimestamp = sourcePresentationTimestamp;
+    request.xNorm = xNorm;
+    request.yNorm = yNorm;
+    request.spatialReachPixels = m_widgets.fuzzySpatialReachSpin
+        ? m_widgets.fuzzySpatialReachSpin->value() : 12;
+    request.temporalReachFrames = m_widgets.fuzzyTemporalReachSpin
+        ? m_widgets.fuzzyTemporalReachSpin->value() : 120;
+
+    m_widgets.fuzzyRemoveButton->setChecked(false);
+    m_widgets.fuzzyRemoveButton->setEnabled(false);
+    if (m_widgets.fuzzyStatusLabel) {
+        m_widgets.fuzzyStatusLabel->setText(QStringLiteral("Following and removing region…"));
+    }
+    auto* watcher = new QFutureWatcher<editor::masks::FuzzyRemoveResult>(this);
+    connect(watcher, &QFutureWatcher<editor::masks::FuzzyRemoveResult>::finished,
+            this, [this, watcher, selectedId]() {
+        const editor::masks::FuzzyRemoveResult result = watcher->result();
+        watcher->deleteLater();
+        if (m_widgets.fuzzyRemoveButton) m_widgets.fuzzyRemoveButton->setEnabled(true);
+        if (!result.succeeded()) {
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(
+                    result.error.isEmpty() ? QStringLiteral("No connected region was removed.")
+                                           : result.error);
+            }
+            return;
+        }
+        const bool updated = m_deps.updateClipById &&
+            m_deps.updateClipById(selectedId, [&result](TimelineClip& clip) {
+                clip.maskFramesDir = result.outputDirectory;
+                clip.generatedFromMaskId =
+                    editor::masks::stableMaskSidecarId(result.outputDirectory);
+            });
+        if (!updated) {
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(
+                    QStringLiteral("The derived mask was created but the timeline clip changed."));
+            }
+            return;
+        }
+        if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
+        if (m_deps.refreshInspector) m_deps.refreshInspector();
+        if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+        if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+        if (m_widgets.fuzzyStatusLabel) {
+            m_widgets.fuzzyStatusLabel->setText(
+                QStringLiteral("Removed %1 pixels across %2 frame(s). Original preserved.")
+                    .arg(result.removedPixels)
+                    .arg(result.changedFrames));
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([request]() {
+        return editor::masks::fuzzyRemoveMaskRegion(request);
+    }));
+}
+
 void MaskTab::refresh()
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -196,6 +282,10 @@ void MaskTab::refresh()
                            clip->mediaType == ClipMediaType::Video;
     const bool maskInspectorActive =
         m_deps.isMaskInspectorActive && m_deps.isMaskInspectorActive();
+    if (!maskInspectorActive && m_widgets.fuzzyRemoveButton &&
+        m_widgets.fuzzyRemoveButton->isChecked()) {
+        m_widgets.fuzzyRemoveButton->setChecked(false);
+    }
 
     // The Masks tab edits child-owned state. A source selection is only a
     // discovery context: resolve its chosen sidecar to a materialized child
@@ -582,6 +672,9 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.sidecarCombo),
                             static_cast<QWidget*>(m_widgets.browseButton),
                             static_cast<QWidget*>(m_widgets.newPromptButton),
+                            static_cast<QWidget*>(m_widgets.fuzzyRemoveButton),
+                            static_cast<QWidget*>(m_widgets.fuzzySpatialReachSpin),
+                            static_cast<QWidget*>(m_widgets.fuzzyTemporalReachSpin),
                             static_cast<QWidget*>(m_widgets.zLevelSpin),
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),
@@ -613,6 +706,9 @@ void MaskTab::setControlsEnabled(bool enabled)
 void MaskTab::setTreatmentControlsEnabled(bool enabled)
 {
     for (QWidget* widget : {static_cast<QWidget*>(m_widgets.enabledCheck),
+                            static_cast<QWidget*>(m_widgets.fuzzyRemoveButton),
+                            static_cast<QWidget*>(m_widgets.fuzzySpatialReachSpin),
+                            static_cast<QWidget*>(m_widgets.fuzzyTemporalReachSpin),
                             static_cast<QWidget*>(m_widgets.zLevelSpin),
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),

@@ -1,14 +1,39 @@
 #include "vulkan_resources.h"
-#include "vulkan_shader_paths.h"
 
+#include <QCryptographicHash>
 #include <QVulkanFunctions>
-
-#include <QFile>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
+
+QString vulkanMaskTextureCacheKey(
+    const VulkanMaskPreprocessOptions& options,
+    const QSize& outputSize)
+{
+    if (options.sourceIdentity.isEmpty() || !outputSize.isValid()) {
+        return {};
+    }
+    QByteArray treatment;
+    treatment.reserve(options.correctionStorage.size() + 96);
+    treatment.append(options.invert ? "invert=1" : "invert=0");
+    treatment.append("|erode=");
+    treatment.append(QByteArray::number(options.erodeRadius));
+    treatment.append("|dilate=");
+    treatment.append(QByteArray::number(options.dilateRadius));
+    treatment.append("|blur=");
+    treatment.append(QByteArray::number(options.blurRadius));
+    treatment.append("|corrections=");
+    treatment.append(options.correctionStorage);
+    const QByteArray treatmentHash =
+        QCryptographicHash::hash(treatment, QCryptographicHash::Sha256).toHex();
+    return QStringLiteral("%1|output=%2x%3|treatment=%4")
+        .arg(options.sourceIdentity)
+        .arg(outputSize.width())
+        .arg(outputSize.height())
+        .arg(QString::fromLatin1(treatmentHash));
+}
 
 namespace {
 constexpr uint32_t kTextureWidth = 64;
@@ -112,18 +137,6 @@ VkDeviceSize frameUniformStrideForDevice(VkPhysicalDevice physicalDevice)
     return stride;
 }
 
-struct MaskPreparePush {
-    int outputSize[2];
-    int inputSize[2];
-    int invert = 0;
-    int applyCorrections = 0;
-};
-
-struct MaskMorphBlurPush {
-    int outputSize[2];
-    int radius = 0;
-    int mode = 0;
-};
 }
 
 VulkanResources::~VulkanResources()
@@ -143,11 +156,6 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     m_physicalDevice = physicalDevice;
     m_device = device;
     m_funcs = funcs;
-    VkPhysicalDeviceProperties physicalProperties{};
-    vkGetPhysicalDeviceProperties(m_physicalDevice, &physicalProperties);
-    m_storageBufferOffsetAlignment = qMax<VkDeviceSize>(
-        16, physicalProperties.limits.minStorageBufferOffsetAlignment);
-
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -255,7 +263,8 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     }
     updateFrameUniform(QSize(1, 1));
 
-    if (!createTextureResources() || !createMaskComputeResources()) {
+    if (!createTextureResources() ||
+        !m_maskPreprocessor.initialize(m_physicalDevice, m_device)) {
         destroy();
         return false;
     }
@@ -307,7 +316,7 @@ void VulkanResources::destroy()
         }
     }
     m_retiredImageResources.clear();
-    destroyMaskComputeResources();
+    m_maskPreprocessor.destroy();
     destroyTextureImage();
     if (m_curveLutView != VK_NULL_HANDLE) {
         vkDestroyImageView(m_device, m_curveLutView, nullptr);
@@ -385,9 +394,7 @@ void VulkanResources::destroy()
     m_maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_maskRawSize = QSize();
-    m_uploadedMaskCacheKey = 0;
-    m_uploadedMaskOutputSize = QSize();
-    m_uploadedMaskCorrectionStorage.clear();
+    m_uploadedMaskCacheKey.clear();
     m_maskSize = QSize();
     m_stagingRing.reset();
     m_initialized = false;
@@ -1220,387 +1227,47 @@ static void transitionExternalImage(QVulkanDeviceFunctions* funcs,
     vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-VkShaderModule VulkanResources::createShaderModule(const QString& path) const
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return VK_NULL_HANDLE;
-    }
-    const QByteArray bytes = file.readAll();
-    if (bytes.isEmpty() || (bytes.size() % 4) != 0) {
-        return VK_NULL_HANDLE;
-    }
-    VkShaderModuleCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    info.codeSize = static_cast<size_t>(bytes.size());
-    info.pCode = reinterpret_cast<const uint32_t*>(bytes.constData());
-    VkShaderModule module = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(m_device, &info, nullptr, &module) != VK_SUCCESS) {
-        return VK_NULL_HANDLE;
-    }
-    return module;
-}
-
-bool VulkanResources::createMaskComputeResources()
-{
-    VkDescriptorSetLayoutBinding bindings[3]{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = bindings;
-    if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &m_maskComputeDescriptorSetLayout) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkDescriptorPoolSize poolSizes[3]{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[2].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 3;
-    poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
-    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_maskComputeDescriptorPool) != VK_SUCCESS) {
-        return false;
-    }
-
-    std::array<VkDescriptorSetLayout, VulkanResources::kMaskComputeDescriptorSetCount> layouts{};
-    layouts.fill(m_maskComputeDescriptorSetLayout);
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_maskComputeDescriptorPool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    allocInfo.pSetLayouts = layouts.data();
-    if (vkAllocateDescriptorSets(m_device, &allocInfo, m_maskComputeDescriptorSets.data()) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkPushConstantRange preparePush{};
-    preparePush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    preparePush.offset = 0;
-    preparePush.size = sizeof(MaskPreparePush);
-    VkPipelineLayoutCreateInfo prepareLayoutInfo{};
-    prepareLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    prepareLayoutInfo.setLayoutCount = 1;
-    prepareLayoutInfo.pSetLayouts = &m_maskComputeDescriptorSetLayout;
-    prepareLayoutInfo.pushConstantRangeCount = 1;
-    prepareLayoutInfo.pPushConstantRanges = &preparePush;
-    if (vkCreatePipelineLayout(m_device, &prepareLayoutInfo, nullptr, &m_maskPreparePipelineLayout) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkPushConstantRange morphPush{};
-    morphPush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    morphPush.offset = 0;
-    morphPush.size = sizeof(MaskMorphBlurPush);
-    VkPipelineLayoutCreateInfo morphLayoutInfo = prepareLayoutInfo;
-    morphLayoutInfo.pPushConstantRanges = &morphPush;
-    if (vkCreatePipelineLayout(m_device, &morphLayoutInfo, nullptr, &m_maskMorphBlurPipelineLayout) != VK_SUCCESS) {
-        return false;
-    }
-
-    const QString shaderDir = jcutVulkanShaderDirectory();
-    m_maskPrepareModule = createShaderModule(shaderDir + QStringLiteral("/mask_prepare.comp.spv"));
-    m_maskMorphModule = createShaderModule(shaderDir + QStringLiteral("/mask_morph.comp.spv"));
-    m_maskBlurModule = createShaderModule(shaderDir + QStringLiteral("/mask_blur.comp.spv"));
-    if (m_maskPrepareModule == VK_NULL_HANDLE ||
-        m_maskMorphModule == VK_NULL_HANDLE ||
-        m_maskBlurModule == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    auto createComputePipeline = [this](VkShaderModule module,
-                                        VkPipelineLayout layout,
-                                        VkPipeline* pipeline) -> bool {
-        VkComputePipelineCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        info.stage.module = module;
-        info.stage.pName = "main";
-        info.layout = layout;
-        return vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &info, nullptr, pipeline) == VK_SUCCESS;
-    };
-    return createComputePipeline(m_maskPrepareModule, m_maskPreparePipelineLayout, &m_maskPreparePipeline) &&
-           createComputePipeline(m_maskMorphModule, m_maskMorphBlurPipelineLayout, &m_maskMorphPipeline) &&
-           createComputePipeline(m_maskBlurModule, m_maskMorphBlurPipelineLayout, &m_maskBlurPipeline);
-}
-
-void VulkanResources::destroyMaskComputeResources()
-{
-    if (m_maskBlurPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(m_device, m_maskBlurPipeline, nullptr);
-        m_maskBlurPipeline = VK_NULL_HANDLE;
-    }
-    if (m_maskMorphPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(m_device, m_maskMorphPipeline, nullptr);
-        m_maskMorphPipeline = VK_NULL_HANDLE;
-    }
-    if (m_maskPreparePipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(m_device, m_maskPreparePipeline, nullptr);
-        m_maskPreparePipeline = VK_NULL_HANDLE;
-    }
-    if (m_maskBlurModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(m_device, m_maskBlurModule, nullptr);
-        m_maskBlurModule = VK_NULL_HANDLE;
-    }
-    if (m_maskMorphModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(m_device, m_maskMorphModule, nullptr);
-        m_maskMorphModule = VK_NULL_HANDLE;
-    }
-    if (m_maskPrepareModule != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(m_device, m_maskPrepareModule, nullptr);
-        m_maskPrepareModule = VK_NULL_HANDLE;
-    }
-    if (m_maskMorphBlurPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(m_device, m_maskMorphBlurPipelineLayout, nullptr);
-        m_maskMorphBlurPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_maskPreparePipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(m_device, m_maskPreparePipelineLayout, nullptr);
-        m_maskPreparePipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_maskComputeDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_device, m_maskComputeDescriptorPool, nullptr);
-        m_maskComputeDescriptorPool = VK_NULL_HANDLE;
-    }
-    m_maskComputeDescriptorSets.fill(VK_NULL_HANDLE);
-    m_maskComputeDescriptorSetIndex = 0;
-    if (m_maskComputeDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(m_device, m_maskComputeDescriptorSetLayout, nullptr);
-        m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
-    }
-}
-
-bool VulkanResources::runMaskComputePass(VkCommandBuffer commandBuffer,
-                                         VkPipeline pipeline,
-                                         const void* pushData,
-                                         uint32_t pushDataSize,
-                                         VkImageView inputView,
-                                         VkImageView outputView,
-                                         VkImage outputImage,
-                                         VkImageLayout& outputLayout,
-                                         VkDeviceSize correctionStorageOffset,
-                                         VkDeviceSize correctionStorageBytes)
-{
-    if (pipeline == VK_NULL_HANDLE || inputView == VK_NULL_HANDLE ||
-        outputView == VK_NULL_HANDLE || outputImage == VK_NULL_HANDLE ||
-        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex] == VK_NULL_HANDLE ||
-        m_stagingBuffer == VK_NULL_HANDLE ||
-        correctionStorageBytes < sizeof(float) * 4) {
-        return false;
-    }
-    VkDescriptorSet computeDescriptorSet = m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex];
-    m_maskComputeDescriptorSetIndex = (m_maskComputeDescriptorSetIndex + 1) % m_maskComputeDescriptorSets.size();
-
-    const VkPipelineStageFlags outputSrcStage =
-        outputLayout == VK_IMAGE_LAYOUT_UNDEFINED
-            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-            : (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    const VkAccessFlags outputSrcAccess =
-        outputLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
-    transitionExternalImage(m_funcs,
-                            commandBuffer,
-                            outputImage,
-                            outputLayout,
-                            VK_IMAGE_LAYOUT_GENERAL,
-                            outputSrcStage,
-                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            outputSrcAccess,
-                            VK_ACCESS_SHADER_WRITE_BIT);
-    outputLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorImageInfo inputInfo{};
-    inputInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    inputInfo.imageView = inputView;
-    inputInfo.sampler = m_sampler;
-    VkDescriptorImageInfo outputInfo{};
-    outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    outputInfo.imageView = outputView;
-    VkDescriptorBufferInfo correctionInfo{};
-    correctionInfo.buffer = m_stagingBuffer;
-    correctionInfo.offset = correctionStorageOffset;
-    correctionInfo.range = correctionStorageBytes;
-    VkWriteDescriptorSet writes[3]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = computeDescriptorSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &inputInfo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = computeDescriptorSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo = &outputInfo;
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = computeDescriptorSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &correctionInfo;
-    vkUpdateDescriptorSets(m_device, 3, writes, 0, nullptr);
-
-    const VkPipelineLayout layout =
-        pipeline == m_maskPreparePipeline ? m_maskPreparePipelineLayout : m_maskMorphBlurPipelineLayout;
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            layout,
-                            0,
-                            1,
-                            &computeDescriptorSet,
-                            0,
-                            nullptr);
-    vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushDataSize, pushData);
-    vkCmdDispatch(commandBuffer,
-                  static_cast<uint32_t>((m_maskSize.width() + 15) / 16),
-                  static_cast<uint32_t>((m_maskSize.height() + 15) / 16),
-                  1);
-    transitionExternalImage(m_funcs,
-                            commandBuffer,
-                            outputImage,
-                            outputLayout,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                            VK_ACCESS_SHADER_WRITE_BIT,
-                            VK_ACCESS_SHADER_READ_BIT);
-    outputLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return true;
-}
-
-bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
-                                            const VulkanMaskPreprocessOptions& options)
+bool VulkanResources::preprocessMaskTexture(
+    VkCommandBuffer commandBuffer,
+    const VulkanMaskPreprocessOptions& options)
 {
     if (!commandBuffer || m_maskSize.isEmpty() || m_maskRawSize.isEmpty()) {
         return false;
     }
-    const int erodeRadius = std::max(0, options.erodeRadius);
-    const int dilateRadius = std::max(0, options.dilateRadius);
-    const int blurRadius = std::max(0, options.blurRadius);
-    const QByteArray correctionStorage =
-        options.correctionStorage.isEmpty()
-            ? QByteArray(static_cast<qsizetype>(sizeof(float) * 4), '\0')
-            : options.correctionStorage;
-    VkDeviceSize correctionStorageOffset = 0;
-    if ((correctionStorage.size() % static_cast<qsizetype>(sizeof(float) * 4)) != 0 ||
-        !writeStagingUpload(
-            correctionStorage.constData(),
-            static_cast<VkDeviceSize>(correctionStorage.size()),
-            m_storageBufferOffsetAlignment,
-            &correctionStorageOffset)) {
-        return false;
-    }
-    const VkDeviceSize correctionStorageBytes =
-        static_cast<VkDeviceSize>(correctionStorage.size());
-
-    VkImageView currentView = m_maskRawView;
-    bool currentIsMask = false;
-
-    auto dispatchPrepare = [&](VkImageView srcView,
-                               VkImageView dstView,
-                               VkImage dstImage,
-                               VkImageLayout& dstLayout,
-                               const QSize& inputSize,
-                               bool invert,
-                               bool applyCorrections) -> bool {
-        MaskPreparePush push{};
-        push.outputSize[0] = m_maskSize.width();
-        push.outputSize[1] = m_maskSize.height();
-        push.inputSize[0] = inputSize.width();
-        push.inputSize[1] = inputSize.height();
-        push.invert = invert ? 1 : 0;
-        push.applyCorrections = applyCorrections ? 1 : 0;
-        return runMaskComputePass(commandBuffer,
-                                  m_maskPreparePipeline,
-                                  &push,
-                                  sizeof(push),
-                                  srcView,
-                                  dstView,
-                                  dstImage,
-                                  dstLayout,
-                                  correctionStorageOffset,
-                                  correctionStorageBytes);
-    };
-    auto dispatchMorphBlur = [&](VkPipeline pipeline, int radius, int mode) -> bool {
-        VkImageView dstView = currentIsMask ? m_maskWorkView : m_maskView;
-        VkImage dstImage = currentIsMask ? m_maskWorkImage : m_maskImage;
-        VkImageLayout& dstLayout = currentIsMask ? m_maskWorkLayout : m_maskLayout;
-        MaskMorphBlurPush push{};
-        push.outputSize[0] = m_maskSize.width();
-        push.outputSize[1] = m_maskSize.height();
-        push.radius = radius;
-        push.mode = mode;
-        if (!runMaskComputePass(commandBuffer,
-                                pipeline,
-                                &push,
-                                sizeof(push),
-                                currentView,
-                                dstView,
-                                dstImage,
-                                dstLayout,
-                                correctionStorageOffset,
-                                correctionStorageBytes)) {
-            return false;
-        }
-        currentView = dstView;
-        currentIsMask = !currentIsMask;
-        return true;
-    };
-
-    if (!dispatchPrepare(m_maskRawView,
-                         m_maskView,
-                         m_maskImage,
-                         m_maskLayout,
-                         m_maskRawSize,
-                         options.invert,
-                         true)) {
-        return false;
-    }
-    currentView = m_maskView;
-    currentIsMask = true;
-    if (erodeRadius > 0 && !dispatchMorphBlur(m_maskMorphPipeline, erodeRadius, 0)) {
-        return false;
-    }
-    if (dilateRadius > 0 && !dispatchMorphBlur(m_maskMorphPipeline, dilateRadius, 1)) {
-        return false;
-    }
-    if (blurRadius > 0) {
-        if (!dispatchMorphBlur(m_maskBlurPipeline, blurRadius, 1) ||
-            !dispatchMorphBlur(m_maskBlurPipeline, blurRadius, 0)) {
-            return false;
-        }
-    }
-    if (!currentIsMask) {
-        if (!dispatchPrepare(currentView,
-                             m_maskView,
-                             m_maskImage,
-                             m_maskLayout,
-                             m_maskSize,
-                             false,
-                             false)) {
-            return false;
-        }
-    }
-    return true;
+    VulkanMaskPreprocessor::Images images;
+    images.sampler = m_sampler;
+    images.inputSize = m_maskRawSize;
+    images.outputSize = m_maskSize;
+    images.inputView = m_maskRawView;
+    images.outputImage = m_maskImage;
+    images.outputView = m_maskView;
+    images.outputLayout = &m_maskLayout;
+    images.workImage = m_maskWorkImage;
+    images.workView = m_maskWorkView;
+    images.workLayout = &m_maskWorkLayout;
+    return m_maskPreprocessor.record(
+        commandBuffer,
+        images,
+        options,
+        [this](
+            const QByteArray& storage,
+            VkDeviceSize alignment,
+            VulkanMaskPreprocessor::StagedCorrectionStorage* staged) {
+            VkDeviceSize offset = 0;
+            if (!staged ||
+                !writeStagingUpload(
+                    storage.constData(),
+                    static_cast<VkDeviceSize>(storage.size()),
+                    alignment,
+                    &offset)) {
+                return false;
+            }
+            staged->buffer = m_stagingBuffer;
+            staged->offset = offset;
+            staged->bytes =
+                static_cast<VkDeviceSize>(storage.size());
+            return true;
+        });
 }
 
 bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer)
@@ -1952,15 +1619,9 @@ bool VulkanResources::uploadMaskTexture(
     const QSize rawSize(image.size.width, image.size.height);
     const QSize requestedOutputSize =
         options.outputSize.isValid() ? options.outputSize : rawSize;
-    const qint64 sourceCacheKey = static_cast<qint64>(
-        reinterpret_cast<std::uintptr_t>(image.bytes.data()));
-    if (sourceCacheKey != 0 && sourceCacheKey == m_uploadedMaskCacheKey &&
-        requestedOutputSize == m_uploadedMaskOutputSize &&
-        options.invert == m_uploadedMaskInvert &&
-        options.erodeRadius == m_uploadedMaskErodeRadius &&
-        options.dilateRadius == m_uploadedMaskDilateRadius &&
-        options.blurRadius == m_uploadedMaskBlurRadius &&
-        options.correctionStorage == m_uploadedMaskCorrectionStorage &&
+    const QString cacheKey =
+        vulkanMaskTextureCacheKey(options, requestedOutputSize);
+    if (!cacheKey.isEmpty() && cacheKey == m_uploadedMaskCacheKey &&
         m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         return true;
     }
@@ -2045,13 +1706,7 @@ bool VulkanResources::uploadMaskTexture(
     if (!preprocessMaskTexture(commandBuffer, options)) {
         return false;
     }
-    m_uploadedMaskCacheKey = sourceCacheKey;
-    m_uploadedMaskOutputSize = requestedOutputSize;
-    m_uploadedMaskInvert = options.invert;
-    m_uploadedMaskErodeRadius = options.erodeRadius;
-    m_uploadedMaskDilateRadius = options.dilateRadius;
-    m_uploadedMaskBlurRadius = options.blurRadius;
-    m_uploadedMaskCorrectionStorage = options.correctionStorage;
+    m_uploadedMaskCacheKey = cacheKey;
     return true;
 }
 

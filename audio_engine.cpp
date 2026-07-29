@@ -1,5 +1,6 @@
 #include "audio_engine.h"
 #include "audio_dynamics_core.h"
+#include "capabilities_detector.h"
 #include "audio_speech_harmonic_isolator.h"
 
 #include "audio_clip_fade.h"
@@ -31,8 +32,6 @@ extern "C" {
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
-
-#include <RtAudio.h>
 
 namespace {
 
@@ -472,107 +471,81 @@ bool AudioEngine::initialize() {
     return false;
   }
 
-  bool created = false;
-#if defined(Q_OS_LINUX)
-  try {
-    m_rtaudio =
-        std::make_unique<rt::audio::RtAudio>(rt::audio::RtAudio::LINUX_ALSA);
-    created = true;
-  } catch (const std::exception &e) {
-    if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-      qWarning() << "RtAudio ALSA creation failed, falling back to default API:"
-                 << e.what();
-      m_lastAudioInitWarningMs = nowMs;
-    }
-  }
-#endif
-  if (!created) {
-    try {
-      m_rtaudio = std::make_unique<rt::audio::RtAudio>();
-      created = true;
-    } catch (const std::exception &e) {
-      if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-        qWarning() << "RtAudio creation failed:" << e.what();
-        m_lastAudioInitWarningMs = nowMs;
-      }
-      m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
-      return false;
-    }
-  }
-  m_rtaudio->showWarnings(false);
-
   m_lastKnownDeviceCount = 0;
   m_lastKnownDefaultOutputValid = false;
   m_lastKnownDefaultOutputId = 0;
   m_lastKnownDefaultOutputName.clear();
   m_lastKnownDefaultOutputChannels = 0;
   m_lastDeviceInfoError.clear();
+  m_selectedAudioBackend.clear();
+  m_audioBackendSelectionReason.clear();
+  m_audioBackendCandidates = {};
 
-  unsigned int deviceCount = 0;
-  try {
-    deviceCount = m_rtaudio->getDeviceCount();
-    m_lastKnownDeviceCount = static_cast<qint64>(deviceCount);
-  } catch (const std::exception &e) {
-    m_lastDeviceInfoError = QString::fromUtf8(e.what());
+  const AudioOutputBackendConfig config{
+      m_sampleRate,
+      m_channelCount,
+      m_periodFrames,
+      &AudioEngine::rtAudioCallback,
+      this,
+  };
+  AudioOutputBackendSelection selection = selectBestAudioOutputBackend(config);
+  for (const AudioOutputBackendProbe& probe : selection.probes) {
+    const AudioOutputBackendCapability& candidate = probe.capability;
+    QJsonObject candidateJson{
+        {QStringLiteral("id"), QString::fromStdString(candidate.id)},
+        {QStringLiteral("label"), QString::fromStdString(candidate.label)},
+        {QStringLiteral("preference"), candidate.preference},
+        {QStringLiteral("compiled"), candidate.compiled},
+        {QStringLiteral("operating_system_supported"),
+         candidate.operatingSystemSupported},
+        {QStringLiteral("reason"), QString::fromStdString(candidate.reason)},
+    };
+    candidateJson[QStringLiteral("available")] = probe.available;
+    if (!probe.error.empty()) {
+      candidateJson[QStringLiteral("probe_error")] =
+          QString::fromStdString(probe.error);
+    }
+    if (probe.available) {
+      candidateJson[QStringLiteral("selected")] = true;
+      candidateJson[QStringLiteral("device_name")] =
+          QString::fromStdString(probe.info.deviceName);
+    }
+    m_audioBackendCandidates.append(candidateJson);
+  }
+  m_selectedAudioBackend =
+      QString::fromStdString(selection.selectedId);
+  m_audioBackendSelectionReason =
+      QString::fromStdString(selection.selectionReason);
+  m_outputBackend = std::move(selection.backend);
+
+  if (!m_outputBackend) {
+    m_lastDeviceInfoError =
+        QStringLiteral("No detected audio backend could open an output device");
     if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-      qWarning() << "RtAudio getDeviceCount failed:" << m_lastDeviceInfoError;
+      qWarning() << m_lastDeviceInfoError;
       m_lastAudioInitWarningMs = nowMs;
     }
-    m_rtaudio.reset();
     m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
     return false;
   }
 
-  if (deviceCount == 0) {
-    if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-      qWarning() << "No audio output devices found";
-      m_lastAudioInitWarningMs = nowMs;
-    }
-    m_rtaudio.reset();
-    m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
-    return false;
-  }
-
-  rt::audio::RtAudio::StreamParameters params;
-  try {
-    params.deviceId = m_rtaudio->getDefaultOutputDevice();
-    m_lastKnownDefaultOutputId = params.deviceId;
-    if (params.deviceId < deviceCount) {
-      const auto info = m_rtaudio->getDeviceInfo(params.deviceId);
-      m_lastKnownDefaultOutputValid = true;
-      m_lastKnownDefaultOutputName = QString::fromStdString(info.name);
-      m_lastKnownDefaultOutputChannels = info.outputChannels;
-    }
-  } catch (const std::exception &e) {
-    m_lastDeviceInfoError = QString::fromUtf8(e.what());
-    if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-      qWarning() << "RtAudio default output query failed:"
-                 << m_lastDeviceInfoError;
-      m_lastAudioInitWarningMs = nowMs;
-    }
-  }
-  params.nChannels = m_channelCount;
-
-  unsigned int bufferFrames = m_periodFrames;
-  auto err = m_rtaudio->openStream(&params, nullptr, rt::audio::RTAUDIO_SINT16,
-                                   m_sampleRate, &bufferFrames,
-                                   &AudioEngine::rtAudioCallback, this);
-  if (err != rt::audio::RTAUDIO_NO_ERROR) {
-    if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
-      qWarning() << "RtAudio openStream failed:"
-                 << QString::fromStdString(m_rtaudio->getErrorText());
-      m_lastAudioInitWarningMs = nowMs;
-    }
-    m_rtaudio.reset();
-    m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
-    return false;
-  }
-
-  m_periodFrames = qMax(1, static_cast<int>(bufferFrames));
+  const AudioOutputBackendInfo& selectedInfo = selection.info;
+  m_lastKnownDeviceCount = selectedInfo.deviceCount;
+  m_lastKnownDefaultOutputValid = selectedInfo.defaultDeviceValid;
+  m_lastKnownDefaultOutputId = selectedInfo.defaultDeviceId;
+  m_lastKnownDefaultOutputName =
+      QString::fromStdString(selectedInfo.deviceName);
+  m_lastKnownDefaultOutputChannels = selectedInfo.outputChannels;
+  m_periodFrames = qMax(
+      1, selectedInfo.periodFrames > 0
+             ? selectedInfo.periodFrames
+             : m_periodFrames);
   const int64_t streamLatencyFrames =
-      qMax<int64_t>(0, m_rtaudio->getStreamLatency());
+      qMax<int64_t>(0, selectedInfo.latencyFrames);
   m_outputStreamLatencyFramesAtOpen.store(
       streamLatencyFrames, std::memory_order_release);
+  m_lastObservedBackendConnectionRevision.store(
+      m_outputBackend->connectionRevision(), std::memory_order_release);
   m_outputPrimeTargetSamples.store(
       outputPrimeTargetSamples(m_periodFrames, streamLatencyFrames),
       std::memory_order_release);
@@ -607,14 +580,9 @@ void AudioEngine::shutdown() {
   if (m_mixWorker.joinable()) {
     m_mixWorker.join();
   }
-  if (m_rtaudio) {
-    if (m_rtaudio->isStreamRunning()) {
-      m_rtaudio->stopStream();
-    }
-    if (m_rtaudio->isStreamOpen()) {
-      m_rtaudio->closeStream();
-    }
-    m_rtaudio.reset();
+  if (m_outputBackend) {
+    m_outputBackend->shutdown();
+    m_outputBackend.reset();
   }
   m_lastKnownDeviceCount = 0;
   m_lastKnownDefaultOutputValid = false;
@@ -653,7 +621,7 @@ void AudioEngine::startAtTimelineSample(int64_t startSample) {
   }
   if (m_playing.load(std::memory_order_acquire)) {
     m_redundantStartCount.fetch_add(1, std::memory_order_relaxed);
-    if (m_rtaudio && !m_rtaudio->isStreamRunning()) {
+    if (m_outputBackend && !m_outputBackend->isRunning()) {
       m_outputStartPending.store(true, std::memory_order_release);
     }
     m_stateCondition.notify_all();
@@ -699,7 +667,7 @@ void AudioEngine::stop() {
     m_outputPrimeCanRebase = false;
     m_outputPrimeStartedMs.store(0, std::memory_order_release);
   }
-  if (m_rtaudio && m_rtaudio->isStreamRunning()) {
+  if (m_outputBackend && m_outputBackend->isRunning()) {
     // Fade to zero from the last rendered sample to avoid click/pop on stop.
     const int16_t lastL =
         static_cast<int16_t>(m_lastOutputLeft.load(std::memory_order_acquire));
@@ -727,7 +695,10 @@ void AudioEngine::stop() {
                     (1000.0 * static_cast<double>(kShutdownFadeFrames)) /
                     static_cast<double>(m_sampleRate))));
     std::this_thread::sleep_for(std::chrono::milliseconds(fadeMs + 2));
-    m_rtaudio->stopStream();
+    if (!m_outputBackend->stop(true)) {
+      m_lastDeviceInfoError =
+          QString::fromStdString(m_outputBackend->lastError());
+    }
   }
   m_ringBuffer.clear();
   m_mixCondition.notify_all();
@@ -991,7 +962,7 @@ bool AudioEngine::playbackAudioNeedsRetimingForFrame(int64_t startFrame) const {
 
 bool AudioEngine::audioClockAvailable() const {
   std::lock_guard<std::mutex> lock(m_stateMutex);
-  return m_initialized && m_rtaudio && m_rtaudio->isStreamRunning();
+  return m_initialized && m_outputBackend && m_outputBackend->isRunning();
 }
 
 bool AudioEngine::audioOutputUnavailableForPlayback() const {
@@ -1012,12 +983,12 @@ bool AudioEngine::audioOutputUnavailableForPlayback() const {
   if (!hasPlayable) {
     return false;
   }
-  if (!initialized || !m_rtaudio || !m_rtaudio->isStreamOpen()) {
+  if (!initialized || !m_outputBackend || !m_outputBackend->isOpen()) {
     return true;
   }
   return playing &&
          !m_outputStartPending.load(std::memory_order_acquire) &&
-         !m_rtaudio->isStreamRunning();
+         !m_outputBackend->isRunning();
 }
 
 QString AudioEngine::audioOutputStatusText() const {
@@ -1044,7 +1015,7 @@ QString AudioEngine::audioOutputStatusText() const {
   if (!hasPlayable) {
     return QString();
   }
-  if (!initialized || !m_rtaudio) {
+  if (!initialized || !m_outputBackend) {
     if (deviceCount == 0) {
       return QStringLiteral("Audio output unavailable: no output device");
     }
@@ -1054,12 +1025,18 @@ QString AudioEngine::audioOutputStatusText() const {
     }
     return QStringLiteral("Audio output unavailable: device initialization failed");
   }
-  if (!m_rtaudio->isStreamOpen()) {
+  if (!m_outputBackend->isOpen()) {
+    const QString backendError =
+        QString::fromStdString(m_outputBackend->lastError());
+    if (!backendError.isEmpty()) {
+      return QStringLiteral("Audio output reconnecting: %1")
+          .arg(backendError);
+    }
     return QStringLiteral("Audio output unavailable: stream is not open");
   }
   if (playing &&
       !m_outputStartPending.load(std::memory_order_acquire) &&
-      !m_rtaudio->isStreamRunning()) {
+      !m_outputBackend->isRunning()) {
     if (!deviceInfoError.isEmpty()) {
       return QStringLiteral("Audio output unavailable: %1")
           .arg(deviceInfoError);
@@ -1479,7 +1456,11 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   snapshot[QStringLiteral("audio_output_unavailable")] =
       !audioOutputStatus.isEmpty();
   snapshot[QStringLiteral("audio_output_status")] = audioOutputStatus;
-  if (!m_rtaudio) {
+  snapshot[QStringLiteral("backend_candidates")] = m_audioBackendCandidates;
+  snapshot[QStringLiteral("selected_backend")] = m_selectedAudioBackend;
+  snapshot[QStringLiteral("backend_selection_reason")] =
+      m_audioBackendSelectionReason;
+  if (!m_outputBackend) {
     snapshot[QStringLiteral("api")] = QStringLiteral("none");
     snapshot[QStringLiteral("device_count")] = 0;
     snapshot[QStringLiteral("stream_open")] = false;
@@ -1487,12 +1468,16 @@ QJsonObject AudioEngine::profilingSnapshot() const {
     return snapshot;
   }
 
-  snapshot[QStringLiteral("api")] = QString::fromStdString(
-      rt::audio::RtAudio::getApiName(m_rtaudio->getCurrentApi()));
+  snapshot[QStringLiteral("api")] =
+      QString::fromStdString(m_outputBackend->info().apiName);
   snapshot[QStringLiteral("device_count")] = m_lastKnownDeviceCount;
-  snapshot[QStringLiteral("stream_open")] = m_rtaudio->isStreamOpen();
-  snapshot[QStringLiteral("stream_running")] = m_rtaudio->isStreamRunning();
-  const long streamLatencyFrames = m_rtaudio->getStreamLatency();
+  snapshot[QStringLiteral("stream_open")] = m_outputBackend->isOpen();
+  snapshot[QStringLiteral("stream_running")] = m_outputBackend->isRunning();
+  snapshot[QStringLiteral("connection_revision")] =
+      static_cast<qint64>(m_outputBackend->connectionRevision());
+  snapshot[QStringLiteral("backend_error")] =
+      QString::fromStdString(m_outputBackend->lastError());
+  const int64_t streamLatencyFrames = m_outputBackend->latencyFrames();
   snapshot[QStringLiteral("stream_latency_frames")] =
       static_cast<qint64>(streamLatencyFrames);
   snapshot[QStringLiteral("stream_latency_ms")] = static_cast<qint64>(
@@ -1540,8 +1525,8 @@ int64_t AudioEngine::playbackClockSample() const {
   const qreal playbackRate =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   long latencyFrames = 0;
-  if (m_rtaudio && m_rtaudio->isStreamOpen()) {
-    latencyFrames = m_rtaudio->getStreamLatency();
+  if (m_outputBackend && m_outputBackend->isOpen()) {
+    latencyFrames = m_outputBackend->latencyFrames();
   }
   const int64_t latencyTimelineSamples = qMax<int64_t>(
       0, static_cast<int64_t>(std::llround(
@@ -1555,22 +1540,55 @@ int64_t AudioEngine::currentFrame() const {
 }
 
 void AudioEngine::setAuthoritativeTransportSample(int64_t sample) {
-  m_authoritativeTransportSample.store(qMax<int64_t>(0, sample),
+  const int64_t boundedSample = qMax<int64_t>(0, sample);
+  m_authoritativeTransportSample.store(boundedSample,
                                        std::memory_order_release);
+  if (!m_outputBackend ||
+      !m_outputBackend->supportsSeamlessReprime()) {
+    return;
+  }
+  const uint64_t backendRevision =
+      m_outputBackend->connectionRevision();
+  if (backendRevision == 0) {
+    return;
+  }
+  const uint64_t observedRevision =
+      m_lastObservedBackendConnectionRevision.exchange(
+          backendRevision, std::memory_order_acq_rel);
+  if (backendRevision == observedRevision) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    ++m_mixGeneration;
+    m_timelineSampleCursor = boundedSample;
+    m_audioClockSample.store(boundedSample, std::memory_order_release);
+    m_lastReportedCurrentSample.store(boundedSample,
+                                      std::memory_order_release);
+    m_ringBufferEndSample.store(boundedSample,
+                                std::memory_order_release);
+    m_ringBuffer.clear();
+    scheduleDecodesLocked(m_timelineClips);
+    prioritizeDecodesNearSampleLocked(boundedSample);
+  }
+  m_stateCondition.notify_all();
+  m_decodeCondition.notify_one();
+  m_mixCondition.notify_all();
 }
 
 AudioEngine::AudioFollowerSnapshot AudioEngine::audioFollowerSnapshot() const {
   std::lock_guard<std::mutex> lock(m_stateMutex);
   AudioFollowerSnapshot snapshot;
   snapshot.available =
-      m_initialized && m_rtaudio && m_rtaudio->isStreamRunning();
+      m_initialized && m_outputBackend && m_outputBackend->isRunning();
   const int64_t submittedSample =
       m_audioClockSample.load(std::memory_order_acquire);
   const qreal playbackRate =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   long latencyFrames = 0;
-  if (snapshot.available && m_rtaudio->isStreamOpen()) {
-    latencyFrames = m_rtaudio->getStreamLatency();
+  if (snapshot.available && m_outputBackend->isOpen()) {
+    latencyFrames = m_outputBackend->latencyFrames();
   }
   const int64_t latencyTimelineSamples = qMax<int64_t>(
       0, static_cast<int64_t>(std::llround(
@@ -2349,7 +2367,7 @@ void AudioEngine::requestAudioForTimelineSampleLocked(int64_t timelineSample) {
 
 int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
                                  unsigned int nFrames, double /*streamTime*/,
-                                 rt::audio::RtAudioStreamStatus status,
+                                 unsigned int status,
                                  void *userData) {
   auto *engine = static_cast<AudioEngine *>(userData);
   auto *out = static_cast<int16_t *>(outputBuffer);
@@ -4664,11 +4682,11 @@ void AudioEngine::startOutputStreamIfPrimed() {
           m_outputStartPending.load(std::memory_order_acquire),
           m_ringBuffer.available(),
           primeTargetSamples) ||
-      !m_rtaudio ||
-      !m_rtaudio->isStreamOpen()) {
+      !m_outputBackend ||
+      !m_outputBackend->isOpen()) {
     return;
   }
-  if (m_rtaudio->isStreamRunning()) {
+  if (m_outputBackend->isRunning()) {
     m_outputStartPending.store(false, std::memory_order_release);
     m_outputPrimeCanRebase = false;
     return;
@@ -4683,7 +4701,7 @@ void AudioEngine::startOutputStreamIfPrimed() {
     return;
   }
 
-  const auto error = m_rtaudio->startStream();
+  const bool started = m_outputBackend->start();
   m_outputStartPending.store(false, std::memory_order_release);
   m_outputPrimeCanRebase = false;
   const qint64 primeStartedMs =
@@ -4694,9 +4712,9 @@ void AudioEngine::startOutputStreamIfPrimed() {
             0, QDateTime::currentMSecsSinceEpoch() - primeStartedMs),
         std::memory_order_release);
   }
-  if (error != rt::audio::RTAUDIO_NO_ERROR) {
+  if (!started) {
     m_lastDeviceInfoError =
-        QString::fromStdString(m_rtaudio->getErrorText());
+        QString::fromStdString(m_outputBackend->lastError());
     return;
   }
   m_lastOutputStartTimelineSample.store(outputStartSample,
@@ -4708,11 +4726,12 @@ void AudioEngine::startOutputStreamIfPrimed() {
 
 void AudioEngine::pauseOutputStreamForRefillLocked() {
   m_outputStartPending.store(false, std::memory_order_release);
-  if (m_rtaudio && m_rtaudio->isStreamRunning()) {
-    const auto error = m_rtaudio->abortStream();
-    if (error != rt::audio::RTAUDIO_NO_ERROR) {
+  if (m_outputBackend &&
+      m_outputBackend->isRunning() &&
+      !m_outputBackend->supportsSeamlessReprime()) {
+    if (!m_outputBackend->stop(false)) {
       m_lastDeviceInfoError =
-          QString::fromStdString(m_rtaudio->getErrorText());
+          QString::fromStdString(m_outputBackend->lastError());
     }
   }
   m_outputStartPending.store(

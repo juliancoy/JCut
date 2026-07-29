@@ -142,108 +142,16 @@ QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& cli
     return playbackClips;
 }
 
-bool pointInNormalizedPolygon(const QPointF& p, const QVector<QPointF>& polygon)
-{
-    bool inside = false;
-    for (int i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
-        const QPointF& a = polygon.at(i);
-        const QPointF& b = polygon.at(j);
-        const bool crosses = ((a.y() > p.y()) != (b.y() > p.y())) &&
-            (p.x() < (b.x() - a.x()) * (p.y() - a.y()) / ((b.y() - a.y()) + 1e-12) + a.x());
-        if (crosses) {
-            inside = !inside;
-        }
-    }
-    return inside;
-}
-
-QImage qtImageFromCoreBuffer(
-    const std::shared_ptr<const jcut::core::ImageBuffer>& buffer)
-{
-    if (!buffer || buffer->empty()) {
-        return {};
-    }
-    auto* retained =
-        new std::shared_ptr<const jcut::core::ImageBuffer>(buffer);
-    const QImage::Format format =
-        buffer->format == jcut::core::PixelFormat::Gray8
-            ? QImage::Format_Grayscale8
-            : QImage::Format_RGBA8888;
-    return QImage(
-        buffer->bytes.data(),
-        buffer->size.width,
-        buffer->size.height,
-        buffer->strideBytes,
-        format,
-        [](void* value) {
-            delete static_cast<
-                std::shared_ptr<const jcut::core::ImageBuffer>*>(value);
-        },
-        retained);
-}
-
-std::shared_ptr<const jcut::core::ImageBuffer> coreBufferFromQtImage(
-    const QImage& image)
-{
-    const QImage gray =
-        image.convertToFormat(QImage::Format_Grayscale8);
-    if (gray.isNull()) {
-        return {};
-    }
-    auto result = std::make_shared<jcut::core::ImageBuffer>();
-    result->format = jcut::core::PixelFormat::Gray8;
-    result->size = {gray.width(), gray.height()};
-    result->strideBytes = gray.width();
-    result->bytes.resize(
-        static_cast<std::size_t>(result->strideBytes) *
-        static_cast<std::size_t>(gray.height()));
-    for (int y = 0; y < gray.height(); ++y) {
-        std::memcpy(
-            result->bytes.data() +
-                static_cast<std::size_t>(y) * result->strideBytes,
-            gray.constScanLine(y),
-            static_cast<std::size_t>(result->strideBytes));
-    }
-    return result;
-}
-
-QImage applyCorrectionMasksToCpuImage(const QImage& source,
-                                      const QVector<TimelineClip::CorrectionPolygon>& polygons)
-{
-    if (source.isNull() || polygons.isEmpty()) {
-        return source;
-    }
-    QImage masked = source.convertToFormat(QImage::Format_ARGB32);
-    const qreal invW = 1.0 / qMax(1, masked.width());
-    const qreal invH = 1.0 / qMax(1, masked.height());
-    for (int y = 0; y < masked.height(); ++y) {
-        QRgb* row = reinterpret_cast<QRgb*>(masked.scanLine(y));
-        for (int x = 0; x < masked.width(); ++x) {
-            const QPointF p((x + 0.5) * invW, (y + 0.5) * invH);
-            bool erased = false;
-            for (const TimelineClip::CorrectionPolygon& polygon : polygons) {
-                if (polygon.enabled && pointInNormalizedPolygon(p, polygon.pointsNormalized)) {
-                    erased = true;
-                    break;
-                }
-            }
-            if (erased) {
-                row[x] = qRgba(qRed(row[x]), qGreen(row[x]), qBlue(row[x]), 0);
-            }
-        }
-    }
-    return masked.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-}
-
 VulkanPreviewClipFrameStatus maskChildStatusFromParentMediaAndTiming(
     const VulkanPreviewClipFrameStatus& parent)
 {
     VulkanPreviewClipFrameStatus child;
+    static_cast<render_detail::VulkanRenderLayerPacket&>(child) =
+        static_cast<const render_detail::VulkanRenderLayerPacket&>(parent);
     child.decodePath = parent.decodePath;
     child.frameSelection = parent.frameSelection;
     child.requestedSourceFrame = parent.requestedSourceFrame;
     child.presentedSourceFrame = parent.presentedSourceFrame;
-    child.frameSize = parent.frameSize;
     child.active = parent.active;
     child.exact = parent.exact;
     child.hasFrame = parent.hasFrame;
@@ -255,11 +163,7 @@ VulkanPreviewClipFrameStatus maskChildStatusFromParentMediaAndTiming(
     child.staleFrameRejected = parent.staleFrameRejected;
     child.upToDate = parent.upToDate;
     child.currentFrameFailure = parent.currentFrameFailure;
-    child.targetRect = parent.targetRect;
-    child.fittedRect = parent.fittedRect;
-    child.transform = parent.transform;
     child.visualTimelineFramePosition = parent.visualTimelineFramePosition;
-    child.frame = parent.frame;
     child.frameCrossfadeActive = parent.frameCrossfadeActive;
     child.frameCrossfadeTimelineFrame = parent.frameCrossfadeTimelineFrame;
     child.frameCrossfadeRequestedSourceFrame =
@@ -337,6 +241,16 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
             [this](const QString& clipId, qreal xNorm, qreal yNorm) {
                 if (correctionPointRequested) {
                     correctionPointRequested(clipId, xNorm, yNorm);
+                }
+            },
+            [this](const QString& clipId,
+                   int64_t sourceFrame,
+                   int64_t sourcePresentationTimestamp,
+                   qreal xNorm,
+                   qreal yNorm) {
+                if (maskFuzzyRemovePointRequested) {
+                    maskFuzzyRemovePointRequested(
+                        clipId, sourceFrame, sourcePresentationTimestamp, xNorm, yNorm);
                 }
             },
             [this](const QString& clipId, qreal xNorm, qreal yNorm) {
@@ -1180,6 +1094,12 @@ void VulkanPreviewSurface::setCorrectionDrawMode(bool enabled)
 bool VulkanPreviewSurface::correctionDrawMode() const
 {
     return m_interaction.correctionDrawMode;
+}
+
+void VulkanPreviewSurface::setMaskFuzzyRemoveMode(bool enabled)
+{
+    m_interaction.maskFuzzyRemoveMode = enabled;
+    requestNativeUpdate();
 }
 
 bool VulkanPreviewSurface::transcriptOverlayInteractionEnabled() const
@@ -2125,7 +2045,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (!m_correctionsEnabled) {
             effects.correctionPolygons.clear();
         }
-        status.grading = effects.grading;
+        status.setGrading(effects.grading);
         status.maskFeather = effects.maskFeather;
         status.maskFeatherGamma = effects.maskFeatherGamma;
         status.maskFeatherFalloff = effects.maskFeatherFalloff;
@@ -2133,11 +2053,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.maskErode = clip.maskErode;
         status.maskDilate = clip.maskDilate;
         status.maskBlur = clip.maskBlur;
-        status.correctionPolygonCount = effects.correctionPolygons.size();
-        status.correctionPolygons = effects.correctionPolygons;
+        status.setCorrectionPolygons(effects.correctionPolygons);
         status.correctionsApplied = false;
         status.correctionsSupported = status.correctionPolygonCount == 0;
-        status.curveLutApplied = gradingUsesCurveLut(effects.grading);
         status.curveLutSupported = true;
         status.gradingShaderActive = true;
         if (effects.grading.opacity <= 0.0001) {
@@ -2165,9 +2083,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 (generatedMaskMatte || clip.maskShowOnly ||
                  clip.maskForegroundLayerEnabled || clip.maskRepeatEnabled);
             if (gpuMaskEnabled) {
-                const auto mask = rawClipMaskBuffer(clip, status.frame);
+                QString maskIdentity;
+                const auto mask =
+                    rawClipMaskBuffer(clip, status.frame, &maskIdentity);
                 if (mask && !mask->empty()) {
                     status.maskBuffer = mask;
+                    status.maskSourceSize =
+                        QSize(mask->size.width, mask->size.height);
+                    status.maskIdentity = maskIdentity;
                     status.maskTextureEnabled = true;
                     status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
@@ -2179,22 +2102,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskDropShadowOffsetX = clip.maskDropShadowOffsetX;
                     status.maskDropShadowOffsetY = clip.maskDropShadowOffsetY;
                     status.maskDropShadowOpacity = clip.maskDropShadowOpacity;
-                    status.maskGradeBrightness = clip.maskGradeBrightness;
-                    status.maskGradeContrast = clip.maskGradeContrast;
-                    status.maskGradeSaturation = clip.maskGradeSaturation;
-                    status.maskGrade = maskGradeForClip(clip);
-                    status.maskCurveLutApplied = gradingUsesCurveLut(status.maskGrade);
+                    status.setMaskGrade(maskGradeForClip(clip));
                     if (status.correctionPolygonCount > 0) {
                         status.correctionsApplied = true;
                         status.correctionsSupported = true;
                     }
                     if (generatedMaskMatte) {
                         status.maskGradeEnabled = true;
-                        status.maskGrade = effects.grading;
-                        status.maskGradeBrightness = effects.grading.brightness;
-                        status.maskGradeContrast = effects.grading.contrast;
-                        status.maskGradeSaturation = effects.grading.saturation;
-                        status.maskCurveLutApplied = gradingUsesCurveLut(effects.grading);
+                        status.setMaskGrade(effects.grading);
                     }
                 }
             }
@@ -2216,12 +2131,58 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             hardwareCount += status.hardwareFrame ? 1 : 0;
             cpuCount += status.cpuImage ? 1 : 0;
             const TimelineClip effectClip =
+                clipWithResolvedTimingOwner(
                 evaluateClipEffectAnimationAtPosition(
                     clipWithRenderableEffectSettings(
                         clip, m_interaction.tracks),
                     visualFramePosition,
                     m_interaction.renderSyncMarkers,
-                    m_interaction.playbackTiming);
+                    m_interaction.playbackTiming),
+                m_interaction.clips);
+            const QSize renderOutputSize = m_interaction.outputSize.isValid()
+                ? m_interaction.outputSize
+                : status.frameSize;
+            const QRectF renderOutputRect(
+                QPointF(0.0, 0.0), QSizeF(renderOutputSize));
+            const QRectF renderFitted =
+                render_detail::fitRectF(status.frameSize, renderOutputSize);
+            const PreviewClipGeometry renderGeometry =
+                PreviewViewTransform::clipGeometry(
+                    renderFitted,
+                    QPointF(1.0, 1.0),
+                    QPointF(status.transform.translationX,
+                            status.transform.translationY),
+                    status.transform.rotation,
+                    QPointF(status.transform.scaleX,
+                            status.transform.scaleY));
+            TimelineClip foregroundEffectClip = effectClip;
+            if (effectClip.edgeFillEffect ==
+                    BackgroundFillEffect::ProgressiveEdgeStretch ||
+                effectClip.edgeFillEffect ==
+                    BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch) {
+                foregroundEffectClip.effectPreset = ClipEffectPreset::None;
+                foregroundEffectClip.maskRepeatEnabled = false;
+            }
+            const QRectF effectBounds =
+                (foregroundEffectClip.effectPreset ==
+                     ClipEffectPreset::SourceTile ||
+                 foregroundEffectClip.maskRepeatEnabled)
+                    ? renderGeometry.bounds.intersected(renderOutputRect)
+                    : renderOutputRect;
+            status.targetRect = renderOutputRect;
+            status.fittedRect = renderFitted;
+            status.effectPlan = render_detail::vulkanEffectPipelinePlan(
+                foregroundEffectClip,
+                effectBounds,
+                status.frameSize,
+                visualFramePosition,
+                render_detail::clipEffectPlaybackFramePosition(
+                    foregroundEffectClip,
+                    m_interaction.clips,
+                    m_interaction.currentFramePosition,
+                    m_interaction.playbackTiming,
+                    m_interaction.tracks),
+                m_interaction.playbackTiming);
             auto auxiliaryFrame = [&](int64_t frameNumber) {
                 FrameHandle result = usePlaybackPipeline
                     ? m_playbackPipeline->getFrame(clip.id, frameNumber)
@@ -2277,7 +2238,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     if (gpuMaskEnabled) {
                         status.frameCrossfadeMaskBuffer = rawClipMaskBuffer(
                             clip,
-                            status.frameCrossfadeFrame);
+                            status.frameCrossfadeFrame,
+                            &status.frameCrossfadeMaskIdentity);
                         status.frameCrossfadeMaskTextureEnabled =
                             status.frameCrossfadeMaskBuffer &&
                             !status.frameCrossfadeMaskBuffer->empty();
@@ -2343,14 +2305,23 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.effectsOwnerClipId = clip.id;
                     markerStatus.matteOwnerClipId = clip.id;
                     markerStatus.maskBuffer = rawClipMaskBuffer(
-                        clip, markerStatus.frame);
+                        clip,
+                        markerStatus.frame,
+                        &markerStatus.maskIdentity);
+                    if (markerStatus.maskBuffer) {
+                        markerStatus.maskSourceSize = QSize(
+                            markerStatus.maskBuffer->size.width,
+                            markerStatus.maskBuffer->size.height);
+                    }
                     markerStatus.maskTextureEnabled =
                         markerStatus.maskBuffer &&
                         !markerStatus.maskBuffer->empty();
-                    markerStatus.frameCrossfadeMaskBuffer = markerStatus.frameCrossfadeActive
+                    markerStatus.frameCrossfadeMaskBuffer =
+                        markerStatus.frameCrossfadeActive
                         ? rawClipMaskBuffer(
                               clip,
-                              markerStatus.frameCrossfadeFrame)
+                              markerStatus.frameCrossfadeFrame,
+                              &markerStatus.frameCrossfadeMaskIdentity)
                         : std::shared_ptr<const jcut::core::ImageBuffer>{};
                     markerStatus.frameCrossfadeMaskTextureEnabled =
                         markerStatus.frameCrossfadeMaskBuffer &&
@@ -2399,11 +2370,57 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.gradingBypassed =
                         m_bypassGrading ||
                         !gradingPreviewEnabledForTrack(clip, m_interaction.tracks);
-                    markerStatus.grading = matteEffects.grading;
-                    markerStatus.curveLutApplied = gradingUsesCurveLut(matteEffects.grading);
-                    markerStatus.correctionPolygonCount = matteEffects.correctionPolygons.size();
-                    markerStatus.correctionPolygons =
-                        matteEffects.correctionPolygons;
+                    markerStatus.setGrading(matteEffects.grading);
+                    markerStatus.setCorrectionPolygons(
+                        matteEffects.correctionPolygons);
+                    const TimelineClip matteEffectClip =
+                        clipWithResolvedTimingOwner(
+                            evaluateClipEffectAnimationAtPosition(
+                                clipWithRenderableEffectSettings(
+                                    clip, m_interaction.tracks),
+                                visualFramePosition,
+                                m_interaction.renderSyncMarkers,
+                                m_interaction.playbackTiming),
+                            m_interaction.clips);
+                    const QSize renderOutputSize =
+                        m_interaction.outputSize.isValid()
+                            ? m_interaction.outputSize
+                            : markerStatus.frameSize;
+                    const QRectF renderOutputRect(
+                        QPointF(0.0, 0.0), QSizeF(renderOutputSize));
+                    const QRectF renderFitted = render_detail::fitRectF(
+                        markerStatus.frameSize, renderOutputSize);
+                    const PreviewClipGeometry renderGeometry =
+                        PreviewViewTransform::clipGeometry(
+                            renderFitted,
+                            QPointF(1.0, 1.0),
+                            QPointF(markerStatus.transform.translationX,
+                                    markerStatus.transform.translationY),
+                            markerStatus.transform.rotation,
+                            QPointF(markerStatus.transform.scaleX,
+                                    markerStatus.transform.scaleY));
+                    const QRectF effectBounds =
+                        (matteEffectClip.effectPreset ==
+                             ClipEffectPreset::SourceTile ||
+                         matteEffectClip.maskRepeatEnabled)
+                            ? renderGeometry.bounds.intersected(
+                                  renderOutputRect)
+                            : renderOutputRect;
+                    markerStatus.targetRect = renderOutputRect;
+                    markerStatus.fittedRect = renderFitted;
+                    markerStatus.effectPlan =
+                        render_detail::vulkanEffectPipelinePlan(
+                            matteEffectClip,
+                            effectBounds,
+                            markerStatus.frameSize,
+                            visualFramePosition,
+                            render_detail::clipEffectPlaybackFramePosition(
+                                matteEffectClip,
+                                m_interaction.clips,
+                                m_interaction.currentFramePosition,
+                                m_interaction.playbackTiming,
+                                m_interaction.tracks),
+                            m_interaction.playbackTiming);
                     markerStatus.correctionsApplied = false;
                     markerStatus.correctionsSupported =
                         markerStatus.correctionPolygonCount == 0 ||
@@ -2424,11 +2441,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     // matte's standard grading model through that shader's
                     // grade inputs. The linked source layer remains unchanged.
                     markerStatus.maskGradeEnabled = true;
-                    markerStatus.maskGrade = matteEffects.grading;
-                    markerStatus.maskGradeBrightness = matteEffects.grading.brightness;
-                    markerStatus.maskGradeContrast = matteEffects.grading.contrast;
-                    markerStatus.maskGradeSaturation = matteEffects.grading.saturation;
-                    markerStatus.maskCurveLutApplied = gradingUsesCurveLut(matteEffects.grading);
+                    markerStatus.setMaskGrade(matteEffects.grading);
                     markerStatus.maskFeather = matteEffects.maskFeather;
                     markerStatus.maskFeatherGamma = matteEffects.maskFeatherGamma;
                     markerStatus.maskFeatherFalloff = matteEffects.maskFeatherFalloff;
@@ -3134,7 +3147,9 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      .arg(status.effectsPath)
                      .arg(status.grading.opacity)
                      .arg(status.gradingBypassed ? QStringLiteral("yes") : QStringLiteral("no"))
-                     .arg(status.curveLutApplied ? QStringLiteral("yes") : QStringLiteral("no")),
+                     .arg(status.gradePayload.curveLutApplied
+                              ? QStringLiteral("yes")
+                              : QStringLiteral("no")),
                  previewImage,
                  QStringLiteral("effects"),
                  true,
@@ -3144,7 +3159,8 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("effects_path"), status.effectsPath},
                      {QStringLiteral("opacity"), status.grading.opacity},
                      {QStringLiteral("grading_bypassed"), status.gradingBypassed},
-                     {QStringLiteral("curve_lut_applied"), status.curveLutApplied},
+                     {QStringLiteral("curve_lut_applied"),
+                      status.gradePayload.curveLutApplied},
                      {QStringLiteral("thumbnail_source"), previewImage.isNull()
                           ? QStringLiteral("pending_gpu_diagnostic_readback")
                           : QStringLiteral("gpu_diagnostic_readback")}

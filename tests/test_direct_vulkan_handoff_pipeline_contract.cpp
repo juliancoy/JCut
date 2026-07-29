@@ -110,6 +110,8 @@ QString readSourceFiles(const QStringList &relativePaths) {
 void TestDirectVulkanHandoffPipelineContract::maskChildrenUseExplicitOwners() {
   const QString statusHeader =
       readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  const QString sharedHeader =
+      readSourceFile(QStringLiteral("render_vulkan_shared.h"));
   const QString surface =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   const QString preview =
@@ -117,11 +119,15 @@ void TestDirectVulkanHandoffPipelineContract::maskChildrenUseExplicitOwners() {
   const QString exportBackend =
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
 
-  QVERIFY2(statusHeader.contains(QStringLiteral("QString mediaOwnerClipId")) &&
-               statusHeader.contains(QStringLiteral("QString timingOwnerClipId")) &&
-               statusHeader.contains(QStringLiteral("QString effectsOwnerClipId")) &&
-               statusHeader.contains(QStringLiteral("QString matteOwnerClipId")),
-           "preview status must name every mask-child owner explicitly");
+  QVERIFY2(
+      statusHeader.contains(QStringLiteral(
+          "public render_detail::VulkanRenderLayerPacket")) &&
+          sharedHeader.contains(QStringLiteral("QString mediaOwnerClipId")) &&
+          sharedHeader.contains(QStringLiteral("QString timingOwnerClipId")) &&
+          sharedHeader.contains(QStringLiteral("QString effectsOwnerClipId")) &&
+          sharedHeader.contains(QStringLiteral("QString matteOwnerClipId")),
+      "preview status must inherit every explicit mask-child owner from the "
+      "shared Vulkan layer packet");
   QVERIFY2(surface.contains(QStringLiteral("markerStatus.mediaOwnerClipId = sourceId")) &&
                surface.contains(QStringLiteral("markerStatus.timingOwnerClipId = sourceId")) &&
                surface.contains(QStringLiteral("markerStatus.effectsOwnerClipId = clip.id")) &&
@@ -410,9 +416,11 @@ void TestDirectVulkanHandoffPipelineContract::
            "preview must not clone or composite a Mask Matte status when its "
            "generated child track or clip visibility is disabled");
   QVERIFY2(previewSurface.contains(QStringLiteral(
-               "status.correctionPolygons = effects.correctionPolygons")) &&
+               "status.setCorrectionPolygons(effects.correctionPolygons)")) &&
                previewSurface.contains(QStringLiteral(
-                   "markerStatus.correctionPolygons = effects.correctionPolygons")) &&
+                   "markerStatus.setCorrectionPolygons(")) &&
+               previewSurface.contains(QStringLiteral(
+                   "matteEffects.correctionPolygons")) &&
                !previewSurface.contains(QStringLiteral(
                    "applyCorrectionPolygonsToMaskBuffer")) &&
                !previewSurface.contains(QStringLiteral(
@@ -421,6 +429,14 @@ void TestDirectVulkanHandoffPipelineContract::
            "the shared Gray8 buffer in direct Vulkan preview");
   const QString previewState =
       readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  QVERIFY2(previewState.contains(QStringLiteral(
+               "public render_detail::VulkanRenderLayerPacket")) &&
+               previewSurface.contains(QStringLiteral(
+                   "status.effectPlan =")) &&
+               source.contains(QStringLiteral(
+                   "status->effectPlan")),
+           "preview status construction and drawing must consume the shared "
+           "canonical Vulkan layer packet, including generated draw passes");
   QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskBuffer")) &&
                previewState.contains(QStringLiteral(
                    "frameCrossfadeMaskTextureEnabled")) &&
@@ -1300,9 +1316,11 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!previewSurface.isEmpty(),
            "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(previewSurface.contains(
-               QStringLiteral("rawClipMaskBuffer(clip, status.frame)")) &&
+               QStringLiteral("rawClipMaskBuffer(")) &&
                previewSurface.contains(
-                   QStringLiteral("clip, markerStatus.frame")) &&
+                   QStringLiteral("clip, status.frame, &maskIdentity")) &&
+               previewSurface.contains(
+                   QStringLiteral("&markerStatus.maskIdentity")) &&
                previewSurface.contains(
                    QStringLiteral("clip,\n                            status.frameCrossfadeFrame")) &&
                !previewSurface.contains(QStringLiteral("maskFrameMatchesPresentedFrame")),
@@ -3232,7 +3250,7 @@ void TestDirectVulkanHandoffPipelineContract::
                preview.contains(QStringLiteral("drawMaskShadow")) &&
                preview.contains(QStringLiteral("kVulkanEffectModeMaskShadow")),
            "live Vulkan preview must propagate and draw mask-shadow controls");
-  QVERIFY2(exportBackend.contains(QStringLiteral("maskDropShadowDraw")) &&
+  QVERIFY2(exportBackend.contains(QStringLiteral("maskDropShadowEnabled")) &&
                exportBackend.contains(QStringLiteral("kVulkanEffectModeMaskShadow")) &&
                exportBackend.contains(QStringLiteral("packedMaskFalloff")),
            "Vulkan export must render the same shadow and continuous-alpha falloff as preview");
@@ -3495,11 +3513,15 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!renderInternal.isEmpty(), "render_internal.h must be readable");
   QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(
-      window.contains(QStringLiteral("status ? status->visualTimelineFramePosition : state->currentFramePosition")) &&
-          window.contains(QStringLiteral("state->currentFramePosition")) &&
-          window.contains(QStringLiteral("clipEffectPlaybackFramePosition(")),
+      window.contains(QStringLiteral("status->effectPlan")) &&
+          surface.contains(QStringLiteral("status.effectPlan =")) &&
+          surface.contains(QStringLiteral("visualFramePosition")) &&
+          surface.contains(QStringLiteral(
+              "m_interaction.currentFramePosition")) &&
+          surface.contains(QStringLiteral("clipEffectPlaybackFramePosition(")),
       "direct preview must sample video from the visual speed-through frame "
-      "while driving generated effect motion from the raw speech-filter clock");
+      "while the shared generated-pass plan is driven from the raw "
+      "speech-filter clock");
   QVERIFY2(
       surface.contains(QStringLiteral("const qreal transformFramePosition = frameClocks.visualTimelineFrame")) &&
           surface.contains(QStringLiteral("transformFramePosition,\n            m_interaction.renderSyncMarkers")) &&
@@ -4239,9 +4261,13 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("vulkan_text_renderer.cpp"));
   const QString vulkanResources =
       readSourceFile(QStringLiteral("vulkan_resources.cpp"));
+  const QString maskPreprocessor =
+      readSourceFile(QStringLiteral("vulkan_mask_preprocessor.cpp"));
+  const QString sharedRender =
+      readSourceFile(QStringLiteral("render_vulkan_shared.cpp"));
 
   QVERIFY2(backend.contains(QStringLiteral(
-               "rawClipMaskBuffer(matteOwner, frame)")) &&
+               "rawClipMaskBuffer(matteOwner, frame, &maskIdentity)")) &&
                exportSource.contains(QStringLiteral(
                    "renderedFrame.failureReason.trimmed()")) &&
                exportSource.contains(QStringLiteral(
@@ -4261,11 +4287,15 @@ void TestDirectVulkanHandoffPipelineContract::
                vulkanResources.contains(QStringLiteral(
                    "overlay_staging_write_failed")) &&
                backend.contains(QStringLiteral(
-                   "rawClipMaskBufferBlocking(matteOwner, frame)")) &&
+                   "rawClipMaskBufferBlocking(")) &&
                backend.contains(QStringLiteral(
+                   "matteOwner, frame, &maskIdentity")) &&
+               sharedRender.contains(QStringLiteral(
                    "vulkanMaskCorrectionStorageData")) &&
-               backend.contains(QStringLiteral(
+               maskPreprocessor.contains(QStringLiteral(
                    "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
+               backend.contains(QStringLiteral(
+                   "m_maskPreprocessor.record(")) &&
                !backend.contains(QStringLiteral(
                    "applyCorrectionPolygonsToMaskBuffer")) &&
                !backend.contains(QStringLiteral(

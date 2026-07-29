@@ -1904,6 +1904,10 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskSidecarCombo(),
             m_inspectorPane->maskBrowseButton(),
             m_inspectorPane->maskNewPromptButton(),
+            m_inspectorPane->maskFuzzyRemoveButton(),
+            m_inspectorPane->maskFuzzySpatialReachSpin(),
+            m_inspectorPane->maskFuzzyTemporalReachSpin(),
+            m_inspectorPane->maskFuzzyStatusLabel(),
             m_inspectorPane->maskZLevelSpin(),
             m_inspectorPane->maskShapeFeatherSpin(),
             m_inspectorPane->maskShapeFeatherFalloffCombo(),
@@ -1981,6 +1985,9 @@ void EditorWindow::createMaskTab()
                 return index >= 0 &&
                        m_inspectorPane->tabs()->tabText(index).compare(
                            QStringLiteral("Masks"), Qt::CaseInsensitive) == 0;
+            },
+            [this](bool enabled) {
+                if (m_preview) m_preview->setMaskFuzzyRemoveMode(enabled);
             }});
     m_maskTab->wire();
 }

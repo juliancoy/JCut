@@ -395,10 +395,14 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
              "export must use the shared output-time timing helper");
     QVERIFY2(source.contains(QStringLiteral("exportFrameTiming.timelineFramePosition")),
              "export must pass the helper's explicit fractional timeline position through to rendering");
-    static const QRegularExpression fractionalRenderCall(
-        QStringLiteral("activeRenderer->renderFrameToOutput\\s*\\(\\s*request\\s*,\\s*timelineFramePosition"));
-    QVERIFY2(fractionalRenderCall.match(source).hasMatch(),
-             "Vulkan export must render the fractional timeline position, not the floored edit frame");
+    QVERIFY2(source.contains(QStringLiteral(
+                 "playbackTimelineFrameClocks(timelineFramePosition")) &&
+                 source.contains(QStringLiteral(
+                     "activeRenderer->renderFrameToOutput(request,")) &&
+                 source.contains(QStringLiteral(
+                     "frameClocks.visualTimelineFrame")),
+             "Vulkan export must derive the renderer's visual clock from the "
+             "fractional timeline position, not the floored edit frame");
     QVERIFY2(!source.contains(QStringLiteral("renderTimelineFrameToOutput(request,")),
              "export must not contain the removed CPU render fallback path");
     QVERIFY2(!source.contains(QStringLiteral("renderTranscriptOverlay(")),
@@ -410,6 +414,20 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     QVERIFY2(vulkanFile.open(QIODevice::ReadOnly),
              "offscreen_vulkan_renderer_backend.cpp must be readable");
     const QString vulkanSource = QString::fromUtf8(vulkanFile.readAll());
+    QFile sharedRenderFile(
+        QStringLiteral(JCUT_SOURCE_DIR) +
+        QStringLiteral("/render_vulkan_shared.cpp"));
+    QVERIFY2(sharedRenderFile.open(QIODevice::ReadOnly),
+             "render_vulkan_shared.cpp must be readable");
+    const QString sharedRenderSource =
+        QString::fromUtf8(sharedRenderFile.readAll());
+    QFile maskPreprocessorFile(
+        QStringLiteral(JCUT_SOURCE_DIR) +
+        QStringLiteral("/vulkan_mask_preprocessor.cpp"));
+    QVERIFY2(maskPreprocessorFile.open(QIODevice::ReadOnly),
+             "vulkan_mask_preprocessor.cpp must be readable");
+    const QString maskPreprocessorSource =
+        QString::fromUtf8(maskPreprocessorFile.readAll());
     QVERIFY2(vulkanSource.contains(QStringLiteral(
                  "if (!frameContext.externalVulkanOutput)")) &&
                  vulkanSource.contains(QStringLiteral(
@@ -418,7 +436,7 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     QVERIFY2(!vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
                  vulkanSource.contains(QStringLiteral("textInputs.title3D.push_back(title)")),
              "All titles must use the Vulkan text path, including GPU-only export");
-    QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frameHandle, false")) &&
+    QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frame, false")) &&
                  vulkanSource.contains(QStringLiteral("return false;\n        }\n      }\n      QImage rgba")),
              "GPU-output render path must not fall back to CPU image uploads when hardware handoff fails");
     QVERIFY2(vulkanSource.contains(QStringLiteral(
@@ -426,10 +444,12 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
                  vulkanSource.contains(QStringLiteral(
                      "timingSource.clipRole != ClipRole::Media")),
              "export must fail closed for orphaned mattes and unsupported parent roles");
-    QVERIFY2(vulkanSource.contains(QStringLiteral(
+    QVERIFY2(sharedRenderSource.contains(QStringLiteral(
                  "vulkanMaskCorrectionStorageData")) &&
-                 vulkanSource.contains(QStringLiteral(
+                 maskPreprocessorSource.contains(QStringLiteral(
                      "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
+                 vulkanSource.contains(QStringLiteral(
+                     "m_maskPreprocessor.record(")) &&
                  !vulkanSource.contains(QStringLiteral(
                      "applyCorrectionPolygonsToMaskBuffer")) &&
                  !vulkanSource.contains(QStringLiteral(

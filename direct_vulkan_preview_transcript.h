@@ -10,12 +10,9 @@
 
 namespace jcut::direct_vulkan_preview {
 
-struct PreparedTranscriptOverlay {
-    TimelineClip clip;
-    TranscriptOverlayLayout layout;
-    QRectF outputRect;
+struct PreparedTranscriptOverlay
+    : public render_detail::VulkanRenderTranscriptInput {
     QRectF bounds;
-    QString speakerTitle;
     bool ready = false;
 };
 

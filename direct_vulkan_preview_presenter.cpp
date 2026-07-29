@@ -593,6 +593,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     std::function<void(const QString&, qreal, qreal, qreal, qreal, bool)> transformRequested,
     std::function<void(int64_t)> playbackSampleRequested,
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested,
+    std::function<void(const QString&, int64_t, int64_t, qreal, qreal)> maskFuzzyRemovePointRequested,
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested,
@@ -610,6 +611,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
         std::move(transformRequested),
         std::move(playbackSampleRequested),
         std::move(correctionPointRequested),
+        std::move(maskFuzzyRemovePointRequested),
         std::move(speakerPointRequested),
         std::move(speakerBoxRequested),
         std::move(faceStreamBoxRequested),
@@ -1040,7 +1042,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             hasTimelineFrameGeometry = hasTimelineFrameGeometry || status.frameSize.isValid();
             correctionsSupported = correctionsSupported || status.correctionsSupported;
             correctionsApplied = correctionsApplied || status.correctionsApplied;
-            curveLutApplied = curveLutApplied || status.curveLutApplied;
+            curveLutApplied =
+                curveLutApplied || status.gradePayload.curveLutApplied;
             statusDetails.append(QJsonObject{
                 {QStringLiteral("clip_id"), status.clipId},
                 {QStringLiteral("media_owner_clip_id"), status.mediaOwnerClipId},
@@ -1073,8 +1076,10 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                 {QStringLiteral("mask_foreground_layer_enabled"), status.maskForegroundLayerEnabled},
                 {QStringLiteral("mask_clip_source"), status.maskClipSource},
                 {QStringLiteral("mask_grade_enabled"), status.maskGradeEnabled},
-                {QStringLiteral("mask_grade_contrast"), status.maskGradeContrast},
-                {QStringLiteral("mask_grade_saturation"), status.maskGradeSaturation},
+                {QStringLiteral("mask_grade_contrast"),
+                 status.maskGradePayload.effects.contrast},
+                {QStringLiteral("mask_grade_saturation"),
+                 status.maskGradePayload.effects.saturation},
                 {QStringLiteral("effects_path"), status.effectsPath},
                 {QStringLiteral("grading_shader_active"), status.gradingShaderActive},
                 {QStringLiteral("grading_bypassed"), status.gradingBypassed},
@@ -1097,7 +1102,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                 {QStringLiteral("vulkan_correction_masks_supported"), status.correctionsSupported},
                 {QStringLiteral("vulkan_correction_masks_applied"), status.correctionsApplied},
                 {QStringLiteral("vulkan_curve_lut_supported"), status.curveLutSupported},
-                {QStringLiteral("vulkan_curve_lut_applied"), status.curveLutApplied},
+                {QStringLiteral("vulkan_curve_lut_applied"),
+                 status.gradePayload.curveLutApplied},
                 {QStringLiteral("frame_size"), status.frameSize.isValid()
                      ? QStringLiteral("%1x%2").arg(status.frameSize.width()).arg(status.frameSize.height())
                      : QString()},

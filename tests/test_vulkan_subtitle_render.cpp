@@ -617,6 +617,10 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
     markerClip.videoEnabled = true;
     markerClip.maskForegroundLayerEnabled = false;
     markerClip.trackIndex = 2;
+    TimelineClip::CorrectionPolygon correction;
+    correction.pointsNormalized = {
+        {0.38, 0.27}, {0.41, 0.27}, {0.41, 0.38}, {0.38, 0.38}};
+    markerClip.correctionPolygons = {correction};
     QImage loadedMask;
     QTRY_VERIFY_WITH_TIMEOUT(
         !(loadedMask = rawClipMaskImage(markerClip, 0)).isNull(),
@@ -663,6 +667,7 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
 
     const QColor backgroundPixel = rendered.pixelColor(8, 8);
     const QColor foregroundPixel = rendered.pixelColor(40, 40);
+    const QColor correctionPixel = rendered.pixelColor(50, 40);
     const QColor softAlphaPixel = rendered.pixelColor(54, 40);
     const QColor shadowPixel = rendered.pixelColor(68, 40);
     QVERIFY2(backgroundPixel.red() > 245 && backgroundPixel.green() > 245,
@@ -672,6 +677,14 @@ void TestVulkanSubtitleRender::testOffscreenVulkanContinuousMaskOpacityAndShadow
              qPrintable(QStringLiteral("mask opacity did not blend foreground: %1,%2,%3")
                             .arg(foregroundPixel.red()).arg(foregroundPixel.green())
                             .arg(foregroundPixel.blue())));
+    QVERIFY2(correctionPixel.red() > 245 &&
+                 correctionPixel.green() > 245 &&
+                 correctionPixel.blue() > 245,
+             qPrintable(QStringLiteral(
+                            "GPU correction polygon did not erase the mask: %1,%2,%3")
+                            .arg(correctionPixel.red())
+                            .arg(correctionPixel.green())
+                            .arg(correctionPixel.blue())));
     QVERIFY2(softAlphaPixel.red() > 235 &&
                  softAlphaPixel.green() > 175 && softAlphaPixel.green() < 225,
              qPrintable(QStringLiteral("continuous alpha was quantized: %1,%2,%3")

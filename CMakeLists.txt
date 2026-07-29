@@ -165,6 +165,13 @@ pkg_check_modules(FONT_RENDER REQUIRED IMPORTED_TARGET
     fontconfig
     freetype2
 )
+set(JCUT_HAVE_PIPEWIRE 0)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3>=0.3)
+    if(TARGET PkgConfig::PIPEWIRE)
+        set(JCUT_HAVE_PIPEWIRE 1)
+    endif()
+endif()
 set(JCUT_HAVE_RUBBERBAND 0)
 if(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH)
     pkg_check_modules(RUBBERBAND QUIET IMPORTED_TARGET rubberband>=3.0.0)
@@ -231,6 +238,33 @@ endif()
 
 set(RTAUDIO_TARGETNAME_UNINSTALL "rtaudio_uninstall" CACHE STRING "" FORCE)
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
+
+add_library(jcut_audio_output_backend STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_output_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/capabilities_detector.cpp
+)
+set_target_properties(jcut_audio_output_backend PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_audio_output_backend
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/rtaudio
+)
+target_link_libraries(jcut_audio_output_backend
+    PUBLIC
+        Threads::Threads
+        rtaudio
+)
+target_compile_definitions(jcut_audio_output_backend
+    PUBLIC
+        JCUT_HAVE_PIPEWIRE=${JCUT_HAVE_PIPEWIRE}
+)
+if(TARGET PkgConfig::PIPEWIRE)
+    target_link_libraries(jcut_audio_output_backend PRIVATE PkgConfig::PIPEWIRE)
+endif()
 set(JCUT_SUPABASE_URL "https://ivwutugdrpugjqglxabw.supabase.co" CACHE STRING
     "Default Supabase project URL for desktop auth.")
 set(JCUT_SUPABASE_ANON_KEY
@@ -357,6 +391,8 @@ set(EDITOR_EXCLUDED_REGEX
     # Built once in Qt-free shared services and reused by the Qt and ImGui paths.
     ".*/audio_time_stretch_core\\.cpp$"
     ".*/audio_dynamics_core\\.cpp$"
+    ".*/audio_output_backend\\.cpp$"
+    ".*/capabilities_detector\\.cpp$"
     ".*/waveform_envelope_core\\.cpp$"
     ".*/mask_frame_map_core\\.cpp$"
     ".*/standalone_audio_mixer\\.cpp$"
@@ -632,6 +668,7 @@ target_link_libraries(editor_core
         CURL::libcurl
         PkgConfig::FFMPEG
         PkgConfig::FONT_RENDER
+        jcut_audio_output_backend
         rtaudio
         jcut_frame_handle_qrhi_adapter
         jcut_frame_payload_core
@@ -922,6 +959,7 @@ target_link_libraries(jcut_runtime_support
         CURL::libcurl
         PkgConfig::FFMPEG
         PkgConfig::FONT_RENDER
+        jcut_audio_output_backend
         rtaudio
 )
 if(TARGET PkgConfig::RUBBERBAND)
@@ -1034,6 +1072,7 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_mask_preprocessor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/title_mesh_extrusion.cpp
@@ -1366,6 +1405,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_mask_preprocessor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/title_mesh_extrusion.cpp

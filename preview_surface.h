@@ -137,6 +137,7 @@ public:
     virtual void setFaceDetectionsAssignmentInteractionEnabled(bool enabled) = 0;
     virtual void setCorrectionDrawMode(bool enabled) = 0;
     virtual bool correctionDrawMode() const = 0;
+    virtual void setMaskFuzzyRemoveMode(bool enabled) = 0;
     virtual bool transcriptOverlayInteractionEnabled() const = 0;
     virtual bool titleOverlayInteractionOnly() const = 0;
     virtual bool faceStreamAssignmentInteractionEnabled() const = 0;
@@ -174,6 +175,7 @@ public:
     std::function<void(const QString&)> hardwareDecodeConversionRequested;
     std::function<void(int64_t)> playbackSampleRequested;
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
+    std::function<void(const QString&, int64_t, int64_t, qreal, qreal)> maskFuzzyRemovePointRequested;
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested;

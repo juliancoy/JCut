@@ -314,6 +314,10 @@ public:
     QComboBox *maskSidecarCombo() const { return m_maskSidecarCombo; }
     QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
     QPushButton *maskNewPromptButton() const { return m_maskNewPromptButton; }
+    QPushButton *maskFuzzyRemoveButton() const { return m_maskFuzzyRemoveButton; }
+    QSpinBox *maskFuzzySpatialReachSpin() const { return m_maskFuzzySpatialReachSpin; }
+    QSpinBox *maskFuzzyTemporalReachSpin() const { return m_maskFuzzyTemporalReachSpin; }
+    QLabel *maskFuzzyStatusLabel() const { return m_maskFuzzyStatusLabel; }
     QSpinBox *maskZLevelSpin() const { return m_maskZLevelSpin; }
     QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
@@ -671,6 +675,10 @@ private:
     QComboBox *m_maskSidecarCombo = nullptr;
     QPushButton *m_maskBrowseButton = nullptr;
     QPushButton *m_maskNewPromptButton = nullptr;
+    QPushButton *m_maskFuzzyRemoveButton = nullptr;
+    QSpinBox *m_maskFuzzySpatialReachSpin = nullptr;
+    QSpinBox *m_maskFuzzyTemporalReachSpin = nullptr;
+    QLabel *m_maskFuzzyStatusLabel = nullptr;
     QSpinBox *m_maskZLevelSpin = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskDilateSpin = nullptr;

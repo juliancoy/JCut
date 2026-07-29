@@ -2,6 +2,7 @@
 
 #include "core/image_buffer.h"
 #include "cpu_overlay_render_backend.h"
+#include "vulkan_mask_preprocessor.h"
 
 #include <QByteArray>
 #include <QImage>
@@ -15,19 +16,13 @@
 
 class QVulkanDeviceFunctions;
 
-struct VulkanMaskPreprocessOptions {
-    QSize outputSize;
-    QByteArray correctionStorage;
-    bool invert = false;
-    int erodeRadius = 0;
-    int dilateRadius = 0;
-    int blurRadius = 0;
-};
+QString vulkanMaskTextureCacheKey(
+    const VulkanMaskPreprocessOptions& options,
+    const QSize& outputSize);
 
 class VulkanResources final {
 public:
     static constexpr size_t kDescriptorSetCount = 3;
-    static constexpr size_t kMaskComputeDescriptorSetCount = 128;
 
     VulkanResources() = default;
     ~VulkanResources();
@@ -82,8 +77,6 @@ public:
 
 private:
     bool createTextureResources();
-    bool createMaskComputeResources();
-    void destroyMaskComputeResources();
     bool createTextureImage(const QSize& size);
     void destroyTextureImage();
     void retireTextureImage();
@@ -96,17 +89,6 @@ private:
                          VkImageView* view);
     void destroyMaskImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view);
     void retireMaskImage(VkImage& image, VkDeviceMemory& memory, VkImageView& view);
-    VkShaderModule createShaderModule(const QString& path) const;
-    bool runMaskComputePass(VkCommandBuffer commandBuffer,
-                            VkPipeline pipeline,
-                            const void* pushData,
-                            uint32_t pushDataSize,
-                            VkImageView inputView,
-                            VkImageView outputView,
-                            VkImage outputImage,
-                            VkImageLayout& outputLayout,
-                            VkDeviceSize correctionStorageOffset,
-                            VkDeviceSize correctionStorageBytes);
     bool preprocessMaskTexture(VkCommandBuffer commandBuffer,
                                const VulkanMaskPreprocessOptions& options);
     bool ensureTextureSize(const QSize& size);
@@ -181,27 +163,8 @@ private:
     VkImageLayout m_maskWorkLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     QSize m_maskSize;
     QSize m_maskRawSize;
-    qint64 m_uploadedMaskCacheKey = 0;
-    QSize m_uploadedMaskOutputSize;
-    bool m_uploadedMaskInvert = false;
-    int m_uploadedMaskErodeRadius = 0;
-    int m_uploadedMaskDilateRadius = 0;
-    int m_uploadedMaskBlurRadius = 0;
-    QByteArray m_uploadedMaskCorrectionStorage;
-    VkDeviceSize m_storageBufferOffsetAlignment = 16;
-
-    VkDescriptorSetLayout m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool m_maskComputeDescriptorPool = VK_NULL_HANDLE;
-    std::array<VkDescriptorSet, kMaskComputeDescriptorSetCount> m_maskComputeDescriptorSets{};
-    size_t m_maskComputeDescriptorSetIndex = 0;
-    VkPipelineLayout m_maskPreparePipelineLayout = VK_NULL_HANDLE;
-    VkPipelineLayout m_maskMorphBlurPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline m_maskPreparePipeline = VK_NULL_HANDLE;
-    VkPipeline m_maskMorphPipeline = VK_NULL_HANDLE;
-    VkPipeline m_maskBlurPipeline = VK_NULL_HANDLE;
-    VkShaderModule m_maskPrepareModule = VK_NULL_HANDLE;
-    VkShaderModule m_maskMorphModule = VK_NULL_HANDLE;
-    VkShaderModule m_maskBlurModule = VK_NULL_HANDLE;
+    QString m_uploadedMaskCacheKey;
+    VulkanMaskPreprocessor m_maskPreprocessor;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;

@@ -85,6 +85,7 @@ public:
     void setFaceDetectionsAssignmentInteractionEnabled(bool enabled) override;
     void setCorrectionDrawMode(bool enabled) override;
     bool correctionDrawMode() const override;
+    void setMaskFuzzyRemoveMode(bool) override {}
     bool transcriptOverlayInteractionEnabled() const override;
     bool titleOverlayInteractionOnly() const override;
     bool faceStreamAssignmentInteractionEnabled() const override;

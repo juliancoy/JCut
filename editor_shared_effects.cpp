@@ -953,8 +953,12 @@ void storeRawMaskDecodeResult(
 
 static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
     const QString& path,
-    bool blocking = false)
+    bool blocking = false,
+    QString* artifactRevision = nullptr)
 {
+    if (artifactRevision) {
+        artifactRevision->clear();
+    }
     if (path.isEmpty()) {
         return {};
     }
@@ -962,6 +966,16 @@ static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
     const FileVersionSignature version = fileVersionSignature(path);
     if (!version.valid || version.size <= 0) {
         return {};
+    }
+    if (artifactRevision) {
+        *artifactRevision =
+            QStringLiteral("%1:%2:%3:%4:%5:%6")
+                .arg(info.absoluteFilePath())
+                .arg(version.size)
+                .arg(version.modifiedNanoseconds)
+                .arg(version.changedNanoseconds)
+                .arg(version.device)
+                .arg(version.inode);
     }
     const QString cacheKey =
         QStringLiteral("%1\x1f%2\x1f%3\x1f%4\x1f%5\x1f%6")
@@ -1027,19 +1041,60 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
 
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
-    const editor::FrameHandle& presentedFrame)
+    const editor::FrameHandle& presentedFrame,
+    QString* stableIdentity)
 {
-    return rawClipMaskBufferForPath(
-        maskFramePathForPresentedFrame(clip, presentedFrame));
+    if (stableIdentity) {
+        stableIdentity->clear();
+    }
+    QString artifactRevision;
+    const auto buffer = rawClipMaskBufferForPath(
+        maskFramePathForPresentedFrame(clip, presentedFrame),
+        false,
+        &artifactRevision);
+    if (stableIdentity && !artifactRevision.isEmpty()) {
+        *stableIdentity =
+            QStringLiteral(
+                "sidecar=%1|presented=%2:%3:%4|artifact=%5")
+                .arg(
+                    editor::masks::stableMaskSidecarId(
+                        clip.maskFramesDir),
+                    presentedFrame.sourcePath(),
+                    QString::number(presentedFrame.frameNumber()),
+                    QString::number(
+                        presentedFrame.sourcePresentationTimestamp()),
+                    artifactRevision);
+    }
+    return buffer;
 }
 
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferBlocking(
     const TimelineClip& clip,
-    const editor::FrameHandle& presentedFrame)
+    const editor::FrameHandle& presentedFrame,
+    QString* stableIdentity)
 {
-    return rawClipMaskBufferForPath(
+    if (stableIdentity) {
+        stableIdentity->clear();
+    }
+    QString artifactRevision;
+    const auto buffer = rawClipMaskBufferForPath(
         maskFramePathForPresentedFrame(clip, presentedFrame),
-        true);
+        true,
+        &artifactRevision);
+    if (stableIdentity && !artifactRevision.isEmpty()) {
+        *stableIdentity =
+            QStringLiteral(
+                "sidecar=%1|presented=%2:%3:%4|artifact=%5")
+                .arg(
+                    editor::masks::stableMaskSidecarId(
+                        clip.maskFramesDir),
+                    presentedFrame.sourcePath(),
+                    QString::number(presentedFrame.frameNumber()),
+                    QString::number(
+                        presentedFrame.sourcePresentationTimestamp()),
+                    artifactRevision);
+    }
+    return buffer;
 }
 
 void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame)

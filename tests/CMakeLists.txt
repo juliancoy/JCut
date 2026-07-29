@@ -10,6 +10,7 @@ set(EDITOR_TEST_TARGETS
     test_explorer_pane
     test_media_drag_drop
     test_mask_tab
+    test_mask_fuzzy_remove
     test_effects_tab
     test_media_root_contract
     test_timeline_cache
@@ -151,6 +152,11 @@ target_sources(test_media_drag_drop PRIVATE
 target_sources(test_mask_tab PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../mask_tab.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../mask_fuzzy_remove.cpp
+)
+target_link_libraries(test_mask_tab PRIVATE Qt6::Concurrent)
+target_sources(test_mask_fuzzy_remove PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../mask_fuzzy_remove.cpp
 )
 target_sources(test_effects_tab PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../effects_tab.cpp
@@ -191,6 +197,7 @@ target_sources(test_vulkan_text_generation
         ${CMAKE_CURRENT_SOURCE_DIR}/../title_mesh_extrusion.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_mask_preprocessor.cpp
 )
 target_link_libraries(test_vulkan_text_generation
     PRIVATE
@@ -237,6 +244,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_mask_preprocessor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../transcript_overlay_cache_key.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../title_mesh_extrusion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp

@@ -32,10 +32,12 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     int64_t sourceFrame);
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
-    const editor::FrameHandle& presentedFrame);
+    const editor::FrameHandle& presentedFrame,
+    QString* stableIdentity = nullptr);
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferBlocking(
     const TimelineClip& clip,
-    const editor::FrameHandle& presentedFrame);
+    const editor::FrameHandle& presentedFrame,
+    QString* stableIdentity = nullptr);
 void prefetchClipMaskBuffers(const TimelineClip& clip, int64_t sourceFrame);
 void prefetchClipMaskBuffers(const TimelineClip& clip,
                              const editor::FrameHandle& presentedFrame);

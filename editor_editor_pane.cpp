@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "mask_tab.h"
 #include "editor_preview_edit_helpers.h"
 #include "editor_scale_to_fill.h"
 #include "timeline_fps.h"
@@ -417,6 +418,17 @@ void EditorWindow::connectPreviewSignals()
             m_correctionsTab->handlePreviewPoint(clipId, xNorm, yNorm);
         }
     };
+    m_preview->maskFuzzyRemovePointRequested =
+        [this](const QString& clipId,
+               int64_t sourceFrame,
+               int64_t sourcePresentationTimestamp,
+               qreal xNorm,
+               qreal yNorm) {
+            if (m_maskTab) {
+                m_maskTab->handlePreviewPoint(
+                    clipId, sourceFrame, sourcePresentationTimestamp, xNorm, yNorm);
+            }
+        };
     m_preview->speakerPointRequested = [this](const QString& clipId, qreal xNorm, qreal yNorm) {
         if (m_speakersTab) {
             m_speakersTab->handlePreviewPoint(clipId, xNorm, yNorm);

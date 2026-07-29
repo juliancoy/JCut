@@ -115,6 +115,28 @@ QByteArray vulkanIdentityCurveLutRgbaBytes()
     return vulkanCurveLutRgbaBytes(grade);
 }
 
+void VulkanRenderLayerPacket::setGrading(
+    const TimelineClip::GradingKeyframe& value)
+{
+    grading = value;
+    gradePayload = vulkanGradePayloadForGrade(value);
+}
+
+void VulkanRenderLayerPacket::setMaskGrade(
+    const TimelineClip::GradingKeyframe& value)
+{
+    maskGrade = value;
+    maskGradePayload = vulkanGradePayloadForGrade(value);
+}
+
+void VulkanRenderLayerPacket::setCorrectionPolygons(
+    const QVector<TimelineClip::CorrectionPolygon>& value)
+{
+    correctionPolygons = value;
+    correctionPolygonCount = value.size();
+    maskCorrectionStorage = vulkanMaskCorrectionStorageData(value);
+}
+
 QByteArray vulkanMaskCorrectionStorageData(
     const QVector<TimelineClip::CorrectionPolygon>& polygons)
 {

@@ -932,6 +932,33 @@ QWidget *InspectorPane::buildMasksTab()
         "Generate a separate SAM mask sidecar and optionally union it with the current mask."));
     layout->addWidget(m_maskNewPromptButton);
 
+    auto *fuzzyForm = new QFormLayout;
+    m_maskFuzzySpatialReachSpin = new QSpinBox(page);
+    m_maskFuzzySpatialReachSpin->setRange(0, 128);
+    m_maskFuzzySpatialReachSpin->setValue(12);
+    m_maskFuzzySpatialReachSpin->setSuffix(QStringLiteral(" px"));
+    m_maskFuzzySpatialReachSpin->setToolTip(
+        QStringLiteral("Maximum movement between the selected region in adjacent mask frames."));
+    m_maskFuzzyTemporalReachSpin = new QSpinBox(page);
+    m_maskFuzzyTemporalReachSpin->setRange(0, 10000);
+    m_maskFuzzyTemporalReachSpin->setValue(120);
+    m_maskFuzzyTemporalReachSpin->setSuffix(QStringLiteral(" frames"));
+    m_maskFuzzyTemporalReachSpin->setToolTip(
+        QStringLiteral("Maximum number of frames to follow in each direction from the clicked frame."));
+    fuzzyForm->addRow(QStringLiteral("Spatial reach"), m_maskFuzzySpatialReachSpin);
+    fuzzyForm->addRow(QStringLiteral("Temporal reach"), m_maskFuzzyTemporalReachSpin);
+    layout->addLayout(fuzzyForm);
+    m_maskFuzzyRemoveButton = new QPushButton(QStringLiteral("Remove Extra Region"), page);
+    m_maskFuzzyRemoveButton->setCheckable(true);
+    m_maskFuzzyRemoveButton->setObjectName(QStringLiteral("masks.fuzzy_remove"));
+    m_maskFuzzyRemoveButton->setToolTip(
+        QStringLiteral("Arm the tool, then click unwanted mask foreground in the preview. "
+                       "The original sidecar is preserved."));
+    layout->addWidget(m_maskFuzzyRemoveButton);
+    m_maskFuzzyStatusLabel = new QLabel(page);
+    m_maskFuzzyStatusLabel->setWordWrap(true);
+    layout->addWidget(m_maskFuzzyStatusLabel);
+
     auto makePixelsSpin = [page](double maxValue, double step) {
         auto *spin = new QDoubleSpinBox(page);
         spin->setRange(0.0, maxValue);

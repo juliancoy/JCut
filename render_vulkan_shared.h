@@ -1,8 +1,11 @@
 #pragma once
 
 #include "background_fill_effect_fwd.h"
+#include "core/image_buffer.h"
 #include "editor_shared.h"
+#include "frame_handle.h"
 #include "playback_timing_context.h"
+#include "titles.h"
 
 #include <QByteArray>
 #include <QMatrix4x4>
@@ -11,6 +14,8 @@
 #include <QRectF>
 #include <QSize>
 #include <QTransform>
+
+#include <memory>
 
 namespace render_detail {
 
@@ -136,6 +141,83 @@ struct VulkanGradePayload {
     VulkanDrawEffectState effects;
     QByteArray curveLutRgba;
     bool curveLutApplied = false;
+};
+
+struct VulkanRenderTranscriptInput {
+    TimelineClip clip;
+    TranscriptOverlayLayout layout;
+    QRectF outputRect;
+    QString speakerTitle;
+};
+
+struct VulkanRenderTextInputs {
+    QVector<VulkanRenderTranscriptInput> transcripts;
+    QVector<EvaluatedTitle> title3D;
+    bool hasSpeakerLabel = false;
+    SpeakerLabelOverlaySpec speakerLabel;
+};
+
+// Canonical renderer-neutral description of one visual layer. Preview and
+// export inherit this packet and add only scheduling, diagnostics, or
+// backend-resource state. Keep semantic render inputs here so the two Vulkan
+// pathways cannot silently grow different ownership, mask, or effect rules.
+struct VulkanRenderLayerPacket {
+    QString clipId;
+    QString mediaOwnerClipId;
+    QString timingOwnerClipId;
+    QString effectsOwnerClipId;
+    QString matteOwnerClipId;
+
+    editor::FrameHandle frame;
+    QSize frameSize;
+    QRectF targetRect;
+    QRectF fittedRect;
+    TimelineClip::TransformKeyframe transform;
+    TimelineClip::GradingKeyframe grading;
+    VulkanGradePayload gradePayload;
+
+    QString maskIdentity;
+    std::shared_ptr<const jcut::core::ImageBuffer> maskBuffer;
+    QSize maskSourceSize;
+    QByteArray maskCorrectionStorage;
+    bool maskTextureEnabled = false;
+    bool maskClipSource = false;
+    bool maskForegroundLayerEnabled = false;
+    bool maskShowOnly = false;
+    bool maskGradeEnabled = false;
+    bool maskInvert = false;
+    qreal maskErode = 0.0;
+    qreal maskDilate = 0.0;
+    qreal maskBlur = 0.0;
+    qreal maskFeather = 0.0;
+    qreal maskFeatherGamma = 1.0;
+    int maskFeatherFalloff = 0;
+    qreal maskOpacity = 1.0;
+    bool maskDropShadowEnabled = false;
+    qreal maskDropShadowRadius = 12.0;
+    qreal maskDropShadowOffsetX = 0.0;
+    qreal maskDropShadowOffsetY = 4.0;
+    qreal maskDropShadowOpacity = 0.45;
+    TimelineClip::GradingKeyframe maskGrade;
+    VulkanGradePayload maskGradePayload;
+
+    QVector<TimelineClip::CorrectionPolygon> correctionPolygons;
+    int correctionPolygonCount = 0;
+
+    bool differenceMatteEnabled = false;
+    qreal differenceThreshold = 0.10;
+    qreal differenceSoftness = 0.05;
+    editor::FrameHandle differenceReferenceFrame;
+    QVector<editor::FrameHandle> temporalEchoFrames;
+    qreal temporalEchoDecay = 0.65;
+
+    VulkanEffectPipelinePlan effectPlan;
+    VulkanRenderTextInputs textInputs;
+
+    void setGrading(const TimelineClip::GradingKeyframe& value);
+    void setMaskGrade(const TimelineClip::GradingKeyframe& value);
+    void setCorrectionPolygons(
+        const QVector<TimelineClip::CorrectionPolygon>& value);
 };
 
 struct VulkanBackgroundFillMapping {

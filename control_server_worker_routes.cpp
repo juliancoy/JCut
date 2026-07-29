@@ -1,4 +1,5 @@
 #include "control_server_worker.h"
+#include "capabilities_detector.h"
 
 #include "build_info.h"
 #include "clip_serialization.h"
@@ -2421,6 +2422,23 @@ bool ControlServerWorker::handleHardwareRoutes(QTcpSocket* socket, const Request
     }
 
     QJsonObject hardware;
+    const RuntimeCapabilities capabilities = detectRuntimeCapabilities();
+    QJsonArray audioBackends;
+    for (const AudioOutputBackendCapability& candidate :
+         capabilities.audioOutputBackends) {
+        audioBackends.append(QJsonObject{
+            {QStringLiteral("id"), QString::fromStdString(candidate.id)},
+            {QStringLiteral("label"), QString::fromStdString(candidate.label)},
+            {QStringLiteral("preference"), candidate.preference},
+            {QStringLiteral("compiled"), candidate.compiled},
+            {QStringLiteral("operating_system_supported"),
+             candidate.operatingSystemSupported},
+            {QStringLiteral("reason"), QString::fromStdString(candidate.reason)}
+        });
+    }
+    hardware[QStringLiteral("operating_system")] =
+        QString::fromStdString(capabilities.operatingSystem);
+    hardware[QStringLiteral("audio_output_backends")] = audioBackends;
 
     QProcess cpuProc;
     cpuProc.start("lscpu");

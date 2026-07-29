@@ -2,10 +2,12 @@
 
 #include "audio_time_stretch.h"
 #include "audio_time_stretch_cache.h"
+#include "audio_output_backend.h"
 #include "editor_shared.h"
 #include "preview_surface.h"
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QSet>
 #include <QString>
@@ -20,10 +22,8 @@
 #include <mutex>
 #include <thread>
 
-#include <RtAudio.h>
-
 // Lock-free SPSC ring buffer for int16 audio samples.
-// Single producer (mix thread) writes, single consumer (RtAudio callback)
+// Single producer (mix thread) writes, single consumer (audio callback)
 // reads.
 struct AudioRingBuffer {
   friend class TestAudioMixPolicy;
@@ -378,11 +378,11 @@ private:
     qreal volume = 0.8;
   };
 
-  // --- RtAudio callback (called from OS audio thread) ---
+  // --- Audio output callback (called from the backend real-time thread) ---
 
   static int rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
                              unsigned int nFrames, double /*streamTime*/,
-                             rt::audio::RtAudioStreamStatus /*status*/,
+                             unsigned int status,
                              void *userData);
 
   // --- Sample math ---
@@ -572,7 +572,10 @@ private:
   std::thread m_decodeWorker;
   std::thread m_mixWorker;
 
-  std::unique_ptr<rt::audio::RtAudio> m_rtaudio;
+  std::unique_ptr<AudioOutputBackend> m_outputBackend;
+  QString m_selectedAudioBackend;
+  QString m_audioBackendSelectionReason;
+  QJsonArray m_audioBackendCandidates;
   AudioRingBuffer m_ringBuffer;
   std::atomic<int64_t> m_ringBufferEndSample{0};
 
@@ -586,6 +589,7 @@ private:
   std::atomic<int64_t> m_outputStreamLatencyFramesAtOpen{0};
   std::atomic<int64_t> m_authoritativeTransportSample{0};
   std::atomic<uint64_t> m_outputStartRevision{0};
+  std::atomic<uint64_t> m_lastObservedBackendConnectionRevision{0};
   std::atomic<int64_t> m_lastOutputStartTimelineSample{0};
   std::atomic<int64_t> m_lastOutputStartFeedbackSample{0};
   std::atomic<qint64> m_outputPrimeStartedMs{0};

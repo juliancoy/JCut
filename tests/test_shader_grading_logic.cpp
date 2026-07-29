@@ -4,6 +4,7 @@
 #include "../frame_handle.h"
 #include "../visual_effects_shader.h"
 #include "../vulkan_staging_flush_range.h"
+#include "../vulkan_resources.h"
 #include "mask_sidecar_test_utils.h"
 
 #include <QRegularExpression>
@@ -27,6 +28,7 @@ private slots:
     void testVulkanMaskMorphShaderUsesMinMax();
     void testVulkanMaskBlurShaderIsSeparable();
     void testVulkanRenderersLoadRawMasksForGpuPreprocess();
+    void testVulkanMaskUploadCacheUsesStableSemanticIdentity();
     void testVulkanMaskComputeUsesDescriptorRings();
     void testVulkanStagingFlushRangeUsesNonCoherentAtomAlignment();
     void testVulkanShaderRecomputesLuminanceBeforeSaturation();
@@ -167,8 +169,10 @@ void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
     QFile previewSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"));
     QVERIFY2(previewSource.open(QIODevice::ReadOnly), "Unable to open Vulkan preview renderer.");
     const QString previewText = QString::fromUtf8(previewSource.readAll());
-    QVERIFY2(previewText.contains(QStringLiteral("rawClipMaskBuffer(clip, status.frame)")) &&
-                 previewText.contains(QStringLiteral("clip, markerStatus.frame)")),
+    QVERIFY2(previewText.contains(QStringLiteral("rawClipMaskBuffer(")) &&
+                 previewText.contains(QStringLiteral(
+                     "clip, status.frame, &maskIdentity")) &&
+                 previewText.contains(QStringLiteral("&markerStatus.maskIdentity")),
              "Vulkan preview must resolve masks from the actual presented FrameHandle.");
     QVERIFY2(!previewText.contains(QStringLiteral("preparedClipMaskImage(clip")),
              "Vulkan preview must not CPU-prepare Vulkan masks.");
@@ -177,7 +181,9 @@ void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
     QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
     const QString exportText = QString::fromUtf8(exportSource.readAll());
     QVERIFY2(exportText.contains(QStringLiteral(
-                 "rawClipMaskImageBlocking(matteOwner, frame)")),
+                 "rawClipMaskBufferBlocking(")) &&
+                 exportText.contains(QStringLiteral(
+                     "matteOwner, frame, &maskIdentity")),
              "Definitive Vulkan export must synchronously resolve masks from "
              "the actual rendered FrameHandle.");
     QVERIFY2(!exportText.contains(QStringLiteral("preparedClipMaskImage(clip")),
@@ -207,53 +213,101 @@ void TestShaderGradingLogic::testVulkanMaskComputeUsesDescriptorRings()
     QFile directHeader(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_resources.h"));
     QFile directSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_resources.cpp"));
     QFile exportSource(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
+    QFile sharedHeader(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.h"));
+    QFile sharedSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.cpp"));
     QVERIFY2(directHeader.open(QIODevice::ReadOnly), "Unable to open Vulkan resources header.");
     QVERIFY2(directSource.open(QIODevice::ReadOnly), "Unable to open Vulkan resources source.");
     QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
+    QVERIFY2(sharedHeader.open(QIODevice::ReadOnly), "Unable to open shared Vulkan mask preprocessor header.");
+    QVERIFY2(sharedSource.open(QIODevice::ReadOnly), "Unable to open shared Vulkan mask preprocessor source.");
 
     const QString directHeaderText = QString::fromUtf8(directHeader.readAll());
     const QString directText = QString::fromUtf8(directSource.readAll());
     const QString exportText = QString::fromUtf8(exportSource.readAll());
+    const QString sharedHeaderText = QString::fromUtf8(sharedHeader.readAll());
+    const QString sharedText = QString::fromUtf8(sharedSource.readAll());
     const QRegularExpression singleMutableSetMember(
         QStringLiteral("\\bVkDescriptorSet\\s+m_maskComputeDescriptorSet\\b"));
 
-    QVERIFY2(!directHeaderText.contains(singleMutableSetMember),
-             "Direct preview mask compute must not keep one mutable descriptor set for all passes.");
-    QVERIFY2(!exportText.contains(singleMutableSetMember),
-             "Vulkan export mask compute must not keep one mutable descriptor set for all passes.");
+    QVERIFY2(!sharedHeaderText.contains(singleMutableSetMember),
+             "Shared mask compute must not keep one mutable descriptor set for all passes.");
     QVERIFY2(directText.contains(QStringLiteral("convertToFormat(QImage::Format_RGBA8888)")) &&
                  !directText.contains(QStringLiteral("Format_RGBA8888_Premultiplied")),
              "Direct Vulkan media upload must preserve straight RGBA so grading runs before premultiplication.");
 
-    QVERIFY2(directHeaderText.contains(QStringLiteral("kMaskComputeDescriptorSetCount = 128")),
-             "Direct preview must keep enough mask compute descriptor sets for one recorded command buffer.");
-    QVERIFY2(directHeaderText.contains(
-                 QStringLiteral("std::array<VkDescriptorSet, kMaskComputeDescriptorSetCount> m_maskComputeDescriptorSets")),
-             "Direct preview must store mask compute descriptor sets in a ring.");
-    QVERIFY2(directText.contains(QStringLiteral(
-                 "VkDescriptorSet computeDescriptorSet = m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex];")),
-             "Direct preview must snapshot the descriptor set used by each mask compute dispatch.");
-    QVERIFY2(directText.contains(QStringLiteral(
-                 "m_maskComputeDescriptorSetIndex = (m_maskComputeDescriptorSetIndex + 1) % m_maskComputeDescriptorSets.size();")),
-             "Direct preview must advance the mask compute descriptor ring per dispatch.");
-    QVERIFY2(directText.contains(QStringLiteral("vkCmdBindDescriptorSets(commandBuffer")) &&
-                 directText.contains(QStringLiteral("&computeDescriptorSet")),
-             "Direct preview must bind the per-dispatch mask compute descriptor set.");
+    QVERIFY2(sharedHeaderText.contains(QStringLiteral("kDescriptorSetCount = 128")) &&
+                 sharedHeaderText.contains(QStringLiteral(
+                     "std::vector<VkDescriptorSet> m_descriptorSets")),
+             "Shared mask preprocessing must own a descriptor ring large "
+             "enough for one recorded command buffer.");
+    QVERIFY2(sharedText.contains(QStringLiteral(
+                 "VkDescriptorSet descriptorSet =")) &&
+                 sharedText.contains(QStringLiteral(
+                     "(m_descriptorSetIndex + 1) % m_descriptorSets.size()")) &&
+                 sharedText.contains(QStringLiteral("vkCmdBindDescriptorSets(")),
+             "Shared mask preprocessing must snapshot, advance, and bind one "
+             "descriptor set per dispatch.");
+    QVERIFY2(directHeaderText.contains(QStringLiteral(
+                 "VulkanMaskPreprocessor m_maskPreprocessor")) &&
+                 directText.contains(QStringLiteral(
+                     "m_maskPreprocessor.record(")) &&
+                 exportText.contains(QStringLiteral(
+                     "m_maskPreprocessor.record(")),
+             "Preview and export must both delegate mask staging and dispatch "
+             "to the reusable preprocessor.");
+    QVERIFY2(!directText.contains(QStringLiteral(
+                 "vkCreateDescriptorSetLayout(m_device, &mask")) &&
+                 !exportText.contains(QStringLiteral(
+                     "VkDescriptorSetLayoutBinding maskComputeBindings")) &&
+                 !directText.contains(QStringLiteral("MaskPreparePush")) &&
+                 !exportText.contains(QStringLiteral("MaskPreparePush")),
+             "Preview and export must not retain private mask descriptor, "
+             "pipeline, or dispatch implementations.");
+}
 
-    QVERIFY2(exportText.contains(QStringLiteral("kMaskComputeDescriptorSetCount = 128")),
-             "Vulkan export must keep enough mask compute descriptor sets for one recorded command buffer.");
-    QVERIFY2(exportText.contains(
-                 QStringLiteral("std::array<VkDescriptorSet, kMaskComputeDescriptorSetCount> m_maskComputeDescriptorSets")),
-             "Vulkan export must store mask compute descriptor sets in a ring.");
-    QVERIFY2(exportText.contains(QStringLiteral(
-                 "computeDescriptorSet =\n        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex];")),
-             "Vulkan export must snapshot the descriptor set used by each mask compute dispatch.");
-    QVERIFY2(exportText.contains(QStringLiteral(
-                 "(m_maskComputeDescriptorSetIndex + 1) % kMaskComputeDescriptorSetCount")),
-             "Vulkan export must advance the mask compute descriptor ring per dispatch.");
-    QVERIFY2(exportText.contains(QStringLiteral("vkCmdBindDescriptorSets(m_commandBuffer")) &&
-                 exportText.contains(QStringLiteral("&computeDescriptorSet")),
-             "Vulkan export must bind the per-dispatch mask compute descriptor set.");
+void TestShaderGradingLogic::
+    testVulkanMaskUploadCacheUsesStableSemanticIdentity()
+{
+    VulkanMaskPreprocessOptions options;
+    options.sourceIdentity = QStringLiteral(
+        "sidecar=s1|presented=media:42:1234|artifact=frame.png:10:20");
+    options.erodeRadius = 2;
+    options.correctionStorage = QByteArray(16, '\0');
+    const QString base =
+        vulkanMaskTextureCacheKey(options, QSize(1920, 1080));
+    QVERIFY(!base.isEmpty());
+
+    VulkanMaskPreprocessOptions changed = options;
+    changed.sourceIdentity += QStringLiteral(":revision-2");
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    changed = options;
+    changed.invert = true;
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    changed = options;
+    changed.correctionStorage[0] = '\1';
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    QVERIFY(base != vulkanMaskTextureCacheKey(options, QSize(1280, 720)));
+
+    changed = options;
+    changed.sourceIdentity.clear();
+    QVERIFY(vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)).isEmpty());
+
+    QFile resourcesFile(
+        QStringLiteral(JCUT_SOURCE_DIR "/vulkan_resources.cpp"));
+    QVERIFY(resourcesFile.open(QIODevice::ReadOnly));
+    const QString resources = QString::fromUtf8(resourcesFile.readAll());
+    QVERIFY(!resources.contains(QStringLiteral(
+        "reinterpret_cast<std::uintptr_t>(image.bytes.data())")));
+    QVERIFY(resources.contains(QStringLiteral(
+        "vulkanMaskTextureCacheKey(options, requestedOutputSize)")));
+
+    QFile effectsFile(
+        QStringLiteral(JCUT_SOURCE_DIR "/editor_shared_effects.cpp"));
+    QVERIFY(effectsFile.open(QIODevice::ReadOnly));
+    const QString effects = QString::fromUtf8(effectsFile.readAll());
+    QVERIFY(effects.contains(QStringLiteral("sidecar=%1|presented=%2:%3:%4|artifact=%5")));
+    QVERIFY(effects.contains(QStringLiteral("version.modifiedNanoseconds")));
+    QVERIFY(effects.contains(QStringLiteral("version.inode")));
 }
 
 void TestShaderGradingLogic::
