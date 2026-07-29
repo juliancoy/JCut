@@ -48,13 +48,14 @@ inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
 inline constexpr float kVulkanEffectModeBackgroundProgressiveEdgeStretch = -3.0f;
 inline constexpr float kVulkanEffectModeBackgroundMirror = -4.0f;
-inline constexpr float kVulkanEffectModeFinalCompositeProgressiveEdgeStretch = -5.0f;
 inline constexpr float kVulkanEffectModeBackgroundProgressiveBidirectionalEdgeStretch = -6.0f;
 inline constexpr float kVulkanEffectModeBackgroundTile = -7.0f;
 inline constexpr float kVulkanMaskGradeUseSelectedCurveLut = -1.0f;
 
 QByteArray vulkanCurveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
 QByteArray vulkanIdentityCurveLutRgbaBytes();
+QByteArray vulkanMaskCorrectionStorageData(
+    const QVector<TimelineClip::CorrectionPolygon>& polygons);
 
 struct VulkanEffectPipelinePlan {
     enum class Mode {
@@ -163,7 +164,6 @@ VulkanGradePayload vulkanGradePayloadForGrade(
     const TimelineClip::GradingKeyframe& grade);
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity);
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
-                                                      const VulkanDrawEffectState& baseEffects,
                                                       float opacity,
                                                       float brightness = 0.0f,
                                                       float saturation = 1.0f,

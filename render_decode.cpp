@@ -12,6 +12,8 @@ namespace render_detail {
 
 namespace {
 
+constexpr int kMinimumExportMaskLookaheadFrames = 16;
+
 QString transcriptSectionsCacheKeyForClip(const TimelineClip& clip)
 {
     const QString transcriptPath = activeTranscriptPathForClip(clip);
@@ -92,11 +94,10 @@ void enqueueRenderMaskLookahead(const RenderRequest& request,
                                 int64_t timelineFrame,
                                 const QVector<TimelineClip>& orderedClips)
 {
-    if (!editor::debugLeadPrefetchEnabled()) {
-        return;
-    }
-    const int lookaheadFrames = qMax(editor::debugLeadPrefetchCount(),
-                                     editor::debugPlaybackWindowAhead());
+    const int lookaheadFrames =
+        qMax(kMinimumExportMaskLookaheadFrames,
+             qMax(editor::debugLeadPrefetchCount(),
+                  editor::debugPlaybackWindowAhead()));
     const QVector<int64_t> futureTimelineFrames =
         editor::collectLookaheadTimelineFrames(timelineFrame,
                                                lookaheadFrames,
@@ -165,11 +166,10 @@ void prewarmRenderMaskSegment(const RenderRequest& request,
                               int64_t segmentEndFrame,
                               const QVector<TimelineClip>& orderedClips)
 {
-    if (!editor::debugLeadPrefetchEnabled()) {
-        return;
-    }
-    const int prewarmFrames = qMax(editor::debugPlaybackWindowAhead() * 2,
-                                   editor::debugLeadPrefetchCount() * 4);
+    const int prewarmFrames =
+        qMax(kMinimumExportMaskLookaheadFrames * 2,
+             qMax(editor::debugPlaybackWindowAhead() * 2,
+                  editor::debugLeadPrefetchCount() * 4));
     const int lookaheadFrames = static_cast<int>(
         qMin<int64_t>(segmentEndFrame - segmentStartFrame + 1,
                       qMax<int64_t>(1, prewarmFrames)));

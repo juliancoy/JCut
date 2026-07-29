@@ -63,10 +63,11 @@ struct FrameUniformData {
     float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundGrade[4] = {0.0f, 1.0f, 1.0f, 0.0f};
     float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 20);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 24);
 
 bool checkedAdd(VkDeviceSize a, VkDeviceSize b, VkDeviceSize* out)
 {
@@ -115,7 +116,7 @@ struct MaskPreparePush {
     int outputSize[2];
     int inputSize[2];
     int invert = 0;
-    int pad0 = 0;
+    int applyCorrections = 0;
 };
 
 struct MaskMorphBlurPush {
@@ -142,6 +143,10 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     m_physicalDevice = physicalDevice;
     m_device = device;
     m_funcs = funcs;
+    VkPhysicalDeviceProperties physicalProperties{};
+    vkGetPhysicalDeviceProperties(m_physicalDevice, &physicalProperties);
+    m_storageBufferOffsetAlignment = qMax<VkDeviceSize>(
+        16, physicalProperties.limits.minStorageBufferOffsetAlignment);
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -382,6 +387,7 @@ void VulkanResources::destroy()
     m_maskRawSize = QSize();
     m_uploadedMaskCacheKey = 0;
     m_uploadedMaskOutputSize = QSize();
+    m_uploadedMaskCorrectionStorage.clear();
     m_maskSize = QSize();
     m_stagingRing.reset();
     m_initialized = false;
@@ -534,6 +540,7 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
                                          const float* backgroundShadows,
                                          const float* backgroundMidtones,
                                          const float* backgroundHighlights,
+                                         const float* backgroundGrade,
                                          const float* effectParams)
 {
     if (!m_frameUniformMapped || m_frameUniformStride == 0) {
@@ -554,6 +561,9 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
     }
     if (backgroundHighlights) {
         std::memcpy(values.backgroundHighlights, backgroundHighlights, sizeof(values.backgroundHighlights));
+    }
+    if (backgroundGrade) {
+        std::memcpy(values.backgroundGrade, backgroundGrade, sizeof(values.backgroundGrade));
     }
     if (effectParams) {
         std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
@@ -917,7 +927,8 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = bytes;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.usage =
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
         m_lastError = QStringLiteral("staging_create_buffer_failed bytes=%1")
@@ -1107,13 +1118,21 @@ bool VulkanResources::reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alig
 
 bool VulkanResources::writeStagingUpload(const void* data, VkDeviceSize bytes, VkDeviceSize* offsetOut)
 {
+    return writeStagingUpload(data, bytes, 4, offsetOut);
+}
+
+bool VulkanResources::writeStagingUpload(const void* data,
+                                         VkDeviceSize bytes,
+                                         VkDeviceSize alignment,
+                                         VkDeviceSize* offsetOut)
+{
     if (!data || !offsetOut || bytes <= 0) {
         m_lastError = QStringLiteral("staging_write_invalid_request bytes=%1")
                           .arg(static_cast<qulonglong>(bytes));
         return false;
     }
     VkDeviceSize stagingOffset = 0;
-    if (!reserveStagingUpload(bytes, 4, &stagingOffset)) {
+    if (!reserveStagingUpload(bytes, alignment, &stagingOffset)) {
         if (m_lastError.isEmpty()) {
             m_lastError = QStringLiteral("staging_reserve_failed bytes=%1")
                               .arg(static_cast<qulonglong>(bytes));
@@ -1224,7 +1243,7 @@ VkShaderModule VulkanResources::createShaderModule(const QString& path) const
 
 bool VulkanResources::createMaskComputeResources()
 {
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    VkDescriptorSetLayoutBinding bindings[3]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -1233,22 +1252,28 @@ bool VulkanResources::createMaskComputeResources()
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &m_maskComputeDescriptorSetLayout) != VK_SUCCESS) {
         return false;
     }
 
-    VkDescriptorPoolSize poolSizes[2]{};
+    VkDescriptorPoolSize poolSizes[3]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[2].descriptorCount = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 2;
+    poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = static_cast<uint32_t>(m_maskComputeDescriptorSets.size());
     if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_maskComputeDescriptorPool) != VK_SUCCESS) {
@@ -1370,11 +1395,15 @@ bool VulkanResources::runMaskComputePass(VkCommandBuffer commandBuffer,
                                          VkImageView inputView,
                                          VkImageView outputView,
                                          VkImage outputImage,
-                                         VkImageLayout& outputLayout)
+                                         VkImageLayout& outputLayout,
+                                         VkDeviceSize correctionStorageOffset,
+                                         VkDeviceSize correctionStorageBytes)
 {
     if (pipeline == VK_NULL_HANDLE || inputView == VK_NULL_HANDLE ||
         outputView == VK_NULL_HANDLE || outputImage == VK_NULL_HANDLE ||
-        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex] == VK_NULL_HANDLE) {
+        m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex] == VK_NULL_HANDLE ||
+        m_stagingBuffer == VK_NULL_HANDLE ||
+        correctionStorageBytes < sizeof(float) * 4) {
         return false;
     }
     VkDescriptorSet computeDescriptorSet = m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex];
@@ -1404,7 +1433,11 @@ bool VulkanResources::runMaskComputePass(VkCommandBuffer commandBuffer,
     VkDescriptorImageInfo outputInfo{};
     outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     outputInfo.imageView = outputView;
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorBufferInfo correctionInfo{};
+    correctionInfo.buffer = m_stagingBuffer;
+    correctionInfo.offset = correctionStorageOffset;
+    correctionInfo.range = correctionStorageBytes;
+    VkWriteDescriptorSet writes[3]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = computeDescriptorSet;
     writes[0].dstBinding = 0;
@@ -1417,7 +1450,13 @@ bool VulkanResources::runMaskComputePass(VkCommandBuffer commandBuffer,
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[1].pImageInfo = &outputInfo;
-    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = computeDescriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &correctionInfo;
+    vkUpdateDescriptorSets(m_device, 3, writes, 0, nullptr);
 
     const VkPipelineLayout layout =
         pipeline == m_maskPreparePipeline ? m_maskPreparePipelineLayout : m_maskMorphBlurPipelineLayout;
@@ -1457,6 +1496,21 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
     const int erodeRadius = std::max(0, options.erodeRadius);
     const int dilateRadius = std::max(0, options.dilateRadius);
     const int blurRadius = std::max(0, options.blurRadius);
+    const QByteArray correctionStorage =
+        options.correctionStorage.isEmpty()
+            ? QByteArray(static_cast<qsizetype>(sizeof(float) * 4), '\0')
+            : options.correctionStorage;
+    VkDeviceSize correctionStorageOffset = 0;
+    if ((correctionStorage.size() % static_cast<qsizetype>(sizeof(float) * 4)) != 0 ||
+        !writeStagingUpload(
+            correctionStorage.constData(),
+            static_cast<VkDeviceSize>(correctionStorage.size()),
+            m_storageBufferOffsetAlignment,
+            &correctionStorageOffset)) {
+        return false;
+    }
+    const VkDeviceSize correctionStorageBytes =
+        static_cast<VkDeviceSize>(correctionStorage.size());
 
     VkImageView currentView = m_maskRawView;
     bool currentIsMask = false;
@@ -1466,13 +1520,15 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
                                VkImage dstImage,
                                VkImageLayout& dstLayout,
                                const QSize& inputSize,
-                               bool invert) -> bool {
+                               bool invert,
+                               bool applyCorrections) -> bool {
         MaskPreparePush push{};
         push.outputSize[0] = m_maskSize.width();
         push.outputSize[1] = m_maskSize.height();
         push.inputSize[0] = inputSize.width();
         push.inputSize[1] = inputSize.height();
         push.invert = invert ? 1 : 0;
+        push.applyCorrections = applyCorrections ? 1 : 0;
         return runMaskComputePass(commandBuffer,
                                   m_maskPreparePipeline,
                                   &push,
@@ -1480,7 +1536,9 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
                                   srcView,
                                   dstView,
                                   dstImage,
-                                  dstLayout);
+                                  dstLayout,
+                                  correctionStorageOffset,
+                                  correctionStorageBytes);
     };
     auto dispatchMorphBlur = [&](VkPipeline pipeline, int radius, int mode) -> bool {
         VkImageView dstView = currentIsMask ? m_maskWorkView : m_maskView;
@@ -1498,7 +1556,9 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
                                 currentView,
                                 dstView,
                                 dstImage,
-                                dstLayout)) {
+                                dstLayout,
+                                correctionStorageOffset,
+                                correctionStorageBytes)) {
             return false;
         }
         currentView = dstView;
@@ -1511,7 +1571,8 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
                          m_maskImage,
                          m_maskLayout,
                          m_maskRawSize,
-                         options.invert)) {
+                         options.invert,
+                         true)) {
         return false;
     }
     currentView = m_maskView;
@@ -1534,6 +1595,7 @@ bool VulkanResources::preprocessMaskTexture(VkCommandBuffer commandBuffer,
                              m_maskImage,
                              m_maskLayout,
                              m_maskSize,
+                             false,
                              false)) {
             return false;
         }
@@ -1898,6 +1960,7 @@ bool VulkanResources::uploadMaskTexture(
         options.erodeRadius == m_uploadedMaskErodeRadius &&
         options.dilateRadius == m_uploadedMaskDilateRadius &&
         options.blurRadius == m_uploadedMaskBlurRadius &&
+        options.correctionStorage == m_uploadedMaskCorrectionStorage &&
         m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         return true;
     }
@@ -1988,6 +2051,7 @@ bool VulkanResources::uploadMaskTexture(
     m_uploadedMaskErodeRadius = options.erodeRadius;
     m_uploadedMaskDilateRadius = options.dilateRadius;
     m_uploadedMaskBlurRadius = options.blurRadius;
+    m_uploadedMaskCorrectionStorage = options.correctionStorage;
     return true;
 }
 

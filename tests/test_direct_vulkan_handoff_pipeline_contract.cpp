@@ -410,8 +410,15 @@ void TestDirectVulkanHandoffPipelineContract::
            "preview must not clone or composite a Mask Matte status when its "
            "generated child track or clip visibility is disabled");
   QVERIFY2(previewSurface.contains(QStringLiteral(
-               "applyCorrectionPolygonsToMaskImage")),
-           "Mask Matte correction polygons must be applied to the preview matte");
+               "status.correctionPolygons = effects.correctionPolygons")) &&
+               previewSurface.contains(QStringLiteral(
+                   "markerStatus.correctionPolygons = effects.correctionPolygons")) &&
+               !previewSurface.contains(QStringLiteral(
+                   "applyCorrectionPolygonsToMaskBuffer")) &&
+               !previewSurface.contains(QStringLiteral(
+                   "qtImageFromCoreBuffer(markerStatus.maskBuffer)")),
+           "Mask Matte correction polygons must remain GPU metadata beside "
+           "the shared Gray8 buffer in direct Vulkan preview");
   const QString previewState =
       readSourceFile(QStringLiteral("preview_interaction_state.h"));
   QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskBuffer")) &&
@@ -1967,23 +1974,16 @@ void TestDirectVulkanHandoffPipelineContract::
 
   const QString vulkanSurface =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
-  QVERIFY2(vulkanSurface.contains(QStringLiteral("13 Final Progressive Edge Stretch")) &&
-               vulkanSurface.contains(QStringLiteral("post_final_progressive_edge_stretch_swapchain")),
-           "pipeline stages must expose final progressive edge stretch as a named reviewable tap");
   QVERIFY2(vulkanSurface.contains(QStringLiteral("m_presenter->requestPipelineTapReadback()")) &&
                vulkanSurface.contains(QStringLiteral("m_presenter->latestPipelineTapImage()")),
-           "pipeline stages must request and display the post-pass GPU tap image");
-  QVERIFY2(vulkanSurface.contains(QStringLiteral("14 Diagnostic Readback")) &&
+           "pipeline stages must request and display the composed GPU tap image");
+  QVERIFY2(vulkanSurface.contains(QStringLiteral("13 Diagnostic Readback")) &&
                vulkanSurface.contains(QStringLiteral("diagnostic_disabled")),
            "pipeline stages must report diagnostic readback as opt-in, not as "
            "a hot-path render dependency");
 
   const QString presenter =
       readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
-  QVERIFY2(presenter.contains(QStringLiteral("final_composite_stretch_prepared")) &&
-               presenter.contains(QStringLiteral("final_composite_stretch_drawn")) &&
-               presenter.contains(QStringLiteral("final_composite_stretch_reason")),
-           "compact /pipeline health must expose final progressive stretch pass state");
   QVERIFY2(presenter.contains(QStringLiteral("directVulkanPreviewWindowPipelineThumbnailReadbackPending")),
            "pipeline tap pending state must be reported from the live Vulkan window");
 }
@@ -3832,6 +3832,8 @@ void TestDirectVulkanHandoffPipelineContract::
                exportUi.contains(QStringLiteral(
                    "presentRenderMonitorFrame")) &&
                exportUi.contains(QStringLiteral(
+                   "imguiRenderMonitorPtr->pumpEvents()")) &&
+               exportUi.contains(QStringLiteral(
                    "renderMonitorCancelRequested")) &&
                exportUi.contains(QStringLiteral(
                    "effectiveRequest.gpuExportPreviewEnabled = "
@@ -3840,6 +3842,14 @@ void TestDirectVulkanHandoffPipelineContract::
                    "RenderMonitorStatus")) &&
                imguiPresenter.contains(QStringLiteral(
                    "std::array<RenderMonitorSlot, 3>")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "kMonitorSwapchainWaitTimeoutNs")) &&
+               !imguiPresenter.contains(QStringLiteral(
+                   "vkAcquireNextImageKHR(impl->device,\n"
+                   "                                         wd->Swapchain,\n"
+                   "                                         UINT64_MAX")) &&
+               !imguiPresenter.contains(QStringLiteral(
+                   "vkWaitForFences(impl->device, 1, &fd->Fence, VK_TRUE, UINT64_MAX)")) &&
                !imguiPresenter.contains(QStringLiteral(
                    "pumpEvents();\n    if (!isActive())")) &&
                imguiPresenter.contains(QStringLiteral(
@@ -4004,6 +4014,10 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("render_export.cpp"));
   const QString backend =
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString hardwareImportCore =
+      readSourceFile(QStringLiteral("vulkan_hardware_frame_import_core.cpp"));
+  const QString detectorHandoff =
+      readSourceFile(QStringLiteral("vulkan_detector_frame_handoff.cpp"));
   const QString outputTab = readSourceFile(QStringLiteral("output_tab.cpp"));
   const QString inspector =
       readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
@@ -4088,13 +4102,41 @@ void TestDirectVulkanHandoffPipelineContract::
                    "QCryptographicHash::Sha256")),
            "chunk reuse must be keyed by a deterministic render/timeline/media "
            "signature");
-  QVERIFY2(implementation.contains(QStringLiteral(
-               "#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1")) ||
+  QVERIFY2(!backend.contains(QStringLiteral("cuDestroyExternalMemory")),
+           "offscreen Vulkan/CUDA export must not call the CUDA external-memory "
+           "destroy entry point from render/chunk workers; imported opaque-FD "
+           "allocations are retained with their CUDA device owner and retired by "
+           "dropping that owner instead");
+  QVERIFY2(!hardwareImportCore.contains(QStringLiteral("cuDestroyExternalMemory")) &&
+               !detectorHandoff.contains(QStringLiteral("cuDestroyExternalMemory")),
+           "first-party Vulkan/CUDA import helpers must follow the same "
+           "driver-safe external-memory lifetime policy and avoid explicit CUDA "
+           "external-memory destroy calls from worker paths");
+  const qsizetype cudaContextRetirementStart = backend.indexOf(
+      QStringLiteral(
+          "if (slot.cudaExternalMemory && slot.cudaImportContext != cudaContext)"));
+  const qsizetype cudaCachedImportReuseStart = backend.indexOf(
+      QStringLiteral(
+          "if (slot.cudaExternalMemory && slot.cudaExternalDevicePtr)"),
+      cudaContextRetirementStart);
+  const QString cudaContextRetirement =
+      cudaContextRetirementStart >= 0 && cudaCachedImportReuseStart >= 0
+          ? backend.mid(cudaContextRetirementStart,
+                        cudaCachedImportReuseStart -
+                            cudaContextRetirementStart)
+          : QString();
+  QVERIFY2(backend.contains(QStringLiteral(
+               "AVBufferRef *cudaImportDeviceRef = nullptr")) &&
                backend.contains(QStringLiteral(
-                   "#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1")),
-           "offscreen Vulkan/CUDA export teardown must follow the existing "
-           "driver-safe policy and must not block export completion in "
-           "cuDestroyExternalMemory");
+                   "av_buffer_ref(framesCtx->device_ref)")) &&
+               !cudaContextRetirement.isEmpty() &&
+               !cudaContextRetirement.contains(
+                   QStringLiteral("cuDestroyExternalMemory")) &&
+               backend.contains(QStringLiteral(
+                   "av_buffer_unref(&slot.cudaImportDeviceRef)")),
+           "incremental Vulkan/CUDA export must retain the CUDA device while "
+           "an external-memory import is cached and retire a stale import by "
+           "releasing that owner instead of destroying it from a new context");
   QVERIFY2(implementation.contains(QStringLiteral("QSaveFile")) &&
                implementation.contains(QStringLiteral("manifest.json")) &&
                implementation.contains(QStringLiteral(
@@ -4221,6 +4263,16 @@ void TestDirectVulkanHandoffPipelineContract::
                backend.contains(QStringLiteral(
                    "rawClipMaskBufferBlocking(matteOwner, frame)")) &&
                backend.contains(QStringLiteral(
+                   "vulkanMaskCorrectionStorageData")) &&
+               backend.contains(QStringLiteral(
+                   "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
+               !backend.contains(QStringLiteral(
+                   "applyCorrectionPolygonsToMaskBuffer")) &&
+               !backend.contains(QStringLiteral(
+                   "rawClipMaskImageBlocking(matteOwner, frame)")) &&
+               !backend.contains(QStringLiteral(
+                   "rgbaMaskImageForUpload")) &&
+               backend.contains(QStringLiteral(
                    "VK_FORMAT_R8_UNORM")) &&
                backend.contains(QStringLiteral(
                    "writeImageBufferToStagingTopLeft(maskUpload")) &&
@@ -4228,6 +4280,8 @@ void TestDirectVulkanHandoffPipelineContract::
                    "enqueueRenderMaskLookahead")) &&
                decode.contains(QStringLiteral(
                    "prewarmRenderMaskSegment")) &&
+               decode.contains(QStringLiteral(
+                   "kMinimumExportMaskLookaheadFrames")) &&
                decode.contains(QStringLiteral(
                    "prefetchRenderableClipMaskBuffersAtTimelinePosition")) &&
                effects.contains(QStringLiteral(

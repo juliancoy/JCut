@@ -181,6 +181,7 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::DirectionalTrimTicker:
     case ClipEffectPreset::SourceTile:
     case ClipEffectPreset::Vulkan3DSynth:
+        return true;
     case ClipEffectPreset::None:
     case ClipEffectPreset::PersonOrbit:
     case ClipEffectPreset::FreezePattern:

@@ -12,6 +12,51 @@ class VulkanDirectRenderParityTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void correctionPolygonsStayInVulkanMaskPreparation()
+    {
+        TimelineClip::CorrectionPolygon polygon;
+        polygon.pointsNormalized = {
+            {0.25, 0.25}, {0.75, 0.25}, {0.75, 0.75}, {0.25, 0.75}};
+        const QByteArray storage =
+            render_detail::vulkanMaskCorrectionStorageData({polygon});
+        QCOMPARE(storage.size(), 6 * 4 * static_cast<int>(sizeof(float)));
+
+        QFile shader(
+            QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/mask_prepare.comp"));
+        QVERIFY2(shader.open(QIODevice::ReadOnly),
+                 "Unable to open Vulkan mask preparation shader.");
+        const QString shaderSource = QString::fromUtf8(shader.readAll());
+        QVERIFY(shaderSource.contains(QStringLiteral(
+            "layout(std430, binding = 2) readonly buffer CorrectionStorage")));
+        QVERIFY(shaderSource.contains(QStringLiteral(
+            "float correctionCoverage(ivec2 dstCoord)")));
+        QVERIFY(shaderSource.contains(QStringLiteral(
+            "value *= 1.0 - correctionCoverage(dstCoord)")));
+
+        QFile preview(
+            QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
+        QVERIFY2(preview.open(QIODevice::ReadOnly),
+                 "Unable to open direct Vulkan preview source.");
+        const QString previewSource = QString::fromUtf8(preview.readAll());
+        QVERIFY(previewSource.contains(QStringLiteral(
+            "maskOptions.correctionStorage")));
+        QVERIFY(!previewSource.contains(QStringLiteral(
+            "applyCorrectionPolygonsToMaskImage")));
+
+        QFile exportRenderer(
+            QStringLiteral(JCUT_SOURCE_DIR
+                           "/offscreen_vulkan_renderer_backend.cpp"));
+        QVERIFY2(exportRenderer.open(QIODevice::ReadOnly),
+                 "Unable to open offscreen Vulkan renderer source.");
+        const QString exportSource = QString::fromUtf8(exportRenderer.readAll());
+        QVERIFY(exportSource.contains(QStringLiteral(
+            "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")));
+        QVERIFY(exportSource.contains(QStringLiteral(
+            "vulkanMaskCorrectionStorageData")));
+        QVERIFY(!exportSource.contains(QStringLiteral(
+            "rgbaMaskImageForUpload")));
+    }
+
     void temporalEffectsUseZeroCopyVulkanContracts()
     {
         QCOMPARE(render_detail::kVulkanEffectModeDifferenceMatte, 5.0f);
@@ -98,17 +143,13 @@ private slots:
 
     void backgroundFillEffectsUseSelectableShaderSignals()
     {
-        render_detail::VulkanDrawEffectState baseState;
-        baseState.brightness = 0.12f;
-        baseState.contrast = 1.3f;
-        baseState.saturation = 0.7f;
         const render_detail::VulkanDrawEffectState edgeState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::EdgeStretch, baseState, 0.8f, -0.02f, 1.5f, 24, 2.5f);
+                BackgroundFillEffect::EdgeStretch, 0.8f, -0.02f, 1.5f, 24, 2.5f);
         QCOMPARE(edgeState.opacity, 0.8f);
-        QVERIFY(qAbs(edgeState.brightness - 0.1f) < 0.0001f);
-        QCOMPARE(edgeState.contrast, 1.3f);
-        QVERIFY(qAbs(edgeState.saturation - 1.05f) < 0.0001f);
+        QVERIFY(qAbs(edgeState.brightness + 0.02f) < 0.0001f);
+        QCOMPARE(edgeState.contrast, 1.0f);
+        QCOMPARE(edgeState.saturation, 1.5f);
         QCOMPARE(edgeState.midtones[0], 24.0f);
         QCOMPARE(edgeState.midtones[1], 0.0f);
         QCOMPARE(edgeState.midtones[2], 2.5f);
@@ -122,7 +163,6 @@ private slots:
         const render_detail::VulkanDrawEffectState progressiveEdgeState =
             render_detail::vulkanBackgroundFillEffectState(
                 BackgroundFillEffect::ProgressiveEdgeStretch,
-                baseState,
                 0.8f,
                 -0.02f,
                 1.5f,
@@ -139,7 +179,6 @@ private slots:
         const render_detail::VulkanDrawEffectState bidirectionalEdgeState =
             render_detail::vulkanBackgroundFillEffectState(
                 BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch,
-                baseState,
                 0.8f,
                 -0.02f,
                 1.5f,
@@ -153,7 +192,6 @@ private slots:
         const render_detail::VulkanDrawEffectState tileState =
             render_detail::vulkanBackgroundFillEffectState(
                 BackgroundFillEffect::Tile,
-                baseState,
                 0.8f,
                 -0.02f,
                 1.5f,
@@ -166,7 +204,7 @@ private slots:
 
         const render_detail::VulkanDrawEffectState mirrorState =
             render_detail::vulkanBackgroundFillEffectState(
-                BackgroundFillEffect::Mirror, baseState, 0.8f, -0.02f, 1.5f, 24, 2.5f);
+                BackgroundFillEffect::Mirror, 0.8f, -0.02f, 1.5f, 24, 2.5f);
         QCOMPARE(mirrorState.shadows[0], 0.5f);
         QCOMPARE(mirrorState.shadows[1], 0.5f);
         QCOMPARE(mirrorState.shadows[2], 1.0f);
@@ -282,33 +320,6 @@ private slots:
         QVERIFY(!render_detail::vulkanEffectPipelinePlan(
                      independentMask, QRectF(0.0, 0.0, 1080.0, 1920.0),
                      QSize(1920, 1080), 12.0, 12.0).usesGeneratedDraws());
-    }
-
-    void finalCompositeProgressiveStretchUsesScreenTextureSampling()
-    {
-        QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
-        QVERIFY(shader.open(QIODevice::ReadOnly));
-        const QByteArray source = shader.readAll();
-        QVERIFY(source.contains("finalCompositeProgressiveEdgeStretchFill"));
-        QVERIFY(source.contains("sampleCompositeScreen"));
-        QVERIFY(source.contains("vec2 frameOutputSize = frame.outputSizeAndInverse.xy"));
-        QVERIFY(source.contains("vec2 rawValidMin = pc.u_highlights.xy"));
-        QVERIFY(source.contains("vec2 sampleMin = clamp(min(rawValidMin, rawValidMax), vec2(0.0), vec2(1.0))"));
-        QVERIFY(source.contains("vec2 validSpan = max(sampleMax - sampleMin, vec2(0.0))"));
-        QVERIFY(source.contains("safeClampRange"));
-        QVERIFY(source.contains("vec2 edgePixelBasis = sampleCompositeScreen ? frameOutputSize : texSize * sampleSpan"));
-        QVERIFY(source.contains("if (progressive && !sampleCompositeScreen && insideClipBounds)"));
-        QVERIFY(source.contains("vec2 compositeUv = rawValidMin + screenUv * rawValidSpan"));
-        QVERIFY(source.contains("if (resolvedSample.a <= 0.01)"));
-        QVERIFY(source.contains("vec2 outside = max(max(-originalSourceUv, originalSourceUv - vec2(1.0))"));
-        QVERIFY(source.contains("inwardStep.x = originalSourceUv.x < 0.5 ? 1.0 : -1.0"));
-        QVERIFY(source.contains("inwardStep.y = originalSourceUv.y < 0.5 ? 1.0 : -1.0"));
-        QVERIFY(source.contains("for (int i = 1; i <= 1024; ++i)"));
-        QVERIFY(source.contains("if (searchSample.a > 0.01)"));
-        QVERIFY(source.contains("if (finalCompositeProgressiveEdgeStretchFill && sourceAlpha > 0.01)"));
-        QVERIFY(source.contains("sourceAlpha = 1.0"));
-        QVERIFY(!source.contains("textureInteriorClamp(compositeUv)"));
-        QCOMPARE(render_detail::kVulkanEffectModeFinalCompositeProgressiveEdgeStretch, -5.0f);
     }
 
     void bidirectionalStretchUsesContinuousRoundedPerimeter()
@@ -432,12 +443,27 @@ private slots:
                  "Direct Vulkan shader must compute luminance after RGB curve channels.");
         QVERIFY2(source.contains(QStringLiteral("rgb *= remappedLuma / curveLuma;")),
                  "Direct Vulkan shader must preserve chroma when applying the Brightness/Luma curve.");
-        QVERIFY2(source.contains(QStringLiteral("} else if (backgroundFill)")) &&
-                     source.contains(QStringLiteral("rgb = applyCurveLut(rgb, false);")),
-                 "Direct Vulkan shader must apply the clip curve LUT to background/stretch fills.");
+        const int postGradeHelper = source.indexOf(
+            QStringLiteral("vec4 samplePostGradeTexture(vec2 uv)"));
+        const int postGradeCurve = source.indexOf(
+            QStringLiteral("rgb = applyCurveLut(rgb, false);"),
+            postGradeHelper);
+        const int postGradeBrightness = source.indexOf(
+            QStringLiteral("frame.backgroundGrade.y"),
+            postGradeHelper);
+        const int fillSampling = source.indexOf(
+            QStringLiteral("sampleBidirectionalRing"),
+            postGradeHelper);
+        QVERIFY2(postGradeHelper >= 0 &&
+                     postGradeCurve > postGradeHelper &&
+                     postGradeBrightness > postGradeCurve &&
+                     fillSampling > postGradeBrightness,
+                 "Edge Fill must sample fully graded clip color before its "
+                 "spatial reconstruction.");
         QVERIFY2(source.contains(QStringLiteral("frame.backgroundShadows.rgb")) &&
                      source.contains(QStringLiteral("frame.backgroundMidtones.rgb")) &&
-                     source.contains(QStringLiteral("frame.backgroundHighlights.rgb")),
+                     source.contains(QStringLiteral("frame.backgroundHighlights.rgb")) &&
+                     source.contains(QStringLiteral("frame.backgroundGrade")),
                  "Background/stretch fills must apply full tonal grading vectors from per-draw uniforms.");
         QVERIFY2(source.contains(QStringLiteral("return vec4(0.0);")) &&
                      source.contains(QStringLiteral("insideClipBounds")),
@@ -481,8 +507,9 @@ private slots:
         QVERIFY2(source.contains(QStringLiteral("baseEffects.shadows")) &&
                      source.contains(QStringLiteral("baseEffects.midtones")) &&
                      source.contains(QStringLiteral("baseEffects.highlights")) &&
+                     source.contains(QStringLiteral("backgroundGrade")) &&
                      source.contains(QStringLiteral("frameUniformDynamicOffset")),
-                 "Direct Vulkan presenter must pass full background grading through per-draw dynamic uniforms.");
+                 "Direct Vulkan presenter must pass the complete pre-fill grade through per-draw dynamic uniforms.");
         QVERIFY2(source.contains(QStringLiteral("effectClip.edgeFillOpacity")) &&
                      source.contains(QStringLiteral("effectClip.edgeFillBrightness")) &&
                      source.contains(QStringLiteral("effectClip.edgeFillSaturation")),
@@ -503,8 +530,9 @@ private slots:
         QVERIFY2(source.contains(QStringLiteral("? renderOutputSize")) &&
                      source.contains(QStringLiteral(": compositeRect.size().toSize()")),
                  "Progressive edge stretch must update the shader frame uniform with output size, not preview canvas size.");
-        QVERIFY2(source.contains(QStringLiteral("const bool useCompositeTarget = false")),
-                 "Direct Vulkan presenter must not route clip-basis progressive stretch through a final composite target.");
+        QVERIFY2(!source.contains(QStringLiteral("useCompositeTarget")) &&
+                     !source.contains(QStringLiteral("finalCompositeStretch")),
+                 "Direct Vulkan presenter must contain only the clip-owned Edge Fill path.");
         QVERIFY2(source.contains(QStringLiteral("recordSwapchainReadback(cb, &slot, swapSize)")),
                  "Direct Vulkan presenter must make the post-final-pass frame available to the pipeline tap.");
         QVERIFY2(source.contains(QStringLiteral("m_owner->pipelineThumbnailReadbackPending()")),

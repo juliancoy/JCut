@@ -99,6 +99,7 @@ struct VulkanPreviewClipFrameStatus {
     qreal speakerFramingTargetY = 0.0;
     qreal speakerFramingTargetBox = -1.0;
     int correctionPolygonCount = 0;
+    QVector<TimelineClip::CorrectionPolygon> correctionPolygons;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0;

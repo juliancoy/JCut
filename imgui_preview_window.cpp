@@ -21,6 +21,7 @@
 #include <atomic>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <cstdio>
 #include <sstream>
@@ -29,6 +30,7 @@
 namespace {
 
 constexpr uint32_t kMinImageCount = 2;
+constexpr std::uint64_t kMonitorSwapchainWaitTimeoutNs = 16'000'000ull;
 
 QRectF toQRectF(const jcut::core::RectF& rect)
 {
@@ -934,14 +936,14 @@ void rebuildSwapchainIfNeeded(ImGuiPreviewWindow::Impl* impl)
     }
 }
 
-void frameRender(ImGuiPreviewWindow::Impl* impl, ImDrawData* drawData)
+bool frameRender(ImGuiPreviewWindow::Impl* impl, ImDrawData* drawData)
 {
     ImGui_ImplVulkanH_Window* wd = &impl->windowData;
     VkSemaphore imageAcquiredSemaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore renderCompleteSemaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
     VkResult err = vkAcquireNextImageKHR(impl->device,
                                          wd->Swapchain,
-                                         UINT64_MAX,
+                                         kMonitorSwapchainWaitTimeoutNs,
                                          imageAcquiredSemaphore,
                                          VK_NULL_HANDLE,
                                          &wd->FrameIndex);
@@ -949,11 +951,29 @@ void frameRender(ImGuiPreviewWindow::Impl* impl, ImDrawData* drawData)
         impl->swapchainRebuild = true;
     }
     if (err == VK_ERROR_OUT_OF_DATE_KHR) {
-        return;
+        return false;
+    }
+    if (err == VK_TIMEOUT || err == VK_NOT_READY) {
+        return false;
+    }
+    if (err != VK_SUCCESS && err != VK_SUBOPTIMAL_KHR) {
+        return false;
     }
 
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
-    vkWaitForFences(impl->device, 1, &fd->Fence, VK_TRUE, UINT64_MAX);
+    const VkResult fenceWait =
+        vkWaitForFences(impl->device,
+                        1,
+                        &fd->Fence,
+                        VK_TRUE,
+                        kMonitorSwapchainWaitTimeoutNs);
+    if (fenceWait == VK_TIMEOUT || fenceWait == VK_NOT_READY) {
+        return false;
+    }
+    if (fenceWait != VK_SUCCESS) {
+        impl->swapchainRebuild = true;
+        return false;
+    }
     vkResetFences(impl->device, 1, &fd->Fence);
     vkResetCommandPool(impl->device, fd->CommandPool, 0);
 
@@ -985,7 +1005,11 @@ void frameRender(ImGuiPreviewWindow::Impl* impl, ImDrawData* drawData)
     submitInfo.pCommandBuffers = &fd->CommandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderCompleteSemaphore;
-    vkQueueSubmit(impl->queue, 1, &submitInfo, fd->Fence);
+    if (vkQueueSubmit(impl->queue, 1, &submitInfo, fd->Fence) != VK_SUCCESS) {
+        impl->swapchainRebuild = true;
+        return false;
+    }
+    return true;
 }
 
 void framePresent(ImGuiPreviewWindow::Impl* impl)
@@ -1710,8 +1734,9 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     ImDrawData* drawData = ImGui::GetDrawData();
     const bool minimized = drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f;
     if (!minimized) {
-        frameRender(m_impl.get(), drawData);
-        framePresent(m_impl.get());
+        if (frameRender(m_impl.get(), drawData)) {
+            framePresent(m_impl.get());
+        }
     }
 
     m_impl->lastPresentedSourceFrame = frameNumber;
@@ -1883,8 +1908,9 @@ bool ImGuiPreviewWindow::presentRenderMonitorFrame(
     const bool minimized =
         drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f;
     if (!minimized) {
-        frameRender(m_impl.get(), drawData);
-        framePresent(m_impl.get());
+        if (frameRender(m_impl.get(), drawData)) {
+            framePresent(m_impl.get());
+        }
     }
 
     m_impl->lastPresentedSourceFrame = status.timelineFrame;

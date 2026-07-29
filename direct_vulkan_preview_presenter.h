@@ -73,11 +73,6 @@ struct DirectVulkanPreviewStats {
     int descriptorSetCount = 0;
     int activeClipHandoffResourceCount = 0;
     int retiredClipHandoffResourceCount = 0;
-    bool finalCompositeStretchPrepared = false;
-    bool finalCompositeStretchDrawn = false;
-    QString finalCompositeStretchSourceClipId;
-    QString finalCompositeStretchSourceLabel;
-    QString finalCompositeStretchReason;
     int transcriptCandidateCount = 0;
     int transcriptPreparedCount = 0;
     int transcriptDrawnCount = 0;

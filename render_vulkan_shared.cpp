@@ -115,6 +115,51 @@ QByteArray vulkanIdentityCurveLutRgbaBytes()
     return vulkanCurveLutRgbaBytes(grade);
 }
 
+QByteArray vulkanMaskCorrectionStorageData(
+    const QVector<TimelineClip::CorrectionPolygon>& polygons)
+{
+    QVector<const TimelineClip::CorrectionPolygon*> active;
+    qsizetype pointCount = 0;
+    for (const TimelineClip::CorrectionPolygon& polygon : polygons) {
+        if (!polygon.enabled || polygon.pointsNormalized.size() < 3) {
+            continue;
+        }
+        active.push_back(&polygon);
+        pointCount += polygon.pointsNormalized.size();
+    }
+
+    // std430 vec4 entries:
+    //   [0]                  polygon count
+    //   [1..polygonCount]    first-point index, point count
+    //   [1+polygonCount..]   normalized xy points
+    const qsizetype entryCount = 1 + active.size() + pointCount;
+    QByteArray storage(
+        static_cast<qsizetype>(entryCount * 4 * sizeof(float)), Qt::Uninitialized);
+    auto* entries = reinterpret_cast<float*>(storage.data());
+    std::fill(entries, entries + entryCount * 4, 0.0f);
+    entries[0] = static_cast<float>(active.size());
+    qsizetype firstPoint = 0;
+    for (qsizetype polygonIndex = 0;
+         polygonIndex < active.size();
+         ++polygonIndex) {
+        const TimelineClip::CorrectionPolygon& polygon =
+            *active.at(polygonIndex);
+        float* header = entries + ((1 + polygonIndex) * 4);
+        header[0] = static_cast<float>(firstPoint);
+        header[1] = static_cast<float>(polygon.pointsNormalized.size());
+        for (const QPointF& point : polygon.pointsNormalized) {
+            float* encodedPoint =
+                entries + ((1 + active.size() + firstPoint) * 4);
+            encodedPoint[0] = static_cast<float>(
+                qBound<qreal>(0.0, point.x(), 1.0));
+            encodedPoint[1] = static_cast<float>(
+                qBound<qreal>(0.0, point.y(), 1.0));
+            ++firstPoint;
+        }
+    }
+    return storage;
+}
+
 QVector<QRectF> VulkanEffectPipelinePlan::generatedDrawRects() const
 {
     QVector<QRectF> rects;
@@ -638,12 +683,10 @@ VulkanGradePayload vulkanGradePayloadForGrade(
 VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity)
 {
     return vulkanBackgroundFillEffectState(BackgroundFillEffect::BlurCover,
-                                           VulkanDrawEffectState{},
                                            opacity);
 }
 
 VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effect,
-                                                      const VulkanDrawEffectState& baseEffects,
                                                       float opacity,
                                                       float brightness,
                                                       float saturation,
@@ -654,9 +697,9 @@ VulkanDrawEffectState vulkanBackgroundFillEffectState(BackgroundFillEffect effec
 {
     VulkanDrawEffectState state;
     state.opacity = std::clamp(opacity, 0.0f, 1.0f);
-    state.brightness = std::clamp(baseEffects.brightness + brightness, -1.0f, 1.0f);
-    state.contrast = std::clamp(baseEffects.contrast, 0.0f, 4.0f);
-    state.saturation = std::clamp(baseEffects.saturation * saturation, 0.0f, 3.0f);
+    state.brightness = std::clamp(brightness, -1.0f, 1.0f);
+    state.contrast = 1.0f;
+    state.saturation = std::clamp(saturation, 0.0f, 3.0f);
     if (effect == BackgroundFillEffect::EdgeStretch ||
         effect == BackgroundFillEffect::ProgressiveEdgeStretch ||
         effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch ||

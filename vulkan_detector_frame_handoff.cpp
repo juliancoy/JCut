@@ -16,7 +16,7 @@
 #endif
 
 #if !defined(JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY)
-#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 0
+#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1
 #endif
 
 extern "C" {
@@ -142,23 +142,10 @@ Nv12ColorConversion nv12ColorConversionForFrame(const editor::FrameHandle& frame
             devicePtr = 0;
             return;
         }
-#if JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY
         memory = nullptr;
         devicePtr = 0;
         Q_UNUSED(context);
         return;
-#else
-        CUcontext previous = nullptr;
-        if (context) {
-            cuCtxPushCurrent(reinterpret_cast<CUcontext>(context));
-        }
-        cuDestroyExternalMemory(reinterpret_cast<CUexternalMemory>(memory));
-    if (context) {
-        cuCtxPopCurrent(&previous);
-        }
-        memory = nullptr;
-        devicePtr = 0;
-#endif
     }
 
 void destroyCudaExternalSemaphore(void*& semaphore, void* context)
@@ -1318,7 +1305,6 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         bufDesc.size = allocationSize;
         CUdeviceptr devPtr = 0;
         if (cuExternalMemoryGetMappedBuffer(&devPtr, extMem, &bufDesc) != CUDA_SUCCESS) {
-            cuDestroyExternalMemory(extMem);
             if (errorMessage) *errorMessage = QStringLiteral("cuExternalMemoryGetMappedBuffer failed (%1)").arg(label);
             return false;
         }
@@ -1762,7 +1748,6 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         bufDesc.size = allocationSize;
         CUdeviceptr devPtr = 0;
         if (cuExternalMemoryGetMappedBuffer(&devPtr, extMem, &bufDesc) != CUDA_SUCCESS) {
-            cuDestroyExternalMemory(extMem);
             if (errorMessage) *errorMessage = QStringLiteral("cuExternalMemoryGetMappedBuffer failed (%1)").arg(label);
             return false;
         }

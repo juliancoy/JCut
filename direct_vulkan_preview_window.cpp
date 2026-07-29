@@ -3556,9 +3556,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     const QSize swapSize = m_window->swapChainImageSize();
-    const bool useCompositeTarget = false;
-    rp.renderPass = useCompositeTarget ? m_compositeRenderPass : m_window->defaultRenderPass();
-    rp.framebuffer = useCompositeTarget ? m_compositeFramebuffer : m_window->currentFramebuffer();
+    rp.renderPass = m_window->defaultRenderPass();
+    rp.framebuffer = m_window->currentFramebuffer();
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                             static_cast<uint32_t>(std::max(1, swapSize.height()))};
@@ -3937,6 +3936,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     if (status.frameCrossfadeMaskTextureEnabled &&
                         status.frameCrossfadeMaskBuffer) {
                         VulkanMaskPreprocessOptions secondaryMaskOptions;
+                        secondaryMaskOptions.correctionStorage =
+                            render_detail::vulkanMaskCorrectionStorageData(
+                                status.correctionPolygons);
                         secondaryMaskOptions.outputSize =
                             status.frameCrossfadeFrameSize.isValid()
                                 ? status.frameCrossfadeFrameSize
@@ -3974,6 +3976,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             if (status.maskTextureEnabled && status.maskBuffer) {
                 VulkanMaskPreprocessOptions maskOptions;
+                maskOptions.correctionStorage =
+                    render_detail::vulkanMaskCorrectionStorageData(
+                        status.correctionPolygons);
                 maskOptions.outputSize = status.frameSize;
                 maskOptions.invert = status.maskInvert;
                 maskOptions.erodeRadius = qRound(qMax<qreal>(0.0, status.maskErode));
@@ -4382,18 +4387,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     int64_t presentedSourceFrame = -1;
     qint64 handoffAttemptCount = mediaOwnerHandoffAttemptCount;
     qint64 handoffSuccessCount = mediaOwnerHandoffSuccessCount;
-    VulkanPipeline::Push finalCompositeStretchPush{};
-    bool finalCompositeStretchReady = false;
-    QRectF finalCompositeRect;
-    if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-        stats->finalCompositeStretchPrepared = false;
-        stats->finalCompositeStretchDrawn = false;
-        stats->finalCompositeStretchSourceClipId.clear();
-        stats->finalCompositeStretchSourceLabel.clear();
-        stats->finalCompositeStretchReason = useCompositeTarget
-            ? QStringLiteral("not_prepared")
-            : QStringLiteral("disabled");
-    }
     QSet<QString> submittedClipIds;
     QSet<QString> submittedCrossfadeClipIds;
     if (state) {
@@ -4413,7 +4406,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                  state->previewPanOffset);
         const QRectF compositeRect = viewTransform.targetRect();
         const QPointF previewScale = viewTransform.outputScale();
-        finalCompositeRect = compositeRect;
         struct PendingMaskForegroundDraw {
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
             VulkanPipeline::Push push;
@@ -4425,7 +4417,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         canvasClear.color.float32[0] = static_cast<float>(std::clamp<double>(base.redF(), 0.0, 1.0));
         canvasClear.color.float32[1] = static_cast<float>(std::clamp<double>(base.greenF(), 0.0, 1.0));
         canvasClear.color.float32[2] = static_cast<float>(std::clamp<double>(base.blueF(), 0.0, 1.0));
-        canvasClear.color.float32[3] = useCompositeTarget ? 0.0f : 1.0f;
+        canvasClear.color.float32[3] = 1.0f;
         clearRect(m_devFuncs, cb, canvasClear, clearRectFromQRect(compositeRect, swapSize));
         VkClearValue canvasBorder{};
         canvasBorder.color.float32[0] = 0.22f;
@@ -4622,13 +4614,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     // preview transform only presents the already-defined
                     // output area; it must not change shader sampling.
                     uint32_t backgroundFrameUniformOffset = 0;
+                    const float backgroundGrade[4] = {
+                        baseEffects.brightness,
+                        baseEffects.contrast,
+                        baseEffects.saturation,
+                        0.0f};
                     if (sampledResources &&
                         sampledResources->updateFrameUniform(progressiveRenderSpaceFill
                                                                  ? renderOutputSize
                                                                  : compositeRect.size().toSize(),
                                                              baseEffects.shadows,
                                                              baseEffects.midtones,
-                                                             baseEffects.highlights)) {
+                                                             baseEffects.highlights,
+                                                             backgroundGrade)) {
                         backgroundFrameUniformOffset = sampledResources->frameUniformDynamicOffset();
                     }
                     mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
@@ -4642,7 +4640,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     const render_detail::VulkanDrawEffectState backgroundEffects =
                         render_detail::vulkanBackgroundFillEffectState(
                             effectiveFillEffect,
-                            baseEffects,
                             static_cast<float>(effectClip.edgeFillOpacity),
                             static_cast<float>(effectClip.edgeFillBrightness),
                             static_cast<float>(effectClip.edgeFillSaturation),
@@ -5268,76 +5265,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
-    if (useCompositeTarget &&
-        m_compositeView != VK_NULL_HANDLE &&
-        m_resources &&
-        m_resources->isReady() &&
-        m_pipeline &&
-        m_pipeline->isReady()) {
-        m_resources->setSampledImage(m_compositeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        m_resources->updateFrameUniform(state && state->outputSize.isValid()
-                                            ? state->outputSize
-                                            : swapSize);
-        VkRenderPassBeginInfo presentPass = rp;
-        presentPass.renderPass = m_window->defaultRenderPass();
-        presentPass.framebuffer = m_window->currentFramebuffer();
-        presentPass.clearValueCount = m_window->depthStencilFormat() == VK_FORMAT_UNDEFINED ? 1u : 2u;
-        presentPass.pClearValues = clearValues;
-        m_devFuncs->vkCmdBeginRenderPass(cb, &presentPass, VK_SUBPASS_CONTENTS_INLINE);
-        VkViewport presentViewport{};
-        presentViewport.x = 0.0f;
-        presentViewport.y = 0.0f;
-        presentViewport.width = static_cast<float>(std::max(1, swapSize.width()));
-        presentViewport.height = static_cast<float>(std::max(1, swapSize.height()));
-        presentViewport.minDepth = 0.0f;
-        presentViewport.maxDepth = 1.0f;
-        VkRect2D fullScissor{};
-        fullScissor.offset = {0, 0};
-        fullScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
-                              static_cast<uint32_t>(std::max(1, swapSize.height()))};
-        VulkanPipeline::Push passthroughPush{};
-        render_detail::vulkanMvpForOutputRect(
-            QRectF(QPointF(0.0, 0.0), QSizeF(swapSize)),
-            swapSize,
-            0.0,
-            passthroughPush.mvp);
-        m_pipeline->bindAndDraw(cb,
-                                presentViewport,
-                                fullScissor,
-                                m_resources->descriptorSet(),
-                                passthroughPush,
-                                m_resources->frameUniformDynamicOffset());
-        if (finalCompositeStretchReady && finalCompositeRect.isValid()) {
-            const VkRect2D compositeScissor = scissorFromQRect(finalCompositeRect, swapSize);
-            m_pipeline->bindAndDraw(cb,
-                                    presentViewport,
-                                    compositeScissor,
-                                    m_resources->descriptorSet(),
-                                    finalCompositeStretchPush,
-                                    m_resources->frameUniformDynamicOffset());
-            if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-                stats->finalCompositeStretchDrawn = true;
-                stats->finalCompositeStretchReason = QStringLiteral("drawn");
+    if (m_owner->pipelineThumbnailReadbackPending()) {
+        const int imageIndex = m_window->currentSwapChainImageIndex();
+        if (imageIndex >= 0) {
+            if (static_cast<int>(m_readbackSlots.size()) <= imageIndex) {
+                m_readbackSlots.resize(static_cast<size_t>(imageIndex + 1));
             }
-        } else if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-            stats->finalCompositeStretchDrawn = false;
-            stats->finalCompositeStretchReason =
-                finalCompositeStretchReady
-                    ? QStringLiteral("invalid_composite_rect")
-                    : QStringLiteral("not_prepared");
-        }
-        m_devFuncs->vkCmdEndRenderPass(cb);
-        if (m_owner->pipelineThumbnailReadbackPending()) {
-            const int imageIndex = m_window->currentSwapChainImageIndex();
-            if (imageIndex >= 0) {
-                if (static_cast<int>(m_readbackSlots.size()) <= imageIndex) {
-                    m_readbackSlots.resize(static_cast<size_t>(imageIndex + 1));
-                }
-                ReadbackSlot& slot = m_readbackSlots[static_cast<size_t>(imageIndex)];
-                if (ensureReadbackSlot(&slot, swapSize, m_window->colorFormat())) {
-                    recordSwapchainReadback(cb, &slot, swapSize);
-                    m_owner->markPipelineThumbnailReadbackRecorded(swapSize);
-                }
+            ReadbackSlot& slot =
+                m_readbackSlots[static_cast<size_t>(imageIndex)];
+            if (ensureReadbackSlot(
+                    &slot, swapSize, m_window->colorFormat())) {
+                recordSwapchainReadback(cb, &slot, swapSize);
+                m_owner->markPipelineThumbnailReadbackRecorded(swapSize);
             }
         }
     }

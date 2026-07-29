@@ -738,8 +738,12 @@ private:
                 pointer,
                 *externalMemory,
                 &mapping) != CUDA_SUCCESS) {
-            cuDestroyExternalMemory(*externalMemory);
+            // Driver-safe external-memory policy: do not synchronously destroy
+            // CUDA imports from render/import workers. Retire by dropping the
+            // cached handle/pointer; the owning CUDA device/context controls
+            // the opaque import lifetime.
             *externalMemory = nullptr;
+            *pointer = 0;
             return fail(error, "cuExternalMemoryGetMappedBuffer failed");
         }
         cudaContext = context;
@@ -756,10 +760,6 @@ private:
                 pushed =
                     cuCtxPushCurrent(cudaContext) == CUDA_SUCCESS;
             }
-#if !defined(JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY) || \
-    !JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY
-            cuDestroyExternalMemory(*memory);
-#endif
             if (pushed) {
                 CUcontext previous = nullptr;
                 cuCtxPopCurrent(&previous);

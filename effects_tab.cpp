@@ -782,9 +782,13 @@ void EffectsTab::refresh()
     if (m_widgets.effectSpeechSyncCheck) {
         const bool steadyIncrease =
             clip->effectModulationMode == QStringLiteral("steady_increase");
+        const bool progressiveEdgePreset =
+            clip->edgeFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+            clip->edgeFillEffect ==
+                BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
         m_widgets.effectSpeechSyncCheck->setEnabled(
             imagePresetCapable && imagePresetActive &&
-            steadyIncrease || imagePresetActive);
+            (steadyIncrease || !progressiveEdgePreset));
     }
     if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setEnabled(imagePresetActive);
     if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setEnabled(imagePresetActive);

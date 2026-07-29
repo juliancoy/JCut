@@ -17,6 +17,7 @@ class QVulkanDeviceFunctions;
 
 struct VulkanMaskPreprocessOptions {
     QSize outputSize;
+    QByteArray correctionStorage;
     bool invert = false;
     int erodeRadius = 0;
     int dilateRadius = 0;
@@ -65,6 +66,7 @@ public:
                             const float* backgroundShadows = nullptr,
                             const float* backgroundMidtones = nullptr,
                             const float* backgroundHighlights = nullptr,
+                            const float* backgroundGrade = nullptr,
                             const float* effectParams = nullptr);
     uint32_t frameUniformDynamicOffset() const { return m_frameUniformDynamicOffset; }
 
@@ -102,13 +104,19 @@ private:
                             VkImageView inputView,
                             VkImageView outputView,
                             VkImage outputImage,
-                            VkImageLayout& outputLayout);
+                            VkImageLayout& outputLayout,
+                            VkDeviceSize correctionStorageOffset,
+                            VkDeviceSize correctionStorageBytes);
     bool preprocessMaskTexture(VkCommandBuffer commandBuffer,
                                const VulkanMaskPreprocessOptions& options);
     bool ensureTextureSize(const QSize& size);
     bool ensureStagingCapacity(VkDeviceSize bytes);
     bool reserveStagingUpload(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize* offsetOut);
     bool writeStagingUpload(const void* data, VkDeviceSize bytes, VkDeviceSize* offsetOut);
+    bool writeStagingUpload(const void* data,
+                            VkDeviceSize bytes,
+                            VkDeviceSize alignment,
+                            VkDeviceSize* offsetOut);
     bool uploadCurveLutImage(VkCommandBuffer commandBuffer,
                              const QByteArray& rgbaLut,
                              VkImage image,
@@ -179,6 +187,8 @@ private:
     int m_uploadedMaskErodeRadius = 0;
     int m_uploadedMaskDilateRadius = 0;
     int m_uploadedMaskBlurRadius = 0;
+    QByteArray m_uploadedMaskCorrectionStorage;
+    VkDeviceSize m_storageBufferOffsetAlignment = 16;
 
     VkDescriptorSetLayout m_maskComputeDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_maskComputeDescriptorPool = VK_NULL_HANDLE;

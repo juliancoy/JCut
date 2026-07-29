@@ -10,6 +10,7 @@ layout(set = 0, binding = 4) uniform FrameUniforms {
     vec4 backgroundShadows;
     vec4 backgroundMidtones;
     vec4 backgroundHighlights;
+    vec4 backgroundGrade; // xyz = brightness, contrast, saturation
     vec4 effectParams; // x=intensity/scale, y=count/radius, z=animation phase, w=spacing
 } frame;
 layout(push_constant) uniform Push {
@@ -78,6 +79,31 @@ vec2 textureInteriorClamp(vec2 uv) {
     return clamp(uv, low, high);
 }
 
+vec4 samplePostGradeTexture(vec2 uv) {
+    vec4 sampleColor = texture(u_texture, uv);
+    vec3 rgb = sampleColor.rgb;
+    float luminance = lumaOf(rgb);
+    float shadowWeight = pow(1.0 - luminance, 2.0);
+    float midtoneWeight = 1.0 - abs(luminance - 0.5) * 2.0;
+    float highlightWeight = pow(luminance, 2.0);
+    rgb *= 1.0 + frame.backgroundShadows.rgb * shadowWeight;
+    vec3 midtoneAdjust = frame.backgroundMidtones.rgb * midtoneWeight;
+    rgb.r = pow(max(rgb.r, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.r));
+    rgb.g = pow(max(rgb.g, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.g));
+    rgb.b = pow(max(rgb.b, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.b));
+    rgb += frame.backgroundHighlights.rgb * highlightWeight;
+    if (frame.backgroundShadows.a > 0.5 &&
+        frame.backgroundShadows.a < 1.5) {
+        rgb = applyCurveLut(rgb, false);
+    }
+    rgb = ((rgb - 0.5) * frame.backgroundGrade.y) +
+          0.5 + vec3(frame.backgroundGrade.x);
+    float gradedLuma = lumaOf(rgb);
+    rgb = mix(vec3(gradedLuma), rgb, frame.backgroundGrade.z);
+    sampleColor.rgb = clamp(rgb, vec3(0.0), vec3(1.0));
+    return sampleColor;
+}
+
 vec2 safeClampRange(vec2 value, vec2 low, vec2 high) {
     vec2 safeLow = min(low, high);
     vec2 safeHigh = max(low, high);
@@ -108,8 +134,7 @@ vec4 sampleBidirectionalRing(vec2 polarDirection,
     vec2 sourceUv =
         vec2(0.5) + superellipseDirection(polarDirection) * sampleRadius * 0.5;
     vec2 mappedUv = sampleMin + sourceUv * sampleSpan;
-    return texture(
-        u_texture,
+    return samplePostGradeTexture(
         safeClampRange(mappedUv,
                        sampleMin + sampleHalfTexel,
                        sampleMax - sampleHalfTexel));
@@ -190,14 +215,14 @@ vec4 blurredFillSample(vec2 uv) {
             float dist2 = float((x * x) + (y * y));
             float weight = 1.0 / (1.0 + dist2 * 0.28);
             vec2 sampleCoord = textureInteriorClamp(uv + vec2(float(x), float(y)) * texelSize * radius * 0.62);
-            sum += texture(u_texture, sampleCoord) * weight;
+            sum += samplePostGradeTexture(sampleCoord) * weight;
             weightSum += weight;
         }
     }
     return sum / max(0.0001, weightSum);
 }
 
-vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
+vec4 edgeStretchFillSample(vec2 uv) {
     vec2 center = pc.u_shadows.xy;
     float inverseWidth = max(0.0001, abs(pc.u_shadows.z));
     float signedInverseHeight = abs(pc.u_shadows.w) < 0.0001
@@ -211,7 +236,6 @@ vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
     vec2 sampleMax = clamp(max(rawValidMin, rawValidMax), sampleMin, vec2(1.0));
     vec2 validSpan = max(sampleMax - sampleMin, vec2(0.0));
     vec2 sampleSpan = max(validSpan, vec2(1.0) / max(vec2(1.0), texSize));
-    vec2 rawValidSpan = max(abs(rawValidMax - rawValidMin), vec2(1.0) / max(vec2(1.0), texSize));
     vec2 frameOutputSize = frame.outputSizeAndInverse.xy;
     float outputAspect = frameOutputSize.x / max(1.0, frameOutputSize.y);
     vec2 delta = vec2((uv.x - center.x) * outputAspect, uv.y - center.y);
@@ -225,7 +249,7 @@ vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
     vec2 originalSourceUv = sourceUv;
     bool insideClipBounds = originalSourceUv.x >= 0.0 && originalSourceUv.x <= 1.0 &&
                             originalSourceUv.y >= 0.0 && originalSourceUv.y <= 1.0;
-    vec2 edgePixelBasis = sampleCompositeScreen ? frameOutputSize : texSize * sampleSpan;
+    vec2 edgePixelBasis = texSize * sampleSpan;
     vec2 edgeSpan = safeClampRange(vec2(max(1.0, pc.u_midtones.x)) /
                                        max(vec2(1.0), edgePixelBasis),
                                    halfTexel,
@@ -233,7 +257,7 @@ vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
     bool progressive = pc.u_highlights.a < -2.5;
     float power = max(0.25, pc.u_midtones.z);
 
-    if (progressive && !sampleCompositeScreen && insideClipBounds) {
+    if (progressive && insideClipBounds) {
         return vec4(0.0);
     }
 
@@ -293,46 +317,9 @@ vec4 edgeStretchFillSample(vec2 uv, bool sampleCompositeScreen) {
         }
     }
     vec2 sampleHalfTexel = min(halfTexel, sampleSpan * 0.5);
-    if (sampleCompositeScreen) {
-        vec2 clampedLocal = vec2((sourceUv.x - 0.5) / inverseWidth,
-                                 (sourceUv.y - 0.5) / signedInverseHeight);
-        vec2 screenDelta = vec2(cosine * clampedLocal.x - sine * clampedLocal.y,
-                                sine * clampedLocal.x + cosine * clampedLocal.y);
-        vec2 screenUv = vec2(center.x + screenDelta.x / outputAspect,
-                             center.y + screenDelta.y);
-        vec2 compositeUv = rawValidMin + screenUv * rawValidSpan;
-        vec2 sampleLow = sampleMin + sampleHalfTexel;
-        vec2 sampleHigh = sampleMax - sampleHalfTexel;
-        vec2 resolvedUv = safeClampRange(compositeUv, sampleLow, sampleHigh);
-        vec4 resolvedSample = texture(u_texture, resolvedUv);
-        if (resolvedSample.a <= 0.01) {
-            vec2 outside = max(max(-originalSourceUv, originalSourceUv - vec2(1.0)),
-                               vec2(0.0));
-            vec2 inwardStep = vec2(0.0);
-            if (outside.x >= outside.y) {
-                inwardStep.x = originalSourceUv.x < 0.5 ? 1.0 : -1.0;
-            } else {
-                inwardStep.y = originalSourceUv.y < 0.5 ? 1.0 : -1.0;
-            }
-            vec2 onePixel = 1.0 / max(vec2(1.0), frameOutputSize);
-            for (int i = 1; i <= 1024; ++i) {
-                vec2 searchScreenUv = screenUv + inwardStep * onePixel * float(i);
-                vec2 searchUv = safeClampRange(rawValidMin + searchScreenUv * rawValidSpan,
-                                               sampleLow,
-                                               sampleHigh);
-                vec4 searchSample = texture(u_texture, searchUv);
-                if (searchSample.a > 0.01) {
-                    resolvedSample = searchSample;
-                    break;
-                }
-            }
-        }
-        return resolvedSample;
-    }
-
     vec2 mappedUv = sampleMin + sourceUv * sampleSpan;
-    return texture(u_texture,
-                   safeClampRange(mappedUv, sampleMin + sampleHalfTexel, sampleMax - sampleHalfTexel));
+    return samplePostGradeTexture(
+        safeClampRange(mappedUv, sampleMin + sampleHalfTexel, sampleMax - sampleHalfTexel));
 }
 
 vec4 progressiveBidirectionalEdgeStretchSample(vec2 uv) {
@@ -467,7 +454,7 @@ vec4 mirrorFillSample(vec2 uv) {
     vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
     vec2 validUv = validMin + vec2(mirroredCoord(sourceUv.x), mirroredCoord(sourceUv.y)) *
                                       max(validMax - validMin, vec2(0.0001));
-    return texture(u_texture, textureInteriorClamp(validUv));
+    return samplePostGradeTexture(textureInteriorClamp(validUv));
 }
 
 vec4 tileFillSample(vec2 uv) {
@@ -488,41 +475,34 @@ vec4 tileFillSample(vec2 uv) {
     vec2 validMax = clamp(vec2(pc.u_highlights.z, pc.u_midtones.w), validMin, vec2(1.0));
     vec2 validUv = validMin + fract(sourceUv) *
                                       max(validMax - validMin, vec2(0.0001));
-    return texture(u_texture, textureInteriorClamp(validUv));
+    return samplePostGradeTexture(textureInteriorClamp(validUv));
 }
 
 void main() {
     bool tileFill = pc.u_highlights.a < -6.5;
     bool progressiveBidirectionalEdgeStretchFill =
         pc.u_highlights.a < -5.5 && !tileFill;
-    bool finalCompositeProgressiveEdgeStretchFill =
-        pc.u_highlights.a < -4.5 && !progressiveBidirectionalEdgeStretchFill;
     bool mirrorFill = pc.u_highlights.a < -3.5 &&
-        !finalCompositeProgressiveEdgeStretchFill &&
         !progressiveBidirectionalEdgeStretchFill &&
         !tileFill;
     bool progressiveEdgeStretchFill = pc.u_highlights.a < -2.5 &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill &&
         !tileFill;
     bool edgeStretchFill = pc.u_highlights.a < -1.5 &&
         !progressiveEdgeStretchFill &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill &&
         !tileFill;
     bool blurredFill = pc.u_highlights.a < -0.5 &&
         !edgeStretchFill &&
         !progressiveEdgeStretchFill &&
         !mirrorFill &&
-        !finalCompositeProgressiveEdgeStretchFill &&
         !tileFill;
     bool backgroundFill = mirrorFill ||
         progressiveEdgeStretchFill ||
         progressiveBidirectionalEdgeStretchFill ||
         tileFill ||
         edgeStretchFill ||
-        blurredFill ||
-        finalCompositeProgressiveEdgeStretchFill;
+        blurredFill;
     // Background fills repurpose u_shadows.a for the signed
     // output-height/source-height mapping. It is geometry, not an effect mode.
     // Without this namespace boundary, ordinary zoom ratios such as 4, 5, or
@@ -654,8 +634,8 @@ void main() {
         ? progressiveBidirectionalEdgeStretchSample(v_texCoord)
         : mirrorFill
         ? mirrorFillSample(v_texCoord)
-        : (progressiveEdgeStretchFill || edgeStretchFill || finalCompositeProgressiveEdgeStretchFill
-            ? edgeStretchFillSample(v_texCoord, finalCompositeProgressiveEdgeStretchFill)
+        : (progressiveEdgeStretchFill || edgeStretchFill
+            ? edgeStretchFillSample(v_texCoord)
             : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, textureInteriorClamp(effectUv))));
 
     float sourceAlpha = c.a;
@@ -716,9 +696,6 @@ void main() {
                                      sqrt(max(lum, 0.0)) * 0.48 + 0.08,
                                      length(dotUv));
         rgb = vec3(ink);
-    }
-    if (finalCompositeProgressiveEdgeStretchFill && sourceAlpha > 0.01) {
-        sourceAlpha = 1.0;
     }
     // Some hardware-direct decoder paths provide valid color but undefined/zero alpha.
     // Treat non-black, near-zero-alpha texels as opaque to avoid black preview frames.
@@ -795,21 +772,6 @@ void main() {
             rgb = clamp(rgb * synthTone * scan, vec3(0.0), vec3(1.0));
             rgb += vec3(0.035, 0.012, 0.055) * smoothstep(0.18, 0.72, radius);
             sourceAlpha *= 1.0 - smoothstep(0.50, 0.74, radius) * 0.34;
-        }
-    } else if (backgroundFill) {
-        float luminance = lumaOf(rgb);
-        float shadowWeight = pow(1.0 - luminance, 2.0);
-        float midtoneWeight = 1.0 - abs(luminance - 0.5) * 2.0;
-        float highlightWeight = pow(luminance, 2.0);
-
-        rgb *= (1.0 + frame.backgroundShadows.rgb * shadowWeight);
-        vec3 midtoneAdjust = frame.backgroundMidtones.rgb * midtoneWeight;
-        rgb.r = pow(max(rgb.r, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.r));
-        rgb.g = pow(max(rgb.g, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.g));
-        rgb.b = pow(max(rgb.b, 0.0), 1.0 / max(0.0001, 1.0 + midtoneAdjust.b));
-        rgb += frame.backgroundHighlights.rgb * highlightWeight;
-        if (frame.backgroundShadows.a > 0.5 && frame.backgroundShadows.a < 1.5) {
-            rgb = applyCurveLut(rgb, false);
         }
     }
 

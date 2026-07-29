@@ -267,27 +267,15 @@ destroyed swapchain-generation resource.
 The preview integration is complete only after zoom/pan invariance tests,
 resize/recreation tests, playback smoke tests, and Vulkan validation pass.
 
-## Phase 8: Activate final-pass semantics and remove legacy behavior
+## Phase 8: Canonical clip-owned post-grade semantics
 
-Remove creation of edge-stretch background layers from individual clip loops.
-The clip render order and grading behavior otherwise remain unchanged.
+All Edge Fill modes are per-clip derived layers. The source clip is graded
+first, then Tile, Mirror, Edge Stretch, Progressive Edge Stretch, and
+Progressive Bidirectional Edge Stretch sample that graded color. Edge Fill
+Brightness and Saturation are post-grade adjustments and use neutral defaults.
 
-Add a final-pass decision after all ordinary graphics and text passes:
-
-```cpp
-if (finalCompositeProgressiveStretchEnabled(settings)) {
-    recordBoundaryReduction(...);
-    recordProgressiveStretchFinalPass(...);
-} else {
-    recordOrdinaryCompositeCopyOrPresentation(...);
-}
-```
-
-Ensure non-progressive background modes retain their documented behavior unless
-they are deliberately migrated in a separate change.
-
-Use identical settings construction for preview and export. Differences should
-be limited to the final destination and canvas-to-surface transform.
+Preview and export use the same settings construction and Vulkan shader. There
+is no output-level or final-composite Edge Fill path.
 
 Do not remove the legacy path until both export and preview final passes are
 operational. Use a temporary internal feature gate during integration, then

@@ -36,10 +36,6 @@ extern "C" {
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
-#if !defined(JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY)
-#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 1
-#endif
-
 namespace render_detail {
 namespace {
 
@@ -109,7 +105,7 @@ struct MaskPreparePush {
   int outputSize[2];
   int inputSize[2];
   int invert = 0;
-  int pad0 = 0;
+  int applyCorrections = 0;
 };
 
 struct MaskMorphBlurPush {
@@ -118,35 +114,16 @@ struct MaskMorphBlurPush {
   int mode = 0;
 };
 
-QImage rgbaMaskImageForUpload(const QImage &mask) {
-  if (mask.isNull()) {
-    return QImage();
-  }
-  const QImage gray = mask.convertToFormat(QImage::Format_Grayscale8);
-  QImage rgba(gray.size(), QImage::Format_RGBA8888);
-  for (int y = 0; y < gray.height(); ++y) {
-    const uchar *src = gray.constScanLine(y);
-    uchar *dst = rgba.scanLine(y);
-    for (int x = 0; x < gray.width(); ++x) {
-      const uchar v = src[x];
-      dst[x * 4 + 0] = v;
-      dst[x * 4 + 1] = v;
-      dst[x * 4 + 2] = v;
-      dst[x * 4 + 3] = 255;
-    }
-  }
-  return rgba;
-}
-
 struct FrameUniformData {
   float outputSizeAndInverse[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float backgroundGrade[4] = {0.0f, 1.0f, 1.0f, 0.0f};
   float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 20);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 24);
 
 constexpr int kFrameUniformRingCount = 4096;
 
@@ -186,6 +163,7 @@ public:
     CUexternalMemory cudaExternalMemory = nullptr;
     CUdeviceptr cudaExternalDevicePtr = 0;
     CUcontext cudaImportContext = nullptr;
+    AVBufferRef *cudaImportDeviceRef = nullptr;
 #endif
     VkFence fence = VK_NULL_HANDLE;
     bool stagingHostCoherent = false;
@@ -326,6 +304,8 @@ public:
     m_graphicsQueueFamily = bestQueueFamily;
     m_nonCoherentAtomSize =
         qMax<VkDeviceSize>(1, bestProperties.limits.nonCoherentAtomSize);
+    m_storageBufferOffsetAlignment = qMax<VkDeviceSize>(
+        16, bestProperties.limits.minStorageBufferOffsetAlignment);
 
     if (m_physicalDevice == VK_NULL_HANDLE) {
       if (errorMessage) {
@@ -1405,7 +1385,7 @@ public:
     }
     vkUpdateDescriptorSets(m_device, 4, yuvWrites, 0, nullptr);
 
-    VkDescriptorSetLayoutBinding maskComputeBindings[2]{};
+    VkDescriptorSetLayoutBinding maskComputeBindings[3]{};
     maskComputeBindings[0].binding = 0;
     maskComputeBindings[0].descriptorType =
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1415,10 +1395,14 @@ public:
     maskComputeBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     maskComputeBindings[1].descriptorCount = 1;
     maskComputeBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    maskComputeBindings[2].binding = 2;
+    maskComputeBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    maskComputeBindings[2].descriptorCount = 1;
+    maskComputeBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     VkDescriptorSetLayoutCreateInfo maskComputeLayoutInfo{};
     maskComputeLayoutInfo.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    maskComputeLayoutInfo.bindingCount = 2;
+    maskComputeLayoutInfo.bindingCount = 3;
     maskComputeLayoutInfo.pBindings = maskComputeBindings;
     if (vkCreateDescriptorSetLayout(m_device, &maskComputeLayoutInfo, nullptr,
                                     &m_maskComputeDescriptorSetLayout) !=
@@ -1428,14 +1412,16 @@ public:
             QStringLiteral("Failed to create Vulkan mask compute descriptor layout.");
       return false;
     }
-    VkDescriptorPoolSize maskComputePoolSizes[2]{};
+    VkDescriptorPoolSize maskComputePoolSizes[3]{};
     maskComputePoolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     maskComputePoolSizes[0].descriptorCount = kMaskComputeDescriptorSetCount;
     maskComputePoolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     maskComputePoolSizes[1].descriptorCount = kMaskComputeDescriptorSetCount;
+    maskComputePoolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    maskComputePoolSizes[2].descriptorCount = kMaskComputeDescriptorSetCount;
     VkDescriptorPoolCreateInfo maskComputePoolInfo{};
     maskComputePoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    maskComputePoolInfo.poolSizeCount = 2;
+    maskComputePoolInfo.poolSizeCount = 3;
     maskComputePoolInfo.pPoolSizes = maskComputePoolSizes;
     maskComputePoolInfo.maxSets = kMaskComputeDescriptorSetCount;
     if (vkCreateDescriptorPool(m_device, &maskComputePoolInfo, nullptr,
@@ -1843,23 +1829,18 @@ public:
     for (FrameSlot &slot : m_frameSlots) {
 #if JCUT_HAS_CUDA_DRIVER
       if (slot.cudaExternalMemory) {
-#if JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY
+        // Do not explicitly destroy the imported opaque-FD allocation from the
+        // render worker. The import is tied to the CUDA device/context retained
+        // in cudaImportDeviceRef; forcing the driver teardown entry point here
+        // has proven unsafe across incremental export chunk boundaries.
+        // Retiring the retained device reference lets the CUDA context own the
+        // import lifetime without putting driver teardown on the hot path.
         slot.cudaExternalMemory = nullptr;
         slot.cudaExternalDevicePtr = 0;
         slot.cudaImportContext = nullptr;
-#else
-        CUcontext previous = nullptr;
-        if (slot.cudaImportContext) {
-          cuCtxPushCurrent(slot.cudaImportContext);
-        }
-        cuDestroyExternalMemory(slot.cudaExternalMemory);
-        if (slot.cudaImportContext) {
-          cuCtxPopCurrent(&previous);
-        }
-        slot.cudaExternalMemory = nullptr;
-        slot.cudaExternalDevicePtr = 0;
-        slot.cudaImportContext = nullptr;
-#endif
+      }
+      if (slot.cudaImportDeviceRef) {
+        av_buffer_unref(&slot.cudaImportDeviceRef);
       }
 #endif
       if (slot.stagingMapped && slot.stagingMemory != VK_NULL_HANDLE) {
@@ -2261,7 +2242,6 @@ public:
     QString effectsOwnerClipId;
     QString matteOwnerClipId;
     QImage image;
-    QImage maskImage;
     std::shared_ptr<const jcut::core::ImageBuffer> maskBuffer;
     QSize maskSourceSize;
     OverlayImage overlayImage;
@@ -2284,6 +2264,8 @@ public:
     QString cacheKey;
     QByteArray curveLutRgba = identityCurveLutBytes();
     QByteArray maskCurveLutRgba = identityCurveLutBytes();
+    QByteArray maskCorrectionStorage =
+        vulkanMaskCorrectionStorageData({});
     bool curveLutApplied = false;
     bool maskCurveLutApplied = false;
     float maskOpacity = 1.0f;
@@ -2305,16 +2287,12 @@ public:
     float backgroundShadows[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundMidtones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float backgroundGrade[4] = {0.0f, 1.0f, 1.0f, 0.0f};
     float mvp[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
     QVector<VulkanEffectPipelinePlan::DrawPass> presetDraws;
     bool presetScissorEnabled = false;
     QRectF presetScissorRect;
-  };
-
-  struct FinalCompositeStretchInput {
-    bool enabled = false;
-    VulkanDrawEffectState effects;
   };
 
   struct TranscriptTextInput {
@@ -2481,11 +2459,14 @@ public:
                           VkImageView inputView,
                           VkImageView outputView,
                           VkImage outputImage,
-                          VkImageLayout &outputLayout) {
+                          VkImageLayout &outputLayout,
+                          VkDeviceSize correctionStorageOffset,
+                          VkDeviceSize correctionStorageBytes) {
     if (pipeline == VK_NULL_HANDLE || layout == VK_NULL_HANDLE ||
         m_maskComputeDescriptorSets[m_maskComputeDescriptorSetIndex] == VK_NULL_HANDLE ||
         inputView == VK_NULL_HANDLE || outputView == VK_NULL_HANDLE ||
-        outputImage == VK_NULL_HANDLE) {
+        outputImage == VK_NULL_HANDLE || m_stagingBuffer == VK_NULL_HANDLE ||
+        correctionStorageBytes < sizeof(float) * 4) {
       return false;
     }
     VkDescriptorSet computeDescriptorSet =
@@ -2503,7 +2484,11 @@ public:
     VkDescriptorImageInfo outputInfo{};
     outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     outputInfo.imageView = outputView;
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorBufferInfo correctionInfo{};
+    correctionInfo.buffer = m_stagingBuffer;
+    correctionInfo.offset = correctionStorageOffset;
+    correctionInfo.range = correctionStorageBytes;
+    VkWriteDescriptorSet writes[3]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = computeDescriptorSet;
     writes[0].dstBinding = 0;
@@ -2516,7 +2501,13 @@ public:
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[1].pImageInfo = &outputInfo;
-    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = computeDescriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &correctionInfo;
+    vkUpdateDescriptorSets(m_device, 3, writes, 0, nullptr);
 
     vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       pipeline);
@@ -2536,7 +2527,10 @@ public:
     return true;
   }
 
-  bool preprocessLayerMask(LayerTextureSlot &slot, const LayerInput &layer) {
+  bool preprocessLayerMask(LayerTextureSlot &slot,
+                           const LayerInput &layer,
+                           VkDeviceSize correctionStorageOffset,
+                           VkDeviceSize correctionStorageBytes) {
     MaskPreparePush prepare{};
     prepare.outputSize[0] = m_outputSize.width();
     prepare.outputSize[1] = m_outputSize.height();
@@ -2544,10 +2538,13 @@ public:
     prepare.inputSize[0] = inputSize.width();
     prepare.inputSize[1] = inputSize.height();
     prepare.invert = layer.maskInvert ? 1 : 0;
+    prepare.applyCorrections = 1;
     if (!runMaskComputePass(m_maskPreparePipeline,
                             m_maskPreparePipelineLayout, &prepare,
                             sizeof(prepare), slot.maskRawView, slot.maskView,
-                            slot.maskImage, slot.maskLayout)) {
+                            slot.maskImage, slot.maskLayout,
+                            correctionStorageOffset,
+                            correctionStorageBytes)) {
       return false;
     }
 
@@ -2566,7 +2563,9 @@ public:
       push.mode = mode;
       if (!runMaskComputePass(pipeline, m_maskMorphBlurPipelineLayout,
                               &push, sizeof(push), currentView, dstView,
-                              dstImage, dstLayout)) {
+                              dstImage, dstLayout,
+                              correctionStorageOffset,
+                              correctionStorageBytes)) {
         return false;
       }
       currentView = dstView;
@@ -2596,7 +2595,9 @@ public:
       if (!runMaskComputePass(m_maskPreparePipeline,
                               m_maskPreparePipelineLayout, &copy,
                               sizeof(copy), currentView, slot.maskView,
-                              slot.maskImage, slot.maskLayout)) {
+                              slot.maskImage, slot.maskLayout,
+                              correctionStorageOffset,
+                              correctionStorageBytes)) {
         return false;
       }
     }
@@ -3009,7 +3010,9 @@ public:
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = requiredSize;
     bufferInfo.usage =
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkBuffer newBuffer = VK_NULL_HANDLE;
     if (vkCreateBuffer(
@@ -3143,7 +3146,6 @@ public:
 
   QImage renderFrameFromLayers(const QVector<LayerInput> &layers,
                                const VulkanTextInputs &textInputs,
-                               const FinalCompositeStretchInput &finalStretch,
                                bool readbackToImage,
                                OffscreenVulkanFrame *gpuPreviewFrame = nullptr,
                                QString *gpuPreviewError = nullptr,
@@ -3195,15 +3197,13 @@ public:
     };
     const VkDeviceSize layerImageBytes = rgbaBytesForSize(m_outputSize);
     VkDeviceSize maxAuxiliaryImageBytes = layerImageBytes;
+    VkDeviceSize maxCorrectionStorageBytes = sizeof(float) * 4;
     for (const LayerInput &layer : layers) {
-      if (layer.maskTextureEnabled &&
-          (layer.maskBuffer || !layer.maskImage.isNull())) {
+      if (layer.maskTextureEnabled && layer.maskBuffer) {
         maxAuxiliaryImageBytes = qMax(
             maxAuxiliaryImageBytes,
-            layer.maskBuffer
-                ? static_cast<VkDeviceSize>(layer.maskBuffer->size.width) *
-                      static_cast<VkDeviceSize>(layer.maskBuffer->size.height)
-                : rgbaBytesForSize(layer.maskImage.size()));
+            static_cast<VkDeviceSize>(layer.maskBuffer->size.width) *
+                static_cast<VkDeviceSize>(layer.maskBuffer->size.height));
       }
       if (layer.differenceMatteEnabled &&
           !layer.referenceFrameHandle.hasHardwareFrame()) {
@@ -3211,6 +3211,9 @@ public:
             maxAuxiliaryImageBytes,
             rgbaBytesForSize(layer.referenceFrameHandle.size()));
       }
+      maxCorrectionStorageBytes = qMax(
+          maxCorrectionStorageBytes,
+          static_cast<VkDeviceSize>(layer.maskCorrectionStorage.size()));
     }
     constexpr VkDeviceSize maxDeviceSize =
         std::numeric_limits<VkDeviceSize>::max();
@@ -3220,8 +3223,29 @@ public:
             maxDeviceSize - layerImageBytes - curveBytes) {
       return QImage();
     }
-    const VkDeviceSize layerStagingSize =
+    const VkDeviceSize alignment = qMax<VkDeviceSize>(
+        16, m_storageBufferOffsetAlignment);
+    const VkDeviceSize unalignedCorrectionStorageOffset =
         layerImageBytes + curveBytes + maxAuxiliaryImageBytes;
+    if (unalignedCorrectionStorageOffset >
+        maxDeviceSize - (alignment - 1)) {
+      return QImage();
+    }
+    const VkDeviceSize correctionStorageOffsetWithinLayer =
+        ((unalignedCorrectionStorageOffset + alignment - 1) / alignment) *
+        alignment;
+    if (maxCorrectionStorageBytes >
+        maxDeviceSize - correctionStorageOffsetWithinLayer) {
+      return QImage();
+    }
+    const VkDeviceSize unalignedLayerStagingSize =
+        correctionStorageOffsetWithinLayer + maxCorrectionStorageBytes;
+    if (unalignedLayerStagingSize > maxDeviceSize - (alignment - 1)) {
+      return QImage();
+    }
+    const VkDeviceSize layerStagingSize =
+        ((unalignedLayerStagingSize + alignment - 1) / alignment) *
+        alignment;
     const VkDeviceSize stagingLayerCount = static_cast<VkDeviceSize>(
         qMin(kMaxLayerTextures,
              qMax(1, static_cast<int>(layers.size()))));
@@ -3277,6 +3301,9 @@ public:
         std::memcpy(values.backgroundHighlights,
                     layer->backgroundHighlights,
                     sizeof(values.backgroundHighlights));
+        std::memcpy(values.backgroundGrade,
+                    layer->backgroundGrade,
+                    sizeof(values.backgroundGrade));
       }
       if (effectParams) {
         std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
@@ -3296,7 +3323,7 @@ public:
     clearColor.float32[0] = 0.0f;
     clearColor.float32[1] = 0.0f;
     clearColor.float32[2] = 0.0f;
-    clearColor.float32[3] = finalStretch.enabled ? 0.0f : 1.0f;
+    clearColor.float32[3] = 1.0f;
     VkImageSubresourceRange clearRange{};
     clearRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clearRange.baseMipLevel = 0;
@@ -3312,8 +3339,7 @@ public:
     m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkClearValue clearValue{};
-    clearValue.color = {
-        {0.0f, 0.0f, 0.0f, finalStretch.enabled ? 0.0f : 1.0f}};
+    clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     VkRenderPassBeginInfo renderPassBeginInfo{};
     renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassBeginInfo.renderPass = m_renderPass;
@@ -3797,89 +3823,54 @@ public:
           slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
           LayerInput maskLayer = layer;
           maskLayer.maskSourceSize = maskSize;
-          if (!preprocessLayerMask(slot, maskLayer)) {
+          const QByteArray correctionStorage =
+              layer.maskCorrectionStorage.isEmpty()
+                  ? vulkanMaskCorrectionStorageData({})
+                  : layer.maskCorrectionStorage;
+          const VkDeviceSize correctionStorageOffset =
+              stagingOffset + correctionStorageOffsetWithinLayer;
+          if (!activeStagingRangeAvailable(
+                  correctionStorageOffset,
+                  static_cast<VkDeviceSize>(correctionStorage.size()))) {
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
           }
-        } else if (layer.maskTextureEnabled) {
-          QImage maskUpload = layer.maskImage;
-          if (maskUpload.isNull()) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
-          if (maskUpload.format() != QImage::Format_RGBA8888) {
-            maskUpload = maskUpload.convertToFormat(QImage::Format_RGBA8888);
-          }
-          if (!ensureMaskRawImage(slot, maskUpload.size(),
-                                  VK_FORMAT_R8G8B8A8_UNORM)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
-          const VkDeviceSize maskStagingOffset =
-              stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
-          if (!writeRgbaImageToStagingTopLeft(maskUpload, maskStagingOffset)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
-          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
-                                slot.maskRawLayout,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-          slot.maskRawLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-          VkBufferImageCopy maskUploadRegion{};
-          maskUploadRegion.bufferOffset = maskStagingOffset;
-          maskUploadRegion.bufferRowLength = 0;
-          maskUploadRegion.bufferImageHeight = 0;
-          maskUploadRegion.imageSubresource.aspectMask =
-              VK_IMAGE_ASPECT_COLOR_BIT;
-          maskUploadRegion.imageSubresource.mipLevel = 0;
-          maskUploadRegion.imageSubresource.baseArrayLayer = 0;
-          maskUploadRegion.imageSubresource.layerCount = 1;
-          maskUploadRegion.imageExtent = {
-              static_cast<uint32_t>(maskUpload.width()),
-              static_cast<uint32_t>(maskUpload.height()), 1};
-          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
-                                 slot.maskRawImage,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                 &maskUploadRegion);
-          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-          slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-          LayerInput maskLayer = layer;
-          maskLayer.maskSourceSize = maskUpload.size();
-          if (!preprocessLayerMask(slot, maskLayer)) {
+          std::memcpy(
+              reinterpret_cast<std::uint8_t*>(m_stagingMapped) +
+                  correctionStorageOffset,
+              correctionStorage.constData(),
+              static_cast<std::size_t>(correctionStorage.size()));
+          if (!flushActiveStagingWrite(
+                  correctionStorageOffset,
+                  static_cast<VkDeviceSize>(correctionStorage.size())) ||
+              !preprocessLayerMask(
+                  slot,
+                  maskLayer,
+                  correctionStorageOffset,
+                  static_cast<VkDeviceSize>(correctionStorage.size()))) {
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
           }
         } else if (!slot.maskUploaded) {
-          QImage whiteMask(m_outputSize, QImage::Format_RGBA8888);
-          whiteMask.fill(Qt::white);
-          const VkDeviceSize maskStagingOffset =
-              stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
-          if (!writeRgbaImageToStagingTopLeft(whiteMask, maskStagingOffset)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
           transitionImageLayout(m_commandBuffer, slot.maskImage,
                                 slot.maskLayout,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
           slot.maskLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-          VkBufferImageCopy maskUploadRegion{};
-          maskUploadRegion.bufferOffset = maskStagingOffset;
-          maskUploadRegion.bufferRowLength = 0;
-          maskUploadRegion.bufferImageHeight = 0;
-          maskUploadRegion.imageSubresource.aspectMask =
-              VK_IMAGE_ASPECT_COLOR_BIT;
-          maskUploadRegion.imageSubresource.mipLevel = 0;
-          maskUploadRegion.imageSubresource.baseArrayLayer = 0;
-          maskUploadRegion.imageSubresource.layerCount = 1;
-          maskUploadRegion.imageExtent = {
-              static_cast<uint32_t>(m_outputSize.width()),
-              static_cast<uint32_t>(m_outputSize.height()), 1};
-          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
-                                 slot.maskImage,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                 &maskUploadRegion);
+          VkClearColorValue whiteMaskClear{};
+          whiteMaskClear.float32[0] = 1.0f;
+          whiteMaskClear.float32[1] = 1.0f;
+          whiteMaskClear.float32[2] = 1.0f;
+          whiteMaskClear.float32[3] = 1.0f;
+          VkImageSubresourceRange whiteMaskRange{};
+          whiteMaskRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          whiteMaskRange.baseMipLevel = 0;
+          whiteMaskRange.levelCount = 1;
+          whiteMaskRange.baseArrayLayer = 0;
+          whiteMaskRange.layerCount = 1;
+          vkCmdClearColorImage(
+              m_commandBuffer, slot.maskImage,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &whiteMaskClear, 1,
+              &whiteMaskRange);
           transitionImageLayout(m_commandBuffer, slot.maskImage,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -4210,83 +4201,6 @@ public:
       m_speakerTextRenderer->drawSpeakerLabel(
           m_commandBuffer, m_outputSize, m_outputSize,
           outputTargetRect, textInputs.speakerLabel);
-      vkCmdEndRenderPass(m_commandBuffer);
-    }
-
-    if (finalStretch.enabled && !m_layerSlots.isEmpty()) {
-      LayerTextureSlot &slot = m_layerSlots[0];
-      transitionImageLayout(m_commandBuffer, m_colorImage,
-                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-      m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-      transitionImageLayout(m_commandBuffer, slot.image,
-                            slot.uploaded
-                                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                : VK_IMAGE_LAYOUT_UNDEFINED,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-      VkImageCopy compositeCopy{};
-      compositeCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      compositeCopy.srcSubresource.mipLevel = 0;
-      compositeCopy.srcSubresource.baseArrayLayer = 0;
-      compositeCopy.srcSubresource.layerCount = 1;
-      compositeCopy.dstSubresource = compositeCopy.srcSubresource;
-      compositeCopy.extent = {
-          static_cast<uint32_t>(m_outputSize.width()),
-          static_cast<uint32_t>(m_outputSize.height()),
-          1};
-      vkCmdCopyImage(m_commandBuffer,
-                     m_colorImage,
-                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     slot.image,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     1,
-                     &compositeCopy);
-      transitionImageLayout(m_commandBuffer, slot.image,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      slot.uploaded = true;
-      transitionImageLayout(m_commandBuffer, m_colorImage,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-      m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      updateLayerDescriptorSet(slot,
-                               slot.view,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-      vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
-                           VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        m_effectsPipeline);
-      vkCmdSetViewport(m_commandBuffer, 0, 1, &fullViewport);
-      vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
-      const uint32_t frameUniformOffset = updateFrameUniformForDraw();
-      vkCmdBindDescriptorSets(
-          m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-          m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 1, &frameUniformOffset);
-      float fullMvp[16];
-      vulkanMvpForOutputRect(QRectF(QPointF(0.0, 0.0), QSizeF(m_outputSize)),
-                             m_outputSize,
-                             0.0,
-                             fullMvp);
-      std::memcpy(push.mvp, fullMvp, sizeof(push.mvp));
-      push.brightness = finalStretch.effects.brightness;
-      push.contrast = finalStretch.effects.contrast;
-      push.saturation = finalStretch.effects.saturation;
-      push.opacity = finalStretch.effects.opacity;
-      std::copy(std::begin(finalStretch.effects.shadows),
-                std::end(finalStretch.effects.shadows),
-                std::begin(push.shadows));
-      std::copy(std::begin(finalStretch.effects.midtones),
-                std::end(finalStretch.effects.midtones),
-                std::begin(push.midtones));
-      std::copy(std::begin(finalStretch.effects.highlights),
-                std::end(finalStretch.effects.highlights),
-                std::begin(push.highlights));
-      vkCmdPushConstants(m_commandBuffer, m_effectsPipelineLayout,
-                         VK_SHADER_STAGE_VERTEX_BIT |
-                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(Push), &push);
-      vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
       vkCmdEndRenderPass(m_commandBuffer);
     }
 
@@ -4635,7 +4549,8 @@ public:
     }
     auto *framesCtx =
         reinterpret_cast<AVHWFramesContext *>(cudaFrame->hw_frames_ctx->data);
-    if (!framesCtx || !framesCtx->device_ctx || !framesCtx->device_ctx->hwctx) {
+    if (!framesCtx || !framesCtx->device_ref || !framesCtx->device_ctx ||
+        !framesCtx->device_ctx->hwctx) {
       return false;
     }
     auto *cudaDevice =
@@ -4645,6 +4560,9 @@ public:
       return false;
     }
 
+    AVBufferRef *retiredCudaDeviceRef = nullptr;
+    auto releaseRetiredCudaDevice = qScopeGuard(
+        [&]() { av_buffer_unref(&retiredCudaDeviceRef); });
     CUcontext previous = nullptr;
     CUresult cuResult = cuInit(0);
     if (cuResult != CUDA_SUCCESS ||
@@ -4655,13 +4573,24 @@ public:
     auto popContext = qScopeGuard([&]() { cuCtxPopCurrent(&previous); });
 
     if (slot.cudaExternalMemory && slot.cudaImportContext != cudaContext) {
-      cuDestroyExternalMemory(slot.cudaExternalMemory);
+      // The previous encoder's CUDA context owns this opaque import. It can
+      // already be in retirement when a new incremental chunk reaches this
+      // renderer, so calling the driver destroy entry point from the new
+      // context is invalid. Dropping our retained device reference retires the
+      // old context and all of its imports together.
       slot.cudaExternalMemory = nullptr;
       slot.cudaExternalDevicePtr = 0;
       slot.cudaImportContext = nullptr;
+      retiredCudaDeviceRef = slot.cudaImportDeviceRef;
+      slot.cudaImportDeviceRef = nullptr;
     }
     if (slot.cudaExternalMemory && slot.cudaExternalDevicePtr) {
       return true;
+    }
+
+    AVBufferRef *cudaImportDeviceRef = av_buffer_ref(framesCtx->device_ref);
+    if (!cudaImportDeviceRef) {
+      return false;
     }
 
     VkMemoryGetFdInfoKHR fdInfo{};
@@ -4671,6 +4600,7 @@ public:
     int memoryFd = -1;
     if (m_vkGetMemoryFdKHR(m_device, &fdInfo, &memoryFd) != VK_SUCCESS ||
         memoryFd < 0) {
+      av_buffer_unref(&cudaImportDeviceRef);
       return false;
     }
 
@@ -4682,6 +4612,7 @@ public:
     if (cuResult != CUDA_SUCCESS) {
       close(memoryFd);
       slot.cudaExternalMemory = nullptr;
+      av_buffer_unref(&cudaImportDeviceRef);
       return false;
     }
 
@@ -4691,12 +4622,16 @@ public:
     cuResult = cuExternalMemoryGetMappedBuffer(
         &slot.cudaExternalDevicePtr, slot.cudaExternalMemory, &bufferDesc);
     if (cuResult != CUDA_SUCCESS) {
-      cuDestroyExternalMemory(slot.cudaExternalMemory);
+      // Keep the driver-safe lifetime policy consistent with renderer teardown:
+      // a failed map retires by dropping our references, not by synchronously
+      // destroying the CUDA external-memory import from this worker thread.
       slot.cudaExternalMemory = nullptr;
       slot.cudaExternalDevicePtr = 0;
+      av_buffer_unref(&cudaImportDeviceRef);
       return false;
     }
     slot.cudaImportContext = cudaContext;
+    slot.cudaImportDeviceRef = cudaImportDeviceRef;
     return true;
   }
 #endif
@@ -5193,6 +5128,7 @@ private:
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
   VkDeviceSize m_nonCoherentAtomSize = 1;
+  VkDeviceSize m_storageBufferOffsetAlignment = 16;
   VkDevice m_device = VK_NULL_HANDLE;
   uint32_t m_graphicsQueueFamily = UINT32_MAX;
   VkQueue m_graphicsQueue = VK_NULL_HANDLE;
@@ -5422,7 +5358,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   }
   int visualClipCandidates = 0;
   int visualLayersResolved = 0;
-  OffscreenVulkanRendererPrivate::FinalCompositeStretchInput finalCompositeStretch;
   int decodePathMissingCount = 0;
   int decodeNullCount = 0;
   int decodeConvertFailCount = 0;
@@ -5592,28 +5527,15 @@ QImage OffscreenVulkanRenderer::renderFrame(
       if (!maskBuffer && frame.frameNumber() >= 0) {
         maskBuffer = rawClipMaskBufferBlocking(matteOwner, frame);
       }
-      QImage mask =
-          generatedMaskMatte && maskBuffer
-              ? rawClipMaskImageBlocking(matteOwner, frame)
-              : QImage{};
-      if (generatedMaskMatte) {
-        mask = applyCorrectionPolygonsToMaskImage(
-            mask, effects.correctionPolygons);
-        maskBuffer.reset();
-      }
-      if (maskBuffer || !mask.isNull()) {
-        if (maskBuffer) {
-          layer.maskBuffer = maskBuffer;
-          layer.maskSourceSize =
-              QSize(maskBuffer->size.width, maskBuffer->size.height);
-        } else {
-          const QImage maskRgba = rgbaMaskImageForUpload(mask);
-          if (maskRgba.isNull()) {
-            continue;
-          }
-          layer.maskImage = maskRgba;
-          layer.maskSourceSize = maskRgba.size();
-        }
+      if (maskBuffer) {
+        layer.maskBuffer = maskBuffer;
+        layer.maskCorrectionStorage =
+            vulkanMaskCorrectionStorageData(
+                generatedMaskMatte
+                    ? effects.correctionPolygons
+                    : QVector<TimelineClip::CorrectionPolygon>{});
+        layer.maskSourceSize =
+            QSize(maskBuffer->size.width, maskBuffer->size.height);
         layer.maskTextureEnabled = true;
         layer.maskClipSource = generatedMaskMatte;
         layer.maskShowOnly = matteOwner.maskShowOnly;
@@ -5811,7 +5733,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
       const VulkanDrawEffectState backgroundEffects =
           vulkanBackgroundFillEffectState(
               fillEffect,
-              layerEffects,
               static_cast<float>(effectClip.edgeFillOpacity),
               static_cast<float>(effectClip.edgeFillBrightness),
               static_cast<float>(effectClip.edgeFillSaturation),
@@ -5847,6 +5768,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
       std::copy(std::begin(layerEffects.highlights),
                 std::end(layerEffects.highlights),
                 std::begin(backgroundLayer.backgroundHighlights));
+      backgroundLayer.backgroundGrade[0] = layerEffects.brightness;
+      backgroundLayer.backgroundGrade[1] = layerEffects.contrast;
+      backgroundLayer.backgroundGrade[2] = layerEffects.saturation;
       // Background fills are derived views of this source layer, not new
       // color owners. Inherit the complete canonical grade payload so preview
       // and export bind the same curve LUT as well as the same tonal values.
@@ -6104,7 +6028,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   const bool shouldReadbackToImage = (readbackMs != nullptr);
   const QImage output = d->renderFrameFromLayers(layers,
                                                  textInputs,
-                                                 finalCompositeStretch,
                                                  shouldReadbackToImage,
                                                  context.gpuPreviewFrame,
                                                  context.gpuPreviewError,

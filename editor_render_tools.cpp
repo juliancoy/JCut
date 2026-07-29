@@ -1248,6 +1248,9 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         (const RenderProgress &progress)
         {
             const qint64 nowMs = progressUiTimer.elapsed();
+            if (imguiRenderMonitorPtr) {
+                imguiRenderMonitorPtr->pumpEvents();
+            }
             if (progress.releaseGpuPreview) {
                 return true;
             }

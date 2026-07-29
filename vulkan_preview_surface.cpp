@@ -2134,29 +2134,15 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.maskDilate = clip.maskDilate;
         status.maskBlur = clip.maskBlur;
         status.correctionPolygonCount = effects.correctionPolygons.size();
+        status.correctionPolygons = effects.correctionPolygons;
         status.correctionsApplied = false;
-        status.correctionsSupported = false;
+        status.correctionsSupported = status.correctionPolygonCount == 0;
         status.curveLutApplied = gradingUsesCurveLut(effects.grading);
         status.curveLutSupported = true;
         status.gradingShaderActive = true;
         if (effects.grading.opacity <= 0.0001) {
             status.drawSuppressed = true;
             status.missingReason = QStringLiteral("skipped_zero_opacity");
-        }
-        if (status.correctionPolygonCount > 0 && !selectedFrame.isNull() && selectedFrame.hasCpuImage()) {
-            const QImage masked = applyCorrectionMasksToCpuImage(selectedFrame.cpuImage(), effects.correctionPolygons);
-            if (!masked.isNull()) {
-                selectedFrame = FrameHandle::createCpuFrame(
-                    masked,
-                    selectedFrame.frameNumber(),
-                    selectedFrame.sourcePath(),
-                    selectedFrame.sourcePresentationTimestamp());
-                status.correctionsApplied = true;
-                status.correctionsSupported = true;
-            }
-        } else if (status.correctionPolygonCount > 0) {
-            status.missingReason = QStringLiteral("vulkan_correction_masks_require_cpu_upload_frame");
-            ++correctionsUnavailableCount;
         }
         const bool selectedHasHardwareFrame = !selectedFrame.isNull() && selectedFrame.hasHardwareFrame();
         const bool selectedHasGpuTexture = !selectedFrame.isNull() && selectedFrame.hasGpuTexture();
@@ -2198,6 +2184,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskGradeSaturation = clip.maskGradeSaturation;
                     status.maskGrade = maskGradeForClip(clip);
                     status.maskCurveLutApplied = gradingUsesCurveLut(status.maskGrade);
+                    if (status.correctionPolygonCount > 0) {
+                        status.correctionsApplied = true;
+                        status.correctionsSupported = true;
+                    }
                     if (generatedMaskMatte) {
                         status.maskGradeEnabled = true;
                         status.maskGrade = effects.grading;
@@ -2412,37 +2402,17 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.grading = matteEffects.grading;
                     markerStatus.curveLutApplied = gradingUsesCurveLut(matteEffects.grading);
                     markerStatus.correctionPolygonCount = matteEffects.correctionPolygons.size();
+                    markerStatus.correctionPolygons =
+                        matteEffects.correctionPolygons;
                     markerStatus.correctionsApplied = false;
-                    markerStatus.correctionsSupported = true;
-                    if (!matteEffects.correctionPolygons.isEmpty()) {
-                        const QImage correctedMask = applyCorrectionPolygonsToMaskImage(
-                            qtImageFromCoreBuffer(markerStatus.maskBuffer),
-                            matteEffects.correctionPolygons);
-                        if (!correctedMask.isNull()) {
-                            markerStatus.maskBuffer =
-                                coreBufferFromQtImage(correctedMask);
-                            markerStatus.maskTextureEnabled = true;
-                            markerStatus.correctionsApplied = true;
-                        } else {
-                            markerStatus.correctionsSupported = false;
-                            ++correctionsUnavailableCount;
-                        }
-                        if (markerStatus.frameCrossfadeMaskTextureEnabled) {
-                            const QImage correctedSecondaryMask =
-                                applyCorrectionPolygonsToMaskImage(
-                                    qtImageFromCoreBuffer(
-                                        markerStatus.frameCrossfadeMaskBuffer),
-                                    matteEffects.correctionPolygons);
-                            if (!correctedSecondaryMask.isNull()) {
-                                markerStatus.frameCrossfadeMaskBuffer =
-                                    coreBufferFromQtImage(correctedSecondaryMask);
-                            } else {
-                                markerStatus.frameCrossfadeMaskBuffer = {};
-                                markerStatus.frameCrossfadeMaskTextureEnabled = false;
-                                markerStatus.correctionsSupported = false;
-                                ++correctionsUnavailableCount;
-                            }
-                        }
+                    markerStatus.correctionsSupported =
+                        markerStatus.correctionPolygonCount == 0 ||
+                        markerStatus.maskTextureEnabled;
+                    markerStatus.correctionsApplied =
+                        markerStatus.correctionPolygonCount > 0 &&
+                        markerStatus.maskTextureEnabled;
+                    if (!markerStatus.correctionsSupported) {
+                        ++correctionsUnavailableCount;
                     }
                     // Decode state belongs to the source, but source-only
                     // temporal effects must not hitch a ride on the virtual
@@ -3292,43 +3262,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
             false});
     }
 
-    const bool finalStretchPrepared =
-        presenterSnapshot.value(QStringLiteral("final_composite_stretch_prepared")).toBool(false);
-    const bool finalStretchDrawn =
-        presenterSnapshot.value(QStringLiteral("final_composite_stretch_drawn")).toBool(false);
-    const QString finalStretchReason =
-        presenterSnapshot.value(QStringLiteral("final_composite_stretch_reason")).toString(
-            finalStretchPrepared ? QStringLiteral("prepared") : QStringLiteral("disabled"));
-    addStage(QStringLiteral("13 Final Progressive Edge Stretch"),
-             QStringLiteral("prepared %1 | drawn %2 | source %3 | reason %4")
-                 .arg(finalStretchPrepared ? QStringLiteral("yes") : QStringLiteral("no"))
-                 .arg(finalStretchDrawn ? QStringLiteral("yes") : QStringLiteral("no"))
-                 .arg(presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_label"))
-                          .toString(QStringLiteral("auto/unresolved")))
-                 .arg(finalStretchReason),
-             previewImage,
-             QStringLiteral("composite"),
-             true,
-             finalStretchPrepared,
-             finalStretchDrawn ? QStringLiteral("ready")
-                               : (finalStretchPrepared ? QStringLiteral("blocked")
-                                                       : QStringLiteral("waiting")),
-             QJsonObject{
-                 {QStringLiteral("final_composite_stretch_prepared"), finalStretchPrepared},
-                 {QStringLiteral("final_composite_stretch_drawn"), finalStretchDrawn},
-                 {QStringLiteral("final_composite_stretch_source_clip_id"),
-                  presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_clip_id")).toString()},
-                 {QStringLiteral("final_composite_stretch_source_label"),
-                  presenterSnapshot.value(QStringLiteral("final_composite_stretch_source_label")).toString()},
-                 {QStringLiteral("final_composite_stretch_reason"), finalStretchReason},
-                 {QStringLiteral("pipeline_tap"), QStringLiteral("post_final_progressive_edge_stretch_swapchain")},
-                 {QStringLiteral("thumbnail_source"), previewImage.isNull()
-                      ? QStringLiteral("pending_gpu_diagnostic_readback")
-                      : QStringLiteral("gpu_diagnostic_readback")},
-                 {QStringLiteral("has_image"), !previewImage.isNull()}
-             });
-
-    addStage(QStringLiteral("14 Diagnostic Readback"),
+    addStage(QStringLiteral("13 Diagnostic Readback"),
              QStringLiteral("disabled by default | sampled images %1 | failures %2")
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("sampled_image_ready_count")).toDouble()))
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_failures")).toDouble())),
@@ -3349,7 +3283,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
     const bool nativeWindowVisible =
         presenterSnapshot.value(QStringLiteral("native_window_visible")).toBool(false);
     const bool presenterFrameReady = swapchainPresent && nativeWindowVisible && presentedFrameCount > 0;
-    addStage(QStringLiteral("15 Presented Surface"),
+    addStage(QStringLiteral("14 Presented Surface"),
              QStringLiteral("swapchain presenter | final visible frame | presented %1")
                  .arg(presentedFrameCount),
              previewImage,

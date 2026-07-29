@@ -691,11 +691,19 @@ private slots:
 
         const auto renderMode = [&](BackgroundFillEffect effect,
                                     const QString& name,
-                                    double clipScale = 1.0) {
+                                    double clipScale = 1.0,
+                                    double edgeBrightness = 0.0,
+                                    double clipBrightness = 0.0,
+                                    double clipContrast = 1.0,
+                                    double clipSaturation = 1.0) {
             TimelineClip clip = makeProgressiveStretchClip(sourcePath);
             clip.edgeFillEffect = effect;
             clip.baseScaleX *= clipScale;
             clip.baseScaleY *= clipScale;
+            clip.edgeFillBrightness = edgeBrightness;
+            clip.brightness = clipBrightness;
+            clip.contrast = clipContrast;
+            clip.saturation = clipSaturation;
             RenderRequest request;
             request.outputPath = QStringLiteral("test://") + name;
             request.outputFormat = QStringLiteral("preview");
@@ -730,13 +738,50 @@ private slots:
         };
 
         const QImage tile = renderMode(
-            BackgroundFillEffect::Tile, QStringLiteral("edge_fill_tile"));
+            BackgroundFillEffect::Tile,
+            QStringLiteral("edge_fill_tile"),
+            1.0,
+            0.0,
+            -0.08,
+            1.25,
+            1.35);
         const QImage mirror = renderMode(
-            BackgroundFillEffect::Mirror, QStringLiteral("edge_fill_mirror"));
+            BackgroundFillEffect::Mirror,
+            QStringLiteral("edge_fill_mirror"),
+            1.0,
+            0.0,
+            -0.08,
+            1.25,
+            1.35);
+        const QImage brighterTile = renderMode(
+            BackgroundFillEffect::Tile,
+            QStringLiteral("edge_fill_tile_brighter"),
+            1.0,
+            0.2,
+            -0.08,
+            1.25,
+            1.35);
         QVERIFY(!tile.isNull());
         QVERIFY(!mirror.isNull());
+        QVERIFY(!brighterTile.isNull());
         QVERIFY(tile.pixelColor(2, 2).alpha() > 240);
         QVERIFY(mirror.pixelColor(2, 2).alpha() > 240);
+        const QColor neutralFill = tile.pixelColor(2, 2);
+        const QColor brighterFill = brighterTile.pixelColor(2, 2);
+        QVERIFY2(
+            qGray(brighterFill.rgb()) >= qGray(neutralFill.rgb()) + 8,
+            "Positive Edge Fill Brightness must brighten the post-grade tile.");
+        const QColor neutralForeground =
+            tile.pixelColor(kOutputW / 2, kOutputH / 2);
+        const QColor brighterForeground =
+            brighterTile.pixelColor(kOutputW / 2, kOutputH / 2);
+        QVERIFY2(
+            std::max({
+                std::abs(brighterForeground.red() - neutralForeground.red()),
+                std::abs(brighterForeground.green() - neutralForeground.green()),
+                std::abs(brighterForeground.blue() - neutralForeground.blue())}) <= 2,
+            "Edge Fill Brightness must not modify the foreground clip.");
+        QCOMPARE(TimelineClip{}.edgeFillBrightness, qreal(0.0));
         QImage diff;
         const DiffStats stats = compareImages(tile, mirror, &diff);
         QVERIFY2(
@@ -782,8 +827,9 @@ private slots:
                         "%1 lost source color at the geometry/effect-mode "
                         "collision: only %2 chromatic pixels")
                         .arg(name)
-                        .arg(chromaticPixels)));
+                    .arg(chromaticPixels)));
         }
+
     }
 
     void exportFillLayersInheritClipCurveLut()

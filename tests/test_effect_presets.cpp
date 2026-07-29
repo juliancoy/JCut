@@ -60,7 +60,7 @@ private slots:
     void effectEnableKeysAndDynamicsEvaluateDeterministically();
     void textExtrudeModesSerializeAndMigrate();
     void maskFeatherFalloffProfilesShapeAlphaDifferently();
-    void correctionPolygonsEraseMaskIntensity();
+    void correctionPolygonsEncodeGpuMaskStorage();
     void maskSidecarDiscoveryProvidesStableIdentityAndCoverage();
     void neutralMaskSidecarDiscoveryMatchesQtIdentityAndReadiness();
     void neutralMaskFrameMapValidatesOrdinalSidecarsAndSourceIdentity();
@@ -364,11 +364,8 @@ void TestEffectPresets::maskFeatherFalloffProfilesShapeAlphaDifferently()
     QVERIFY(smootherAlpha < linearAlpha);
 }
 
-void TestEffectPresets::correctionPolygonsEraseMaskIntensity()
+void TestEffectPresets::correctionPolygonsEncodeGpuMaskStorage()
 {
-    QImage source(8, 8, QImage::Format_Grayscale8);
-    source.fill(200);
-
     TimelineClip::CorrectionPolygon active;
     active.pointsNormalized = {
         {0.25, 0.25}, {0.75, 0.25}, {0.75, 0.75}, {0.25, 0.75}};
@@ -377,12 +374,22 @@ void TestEffectPresets::correctionPolygonsEraseMaskIntensity()
     disabled.pointsNormalized = {
         {0.0, 0.0}, {0.25, 0.0}, {0.25, 0.25}, {0.0, 0.25}};
 
-    const QImage corrected = applyCorrectionPolygonsToMaskImage(
-        source, {active, disabled});
-    QCOMPARE(corrected.format(), QImage::Format_Grayscale8);
-    QCOMPARE(corrected.constScanLine(4)[4], uchar{0});
-    QCOMPARE(corrected.constScanLine(0)[0], uchar{200});
-    QCOMPARE(source.constScanLine(4)[4], uchar{200});
+    const QByteArray storage =
+        vulkanMaskCorrectionStorageData({active, disabled});
+    QCOMPARE(storage.size(), 6 * 4 * static_cast<int>(sizeof(float)));
+    const auto* entries = reinterpret_cast<const float*>(storage.constData());
+    QCOMPARE(entries[0], 1.0f);
+    QCOMPARE(entries[4], 0.0f);
+    QCOMPARE(entries[5], 4.0f);
+    QCOMPARE(entries[8], 0.25f);
+    QCOMPARE(entries[9], 0.25f);
+    QCOMPARE(entries[20], 0.25f);
+    QCOMPARE(entries[21], 0.75f);
+
+    const QByteArray emptyStorage = vulkanMaskCorrectionStorageData({});
+    QCOMPARE(emptyStorage.size(), 4 * static_cast<int>(sizeof(float)));
+    QCOMPARE(reinterpret_cast<const float*>(emptyStorage.constData())[0],
+             0.0f);
 }
 
 void TestEffectPresets::maskSidecarDiscoveryProvidesStableIdentityAndCoverage()

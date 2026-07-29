@@ -427,8 +427,21 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
                      "timingSource.clipRole != ClipRole::Media")),
              "export must fail closed for orphaned mattes and unsupported parent roles");
     QVERIFY2(vulkanSource.contains(QStringLiteral(
-                 "applyCorrectionPolygonsToMaskImage")),
-             "export must apply child correction polygons to the matte before upload");
+                 "vulkanMaskCorrectionStorageData")) &&
+                 vulkanSource.contains(QStringLiteral(
+                     "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
+                 !vulkanSource.contains(QStringLiteral(
+                     "applyCorrectionPolygonsToMaskBuffer")) &&
+                 !vulkanSource.contains(QStringLiteral(
+                     "rawClipMaskImageBlocking(matteOwner, frame)")) &&
+                 !vulkanSource.contains(QStringLiteral(
+                     "rgbaMaskImageForUpload")) &&
+                 !vulkanSource.contains(QStringLiteral(
+                     "QImage maskImage")) &&
+                 !vulkanSource.contains(QStringLiteral(
+                     "QImage whiteMask")),
+             "export must apply child corrections in the Vulkan mask compute "
+             "path without introducing QImage or RGBA mask staging");
 }
 
 QTEST_MAIN(TestRealtimeRenderContract)
