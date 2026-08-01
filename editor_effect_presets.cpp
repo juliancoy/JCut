@@ -4,6 +4,7 @@
 #include "timeline_fps.h"
 
 #include <QHash>
+#include <QDir>
 #include <QFileInfo>
 #include <QUuid>
 
@@ -341,6 +342,23 @@ bool setMaskSidecarAssociation(TimelineClip& clip, const QString& directory)
     }
     clip.maskFramesDir = normalizedDirectory;
     clip.generatedFromMaskId = stableId;
+    if (!clip.maskFuzzyRemoveEdits.isEmpty()) {
+        int retainedEditIndex = -1;
+        for (int index = 0; index < clip.maskFuzzyRemoveEdits.size(); ++index) {
+            if (QDir::cleanPath(
+                    clip.maskFuzzyRemoveEdits.at(index).materializedSidecarDirectory) ==
+                QDir::cleanPath(normalizedDirectory)) {
+                retainedEditIndex = index;
+                break;
+            }
+        }
+        if (retainedEditIndex < 0) {
+            clip.maskFuzzyRemoveEdits.clear();
+            clip.maskOriginalFramesDir.clear();
+        } else {
+            clip.maskFuzzyRemoveEdits.resize(retainedEditIndex + 1);
+        }
+    }
     return true;
 }
 

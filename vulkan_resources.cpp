@@ -1,39 +1,11 @@
 #include "vulkan_resources.h"
 
-#include <QCryptographicHash>
 #include <QVulkanFunctions>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
-
-QString vulkanMaskTextureCacheKey(
-    const VulkanMaskPreprocessOptions& options,
-    const QSize& outputSize)
-{
-    if (options.sourceIdentity.isEmpty() || !outputSize.isValid()) {
-        return {};
-    }
-    QByteArray treatment;
-    treatment.reserve(options.correctionStorage.size() + 96);
-    treatment.append(options.invert ? "invert=1" : "invert=0");
-    treatment.append("|erode=");
-    treatment.append(QByteArray::number(options.erodeRadius));
-    treatment.append("|dilate=");
-    treatment.append(QByteArray::number(options.dilateRadius));
-    treatment.append("|blur=");
-    treatment.append(QByteArray::number(options.blurRadius));
-    treatment.append("|corrections=");
-    treatment.append(options.correctionStorage);
-    const QByteArray treatmentHash =
-        QCryptographicHash::hash(treatment, QCryptographicHash::Sha256).toHex();
-    return QStringLiteral("%1|output=%2x%3|treatment=%4")
-        .arg(options.sourceIdentity)
-        .arg(outputSize.width())
-        .arg(outputSize.height())
-        .arg(QString::fromLatin1(treatmentHash));
-}
 
 namespace {
 constexpr uint32_t kTextureWidth = 64;

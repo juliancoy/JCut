@@ -13,7 +13,6 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QImageWriter>
-#include <QPainter>
 #include <QProcess>
 #include <QSaveFile>
 #include <QSet>
@@ -80,14 +79,29 @@ inline int clampByte(int value) {
     return value < 0 ? 0 : (value > 255 ? 255 : value);
 }
 
-bool exportNeedsAsyncDecode(const QVector<TimelineClip>& orderedClips) {
+bool exportNeedsDecodePipeline(const QVector<TimelineClip>& orderedClips) {
     for (const TimelineClip& clip : orderedClips) {
         const QString decodePath = playbackMediaPathForClip(clip);
-        if (!decodePath.isEmpty() && isImageSequencePath(decodePath)) {
+        if (!decodePath.isEmpty()) {
             return true;
         }
     }
     return false;
+}
+
+void storeRenderAsyncFrame(
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* cache,
+    const editor::FrameHandle& frame)
+{
+    if (!cache || frame.isNull() || frame.sourcePath().isEmpty()) {
+        return;
+    }
+    cache->insert(
+        RenderAsyncFrameKey{frame.sourcePath(), frame.frameNumber()}, frame);
+    constexpr int kMaxExportAsyncFrames = 64;
+    while (cache->size() > kMaxExportAsyncFrames) {
+        cache->erase(cache->begin());
+    }
 }
 
 bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
@@ -331,7 +345,9 @@ void configureVideoCodecContext(AVCodecContext* ctx,
 static RenderResult renderTimelineSingleFile(
     const RenderRequest& request,
     const std::function<bool(const RenderProgress&)>& progressCallback,
-    HeadlessVulkanCompositor* persistentRenderer = nullptr) {
+    HeadlessVulkanCompositor* persistentRenderer = nullptr,
+    editor::AsyncDecoder* persistentAsyncDecoder = nullptr,
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* persistentAsyncFrameCache = nullptr) {
     RenderResult result;
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
     const qreal playbackSpeed = std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
@@ -503,10 +519,19 @@ static RenderResult renderTimelineSingleFile(
     }
     result.usedGpu = useGpuRenderer;
 
-    std::unique_ptr<editor::AsyncDecoder> asyncDecoder;
-    if (exportNeedsAsyncDecode(orderedClips)) {
-        asyncDecoder = std::make_unique<editor::AsyncDecoder>();
-        asyncDecoder->initialize();
+    std::unique_ptr<editor::AsyncDecoder> ownedAsyncDecoder;
+    editor::AsyncDecoder* asyncDecoder = persistentAsyncDecoder;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle> ownedAsyncFrameCache;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCachePtr =
+        persistentAsyncFrameCache
+            ? persistentAsyncFrameCache
+            : &ownedAsyncFrameCache;
+    if (!asyncDecoder && exportNeedsDecodePipeline(orderedClips)) {
+        ownedAsyncDecoder = std::make_unique<editor::AsyncDecoder>();
+        if (!ownedAsyncDecoder->initialize()) {
+            ownedAsyncDecoder.reset();
+        }
+        asyncDecoder = ownedAsyncDecoder.get();
     }
     ScopedAvBufferRef sharedCudaDeviceForEncoder(
         asyncDecoder ? asyncDecoder->acquireSharedHwDevice(AV_HWDEVICE_TYPE_CUDA) : nullptr);
@@ -673,6 +698,27 @@ static RenderResult renderTimelineSingleFile(
         return result;
     }
     stream->time_base = codecCtx->time_base;
+
+    if (progressCallback) {
+        RenderProgress progress;
+        progress.activity = QStringLiteral("Preparing audio");
+        progress.framesCompleted = 0;
+        progress.totalFrames = totalFramesToRender;
+        progress.segmentIndex = 0;
+        progress.segmentCount = exportRanges.size();
+        progress.usingGpu = useGpuRenderer;
+        progress.usingHardwareEncode = usingHardwareEncode;
+        progress.encoderLabel = codecLabel;
+        progress.elapsedMs = totalTimer.elapsed();
+        progress.estimatedRemainingMs = -1;
+        if (!progressCallback(progress)) {
+            avcodec_free_context(&codecCtx);
+            avformat_free_context(formatCtx);
+            result.cancelled = true;
+            result.message = QStringLiteral("Render cancelled.");
+            return result;
+        }
+    }
 
     AudioExportState audioState;
     QElapsedTimer audioSetupTimer;
@@ -896,18 +942,15 @@ static RenderResult renderTimelineSingleFile(
     int64_t outputPts = 0;
     int64_t framesCompleted = 0;
     QHash<QString, editor::DecoderContext*> decoders;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache =
+        *asyncFrameCachePtr;
+    QObject asyncFrameCacheConnectionContext;
     if (asyncDecoder) {
-        QObject::connect(asyncDecoder.get(),
+        QObject::connect(asyncDecoder,
                          &editor::AsyncDecoder::frameReady,
-                         [&](editor::FrameHandle frame) {
-                             if (frame.isNull() || frame.sourcePath().isEmpty()) {
-                                 return;
-                             }
-                             asyncFrameCache.insert(RenderAsyncFrameKey{frame.sourcePath(), frame.frameNumber()}, frame);
-                             while (asyncFrameCache.size() > 256) {
-                                 asyncFrameCache.erase(asyncFrameCache.begin());
-                             }
+                         &asyncFrameCacheConnectionContext,
+                         [asyncFrameCachePtr](editor::FrameHandle frame) {
+                             storeRenderAsyncFrame(asyncFrameCachePtr, frame);
                          });
     }
     QString errorMessage;
@@ -1029,6 +1072,9 @@ static RenderResult renderTimelineSingleFile(
         return true;
     };
 
+    PlaybackTimingContext exportPlaybackTiming = request.playbackTiming;
+    exportPlaybackTiming.playbackRanges = exportRanges;
+    QSet<int> prewarmedDecodeSegments;
     for (int segmentIndex = 0; segmentIndex < exportRanges.size(); ++segmentIndex) {
         const ExportRangeSegment& range = exportRanges[segmentIndex];
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
@@ -1039,12 +1085,15 @@ static RenderResult renderTimelineSingleFile(
                 exportEnd,
                 outputFps,
                 playbackSpeed);
-        prewarmRenderSequenceSegment(request,
-                                     exportStart,
-                                     exportEnd,
-                                     orderedClips,
-                                     asyncDecoder.get(),
-                                     asyncFrameCache);
+        if (!prewarmedDecodeSegments.contains(segmentIndex)) {
+            prewarmRenderDecodeSegment(request,
+                                       exportStart,
+                                       exportEnd,
+                                       orderedClips,
+                                       asyncDecoder,
+                                       asyncFrameCache);
+            prewarmedDecodeSegments.insert(segmentIndex);
+        }
         prewarmRenderMaskSegment(request,
                                  exportStart,
                                  exportEnd,
@@ -1063,11 +1112,34 @@ static RenderResult renderTimelineSingleFile(
                 static_cast<qreal>(exportFrameTiming.timelineFramePosition);
             const int64_t timelineFrame = exportFrameTiming.timelineFrame;
             const int64_t outputFrameNumber = framesCompleted;
-            enqueueRenderSequenceLookahead(request,
-                                          timelineFrame,
-                                          orderedClips,
-                                          asyncDecoder.get(),
-                                          asyncFrameCache);
+            const int transitionLeadFrames = qMax(
+                qMax(editor::debugPlaybackWindowAhead(),
+                     editor::debugFileVideoPlaybackWindowAhead()),
+                request.playbackTiming.frameCrossfadeFrames);
+            const int64_t upcomingRangeStart =
+                upcomingNoncontiguousPlaybackRangeStart(
+                    timelineFramePosition,
+                    exportPlaybackTiming,
+                    transitionLeadFrames);
+            if (upcomingRangeStart >= 0 &&
+                segmentIndex + 1 < exportRanges.size() &&
+                exportRanges.at(segmentIndex + 1).startFrame == upcomingRangeStart &&
+                !prewarmedDecodeSegments.contains(segmentIndex + 1)) {
+                const ExportRangeSegment& upcomingRange =
+                    exportRanges.at(segmentIndex + 1);
+                prewarmRenderDecodeSegment(request,
+                                           upcomingRange.startFrame,
+                                           upcomingRange.endFrame,
+                                           orderedClips,
+                                           asyncDecoder,
+                                           asyncFrameCache);
+                prewarmedDecodeSegments.insert(segmentIndex + 1);
+            }
+            enqueueRenderDecodeLookahead(request,
+                                         timelineFrame,
+                                         orderedClips,
+                                         asyncDecoder,
+                                         asyncFrameCache);
             enqueueRenderMaskLookahead(request,
                                        timelineFrame,
                                        orderedClips);
@@ -1078,6 +1150,7 @@ static RenderResult renderTimelineSingleFile(
                 progress.segmentIndex = segmentIndex + 1;
                 progress.segmentCount = exportRanges.size();
                 progress.timelineFrame = timelineFrame;
+                progress.activity = QStringLiteral("Rendering video");
                 progress.segmentStartFrame = exportStart;
                 progress.segmentEndFrame = exportEnd;
                 progress.usingGpu = useGpuRenderer;
@@ -1139,12 +1212,8 @@ static RenderResult renderTimelineSingleFile(
             qint64* frameReadbackMsPtr = &frameReadbackMs;
             const PlaybackTimelineFrameClocks frameClocks =
                 playbackTimelineFrameClocks(timelineFramePosition, request.playbackTiming);
-            const PlaybackFrameCrossfade frameCrossfade =
-                playbackFrameCrossfadeAtTimelineFrame(
-                    frameClocks.transportTimelineFrame,
-                    request.playbackTiming);
             const bool directGpuFrameReadback =
-                useGpuRenderer && !request.createVideoFromImageSequence && !frameCrossfade.active;
+                useGpuRenderer && !request.createVideoFromImageSequence;
             if (directGpuFrameReadback) {
                 frameReadbackMsPtr = nullptr;
             }
@@ -1163,7 +1232,7 @@ static RenderResult renderTimelineSingleFile(
                 activeRenderer->renderFrameToOutput(request,
                                                     frameClocks.visualTimelineFrame,
                                                     decoders,
-                                                    asyncDecoder.get(),
+                                                    asyncDecoder,
                                                     &asyncFrameCache,
                                                     orderedClips,
                                                     &renderedFrame,
@@ -1209,51 +1278,6 @@ static RenderResult renderTimelineSingleFile(
                           .arg(frameFailure);
                 break;
             }
-            if (frameCrossfade.active && !rendered.isNull()) {
-                RenderRequest secondaryRequest = request;
-                secondaryRequest.playbackTiming.frameCrossfadeEnabled = false;
-                render_detail::OffscreenRenderFrame secondaryFrame;
-                QJsonArray secondarySkippedClips;
-                QJsonObject secondaryFaceDiagnostics;
-                qint64 secondaryDecodeMs = 0;
-                qint64 secondaryTextureMs = 0;
-                qint64 secondaryCompositeMs = 0;
-                qint64 secondaryReadbackMs = 0;
-                const bool secondaryOk = activeRenderer->renderFrameToOutput(
-                    secondaryRequest,
-                    static_cast<qreal>(frameCrossfade.secondaryTimelineFrame),
-                    decoders,
-                    asyncDecoder.get(),
-                    &asyncFrameCache,
-                    orderedClips,
-                    &secondaryFrame,
-                    true,
-                    &clipStageStats,
-                    &secondaryDecodeMs,
-                    &secondaryTextureMs,
-                    &secondaryCompositeMs,
-                    &secondaryReadbackMs,
-                    &secondarySkippedClips,
-                    &skippedReasonCounts,
-                    &secondaryFaceDiagnostics,
-                    static_cast<qreal>(frameCrossfade.secondaryTimelineFrame));
-                totalRenderDecodeStageMs += secondaryDecodeMs;
-                totalRenderTextureStageMs += secondaryTextureMs;
-                totalRenderCompositeStageMs += secondaryCompositeMs;
-                totalGpuReadbackMs += secondaryReadbackMs;
-                if (secondaryOk && !secondaryFrame.cpuImage.isNull()) {
-                    QImage blended = rendered.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                    QImage incoming = secondaryFrame.cpuImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                    QPainter painter(&blended);
-                    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-                    painter.setOpacity(qBound(0.0f, frameCrossfade.secondaryOpacity, 1.0f));
-                    painter.drawImage(QPoint(0, 0), incoming);
-                    painter.end();
-                    rendered = blended;
-                    renderedFrame.cpuImage = rendered;
-                }
-            }
-
             // Save intermediate image files if requested
             if (request.createVideoFromImageSequence && !namedDirPath.isEmpty() && !request.imageSequenceFormat.isEmpty()) {
                 const QString format =
@@ -1299,6 +1323,7 @@ static RenderResult renderTimelineSingleFile(
                 progress.segmentIndex = segmentIndex + 1;
                 progress.segmentCount = exportRanges.size();
                 progress.timelineFrame = timelineFrame;
+                progress.activity = QStringLiteral("Rendering video");
                 progress.segmentStartFrame = exportStart;
                 progress.segmentEndFrame = exportEnd;
                 progress.usingGpu = useGpuRenderer;
@@ -1628,7 +1653,88 @@ static RenderResult renderTimelineSingleFile(
     }
 
     if (errorMessage.isEmpty()) {
-        encodeFrame(codecCtx, stream, formatCtx, nullptr, &errorMessage);
+        if (progressCallback) {
+            RenderProgress progress;
+            progress.activity = QStringLiteral("Finalizing video encoder");
+            progress.framesCompleted = framesCompleted;
+            progress.totalFrames = totalFramesToRender;
+            progress.segmentIndex = exportRanges.size();
+            progress.segmentCount = exportRanges.size();
+            progress.timelineFrame = exportRanges.isEmpty()
+                                         ? 0
+                                         : exportRanges.constLast().endFrame;
+            progress.usingGpu = useGpuRenderer;
+            progress.usingHardwareEncode = usingHardwareEncode;
+            progress.encoderLabel = codecLabel;
+            progress.elapsedMs = totalTimer.elapsed();
+            progress.estimatedRemainingMs = -1;
+            if (!progressCallback(progress)) {
+                errorMessage = QStringLiteral("Render cancelled.");
+            }
+        }
+        if (errorMessage.isEmpty()) {
+            encodeFrame(codecCtx, stream, formatCtx, nullptr, &errorMessage);
+        }
+    }
+
+    if (errorMessage.isEmpty() && audioState.enabled) {
+        if (progressCallback) {
+            RenderProgress progress;
+            progress.framesCompleted = framesCompleted;
+            progress.totalFrames = totalFramesToRender;
+            progress.segmentIndex = exportRanges.size();
+            progress.segmentCount = exportRanges.size();
+            progress.timelineFrame = exportRanges.isEmpty()
+                                         ? 0
+                                         : exportRanges.constLast().endFrame;
+            progress.segmentStartFrame = exportRanges.isEmpty()
+                                             ? 0
+                                             : exportRanges.constFirst().startFrame;
+            progress.segmentEndFrame = exportRanges.isEmpty()
+                                           ? 0
+                                           : exportRanges.constLast().endFrame;
+            progress.activity = QStringLiteral("Encoding audio");
+            progress.usingGpu = useGpuRenderer;
+            progress.usingHardwareEncode = usingHardwareEncode;
+            progress.encoderLabel = codecLabel;
+            progress.exportPipeline = exportPipeline;
+            progress.gpuTransferLabel = gpuTransferLabel;
+            progress.encoderPixelFormat = encoderPixelFormatName;
+            progress.encoderSoftwarePixelFormat = encoderSoftwarePixelFormatName;
+            progress.cudaExternalMemoryStatus = cudaExternalMemoryStatus;
+            progress.exportPathFallbackReason = exportPathFallbackReason;
+            progress.cudaExternalTransfer = vulkanCudaExternalTransfer;
+            progress.cudaExternalMemorySupported = cudaExternalMemorySupported;
+            progress.encoderHardwareFrames = cudaHardwareFrames;
+            progress.elapsedMs = totalTimer.elapsed();
+            progress.estimatedRemainingMs = -1;
+            progress.renderStageMs = totalRenderStageMs;
+            progress.renderDecodeStageMs = totalRenderDecodeStageMs;
+            progress.renderTextureStageMs = totalRenderTextureStageMs;
+            progress.renderCompositeStageMs = totalRenderCompositeStageMs;
+            progress.renderNv12StageMs = totalRenderNv12StageMs;
+            progress.gpuReadbackMs = totalGpuReadbackMs;
+            progress.overlayStageMs = totalOverlayStageMs;
+            progress.convertStageMs = totalConvertStageMs;
+            progress.encodeStageMs = totalEncodeStageMs;
+            progress.audioStageMs = totalAudioStageMs;
+            progress.audioSetupMs = audioSetupMs;
+            progress.maxFrameRenderStageMs = maxFrameRenderStageMs;
+            progress.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
+            progress.maxFrameTextureStageMs = maxFrameTextureStageMs;
+            progress.maxFrameReadbackStageMs = maxFrameReadbackStageMs;
+            progress.maxFrameConvertStageMs = maxFrameConvertStageMs;
+            progress.skippedClips = lastSkippedClips;
+            progress.skippedClipReasonCounts = skippedReasonCounts;
+            progress.renderStageTable =
+                buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
+            progress.worstFrameTable = buildWorstFrameTable(worstFrames);
+            progress.exportFaceTransformDiagnostics =
+                lastExportFaceTransformDiagnostics;
+            if (!progressCallback(progress)) {
+                errorMessage = QStringLiteral("Render cancelled.");
+            }
+        }
     }
 
     if (errorMessage.isEmpty() && audioState.enabled) {
@@ -1638,11 +1744,30 @@ static RenderResult renderTimelineSingleFile(
         totalAudioStageMs += audioTimer.elapsed();
     }
 
+    if (errorMessage.isEmpty() && progressCallback) {
+        RenderProgress progress;
+        progress.activity = QStringLiteral("Writing output trailer");
+        progress.framesCompleted = framesCompleted;
+        progress.totalFrames = totalFramesToRender;
+        progress.segmentIndex = exportRanges.size();
+        progress.segmentCount = exportRanges.size();
+        progress.timelineFrame = exportRanges.isEmpty()
+                                     ? 0
+                                     : exportRanges.constLast().endFrame;
+        progress.usingGpu = useGpuRenderer;
+        progress.usingHardwareEncode = usingHardwareEncode;
+        progress.encoderLabel = codecLabel;
+        progress.elapsedMs = totalTimer.elapsed();
+        progress.estimatedRemainingMs = -1;
+        if (!progressCallback(progress)) {
+            errorMessage = QStringLiteral("Render cancelled.");
+        }
+    }
     av_write_trailer(formatCtx);
     qDeleteAll(decoders);
     decoders.clear();
-    if (asyncDecoder) {
-        asyncDecoder->shutdown();
+    if (ownedAsyncDecoder) {
+        ownedAsyncDecoder->shutdown();
     }
     for (AVFrame* frame : asyncGpuFrames) {
         av_frame_free(&frame);
@@ -1997,6 +2122,12 @@ QByteArray incrementalRenderSignature(const RenderRequest& request,
          request.playbackTiming.frameCrossfadeEnabled},
         {QStringLiteral("frameCrossfadeFrames"),
          request.playbackTiming.frameCrossfadeFrames},
+        {QStringLiteral("speechFadeMode"),
+         static_cast<int>(request.playbackTiming.speechFadeMode)},
+        {QStringLiteral("speechFadeSamples"),
+         request.playbackTiming.speechFadeSamples},
+        {QStringLiteral("speechCurveStrength"),
+         request.playbackTiming.speechCurveStrength},
         {QStringLiteral("chunkFrames"), chunkFrames},
     };
 
@@ -2341,7 +2472,11 @@ bool assembleIncrementalChunks(
     const RenderRequest& request,
     const QVector<IncrementalRenderChunk>& chunks,
     const QString& cacheDirectory,
-    QString* errorMessage)
+    QString* errorMessage,
+    const std::function<bool(const RenderProgress&)>* progressCallback = nullptr,
+    int64_t totalFrames = 0,
+    int64_t reusedFrames = 0,
+    const std::function<qint64()>& elapsedMs = {})
 {
     const QString ffmpeg =
         QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
@@ -2376,6 +2511,38 @@ bool assembleIncrementalChunks(
     }
 
     for (const IncrementalRenderChunk& chunk : chunks) {
+        if (progressCallback && *progressCallback) {
+            RenderProgress progress;
+            progress.framesCompleted = totalFrames;
+            progress.totalFrames = qMax<int64_t>(1, totalFrames);
+            progress.segmentIndex = chunk.index + 1;
+            progress.segmentCount = chunks.size();
+            progress.timelineFrame = chunk.ranges.isEmpty()
+                                         ? 0
+                                         : chunk.ranges.constLast().endFrame;
+            progress.segmentStartFrame = chunk.ranges.isEmpty()
+                                             ? 0
+                                             : chunk.ranges.constFirst().startFrame;
+            progress.segmentEndFrame = chunk.ranges.isEmpty()
+                                           ? 0
+                                           : chunk.ranges.constLast().endFrame;
+            progress.activity =
+                QStringLiteral("Validating chunk %1/%2 with ffprobe")
+                    .arg(chunk.index + 1)
+                    .arg(chunks.size());
+            progress.incrementalChunksCompleted = chunks.size();
+            progress.incrementalChunksTotal = chunks.size();
+            progress.incrementalFramesReused = reusedFrames;
+            progress.incrementalCachePath = cacheDirectory;
+            progress.elapsedMs = elapsedMs ? elapsedMs() : 0;
+            progress.estimatedRemainingMs = -1;
+            if (!(*progressCallback)(progress)) {
+                if (errorMessage) {
+                    *errorMessage = QStringLiteral("Render cancelled.");
+                }
+                return false;
+            }
+        }
         if (!hasCompleteIncrementalEncodedChunk(chunk, request)) {
             if (errorMessage) {
                 *errorMessage =
@@ -2415,6 +2582,37 @@ bool assembleIncrementalChunks(
                   << QStringLiteral("+faststart");
     }
     arguments << QStringLiteral("-y") << assemblingPath;
+
+    if (progressCallback && *progressCallback) {
+        RenderProgress progress;
+        progress.framesCompleted = totalFrames;
+        progress.totalFrames = qMax<int64_t>(1, totalFrames);
+        progress.segmentIndex = chunks.size();
+        progress.segmentCount = chunks.size();
+        progress.timelineFrame =
+            chunks.isEmpty() || chunks.constLast().ranges.isEmpty()
+                ? 0
+                : chunks.constLast().ranges.constLast().endFrame;
+        progress.segmentStartFrame =
+            chunks.isEmpty() || chunks.constFirst().ranges.isEmpty()
+                ? 0
+                : chunks.constFirst().ranges.constFirst().startFrame;
+        progress.segmentEndFrame = progress.timelineFrame;
+        progress.activity =
+            QStringLiteral("Assembling chunks with ffmpeg (video copy + audio encode)");
+        progress.incrementalChunksCompleted = chunks.size();
+        progress.incrementalChunksTotal = chunks.size();
+        progress.incrementalFramesReused = reusedFrames;
+        progress.incrementalCachePath = cacheDirectory;
+        progress.elapsedMs = elapsedMs ? elapsedMs() : 0;
+        progress.estimatedRemainingMs = -1;
+        if (!(*progressCallback)(progress)) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Render cancelled.");
+            }
+            return false;
+        }
+    }
 
     QProcess process;
     process.setProgram(ffmpeg);
@@ -2517,6 +2715,19 @@ RenderResult renderTimelineToFile(
         return result;
     }
 
+    std::unique_ptr<editor::AsyncDecoder> incrementalAsyncDecoder;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>
+        incrementalAsyncFrameCache;
+    const QVector<TimelineClip> incrementalOrderedClips =
+        sortedVisualClips(request.clips, request.tracks);
+    if (exportNeedsDecodePipeline(incrementalOrderedClips)) {
+        incrementalAsyncDecoder =
+            std::make_unique<editor::AsyncDecoder>();
+        if (!incrementalAsyncDecoder->initialize()) {
+            incrementalAsyncDecoder.reset();
+        }
+    }
+
     struct IncrementalRendererSession {
         std::unique_ptr<HeadlessVulkanCompositor> renderer;
         bool previewEnabled = false;
@@ -2555,6 +2766,10 @@ RenderResult renderTimelineToFile(
                 progress.segmentIndex = completed.size();
                 progress.segmentCount = chunks.size();
                 progress.timelineFrame = chunk.ranges.constLast().endFrame;
+                progress.activity =
+                    QStringLiteral("Reusing completed chunk %1/%2")
+                        .arg(chunk.index + 1)
+                        .arg(chunks.size());
                 progress.incrementalChunksCompleted = completed.size();
                 progress.incrementalChunksTotal = chunks.size();
                 progress.incrementalFramesReused = reusedFrames;
@@ -2634,6 +2849,12 @@ RenderResult renderTimelineToFile(
                 progress.totalFrames = totalFrames;
                 progress.segmentIndex = chunk.index + 1;
                 progress.segmentCount = chunks.size();
+                if (progress.activity.trimmed().isEmpty()) {
+                    progress.activity =
+                        QStringLiteral("Rendering video chunk %1/%2")
+                            .arg(chunk.index + 1)
+                            .arg(chunks.size());
+                }
                 progress.incrementalChunksCompleted = completed.size();
                 progress.incrementalChunksTotal = chunks.size();
                 progress.incrementalFramesReused = reusedFrames;
@@ -2651,7 +2872,9 @@ RenderResult renderTimelineToFile(
                     : -1;
                 return progressCallback(progress);
             },
-            rendererSession.renderer.get());
+            rendererSession.renderer.get(),
+            incrementalAsyncDecoder.get(),
+            &incrementalAsyncFrameCache);
         accumulateIncrementalResult(&result, chunkResult);
         if (!chunkResult.success) {
             const QString failedAttemptPath = incrementalChunkFailurePath(chunk);
@@ -2681,6 +2904,35 @@ RenderResult renderTimelineToFile(
             return result;
         }
         QString publishError;
+        if (progressCallback) {
+            RenderProgress progress;
+            progress.framesCompleted = framesBeforeChunk + chunkResult.framesRendered;
+            progress.totalFrames = totalFrames;
+            progress.segmentIndex = chunk.index + 1;
+            progress.segmentCount = chunks.size();
+            progress.timelineFrame = chunk.ranges.constLast().endFrame;
+            progress.segmentStartFrame = chunk.ranges.constFirst().startFrame;
+            progress.segmentEndFrame = chunk.ranges.constLast().endFrame;
+            progress.activity =
+                QStringLiteral("Validating chunk %1/%2 with ffprobe")
+                    .arg(chunk.index + 1)
+                    .arg(chunks.size());
+            progress.incrementalChunksCompleted = completed.size();
+            progress.incrementalChunksTotal = chunks.size();
+            progress.incrementalFramesReused = reusedFrames;
+            progress.incrementalCachePath = cacheDirectory;
+            progress.elapsedMs = totalTimer.elapsed();
+            progress.estimatedRemainingMs = -1;
+            if (!progressCallback(progress)) {
+                result.success = false;
+                result.cancelled = true;
+                result.framesRendered =
+                    framesBeforeChunk + chunkResult.framesRendered;
+                result.elapsedMs = totalTimer.elapsed();
+                result.message = QStringLiteral("Render cancelled.");
+                return result;
+            }
+        }
         if (!publishIncrementalEncodedChunk(
                 chunk, attemptPath, request, &publishError)) {
             const QString failedAttemptPath = incrementalChunkFailurePath(chunk);
@@ -2709,6 +2961,7 @@ RenderResult renderTimelineToFile(
                 &failureManifestError);
             return result;
         }
+        QFile::remove(incrementalChunkFailurePath(chunk));
         QFile::remove(chunk.path + QStringLiteral(".failure.json"));
         completedFrames += chunk.frameCount;
         completed.insert(chunk.index);
@@ -2726,7 +2979,14 @@ RenderResult renderTimelineToFile(
     rendererSession.finish();
     QString assemblyError;
     if (!assembleIncrementalChunks(
-            request, chunks, cacheDirectory, &assemblyError)) {
+            request,
+            chunks,
+            cacheDirectory,
+            &assemblyError,
+            &progressCallback,
+            totalFrames,
+            reusedFrames,
+            [&totalTimer]() { return totalTimer.elapsed(); })) {
         result.message = assemblyError;
         result.framesRendered = completedFrames;
         result.elapsedMs = totalTimer.elapsed();

@@ -137,6 +137,29 @@ void VulkanRenderLayerPacket::setCorrectionPolygons(
     maskCorrectionStorage = vulkanMaskCorrectionStorageData(value);
 }
 
+QString vulkanSourceFrameCacheKey(
+    const QString& mediaOwnerClipId,
+    const editor::FrameHandle& frame)
+{
+    const QString owner = mediaOwnerClipId.trimmed();
+    const QString sourcePath = frame.sourcePath();
+    if (owner.isEmpty() || frame.isNull() || sourcePath.isEmpty() ||
+        frame.frameNumber() < 0 || !frame.size().isValid()) {
+        return {};
+    }
+    return QStringLiteral(
+               "owner=%1\x1fsource=%2\x1fframe=%3\x1fpts=%4"
+               "\x1fsize=%5x%6\x1fpixel=%7:%8")
+        .arg(owner,
+             sourcePath,
+             QString::number(frame.frameNumber()),
+             QString::number(frame.sourcePresentationTimestamp()),
+             QString::number(frame.size().width()),
+             QString::number(frame.size().height()),
+             QString::number(frame.hardwarePixelFormat()),
+             QString::number(frame.hardwareSwPixelFormat()));
+}
+
 QByteArray vulkanMaskCorrectionStorageData(
     const QVector<TimelineClip::CorrectionPolygon>& polygons)
 {

@@ -314,6 +314,8 @@ public:
     QComboBox *maskSidecarCombo() const { return m_maskSidecarCombo; }
     QPushButton *maskBrowseButton() const { return m_maskBrowseButton; }
     QPushButton *maskNewPromptButton() const { return m_maskNewPromptButton; }
+    QPushButton *maskBiRefNetRefineButton() const { return m_maskBiRefNetRefineButton; }
+    QSpinBox *maskBiRefNetGuideRadiusSpin() const { return m_maskBiRefNetGuideRadiusSpin; }
     QPushButton *maskFuzzyRemoveButton() const { return m_maskFuzzyRemoveButton; }
     QSpinBox *maskFuzzySpatialReachSpin() const { return m_maskFuzzySpatialReachSpin; }
     QSpinBox *maskFuzzyTemporalReachSpin() const { return m_maskFuzzyTemporalReachSpin; }
@@ -675,6 +677,8 @@ private:
     QComboBox *m_maskSidecarCombo = nullptr;
     QPushButton *m_maskBrowseButton = nullptr;
     QPushButton *m_maskNewPromptButton = nullptr;
+    QPushButton *m_maskBiRefNetRefineButton = nullptr;
+    QSpinBox *m_maskBiRefNetGuideRadiusSpin = nullptr;
     QPushButton *m_maskFuzzyRemoveButton = nullptr;
     QSpinBox *m_maskFuzzySpatialReachSpin = nullptr;
     QSpinBox *m_maskFuzzyTemporalReachSpin = nullptr;

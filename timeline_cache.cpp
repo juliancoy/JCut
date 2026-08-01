@@ -1172,14 +1172,14 @@ void TimelineCache::schedulePredictiveLoads() {
 
     const int step = dir == Direction::Forward ? 1 : -1;
 
-    QVector<editor::SequencePrefetchClip> sequenceClips;
+    QVector<editor::DecodePrefetchClip> sequenceClips;
     QVector<ClipInfo> allClips;
     {
         QMutexLocker lock(&m_clipsMutex);
         sequenceClips.reserve(m_clips.size());
         allClips.reserve(m_clips.size());
         for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
-            sequenceClips.push_back(editor::SequencePrefetchClip{it.value().clip, it.value().decodePath});
+            sequenceClips.push_back(editor::DecodePrefetchClip{it.value().clip, it.value().decodePath});
             allClips.push_back(it.value());
         }
     }
@@ -1215,16 +1215,18 @@ void TimelineCache::schedulePredictiveLoads() {
                       return aDistance < bDistance;
                   });
 
-        const QVector<editor::SequencePrefetchRequest> requests =
-            editor::collectSequencePrefetchRequestsAtTimelineFrame(sequenceClips,
-                                                                   static_cast<qreal>(currentTimelineFrame),
-                                                                   m_renderSyncMarkers,
-                                                                   false,
-                                                                   qMax(20, 44 - ((i + 1) * 2)));
+        const QVector<editor::DecodePrefetchRequest> requests =
+            editor::collectDecodePrefetchRequestsAtTimelineFrame(
+                sequenceClips,
+                static_cast<qreal>(currentTimelineFrame),
+                m_renderSyncMarkers,
+                false,
+                qMax(20, 44 - ((i + 1) * 2)),
+                true);
 
         QSet<QString> scheduledSequenceClipIds;
 
-        for (const editor::SequencePrefetchRequest& prefetch : requests) {
+        for (const editor::DecodePrefetchRequest& prefetch : requests) {
             if (scheduledThisTick >= maxPrefetchPerTick) {
                 break;
             }

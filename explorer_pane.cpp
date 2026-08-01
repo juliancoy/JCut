@@ -1,6 +1,6 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
-#include "decoder_ffmpeg_utils.h"
+#include "decoder_context.h"
 #include "media_drag_payload.h"
 #include "preview_surface.h"
 #include "render.h"
@@ -45,14 +45,6 @@
 #include <QStyle>
 
 #include <functional>
-
-extern "C"
-{
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/frame.h>
-#include <libswscale/swscale.h>
-}
 
 namespace {
 
@@ -215,6 +207,26 @@ static QImage macOSVideoThumbnail(const QString &filePath)
 }
 #endif
 
+QImage decodeExplorerThumbnail(const QString& filePath)
+{
+    const MediaProbeResult probe = probeMediaFile(filePath);
+    if (probe.mediaType == ClipMediaType::Image) {
+        return QImage(filePath);
+    }
+    if (probe.mediaType != ClipMediaType::Video) {
+        return {};
+    }
+
+    // Explorer thumbnails require a CPU image. Keep that requirement local
+    // while reusing the canonical decoder and its codec-selection policy.
+    editor::DecoderContext decoder(filePath, nullptr, true);
+    if (!decoder.initialize()) {
+        return {};
+    }
+    const editor::FrameHandle frame = decoder.decodeFrame(0);
+    return frame.hasCpuImage() ? frame.cpuImage() : QImage();
+}
+
 } // anonymous namespace
 
 void ThumbnailWorker::generateThumbnail(const QString &filePath, const QString &cacheKey)
@@ -227,85 +239,7 @@ void ThumbnailWorker::generateThumbnail(const QString &filePath, const QString &
 
     // Fallback to FFmpeg decode if native method failed or not available
     if (image.isNull()) {
-        // Use the ExplorerPane's static decode — but we can't call it from here
-        // since we don't have an ExplorerPane pointer. Instead, do inline FFmpeg decode.
-        const MediaProbeResult probe = probeMediaFile(filePath);
-        if (probe.mediaType == ClipMediaType::Image) {
-            image = QImage(filePath);
-        } else if (probe.mediaType == ClipMediaType::Video) {
-            AVFormatContext *formatCtx = nullptr;
-            if (avformat_open_input(&formatCtx, QFile::encodeName(filePath).constData(),
-                                     nullptr, nullptr) >= 0 &&
-                avformat_find_stream_info(formatCtx, nullptr) >= 0)
-            {
-                int vidIdx = -1;
-                for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
-                    if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                        vidIdx = static_cast<int>(i);
-                        break;
-                    }
-                }
-                if (vidIdx >= 0) {
-                    const AVCodec *dec = avcodec_find_decoder(
-                        formatCtx->streams[vidIdx]->codecpar->codec_id);
-                    AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : nullptr;
-                    const bool ctxReady = ctx &&
-                        avcodec_parameters_to_context(ctx, formatCtx->streams[vidIdx]->codecpar) >= 0;
-                    if (ctxReady) {
-                        editor::applyVideoDecoderThreadingPolicy(ctx,
-                                                                 dec,
-                                                                 formatCtx->streams[vidIdx]->codecpar->codec_id,
-                                                                 false,
-                                                                 false);
-                    }
-                    if (ctxReady &&
-                        avcodec_open2(ctx, dec, nullptr) >= 0)
-                    {
-                        AVPacket *pkt = av_packet_alloc();
-                        AVFrame *frm = av_frame_alloc();
-                        AVFrame *rgba = av_frame_alloc();
-                        SwsContext *sws = nullptr;
-                        while (av_read_frame(formatCtx, pkt) >= 0 && image.isNull()) {
-                            if (pkt->stream_index == vidIdx &&
-                                avcodec_send_packet(ctx, pkt) >= 0) {
-                                while (avcodec_receive_frame(ctx, frm) >= 0 && image.isNull()) {
-                                    if (frm->width > 0 && frm->height > 0) {
-                                        sws = sws_getCachedContext(sws,
-                                            frm->width, frm->height,
-                                            static_cast<AVPixelFormat>(frm->format),
-                                            frm->width, frm->height,
-                                            AV_PIX_FMT_RGBA, SWS_BILINEAR,
-                                            nullptr, nullptr, nullptr);
-                                        if (sws) {
-                                            av_frame_unref(rgba);
-                                            rgba->format = AV_PIX_FMT_RGBA;
-                                            rgba->width = frm->width;
-                                            rgba->height = frm->height;
-                                            if (av_frame_get_buffer(rgba, 32) >= 0 &&
-                                                av_frame_make_writable(rgba) >= 0) {
-                                                sws_scale(sws, frm->data, frm->linesize,
-                                                          0, frm->height, rgba->data, rgba->linesize);
-                                                QImage tmp(rgba->data[0], frm->width, frm->height,
-                                                           rgba->linesize[0], QImage::Format_RGBA8888);
-                                                image = tmp.copy();
-                                            }
-                                        }
-                                    }
-                                    av_frame_unref(frm);
-                                }
-                            }
-                            av_packet_unref(pkt);
-                        }
-                        sws_freeContext(sws);
-                        av_frame_free(&rgba);
-                        av_frame_free(&frm);
-                        av_packet_free(&pkt);
-                    }
-                    avcodec_free_context(&ctx);
-                }
-            }
-            avformat_close_input(&formatCtx);
-        }
+        image = decodeExplorerThumbnail(filePath);
     }
 
     if (!image.isNull() && (image.width() > 640 || image.height() > 360)) {
@@ -1094,165 +1028,6 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
     return {};
 }
 
-// Decode the first video frame into a QImage. Thread-safe (no Qt GUI calls).
-QImage ExplorerPane::decodeVideoThumbnail(const QString &filePath) const
-{
-    const MediaProbeResult probe = probeMediaFile(filePath);
-    if (probe.mediaType == ClipMediaType::Image)
-    {
-        return QImage(filePath);
-    }
-    if (probe.mediaType != ClipMediaType::Video)
-    {
-        return {};
-    }
-
-    AVFormatContext *formatCtx = nullptr;
-    if (avformat_open_input(&formatCtx, QFile::encodeName(filePath).constData(), nullptr, nullptr) < 0)
-    {
-        return {};
-    }
-
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0)
-    {
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    int videoStreamIndex = -1;
-    for (unsigned i = 0; i < formatCtx->nb_streams; ++i)
-    {
-        if (formatCtx->streams[i] &&
-            formatCtx->streams[i]->codecpar &&
-            formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
-        {
-            videoStreamIndex = static_cast<int>(i);
-            break;
-        }
-    }
-
-    if (videoStreamIndex < 0)
-    {
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    AVStream *stream = formatCtx->streams[videoStreamIndex];
-    const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (!decoder)
-    {
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    AVCodecContext *codecCtx = avcodec_alloc_context3(decoder);
-    if (!codecCtx)
-    {
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
-        (editor::applyVideoDecoderThreadingPolicy(codecCtx,
-                                                  decoder,
-                                                  stream->codecpar->codec_id,
-                                                  false,
-                                                  false),
-         avcodec_open2(codecCtx, decoder, nullptr) < 0))
-    {
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    AVPacket *packet = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-    AVFrame *rgbaFrame = av_frame_alloc();
-    QImage result;
-
-    if (!packet || !frame || !rgbaFrame)
-    {
-        av_frame_free(&rgbaFrame);
-        av_frame_free(&frame);
-        av_packet_free(&packet);
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return {};
-    }
-
-    SwsContext *sws = nullptr;
-
-    auto decodeFirstFrame = [&](AVFrame *decodedFrame)
-    {
-        if (decodedFrame->width <= 0 || decodedFrame->height <= 0)
-            return;
-
-        sws = sws_getCachedContext(sws,
-            decodedFrame->width, decodedFrame->height,
-            static_cast<AVPixelFormat>(decodedFrame->format),
-            decodedFrame->width, decodedFrame->height,
-            AV_PIX_FMT_RGBA, SWS_BILINEAR,
-            nullptr, nullptr, nullptr);
-        if (!sws)
-            return;
-
-        if (rgbaFrame->width != decodedFrame->width ||
-            rgbaFrame->height != decodedFrame->height ||
-            rgbaFrame->format != AV_PIX_FMT_RGBA)
-        {
-            av_frame_unref(rgbaFrame);
-            rgbaFrame->format = AV_PIX_FMT_RGBA;
-            rgbaFrame->width = decodedFrame->width;
-            rgbaFrame->height = decodedFrame->height;
-            if (av_frame_get_buffer(rgbaFrame, 32) < 0)
-                return;
-        }
-        if (av_frame_make_writable(rgbaFrame) < 0)
-            return;
-
-        sws_scale(sws, decodedFrame->data, decodedFrame->linesize,
-                   0, decodedFrame->height, rgbaFrame->data, rgbaFrame->linesize);
-
-        QImage image(rgbaFrame->data[0], decodedFrame->width, decodedFrame->height,
-                     rgbaFrame->linesize[0], QImage::Format_RGBA8888);
-        result = image.copy();
-    };
-
-    while (av_read_frame(formatCtx, packet) >= 0 && result.isNull())
-    {
-        if (packet->stream_index == videoStreamIndex &&
-            avcodec_send_packet(codecCtx, packet) >= 0)
-        {
-            while (avcodec_receive_frame(codecCtx, frame) >= 0)
-            {
-                decodeFirstFrame(frame);
-                av_frame_unref(frame);
-                if (!result.isNull())
-                    break;
-            }
-        }
-        av_packet_unref(packet);
-    }
-
-    if (result.isNull())
-    {
-        avcodec_send_packet(codecCtx, nullptr);
-        while (avcodec_receive_frame(codecCtx, frame) >= 0 && result.isNull())
-        {
-            decodeFirstFrame(frame);
-            av_frame_unref(frame);
-        }
-    }
-
-    sws_freeContext(sws);
-    av_frame_free(&rgbaFrame);
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    avcodec_free_context(&codecCtx);
-    avformat_close_input(&formatCtx);
-
-    return result;
-}
 
 void ExplorerPane::hideExplorerHoverPreview()
 {

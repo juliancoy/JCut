@@ -4,13 +4,12 @@
 #include "decode_trace.h"
 #include "decoder_context.h"
 #include "decoder_image_io.h"
-#include "gpu_selection.h"
+#include "video_decode_capabilities_core.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDeadlineTimer>
 #include <QDebug>
-#include <QFile>
 #include <QFileInfo>
 #include <QJsonObject>
 #include <QMetaObject>
@@ -176,11 +175,13 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                                     int priority,
                                     int timeoutMs,
                                     DecodeRequestKind kind,
-                                    std::function<void(FrameHandle)> callback) {
+                                    std::function<void(FrameHandle)> callback,
+                                    bool callbackOnOwnerThread) {
     LaneState* lane = laneForRequest(path, frameNumber, kind);
     if (!lane || m_shuttingDown) {
         recordNullCallback(kind, "lane_unavailable");
-        invokeRequestCallback(std::move(callback), FrameHandle());
+        invokeRequestCallback(std::move(callback), FrameHandle(),
+                              callbackOnOwnerThread ? this : nullptr);
         return 0;
     }
 
@@ -191,6 +192,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
     req.frameNumber = frameNumber;
     req.priority = priority;
     req.kind = kind;
+    req.callbackOnOwnerThread = callbackOnOwnerThread;
     req.deadline = QDeadlineTimer(timeoutMs);
     req.callback = callback;
     req.submittedAt = QDateTime::currentMSecsSinceEpoch();
@@ -238,7 +240,9 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                             it->kind != DecodeRequestKind::Visible;
                         if (kindFavored || it->priority < req.priority) {
                             if (it->callback) {
-                                droppedCallbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                                droppedCallbacks.push_back(DroppedCallback{
+                                    it->kind, it->callbackOnOwnerThread,
+                                    std::move(it->callback)});
                             }
                             lane->queue.erase(it);
                             dropped = true;
@@ -277,7 +281,8 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
 
     for (auto& droppedCallback : droppedCallbacks) {
         recordNullCallback(droppedCallback.kind, "superseded");
-        invokeRequestCallback(std::move(droppedCallback.callback), FrameHandle());
+        invokeRequestCallback(std::move(droppedCallback.callback), FrameHandle(),
+                              droppedCallback.callbackOnOwnerThread ? this : nullptr);
     }
 
     if (!accepted) {
@@ -288,7 +293,8 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                         .arg(frameNumber)
                         .arg(static_cast<int>(kind)));
         recordNullCallback(kind, "queue_full");
-        invokeRequestCallback(std::move(callback), FrameHandle());
+        invokeRequestCallback(std::move(callback), FrameHandle(),
+                              callbackOnOwnerThread ? this : nullptr);
         return 0;
     }
 
@@ -322,7 +328,9 @@ void AsyncDecoder::cancelForFile(const QString& path) {
         for (auto it = lane->queue.begin(); it != lane->queue.end();) {
             if (it->filePath == path) {
                 if (it->callback) {
-                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                    callbacks.push_back(DroppedCallback{
+                        it->kind, it->callbackOnOwnerThread,
+                        std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
             } else {
@@ -333,7 +341,8 @@ void AsyncDecoder::cancelForFile(const QString& path) {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_file");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle());
+        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
+                              callback.callbackOnOwnerThread ? this : nullptr);
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -356,7 +365,9 @@ void AsyncDecoder::cancelQueuedNonVisibleForFile(const QString& path) {
         for (auto it = lane->queue.begin(); it != lane->queue.end();) {
             if (it->filePath == path && it->kind != DecodeRequestKind::Visible) {
                 if (it->callback) {
-                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                    callbacks.push_back(DroppedCallback{
+                        it->kind, it->callbackOnOwnerThread,
+                        std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
             } else {
@@ -367,7 +378,8 @@ void AsyncDecoder::cancelQueuedNonVisibleForFile(const QString& path) {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_file");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle());
+        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
+                              callback.callbackOnOwnerThread ? this : nullptr);
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -399,7 +411,9 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
         for (auto it = lane->queue.begin(); it != lane->queue.end();) {
             if (it->filePath == path && it->frameNumber < frameNumber) {
                 if (it->callback) {
-                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                    callbacks.push_back(DroppedCallback{
+                        it->kind, it->callbackOnOwnerThread,
+                        std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
             } else {
@@ -410,7 +424,8 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_before");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle());
+        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
+                              callback.callbackOnOwnerThread ? this : nullptr);
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -429,7 +444,9 @@ void AsyncDecoder::cancelAll() {
 
         for (DecodeRequest& request : lane->queue) {
             if (request.callback) {
-                callbacks.push_back(DroppedCallback{request.kind, std::move(request.callback)});
+                callbacks.push_back(DroppedCallback{
+                    request.kind, request.callbackOnOwnerThread,
+                    std::move(request.callback)});
             }
         }
         lane->queue.clear();
@@ -437,7 +454,8 @@ void AsyncDecoder::cancelAll() {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_all");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle());
+        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
+                              callback.callbackOnOwnerThread ? this : nullptr);
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -721,6 +739,12 @@ void AsyncDecoder::runLane(LaneState* lane) {
                             break;
                         }
                     }
+                    if (frame.isNull() && isStillImagePath(request.filePath) &&
+                        !decodedFrames.isEmpty()) {
+                        // A still image has one source frame regardless of
+                        // how long its timeline clip lasts.
+                        frame = decodedFrames.constFirst();
+                    }
                     if (frame.isNull() && !decodedFrames.isEmpty()) {
                         visibleExactMiss = request.kind == DecodeRequestKind::Visible;
                     }
@@ -763,10 +787,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
         const qint64 decodeMs = decodeTraceMs() - startedAt;
         recordDecodeTiming(request, frame, queueWaitMs, decodeMs);
 
-        invokeRequestCallback(std::move(request.callback), frame);
-
-        QMetaObject::invokeMethod(
-            this,
+        auto publishDecodedFrames =
             [this, frame, decodedFrames, path = request.filePath, errorMessage]() {
                 if (!decodedFrames.isEmpty()) {
                     for (const FrameHandle& decodedFrame : decodedFrames) {
@@ -779,8 +800,27 @@ void AsyncDecoder::runLane(LaneState* lane) {
                 if (!errorMessage.isEmpty()) {
                     emit error(path, errorMessage);
                 }
-            },
-            Qt::QueuedConnection);
+            };
+
+        if (request.callbackOnOwnerThread && request.callback) {
+            // Export consumes frameReady into its exact-frame cache on this
+            // owner thread. Publish the batch before completing the visible
+            // request so a prefetched exact frame cannot be reported missing.
+            QMetaObject::invokeMethod(
+                this,
+                [publishDecodedFrames = std::move(publishDecodedFrames),
+                 callback = std::move(request.callback), frame]() mutable {
+                    publishDecodedFrames();
+                    callback(frame);
+                },
+                Qt::QueuedConnection);
+        } else {
+            invokeRequestCallback(std::move(request.callback), frame, nullptr);
+            QMetaObject::invokeMethod(
+                this,
+                std::move(publishDecodedFrames),
+                Qt::QueuedConnection);
+        }
 
         decodeTrace(QStringLiteral("AsyncDecoder::runLane.end"),
                     QStringLiteral("lane=%1 seq=%2 file=%3 frame=%4 null=%5 waitMs=%6")
@@ -850,6 +890,43 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         return false;
     }
 
+    // Coalesce an exact queued request. Export lookahead can enqueue a frame
+    // immediately before it becomes visible; decoding the same stateful video
+    // frame twice can advance the codec past the exact result and return null.
+    for (int i = static_cast<int>(queue.size()) - 1; i >= 0; --i) {
+        DecodeRequest& queued = queue[static_cast<size_t>(i)];
+        if (queued.filePath != req.filePath ||
+            queued.frameNumber != req.frameNumber) {
+            continue;
+        }
+        if (queued.callback && req.callback &&
+            queued.callbackOnOwnerThread != req.callbackOnOwnerThread) {
+            continue;
+        }
+        if (req.callback) {
+            if (queued.callback) {
+                const auto first = queued.callback;
+                const auto second = req.callback;
+                queued.callback = [first, second](FrameHandle frame) {
+                    first(frame);
+                    second(std::move(frame));
+                };
+            } else {
+                queued.callback = req.callback;
+                queued.callbackOnOwnerThread = req.callbackOnOwnerThread;
+            }
+        }
+        queued.priority = qMax(queued.priority, req.priority);
+        if (req.kind == DecodeRequestKind::Visible) {
+            queued.kind = DecodeRequestKind::Visible;
+        }
+        queued.deadline = req.deadline;
+        DecodeRequest promoted = std::move(queued);
+        queue.erase(queue.begin() + i);
+        insertByPriority(queue, promoted);
+        return true;
+    }
+
     // Visible requests are never proximity-superseded here. The current visible
     // frame must either complete exactly or fail explicitly so preview callers can
     // distinguish starvation from successful presentation.
@@ -858,6 +935,27 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         DecodeRequest& queued = queue[static_cast<size_t>(i)];
         if (queued.filePath != req.filePath) {
             continue;
+        }
+        if (queued.frameNumber == req.frameNumber) {
+            if (req.kind == DecodeRequestKind::Visible &&
+                queued.kind != DecodeRequestKind::Visible) {
+                if (queued.callback) {
+                    droppedCallbacks->push_back(
+                        DroppedCallback{queued.kind,
+                                        queued.callbackOnOwnerThread,
+                                        std::move(queued.callback)});
+                }
+                queue.erase(queue.begin() + i);
+                continue;
+            }
+            // Export lookahead has no completion callback. One queued exact
+            // prefetch is sufficient; repeated sliding-window submissions
+            // must not advance a stateful video decoder through the same
+            // frame several times before the visible request arrives.
+            if (req.kind != DecodeRequestKind::Visible && !req.callback) {
+                queued.priority = qMax(queued.priority, req.priority);
+                return true;
+            }
         }
         if (queued.kind == DecodeRequestKind::Visible) {
             continue;
@@ -872,6 +970,7 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         if (queued.callback) {
             droppedCallbacks->push_back(
                 DroppedCallback{queued.kind,
+                                queued.callbackOnOwnerThread,
                                 std::move(queued.callback)});
         }
         queue.erase(queue.begin() + i);
@@ -1010,43 +1109,17 @@ void AsyncDecoder::initSharedHwDevices() {
     // instead of calling av_hwdevice_ctx_create() themselves.
     // This reduces CUDA context count from O(workers × files) → O(1).
 
-    AVHWDeviceType types[] = {
-#ifdef __APPLE__
-        AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-#elif defined(_WIN32)
-        AV_HWDEVICE_TYPE_D3D11VA,
-        AV_HWDEVICE_TYPE_DXVA2,
-#endif
-        AV_HWDEVICE_TYPE_CUDA,
-        AV_HWDEVICE_TYPE_VAAPI,
-    };
-#if defined(Q_OS_LINUX)
-    if (gpu::requestedVendorId() != 0x10de) {
-        std::swap(types[0], types[1]);
-    }
-#endif
-
     QMutexLocker lock(&m_sharedHwMutex);
 
-    for (AVHWDeviceType type : types) {
-        const char* deviceName = nullptr;
-
-#if defined(Q_OS_LINUX)
-        QByteArray devicePath;
-        if (type == AV_HWDEVICE_TYPE_VAAPI) {
-            const QStringList renderNodes = gpu::linuxVaapiRenderNodes();
-            for (const QString& candidate : renderNodes) {
-                if (QFile::exists(candidate)) {
-                    devicePath = candidate.toLocal8Bit();
-                    deviceName = devicePath.constData();
-                    break;
-                }
-            }
-            if (!deviceName) {
-                continue;
-            }
+    for (const jcut::VideoDecodeBackendCapability& capability :
+         jcut::detectedVideoDecodeCapabilities()) {
+        if (!capability.available) {
+            continue;
         }
-#endif
+        const AVHWDeviceType type = capability.deviceType;
+        const char* deviceName = capability.devicePath.empty()
+            ? nullptr
+            : capability.devicePath.c_str();
 
         AVBufferRef* hwCtx = nullptr;
         const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);

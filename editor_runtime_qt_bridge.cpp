@@ -189,6 +189,30 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.locked = clip.locked;
         coreClip.maskEnabled = clip.maskEnabled;
         coreClip.maskFramesDir = clip.maskFramesDir.toStdString();
+        coreClip.maskOriginalFramesDir = clip.maskOriginalFramesDir.toStdString();
+        for (const TimelineClip::MaskFuzzyRemoveEdit& edit : clip.maskFuzzyRemoveEdits) {
+            coreClip.maskFuzzyRemoveEdits.push_back(EditorMaskFuzzyRemoveEdit{
+                edit.recipeHash.toStdString(),
+                edit.algorithm.toStdString(),
+                edit.sourceSidecarDirectory.toStdString(),
+                edit.materializedSidecarDirectory.toStdString(),
+                edit.sourceFrame,
+                edit.sourcePresentationTimestamp,
+                edit.seedMaskOrdinal,
+                edit.firstMaskOrdinal,
+                edit.lastMaskOrdinal,
+                edit.xNorm,
+                edit.yNorm,
+                edit.spatialReachPixels,
+                edit.temporalReachFrames,
+                edit.foregroundThreshold,
+                edit.maximumAreaGrowth,
+                edit.minimumAreaRatio,
+                edit.maximumFrameFraction,
+                edit.ambiguityRatio,
+                edit.changedFrames,
+                edit.removedPixels});
+        }
         coreClip.maskFeather = clip.maskFeather;
         coreClip.maskFeatherGamma = clip.maskFeatherGamma;
         coreClip.maskFeatherFalloff = clip.maskFeatherFalloff;

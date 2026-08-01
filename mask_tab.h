@@ -13,7 +13,10 @@
 class QComboBox;
 class QSpinBox;
 class QTimer;
-namespace editor::masks { struct FuzzyRemoveResult; }
+namespace editor::masks {
+struct FuzzyRemoveAnalysis;
+struct FuzzyRemoveResult;
+}
 
 class MaskTab : public QObject
 {
@@ -28,6 +31,8 @@ public:
         QComboBox* sidecarCombo = nullptr;
         QPushButton* browseButton = nullptr;
         QPushButton* newPromptButton = nullptr;
+        QPushButton* biRefNetRefineButton = nullptr;
+        QSpinBox* biRefNetGuideRadiusSpin = nullptr;
         QPushButton* fuzzyRemoveButton = nullptr;
         QSpinBox* fuzzySpatialReachSpin = nullptr;
         QSpinBox* fuzzyTemporalReachSpin = nullptr;
@@ -64,11 +69,15 @@ public:
         std::function<bool(const TimelineClip&)> clipHasVisuals;
         std::function<QString(QWidget*, const QString&)> chooseMaskDirectory;
         std::function<void(const QString&)> generatePromptMask;
+        std::function<void(const QString&, const QString&, int)>
+            refineMaskWithBiRefNet;
         std::function<QString(const QString&, const QString&)> findMaskMatteChildForSidecar;
         std::function<QString(const QString&, const QString&)> materializeMaskMatteForSidecar;
         std::function<void(const QString&)> selectClipById;
         std::function<bool()> isMaskInspectorActive;
         std::function<void(bool)> setMaskFuzzyRemoveMode;
+        std::function<bool(const editor::masks::FuzzyRemoveAnalysis&)>
+            confirmFuzzyRemoveAnalysis;
     };
 
     explicit MaskTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -87,6 +96,11 @@ private:
     void applyTreatmentEdit(bool commit, bool zLevelEdited = false);
     void setControlsEnabled(bool enabled);
     void setTreatmentControlsEnabled(bool enabled);
+    bool confirmFuzzyRemoveAnalysis(
+        const editor::masks::FuzzyRemoveAnalysis& analysis) const;
+    void materializeFuzzyRemoveAnalysis(
+        const QString& selectedId,
+        editor::masks::FuzzyRemoveAnalysis analysis);
 
     Widgets m_widgets;
     Dependencies m_deps;

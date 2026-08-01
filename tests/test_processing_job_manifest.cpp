@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
 class ProcessingJobManifestTest : public QObject {
@@ -203,6 +204,11 @@ private slots:
     request.device = "cpu";
     request.fp16 = false;
     request.alphaTolerance = 0.25;
+    const QString guidancePath = QDir(tempDir.path()).absoluteFilePath(
+        QStringLiteral("portrait_sam3_person_binary_masks"));
+    QVERIFY(QDir().mkpath(guidancePath));
+    request.guidanceDirectory = guidancePath.toStdString();
+    request.guidanceGateRadius = 37;
 
     const auto plan =
         jcut::jobs::buildBiRefNetJobPlanCore(request);
@@ -214,6 +220,25 @@ private slots:
                 plan.command.begin(),
                 plan.command.end(),
                 "--fp32") != plan.command.end());
+    const auto guidanceArgument = std::find(
+        plan.command.begin(), plan.command.end(), "--guidance-dir");
+    QVERIFY(guidanceArgument != plan.command.end());
+    QVERIFY(std::next(guidanceArgument) != plan.command.end());
+    QCOMPARE(QString::fromStdString(*std::next(guidanceArgument)), guidancePath);
+    const auto radiusArgument = std::find(
+        plan.command.begin(), plan.command.end(), "--guidance-gate-radius");
+    QVERIFY(radiusArgument != plan.command.end());
+    QVERIFY(std::next(radiusArgument) != plan.command.end());
+    QCOMPARE(QString::fromStdString(*std::next(radiusArgument)), QStringLiteral("37"));
+    QCOMPARE(
+        QString::fromStdString(
+            plan.manifest["parameters"]["guidance_directory"].get<std::string>()),
+        guidancePath);
+    QCOMPARE(
+        plan.manifest["parameters"]["guidance_gate_radius"].get<int>(),
+        37);
+    QVERIFY(QString::fromStdString(plan.outputDirectory).contains(
+        QStringLiteral("guided_portrait_sam3_person_binary_masks")));
     QVERIFY(plan.environment.contains("BIREFNET_JOB_ROOT"));
 
     jcut::jobs::BiRefNetJobControllerCore controller;

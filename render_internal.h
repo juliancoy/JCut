@@ -111,20 +111,20 @@ void recordWorstFrame(QVector<RenderFrameStageStats>* worstFrames,
                       int maxEntries = 8);
 QJsonObject buildWorstFrameTable(const QVector<RenderFrameStageStats>& worstFrames);
 
-void enqueueRenderSequenceLookahead(const RenderRequest& request,
-                                    int64_t timelineFrame,
-                                    const QVector<TimelineClip>& orderedClips,
-                                    editor::AsyncDecoder* asyncDecoder,
-                                    const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
-void enqueueRenderMaskLookahead(const RenderRequest& request,
-                                int64_t timelineFrame,
-                                const QVector<TimelineClip>& orderedClips);
-void prewarmRenderSequenceSegment(const RenderRequest& request,
-                                  int64_t segmentStartFrame,
-                                  int64_t segmentEndFrame,
+void enqueueRenderDecodeLookahead(const RenderRequest& request,
+                                  int64_t timelineFrame,
                                   const QVector<TimelineClip>& orderedClips,
                                   editor::AsyncDecoder* asyncDecoder,
                                   const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
+void enqueueRenderMaskLookahead(const RenderRequest& request,
+                                int64_t timelineFrame,
+                                const QVector<TimelineClip>& orderedClips);
+void prewarmRenderDecodeSegment(const RenderRequest& request,
+                                int64_t segmentStartFrame,
+                                int64_t segmentEndFrame,
+                                const QVector<TimelineClip>& orderedClips,
+                                editor::AsyncDecoder* asyncDecoder,
+                                const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
 void prewarmRenderMaskSegment(const RenderRequest& request,
                               int64_t segmentStartFrame,
                               int64_t segmentEndFrame,
@@ -176,6 +176,11 @@ struct AudioExportState {
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
+    QVector<editor::speech::SampleRange> speechSampleRanges;
+    editor::speech::FadeMode speechFadeMode =
+        editor::speech::FadeMode::JumpCut;
+    int speechFadeSamples = 0;
+    qreal speechCurveStrength = 1.0;
     QHash<QString, DecodedAudioClip> cache;
     AVStream* stream = nullptr;
     AVCodecContext* codecCtx = nullptr;
@@ -193,7 +198,13 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
                    float* output,
                    int frames,
                    int64_t chunkStartSample,
-                   qreal timelineSampleStep = 1.0);
+                   qreal timelineSampleStep = 1.0,
+                   const QVector<editor::speech::SampleRange>&
+                       speechSampleRanges = {},
+                   int speechFadeSamples = 0,
+                   editor::speech::FadeMode speechFadeMode =
+                       editor::speech::FadeMode::JumpCut,
+                   qreal speechCurveStrength = 1.0);
 bool encodeFrame(AVCodecContext* codecCtx,
                  AVStream* stream,
                  AVFormatContext* formatCtx,

@@ -65,6 +65,28 @@ std::vector<std::uint32_t> readSpirv(
     return words;
 }
 
+#if JCUT_HAS_CUDA_DRIVER
+std::string cudaFailure(const char* operation, CUresult result)
+{
+    const char* name = nullptr;
+    const char* description = nullptr;
+    cuGetErrorName(result, &name);
+    cuGetErrorString(result, &description);
+    std::string message = operation;
+    message += " failed";
+    if (name) {
+        message += ": ";
+        message += name;
+    }
+    if (description) {
+        message += " (";
+        message += description;
+        message += ')';
+    }
+    return message;
+}
+#endif
+
 } // namespace
 
 class VulkanHardwareFrameImportCore::Impl {
@@ -276,6 +298,7 @@ public:
                 cuda->cuda_ctx,
                 &yExternalMemory,
                 &yDevicePointer,
+                &yCudaContext,
                 error) ||
             (nv12 && !ensureCudaMapping(
                  uvMemory,
@@ -283,6 +306,7 @@ public:
                  cuda->cuda_ctx,
                  &uvExternalMemory,
                  &uvDevicePointer,
+                 &uvCudaContext,
                  error))) {
             popCudaContext();
             return false;
@@ -316,10 +340,27 @@ public:
             uvCopy.WidthInBytes = static_cast<std::size_t>(size.width);
             uvCopy.Height =
                 static_cast<std::size_t>((size.height + 1) / 2);
-            copied =
-                cuMemcpy2DAsync(&yCopy, cuda->stream) == CUDA_SUCCESS &&
-                cuMemcpy2DAsync(&uvCopy, cuda->stream) == CUDA_SUCCESS &&
-                cuStreamSynchronize(cuda->stream) == CUDA_SUCCESS;
+            const CUresult yResult =
+                cuMemcpy2DAsync(&yCopy, cuda->stream);
+            const CUresult uvResult = yResult == CUDA_SUCCESS
+                ? cuMemcpy2DAsync(&uvCopy, cuda->stream)
+                : yResult;
+            const CUresult syncResult = uvResult == CUDA_SUCCESS
+                ? cuStreamSynchronize(cuda->stream)
+                : uvResult;
+            copied = syncResult == CUDA_SUCCESS;
+            if (!copied && error) {
+                *error = cudaFailure(
+                    yResult != CUDA_SUCCESS
+                        ? "cuMemcpy2DAsync(Y)"
+                        : uvResult != CUDA_SUCCESS
+                            ? "cuMemcpy2DAsync(UV)"
+                            : "cuStreamSynchronize",
+                    yResult != CUDA_SUCCESS
+                        ? yResult
+                        : uvResult != CUDA_SUCCESS
+                            ? uvResult : syncResult);
+            }
         } else {
             CUDA_MEMCPY2D copy{};
             copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -334,15 +375,27 @@ public:
             copy.WidthInBytes =
                 static_cast<std::size_t>(size.width) * 4;
             copy.Height = static_cast<std::size_t>(size.height);
-            copied =
-                cuMemcpy2DAsync(&copy, cuda->stream) == CUDA_SUCCESS &&
-                cuStreamSynchronize(cuda->stream) == CUDA_SUCCESS;
+            const CUresult copyResult =
+                cuMemcpy2DAsync(&copy, cuda->stream);
+            const CUresult syncResult = copyResult == CUDA_SUCCESS
+                ? cuStreamSynchronize(cuda->stream)
+                : copyResult;
+            copied = syncResult == CUDA_SUCCESS;
+            if (!copied && error) {
+                *error = cudaFailure(
+                    copyResult != CUDA_SUCCESS
+                        ? "cuMemcpy2DAsync(RGBA)"
+                        : "cuStreamSynchronize",
+                    copyResult != CUDA_SUCCESS
+                        ? copyResult : syncResult);
+            }
         }
         popCudaContext();
         if (!copied) {
-            return fail(
-                error,
-                "CUDA device copy into Vulkan external memory failed");
+            return error && !error->empty()
+                ? false
+                : fail(error,
+                       "CUDA device copy into Vulkan external memory failed");
         }
         if (nv12) {
             if (!recordNv12(
@@ -386,9 +439,10 @@ public:
             vkDeviceWaitIdle(device);
         }
 #if JCUT_HAS_CUDA_DRIVER
-        destroyCudaMapping(&yExternalMemory, &yDevicePointer);
-        destroyCudaMapping(&uvExternalMemory, &uvDevicePointer);
-        cudaContext = nullptr;
+        destroyCudaMapping(
+            &yExternalMemory, &yDevicePointer, &yCudaContext);
+        destroyCudaMapping(
+            &uvExternalMemory, &uvDevicePointer, &uvCudaContext);
 #endif
         destroyBuffer(&yBuffer, &yMemory);
         destroyBuffer(&uvBuffer, &uvMemory);
@@ -573,9 +627,11 @@ private:
         }
 #if JCUT_HAS_CUDA_DRIVER
         if (buffer == &yBuffer)
-            destroyCudaMapping(&yExternalMemory, &yDevicePointer);
+            destroyCudaMapping(
+                &yExternalMemory, &yDevicePointer, &yCudaContext);
         else
-            destroyCudaMapping(&uvExternalMemory, &uvDevicePointer);
+            destroyCudaMapping(
+                &uvExternalMemory, &uvDevicePointer, &uvCudaContext);
 #endif
         destroyBuffer(buffer, memory);
         *allocationSize = 0;
@@ -689,7 +745,6 @@ private:
             return fail(error, "failed to activate decoded frame CUDA context");
         }
         cudaContextPushed = true;
-        cudaContext = context;
         return true;
     }
 
@@ -707,12 +762,13 @@ private:
         CUcontext context,
         CUexternalMemory* externalMemory,
         CUdeviceptr* pointer,
+        CUcontext* mappingContext,
         std::string* error)
     {
-        if (*externalMemory && *pointer && cudaContext == context) {
+        if (*externalMemory && *pointer && *mappingContext == context) {
             return true;
         }
-        destroyCudaMapping(externalMemory, pointer);
+        destroyCudaMapping(externalMemory, pointer, mappingContext);
         VkMemoryGetFdInfoKHR fdInfo{};
         fdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
         fdInfo.memory = memory;
@@ -744,21 +800,23 @@ private:
             // the opaque import lifetime.
             *externalMemory = nullptr;
             *pointer = 0;
+            *mappingContext = nullptr;
             return fail(error, "cuExternalMemoryGetMappedBuffer failed");
         }
-        cudaContext = context;
+        *mappingContext = context;
         return true;
     }
 
     void destroyCudaMapping(
         CUexternalMemory* memory,
-        CUdeviceptr* pointer)
+        CUdeviceptr* pointer,
+        CUcontext* mappingContext)
     {
         if (*memory) {
             bool pushed = false;
-            if (cudaContext && !cudaContextPushed) {
+            if (*mappingContext && !cudaContextPushed) {
                 pushed =
-                    cuCtxPushCurrent(cudaContext) == CUDA_SUCCESS;
+                    cuCtxPushCurrent(*mappingContext) == CUDA_SUCCESS;
             }
             if (pushed) {
                 CUcontext previous = nullptr;
@@ -767,6 +825,7 @@ private:
         }
         *memory = nullptr;
         *pointer = 0;
+        *mappingContext = nullptr;
     }
 #endif
 
@@ -1244,7 +1303,8 @@ private:
     CUexternalMemory uvExternalMemory = nullptr;
     CUdeviceptr yDevicePointer = 0;
     CUdeviceptr uvDevicePointer = 0;
-    CUcontext cudaContext = nullptr;
+    CUcontext yCudaContext = nullptr;
+    CUcontext uvCudaContext = nullptr;
     bool cudaContextPushed = false;
 #endif
 };

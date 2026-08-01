@@ -20,6 +20,10 @@ struct VulkanMaskPreprocessOptions {
     int blurRadius = 0;
 };
 
+QString vulkanMaskTextureCacheKey(
+    const VulkanMaskPreprocessOptions& options,
+    const QSize& outputSize);
+
 class VulkanMaskPreprocessor final {
 public:
     static constexpr std::size_t kDescriptorSetCount = 128;

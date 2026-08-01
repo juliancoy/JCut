@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_output_backend.h"
+#include "video_decode_capabilities_core.h"
 
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ struct AudioOutputBackendCapability {
 struct RuntimeCapabilities {
   std::string operatingSystem;
   std::vector<AudioOutputBackendCapability> audioOutputBackends;
+  std::vector<jcut::VideoDecodeBackendCapability> videoDecodeBackends;
 };
 
 struct AudioOutputBackendProbe {

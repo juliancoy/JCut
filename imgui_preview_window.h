@@ -42,6 +42,7 @@ public:
         bool usingGpu = false;
         bool usingHardwareEncode = false;
         bool createVideoFromImageSequence = false;
+        std::string activity;
         std::string encoderLabel;
         std::string exportPipeline;
         std::string gpuTransferLabel;

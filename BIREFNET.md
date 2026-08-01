@@ -4,6 +4,13 @@ Right-click a video clip in the timeline or Clips table and choose
 **Rotoscope → Run BiRefNet…**. The neighboring **Run SAM 3…** action remains
 available for prompt-based selection.
 
+For a completed binary SAM Mask Matte, open the **Masks** tab and choose
+**Refine SAM Edges with BiRefNet…**. **Refinement reach** controls how far
+outside the SAM boundary BiRefNet may recover hair, motion blur, and
+semi-transparent detail. The SAM sidecar is mounted read-only and remains
+unchanged; refinement writes a separately named continuous-alpha sidecar and
+creates its own Mask Matte child.
+
 The BiRefNet preflight includes **Preview Frame**. It runs the pinned model on the
 source frame under the playhead (or the clip midpoint when the playhead is outside
 the clip), then displays the source, grayscale alpha, and a checkerboard composite.
@@ -27,7 +34,8 @@ alpha frames. The Mask Matte child is materialized only after the full job
 succeeds.
 
 BiRefNet is most suitable when the intended subject is the visually dominant
-foreground. Unlike SAM, it does not accept a text or point prompt. It writes one
+foreground, or when a SAM sidecar supplies a spatial guide. Unlike SAM, it does
+not accept a text or point prompt directly. It writes one
 8-bit grayscale alpha PNG per decoded source frame and JCut immediately uses that
 directory as the child's mask sidecar. Intermediate gray values are preserved by
 the Vulkan mask pipeline. The shared Masks controls support invert, erode, dilate,
@@ -73,6 +81,8 @@ The standalone launcher is also available:
 ./birefnet.sh input.mp4 --output-dir ./input_birefnet_alpha_masks
 ```
 
+BiRefNet refinement is preprocessed rather than evaluated in the live render
+path. The resulting alpha remains fully adjustable with the live Masks controls.
 BiRefNet processes frames independently. It improves edge detail and produces a
 true continuous matte, but it does not provide temporal memory; difficult footage
 may still benefit from a later temporal-stabilization pass.

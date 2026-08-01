@@ -3612,6 +3612,41 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     QHash<QString, bool> frameCrossfadeMaskUploadResults;
     QHash<QString, bool> frameCrossfadeCurveLutUploadResults;
     QHash<QString, bool> frameCrossfadeMaskCurveLutUploadResults;
+    struct PreparedGpuMask {
+        VkImageView view = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+    QHash<QString, PreparedGpuMask> preparedGpuMasks;
+    const auto bindOrPrepareGpuMask = [&](
+        VulkanResources* resources,
+        const jcut::core::ImageBuffer& mask,
+        const VulkanMaskPreprocessOptions& options) {
+        if (!resources) {
+            return false;
+        }
+        const QSize outputSize =
+            options.outputSize.isValid()
+            ? options.outputSize
+            : QSize(mask.size.width, mask.size.height);
+        const QString key =
+            vulkanMaskTextureCacheKey(options, outputSize);
+        const auto prepared = preparedGpuMasks.constFind(key);
+        if (!key.isEmpty() && prepared != preparedGpuMasks.cend()) {
+            return resources->bindAuxiliaryImage(
+                prepared->view, prepared->layout);
+        }
+        if (!resources->uploadMaskTexture(cb, mask, options)) {
+            return false;
+        }
+        const PreparedGpuMask result{
+            resources->preparedMaskImageView(),
+            resources->preparedMaskImageLayout()};
+        if (!key.isEmpty() && result.view != VK_NULL_HANDLE &&
+            result.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            preparedGpuMasks.insert(key, result);
+        }
+        return true;
+    };
     struct PreparedOverlayTexture {
         VulkanResources* resources = nullptr;
         QRectF bounds;
@@ -3962,6 +3997,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                     cb, secondaryMaskCurveLut));
                         }
                     }
+                    secondaryHandoffResources->resources
+                        ->ensureAuxiliaryImagesReadable(cb);
                     if (status.frameCrossfadeMaskTextureEnabled &&
                         status.frameCrossfadeMaskBuffer) {
                         VulkanMaskPreprocessOptions secondaryMaskOptions;
@@ -3982,12 +4019,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             qMax<qreal>(status.maskFeather, status.maskBlur));
                         frameCrossfadeMaskUploadResults.insert(
                             status.clipId,
-                            secondaryHandoffResources->resources->uploadMaskTexture(
-                                cb,
+                            bindOrPrepareGpuMask(
+                                secondaryHandoffResources->resources.get(),
                                 *status.frameCrossfadeMaskBuffer,
                                 secondaryMaskOptions));
                     }
-                    secondaryHandoffResources->resources->ensureAuxiliaryImagesReadable(cb);
                 }
             }
             const QByteArray& curveLut = gradePayload.curveLutRgba;
@@ -4006,6 +4042,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     maskCurveLutUploadResults.insert(status.clipId, uploaded);
                 }
             }
+            handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
             if (status.maskTextureEnabled && status.maskBuffer) {
                 VulkanMaskPreprocessOptions maskOptions;
                 maskOptions.sourceIdentity = status.maskIdentity;
@@ -4018,10 +4055,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 maskOptions.blurRadius = qRound(qMax<qreal>(status.maskFeather, status.maskBlur));
                 maskUploadResults.insert(
                     status.clipId,
-                    handoffResources->resources->uploadMaskTexture(
-                        cb, *status.maskBuffer, maskOptions));
+                    bindOrPrepareGpuMask(
+                        handoffResources->resources.get(),
+                        *status.maskBuffer,
+                        maskOptions));
             }
-            handoffResources->resources->ensureAuxiliaryImagesReadable(cb);
             if (handoffResult.sampledFrameReady) {
                 handoffResult.descriptorSet = handoffResources->resources->descriptorSet();
                 handoffResult.descriptorSetIndex =

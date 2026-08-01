@@ -11,6 +11,7 @@ JOB_ROOT="${BIREFNET_JOB_ROOT:-}"
 LOG_PATH="${BIREFNET_LOG_PATH:-}"
 PREVIEW_ONLY=0
 SOURCE_PRESENTATION_TIMESTAMP=""
+GUIDANCE_DIR=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -22,6 +23,8 @@ Options:
   --cpu                          Run on CPU instead of CUDA
   --fp32                         Disable FP16 inference
   --alpha-tolerance <0..0.99>    Remove low-confidence foreground (default: 0)
+  --guidance-dir <directory>     Restrict alpha generation to a dilated SAM mask
+  --guidance-gate-radius <px>    SAM guidance dilation radius (default: 24)
   --source-presentation-timestamp <pts>
                                 Preview the frame with this exact raw best-effort timestamp
   --no-resume                    Re-render existing alpha frames
@@ -46,6 +49,11 @@ while [[ $# -gt 0 ]]; do
     --output-dir)
       [[ $# -ge 2 ]] || { echo "ERROR: --output-dir requires a value" >&2; exit 2; }
       OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --guidance-dir)
+      [[ $# -ge 2 ]] || { echo "ERROR: --guidance-dir requires a value" >&2; exit 2; }
+      GUIDANCE_DIR="$2"
       shift 2
       ;;
     --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--source-presentation-timestamp|--live-preview-every)
@@ -100,6 +108,11 @@ mkdir -p "$OUTPUT_DIR" "$MODEL_CACHE" "$RUNTIME_CACHE"
 OUTPUT_ABS="$(realpath "$OUTPUT_DIR")"
 MODEL_CACHE_ABS="$(realpath "$MODEL_CACHE")"
 RUNTIME_CACHE_ABS="$(realpath "$RUNTIME_CACHE")"
+GUIDANCE_ABS=""
+if [[ -n "$GUIDANCE_DIR" ]]; then
+  [[ -d "$GUIDANCE_DIR" ]] || { echo "ERROR: guidance directory does not exist: $GUIDANCE_DIR" >&2; exit 2; }
+  GUIDANCE_ABS="$(realpath "$GUIDANCE_DIR")"
+fi
 
 if [[ -n "$LOG_PATH" ]]; then
   mkdir -p "$(dirname "$LOG_PATH")"
@@ -182,6 +195,10 @@ DOCKER_ARGS+=(
   -v "$ROOT_DIR/jcut_frame_index_map.py:/workspace/jcut_frame_index_map.py:ro"
   -v "$ROOT_DIR/sam3_resume.py:/workspace/sam3_resume.py:ro"
 )
+if [[ -n "$GUIDANCE_ABS" ]]; then
+  DOCKER_ARGS+=( -v "$GUIDANCE_ABS:/guidance:ro" )
+  FORWARD_ARGS+=(--guidance-dir /guidance)
+fi
 if [[ -n "$JOB_ROOT_ABS" ]]; then
   DOCKER_ARGS+=(
     --label "jcut.operation=birefnet"

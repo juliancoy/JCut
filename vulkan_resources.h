@@ -16,10 +16,6 @@
 
 class QVulkanDeviceFunctions;
 
-QString vulkanMaskTextureCacheKey(
-    const VulkanMaskPreprocessOptions& options,
-    const QSize& outputSize);
-
 class VulkanResources final {
 public:
     static constexpr size_t kDescriptorSetCount = 3;
@@ -73,6 +69,8 @@ public:
     VkImage sampledImage() const { return m_textureImage; }
     VkImageView sampledImageView() const { return m_textureView; }
     VkImageLayout sampledImageLayout() const { return m_textureLayout; }
+    VkImageView preparedMaskImageView() const { return m_maskView; }
+    VkImageLayout preparedMaskImageLayout() const { return m_maskLayout; }
     QString lastError() const { return m_lastError; }
 
 private:

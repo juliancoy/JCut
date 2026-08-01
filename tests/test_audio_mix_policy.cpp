@@ -82,6 +82,7 @@ private slots:
   void testOnlyStarvedClipBlocksChunk();
   void testSpeechFilterRangesAreDerivedFromExportRanges();
   void testSpeechFilterFadeModesShapeBoundaryGain();
+  void testExportMixerUsesSharedSpeechFilterFadeBlend();
   void testSpliceSecondaryTapStopsAtClipEnd();
   void testAudioDynamicsAreAppliedPerClipBeforeMix();
   void testTrackGainMuteAndSoloAffectMix();
@@ -95,6 +96,7 @@ private slots:
   void testPendingOutputRebasePreservesExactSampleAndIsOneShot();
   void testAudioFollowerSnapshotIsCoherent();
   void testCapabilitiesRankNativeBackendBeforePortableFallback();
+  void testCapabilitiesDescribeVideoDecoderBackends();
   void testSeamlessBackendSeekNeverCallsBlockingDeviceStop();
   void testRecoveredBackendRebasesToAuthoritativeTransport();
   void testDetectedBackendDrivesLiveCallbackWhenDeviceIsAvailable();
@@ -308,6 +310,35 @@ testCapabilitiesRankNativeBackendBeforePortableFallback() {
 #endif
 }
 
+void TestAudioMixPolicy::testCapabilitiesDescribeVideoDecoderBackends() {
+  const RuntimeCapabilities capabilities = detectRuntimeCapabilities();
+  QVERIFY(!capabilities.videoDecodeBackends.empty());
+
+  bool unavailableSeen = false;
+  for (const jcut::VideoDecodeBackendCapability& backend :
+       capabilities.videoDecodeBackends) {
+    QVERIFY(backend.deviceType != AV_HWDEVICE_TYPE_NONE);
+    QVERIFY(!backend.id.empty());
+    if (!backend.available) {
+      unavailableSeen = true;
+    } else {
+      QVERIFY2(!unavailableSeen,
+               "available video decoders must rank before unavailable ones");
+    }
+  }
+
+  const std::vector<AVHWDeviceType> h264Order =
+      jcut::preferredVideoDecodeDeviceOrder(AV_CODEC_ID_H264);
+  for (AVHWDeviceType type : h264Order) {
+    const jcut::VideoDecodeBackendCapability* backend =
+        jcut::videoDecodeCapability(type);
+    QVERIFY(backend);
+    QVERIFY(backend->available);
+    QVERIFY(jcut::videoDecodeBackendSupportsCodec(
+        *backend, AV_CODEC_ID_H264));
+  }
+}
+
 void TestAudioMixPolicy::
 testSeamlessBackendSeekNeverCallsBlockingDeviceStop() {
   AudioEngine engine;
@@ -510,6 +541,57 @@ void TestAudioMixPolicy::testSpeechFilterFadeModesShapeBoundaryGain() {
   QVERIFY(crossfadeMode.primaryGain < 1.0f);
   QVERIFY(crossfadeMode.secondaryGain > 0.0f);
   QCOMPARE(crossfadeMode.secondaryTimelineSample, static_cast<int64_t>(2050));
+}
+
+void TestAudioMixPolicy::testExportMixerUsesSharedSpeechFilterFadeBlend() {
+  const QString path =
+      QStringLiteral("/tmp/jcut_export_speech_fade.wav");
+  TimelineClip clip =
+      makeAudioClip(QStringLiteral("speech-fade"), path, 0, 2);
+  clip.fadeSamples = 1;
+
+  render_detail::DecodedAudioClip decoded;
+  decoded.samples.resize(3200 * 2);
+  for (int sample = 0; sample < 3200; ++sample) {
+    const float value = sample < 1500 ? 0.25f : 0.5f;
+    decoded.samples[sample * 2] = value;
+    decoded.samples[sample * 2 + 1] = value;
+  }
+  decoded.sourceStartSample = 0;
+  decoded.fullyDecoded = true;
+  decoded.valid = true;
+  const QHash<QString, render_detail::DecodedAudioClip> cache{
+      {path, decoded}};
+  const QVector<editor::speech::SampleRange> ranges{
+      {0, 1000},
+      {2000, 3000}};
+  const editor::speech::RangeBlend expected =
+      editor::speech::rangeBlendAtSample(
+          950,
+          ranges,
+          100,
+          editor::speech::FadeMode::Crossfade,
+          1.0);
+
+  std::array<float, 2> output{};
+  render_detail::mixAudioChunk(
+      QVector<TimelineClip>{clip},
+      {},
+      {},
+      cache,
+      output.data(),
+      1,
+      950,
+      1.0,
+      ranges,
+      100,
+      editor::speech::FadeMode::Crossfade,
+      1.0);
+  const float expectedSample =
+      0.25f * expected.primaryGain +
+      0.5f * expected.secondaryGain;
+  QVERIFY(std::abs(output[0] - expectedSample) < 0.00001f);
+  QVERIFY(std::abs(output[1] - expectedSample) < 0.00001f);
 }
 
 void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {

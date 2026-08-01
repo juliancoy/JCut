@@ -429,11 +429,31 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
                    float* output,
                    int frames,
                    int64_t chunkStartSample,
-                   qreal timelineSampleStep) {
+                   qreal timelineSampleStep,
+                   const QVector<editor::speech::SampleRange>&
+                       speechSampleRanges,
+                   int speechFadeSamples,
+                   editor::speech::FadeMode speechFadeMode,
+                   qreal speechCurveStrength) {
     std::fill(output, output + frames * kRenderAudioChannels, 0.0f);
     const qreal sampleStep = std::isfinite(timelineSampleStep) && timelineSampleStep > 0.001
         ? timelineSampleStep
         : 1.0;
+    QVector<editor::speech::RangeBlend> speechBlends;
+    speechBlends.reserve(frames);
+    for (int outFrame = 0; outFrame < frames; ++outFrame) {
+        const int64_t samplePos =
+            chunkStartSample +
+            static_cast<int64_t>(std::floor(
+                static_cast<qreal>(outFrame) * sampleStep));
+        speechBlends.push_back(
+            editor::speech::rangeBlendAtSample(
+                samplePos,
+                speechSampleRanges,
+                speechFadeSamples,
+                speechFadeMode,
+                speechCurveStrength));
+    }
 
     const bool soloActive = anyAudioSolo(clips, tracks);
     for (const TimelineClip& clip : clips) {
@@ -455,38 +475,55 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         const int64_t clipEndSample = clipTimelineEndSamples(clip);
         const int fadeSamples = editor::audio::effectiveClipFadeSamples(
             clip.fadeSamples);
-        const int64_t chunkEndSample =
-            chunkStartSample + static_cast<int64_t>(std::ceil(static_cast<qreal>(frames) * sampleStep));
-        if (chunkEndSample <= clipStartSample || chunkStartSample >= clipEndSample) {
-            continue;
-        }
-
         for (int outFrame = 0; outFrame < frames; ++outFrame) {
             const int64_t samplePos =
                 chunkStartSample + static_cast<int64_t>(std::floor(static_cast<qreal>(outFrame) * sampleStep));
-            if (samplePos < clipStartSample || samplePos >= clipEndSample) {
-                continue;
-            }
-            const int64_t inFrame =
-                sourceSampleForClipAtTimelineSample(clip, samplePos, renderSyncMarkers);
-            const int64_t localInFrame = inFrame - audio.sourceStartSample;
-            if (localInFrame < 0 || localInFrame >= decodedFrameCount) {
-                continue;
-            }
             const int outIndex = outFrame * kRenderAudioChannels;
-            const int inIndex = static_cast<int>(localInFrame * kRenderAudioChannels);
-            const float clipFadeGain = editor::audio::clipFadeGain(
-                samplePos, clipStartSample, clipEndSample, fadeSamples);
-            const float effectiveGain = mixerGain * clipFadeGain;
-            output[outIndex] = qBound(
-                -1.0f,
-                output[outIndex] + audio.samples[inIndex] * effectiveGain,
-                1.0f);
-            output[outIndex + 1] = qBound(
-                -1.0f,
-                output[outIndex + 1] +
-                    audio.samples[inIndex + 1] * effectiveGain,
-                1.0f);
+            const auto mixTimelineSample =
+                [&](int64_t timelineSample, float speechGain) {
+                    if (speechGain <= 0.0f ||
+                        timelineSample < clipStartSample ||
+                        timelineSample >= clipEndSample) {
+                        return;
+                    }
+                    const int64_t inFrame =
+                        sourceSampleForClipAtTimelineSample(
+                            clip, timelineSample, renderSyncMarkers);
+                    const int64_t localInFrame =
+                        inFrame - audio.sourceStartSample;
+                    if (localInFrame < 0 ||
+                        localInFrame >= decodedFrameCount) {
+                        return;
+                    }
+                    const int inIndex = static_cast<int>(
+                        localInFrame * kRenderAudioChannels);
+                    const float clipFadeGain =
+                        editor::audio::clipFadeGain(
+                            timelineSample,
+                            clipStartSample,
+                            clipEndSample,
+                            fadeSamples);
+                    const float gain =
+                        mixerGain * clipFadeGain * speechGain;
+                    output[outIndex] = qBound(
+                        -1.0f,
+                        output[outIndex] +
+                            audio.samples[inIndex] * gain,
+                        1.0f);
+                    output[outIndex + 1] = qBound(
+                        -1.0f,
+                        output[outIndex + 1] +
+                            audio.samples[inIndex + 1] * gain,
+                        1.0f);
+                };
+            const editor::speech::RangeBlend& blend =
+                speechBlends.at(outFrame);
+            mixTimelineSample(samplePos, blend.primaryGain);
+            if (blend.secondaryTimelineSample >= 0) {
+                mixTimelineSample(
+                    blend.secondaryTimelineSample,
+                    blend.secondaryGain);
+            }
         }
     }
 }
@@ -631,6 +668,23 @@ bool initializeExportAudio(const RenderRequest& request,
     state->tracks = request.tracks;
     state->cache = audioCache;
     state->renderSyncMarkers = request.renderSyncMarkers;
+    for (const ExportRangeSegment& range :
+         request.playbackTiming.playbackRanges) {
+        const int64_t startSample =
+            frameToSamples(range.startFrame);
+        const int64_t endSampleExclusive =
+            frameToSamples(range.endFrame + 1);
+        if (endSampleExclusive > startSample) {
+            state->speechSampleRanges.push_back(
+                {startSample, endSampleExclusive});
+        }
+    }
+    state->speechFadeMode =
+        request.playbackTiming.speechFadeMode;
+    state->speechFadeSamples =
+        request.playbackTiming.speechFadeSamples;
+    state->speechCurveStrength =
+        request.playbackTiming.speechCurveStrength;
     state->enabled = true;
     return true;
 }
@@ -828,7 +882,11 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                           mixBuffer.data(),
                           framesThisChunk,
                           chunkStartSample,
-                          1.0);
+                          1.0,
+                          state.speechSampleRanges,
+                          state.speechFadeSamples,
+                          state.speechFadeMode,
+                          state.speechCurveStrength);
             std::memcpy(sourceMix.data() + (mixedSamples * kRenderAudioChannels),
                         mixBuffer.constData(),
                         static_cast<size_t>(framesThisChunk * kRenderAudioChannels) * sizeof(float));

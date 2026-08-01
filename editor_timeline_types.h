@@ -294,6 +294,29 @@ struct TimelineClip {
         int64_t endFrame = -1;
     };
 
+    struct MaskFuzzyRemoveEdit {
+        QString recipeHash;
+        QString algorithm = QStringLiteral("guarded_component_v2");
+        QString sourceSidecarDirectory;
+        QString materializedSidecarDirectory;
+        int64_t sourceFrame = -1;
+        int64_t sourcePresentationTimestamp = -1;
+        int64_t seedMaskOrdinal = -1;
+        int64_t firstMaskOrdinal = -1;
+        int64_t lastMaskOrdinal = -1;
+        qreal xNorm = 0.0;
+        qreal yNorm = 0.0;
+        int spatialReachPixels = 12;
+        int temporalReachFrames = 120;
+        int foregroundThreshold = 128;
+        qreal maximumAreaGrowth = 2.5;
+        qreal minimumAreaRatio = 0.20;
+        qreal maximumFrameFraction = 0.25;
+        qreal ambiguityRatio = 0.80;
+        int changedFrames = 0;
+        qint64 removedPixels = 0;
+    };
+
     QString id;
     ClipRole clipRole = ClipRole::Media;
     QString linkedSourceClipId;
@@ -380,6 +403,8 @@ struct TimelineClip {
     bool locked = false;
     bool maskEnabled = false;
     QString maskFramesDir;
+    QString maskOriginalFramesDir;
+    QVector<MaskFuzzyRemoveEdit> maskFuzzyRemoveEdits;
     // Runtime availability is deliberately not serialized. maskEnabled is the
     // user's durable intent; discovery/render validation may temporarily make
     // an ordinal sidecar unavailable without changing that intent.

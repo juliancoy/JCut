@@ -1904,6 +1904,8 @@ void EditorWindow::createMaskTab()
             m_inspectorPane->maskSidecarCombo(),
             m_inspectorPane->maskBrowseButton(),
             m_inspectorPane->maskNewPromptButton(),
+            m_inspectorPane->maskBiRefNetRefineButton(),
+            m_inspectorPane->maskBiRefNetGuideRadiusSpin(),
             m_inspectorPane->maskFuzzyRemoveButton(),
             m_inspectorPane->maskFuzzySpatialReachSpin(),
             m_inspectorPane->maskFuzzyTemporalReachSpin(),
@@ -1945,6 +1947,12 @@ void EditorWindow::createMaskTab()
                     QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
             },
             [this](const QString& clipId) { openSamDetectorWindow(clipId); },
+            [this](const QString& sourceClipId,
+                   const QString& guidanceDirectory,
+                   int guidanceGateRadius) {
+                openBiRefNetDetectorWindow(
+                    sourceClipId, guidanceDirectory, guidanceGateRadius);
+            },
             [this](const QString& sourceClipId, const QString& stableSidecarId) {
                 return m_timeline
                     ? maskMatteChildIdForSidecar(

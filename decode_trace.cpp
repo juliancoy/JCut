@@ -86,18 +86,20 @@ void decodeTrace(const QString& stage, const QString& detail) {
                               .arg(detail.isEmpty() ? QString() : QStringLiteral(" | ") + detail);
 }
 
-void invokeRequestCallback(std::function<void(FrameHandle)> callback, FrameHandle frame) {
+void invokeRequestCallback(std::function<void(FrameHandle)> callback,
+                           FrameHandle frame,
+                           QObject* target) {
     if (!callback) {
         return;
     }
 
-    QCoreApplication* app = QCoreApplication::instance();
-    if (!app) {
+    QObject* deliveryTarget = target ? target : QCoreApplication::instance();
+    if (!deliveryTarget) {
         callback(frame);
         return;
     }
 
-    QMetaObject::invokeMethod(app,
+    QMetaObject::invokeMethod(deliveryTarget,
                               [callback = std::move(callback), frame]() mutable {
                                   if (callback) {
                                       callback(frame);

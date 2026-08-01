@@ -15,6 +15,8 @@ QString shortPath(const QString& path);
 bool linuxNvidiaDetected();
 bool zeroCopyInteropSupportedForCurrentBuild();
 void decodeTrace(const QString& stage, const QString& detail = QString());
-void invokeRequestCallback(std::function<void(FrameHandle)> callback, FrameHandle frame);
+void invokeRequestCallback(std::function<void(FrameHandle)> callback,
+                           FrameHandle frame,
+                           QObject* target = nullptr);
 
 } // namespace editor

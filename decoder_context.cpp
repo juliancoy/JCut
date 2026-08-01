@@ -5,12 +5,11 @@
 #include "decode_trace.h"
 #include "decoder_ffmpeg_utils.h"
 #include "decoder_image_io.h"
-#include "gpu_selection.h"
 #include "timeline_fps.h"
+#include "video_decode_capabilities_core.h"
 
 #include <QDateTime>
 #include <QDebug>
-#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
@@ -19,6 +18,7 @@
 
 #include <limits>
 #include <mutex>
+#include <vector>
 
 namespace editor {
 
@@ -602,31 +602,11 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
                         m_videoStreamIndex < static_cast<int>(m_formatCtx->nb_streams))
                            ? m_formatCtx->streams[m_videoStreamIndex]
                            : nullptr;
-    if (stream && stream->codecpar && stream->codecpar->codec_id == AV_CODEC_ID_AV1 &&
-        qEnvironmentVariableIntValue("JCUT_ALLOW_AV1_HARDWARE_DECODE") != 1) {
-        if (debugDecodeEnabled()) {
-            qDebug() << "Skipping AV1 hardware decode for" << m_path
-                     << "because this platform/build may advertise unsupported AV1 hwaccel";
-        }
-        return false;
-    }
-
-    AVHWDeviceType preferredDevices[] = {
-#ifdef __APPLE__
-        AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-#elif defined(_WIN32)
-        AV_HWDEVICE_TYPE_D3D11VA,
-        AV_HWDEVICE_TYPE_DXVA2,
-#endif
-        AV_HWDEVICE_TYPE_CUDA,
-        AV_HWDEVICE_TYPE_VAAPI,
-    };
-
-#if defined(Q_OS_LINUX)
-    if (gpu::requestedVendorId() != 0x10de) {
-        std::swap(preferredDevices[0], preferredDevices[1]);
-    }
-#endif
+    const AVCodecID codecId = stream && stream->codecpar
+        ? stream->codecpar->codec_id
+        : AV_CODEC_ID_NONE;
+    const std::vector<AVHWDeviceType> preferredDevices =
+        jcut::preferredVideoDecodeDeviceOrder(codecId);
 
     for (AVHWDeviceType type : preferredDevices) {
         const AVCodecHWConfig* selectedConfig = nullptr;
@@ -646,23 +626,12 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
             continue;
         }
 
-        const char* deviceName = nullptr;
-#if defined(Q_OS_LINUX)
-        QByteArray devicePath;
-        if (type == AV_HWDEVICE_TYPE_VAAPI) {
-            const QStringList renderNodes = gpu::linuxVaapiRenderNodes();
-            for (const QString& candidate : renderNodes) {
-                if (QFile::exists(candidate)) {
-                    devicePath = candidate.toLocal8Bit();
-                    deviceName = devicePath.constData();
-                    break;
-                }
-            }
-            if (!deviceName) {
-                continue;
-            }
-        }
-#endif
+        const jcut::VideoDecodeBackendCapability* capability =
+            jcut::videoDecodeCapability(type);
+        const char* deviceName =
+            capability && !capability->devicePath.empty()
+                ? capability->devicePath.c_str()
+                : nullptr;
 
         // --- Shared device path ---
         // If AsyncDecoder pre-created a device context for this type, borrow a ref

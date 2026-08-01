@@ -6,12 +6,12 @@
 
 namespace editor {
 
-struct SequencePrefetchClip {
+struct DecodePrefetchClip {
     TimelineClip clip;
     QString decodePath;
 };
 
-struct SequencePrefetchRequest {
+struct DecodePrefetchRequest {
     QString clipId;
     QString decodePath;
     int64_t timelineFrame = -1;
@@ -35,11 +35,12 @@ QVector<int64_t> collectSequenceLookaheadSourceFrames(const TimelineClip& clip,
                                                       const QVector<RenderSyncMarker>& renderSyncMarkers,
                                                       bool bypassGrading);
 
-QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
-    const QVector<SequencePrefetchClip>& clips,
+QVector<DecodePrefetchRequest> collectDecodePrefetchRequestsAtTimelineFrame(
+    const QVector<DecodePrefetchClip>& clips,
     qreal timelineFrame,
     const QVector<RenderSyncMarker>& renderSyncMarkers,
     bool bypassGrading,
-    int priority);
+    int priority,
+    bool imageSequencesOnly);
 
 } // namespace editor

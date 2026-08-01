@@ -116,6 +116,7 @@ private slots:
     void testImGuiProjectSessionSaveWritesQtStateFiles();
     void testAiLoginPersistsRefreshTokenContract();
     void testAudioClipDurationPreservesSubframeSamples();
+    void testMaskFuzzyRemoveRecipeRoundTripsThroughQtAndCore();
 };
 
 namespace {
@@ -1195,6 +1196,60 @@ void TestEditorRuntime::testAudioClipDurationPreservesSubframeSamples()
     QCOMPARE(loaded.audioDynamics.amplifyDb, 5.5);
     QCOMPARE(loaded.audioDynamics.limiterEnabled, true);
     QCOMPARE(loaded.audioDynamics.limiterThresholdDb, -3.0);
+}
+
+void TestEditorRuntime::testMaskFuzzyRemoveRecipeRoundTripsThroughQtAndCore()
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("mask-child");
+    clip.clipRole = ClipRole::MaskMatte;
+    clip.mediaType = ClipMediaType::Video;
+    clip.filePath = QStringLiteral("/tmp/source.mp4");
+    clip.maskEnabled = true;
+    clip.maskFramesDir = QStringLiteral("/tmp/source_fuzzy_remove_abcd");
+    clip.maskOriginalFramesDir = QStringLiteral("/tmp/source_masks");
+    TimelineClip::MaskFuzzyRemoveEdit edit;
+    edit.recipeHash = QStringLiteral("abcd");
+    edit.sourceSidecarDirectory = clip.maskOriginalFramesDir;
+    edit.materializedSidecarDirectory = clip.maskFramesDir;
+    edit.sourceFrame = 42;
+    edit.sourcePresentationTimestamp = 9001;
+    edit.seedMaskOrdinal = 40;
+    edit.firstMaskOrdinal = 35;
+    edit.lastMaskOrdinal = 47;
+    edit.xNorm = 0.25;
+    edit.yNorm = 0.75;
+    edit.changedFrames = 13;
+    edit.removedPixels = 12345;
+    clip.maskFuzzyRemoveEdits.push_back(edit);
+
+    const TimelineClip loaded = editor::clipFromJson(editor::clipToJson(clip));
+    QCOMPARE(loaded.maskOriginalFramesDir, clip.maskOriginalFramesDir);
+    QCOMPARE(loaded.maskFuzzyRemoveEdits.size(), 1);
+    QCOMPARE(loaded.maskFuzzyRemoveEdits.constFirst().recipeHash, edit.recipeHash);
+    QCOMPARE(loaded.maskFuzzyRemoveEdits.constFirst().sourcePresentationTimestamp,
+             edit.sourcePresentationTimestamp);
+    QCOMPARE(loaded.maskFuzzyRemoveEdits.constFirst().removedPixels,
+             edit.removedPixels);
+
+    const QVector<TimelineTrack> tracks{TimelineTrack{}};
+    const jcut::EditorDocumentCore core =
+        jcut::buildEditorDocumentCore(
+            QStringLiteral("Recipe"),
+            QVector<TimelineClip>{loaded},
+            tracks);
+    QCOMPARE(core.clips.size(), std::size_t{1});
+    QCOMPARE(QString::fromStdString(core.clips.front().maskOriginalFramesDir),
+             clip.maskOriginalFramesDir);
+    QCOMPARE(core.clips.front().maskFuzzyRemoveEdits.size(), std::size_t{1});
+    QCOMPARE(QString::fromStdString(
+                 core.clips.front().maskFuzzyRemoveEdits.front().recipeHash),
+             edit.recipeHash);
+    const auto reparsed = jcut::editorDocumentCoreFromJson(jcut::toJson(core));
+    QVERIFY(reparsed.has_value());
+    QCOMPARE(reparsed->clips.front().maskFuzzyRemoveEdits.size(), std::size_t{1});
+    QCOMPARE(reparsed->clips.front().maskFuzzyRemoveEdits.front().removedPixels,
+             edit.removedPixels);
 }
 
 void TestEditorRuntime::testProjectAndClipEditCommandsUpdateDocument()

@@ -932,6 +932,27 @@ QWidget *InspectorPane::buildMasksTab()
         "Generate a separate SAM mask sidecar and optionally union it with the current mask."));
     layout->addWidget(m_maskNewPromptButton);
 
+    auto* refinementForm = new QFormLayout;
+    m_maskBiRefNetGuideRadiusSpin = new QSpinBox(page);
+    m_maskBiRefNetGuideRadiusSpin->setObjectName(
+        QStringLiteral("masks.birefnet_guide_radius"));
+    m_maskBiRefNetGuideRadiusSpin->setRange(0, 512);
+    m_maskBiRefNetGuideRadiusSpin->setValue(24);
+    m_maskBiRefNetGuideRadiusSpin->setSuffix(QStringLiteral(" px"));
+    m_maskBiRefNetGuideRadiusSpin->setToolTip(QStringLiteral(
+        "How far beyond the binary SAM boundary BiRefNet may recover soft edge detail."));
+    refinementForm->addRow(
+        QStringLiteral("Refinement reach"), m_maskBiRefNetGuideRadiusSpin);
+    layout->addLayout(refinementForm);
+    m_maskBiRefNetRefineButton = new QPushButton(
+        QStringLiteral("Refine SAM Edges with BiRefNet…"), page);
+    m_maskBiRefNetRefineButton->setObjectName(
+        QStringLiteral("masks.birefnet_refine"));
+    m_maskBiRefNetRefineButton->setToolTip(QStringLiteral(
+        "Preprocess the selected binary SAM sidecar into a separate continuous-alpha "
+        "matte. The original SAM masks remain unchanged."));
+    layout->addWidget(m_maskBiRefNetRefineButton);
+
     auto *fuzzyForm = new QFormLayout;
     m_maskFuzzySpatialReachSpin = new QSpinBox(page);
     m_maskFuzzySpatialReachSpin->setRange(0, 128);

@@ -125,17 +125,29 @@ BiRefNetJobPlanCore buildBiRefNetJobPlanCore(
             : 0.0,
         0.0,
         0.99);
+    const int guidanceGateRadius =
+        std::clamp(request.guidanceGateRadius, 0, 512);
     const fs::path script = fs::absolute(request.scriptPath);
     const fs::path media = fs::absolute(request.mediaPath);
+    const fs::path guidance = request.guidanceDirectory.empty()
+        ? fs::path()
+        : fs::absolute(request.guidanceDirectory);
     const std::string stem =
         jcut::masks::sanitizedPromptMaskJobComponent(
             media.stem().string());
     const std::string modelName =
         jcut::masks::sanitizedPromptMaskJobComponent(
             fs::path(request.model).filename().string());
+    const std::string guidanceName = guidance.empty()
+        ? std::string()
+        : jcut::masks::sanitizedPromptMaskJobComponent(
+              guidance.filename().string());
+    const std::string refinementSuffix = guidanceName.empty()
+        ? std::string()
+        : "_guided_" + guidanceName;
     plan.jobRoot = (
         media.parent_path() / ".jcut_jobs" /
-        ("birefnet_" + modelName + "_" + stem)).string();
+        ("birefnet_" + modelName + "_" + stem + refinementSuffix)).string();
     plan.manifestPath =
         (fs::path(plan.jobRoot) / "manifest.json").string();
     plan.logPath =
@@ -145,7 +157,7 @@ BiRefNetJobPlanCore buildBiRefNetJobPlanCore(
     plan.outputDirectory = request.outputDirectory.empty()
         ? (media.parent_path() /
            (media.stem().string() +
-            "_birefnet_alpha_masks")).string()
+            "_birefnet" + refinementSuffix + "_alpha_masks")).string()
         : fs::absolute(request.outputDirectory).string();
     plan.livePreviewPath =
         (fs::path(plan.outputDirectory) /
@@ -172,6 +184,12 @@ BiRefNetJobPlanCore buildBiRefNetJobPlanCore(
         "--progress-every",
         "1",
     };
+    if (!guidance.empty()) {
+        plan.command.insert(
+            plan.command.end(),
+            {"--guidance-dir", guidance.string(),
+             "--guidance-gate-radius", std::to_string(guidanceGateRadius)});
+    }
     if (request.device == "cpu") {
         plan.command.push_back("--cpu");
     }
@@ -200,12 +218,15 @@ BiRefNetJobPlanCore buildBiRefNetJobPlanCore(
             {"device", request.device},
             {"fp16", request.fp16},
             {"alpha_tolerance", alphaTolerance},
+            {"guidance_directory", guidance.empty() ? "" : guidance.string()},
+            {"guidance_gate_radius", guidanceGateRadius},
             {"restart", request.restart},
             {"docker_root_mode", request.runDockerAsRoot},
             {"live_preview", true},
             {"create_mask_marker", true}}},
         {"artifacts", {
             {"alpha_masks_dir", plan.outputDirectory},
+            {"guidance_masks_dir", guidance.empty() ? "" : guidance.string()},
             {"model_cache", request.modelCachePath},
             {"runtime_cache", request.runtimeCachePath},
             {"job_log", plan.logPath},

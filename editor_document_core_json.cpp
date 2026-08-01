@@ -449,6 +449,39 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->locked = valueOr(value, "locked", false);
     clip->maskEnabled = valueOr(value, "maskEnabled", false);
     clip->maskFramesDir = stringOr(value, "maskFramesDir");
+    clip->maskOriginalFramesDir = stringOr(value, "maskOriginalFramesDir");
+    const json& fuzzyEdits = value.value("maskFuzzyRemoveEdits", json::array());
+    if (fuzzyEdits.is_array()) {
+        for (const json& item : fuzzyEdits) {
+            if (!item.is_object()) continue;
+            jcut::EditorMaskFuzzyRemoveEdit edit;
+            edit.recipeHash = stringOr(item, "recipeHash");
+            edit.algorithm = stringOr(item, "algorithm", "guarded_component_v2");
+            edit.sourceSidecarDirectory = stringOr(item, "sourceSidecarDirectory");
+            edit.materializedSidecarDirectory =
+                stringOr(item, "materializedSidecarDirectory");
+            edit.sourceFrame = valueOr(item, "sourceFrame", std::int64_t{-1});
+            edit.sourcePresentationTimestamp =
+                valueOr(item, "sourcePresentationTimestamp", std::int64_t{-1});
+            edit.seedMaskOrdinal = valueOr(item, "seedMaskOrdinal", std::int64_t{-1});
+            edit.firstMaskOrdinal = valueOr(item, "firstMaskOrdinal", std::int64_t{-1});
+            edit.lastMaskOrdinal = valueOr(item, "lastMaskOrdinal", std::int64_t{-1});
+            edit.xNorm = valueOr(item, "xNorm", 0.0);
+            edit.yNorm = valueOr(item, "yNorm", 0.0);
+            edit.spatialReachPixels = valueOr(item, "spatialReachPixels", 12);
+            edit.temporalReachFrames = valueOr(item, "temporalReachFrames", 120);
+            edit.foregroundThreshold = valueOr(item, "foregroundThreshold", 128);
+            edit.maximumAreaGrowth = valueOr(item, "maximumAreaGrowth", 2.5);
+            edit.minimumAreaRatio = valueOr(item, "minimumAreaRatio", 0.20);
+            edit.maximumFrameFraction = valueOr(item, "maximumFrameFraction", 0.25);
+            edit.ambiguityRatio = valueOr(item, "ambiguityRatio", 0.80);
+            edit.changedFrames = valueOr(item, "changedFrames", 0);
+            edit.removedPixels = valueOr(item, "removedPixels", std::int64_t{0});
+            if (!edit.recipeHash.empty()) {
+                clip->maskFuzzyRemoveEdits.push_back(std::move(edit));
+            }
+        }
+    }
     clip->maskFeather = valueOr(value, "maskFeather", 0.0);
     clip->maskFeatherGamma = valueOr(value, "maskFeatherGamma", 1.0);
     clip->maskFeatherFalloff = valueOr(value, "maskFeatherFalloff", 0);
@@ -1523,6 +1556,33 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["locked"] = clip.locked;
     (*out)["maskEnabled"] = clip.maskEnabled;
     (*out)["maskFramesDir"] = clip.maskFramesDir;
+    (*out)["maskOriginalFramesDir"] = clip.maskOriginalFramesDir;
+    json fuzzyEdits = json::array();
+    for (const jcut::EditorMaskFuzzyRemoveEdit& edit :
+         clip.maskFuzzyRemoveEdits) {
+        fuzzyEdits.push_back({
+            {"recipeHash", edit.recipeHash},
+            {"algorithm", edit.algorithm},
+            {"sourceSidecarDirectory", edit.sourceSidecarDirectory},
+            {"materializedSidecarDirectory", edit.materializedSidecarDirectory},
+            {"sourceFrame", edit.sourceFrame},
+            {"sourcePresentationTimestamp", edit.sourcePresentationTimestamp},
+            {"seedMaskOrdinal", edit.seedMaskOrdinal},
+            {"firstMaskOrdinal", edit.firstMaskOrdinal},
+            {"lastMaskOrdinal", edit.lastMaskOrdinal},
+            {"xNorm", edit.xNorm},
+            {"yNorm", edit.yNorm},
+            {"spatialReachPixels", edit.spatialReachPixels},
+            {"temporalReachFrames", edit.temporalReachFrames},
+            {"foregroundThreshold", edit.foregroundThreshold},
+            {"maximumAreaGrowth", edit.maximumAreaGrowth},
+            {"minimumAreaRatio", edit.minimumAreaRatio},
+            {"maximumFrameFraction", edit.maximumFrameFraction},
+            {"ambiguityRatio", edit.ambiguityRatio},
+            {"changedFrames", edit.changedFrames},
+            {"removedPixels", edit.removedPixels}});
+    }
+    (*out)["maskFuzzyRemoveEdits"] = std::move(fuzzyEdits);
     (*out)["maskFeather"] = clip.maskFeather;
     (*out)["maskFeatherGamma"] = clip.maskFeatherGamma;
     (*out)["maskFeatherFalloff"] = clip.maskFeatherFalloff;

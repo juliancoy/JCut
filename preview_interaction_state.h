@@ -96,16 +96,6 @@ struct VulkanPreviewClipFrameStatus
     QString missingReason;
     QString effectsPath;
     qreal visualTimelineFramePosition = 0.0;
-    bool frameCrossfadeActive = false;
-    int64_t frameCrossfadeTimelineFrame = -1;
-    int64_t frameCrossfadeRequestedSourceFrame = -1;
-    int64_t frameCrossfadePresentedSourceFrame = -1;
-    float frameCrossfadeOpacity = 0.0f;
-    QSize frameCrossfadeFrameSize;
-    editor::FrameHandle frameCrossfadeFrame;
-    std::shared_ptr<const jcut::core::ImageBuffer> frameCrossfadeMaskBuffer;
-    QString frameCrossfadeMaskIdentity;
-    bool frameCrossfadeMaskTextureEnabled = false;
     bool externalVulkanFrame = false;
     bool sampledFramePregraded = false;
     bool sampledFrameNeedsYFlip = false;

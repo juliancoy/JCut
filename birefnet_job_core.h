@@ -21,6 +21,8 @@ struct BiRefNetJobRequestCore {
     std::string modelCachePath;
     std::string runtimeCachePath;
     std::string outputDirectory;
+    std::string guidanceDirectory;
+    int guidanceGateRadius = 24;
     std::string device = "cuda";
     bool fp16 = true;
     bool runDockerAsRoot = false;

@@ -136,6 +136,10 @@ PlaybackTimingContext EditorWindow::speechFilterPlaybackTimingContext(
     context.frameCrossfadeEnabled =
         m_speechFilterFrameTransitionMode == PlaybackFrameTransitionMode::Crossfade;
     context.frameCrossfadeFrames = qBound(0, m_speechFilterFrameCrossfadeFrames, 240);
+    context.speechFadeMode = m_speechFilterFadeMode;
+    context.speechFadeSamples = qMax(0, m_speechFilterFadeSamples);
+    context.speechCurveStrength =
+        qBound<qreal>(0.25, m_speechFilterCurveStrength, 4.0);
     return context;
 }
 

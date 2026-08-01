@@ -9,6 +9,7 @@
 #include "title_3d_projection_core.h"
 #include "transcript_cut_session_core.h"
 #include "transcript_overlay_core.h"
+#include "video_decode_capabilities_core.h"
 
 #include <algorithm>
 #include <array>
@@ -56,6 +57,7 @@ using jcut::core::SizeI;
 using jcut::effectiveDecoderPolicyCore;
 using jcut::createFfmpegHardwareDeviceForDecoder;
 using jcut::ffmpegHardwareDeviceOrder;
+using jcut::preferredVideoDecodeDeviceOrder;
 using jcut::selectFfmpegHardwarePixelFormat;
 using jcut::probeImageSequenceDirectory;
 
@@ -2918,11 +2920,21 @@ public:
         if (!m_hardwareDisabled &&
             m_decoderPolicy.decodePreference !=
             jcut::DecodePreferenceCore::Software) {
-            FfmpegHardwareDeviceSetup hardware =
-                createFfmpegHardwareDeviceForDecoder(
-                    codec,
-                    ffmpegHardwareDeviceOrder(
-                        m_decoderPolicy.hardwareDevice));
+            const std::vector<AVHWDeviceType> preferredDevices =
+                m_decoderPolicy.hardwareDevice ==
+                        jcut::DecodeHardwareDeviceCore::Auto
+                    ? preferredVideoDecodeDeviceOrder(
+                          m_stream->codecpar->codec_id)
+                    : ffmpegHardwareDeviceOrder(
+                          m_decoderPolicy.hardwareDevice);
+            FfmpegHardwareDeviceSetup hardware;
+            if (!preferredDevices.empty()) {
+                hardware = createFfmpegHardwareDeviceForDecoder(
+                    codec, preferredDevices);
+            } else {
+                hardware.error =
+                    "capabilities detector found no usable hardware decoder";
+            }
             if (hardware.deviceContext) {
                 m_codecContext->hw_device_ctx = hardware.deviceContext;
                 hardware.deviceContext = nullptr;

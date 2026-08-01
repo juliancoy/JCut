@@ -21,6 +21,7 @@ std::string operatingSystemId() {
 RuntimeCapabilities detectRuntimeCapabilities() {
   RuntimeCapabilities result;
   result.operatingSystem = operatingSystemId();
+  result.videoDecodeBackends = jcut::detectedVideoDecodeCapabilities();
 
   AudioOutputBackendCapability pipewire;
   pipewire.kind = AudioOutputBackendKind::PipeWire;

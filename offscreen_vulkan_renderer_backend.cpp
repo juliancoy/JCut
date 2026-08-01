@@ -2214,6 +2214,19 @@ public:
                                    static_cast<VkDeviceSize>(bytes));
   }
 
+  VulkanMaskPreprocessOptions maskPreprocessOptions(
+      const LayerInput &layer) const {
+    VulkanMaskPreprocessOptions options;
+    options.outputSize = m_outputSize;
+    options.sourceIdentity = layer.maskIdentity;
+    options.correctionStorage = layer.maskCorrectionStorage;
+    options.invert = layer.maskInvert;
+    options.erodeRadius = qRound(qMax<qreal>(0.0, layer.maskErode));
+    options.dilateRadius = qRound(qMax<qreal>(0.0, layer.maskDilate));
+    options.blurRadius = qRound(qMax<qreal>(0.0, layer.maskBlur));
+    return options;
+  }
+
   bool preprocessLayerMask(LayerTextureSlot &slot,
                            const LayerInput &layer,
                            VkDeviceSize correctionStorageOffset,
@@ -2231,14 +2244,8 @@ public:
     images.workImage = slot.maskWorkImage;
     images.workView = slot.maskWorkView;
     images.workLayout = &slot.maskWorkLayout;
-    VulkanMaskPreprocessOptions options;
-    options.outputSize = m_outputSize;
-    options.sourceIdentity = layer.maskIdentity;
-    options.correctionStorage = layer.maskCorrectionStorage;
-    options.invert = layer.maskInvert;
-    options.erodeRadius = qRound(qMax<qreal>(0.0, layer.maskErode));
-    options.dilateRadius = qRound(qMax<qreal>(0.0, layer.maskDilate));
-    options.blurRadius = qRound(qMax<qreal>(0.0, layer.maskBlur));
+    const VulkanMaskPreprocessOptions options =
+        maskPreprocessOptions(layer);
     slot.maskUploaded = m_maskPreprocessor.record(
         m_commandBuffer,
         images,
@@ -2826,6 +2833,8 @@ public:
     if (!selectNextSlot()) {
       return QImage();
     }
+    m_lastHardwareSourceImportCount = 0;
+    m_lastHardwareSourceReuseCount = 0;
     const size_t activeTextFrameSlot =
         static_cast<size_t>(qMax(0, m_activeSlotIndex));
     const size_t textFrameSlotCount =
@@ -3074,8 +3083,14 @@ public:
       writes[4].pBufferInfo = &frameUniformInfo;
       vkUpdateDescriptorSets(m_device, 5, writes, 0, nullptr);
     };
+    struct PreparedGpuSource {
+      VkImageView view = VK_NULL_HANDLE;
+      VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+      int ownerSlotIndex = -1;
+    };
+    QHash<QString, PreparedGpuSource> preparedGpuSources;
     auto prepareLayerSource =
-        [&](LayerTextureSlot &slot, const LayerInput &layer,
+        [&](int slotIndex, LayerTextureSlot &slot, const LayerInput &layer,
             VkDeviceSize stagingOffset, VkImageView *sourceViewOut,
             VkImageLayout *sourceLayoutOut) -> bool {
       if (sourceViewOut) {
@@ -3086,6 +3101,29 @@ public:
       }
       if (layer.preferHardwareDirect && !layer.frame.isNull() &&
           layer.frame.hasHardwareFrame()) {
+        const QString sourceKey = vulkanSourceFrameCacheKey(
+            layer.mediaOwnerClipId, layer.frame);
+        const auto preparedSource =
+            preparedGpuSources.constFind(sourceKey);
+        if (!sourceKey.isEmpty() &&
+            preparedSource != preparedGpuSources.cend()) {
+          ++m_lastHardwareSourceReuseCount;
+          if (sourceViewOut) {
+            *sourceViewOut = preparedSource->view;
+          }
+          if (sourceLayoutOut) {
+            *sourceLayoutOut = preparedSource->layout;
+          }
+          return preparedSource->view != VK_NULL_HANDLE;
+        }
+        for (auto cached = preparedGpuSources.begin();
+             cached != preparedGpuSources.end();) {
+          if (cached->ownerSlotIndex == slotIndex) {
+            cached = preparedGpuSources.erase(cached);
+          } else {
+            ++cached;
+          }
+        }
         if (!slot.hardwareFrameHandoff) {
           auto handoff = std::make_shared<
               jcut::vulkan_detector::VulkanDetectorFrameHandoff>();
@@ -3108,7 +3146,17 @@ public:
           std::string uploadError;
           if (slot.hardwareFrameHandoff->uploadFrame(layer.frame, false,
                                                      nullptr, &uploadError)) {
+            ++m_lastHardwareSourceImportCount;
             const auto external = slot.hardwareFrameHandoff->externalImage();
+            if (!sourceKey.isEmpty() &&
+                external.imageView != VK_NULL_HANDLE) {
+              preparedGpuSources.insert(
+                  sourceKey,
+                  PreparedGpuSource{
+                      external.imageView,
+                      external.imageLayout,
+                      slotIndex});
+            }
             if (sourceViewOut) {
               *sourceViewOut = external.imageView;
             }
@@ -3267,6 +3315,11 @@ public:
       return true;
     };
     int layerIndex = 0;
+    struct PreparedGpuMask {
+      VkImageView view = VK_NULL_HANDLE;
+      VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+    QHash<QString, PreparedGpuMask> preparedGpuMasks;
     while (layerIndex < layers.size()) {
       const int batchCount =
           qMin(kMaxLayerTextures, layers.size() - layerIndex);
@@ -3284,7 +3337,7 @@ public:
         }
         LayerTextureSlot &slot = m_layerSlots[i];
         const VkDeviceSize stagingOffset = layerStagingSize * i;
-        if (!prepareLayerSource(slot, layer, stagingOffset,
+        if (!prepareLayerSource(i, slot, layer, stagingOffset,
                                 &preparedLayers[i].view,
                                 &preparedLayers[i].layout)) {
           vkEndCommandBuffer(m_commandBuffer);
@@ -3455,54 +3508,90 @@ public:
             vkEndCommandBuffer(m_commandBuffer);
             return QImage();
           }
-          const QSize maskSize(maskUpload.size.width, maskUpload.size.height);
-          if (!ensureMaskRawImage(slot, maskSize, VK_FORMAT_R8_UNORM)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
-          const VkDeviceSize maskStagingOffset =
-              stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
-          if (!writeImageBufferToStagingTopLeft(maskUpload,
-                                                maskStagingOffset,
-                                                1)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
-          }
-          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
-                                slot.maskRawLayout,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-          slot.maskRawLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-          VkBufferImageCopy maskUploadRegion{};
-          maskUploadRegion.bufferOffset = maskStagingOffset;
-          maskUploadRegion.bufferRowLength = 0;
-          maskUploadRegion.bufferImageHeight = 0;
-          maskUploadRegion.imageSubresource.aspectMask =
-              VK_IMAGE_ASPECT_COLOR_BIT;
-          maskUploadRegion.imageSubresource.mipLevel = 0;
-          maskUploadRegion.imageSubresource.baseArrayLayer = 0;
-          maskUploadRegion.imageSubresource.layerCount = 1;
-          maskUploadRegion.imageExtent = {
-              static_cast<uint32_t>(maskSize.width()),
-              static_cast<uint32_t>(maskSize.height()), 1};
-          vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer,
-                                 slot.maskRawImage,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                 &maskUploadRegion);
-          transitionImageLayout(m_commandBuffer, slot.maskRawImage,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-          slot.maskRawLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-          LayerInput maskLayer = layer;
-          maskLayer.maskSourceSize = maskSize;
-          const VkDeviceSize correctionStorageOffset =
-              stagingOffset + correctionStorageOffsetWithinLayer;
-          if (!preprocessLayerMask(
-                  slot,
-                  maskLayer,
-                  correctionStorageOffset,
-                  maxCorrectionStorageBytes)) {
-            vkEndCommandBuffer(m_commandBuffer);
-            return QImage();
+          const VulkanMaskPreprocessOptions maskOptions =
+              maskPreprocessOptions(layer);
+          const QString maskKey =
+              vulkanMaskTextureCacheKey(maskOptions, m_outputSize);
+          const auto preparedMask = preparedGpuMasks.constFind(maskKey);
+          if (!maskKey.isEmpty() &&
+              preparedMask != preparedGpuMasks.cend()) {
+            preparedLayers[i].auxiliaryView = preparedMask->view;
+            preparedLayers[i].auxiliaryLayout = preparedMask->layout;
+          } else {
+            for (auto cached = preparedGpuMasks.begin();
+                 cached != preparedGpuMasks.end();) {
+              if (cached->view == slot.maskView) {
+                cached = preparedGpuMasks.erase(cached);
+              } else {
+                ++cached;
+              }
+            }
+            const QSize maskSize(
+                maskUpload.size.width, maskUpload.size.height);
+            if (!ensureMaskRawImage(
+                    slot, maskSize, VK_FORMAT_R8_UNORM)) {
+              vkEndCommandBuffer(m_commandBuffer);
+              return QImage();
+            }
+            const VkDeviceSize maskStagingOffset =
+                stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
+            if (!writeImageBufferToStagingTopLeft(
+                    maskUpload, maskStagingOffset, 1)) {
+              vkEndCommandBuffer(m_commandBuffer);
+              return QImage();
+            }
+            transitionImageLayout(
+                m_commandBuffer,
+                slot.maskRawImage,
+                slot.maskRawLayout,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            slot.maskRawLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            VkBufferImageCopy maskUploadRegion{};
+            maskUploadRegion.bufferOffset = maskStagingOffset;
+            maskUploadRegion.bufferRowLength = 0;
+            maskUploadRegion.bufferImageHeight = 0;
+            maskUploadRegion.imageSubresource.aspectMask =
+                VK_IMAGE_ASPECT_COLOR_BIT;
+            maskUploadRegion.imageSubresource.mipLevel = 0;
+            maskUploadRegion.imageSubresource.baseArrayLayer = 0;
+            maskUploadRegion.imageSubresource.layerCount = 1;
+            maskUploadRegion.imageExtent = {
+                static_cast<uint32_t>(maskSize.width()),
+                static_cast<uint32_t>(maskSize.height()), 1};
+            vkCmdCopyBufferToImage(
+                m_commandBuffer,
+                m_stagingBuffer,
+                slot.maskRawImage,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &maskUploadRegion);
+            transitionImageLayout(
+                m_commandBuffer,
+                slot.maskRawImage,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            slot.maskRawLayout =
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            LayerInput maskLayer = layer;
+            maskLayer.maskSourceSize = maskSize;
+            const VkDeviceSize correctionStorageOffset =
+                stagingOffset + correctionStorageOffsetWithinLayer;
+            if (!preprocessLayerMask(
+                    slot,
+                    maskLayer,
+                    correctionStorageOffset,
+                    maxCorrectionStorageBytes)) {
+              vkEndCommandBuffer(m_commandBuffer);
+              return QImage();
+            }
+            if (!maskKey.isEmpty() &&
+                slot.maskView != VK_NULL_HANDLE &&
+                slot.maskLayout ==
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+              preparedGpuMasks.insert(
+                  maskKey,
+                  PreparedGpuMask{slot.maskView, slot.maskLayout});
+            }
           }
         } else if (!slot.maskUploaded) {
           transitionImageLayout(m_commandBuffer, slot.maskImage,
@@ -3926,6 +4015,14 @@ public:
     }
     m_colorImagePrimed = true;
     return out;
+  }
+
+  int lastHardwareSourceImportCount() const {
+    return m_lastHardwareSourceImportCount;
+  }
+
+  int lastHardwareSourceReuseCount() const {
+    return m_lastHardwareSourceReuseCount;
   }
 
   bool finishLastFrameForExternalSampling(OffscreenVulkanFrame *frame,
@@ -4802,6 +4899,8 @@ private:
   VkFence m_submitFence = VK_NULL_HANDLE;
   QVector<FrameSlot> m_frameSlots;
   int m_activeSlotIndex = -1;
+  int m_lastHardwareSourceImportCount = 0;
+  int m_lastHardwareSourceReuseCount = 0;
   QVector<int> m_pendingNv12SlotIndices;
   QVector<int> m_pendingNv12CudaSlotIndices;
   QVector<int> m_pendingYuvSlotIndices;
@@ -4942,6 +5041,18 @@ QImage OffscreenVulkanRenderer::renderFrame(
     stats.frames += 1;
     stats.compositeMs += elapsedMs;
   };
+  auto recordRenderFrameCountMetric =
+      [&](const QString& id, const QString& label, int count) {
+    if (!clipStageStats || count <= 0) {
+      return;
+    }
+    RenderClipStageStats& stats = (*clipStageStats)[id];
+    if (stats.id.isEmpty()) {
+      stats.id = id;
+      stats.label = label;
+    }
+    stats.frames += count;
+  };
   QStringList unresolvedVisualLayers;
   auto recordUnresolvedLayer =
       [&](const TimelineClip& clip, const QString& reason) {
@@ -5010,6 +5121,10 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int decodeConvertFailCount = 0;
   const RenderFrameClock frameClock =
       renderFrameClockForTimelinePosition(timelineFrame);
+  const PlaybackFrameCrossfade frameCrossfade =
+      playbackFrameCrossfadeAtTimelineFrame(
+          generatedEffectClockTimelineFrame,
+          request.playbackTiming);
   QHash<QString, QHash<int64_t, editor::FrameHandle>> decodedFramesByTimingOwner;
   auto decodeFrameForTimingOwner =
       [&](const TimelineClip& timingOwner,
@@ -5312,6 +5427,132 @@ QImage OffscreenVulkanRenderer::renderFrame(
                                         request.tracks),
         request.playbackTiming);
     layer.effectPlan = effectPlan;
+    OffscreenVulkanRendererPrivate::LayerInput frameCrossfadeLayer;
+    bool frameCrossfadeLayerPending = false;
+    if (frameCrossfade.active) {
+      const qreal secondaryTimelineFrame =
+          static_cast<qreal>(frameCrossfade.secondaryTimelineFrame);
+      const bool secondaryClipVisible =
+          secondaryTimelineFrame >= activeRangeClip.startFrame &&
+          secondaryTimelineFrame <
+              activeRangeClip.startFrame +
+                  activeRangeClip.durationFrames;
+      if (secondaryClipVisible) {
+        const RenderFrameClock secondaryClock =
+            renderFrameClockForTimelinePosition(
+                secondaryTimelineFrame);
+        const ClipFrameMapping secondaryMapping =
+            clipFrameMappingForClock(
+                clip,
+                request.clips,
+                secondaryClock,
+                request.renderSyncMarkers);
+        const editor::FrameHandle secondaryFrame =
+            decodeFrameForTimingOwner(
+                timingOwner,
+                decodePath,
+                secondaryMapping.sourceFrame);
+        if (!secondaryFrame.isNull()) {
+          frameCrossfadeLayer = layer;
+          frameCrossfadeLayer.clipId =
+              layer.clipId + QStringLiteral("#frameCrossfade");
+          frameCrossfadeLayer.frame = secondaryFrame;
+          frameCrossfadeLayer.frameSize = secondaryFrame.size();
+          frameCrossfadeLayer.preferHardwareDirect =
+              secondaryFrame.hasHardwareFrame();
+          frameCrossfadeLayer.image = {};
+          if (!frameCrossfadeLayer.preferHardwareDirect) {
+            frameCrossfadeLayer.image =
+                secondaryFrame.hasCpuImage()
+                    ? secondaryFrame.cpuImage()
+                    : frameHandleToCpuImage(secondaryFrame);
+            frameCrossfadeLayer.frameSize =
+                frameCrossfadeLayer.image.size();
+          }
+          frameCrossfadeLayer.cacheKey.clear();
+          frameCrossfadeLayer.effectPlan.generatedDraws.clear();
+          frameCrossfadeLayer.temporalEchoFrames.clear();
+          frameCrossfadeLayer.differenceMatteEnabled = false;
+          frameCrossfadeLayer.differenceReferenceFrame = {};
+          frameCrossfadeLayer.maskDropShadowEnabled = false;
+          frameCrossfadeLayer.gradePayload.effects.opacity *=
+              qBound(
+                  0.0f,
+                  frameCrossfade.secondaryOpacity,
+                  1.0f);
+          frameCrossfadeLayer.frameCrossfadeActive = false;
+          frameCrossfadeLayer.frameCrossfadeFrame = {};
+          frameCrossfadeLayer.frameCrossfadeMaskBuffer.reset();
+          frameCrossfadeLayer.frameCrossfadeMaskIdentity.clear();
+          frameCrossfadeLayer.frameCrossfadeMaskTextureEnabled =
+              false;
+
+          bool secondaryMaskReady = true;
+          if (gpuMaskEnabled) {
+            QString secondaryMaskIdentity;
+            auto secondaryMaskBuffer = rawClipMaskBuffer(
+                matteOwner,
+                secondaryFrame,
+                &secondaryMaskIdentity);
+            if (!secondaryMaskBuffer) {
+              secondaryMaskBuffer = rawClipMaskBufferBlocking(
+                  matteOwner,
+                  secondaryFrame,
+                  &secondaryMaskIdentity);
+            }
+            frameCrossfadeLayer.maskBuffer =
+                secondaryMaskBuffer;
+            frameCrossfadeLayer.maskIdentity =
+                secondaryMaskIdentity;
+            frameCrossfadeLayer.maskTextureEnabled =
+                static_cast<bool>(secondaryMaskBuffer);
+            secondaryMaskReady =
+                !generatedMaskMatte ||
+                frameCrossfadeLayer.maskTextureEnabled;
+          }
+          frameCrossfadeLayerPending =
+              secondaryMaskReady &&
+              (frameCrossfadeLayer.preferHardwareDirect ||
+               !frameCrossfadeLayer.image.isNull());
+          if (qEnvironmentVariableIsSet(
+                  "JCUT_TRACE_FRAME_CROSSFADE")) {
+            qInfo().noquote()
+                << QStringLiteral(
+                       "[frame-crossfade] transport=%1 visual=%2 clip=%3 "
+                       "secondary_timeline=%4 requested=%5 presented=%6 "
+                       "opacity=%7 ready=%8")
+                       .arg(generatedEffectClockTimelineFrame)
+                       .arg(timelineFrame)
+                       .arg(clip.id)
+                       .arg(frameCrossfade.secondaryTimelineFrame)
+                       .arg(secondaryMapping.sourceFrame)
+                       .arg(secondaryFrame.frameNumber())
+                       .arg(frameCrossfade.secondaryOpacity)
+                       .arg(frameCrossfadeLayerPending);
+          }
+          if (frameCrossfadeLayerPending) {
+            layer.frameCrossfadeActive = true;
+            layer.frameCrossfadeTimelineFrame =
+                frameCrossfade.secondaryTimelineFrame;
+            layer.frameCrossfadeRequestedSourceFrame =
+                secondaryMapping.sourceFrame;
+            layer.frameCrossfadePresentedSourceFrame =
+                secondaryFrame.frameNumber();
+            layer.frameCrossfadeOpacity =
+                frameCrossfade.secondaryOpacity;
+            layer.frameCrossfadeFrame = secondaryFrame;
+            layer.frameCrossfadeFrameSize =
+                secondaryFrame.size();
+            layer.frameCrossfadeMaskBuffer =
+                frameCrossfadeLayer.maskBuffer;
+            layer.frameCrossfadeMaskIdentity =
+                frameCrossfadeLayer.maskIdentity;
+            layer.frameCrossfadeMaskTextureEnabled =
+                frameCrossfadeLayer.maskTextureEnabled;
+          }
+        }
+      }
+    }
     if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile && effectBounds.isValid()) {
       layer.presetScissorEnabled = true;
       layer.presetScissorRect = effectBounds;
@@ -5359,6 +5600,16 @@ QImage OffscreenVulkanRenderer::renderFrame(
         transform.rotation,
         QPointF(transform.scaleX, transform.scaleY),
         layer.mvp);
+    if (frameCrossfadeLayerPending) {
+      std::copy(
+          std::begin(layer.mvp),
+          std::end(layer.mvp),
+          std::begin(frameCrossfadeLayer.mvp));
+      frameCrossfadeLayer.presetScissorEnabled =
+          layer.presetScissorEnabled;
+      frameCrossfadeLayer.presetScissorRect =
+          layer.presetScissorRect;
+    }
     if (clipVisible && clipEdgeFillEffect) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.frameSize = request.outputSize;
@@ -5491,6 +5742,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
               ? kVulkanEffectModeCurve : kVulkanEffectModeNormal;
           layers.push_back(echoLayer);
         }
+      }
+      if (frameCrossfadeLayerPending) {
+        layers.push_back(frameCrossfadeLayer);
       }
     }
     if (bidirectionalEdgeLayerPending) {
@@ -5684,6 +5938,14 @@ QImage OffscreenVulkanRenderer::renderFrame(
   if (compositeMs) {
     *compositeMs = compositeElapsedMs;
   }
+  recordRenderFrameCountMetric(
+      QStringLiteral("__render_frame_hardware_source_import__"),
+      QStringLiteral("__render_frame_hardware_source_import__"),
+      d->lastHardwareSourceImportCount());
+  recordRenderFrameCountMetric(
+      QStringLiteral("__render_frame_hardware_source_reuse__"),
+      QStringLiteral("__render_frame_hardware_source_reuse__"),
+      d->lastHardwareSourceReuseCount());
   recordRenderFrameStageMetric(
       QStringLiteral("__render_frame_layer_build__"),
       QStringLiteral("__render_frame_layer_build__"),

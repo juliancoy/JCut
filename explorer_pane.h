@@ -72,7 +72,6 @@ private:
     void chooseExplorerRoot();
 
     QPixmap previewPixmapForFile(const QString &filePath) const;
-    QImage decodeVideoThumbnail(const QString &filePath) const;
     void showExplorerHoverPreview(const QString &filePath);
     void hideExplorerHoverPreview();
     void onThumbnailReady(const QString &filePath, const QString &cacheKey, const QImage &image);

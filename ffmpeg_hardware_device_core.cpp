@@ -1,4 +1,5 @@
 #include "ffmpeg_hardware_device_core.h"
+#include "video_decode_capabilities_core.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -37,17 +38,7 @@ std::string vaapiRenderNode()
 
 std::vector<AVHWDeviceType> defaultFfmpegHardwareDeviceOrder()
 {
-    std::vector<AVHWDeviceType> result;
-#if defined(__APPLE__)
-    result.push_back(AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
-#elif defined(_WIN32)
-    result.push_back(AV_HWDEVICE_TYPE_D3D11VA);
-    result.push_back(AV_HWDEVICE_TYPE_DXVA2);
-#else
-    result.push_back(AV_HWDEVICE_TYPE_CUDA);
-    result.push_back(AV_HWDEVICE_TYPE_VAAPI);
-#endif
-    return result;
+    return preferredVideoDecodeDeviceOrder();
 }
 
 std::vector<AVHWDeviceType> ffmpegHardwareDeviceOrder(

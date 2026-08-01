@@ -107,16 +107,18 @@ QVector<int64_t> collectSequenceLookaheadSourceFrames(const TimelineClip& clip,
     return sourceFrames;
 }
 
-QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
-    const QVector<SequencePrefetchClip>& clips,
+QVector<DecodePrefetchRequest> collectDecodePrefetchRequestsAtTimelineFrame(
+    const QVector<DecodePrefetchClip>& clips,
     qreal timelineFrame,
     const QVector<RenderSyncMarker>& renderSyncMarkers,
     bool bypassGrading,
-    int priority) {
-    QVector<SequencePrefetchClip> activeClips;
+    int priority,
+    bool imageSequencesOnly) {
+    QVector<DecodePrefetchClip> activeClips;
     activeClips.reserve(clips.size());
-    for (const SequencePrefetchClip& candidate : clips) {
-        if (candidate.decodePath.isEmpty() || !isImageSequencePath(candidate.decodePath)) {
+    for (const DecodePrefetchClip& candidate : clips) {
+        if (candidate.decodePath.isEmpty() ||
+            (imageSequencesOnly && !isImageSequencePath(candidate.decodePath))) {
             continue;
         }
         if (!clipIsActiveAtTimelineFrame(candidate.clip, {}, timelineFrame, bypassGrading)) {
@@ -127,7 +129,7 @@ QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
 
     std::sort(activeClips.begin(),
               activeClips.end(),
-              [timelineFrame](const SequencePrefetchClip& a, const SequencePrefetchClip& b) {
+              [timelineFrame](const DecodePrefetchClip& a, const DecodePrefetchClip& b) {
                   const int64_t aDistance =
                       qAbs(qRound64(timelineFrame) - a.clip.startFrame);
                   const int64_t bDistance =
@@ -138,10 +140,10 @@ QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
                   return aDistance < bDistance;
               });
 
-    QVector<SequencePrefetchRequest> requests;
+    QVector<DecodePrefetchRequest> requests;
     requests.reserve(activeClips.size());
     QSet<QString> seenKeys;
-    for (const SequencePrefetchClip& candidate : activeClips) {
+    for (const DecodePrefetchClip& candidate : activeClips) {
         const int64_t sourceFrame =
             sourceFrameForClipAtTimelinePosition(candidate.clip, timelineFrame, renderSyncMarkers);
         const QString dedupeKey =
@@ -150,7 +152,7 @@ QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
             continue;
         }
         seenKeys.insert(dedupeKey);
-        requests.push_back(SequencePrefetchRequest{
+        requests.push_back(DecodePrefetchRequest{
             candidate.clip.id,
             candidate.decodePath,
             qRound64(timelineFrame),

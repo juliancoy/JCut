@@ -170,6 +170,17 @@ struct VulkanRenderLayerPacket {
 
     editor::FrameHandle frame;
     QSize frameSize;
+    bool frameCrossfadeActive = false;
+    int64_t frameCrossfadeTimelineFrame = -1;
+    int64_t frameCrossfadeRequestedSourceFrame = -1;
+    int64_t frameCrossfadePresentedSourceFrame = -1;
+    float frameCrossfadeOpacity = 0.0f;
+    QSize frameCrossfadeFrameSize;
+    editor::FrameHandle frameCrossfadeFrame;
+    std::shared_ptr<const jcut::core::ImageBuffer>
+        frameCrossfadeMaskBuffer;
+    QString frameCrossfadeMaskIdentity;
+    bool frameCrossfadeMaskTextureEnabled = false;
     QRectF targetRect;
     QRectF fittedRect;
     TimelineClip::TransformKeyframe transform;
@@ -219,6 +230,13 @@ struct VulkanRenderLayerPacket {
     void setCorrectionPolygons(
         const QVector<TimelineClip::CorrectionPolygon>& value);
 };
+
+// Stable identity for sharing one neutral decoded-frame import among linked
+// layers in the same Vulkan composition. An empty key deliberately disables
+// reuse when ownership or source identity is incomplete.
+QString vulkanSourceFrameCacheKey(
+    const QString& mediaOwnerClipId,
+    const editor::FrameHandle& frame);
 
 struct VulkanBackgroundFillMapping {
     float centerXNorm = 0.5f;

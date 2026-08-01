@@ -34,6 +34,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QSpinBox>
 #include <QTextCursor>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -195,6 +196,8 @@ bool showBiRefNetPreview(QWidget* parent,
                          bool fp16,
                          bool rootMode,
                          double alphaTolerance,
+                         const QString& guidanceDirectory,
+                         int guidanceGateRadius,
                          int64_t frameIndex)
 {
     QTemporaryDir previewDirectory(
@@ -233,6 +236,11 @@ bool showBiRefNetPreview(QWidget* parent,
                         QStringLiteral("--source-presentation-timestamp"),
                         QString::number(
                             presentedFrame.sourcePresentationTimestamp())};
+    if (!guidanceDirectory.trimmed().isEmpty()) {
+        command << QStringLiteral("--guidance-dir") << guidanceDirectory
+                << QStringLiteral("--guidance-gate-radius")
+                << QString::number(guidanceGateRadius);
+    }
     if (device == QStringLiteral("cpu")) command << QStringLiteral("--cpu");
     if (!fp16) command << QStringLiteral("--fp32");
 
@@ -332,7 +340,10 @@ bool showBiRefNetPreview(QWidget* parent,
 
 } // namespace
 
-void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
+void EditorWindow::openBiRefNetDetectorWindow(
+    const QString& clipId,
+    const QString& guidanceDirectory,
+    int guidanceGateRadius)
 {
     const TimelineClip* clip = clipById(m_timeline, clipId);
     if (!clip || clip->mediaType != ClipMediaType::Video) {
@@ -361,6 +372,19 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
                                  .arg(QDir::toNativeSeparators(clip->filePath)));
         return;
     }
+    const QString normalizedGuidance = guidanceDirectory.trimmed().isEmpty()
+        ? QString()
+        : QFileInfo(guidanceDirectory).absoluteFilePath();
+    const bool guidedRefinement = !normalizedGuidance.isEmpty();
+    if (guidedRefinement && !QFileInfo(normalizedGuidance).isDir()) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("BiRefNet Refinement"),
+            QStringLiteral("The SAM guidance directory does not exist:\n%1")
+                .arg(QDir::toNativeSeparators(normalizedGuidance)));
+        return;
+    }
+    guidanceGateRadius = qBound(0, guidanceGateRadius, 512);
     const QString scriptPath = QDir::current().absoluteFilePath(QStringLiteral("birefnet.sh"));
     if (!QFileInfo::exists(scriptPath)) {
         QMessageBox::warning(this, QStringLiteral("BiRefNet"),
@@ -370,11 +394,18 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
 
     QSettings settings(QStringLiteral("PanelTalkEditor"), QStringLiteral("JCut"));
     QDialog preflight(this);
-    preflight.setWindowTitle(QStringLiteral("BiRefNet Alpha Preflight"));
+    preflight.setWindowTitle(
+        guidedRefinement
+            ? QStringLiteral("SAM-guided BiRefNet Refinement")
+            : QStringLiteral("BiRefNet Alpha Preflight"));
     auto* layout = new QVBoxLayout(&preflight);
     auto* explanation = new QLabel(
-        QStringLiteral("BiRefNet automatically extracts the most salient foreground and writes "
-                       "continuous-alpha PNG frames. It does not accept a text prompt."),
+        guidedRefinement
+            ? QStringLiteral(
+                  "BiRefNet will refine the selected SAM mask into continuous alpha. "
+                  "The original binary sidecar remains unchanged and acts only as a spatial guide.")
+            : QStringLiteral("BiRefNet automatically extracts the most salient foreground and writes "
+                             "continuous-alpha PNG frames. It does not accept a text prompt."),
         &preflight);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
@@ -426,6 +457,16 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
         "Minimum foreground confidence. Higher values remove faint background leakage; "
         "0% preserves BiRefNet's original continuous alpha."));
     form->addRow(QStringLiteral("Alpha tolerance"), alphaToleranceSpin);
+    auto* guidanceRadiusSpin = new QSpinBox(&preflight);
+    guidanceRadiusSpin->setRange(0, 512);
+    guidanceRadiusSpin->setSuffix(QStringLiteral(" px"));
+    guidanceRadiusSpin->setValue(guidanceGateRadius);
+    guidanceRadiusSpin->setToolTip(QStringLiteral(
+        "How far outside the SAM boundary BiRefNet may recover hair, motion blur, "
+        "and semi-transparent edge detail."));
+    if (guidedRefinement) {
+        form->addRow(QStringLiteral("SAM guide expansion"), guidanceRadiusSpin);
+    }
     auto* maskMatteNote = new QLabel(QStringLiteral(
         "The generated alpha is added as a source-linked Mask Matte child."),
         &preflight);
@@ -445,7 +486,11 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
         QStringLiteral("Preview Frame %1").arg(previewSourceFrame), &preflight);
     previewButton->setToolTip(
         QStringLiteral("Run BiRefNet on the source frame under the playhead, or the clip midpoint when the playhead is outside the clip."));
-    auto* run = new QPushButton(QStringLiteral("Generate Alpha"), &preflight);
+    auto* run = new QPushButton(
+        guidedRefinement
+            ? QStringLiteral("Create Refined Matte")
+            : QStringLiteral("Generate Alpha"),
+        &preflight);
     run->setDefault(true);
     buttons->addStretch(1);
     buttons->addWidget(cancel);
@@ -475,6 +520,8 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
                             fp16->isChecked(),
                             rootMode->isChecked(),
                             alphaToleranceSpin->value() / 100.0,
+                            normalizedGuidance,
+                            guidanceRadiusSpin->value(),
                             previewSourceFrame);
     });
     connect(run, &QPushButton::clicked, &preflight, [&]() {
@@ -509,6 +556,7 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     settings.setValue(QStringLiteral("birefnet/device"), deviceCombo->currentIndex());
     settings.setValue(QStringLiteral("birefnet/fp16"), fp16->isChecked());
     const double alphaTolerance = alphaToleranceSpin->value() / 100.0;
+    guidanceGateRadius = guidanceRadiusSpin->value();
     settings.setValue(
         QStringLiteral("birefnet/alphaTolerancePercent"), alphaToleranceSpin->value());
     jcut::jobs::BiRefNetJobRequestCore sharedRequest;
@@ -518,6 +566,8 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
     sharedRequest.revision = revision.toStdString();
     sharedRequest.modelCachePath = modelCache.toStdString();
     sharedRequest.runtimeCachePath = runtimeCache.toStdString();
+    sharedRequest.guidanceDirectory = normalizedGuidance.toStdString();
+    sharedRequest.guidanceGateRadius = guidanceGateRadius;
     sharedRequest.device =
         deviceCombo->currentData().toString().toStdString();
     sharedRequest.fp16 = fp16->isChecked();
@@ -551,7 +601,11 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
             oldParameters.value(QStringLiteral("fp16")).toBool(true) != fp16->isChecked() ||
             !qFuzzyCompare(
                 1.0 + oldParameters.value(QStringLiteral("alpha_tolerance")).toDouble(0.0),
-                1.0 + alphaTolerance);
+                1.0 + alphaTolerance) ||
+            oldParameters.value(QStringLiteral("guidance_directory")).toString() !=
+                normalizedGuidance ||
+            oldParameters.value(QStringLiteral("guidance_gate_radius")).toInt(24) !=
+                guidanceGateRadius;
         if (generationParametersChanged) {
             // Existing frames cannot be resumed under different inference or
             // alpha-remapping settings without creating a mixed matte.
@@ -591,10 +645,13 @@ void EditorWindow::openBiRefNetDetectorWindow(const QString& clipId)
                     {QStringLiteral("device"), deviceCombo->currentData().toString()},
                     {QStringLiteral("fp16"), fp16->isChecked()},
                     {QStringLiteral("alpha_tolerance"), alphaTolerance},
+                    {QStringLiteral("guidance_directory"), normalizedGuidance},
+                    {QStringLiteral("guidance_gate_radius"), guidanceGateRadius},
                     {QStringLiteral("create_mask_marker"), true},
                     {QStringLiteral("docker_root_mode"), rootMode->isChecked()},
                     {QStringLiteral("live_preview"), true}},
         QJsonObject{{QStringLiteral("alpha_masks_dir"), outputDir},
+                    {QStringLiteral("guidance_masks_dir"), normalizedGuidance},
                     {QStringLiteral("model_cache"), modelCache},
                     {QStringLiteral("runtime_cache"), runtimeCache},
                     {QStringLiteral("job_log"), jobLogPath},

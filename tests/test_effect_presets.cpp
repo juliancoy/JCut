@@ -18,8 +18,10 @@
 #include <limits>
 
 #include <QFile>
+#include <QImage>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <utility>
 
 namespace {
 
@@ -67,6 +69,7 @@ private slots:
     void neutralMaskFrameMapValidatesOrdinalSidecarsAndSourceIdentity();
     void neutralMaskFrameMapCacheReusesValidationAndInvalidatesChanges();
     void genericAiMaskSidecarsBecomeNestedChildrenWithIndependentZLevels();
+    void guidedBiRefNetMatteIsSiblingOfItsSamOrigin();
     void birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata();
     void authenticatedPartialBiRefNetPrefixEnablesOnlyPersistedChild();
     void completedOrdinalSidecarWithInteriorHoleFailsClosed();
@@ -745,6 +748,77 @@ void TestEffectPresets::genericAiMaskSidecarsBecomeNestedChildrenWithIndependent
     const QJsonObject serialized = editor::clipToJson(children[0]);
     QCOMPARE(serialized.value(QStringLiteral("zLevel")).toInt(), 90);
     QCOMPARE(editor::clipFromJson(serialized).zLevel, 90);
+}
+
+void TestEffectPresets::guidedBiRefNetMatteIsSiblingOfItsSamOrigin()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString mediaPath = temp.filePath(QStringLiteral("shot.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.write("video");
+    media.close();
+
+    const QString samDirectory = temp.filePath(
+        QStringLiteral("shot_sam3_person_binary_masks"));
+    const QString refinedDirectory = temp.filePath(
+        QStringLiteral(
+            "shot_birefnet_guided_shot_sam3_person_binary_masks_alpha_masks"));
+    for (const auto& sidecar : {
+             std::pair<QString, bool>{samDirectory, false},
+             std::pair<QString, bool>{refinedDirectory, true}}) {
+        QVERIFY(QDir().mkpath(sidecar.first));
+        QImage frame(4, 4, QImage::Format_Grayscale8);
+        frame.fill(sidecar.second ? 192 : 255);
+        QVERIFY(frame.save(QDir(sidecar.first).filePath(
+            QStringLiteral("frame_000001.png"))));
+        QFile map(QDir(sidecar.first).filePath(
+            QStringLiteral("jcut_frame_map.tsv")));
+        QVERIFY(map.open(QIODevice::WriteOnly | QIODevice::Text));
+        map.write(
+            "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+            "0\t0\t0\n");
+        map.close();
+        QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
+            sidecar.first, mediaPath));
+        QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+            sidecar.first, mediaPath, sidecar.second));
+    }
+
+    TimelineClip source;
+    source.id = QStringLiteral("shot-master");
+    source.label = QStringLiteral("Shot");
+    source.filePath = mediaPath;
+    source.mediaType = ClipMediaType::Video;
+    source.trackIndex = 3;
+    source.zLevel = 20;
+    source.durationFrames = 60;
+    QVector<TimelineClip> clips{source};
+
+    QVERIFY(reconcileMaskMatteChildrenFromDisk(clips));
+    QCOMPARE(clips.size(), 3);
+    const QString samId = editor::masks::stableMaskSidecarId(samDirectory);
+    const QString refinedId = editor::masks::stableMaskSidecarId(refinedDirectory);
+    const QString samChildId = maskMatteChildIdForSidecar(
+        clips, source.id, samId);
+    const QString refinedChildId = maskMatteChildIdForSidecar(
+        clips, source.id, refinedId);
+    QVERIFY(!samChildId.isEmpty());
+    QVERIFY(!refinedChildId.isEmpty());
+    QVERIFY(samChildId != refinedChildId);
+
+    for (const TimelineClip& clip : std::as_const(clips)) {
+        if (clip.id != samChildId && clip.id != refinedChildId) {
+            continue;
+        }
+        QCOMPARE(clip.clipRole, ClipRole::MaskMatte);
+        QCOMPARE(clip.linkedSourceClipId, source.id);
+        QCOMPARE(clip.trackIndex, source.trackIndex);
+    }
+    QCOMPARE(clips.size(), 3);
+    QVERIFY(!reconcileMaskMatteChildrenFromDisk(clips));
+    QCOMPARE(clips.size(), 3);
 }
 
 void TestEffectPresets::birefnetSidecarDiscoveryPreservesContinuousAlphaMetadata()
@@ -1568,14 +1642,31 @@ void TestEffectPresets::maskSidecarAssociationUpdatesPathAndStableIdentityTogeth
 {
     TimelineClip matte;
     matte.clipRole = ClipRole::MaskMatte;
-    matte.maskFramesDir = QStringLiteral("/tmp/old-mask");
+    matte.maskOriginalFramesDir = QStringLiteral("/tmp/original-mask");
+    TimelineClip::MaskFuzzyRemoveEdit firstEdit;
+    firstEdit.recipeHash = QStringLiteral("first");
+    firstEdit.materializedSidecarDirectory = QStringLiteral("/tmp/derived-mask-1");
+    TimelineClip::MaskFuzzyRemoveEdit secondEdit;
+    secondEdit.recipeHash = QStringLiteral("second");
+    secondEdit.materializedSidecarDirectory = QStringLiteral("/tmp/derived-mask-2");
+    matte.maskFuzzyRemoveEdits = {firstEdit, secondEdit};
+    matte.maskFramesDir = secondEdit.materializedSidecarDirectory;
     matte.generatedFromMaskId = QStringLiteral("stale-id");
+
+    QVERIFY(setMaskSidecarAssociation(
+        matte, firstEdit.materializedSidecarDirectory));
+    QCOMPARE(matte.maskFuzzyRemoveEdits.size(), 1);
+    QCOMPARE(matte.maskFuzzyRemoveEdits.constFirst().recipeHash,
+             firstEdit.recipeHash);
+    QCOMPARE(matte.maskOriginalFramesDir, QStringLiteral("/tmp/original-mask"));
 
     const QString newDirectory = QStringLiteral(" /tmp/new-mask ");
     QVERIFY(setMaskSidecarAssociation(matte, newDirectory));
     QCOMPARE(matte.maskFramesDir, QStringLiteral("/tmp/new-mask"));
     QCOMPARE(matte.generatedFromMaskId,
              editor::masks::stableMaskSidecarId(matte.maskFramesDir));
+    QVERIFY(matte.maskFuzzyRemoveEdits.isEmpty());
+    QVERIFY(matte.maskOriginalFramesDir.isEmpty());
     QVERIFY(!setMaskSidecarAssociation(matte, matte.maskFramesDir));
 
     QVERIFY(setMaskSidecarAssociation(matte, QString()));

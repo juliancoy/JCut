@@ -5,6 +5,7 @@
 #include "audio_output_backend.h"
 #include "editor_shared.h"
 #include "preview_surface.h"
+#include "speech_filter_fade.h"
 
 #include <QHash>
 #include <QJsonArray>
@@ -53,13 +54,9 @@ class AudioEngine {
   friend class TestAudioMixPolicy;
 
 public:
-  enum class SpeechFilterFadeMode {
-    JumpCut = 0,
-    Fade = 1,
-    SmoothStep = 2,
-    SmootherStep = 3,
-    Crossfade = 4,
-  };
+  using SpeechFilterFadeMode = editor::speech::FadeMode;
+  using SpeechSampleRange = editor::speech::SampleRange;
+  using SpeechRangeBlend = editor::speech::RangeBlend;
 
   static QString speechFilterFadeModeToString(SpeechFilterFadeMode mode);
   static QString speechFilterFadeModeLabel(SpeechFilterFadeMode mode);
@@ -234,11 +231,6 @@ private:
     int channelCount = 2;
     bool valid = false;
     bool fullyDecoded = false;
-  };
-
-  struct SpeechSampleRange {
-    int64_t startSample = 0;
-    int64_t endSampleExclusive = 0;
   };
 
   static qreal normalizedTimeStretchSpeed(qreal playbackRate);
@@ -427,12 +419,6 @@ private:
   void prioritizeDecodesNearSampleLocked(int64_t focusSample);
 
   // --- Gain calculations ---
-
-  struct SpeechRangeBlend {
-    float primaryGain = 1.0f;
-    float secondaryGain = 0.0f;
-    int64_t secondaryTimelineSample = -1;
-  };
 
   SpeechRangeBlend
   calculateSpeechRangeBlend(int64_t samplePos,

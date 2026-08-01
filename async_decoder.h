@@ -62,6 +62,7 @@ struct DecodeRequest {
     int64_t frameNumber;
     int priority;  // Higher = more urgent (0-255)
     DecodeRequestKind kind = DecodeRequestKind::Visible;
+    bool callbackOnOwnerThread = false;
     uint64_t generation = 0;
     QDeadlineTimer deadline;
     std::function<void(FrameHandle)> callback;
@@ -118,7 +119,8 @@ public:
                           int priority,
                           int timeoutMs,
                           DecodeRequestKind kind,
-                          std::function<void(FrameHandle)> callback);
+                          std::function<void(FrameHandle)> callback,
+                          bool callbackOnOwnerThread = false);
     
     // Cancel pending requests
     void cancelForFile(const QString& path);
@@ -162,6 +164,7 @@ private:
     struct LaneState;
     struct DroppedCallback {
         DecodeRequestKind kind = DecodeRequestKind::Visible;
+        bool callbackOnOwnerThread = false;
         std::function<void(FrameHandle)> callback;
     };
 

@@ -2439,6 +2439,28 @@ bool ControlServerWorker::handleHardwareRoutes(QTcpSocket* socket, const Request
     hardware[QStringLiteral("operating_system")] =
         QString::fromStdString(capabilities.operatingSystem);
     hardware[QStringLiteral("audio_output_backends")] = audioBackends;
+    QJsonArray videoDecodeBackends;
+    for (const jcut::VideoDecodeBackendCapability& candidate :
+         capabilities.videoDecodeBackends) {
+        QJsonArray codecs;
+        for (AVCodecID codecId : candidate.codecIds) {
+            codecs.append(QString::fromLatin1(avcodec_get_name(codecId)));
+        }
+        videoDecodeBackends.append(QJsonObject{
+            {QStringLiteral("id"), QString::fromStdString(candidate.id)},
+            {QStringLiteral("label"), QString::fromStdString(candidate.label)},
+            {QStringLiteral("preference"), candidate.preference},
+            {QStringLiteral("compiled"), candidate.compiled},
+            {QStringLiteral("operating_system_supported"),
+             candidate.operatingSystemSupported},
+            {QStringLiteral("available"), candidate.available},
+            {QStringLiteral("device_path"),
+             QString::fromStdString(candidate.devicePath)},
+            {QStringLiteral("codecs"), codecs},
+            {QStringLiteral("reason"), QString::fromStdString(candidate.reason)}
+        });
+    }
+    hardware[QStringLiteral("video_decode_backends")] = videoDecodeBackends;
 
     QProcess cpuProc;
     cpuProc.start("lscpu");

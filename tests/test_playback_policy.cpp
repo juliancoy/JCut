@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "../editor_shared.h"
+#include "../media_pipeline_shared.h"
 #include "../playback_clock_coordinator.h"
 #include "../playback_timing_context.h"
 
@@ -38,6 +39,7 @@ private slots:
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
     void testPlaybackSampleClampUsesExclusivePlayableEnd();
     void testDiscontinuousRangePrefetchStartsBeforeCrossfade();
+    void testExportDecodePrefetchIncludesOrdinaryVideo();
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
@@ -174,6 +176,32 @@ void TestPlaybackPolicy::testDiscontinuousRangePrefetchStartsBeforeCrossfade()
              int64_t(-1));
     QCOMPARE(upcomingNoncontiguousPlaybackRangeStart(55.0, timing, 4),
              int64_t(-1));
+}
+
+void TestPlaybackPolicy::testExportDecodePrefetchIncludesOrdinaryVideo()
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("video");
+    clip.filePath = QStringLiteral("/tmp/export-prefetch.mp4");
+    clip.mediaType = ClipMediaType::Video;
+    clip.sourceKind = MediaSourceKind::File;
+    clip.startFrame = 10;
+    clip.durationFrames = 100;
+    clip.sourceDurationFrames = 100;
+
+    const QVector<editor::DecodePrefetchClip> clips = {
+        editor::DecodePrefetchClip{clip, clip.filePath},
+    };
+    const QVector<editor::DecodePrefetchRequest> exportRequests =
+        editor::collectDecodePrefetchRequestsAtTimelineFrame(
+            clips, 20.0, {}, false, 192, false);
+    QCOMPARE(exportRequests.size(), 1);
+    QCOMPARE(exportRequests.constFirst().decodePath, clip.filePath);
+
+    const QVector<editor::DecodePrefetchRequest> sequenceOnlyRequests =
+        editor::collectDecodePrefetchRequestsAtTimelineFrame(
+            clips, 20.0, {}, false, 192, true);
+    QVERIFY(sequenceOnlyRequests.isEmpty());
 }
 
 void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap()

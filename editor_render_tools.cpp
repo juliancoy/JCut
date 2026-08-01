@@ -1065,6 +1065,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("segment_end_frame"), static_cast<qint64>(progress.segmentEndFrame)},
             {QStringLiteral("using_gpu"), progress.usingGpu},
             {QStringLiteral("using_hardware_encode"), progress.usingHardwareEncode},
+            {QStringLiteral("activity"), progress.activity},
             {QStringLiteral("encoder_label"), progress.encoderLabel},
             {QStringLiteral("export_pipeline"), progress.exportPipeline},
             {QStringLiteral("gpu_transfer_label"), progress.gpuTransferLabel},
@@ -1284,6 +1285,7 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                     progress.usingHardwareEncode;
                 monitorStatus.createVideoFromImageSequence =
                     createVideoFromImageSequence;
+                monitorStatus.activity = progress.activity.toStdString();
                 monitorStatus.encoderLabel =
                     progress.encoderLabel.toStdString();
                 monitorStatus.exportPipeline =
@@ -1323,6 +1325,12 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             const QString encoderLabel = progress.encoderLabel.isEmpty()
                                              ? QStringLiteral("unknown")
                                              : progress.encoderLabel;
+            const QString activity = progress.activity.trimmed().isEmpty()
+                                         ? QStringLiteral("Rendering video")
+                                         : progress.activity.trimmed();
+            if (imguiRenderMonitorPtr) {
+                imguiRenderMonitorPtr->setStatusText(activity.toStdString());
+            }
             const QString gpuTransferMetricLabel = progress.gpuTransferLabel.isEmpty()
                                                        ? QStringLiteral("GPU Transfer")
                                                        : progress.gpuTransferLabel;
@@ -1371,11 +1379,14 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                           .arg(progress.incrementalFramesReused)
                     : QString();
                 renderStatusLabel->setText(
-                    QStringLiteral("<b>Rendering frame %1 of %2</b><br>"
-                                   "Segment %3/%4: %5-%6<br>"
-                                   "%7 | %8 (%9)<br>"
-                                   "ETA: %10%11<br>%12")
-                        .arg(progress.framesCompleted + 1)
+                    QStringLiteral("<b>%1</b><br>"
+                                   "Frame %2 of %3<br>"
+                                   "Segment %4/%5: %6-%7<br>"
+                                   "%8 | %9 (%10)<br>"
+                                   "ETA: %11%12<br>%13")
+                        .arg(activity.toHtmlEscaped())
+                        .arg(qMin<int64_t>(progress.framesCompleted + 1,
+                                           qMax<int64_t>(1, progress.totalFrames)))
                         .arg(qMax<int64_t>(1, progress.totalFrames))
                         .arg(progress.segmentIndex)
                         .arg(progress.segmentCount)

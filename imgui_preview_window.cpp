@@ -1845,6 +1845,9 @@ bool ImGuiPreviewWindow::presentRenderMonitorFrame(
                             progressTitle,
                             progressDetail);
 
+    if (!status.activity.empty()) {
+        ImGui::Text("Activity: %s", status.activity.c_str());
+    }
     if (ImGui::Button("Cancel Render")) {
         m_impl->renderMonitorCancelRequested = true;
     }

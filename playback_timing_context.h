@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_playback_types.h"
+#include "speech_filter_fade.h"
 
 #include <QString>
 #include <QVector>
@@ -69,6 +70,10 @@ struct PlaybackTimingContext {
     PlaybackFrameTransitionMode frameTransitionMode = PlaybackFrameTransitionMode::Cut;
     bool frameCrossfadeEnabled = false;
     int frameCrossfadeFrames = 0;
+    editor::speech::FadeMode speechFadeMode =
+        editor::speech::FadeMode::JumpCut;
+    int speechFadeSamples = 0;
+    qreal speechCurveStrength = 1.0;
 };
 
 struct PlaybackFrameCrossfade {

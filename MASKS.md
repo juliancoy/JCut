@@ -77,6 +77,12 @@ timeline track.
 
 The Masks tab discovers every compatible mask sidecar beside the selected media. This includes SAM2/SAM3 and BiRefNet output, plus other AI-generated sibling directories whose names identify mask, matte, segmentation, or alpha output. A `jcut_alpha.json` manifest also marks a generic directory as a sidecar. Discovery is deterministic and each canonical directory has a stable identity.
 
+Completed binary SAM sidecars expose **Refine SAM Edges with BiRefNet…** in the
+Masks tab. The selected SAM mask becomes a read-only, dilated spatial guide for
+offline continuous-alpha generation. **Refinement reach** sets the dilation
+radius. The refined sidecar is separate from both ordinary BiRefNet output and
+the original SAM frames, so either matte remains independently selectable.
+
 Every discovered sidecar may be materialized as its own Mask Matte child. The directory remains serialized as `maskFramesDir` for backward compatibility; UI code uses the stable sidecar identity and descriptive name instead of treating the path as display identity.
 
 Sidecar reconciliation is parent-scoped and idempotent. The identity key is the

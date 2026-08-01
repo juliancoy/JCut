@@ -744,6 +744,33 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("locked")] = clip.locked;
         obj[QStringLiteral("maskEnabled")] = clip.maskEnabled;
         obj[QStringLiteral("maskFramesDir")] = clip.maskFramesDir;
+        obj[QStringLiteral("maskOriginalFramesDir")] = clip.maskOriginalFramesDir;
+        QJsonArray fuzzyRemoveEdits;
+        for (const TimelineClip::MaskFuzzyRemoveEdit& edit : clip.maskFuzzyRemoveEdits) {
+            fuzzyRemoveEdits.push_back(QJsonObject{
+                {QStringLiteral("recipeHash"), edit.recipeHash},
+                {QStringLiteral("algorithm"), edit.algorithm},
+                {QStringLiteral("sourceSidecarDirectory"), edit.sourceSidecarDirectory},
+                {QStringLiteral("materializedSidecarDirectory"), edit.materializedSidecarDirectory},
+                {QStringLiteral("sourceFrame"), static_cast<qint64>(edit.sourceFrame)},
+                {QStringLiteral("sourcePresentationTimestamp"),
+                 static_cast<qint64>(edit.sourcePresentationTimestamp)},
+                {QStringLiteral("seedMaskOrdinal"), static_cast<qint64>(edit.seedMaskOrdinal)},
+                {QStringLiteral("firstMaskOrdinal"), static_cast<qint64>(edit.firstMaskOrdinal)},
+                {QStringLiteral("lastMaskOrdinal"), static_cast<qint64>(edit.lastMaskOrdinal)},
+                {QStringLiteral("xNorm"), edit.xNorm},
+                {QStringLiteral("yNorm"), edit.yNorm},
+                {QStringLiteral("spatialReachPixels"), edit.spatialReachPixels},
+                {QStringLiteral("temporalReachFrames"), edit.temporalReachFrames},
+                {QStringLiteral("foregroundThreshold"), edit.foregroundThreshold},
+                {QStringLiteral("maximumAreaGrowth"), edit.maximumAreaGrowth},
+                {QStringLiteral("minimumAreaRatio"), edit.minimumAreaRatio},
+                {QStringLiteral("maximumFrameFraction"), edit.maximumFrameFraction},
+                {QStringLiteral("ambiguityRatio"), edit.ambiguityRatio},
+                {QStringLiteral("changedFrames"), edit.changedFrames},
+                {QStringLiteral("removedPixels"), edit.removedPixels}});
+        }
+        obj[QStringLiteral("maskFuzzyRemoveEdits")] = fuzzyRemoveEdits;
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
         obj[QStringLiteral("maskFeatherFalloff")] = clip.maskFeatherFalloff;
@@ -1262,6 +1289,57 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
         clip.maskEnabled = obj.value(QStringLiteral("maskEnabled")).toBool(false);
         clip.maskFramesDir = obj.value(QStringLiteral("maskFramesDir")).toString().trimmed();
+        clip.maskOriginalFramesDir =
+            obj.value(QStringLiteral("maskOriginalFramesDir")).toString().trimmed();
+        const QJsonArray fuzzyRemoveEdits =
+            obj.value(QStringLiteral("maskFuzzyRemoveEdits")).toArray();
+        for (const QJsonValue& value : fuzzyRemoveEdits) {
+            if (!value.isObject()) continue;
+            const QJsonObject editObj = value.toObject();
+            TimelineClip::MaskFuzzyRemoveEdit edit;
+            edit.recipeHash = editObj.value(QStringLiteral("recipeHash")).toString();
+            edit.algorithm = editObj.value(QStringLiteral("algorithm"))
+                                 .toString(QStringLiteral("guarded_component_v2"));
+            edit.sourceSidecarDirectory =
+                editObj.value(QStringLiteral("sourceSidecarDirectory")).toString();
+            edit.materializedSidecarDirectory =
+                editObj.value(QStringLiteral("materializedSidecarDirectory")).toString();
+            edit.sourceFrame = editObj.value(QStringLiteral("sourceFrame")).toInteger(-1);
+            edit.sourcePresentationTimestamp =
+                editObj.value(QStringLiteral("sourcePresentationTimestamp")).toInteger(-1);
+            edit.seedMaskOrdinal =
+                editObj.value(QStringLiteral("seedMaskOrdinal")).toInteger(-1);
+            edit.firstMaskOrdinal =
+                editObj.value(QStringLiteral("firstMaskOrdinal")).toInteger(-1);
+            edit.lastMaskOrdinal =
+                editObj.value(QStringLiteral("lastMaskOrdinal")).toInteger(-1);
+            edit.xNorm = qBound<qreal>(
+                0.0, editObj.value(QStringLiteral("xNorm")).toDouble(), 1.0);
+            edit.yNorm = qBound<qreal>(
+                0.0, editObj.value(QStringLiteral("yNorm")).toDouble(), 1.0);
+            edit.spatialReachPixels = qBound(
+                0, editObj.value(QStringLiteral("spatialReachPixels")).toInt(12), 128);
+            edit.temporalReachFrames = qBound(
+                0, editObj.value(QStringLiteral("temporalReachFrames")).toInt(120), 10000);
+            edit.foregroundThreshold = qBound(
+                1, editObj.value(QStringLiteral("foregroundThreshold")).toInt(128), 255);
+            edit.maximumAreaGrowth = qBound<qreal>(
+                1.0, editObj.value(QStringLiteral("maximumAreaGrowth")).toDouble(2.5), 10.0);
+            edit.minimumAreaRatio = qBound<qreal>(
+                0.01, editObj.value(QStringLiteral("minimumAreaRatio")).toDouble(0.20), 1.0);
+            edit.maximumFrameFraction = qBound<qreal>(
+                0.001, editObj.value(QStringLiteral("maximumFrameFraction")).toDouble(0.25), 1.0);
+            edit.ambiguityRatio = qBound<qreal>(
+                0.0, editObj.value(QStringLiteral("ambiguityRatio")).toDouble(0.80), 1.0);
+            edit.changedFrames = qMax(
+                0, editObj.value(QStringLiteral("changedFrames")).toInt());
+            edit.removedPixels = qMax<qint64>(
+                0, editObj.value(QStringLiteral("removedPixels")).toInteger());
+            if (!edit.recipeHash.isEmpty() &&
+                !edit.materializedSidecarDirectory.trimmed().isEmpty()) {
+                clip.maskFuzzyRemoveEdits.push_back(std::move(edit));
+            }
+        }
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
         clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
         clip.maskFeatherFalloff = qBound(0, obj.value(QStringLiteral("maskFeatherFalloff")).toInt(0), 5);

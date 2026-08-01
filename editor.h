@@ -123,7 +123,10 @@ private:
     void loadState();
     void openTranscriptionWindow(const QString &filePath, const QString &label);
     void openSamDetectorWindow(const QString& clipId);
-    void openBiRefNetDetectorWindow(const QString& clipId);
+    void openBiRefNetDetectorWindow(
+        const QString& clipId,
+        const QString& guidanceDirectory = QString(),
+        int guidanceGateRadius = 24);
     void scheduleTranscriptTextCompanionBackfill();
     void scheduleDeferredHistoryLoad(const QString& projectId);
     void applyDeferredStartupPanelState(const QJsonObject& root,

@@ -429,6 +429,8 @@ void TestDirectVulkanHandoffPipelineContract::
            "the shared Gray8 buffer in direct Vulkan preview");
   const QString previewState =
       readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  const QString sharedLayerPacket =
+      readSourceFile(QStringLiteral("render_vulkan_shared.h"));
   QVERIFY2(previewState.contains(QStringLiteral(
                "public render_detail::VulkanRenderLayerPacket")) &&
                previewSurface.contains(QStringLiteral(
@@ -437,8 +439,9 @@ void TestDirectVulkanHandoffPipelineContract::
                    "status->effectPlan")),
            "preview status construction and drawing must consume the shared "
            "canonical Vulkan layer packet, including generated draw passes");
-  QVERIFY2(previewState.contains(QStringLiteral("frameCrossfadeMaskBuffer")) &&
-               previewState.contains(QStringLiteral(
+  QVERIFY2(sharedLayerPacket.contains(QStringLiteral(
+               "frameCrossfadeMaskBuffer")) &&
+               sharedLayerPacket.contains(QStringLiteral(
                    "frameCrossfadeMaskTextureEnabled")) &&
                previewSurface.contains(QStringLiteral(
                    "markerStatus.frameCrossfadeMaskBuffer")) &&
@@ -1772,6 +1775,38 @@ void TestDirectVulkanHandoffPipelineContract::
                decoderContext.contains(QStringLiteral("decodeLock.lock()")),
            "global FFmpeg decode serialization must apply only to software "
            "decode; NVIDIA hardware decode lanes must run concurrently");
+  const QString decodeCapabilities =
+      readSourceFile(QStringLiteral("video_decode_capabilities_core.cpp"));
+  const QString standaloneRenderer =
+      readSourceFile(QStringLiteral("standalone_timeline_renderer.cpp"));
+  const QString controlRoutes =
+      readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+  const QString explorer =
+      readSourceFile(QStringLiteral("explorer_pane.cpp"));
+  const QString sharedMedia =
+      readSourceFile(QStringLiteral("editor_shared_media.cpp"));
+  QVERIFY2(!decodeCapabilities.isEmpty() && !standaloneRenderer.isEmpty(),
+           "shared video decode capability sources must be readable");
+  QVERIFY2(decoderContext.contains(QStringLiteral(
+               "preferredVideoDecodeDeviceOrder(codecId)")) &&
+               decoder.contains(QStringLiteral(
+                   "detectedVideoDecodeCapabilities()")) &&
+               standaloneRenderer.contains(QStringLiteral(
+                   "preferredVideoDecodeDeviceOrder(")) &&
+               controlRoutes.contains(QStringLiteral(
+                   "video_decode_backends")) &&
+               sharedMedia.contains(QStringLiteral(
+                   "detectedVideoDecodeCapabilities()")) &&
+               !sharedMedia.contains(QStringLiteral(
+                   "av_hwdevice_ctx_create(")) &&
+               explorer.contains(QStringLiteral(
+                   "editor::DecoderContext decoder(filePath, nullptr, true)")) &&
+               !explorer.contains(QStringLiteral("avcodec_find_decoder(")) &&
+               !decoderContext.contains(QStringLiteral(
+                   "JCUT_ALLOW_AV1_HARDWARE_DECODE")),
+           "Qt preview/export, shared decoder devices, standalone rendering, "
+           "and diagnostics must consume one capability-driven decoder order; "
+           "AV1 must probe the detected backend instead of using an env gate");
   const QString decoderHeader = readSourceFile(QStringLiteral("decoder_context.h"));
   QVERIFY2(decoderHeader.contains(QStringLiteral("setAllowHardwareFrameMaterialization")) &&
                decoderHeader.contains(QStringLiteral("m_allowHardwareFrameMaterialization")) &&
@@ -3068,13 +3103,28 @@ void TestDirectVulkanHandoffPipelineContract::
            "each batch section");
   const QString renderExportAsync = readSourceFile(QStringLiteral("render_export.cpp"));
   QVERIFY2(!renderExportAsync.isEmpty(), "render_export.cpp must be readable");
-  QVERIFY2(renderExportAsync.contains(QStringLiteral("exportNeedsAsyncDecode")) &&
-               renderExportAsync.contains(QStringLiteral("isImageSequencePath(decodePath)")) &&
-               renderExportAsync.contains(QStringLiteral("if (exportNeedsAsyncDecode(orderedClips))")) &&
-               renderExportAsync.contains(QStringLiteral("asyncDecoder.get()")),
-           "normal video export must not initialize the preview-style async "
-           "decode worker pool; keep async export decode limited to image "
-           "sequences that require it");
+  const QString asyncDecode = readSourceFile(QStringLiteral("async_decoder.cpp"));
+  QVERIFY2(!asyncDecode.isEmpty(), "async_decoder.cpp must be readable");
+  const qsizetype publishDecodedFrames =
+      asyncDecode.indexOf(QStringLiteral("publishDecodedFrames();"));
+  const qsizetype completeVisibleRequest =
+      asyncDecode.indexOf(QStringLiteral("callback(frame);"), publishDecodedFrames);
+  QVERIFY2(renderExportAsync.contains(QStringLiteral("exportNeedsDecodePipeline")) &&
+               renderExportAsync.contains(QStringLiteral("if (!decodePath.isEmpty())")) &&
+               renderExportAsync.contains(QStringLiteral("exportNeedsDecodePipeline(incrementalOrderedClips)")) &&
+               renderExportAsync.contains(QStringLiteral("incrementalAsyncDecoder")) &&
+               renderExportAsync.contains(QStringLiteral("incrementalAsyncFrameCache")) &&
+               renderExportAsync.contains(QStringLiteral("upcomingNoncontiguousPlaybackRangeStart")) &&
+               renderExportAsync.contains(QStringLiteral("prewarmRenderDecodeSegment")) &&
+               renderDecode.contains(QStringLiteral("asyncDecoder && asyncFrameCache && !forceSoftwareDecode")) &&
+               renderDecode.contains(QStringLiteral("editor::DecodeRequestKind::Visible,")) &&
+               renderDecode.contains(QStringLiteral("                                   true);")) &&
+               publishDecodedFrames >= 0 &&
+               completeVisibleRequest > publishDecodedFrames,
+           "ordinary-video export must reuse the bounded preview discontinuity "
+           "prefetch policy, consume prefetched frames through the async "
+           "decode cache, and publish decoded frames before completing the "
+           "visible request on the export owner's thread");
   const qsizetype batchExportIndex = renderTools.indexOf(
       QStringLiteral("void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip"));
   QVERIFY2(batchExportIndex >= 0,
@@ -3546,17 +3596,25 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     speechFilterFrameCrossfadeIsVisibleInDirectPreview() {
   const QString state = readSourceFile(QStringLiteral("preview_interaction_state.h"));
+  const QString sharedLayers =
+      readSourceFile(QStringLiteral("render_vulkan_shared.h"));
   const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   const QString window = readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+  const QString offscreen =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
   QVERIFY2(!state.isEmpty(), "preview_interaction_state.h must be readable");
+  QVERIFY2(!sharedLayers.isEmpty(), "render_vulkan_shared.h must be readable");
   QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(!window.isEmpty(), "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(!offscreen.isEmpty(), "offscreen Vulkan source must be readable");
 
-  QVERIFY2(state.contains(QStringLiteral("frameCrossfadeActive")) &&
-               state.contains(QStringLiteral("frameCrossfadeFrame")) &&
-               state.contains(QStringLiteral("frameCrossfadeOpacity")),
-           "direct preview status must carry a secondary frame-crossfade image "
-           "and opacity separately from audio crossfade state");
+  QVERIFY2(state.contains(QStringLiteral(
+               "public render_detail::VulkanRenderLayerPacket")) &&
+               sharedLayers.contains(QStringLiteral("frameCrossfadeActive")) &&
+               sharedLayers.contains(QStringLiteral("frameCrossfadeFrame")) &&
+               sharedLayers.contains(QStringLiteral("frameCrossfadeOpacity")),
+           "preview and export must inherit one canonical layer packet carrying "
+           "the secondary frame-crossfade image and opacity");
   QVERIFY2(surface.contains(QStringLiteral("playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition")) &&
                surface.contains(QStringLiteral("playbackVisualTimelineFramePosition(m_interaction.currentFramePosition")) &&
                surface.contains(QStringLiteral("requestFramesForSample(")) &&
@@ -3596,6 +3654,17 @@ void TestDirectVulkanHandoffPipelineContract::
            "export must pass the same visual timeline frame used by preview "
            "into the compositor while keeping the raw transport frame only for "
            "generated effect phase");
+  QVERIFY2(!exportSource.contains(QStringLiteral("#include <QPainter>")) &&
+               !exportSource.contains(QStringLiteral(
+                   "QPainter painter(&blended)")) &&
+               offscreen.contains(QStringLiteral(
+                   "playbackFrameCrossfadeAtTimelineFrame(")) &&
+               offscreen.contains(QStringLiteral(
+                   "frameCrossfadeLayer.gradePayload.effects.opacity *=")) &&
+               offscreen.contains(QStringLiteral(
+                   "layers.push_back(frameCrossfadeLayer)")),
+           "export must append the secondary frame through the Vulkan layer "
+           "composition path and must not read back two frames for QPainter");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3627,18 +3696,25 @@ void TestDirectVulkanHandoffPipelineContract::
     speechFilterBlendUsesPrecomputedSampleRanges() {
   const QString header = readSourceFile(QStringLiteral("audio_engine.h"));
   const QString source = readSourceFile(QStringLiteral("audio_engine.cpp"));
+  const QString sharedFade =
+      readSourceFile(QStringLiteral("speech_filter_fade.h"));
+  const QString exportAudio =
+      readSourceFile(QStringLiteral("render_audio.cpp"));
   QVERIFY2(!header.isEmpty(), "audio_engine.h must be readable");
   QVERIFY2(!source.isEmpty(), "audio_engine.cpp must be readable");
+  QVERIFY2(!sharedFade.isEmpty(), "speech_filter_fade.h must be readable");
+  QVERIFY2(!exportAudio.isEmpty(), "render_audio.cpp must be readable");
 
-  QVERIFY2(header.contains(QStringLiteral("struct SpeechSampleRange")),
+  QVERIFY2(header.contains(QStringLiteral(
+               "using SpeechSampleRange = editor::speech::SampleRange")),
            "audio speech filtering must have a precomputed sample-domain range type");
   QVERIFY2(header.contains(QStringLiteral("QVector<SpeechSampleRange> speechSampleRanges")),
            "audio mix context must carry precomputed sample-domain speech ranges");
   QVERIFY2(source.contains(QStringLiteral("context.speechSampleRanges.reserve")) &&
                source.contains(QStringLiteral("SpeechSampleRange{startSample, endSampleExclusive}")),
            "audio mix loop must precompute speech-filter sample ranges once per chunk");
-  QVERIFY2(source.contains(QStringLiteral("std::upper_bound(")) &&
-               source.contains(QStringLiteral("const SpeechSampleRange &range")),
+  QVERIFY2(sharedFade.contains(QStringLiteral("std::upper_bound(")) &&
+               sharedFade.contains(QStringLiteral("const SampleRange& range")),
            "speech-filter blend lookup must use ordered sample ranges instead of scanning all export ranges");
 
   const int fnStart = source.indexOf(QStringLiteral(
@@ -3648,9 +3724,19 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(fnStart >= 0 && nextFn > fnStart,
            "calculateSpeechRangeBlend body must be visible for inspection");
   const QString blendBody = source.mid(fnStart, nextFn - fnStart);
-  QVERIFY2(!blendBody.contains(QStringLiteral("timelineFrameToSamples(")) &&
+  QVERIFY2(blendBody.contains(QStringLiteral(
+               "editor::speech::rangeBlendAtSample(")) &&
+               !blendBody.contains(QStringLiteral("timelineFrameToSamples(")) &&
                !blendBody.contains(QStringLiteral("frameToSamples(")),
            "per-sample speech blend calculation must not convert transcript frames to samples");
+  QVERIFY2(exportAudio.contains(QStringLiteral(
+               "editor::speech::rangeBlendAtSample(")) &&
+               exportAudio.contains(QStringLiteral(
+                   "blend.secondaryTimelineSample")) &&
+               exportAudio.contains(QStringLiteral(
+                   "state.speechSampleRanges")),
+           "offline export must use the same speech-range evaluator and mix "
+           "its secondary boundary tap");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3884,12 +3970,22 @@ void TestDirectVulkanHandoffPipelineContract::
                    "signal.pSignalSemaphores = &slot.consumed")) &&
                imguiPresenter.contains(QStringLiteral(
                    "completedGeneration.store")) &&
-               imguiPresenter.contains(QStringLiteral(
-                   "importExternalFrame(frame")) &&
-               imguiPresenter.contains(QStringLiteral(
-                   "ImVec2(0.0f, 0.0f),\n                 ImVec2(1.0f, 1.0f)")) &&
-               imguiPresenter.contains(QStringLiteral(
-                   "JCut Render Monitor")),
+	               imguiPresenter.contains(QStringLiteral(
+	                   "importExternalFrame(frame")) &&
+	               imguiPresenter.contains(QStringLiteral(
+	                   "Activity: %s")) &&
+	               imguiPresenterHeader.contains(QStringLiteral(
+	                   "std::string activity")) &&
+	               exportUi.contains(QStringLiteral(
+	                   "monitorStatus.activity")) &&
+	               exportUi.contains(QStringLiteral(
+	                   "imguiRenderMonitorPtr->setStatusText")) &&
+	               exportUi.contains(QStringLiteral(
+	                   "activity.toHtmlEscaped()")) &&
+	               imguiPresenter.contains(QStringLiteral(
+	                   "ImVec2(0.0f, 0.0f),\n                 ImVec2(1.0f, 1.0f)")) &&
+	               imguiPresenter.contains(QStringLiteral(
+	                   "JCut Render Monitor")),
            "the export UI must provide an optional Dear ImGui Vulkan render "
            "monitor that consumes the same synchronized GPU handoff frame "
            "upright and remains a monitor/control surface, not a second "
@@ -4134,6 +4230,13 @@ void TestDirectVulkanHandoffPipelineContract::
            "first-party Vulkan/CUDA import helpers must follow the same "
            "driver-safe external-memory lifetime policy and avoid explicit CUDA "
            "external-memory destroy calls from worker paths");
+  QVERIFY2(hardwareImportCore.contains(QStringLiteral("CUcontext yCudaContext")) &&
+               hardwareImportCore.contains(QStringLiteral("CUcontext uvCudaContext")) &&
+               hardwareImportCore.contains(QStringLiteral("*mappingContext == context")) &&
+               hardwareImportCore.contains(QStringLiteral("cudaFailure(")),
+           "hardware-frame imports must validate each external-memory mapping "
+           "against the decoded frame CUDA context and report the exact CUDA "
+           "operation on failure");
   const qsizetype cudaContextRetirementStart = backend.indexOf(
       QStringLiteral(
           "if (slot.cudaExternalMemory && slot.cudaImportContext != cudaContext)"));
@@ -4186,14 +4289,30 @@ void TestDirectVulkanHandoffPipelineContract::
            "published from a temporary attempt path, and its manifest is "
            "atomically checkpointed; failed attempts must leave diagnostics "
            "without poisoning the reusable chunk filename");
-  QVERIFY2(implementation.contains(QStringLiteral(
-               "progress.elapsedMs = totalTimer.elapsed()")) &&
-               implementation.contains(QStringLiteral(
-                   "progress.framesCompleted - reusedFrames")) &&
-               implementation.contains(QStringLiteral(
-                   "totalFrames - progress.framesCompleted")),
-           "incremental progress must calculate throughput and ETA from the "
-           "global render clock and frames actually rendered in this run");
+	  QVERIFY2(implementation.contains(QStringLiteral(
+	               "progress.elapsedMs = totalTimer.elapsed()")) &&
+	               implementation.contains(QStringLiteral(
+	                   "progress.framesCompleted - reusedFrames")) &&
+	               implementation.contains(QStringLiteral(
+	                   "totalFrames - progress.framesCompleted")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Rendering video chunk %1/%2")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Preparing audio")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Finalizing video encoder")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Encoding audio")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Writing output trailer")) &&
+		               implementation.contains(QStringLiteral(
+		                   "Validating chunk %1/%2 with ffprobe")) &&
+	               implementation.contains(QStringLiteral(
+	                   "Assembling chunks with ffmpeg")),
+	           "incremental progress must calculate throughput and ETA from the "
+	           "global render clock and frames actually rendered in this run, "
+	           "and the UI must identify non-video stages such as audio, chunk "
+	           "validation, and final assembly");
   QVERIFY2(implementation.contains(QStringLiteral(
                "chunkRequest.exportRanges = chunk.ranges")) &&
                implementation.contains(QStringLiteral(
@@ -4305,7 +4424,9 @@ void TestDirectVulkanHandoffPipelineContract::
                backend.contains(QStringLiteral(
                    "VK_FORMAT_R8_UNORM")) &&
                backend.contains(QStringLiteral(
-                   "writeImageBufferToStagingTopLeft(maskUpload")) &&
+                   "writeImageBufferToStagingTopLeft(")) &&
+               backend.contains(QStringLiteral(
+                   "maskUpload, maskStagingOffset")) &&
                decode.contains(QStringLiteral(
                    "enqueueRenderMaskLookahead")) &&
                decode.contains(QStringLiteral(

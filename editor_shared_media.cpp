@@ -2,42 +2,20 @@
 #include "editor_shared_timing.h"
 #include "debug_controls.h"
 #include "image_sequence_directory.h"
+#include "video_decode_capabilities_core.h"
 
 #include <QFile>
 
 #include <algorithm>
 
-extern "C" {
-#include <libavutil/buffer.h>
-#include <libavutil/hwcontext.h>
-}
-
 bool zeroCopyInteropEnvironmentDetected()
 {
 #if defined(Q_OS_LINUX)
-    auto canCreateHardwareDevice = [](AVHWDeviceType type, const char* deviceName) {
-        AVBufferRef* context = nullptr;
-        const int result = av_hwdevice_ctx_create(&context, type, deviceName, nullptr, 0);
-        if (context) {
-            av_buffer_unref(&context);
-        }
-        return result >= 0;
-    };
-
-    if ((QFile::exists(QStringLiteral("/proc/driver/nvidia/version")) ||
-         QFile::exists(QStringLiteral("/sys/module/nvidia"))) &&
-        canCreateHardwareDevice(AV_HWDEVICE_TYPE_CUDA, nullptr)) {
-        return true;
-    }
-
-    static const char* kRenderNodes[] = {
-        "/dev/dri/renderD128",
-        "/dev/dri/renderD129",
-        "/dev/dri/renderD130",
-    };
-    for (const char* candidate : kRenderNodes) {
-        if (QFile::exists(QString::fromLatin1(candidate)) &&
-            canCreateHardwareDevice(AV_HWDEVICE_TYPE_VAAPI, candidate)) {
+    for (const jcut::VideoDecodeBackendCapability& capability :
+         jcut::detectedVideoDecodeCapabilities()) {
+        if (capability.available &&
+            (capability.deviceType == AV_HWDEVICE_TYPE_CUDA ||
+             capability.deviceType == AV_HWDEVICE_TYPE_VAAPI)) {
             return true;
         }
     }

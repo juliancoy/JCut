@@ -295,6 +295,29 @@ struct EditorCorrectionPolygon {
     std::int64_t endFrame = -1;
 };
 
+struct EditorMaskFuzzyRemoveEdit {
+    std::string recipeHash;
+    std::string algorithm = "guarded_component_v2";
+    std::string sourceSidecarDirectory;
+    std::string materializedSidecarDirectory;
+    std::int64_t sourceFrame = -1;
+    std::int64_t sourcePresentationTimestamp = -1;
+    std::int64_t seedMaskOrdinal = -1;
+    std::int64_t firstMaskOrdinal = -1;
+    std::int64_t lastMaskOrdinal = -1;
+    double xNorm = 0.0;
+    double yNorm = 0.0;
+    int spatialReachPixels = 12;
+    int temporalReachFrames = 120;
+    int foregroundThreshold = 128;
+    double maximumAreaGrowth = 2.5;
+    double minimumAreaRatio = 0.20;
+    double maximumFrameFraction = 0.25;
+    double ambiguityRatio = 0.80;
+    int changedFrames = 0;
+    std::int64_t removedPixels = 0;
+};
+
 struct EditorTranscriptOverlayState {
     bool enabled = false;
     bool showBackground = true;
@@ -431,6 +454,8 @@ struct EditorClip {
     bool locked = false;
     bool maskEnabled = false;
     std::string maskFramesDir;
+    std::string maskOriginalFramesDir;
+    std::vector<EditorMaskFuzzyRemoveEdit> maskFuzzyRemoveEdits;
     double maskFeather = 0.0;
     double maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0;

@@ -239,6 +239,24 @@ endif()
 set(RTAUDIO_TARGETNAME_UNINSTALL "rtaudio_uninstall" CACHE STRING "" FORCE)
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
 
+add_library(jcut_video_decode_capabilities_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/video_decode_capabilities_core.cpp
+)
+set_target_properties(jcut_video_decode_capabilities_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_video_decode_capabilities_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(jcut_video_decode_capabilities_core PUBLIC
+    __STDC_CONSTANT_MACROS
+)
+target_link_libraries(jcut_video_decode_capabilities_core PUBLIC
+    PkgConfig::FFMPEG
+)
+
 add_library(jcut_audio_output_backend STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_output_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/capabilities_detector.cpp
@@ -255,6 +273,7 @@ target_include_directories(jcut_audio_output_backend
 )
 target_link_libraries(jcut_audio_output_backend
     PUBLIC
+        jcut_video_decode_capabilities_core
         Threads::Threads
         rtaudio
 )
@@ -403,6 +422,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/prompt_mask_job_core\\.cpp$"
     ".*/decoder_policy_core\\.cpp$"
     ".*/ffmpeg_hardware_device_core\\.cpp$"
+    ".*/video_decode_capabilities_core\\.cpp$"
     # 3D model import/runtime sources depend on motive3d engine files that are not
     # part of this repository build graph (eg. primitive/texture engine runtime).
     # Exclude them from the editor target so standard builds remain reproducible.
@@ -753,6 +773,7 @@ target_include_directories(jcut_ffmpeg_hardware_device_core PUBLIC
 target_link_libraries(jcut_ffmpeg_hardware_device_core
     PUBLIC
         jcut_decoder_policy_core
+        jcut_video_decode_capabilities_core
         PkgConfig::FFMPEG
 )
 target_link_libraries(editor_core PUBLIC jcut_ffmpeg_hardware_device_core)
@@ -949,6 +970,7 @@ target_link_libraries(jcut_runtime_support
     PUBLIC
         jcut_decoder_policy_core
         jcut_ffmpeg_hardware_device_core
+        jcut_video_decode_capabilities_core
         jcut_frame_payload_core
         jcut_media_path_core
         jcut_audio_time_stretch_core
@@ -1145,6 +1167,7 @@ target_link_libraries(jcut_imgui_standalone_runtime
     PUBLIC
         jcut_decoder_policy_core
         jcut_ffmpeg_hardware_device_core
+        jcut_video_decode_capabilities_core
         jcut_frame_payload_core
         jcut_editor_core
         jcut_media_path_core

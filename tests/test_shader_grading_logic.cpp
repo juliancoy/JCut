@@ -2,6 +2,7 @@
 
 #include "../editor_shared_effects.h"
 #include "../frame_handle.h"
+#include "../render_vulkan_shared.h"
 #include "../visual_effects_shader.h"
 #include "../vulkan_staging_flush_range.h"
 #include "../vulkan_resources.h"
@@ -29,6 +30,7 @@ private slots:
     void testVulkanMaskBlurShaderIsSeparable();
     void testVulkanRenderersLoadRawMasksForGpuPreprocess();
     void testVulkanMaskUploadCacheUsesStableSemanticIdentity();
+    void testVulkanSourceImportCacheUsesStableFrameOwnership();
     void testVulkanMaskComputeUsesDescriptorRings();
     void testVulkanStagingFlushRangeUsesNonCoherentAtomAlignment();
     void testVulkanShaderRecomputesLuminanceBeforeSaturation();
@@ -308,6 +310,94 @@ void TestShaderGradingLogic::
     QVERIFY(effects.contains(QStringLiteral("sidecar=%1|presented=%2:%3:%4|artifact=%5")));
     QVERIFY(effects.contains(QStringLiteral("version.modifiedNanoseconds")));
     QVERIFY(effects.contains(QStringLiteral("version.inode")));
+
+    QFile previewFile(
+        QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
+    QVERIFY(previewFile.open(QIODevice::ReadOnly));
+    const QString preview = QString::fromUtf8(previewFile.readAll());
+    QVERIFY(preview.contains(QStringLiteral(
+        "QHash<QString, PreparedGpuMask> preparedGpuMasks")));
+    QVERIFY(preview.contains(QStringLiteral(
+        "preparedGpuMasks.constFind(key)")));
+    QVERIFY(preview.contains(QStringLiteral(
+        "resources->bindAuxiliaryImage(")));
+    QVERIFY(preview.contains(QStringLiteral(
+        "resources->preparedMaskImageView()")));
+    QVERIFY(preview.contains(QStringLiteral(
+        "preparedGpuMasks.insert(key, result)")));
+
+    QFile exportFile(
+        QStringLiteral(
+            JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
+    QVERIFY(exportFile.open(QIODevice::ReadOnly));
+    const QString exportSource = QString::fromUtf8(exportFile.readAll());
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "QHash<QString, PreparedGpuMask> preparedGpuMasks")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "preparedGpuMasks.constFind(maskKey)")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "preparedLayers[i].auxiliaryView = preparedMask->view")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "cached = preparedGpuMasks.erase(cached)")));
+}
+
+void TestShaderGradingLogic::
+    testVulkanSourceImportCacheUsesStableFrameOwnership()
+{
+    const QImage pixels(4, 3, QImage::Format_RGBA8888);
+    const editor::FrameHandle frame = editor::FrameHandle::createCpuFrame(
+        pixels,
+        42,
+        QStringLiteral("/tmp/source.mp4"),
+        1234);
+    const QString key = render_detail::vulkanSourceFrameCacheKey(
+        QStringLiteral("media-owner"), frame);
+    QVERIFY(!key.isEmpty());
+
+    const editor::FrameHandle sameIdentity =
+        editor::FrameHandle::createCpuFrame(
+            pixels,
+            42,
+            QStringLiteral("/tmp/source.mp4"),
+            1234);
+    QCOMPARE(
+        key,
+        render_detail::vulkanSourceFrameCacheKey(
+            QStringLiteral("media-owner"), sameIdentity));
+    QVERIFY(key != render_detail::vulkanSourceFrameCacheKey(
+                       QStringLiteral("different-owner"), frame));
+
+    const editor::FrameHandle differentPresentedFrame =
+        editor::FrameHandle::createCpuFrame(
+            pixels,
+            42,
+            QStringLiteral("/tmp/source.mp4"),
+            1235);
+    QVERIFY(key != render_detail::vulkanSourceFrameCacheKey(
+                       QStringLiteral("media-owner"),
+                       differentPresentedFrame));
+    QVERIFY(render_detail::vulkanSourceFrameCacheKey({}, frame).isEmpty());
+
+    QFile exportFile(QStringLiteral(
+        JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
+    QVERIFY(exportFile.open(QIODevice::ReadOnly));
+    const QString exportSource = QString::fromUtf8(exportFile.readAll());
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "QHash<QString, PreparedGpuSource> preparedGpuSources")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "preparedGpuSources.constFind(sourceKey)")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "preparedGpuSources.insert(")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "__render_frame_hardware_source_import__")));
+    QVERIFY(exportSource.contains(QStringLiteral(
+        "__render_frame_hardware_source_reuse__")));
+    const int cacheLookup = exportSource.indexOf(QStringLiteral(
+        "preparedGpuSources.constFind(sourceKey)"));
+    const int hardwareUpload = exportSource.indexOf(QStringLiteral(
+        "slot.hardwareFrameHandoff->uploadFrame"), cacheLookup);
+    QVERIFY(cacheLookup >= 0);
+    QVERIFY(hardwareUpload > cacheLookup);
 }
 
 void TestShaderGradingLogic::

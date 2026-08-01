@@ -5,12 +5,17 @@
 #include "mask_fuzzy_remove.h"
 
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFutureWatcher>
 #include <QDir>
 #include <QFileInfo>
+#include <QProgressDialog>
+#include <QPointer>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -61,6 +66,14 @@ QString maskSidecarIdForClip(const TimelineClip& clip)
     return !persistedId.isEmpty()
         ? persistedId
         : editor::masks::stableMaskSidecarId(clip.maskFramesDir);
+}
+
+bool supportsBiRefNetRefinement(const editor::masks::MaskSidecar& sidecar)
+{
+    return sidecar.isReadyForTimeline() &&
+        sidecar.sourceType.contains(QStringLiteral("sam"), Qt::CaseInsensitive) &&
+        !sidecar.sourceType.contains(
+            QStringLiteral("continuous_alpha"), Qt::CaseInsensitive);
 }
 
 }
@@ -141,6 +154,29 @@ void MaskTab::wire()
                     m_deps.generatePromptMask(sourceId);
                 }
             }
+        });
+    }
+    if (m_widgets.biRefNetRefineButton) {
+        connect(m_widgets.biRefNetRefineButton, &QPushButton::clicked, this, [this]() {
+            const TimelineClip* clip =
+                m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+            if (!clip || clip->clipRole != ClipRole::MaskMatte ||
+                !m_deps.refineMaskWithBiRefNet) {
+                return;
+            }
+            const editor::masks::MaskSidecar sidecar =
+                editor::masks::inspectMaskSidecar(
+                    clip->maskFramesDir,
+                    QFileInfo(clip->filePath).completeBaseName(),
+                    clip->filePath);
+            if (!supportsBiRefNetRefinement(sidecar)) {
+                return;
+            }
+            const int radius = m_widgets.biRefNetGuideRadiusSpin
+                ? m_widgets.biRefNetGuideRadiusSpin->value()
+                : 24;
+            m_deps.refineMaskWithBiRefNet(
+                clip->linkedSourceClipId.trimmed(), sidecar.directory, radius);
         });
     }
     if (m_widgets.fuzzyRemoveButton) {
@@ -227,32 +263,209 @@ void MaskTab::handlePreviewPoint(const QString& clipId,
     m_widgets.fuzzyRemoveButton->setChecked(false);
     m_widgets.fuzzyRemoveButton->setEnabled(false);
     if (m_widgets.fuzzyStatusLabel) {
-        m_widgets.fuzzyStatusLabel->setText(QStringLiteral("Following and removing region…"));
+        m_widgets.fuzzyStatusLabel->setText(QStringLiteral("Analyzing region safely…"));
     }
+    const auto cancel = std::make_shared<std::atomic_bool>(false);
+    auto* progress = new QProgressDialog(
+        QStringLiteral("Analyzing mask continuity…"),
+        QStringLiteral("Cancel"),
+        0,
+        qMax(1, request.temporalReachFrames * 2),
+        m_widgets.fuzzyRemoveButton);
+    progress->setWindowTitle(QStringLiteral("Mask Removal Analysis"));
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->show();
+    connect(progress, &QProgressDialog::canceled, this, [cancel]() {
+        cancel->store(true, std::memory_order_relaxed);
+    });
+    auto* watcher = new QFutureWatcher<editor::masks::FuzzyRemoveAnalysis>(this);
+    connect(watcher, &QFutureWatcher<editor::masks::FuzzyRemoveAnalysis>::finished,
+            this, [this, watcher, progress, selectedId]() {
+        editor::masks::FuzzyRemoveAnalysis analysis = watcher->result();
+        watcher->deleteLater();
+        progress->close();
+        progress->deleteLater();
+        if (m_widgets.fuzzyRemoveButton) m_widgets.fuzzyRemoveButton->setEnabled(true);
+        if (!analysis.succeeded()) {
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(
+                    analysis.cancelled
+                        ? QStringLiteral("Mask analysis cancelled.")
+                        : (analysis.error.isEmpty()
+                               ? QStringLiteral("No safely trackable region was found.")
+                               : analysis.error));
+            }
+            return;
+        }
+        const TimelineClip* current =
+            m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        if (!current || current->id != selectedId) {
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(QStringLiteral(
+                    "Selection changed; the analyzed mask edit was not applied."));
+            }
+            return;
+        }
+        const bool accepted = m_deps.confirmFuzzyRemoveAnalysis
+            ? m_deps.confirmFuzzyRemoveAnalysis(analysis)
+            : confirmFuzzyRemoveAnalysis(analysis);
+        if (!accepted) {
+            if (m_widgets.fuzzyStatusLabel) {
+                m_widgets.fuzzyStatusLabel->setText(
+                    QStringLiteral("Mask removal cancelled before applying."));
+            }
+            return;
+        }
+        materializeFuzzyRemoveAnalysis(selectedId, std::move(analysis));
+    });
+    QPointer<QProgressDialog> guardedProgress(progress);
+    watcher->setFuture(QtConcurrent::run([request, cancel, guardedProgress]() {
+        return editor::masks::analyzeFuzzyRemoveMaskRegion(
+            request,
+            cancel,
+            [guardedProgress](int completed, int total, const QString& phase) {
+                if (!guardedProgress) return;
+                QMetaObject::invokeMethod(
+                    guardedProgress,
+                    [guardedProgress, completed, total, phase]() {
+                        if (!guardedProgress) return;
+                        guardedProgress->setMaximum(qMax(1, total));
+                        guardedProgress->setValue(qMin(completed, total));
+                        guardedProgress->setLabelText(phase);
+                    },
+                    Qt::QueuedConnection);
+            });
+    }));
+}
+
+bool MaskTab::confirmFuzzyRemoveAnalysis(
+    const editor::masks::FuzzyRemoveAnalysis& analysis) const
+{
+    QDialog dialog(m_widgets.fuzzyRemoveButton);
+    dialog.setWindowTitle(QStringLiteral("Review Mask Removal"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* preview = new QLabel(&dialog);
+    preview->setAlignment(Qt::AlignCenter);
+    preview->setMinimumSize(480, 270);
+    preview->setPixmap(QPixmap::fromImage(analysis.seedPreview).scaled(
+        QSize(720, 480), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    layout->addWidget(preview);
+    auto* summary = new QLabel(
+        QStringLiteral(
+            "Red pixels will be removed.\n"
+            "Frames: %1–%2 (%3 total) · Pixels: %4\n"
+            "Backward: %5\nForward: %6")
+            .arg(analysis.firstMaskOrdinal + 1)
+            .arg(analysis.lastMaskOrdinal + 1)
+            .arg(analysis.frames.size())
+            .arg(analysis.selectedPixels)
+            .arg(analysis.backwardStopReason, analysis.forwardStopReason),
+        &dialog);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+    auto* warning = new QLabel(
+        QStringLiteral(
+            "The source sidecar remains unchanged. Applying creates a reversible "
+            "derived cache and records the edit recipe in project history."),
+        &dialog);
+    warning->setWordWrap(true);
+    layout->addWidget(warning);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Apply | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    return dialog.exec() == QDialog::Accepted;
+}
+
+void MaskTab::materializeFuzzyRemoveAnalysis(
+    const QString& selectedId,
+    editor::masks::FuzzyRemoveAnalysis analysis)
+{
+    const auto cancel = std::make_shared<std::atomic_bool>(false);
+    auto* progress = new QProgressDialog(
+        QStringLiteral("Publishing non-destructive mask edit…"),
+        QStringLiteral("Cancel"),
+        0,
+        qMax(1, analysis.frames.size()),
+        m_widgets.fuzzyRemoveButton);
+    progress->setWindowTitle(QStringLiteral("Mask Removal"));
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->show();
+    connect(progress, &QProgressDialog::canceled, this, [cancel]() {
+        cancel->store(true, std::memory_order_relaxed);
+    });
+    if (m_widgets.fuzzyRemoveButton) m_widgets.fuzzyRemoveButton->setEnabled(false);
+    if (m_widgets.fuzzyStatusLabel) {
+        m_widgets.fuzzyStatusLabel->setText(QStringLiteral("Publishing reviewed mask edit…"));
+    }
+
     auto* watcher = new QFutureWatcher<editor::masks::FuzzyRemoveResult>(this);
     connect(watcher, &QFutureWatcher<editor::masks::FuzzyRemoveResult>::finished,
-            this, [this, watcher, selectedId]() {
+            this, [this, watcher, progress, selectedId, analysis]() {
         const editor::masks::FuzzyRemoveResult result = watcher->result();
         watcher->deleteLater();
+        progress->close();
+        progress->deleteLater();
         if (m_widgets.fuzzyRemoveButton) m_widgets.fuzzyRemoveButton->setEnabled(true);
         if (!result.succeeded()) {
             if (m_widgets.fuzzyStatusLabel) {
                 m_widgets.fuzzyStatusLabel->setText(
-                    result.error.isEmpty() ? QStringLiteral("No connected region was removed.")
-                                           : result.error);
+                    result.cancelled ? QStringLiteral("Mask removal cancelled.")
+                                     : result.error);
             }
             return;
         }
+        bool sourceStillCurrent = false;
         const bool updated = m_deps.updateClipById &&
-            m_deps.updateClipById(selectedId, [&result](TimelineClip& clip) {
+            m_deps.updateClipById(
+                selectedId,
+                [&result, &analysis, &sourceStillCurrent](TimelineClip& clip) {
+                if (QDir::cleanPath(clip.maskFramesDir) !=
+                    QDir::cleanPath(analysis.request.sourceDirectory)) {
+                    return;
+                }
+                sourceStillCurrent = true;
+                if (clip.maskOriginalFramesDir.trimmed().isEmpty()) {
+                    clip.maskOriginalFramesDir = analysis.request.sourceDirectory;
+                }
+                TimelineClip::MaskFuzzyRemoveEdit edit;
+                edit.recipeHash = result.recipeHash;
+                edit.algorithm = QString::fromLatin1(
+                    editor::masks::kFuzzyRemoveAlgorithmVersion);
+                edit.sourceSidecarDirectory = analysis.request.sourceDirectory;
+                edit.materializedSidecarDirectory = result.outputDirectory;
+                edit.sourceFrame = analysis.request.sourceFrame;
+                edit.sourcePresentationTimestamp =
+                    analysis.request.sourcePresentationTimestamp;
+                edit.seedMaskOrdinal = analysis.seedMaskOrdinal;
+                edit.firstMaskOrdinal = analysis.firstMaskOrdinal;
+                edit.lastMaskOrdinal = analysis.lastMaskOrdinal;
+                edit.xNorm = analysis.request.xNorm;
+                edit.yNorm = analysis.request.yNorm;
+                edit.spatialReachPixels = analysis.request.spatialReachPixels;
+                edit.temporalReachFrames = analysis.request.temporalReachFrames;
+                edit.foregroundThreshold = analysis.request.foregroundThreshold;
+                edit.maximumAreaGrowth = analysis.request.maximumAreaGrowth;
+                edit.minimumAreaRatio = analysis.request.minimumAreaRatio;
+                edit.maximumFrameFraction = analysis.request.maximumFrameFraction;
+                edit.ambiguityRatio = analysis.request.ambiguityRatio;
+                edit.changedFrames = result.changedFrames;
+                edit.removedPixels = result.removedPixels;
+                clip.maskFuzzyRemoveEdits.push_back(std::move(edit));
                 clip.maskFramesDir = result.outputDirectory;
                 clip.generatedFromMaskId =
                     editor::masks::stableMaskSidecarId(result.outputDirectory);
             });
-        if (!updated) {
+        if (!updated || !sourceStillCurrent) {
             if (m_widgets.fuzzyStatusLabel) {
-                m_widgets.fuzzyStatusLabel->setText(
-                    QStringLiteral("The derived mask was created but the timeline clip changed."));
+                m_widgets.fuzzyStatusLabel->setText(QStringLiteral(
+                    "The derived cache was created, but the clip's source mask changed; "
+                    "the edit was not attached."));
             }
             return;
         }
@@ -262,13 +475,29 @@ void MaskTab::handlePreviewPoint(const QString& clipId,
         if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
         if (m_widgets.fuzzyStatusLabel) {
             m_widgets.fuzzyStatusLabel->setText(
-                QStringLiteral("Removed %1 pixels across %2 frame(s). Original preserved.")
+                QStringLiteral(
+                    "Removed %1 pixels across %2 frame(s). Source preserved; edit is undoable.")
                     .arg(result.removedPixels)
                     .arg(result.changedFrames));
         }
     });
-    watcher->setFuture(QtConcurrent::run([request]() {
-        return editor::masks::fuzzyRemoveMaskRegion(request);
+    QPointer<QProgressDialog> guardedProgress(progress);
+    watcher->setFuture(QtConcurrent::run([analysis, cancel, guardedProgress]() {
+        return editor::masks::materializeFuzzyRemoveMaskRegion(
+            analysis,
+            cancel,
+            [guardedProgress](int completed, int total, const QString& phase) {
+                if (!guardedProgress) return;
+                QMetaObject::invokeMethod(
+                    guardedProgress,
+                    [guardedProgress, completed, total, phase]() {
+                        if (!guardedProgress) return;
+                        guardedProgress->setMaximum(qMax(1, total));
+                        guardedProgress->setValue(qMin(completed, total));
+                        guardedProgress->setLabelText(phase);
+                    },
+                    Qt::QueuedConnection);
+            });
     }));
 }
 
@@ -428,6 +657,19 @@ void MaskTab::refresh()
         if (m_widgets.featherPowerSpin) {
             m_widgets.featherPowerSpin->setEnabled(
                 treatmentActive && clip->maskFeatherFalloff == 0);
+        }
+        const editor::masks::MaskSidecar activeSidecar =
+            editor::masks::inspectMaskSidecar(
+                effectiveMaskFramesDir,
+                QFileInfo(clip->filePath).completeBaseName(),
+                clip->filePath);
+        const bool canRefine = treatmentActive &&
+            supportsBiRefNetRefinement(activeSidecar);
+        if (m_widgets.biRefNetRefineButton) {
+            m_widgets.biRefNetRefineButton->setEnabled(canRefine);
+        }
+        if (m_widgets.biRefNetGuideRadiusSpin) {
+            m_widgets.biRefNetGuideRadiusSpin->setEnabled(canRefine);
         }
         setSpin(m_widgets.dilateSpin, clip->maskDilate);
         setSpin(m_widgets.erodeSpin, clip->maskErode);
@@ -672,6 +914,8 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.sidecarCombo),
                             static_cast<QWidget*>(m_widgets.browseButton),
                             static_cast<QWidget*>(m_widgets.newPromptButton),
+                            static_cast<QWidget*>(m_widgets.biRefNetRefineButton),
+                            static_cast<QWidget*>(m_widgets.biRefNetGuideRadiusSpin),
                             static_cast<QWidget*>(m_widgets.fuzzyRemoveButton),
                             static_cast<QWidget*>(m_widgets.fuzzySpatialReachSpin),
                             static_cast<QWidget*>(m_widgets.fuzzyTemporalReachSpin),
@@ -706,6 +950,8 @@ void MaskTab::setControlsEnabled(bool enabled)
 void MaskTab::setTreatmentControlsEnabled(bool enabled)
 {
     for (QWidget* widget : {static_cast<QWidget*>(m_widgets.enabledCheck),
+                            static_cast<QWidget*>(m_widgets.biRefNetRefineButton),
+                            static_cast<QWidget*>(m_widgets.biRefNetGuideRadiusSpin),
                             static_cast<QWidget*>(m_widgets.fuzzyRemoveButton),
                             static_cast<QWidget*>(m_widgets.fuzzySpatialReachSpin),
                             static_cast<QWidget*>(m_widgets.fuzzyTemporalReachSpin),

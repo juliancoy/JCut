@@ -28,6 +28,7 @@ struct RenderProgress {
     int64_t segmentEndFrame = 0;
     bool usingGpu = false;
     bool usingHardwareEncode = false;
+    QString activity;
     QString encoderLabel;
     QString exportPipeline;
     QString gpuTransferLabel;

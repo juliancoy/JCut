@@ -2,14 +2,20 @@
 
 #include "../mask_tab.h"
 #include "../mask_sidecar.h"
+#include "../clip_serialization.h"
+#include "mask_sidecar_test_utils.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDir>
+#include <QFile>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTemporaryDir>
 
 namespace {
 
@@ -46,6 +52,8 @@ struct MaskWidgets {
     QComboBox sidecars;
     QPushButton browse;
     QPushButton prompt;
+    QPushButton refine;
+    QSpinBox refineRadius;
     QSpinBox zLevel;
     QDoubleSpinBox feather;
     QDoubleSpinBox dilate;
@@ -58,6 +66,8 @@ struct MaskWidgets {
     {
         repeatX.setRange(-1000.0, 1000.0);
         repeatY.setRange(-1000.0, 1000.0);
+        refineRadius.setRange(0, 512);
+        refineRadius.setValue(24);
     }
 
     MaskTab::Widgets dependencies()
@@ -69,6 +79,8 @@ struct MaskWidgets {
         widgets.sidecarCombo = &sidecars;
         widgets.browseButton = &browse;
         widgets.newPromptButton = &prompt;
+        widgets.biRefNetRefineButton = &refine;
+        widgets.biRefNetGuideRadiusSpin = &refineRadius;
         widgets.zLevelSpin = &zLevel;
         widgets.featherSpin = &feather;
         widgets.dilateSpin = &dilate;
@@ -94,6 +106,8 @@ private slots:
     void onlyExplicitZEditsFreezeAutomaticOrdering();
     void treatmentEditsApplyOnlyToSelectedMaskChild();
     void liveTreatmentEditsOnlyUpdateSelectedChildAndPreview();
+    void samMaskCanLaunchGuidedBiRefNetRefinement();
+    void fuzzyRemoveRecipeRoundTrips();
 };
 
 void TestMaskTab::inactiveRefreshNeverMaterializesOrSelects()
@@ -414,6 +428,111 @@ void TestMaskTab::liveTreatmentEditsOnlyUpdateSelectedChildAndPreview()
     QCOMPARE(historyCalls, 1);
     QCOMPARE(materializeCalls, 0);
     QCOMPARE(selectCalls, 0);
+}
+
+void TestMaskTab::samMaskCanLaunchGuidedBiRefNetRefinement()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString mediaPath = temporary.filePath(QStringLiteral("shot.mp4"));
+    QFile media(mediaPath);
+    QVERIFY(media.open(QIODevice::WriteOnly));
+    media.write("video");
+    media.close();
+
+    const QString samDirectory = temporary.filePath(
+        QStringLiteral("shot_sam3_person_binary_masks"));
+    QVERIFY(QDir().mkpath(samDirectory));
+    QImage frame(4, 4, QImage::Format_Grayscale8);
+    frame.fill(255);
+    QVERIFY(frame.save(
+        QDir(samDirectory).filePath(QStringLiteral("frame_000001.png"))));
+    QFile map(QDir(samDirectory).filePath(QStringLiteral("jcut_frame_map.tsv")));
+    QVERIFY(map.open(QIODevice::WriteOnly | QIODevice::Text));
+    map.write(
+        "# source_frame\tsource_best_effort_timestamp\tmask_frame\n"
+        "0\t0\t0\n");
+    map.close();
+    QVERIFY(mask_sidecar_test::writeSingleFrameMapMetadata(
+        samDirectory, mediaPath));
+    QVERIFY(mask_sidecar_test::writeSingleFrameCompletion(
+        samDirectory, mediaPath, false));
+
+    TimelineClip source = makeSourceClip();
+    source.filePath = mediaPath;
+    TimelineClip selected = makeMaskChild(source, samDirectory);
+    MaskWidgets controls;
+    controls.refineRadius.setValue(41);
+    int refineCalls = 0;
+    QString requestedSource;
+    QString requestedGuidance;
+    int requestedRadius = -1;
+
+    MaskTab::Dependencies deps;
+    deps.getSelectedClip = [&selected]() { return &selected; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.isMaskInspectorActive = []() { return true; };
+    deps.refineMaskWithBiRefNet =
+        [&](const QString& sourceId, const QString& guidance, int radius) {
+            ++refineCalls;
+            requestedSource = sourceId;
+            requestedGuidance = guidance;
+            requestedRadius = radius;
+        };
+
+    MaskTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    QVERIFY(controls.refine.isEnabled());
+    controls.refine.click();
+    QCOMPARE(refineCalls, 1);
+    QCOMPARE(requestedSource, source.id);
+    QCOMPARE(QDir::cleanPath(requestedGuidance), QDir::cleanPath(samDirectory));
+    QCOMPARE(requestedRadius, 41);
+}
+
+void TestMaskTab::fuzzyRemoveRecipeRoundTrips()
+{
+    TimelineClip clip = makeMaskChild(
+        makeSourceClip(), QStringLiteral("/tmp/current-derived-mask"));
+    clip.maskOriginalFramesDir = QStringLiteral("/tmp/original-mask");
+    TimelineClip::MaskFuzzyRemoveEdit edit;
+    edit.recipeHash = QStringLiteral("abc123");
+    edit.sourceSidecarDirectory = QStringLiteral("/tmp/original-mask");
+    edit.materializedSidecarDirectory = QStringLiteral("/tmp/current-derived-mask");
+    edit.sourceFrame = 42;
+    edit.sourcePresentationTimestamp = 84084;
+    edit.seedMaskOrdinal = 40;
+    edit.firstMaskOrdinal = 35;
+    edit.lastMaskOrdinal = 49;
+    edit.xNorm = 0.25;
+    edit.yNorm = 0.75;
+    edit.spatialReachPixels = 9;
+    edit.temporalReachFrames = 80;
+    edit.changedFrames = 15;
+    edit.removedPixels = 12345;
+    clip.maskFuzzyRemoveEdits.push_back(edit);
+
+    const TimelineClip loaded = editor::clipFromJson(editor::clipToJson(clip));
+    QCOMPARE(loaded.maskOriginalFramesDir, clip.maskOriginalFramesDir);
+    QCOMPARE(loaded.maskFuzzyRemoveEdits.size(), 1);
+    const TimelineClip::MaskFuzzyRemoveEdit& loadedEdit =
+        loaded.maskFuzzyRemoveEdits.constFirst();
+    QCOMPARE(loadedEdit.recipeHash, edit.recipeHash);
+    QCOMPARE(loadedEdit.sourceSidecarDirectory, edit.sourceSidecarDirectory);
+    QCOMPARE(loadedEdit.materializedSidecarDirectory,
+             edit.materializedSidecarDirectory);
+    QCOMPARE(loadedEdit.sourceFrame, edit.sourceFrame);
+    QCOMPARE(loadedEdit.sourcePresentationTimestamp,
+             edit.sourcePresentationTimestamp);
+    QCOMPARE(loadedEdit.seedMaskOrdinal, edit.seedMaskOrdinal);
+    QCOMPARE(loadedEdit.firstMaskOrdinal, edit.firstMaskOrdinal);
+    QCOMPARE(loadedEdit.lastMaskOrdinal, edit.lastMaskOrdinal);
+    QCOMPARE(loadedEdit.xNorm, edit.xNorm);
+    QCOMPARE(loadedEdit.yNorm, edit.yNorm);
+    QCOMPARE(loadedEdit.changedFrames, edit.changedFrames);
+    QCOMPARE(loadedEdit.removedPixels, edit.removedPixels);
 }
 
 QTEST_MAIN(TestMaskTab)
