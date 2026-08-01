@@ -257,7 +257,12 @@ def atomic_save_rgb(path: Path, rgb: np.ndarray) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def live_preview_strip(rgb: np.ndarray, alpha_u8: np.ndarray, max_height: int = 320) -> np.ndarray:
+def live_preview_strip(
+    rgb: np.ndarray,
+    alpha_u8: np.ndarray,
+    guidance_u8: np.ndarray | None = None,
+    max_height: int = 320,
+) -> np.ndarray:
     height, width = rgb.shape[:2]
     scale = min(1.0, max_height / max(1, height))
     preview_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
@@ -271,25 +276,63 @@ def live_preview_strip(rgb: np.ndarray, alpha_u8: np.ndarray, max_height: int = 
     composite = np.rint(source * coverage + checker * (1.0 - coverage)).astype(np.uint8)
     alpha_rgb = np.repeat(alpha[..., None], 3, axis=2)
     divider = np.full((source.shape[0], 4, 3), 24, dtype=np.uint8)
-    return np.concatenate((source, divider, alpha_rgb, divider, composite), axis=1)
+    panels = [source]
+    if guidance_u8 is not None:
+        guidance = cv2.resize(
+            guidance_u8, preview_size, interpolation=cv2.INTER_NEAREST
+        )
+        guidance_rgb = np.repeat(guidance[..., None], 3, axis=2)
+        contribution = alpha_contribution_preview(guidance, alpha)
+        panels.extend((guidance_rgb, alpha_rgb, contribution, composite))
+    else:
+        panels.extend((alpha_rgb, composite))
+    strip = panels[0]
+    for panel in panels[1:]:
+        strip = np.concatenate((strip, divider, panel), axis=1)
+    return strip
 
 
-def guided_alpha(alpha: np.ndarray, guidance_path: Path | None, gate_radius: int) -> np.ndarray:
-    if guidance_path is None or not guidance_path.exists():
-        return alpha
+def read_guidance_alpha(
+    guidance_path: Path | None, output_shape: tuple[int, int]
+) -> np.ndarray | None:
+    if guidance_path is None:
+        return None
+    if not guidance_path.exists():
+        raise RuntimeError(f"SAM guidance frame is missing: {guidance_path}")
     guidance = cv2.imread(str(guidance_path), cv2.IMREAD_GRAYSCALE)
     if guidance is None:
-        return alpha
-    if guidance.shape != alpha.shape:
+        raise RuntimeError(f"Unable to read SAM guidance frame: {guidance_path}")
+    if guidance.shape != output_shape:
         guidance = cv2.resize(
-            guidance, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_NEAREST
+            guidance, (output_shape[1], output_shape[0]), interpolation=cv2.INTER_NEAREST
         )
+    return guidance
+
+
+def guided_alpha(
+    alpha: np.ndarray, guidance: np.ndarray | None, gate_radius: int
+) -> np.ndarray:
+    if guidance is None:
+        return alpha
     binary = (guidance >= 128).astype(np.uint8)
     if gate_radius > 0:
         size = gate_radius * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
         binary = cv2.dilate(binary, kernel)
     return alpha * binary.astype(np.float32)
+
+
+def alpha_contribution_preview(
+    sam_alpha_u8: np.ndarray, refined_alpha_u8: np.ndarray
+) -> np.ndarray:
+    delta = refined_alpha_u8.astype(np.int16) - sam_alpha_u8.astype(np.int16)
+    added = np.clip(delta, 0, 255).astype(np.uint8)
+    removed = np.clip(-delta, 0, 255).astype(np.uint8)
+    contribution = np.zeros((*delta.shape, 3), dtype=np.uint8)
+    contribution[..., 0] = removed
+    contribution[..., 1] = added
+    contribution[..., 2] = removed
+    return contribution
 
 
 def apply_alpha_tolerance(alpha: np.ndarray, tolerance: float) -> np.ndarray:
@@ -422,6 +465,7 @@ def run(args: argparse.Namespace, state: RunState) -> None:
     expected_frame_count = 0
     initial_source_identity: dict = {}
     initial_guidance_identity: dict | None = None
+    preview_bgr = None
     if args.frame_index is None:
         validated = validated_frame_index_map_metadata(
             input_path, output_dir / "jcut_frame_map.tsv"
@@ -436,6 +480,10 @@ def run(args: argparse.Namespace, state: RunState) -> None:
             raise RuntimeError("Frame-map metadata has no positive output-frame count.")
         initial_source_identity = source_identity(input_path)
         initial_guidance_identity = guidance_identity(guidance_dir)
+    if args.preview_image:
+        preview_bgr = cv2.imread(str(args.preview_image), cv2.IMREAD_COLOR)
+        if preview_bgr is None:
+            raise RuntimeError(f"Unable to read preview image: {args.preview_image}")
     state.started_monotonic = time.monotonic()
     try_write_progress(args, state, "starting")
 
@@ -483,13 +531,18 @@ def run(args: argparse.Namespace, state: RunState) -> None:
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    capture = cv2.VideoCapture(str(input_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Unable to open input video: {input_path}")
-    decoder_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    total = expected_frame_count if args.frame_index is None else max(0, decoder_total)
+    capture = None
+    if preview_bgr is None:
+        capture = cv2.VideoCapture(str(input_path))
+        if not capture.isOpened():
+            raise RuntimeError(f"Unable to open input video: {input_path}")
+        decoder_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        total = expected_frame_count if args.frame_index is None else max(0, decoder_total)
+    else:
+        total = 1
     state.total_frames = total
-    frame_index = 1  # Matches ffmpeg's default frame_%06d numbering used by SAM3.
+    frame_index = args.frame_index if preview_bgr is not None else 1
+    # Otherwise matches ffmpeg's default frame_%06d numbering used by SAM3.
     if args.resume and args.frame_index is None:
         first_missing = first_missing_frame(output_dir, total)
         state.completed_frame = first_missing - 1
@@ -503,12 +556,19 @@ def run(args: argparse.Namespace, state: RunState) -> None:
         # land on an adjacent decoded frame while reporting the requested
         # ordinal, which would permanently shift every resumed matte.
     processed = 0
+    decoded_any = False
     try_write_progress(args, state, "running")
     try:
         while True:
-            ok, bgr = capture.read()
+            if preview_bgr is not None:
+                bgr = preview_bgr
+                preview_bgr = None
+                ok = True
+            else:
+                ok, bgr = capture.read()
             if not ok:
                 break
+            decoded_any = True
             if args.frame_index is not None and frame_index < args.frame_index:
                 frame_index += 1
                 continue
@@ -538,9 +598,16 @@ def run(args: argparse.Namespace, state: RunState) -> None:
             guidance_path = (
                 guidance_dir / f"frame_{frame_index:06d}.png" if guidance_dir else None
             )
-            alpha = guided_alpha(alpha, guidance_path, args.guidance_gate_radius)
+            guidance = read_guidance_alpha(guidance_path, alpha.shape)
+            alpha = guided_alpha(alpha, guidance, args.guidance_gate_radius)
             alpha = apply_alpha_tolerance(alpha, args.alpha_tolerance)
             alpha_u8 = np.rint(np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
+            if args.frame_index is not None and guidance is not None:
+                atomic_save_grayscale(output_dir / "preview_guidance.png", guidance)
+                atomic_save_rgb(
+                    output_dir / "preview_contribution.png",
+                    alpha_contribution_preview(guidance, alpha_u8),
+                )
             atomic_save_grayscale(output_path, alpha_u8)
             processed += 1
             state.rendered_frames = processed
@@ -550,7 +617,7 @@ def run(args: argparse.Namespace, state: RunState) -> None:
             ):
                 atomic_save_rgb(
                     output_dir / "jcut_live_preview.png",
-                    live_preview_strip(rgb, alpha_u8),
+                    live_preview_strip(rgb, alpha_u8, guidance),
                 )
             if processed == 1 or processed % args.progress_every == 0:
                 suffix = f"/{total}" if total > 0 else ""
@@ -561,8 +628,9 @@ def run(args: argparse.Namespace, state: RunState) -> None:
             if args.frame_index is not None:
                 break
     finally:
-        capture.release()
-    if frame_index == 1:
+        if capture is not None:
+            capture.release()
+    if not decoded_any:
         raise RuntimeError(f"No video frames could be decoded from: {input_path}")
     if args.frame_index is not None and processed == 0:
         raise RuntimeError(
@@ -661,6 +729,8 @@ def parse_args() -> argparse.Namespace:
                         help="Atomically update this JSON file with durable job progress.")
     parser.add_argument("--frame-index", type=int, default=None,
                         help="Render only this 1-based frame and write preview_source.png.")
+    parser.add_argument("--preview-image",
+                        help="Exact source image for bounded preview; bypasses video decoding.")
     parser.add_argument("--live-preview", action="store_true",
                         help="Continuously refresh jcut_live_preview.png during full runs.")
     parser.add_argument("--live-preview-every", type=int, default=1,
@@ -674,6 +744,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--progress-every must be positive")
     if args.frame_index is not None and args.frame_index < 1:
         parser.error("--frame-index must be positive")
+    if args.preview_image and args.frame_index is None:
+        parser.error("--preview-image requires --frame-index")
     if args.live_preview_every < 1:
         parser.error("--live-preview-every must be positive")
     return args

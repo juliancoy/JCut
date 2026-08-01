@@ -435,6 +435,10 @@ QJsonObject widgetSnapshotRecursive(QWidget* widget,
         object[QStringLiteral("sizes")] = sizes;
     } else if (auto* scrollArea = qobject_cast<QScrollArea*>(widget)) {
         object[QStringLiteral("widgetResizable")] = scrollArea->widgetResizable();
+        const QVariant zoom = scrollArea->property("zoom");
+        if (zoom.isValid()) {
+            object[QStringLiteral("zoom")] = zoom.toDouble();
+        }
         if (QWidget* content = scrollArea->widget()) {
             object[QStringLiteral("content_id")] = content->objectName();
             object[QStringLiteral("content_class")] =

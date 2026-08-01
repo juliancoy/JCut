@@ -118,6 +118,30 @@ QString jobProcessLabel(const QJsonObject& manifest,
     return jobProcessLabel(manifest);
 }
 
+QString dockerOperationLabel(const jcut::jobs::DockerContainerInfo& container)
+{
+    const QString labeled =
+        container.labels.value(QStringLiteral("jcut.operation")).toString().trimmed();
+    if (!labeled.isEmpty()) return labeled;
+    if (container.image.startsWith(QStringLiteral("jcut-birefnet"), Qt::CaseInsensitive) ||
+        container.command.contains(QStringLiteral("birefnet_run.py"), Qt::CaseInsensitive)) {
+        return QStringLiteral("birefnet");
+    }
+    if (container.image.startsWith(QStringLiteral("sam3"), Qt::CaseInsensitive) ||
+        container.command.contains(QStringLiteral("sam3_run.py"), Qt::CaseInsensitive)) {
+        return QStringLiteral("sam3");
+    }
+    return QStringLiteral("jcut");
+}
+
+QString dockerJobRootLabel(const jcut::jobs::DockerContainerInfo& container)
+{
+    const QString labeled =
+        container.labels.value(QStringLiteral("jcut.job_root")).toString().trimmed();
+    if (!labeled.isEmpty()) return labeled;
+    return container.mounts.value(QStringLiteral("/job")).toString().trimmed();
+}
+
 QJsonObject manifestWithDockerProcess(const QJsonObject& manifest,
                                       const jcut::jobs::DockerContainerInfo& container)
 {
@@ -414,6 +438,18 @@ void EditorWindow::refreshProcessingJobsTab()
     QString dockerError;
     const QVector<jcut::jobs::DockerContainerInfo> dockerContainers =
         jcut::jobs::listDockerContainers(&dockerError);
+    QVector<jcut::jobs::DockerContainerInfo> relatedDockerContainers;
+    for (const jcut::jobs::DockerContainerInfo& container : dockerContainers) {
+        if (jcut::jobs::dockerContainerIsRunning(container) &&
+            jcut::jobs::dockerContainerIsJCutRelated(container)) {
+            relatedDockerContainers.push_back(container);
+        }
+    }
+    std::sort(relatedDockerContainers.begin(), relatedDockerContainers.end(),
+              [](const auto& a, const auto& b) {
+                  return jcut::jobs::dockerContainerIdentifier(a) <
+                         jcut::jobs::dockerContainerIdentifier(b);
+              });
     QVector<JobRow> rows;
     rows.reserve(manifestPaths.size());
     for (const QString& path : manifestPaths) {
@@ -535,11 +571,135 @@ void EditorWindow::refreshProcessingJobsTab()
             resumeSamProcessingJob(manifestPath);
         });
 
+        auto* killButton = new QPushButton(QStringLiteral("Kill Job"), actionsWidget);
+        killButton->setObjectName(QStringLiteral("jobs.kill"));
+        const bool killEnabled = row.hasDockerContainer &&
+            jcut::jobs::dockerContainerIsRunning(row.dockerContainer) &&
+            jcut::jobs::dockerContainerIsJCutRelated(row.dockerContainer);
+        killButton->setEnabled(killEnabled);
+        killButton->setToolTip(
+            killEnabled
+                ? QStringLiteral("Immediately terminate this job's JCut Docker container.")
+                : QStringLiteral("No running JCut Docker container was found for this job."));
+        connect(killButton, &QPushButton::clicked, this,
+                [this,
+                 identifier = jcut::jobs::dockerContainerIdentifier(row.dockerContainer),
+                 manifestPath = row.manifestPath]() {
+                    killProcessingDockerContainer(identifier, manifestPath);
+                });
+
         actionsLayout->addWidget(logButton);
         actionsLayout->addWidget(resumeButton);
+        actionsLayout->addWidget(killButton);
         actionsLayout->addStretch(1);
         table->setCellWidget(rowIndex, 6, actionsWidget);
     }
+
+    if (QLabel* dockerLabel = m_inspectorPane->processingDockerSummaryLabel()) {
+        dockerLabel->setText(
+            relatedDockerContainers.isEmpty()
+                ? QStringLiteral("No related Docker instances are running.")
+                : QStringLiteral("%1 related JCut Docker instance(s) running.")
+                      .arg(relatedDockerContainers.size()));
+    }
+    if (QTableWidget* dockerTable = m_inspectorPane->processingDockerTable()) {
+        QSignalBlocker dockerBlocker(dockerTable);
+        dockerTable->clearContents();
+        dockerTable->setRowCount(relatedDockerContainers.size());
+        for (int rowIndex = 0; rowIndex < relatedDockerContainers.size(); ++rowIndex) {
+            const auto& container = relatedDockerContainers.at(rowIndex);
+            const QString identifier =
+                jcut::jobs::dockerContainerIdentifier(container);
+            const QStringList values{
+                dockerOperationLabel(container),
+                identifier,
+                container.image,
+                container.status,
+                QDir::toNativeSeparators(dockerJobRootLabel(container)),
+            };
+            for (int column = 0; column < values.size(); ++column) {
+                auto* item = new QTableWidgetItem(values.at(column));
+                item->setToolTip(values.at(column));
+                dockerTable->setItem(rowIndex, column, item);
+            }
+            auto* killButton = new QPushButton(QStringLiteral("Kill"), dockerTable);
+            killButton->setObjectName(QStringLiteral("jobs.docker.kill"));
+            killButton->setToolTip(
+                QStringLiteral("Immediately terminate this JCut Docker container."));
+            connect(killButton, &QPushButton::clicked, this,
+                    [this, identifier]() {
+                        killProcessingDockerContainer(identifier);
+                    });
+            dockerTable->setCellWidget(rowIndex, 5, killButton);
+        }
+    }
+}
+
+void EditorWindow::killProcessingDockerContainer(const QString& identifier,
+                                                 const QString& manifestPath)
+{
+    QString dockerError;
+    const QVector<jcut::jobs::DockerContainerInfo> containers =
+        jcut::jobs::listDockerContainers(&dockerError);
+    const auto found = std::find_if(
+        containers.cbegin(), containers.cend(), [&identifier](const auto& container) {
+            return container.name.compare(identifier, Qt::CaseInsensitive) == 0 ||
+                   container.id == identifier || container.id.startsWith(identifier);
+        });
+    if (found == containers.cend() ||
+        !jcut::jobs::dockerContainerIsRunning(*found)) {
+        QMessageBox::information(
+            this, QStringLiteral("Kill Processing Job"),
+            dockerError.isEmpty()
+                ? QStringLiteral("The Docker container is no longer running.")
+                : QStringLiteral("Could not refresh Docker state: %1").arg(dockerError));
+        refreshProcessingJobsTab();
+        return;
+    }
+    if (!jcut::jobs::dockerContainerIsJCutRelated(*found)) {
+        QMessageBox::warning(
+            this, QStringLiteral("Kill Processing Job"),
+            QStringLiteral("JCut refused to terminate an unrelated Docker container."));
+        return;
+    }
+
+    QMessageBox confirmation(QMessageBox::Warning,
+                             QStringLiteral("Kill Processing Job"),
+                             QStringLiteral("Immediately terminate Docker container %1?")
+                                 .arg(identifier),
+                             QMessageBox::NoButton,
+                             this);
+    confirmation.setObjectName(QStringLiteral("jobs.kill.confirmation"));
+    auto* killButton = confirmation.addButton(
+        QStringLiteral("Kill"), QMessageBox::DestructiveRole);
+    killButton->setObjectName(QStringLiteral("jobs.kill.confirm"));
+    auto* cancelButton = confirmation.addButton(
+        QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    cancelButton->setObjectName(QStringLiteral("jobs.kill.cancel"));
+    confirmation.setDefaultButton(cancelButton);
+    confirmation.exec();
+    if (confirmation.clickedButton() != killButton) return;
+
+    if (!jcut::jobs::killDockerContainer(*found, &dockerError)) {
+        QMessageBox::warning(
+            this, QStringLiteral("Kill Processing Job"),
+            QStringLiteral("Could not kill Docker container %1:\n%2")
+                .arg(identifier, dockerError));
+        refreshProcessingJobsTab();
+        return;
+    }
+    if (!manifestPath.trimmed().isEmpty()) {
+        jcut::jobs::updateManifestStatus(
+            manifestPath,
+            QStringLiteral("canceled"),
+            QJsonObject{
+                {QStringLiteral("termination_reason"), QStringLiteral("user_killed_from_jobs_tab")},
+                {QStringLiteral("terminated_at_utc"),
+                 QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+            },
+            nullptr);
+    }
+    refreshProcessingJobsTab();
 }
 
 void EditorWindow::showProcessingJobLog(const QString& manifestPath)

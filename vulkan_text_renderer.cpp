@@ -455,6 +455,18 @@ QColor colorWithOpacity(QColor color, qreal opacity)
     return color;
 }
 
+QColor colorWithMultipliedOpacity(QColor color, qreal opacityMultiplier)
+{
+    if (!color.isValid()) {
+        color = QColor(Qt::black);
+    }
+    color.setAlphaF(qBound<qreal>(
+        0.0,
+        color.alphaF() * qBound<qreal>(0.0, opacityMultiplier, 1.0),
+        1.0));
+    return color;
+}
+
 int materialStyleId(TitleMaterialStyle style)
 {
     switch (style) {
@@ -2585,12 +2597,18 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                                const TimelineClip& clip,
                                                const TranscriptOverlayLayout& layout,
                                                const QRectF& outputRect,
-                                               const QString& speakerTitle)
+                                               const QString& speakerTitle,
+                                               qreal opacityMultiplier)
 {
     m_lastFailureReason.clear();
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !swapSize.isValid() ||
         !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty()) {
         return fail(QStringLiteral("transcript_draw_invalid_state"));
+    }
+    const qreal overlayOpacity =
+        qBound<qreal>(0.0, opacityMultiplier, 1.0);
+    if (overlayOpacity <= 0.001) {
+        return true;
     }
     const TranscriptLayoutCache* cachedLayout =
         transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
@@ -2615,15 +2633,20 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                              mapRect(background.rect),
                              background.radius * qMin(scaleX, scaleY),
                              cachedLayout->atlas.solidUv,
-                             background.color);
+                             colorWithMultipliedOpacity(background.color,
+                                                        overlayOpacity));
     }
     for (const TranscriptHighlight& highlight : cachedLayout->highlights) {
-        clearRect(m_funcs,
-                  commandBuffer,
-                  clearValueForColor(highlight.color.isValid()
-                                         ? highlight.color
-                                         : QColor(QStringLiteral("#fff2a8"))),
-                  clearRectFromQRect(mapRect(highlight.rect), swapSize));
+        drawSolidRoundedRect(commandBuffer,
+                             swapSize,
+                             mapRect(highlight.rect),
+                             0.0,
+                             cachedLayout->atlas.solidUv,
+                             colorWithMultipliedOpacity(
+                                 highlight.color.isValid()
+                                     ? highlight.color
+                                     : QColor(QStringLiteral("#fff2a8")),
+                                 overlayOpacity));
     }
     const auto& textSettings = clip.transcriptOverlay;
     const QVector<qreal> transcriptExtrusion = textExtrusionLayerOffsets(
@@ -2631,7 +2654,8 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
     for (int layerIndex = 0; layerIndex < transcriptExtrusion.size(); ++layerIndex) {
         const int layer = transcriptExtrusion.size() - layerIndex;
         for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
-            QColor side = glyph.color.darker(175);
+            QColor side = colorWithMultipliedOpacity(glyph.color.darker(175),
+                                                     overlayOpacity);
             const QRectF uv = textSettings.textExtrudeMode == TextExtrudeMode::ErodedSolid &&
                     layer <= qRound(1.0 + textSettings.textExtrudeBevelScale * 2.0) &&
                     !glyph.erodedUv.isEmpty()
@@ -2642,7 +2666,11 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
         }
     }
     for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
-        drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
+        drawGlyph(commandBuffer,
+                  swapSize,
+                  mapRect(glyph.rect),
+                  glyph.uv,
+                  colorWithMultipliedOpacity(glyph.color, overlayOpacity));
     }
     return true;
 }

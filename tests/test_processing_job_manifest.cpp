@@ -17,6 +17,26 @@ class ProcessingJobManifestTest : public QObject {
   Q_OBJECT
 
 private slots:
+  void dockerOwnershipClassificationFailsClosed() {
+    jcut::jobs::DockerContainerInfo unrelated;
+    unrelated.name = QStringLiteral("database");
+    unrelated.image = QStringLiteral("postgres:17");
+    unrelated.command = QStringLiteral("postgres");
+    QVERIFY(!jcut::jobs::dockerContainerIsJCutRelated(unrelated));
+
+    auto labeled = unrelated;
+    labeled.labels.insert(QStringLiteral("jcut.operation"), QStringLiteral("birefnet"));
+    QVERIFY(jcut::jobs::dockerContainerIsJCutRelated(labeled));
+
+    auto named = unrelated;
+    named.name = QStringLiteral("jcut-sam3-person-123");
+    QVERIFY(jcut::jobs::dockerContainerIsJCutRelated(named));
+
+    auto legacy = unrelated;
+    legacy.image = QStringLiteral("jcut-birefnet:cu126");
+    QVERIFY(jcut::jobs::dockerContainerIsJCutRelated(legacy));
+  }
+
   void defaultJobRootIsStableAndScopedToInputDirectory() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());

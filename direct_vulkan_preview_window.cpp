@@ -4416,7 +4416,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                                      transcript.clip,
                                                                      transcript.layout,
                                                                      transcript.outputRect,
-                                                                     transcript.speakerTitle);
+                                                                     transcript.speakerTitle,
+                                                                     transcript.opacityMultiplier);
             if (drawn) {
                 drawnTranscriptOverlayClipIds.insert(clipId);
                 return true;

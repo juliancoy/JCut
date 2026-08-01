@@ -1279,6 +1279,19 @@ void TestDirectVulkanHandoffPipelineContract::
                QStringLiteral("const TranscriptLayoutCache* cachedLayout")),
            "transcript draw must consume the cached prepared layout instead of "
            "rebuilding glyphs every frame");
+  const bool transcriptFadeUsesVulkanPrimitiveOpacity =
+      textRenderer.contains(QStringLiteral("qreal opacityMultiplier")) &&
+      textRenderer.contains(QStringLiteral("colorWithMultipliedOpacity")) &&
+      textRenderer.contains(QStringLiteral("background.color")) &&
+      textRenderer.contains(QStringLiteral("highlight.color")) &&
+      !textRenderer.contains(QStringLiteral(
+          "clearRect(m_funcs,\n"
+          "                  commandBuffer,\n"
+          "                  clearValueForColor(highlight.color"));
+  QVERIFY2(transcriptFadeUsesVulkanPrimitiveOpacity,
+           "transcript fades must be applied to every Vulkan text primitive; "
+           "active-word highlight may not overwrite the composed frame with a "
+           "clear operation");
   QVERIFY2(textRenderer.contains(
                QStringLiteral("clip.transcriptOverlay.showShadow && !active")),
            "highlighted active subtitle words must not receive black shadow "
@@ -1314,6 +1327,15 @@ void TestDirectVulkanHandoffPipelineContract::
                               " status->presentedSourceFrame)")),
            "live Vulkan transcript subtitles must time against the presented "
            "video frame when one is available");
+  QVERIFY2(transcriptBackend.contains(QStringLiteral(
+               "evaluateEffectiveVisualEffectsAtPosition(effectiveClip")) &&
+               transcriptBackend.contains(QStringLiteral(
+                   "prepared.opacityMultiplier")) &&
+               backend.contains(QStringLiteral(
+                   "transcript.opacityMultiplier")),
+           "direct Vulkan preview transcript fades must use the same effective "
+           "visual-effects opacity evaluator as the rest of the render "
+           "pipeline and pass the multiplier to the Vulkan text draw");
   const QString previewSurface =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   QVERIFY2(!previewSurface.isEmpty(),
@@ -2039,6 +2061,30 @@ void TestDirectVulkanHandoffPipelineContract::
       readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
   QVERIFY2(presenter.contains(QStringLiteral("directVulkanPreviewWindowPipelineThumbnailReadbackPending")),
            "pipeline tap pending state must be reported from the live Vulkan window");
+
+  const QString pipelineTab = readSourceFile(QStringLiteral("pipeline_tab.cpp"));
+  const QString inspectorTabs =
+      readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
+  QVERIFY2(!pipelineTab.isEmpty() && !inspectorTabs.isEmpty(),
+           "pipeline tab sources must be readable");
+  QVERIFY2(pipelineTab.contains(QStringLiteral("PipelineStageRowWidget")) &&
+               pipelineTab.contains(QStringLiteral("kPipelineStageRowHeight")) &&
+               pipelineTab.contains(QStringLiteral("setUniformItemSizes(true)")) &&
+               pipelineTab.contains(QStringLiteral("setResizeMode(QListView::Fixed)")) &&
+               pipelineTab.contains(QStringLiteral("setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff)")) &&
+               pipelineTab.contains(QStringLiteral("setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored)")) &&
+               pipelineTab.contains(QStringLiteral("fm.elidedText")) &&
+               pipelineTab.contains(QStringLiteral("bestColumns")) &&
+               pipelineTab.contains(QStringLiteral("row = i / columns")),
+           "Pipeline tab preview states must render in bounded fixed-height "
+           "grid rows and a wrapping visualization grid instead of expanding "
+           "from long labels or details");
+  QVERIFY2(inspectorTabs.contains(QStringLiteral("setResizeMode(QListView::Fixed)")) &&
+               inspectorTabs.contains(QStringLiteral("setWordWrap(false)")) &&
+               inspectorTabs.contains(QStringLiteral("setUniformItemSizes(true)")) &&
+               inspectorTabs.contains(QStringLiteral("setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored)")),
+           "Pipeline tab list construction must disable word-wrap and "
+           "adjust-to-content behavior at the owning widget");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -4460,6 +4506,11 @@ void TestDirectVulkanHandoffPipelineContract::
                    "const bool transcriptDrawn")) &&
                backend.contains(QStringLiteral(
                    "clip %1 has transcript overlay enabled but no active transcript path")) &&
+               backend.contains(QStringLiteral(
+                   "evaluateEffectiveVisualEffectsAtPosition(\n"
+                   "                    clip")) &&
+               backend.contains(QStringLiteral(
+                   "text.opacityMultiplier")) &&
                backend.contains(QStringLiteral(
                    "has no readable sections")) &&
                !backend.contains(QStringLiteral(

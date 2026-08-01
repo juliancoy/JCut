@@ -253,6 +253,8 @@ public:
     QPlainTextEdit *speakerRawDetectionDetailsEdit() const { return m_speakerRawDetectionDetailsEdit; }
     QLabel *processingJobsSummaryLabel() const { return m_processingJobsSummaryLabel; }
     QTableWidget *processingJobsTable() const { return m_processingJobsTable; }
+    QLabel *processingDockerSummaryLabel() const { return m_processingDockerSummaryLabel; }
+    QTableWidget *processingDockerTable() const { return m_processingDockerTable; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -1092,4 +1094,6 @@ private:
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     QLabel *m_processingJobsSummaryLabel = nullptr;
     QTableWidget *m_processingJobsTable = nullptr;
+    QLabel *m_processingDockerSummaryLabel = nullptr;
+    QTableWidget *m_processingDockerTable = nullptr;
 };

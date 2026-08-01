@@ -630,12 +630,16 @@ QWidget *InspectorPane::buildPipelineTab()
 
     m_pipelineStageList = new QListWidget(page);
     m_pipelineStageList->setViewMode(QListView::ListMode);
-    m_pipelineStageList->setResizeMode(QListView::Adjust);
+    m_pipelineStageList->setResizeMode(QListView::Fixed);
     m_pipelineStageList->setMovement(QListView::Static);
     m_pipelineStageList->setWrapping(false);
     m_pipelineStageList->setSpacing(4);
     m_pipelineStageList->setIconSize(QSize(96, 54));
-    m_pipelineStageList->setWordWrap(true);
+    m_pipelineStageList->setWordWrap(false);
+    m_pipelineStageList->setTextElideMode(Qt::ElideRight);
+    m_pipelineStageList->setUniformItemSizes(true);
+    m_pipelineStageList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_pipelineStageList->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     m_pipelineStageList->setSelectionMode(QAbstractItemView::NoSelection);
     layout->addWidget(m_pipelineStageList, 1);
 
@@ -678,7 +682,38 @@ QWidget *InspectorPane::buildProcessingJobsTab()
     m_processingJobsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_processingJobsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
     m_processingJobsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    layout->addWidget(m_processingJobsTable, 1);
+    layout->addWidget(m_processingJobsTable, 2);
+
+    m_processingDockerSummaryLabel = new QLabel(
+        QStringLiteral("No related Docker instances are running."), page);
+    m_processingDockerSummaryLabel->setObjectName(QStringLiteral("jobs.docker_summary"));
+    m_processingDockerSummaryLabel->setWordWrap(true);
+    m_processingDockerSummaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_processingDockerSummaryLabel);
+
+    m_processingDockerTable = new QTableWidget(page);
+    m_processingDockerTable->setObjectName(QStringLiteral("jobs.docker_table"));
+    m_processingDockerTable->setColumnCount(6);
+    m_processingDockerTable->setHorizontalHeaderLabels({
+        QStringLiteral("Operation"),
+        QStringLiteral("Container"),
+        QStringLiteral("Image"),
+        QStringLiteral("Status"),
+        QStringLiteral("Job Root"),
+        QStringLiteral("Actions"),
+    });
+    m_processingDockerTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_processingDockerTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_processingDockerTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_processingDockerTable->setAlternatingRowColors(true);
+    m_processingDockerTable->verticalHeader()->setVisible(false);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_processingDockerTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    layout->addWidget(m_processingDockerTable, 1);
 
     return page;
 }

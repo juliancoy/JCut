@@ -237,6 +237,65 @@ bool dockerContainerIsRunning(const DockerContainerInfo& container)
            container.status.startsWith(QStringLiteral("Up "), Qt::CaseInsensitive);
 }
 
+bool dockerContainerIsJCutRelated(const DockerContainerInfo& container)
+{
+    if (!dockerLabel(container, QStringLiteral("jcut.operation")).isEmpty() ||
+        !dockerLabel(container, QStringLiteral("jcut.job_root")).isEmpty()) {
+        return true;
+    }
+    if (container.name.startsWith(QStringLiteral("jcut-"), Qt::CaseInsensitive) ||
+        container.image.startsWith(QStringLiteral("jcut-birefnet"), Qt::CaseInsensitive) ||
+        container.image.startsWith(QStringLiteral("sam3"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    return container.command.contains(QStringLiteral("/workspace/birefnet_run.py"),
+                                      Qt::CaseInsensitive) ||
+           container.command.contains(QStringLiteral("/workspace/sam3_run.py"),
+                                      Qt::CaseInsensitive);
+}
+
+bool killDockerContainer(const DockerContainerInfo& container, QString* errorOut)
+{
+    if (errorOut) errorOut->clear();
+    if (!dockerContainerIsJCutRelated(container)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("refusing to kill a Docker container not owned by JCut");
+        }
+        return false;
+    }
+    const QString identifier = dockerContainerIdentifier(container);
+    if (identifier.isEmpty()) {
+        if (errorOut) *errorOut = QStringLiteral("Docker container has no identifier");
+        return false;
+    }
+    const QString docker = QStandardPaths::findExecutable(QStringLiteral("docker"));
+    if (docker.isEmpty()) {
+        if (errorOut) *errorOut = QStringLiteral("docker was not found in PATH");
+        return false;
+    }
+
+    QProcess process;
+    process.setProgram(docker);
+    process.setArguments(QStringList{QStringLiteral("kill"), identifier});
+    process.start();
+    if (!process.waitForFinished(5000)) {
+        process.kill();
+        process.waitForFinished(500);
+        if (errorOut) *errorOut = QStringLiteral("timed out while killing Docker container %1").arg(identifier);
+        return false;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (errorOut) {
+            *errorOut = QString::fromLocal8Bit(process.readAllStandardError()).trimmed();
+            if (errorOut->isEmpty()) {
+                *errorOut = QStringLiteral("docker kill exited with code %1").arg(process.exitCode());
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
 const DockerContainerInfo* findDockerContainerForManifest(
     const QJsonObject& manifest,
     const QVector<DockerContainerInfo>& containers)

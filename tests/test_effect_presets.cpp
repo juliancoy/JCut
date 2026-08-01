@@ -1186,10 +1186,42 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  runner.contains(QStringLiteral("jcut_live_preview.png")),
              "BiRefNet preflight must provide a visual source/alpha/composite preview.");
     QVERIFY2(runner.contains(QStringLiteral("--frame-index")) &&
+                 runner.contains(QStringLiteral("--preview-image")) &&
                  runner.contains(QStringLiteral("preview_source.png")) &&
                  runner.contains(QStringLiteral("--live-preview")) &&
                  runner.contains(QStringLiteral("live_preview_strip")),
              "BiRefNet runner must support bounded and live source/alpha/composite previews.");
+    QVERIFY2(editor.contains(QStringLiteral("presentedFrame.cpuImage()")) &&
+                 editor.contains(QStringLiteral("--preview-image")) &&
+                 shell.contains(QStringLiteral("/preview/input.png:ro")) &&
+                 runner.contains(QStringLiteral("if preview_bgr is None")),
+             "Bounded previews must infer from JCut's already-decoded exact frame.");
+    QVERIFY2(editor.contains(QStringLiteral("class ZoomablePreviewImage")) &&
+                 editor.contains(QStringLiteral("void wheelEvent(QWheelEvent* event)")) &&
+                 editor.contains(QStringLiteral("zoom at the cursor")) &&
+                 editor.contains(QStringLiteral("birefnet.preview.source")) &&
+                 editor.contains(QStringLiteral("birefnet.preview.sam_alpha")) &&
+                 editor.contains(QStringLiteral("birefnet.preview.alpha")) &&
+                 editor.contains(QStringLiteral("birefnet.preview.contribution")) &&
+                 editor.contains(QStringLiteral("birefnet.preview.composite")),
+             "Each BiRefNet preview panel must expose independent cursor-centered wheel zoom.");
+    QVERIFY2(runner.contains(QStringLiteral("preview_guidance.png")) &&
+                 runner.contains(QStringLiteral("preview_contribution.png")) &&
+                 runner.contains(QStringLiteral("alpha_contribution_preview")) &&
+                 runner.contains(QStringLiteral("SAM guidance frame is missing")) &&
+                 editor.contains(QStringLiteral("Original SAM Alpha")) &&
+                 editor.contains(QStringLiteral("BiRefNet Changes")) &&
+                 editor.contains(QStringLiteral("green adds alpha")),
+             "Guided preview must show SAM provenance and BiRefNet's signed alpha contribution.");
+    QVERIFY2(editor.contains(QStringLiteral(
+                     "Original  |  SAM Alpha  |  Refined Alpha  |  Changes  |  Composite")) &&
+                 runner.contains(QStringLiteral(
+                     "live_preview_strip(rgb, alpha_u8, guidance)")) &&
+                 editor.contains(QStringLiteral("const QString program = command.takeFirst()")) &&
+                 editor.contains(QStringLiteral("process->start(program, command)")) &&
+                 !editor.contains(QStringLiteral(
+                     "process->start(QStringLiteral(\"/bin/bash\"), command)")),
+             "Full guided jobs must launch their recorded program exactly once and preview SAM deltas live.");
     QVERIFY2(shell.contains(QStringLiteral("jcut_frame_index_map.py")) &&
                  shell.contains(QStringLiteral(
                      "--source-presentation-timestamp")) &&

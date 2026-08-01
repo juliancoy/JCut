@@ -126,6 +126,28 @@ class FrameIndexMapTest(unittest.TestCase):
             )
         )
 
+    def test_exact_timestamp_lookup_reuses_validated_map_without_ffprobe(self) -> None:
+        self.adopt()
+        with mock.patch.object(
+            frame_map.subprocess,
+            "Popen",
+            side_effect=AssertionError("validated lookup must not launch ffprobe"),
+        ):
+            self.assertEqual(
+                frame_map.decoded_ordinal_from_validated_frame_index_map(
+                    self.source_a, self.map_path, 100
+                ),
+                1,
+            )
+        with self.assertRaisesRegex(RuntimeError, "No mapped video frame"):
+            frame_map.decoded_ordinal_from_validated_frame_index_map(
+                self.source_a, self.map_path, 150
+            )
+        with self.assertRaisesRegex(RuntimeError, "unvalidated"):
+            frame_map.decoded_ordinal_from_validated_frame_index_map(
+                self.source_b, self.map_path, 100
+            )
+
     def test_unsampled_source_mutation_is_rejected_by_complete_hash(self) -> None:
         large_source = self.root / "large.mp4"
         large_source.write_bytes(b"a" * (6 * 1024 * 1024))
@@ -420,6 +442,26 @@ class FrameIndexMapTest(unittest.TestCase):
             frame_map.write_jcut_frame_index_map(
                 self.source_a, self.map_path, output_fps=10.0
             )
+
+    def test_validated_map_replication_avoids_source_frame_scan(self) -> None:
+        self.adopt()
+        destination = self.root / "refined" / "jcut_frame_map.tsv"
+        with mock.patch.object(
+            frame_map.subprocess, "Popen",
+            side_effect=AssertionError("replication must not scan decoded frames"),
+        ):
+            replicated = frame_map.replicate_validated_frame_index_map(
+                self.source_a, self.map_path, destination
+            )
+        self.assertEqual(destination.read_bytes(), self.map_path.read_bytes())
+        self.assertEqual(
+            replicated["map_sha256"], frame_map._file_sha256(destination)
+        )
+        self.assertIsNotNone(
+            frame_map.validated_frame_index_map_metadata(
+                self.source_a, destination
+            )
+        )
 
     def test_invalid_probe_values_and_format_duration_fallback(self) -> None:
         self.assertIsNone(frame_map._rational_float("N/A"))

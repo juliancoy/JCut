@@ -12,6 +12,7 @@ LOG_PATH="${BIREFNET_LOG_PATH:-}"
 PREVIEW_ONLY=0
 SOURCE_PRESENTATION_TIMESTAMP=""
 GUIDANCE_DIR=""
+PREVIEW_IMAGE=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -27,6 +28,7 @@ Options:
   --guidance-gate-radius <px>    SAM guidance dilation radius (default: 24)
   --source-presentation-timestamp <pts>
                                 Preview the frame with this exact raw best-effort timestamp
+  --preview-image <image>        Use JCut's exact decoded frame for bounded preview inference
   --no-resume                    Re-render existing alpha frames
 EOF
 }
@@ -54,6 +56,11 @@ while [[ $# -gt 0 ]]; do
     --guidance-dir)
       [[ $# -ge 2 ]] || { echo "ERROR: --guidance-dir requires a value" >&2; exit 2; }
       GUIDANCE_DIR="$2"
+      shift 2
+      ;;
+    --preview-image)
+      [[ $# -ge 2 ]] || { echo "ERROR: --preview-image requires a value" >&2; exit 2; }
+      PREVIEW_IMAGE="$2"
       shift 2
       ;;
     --model|--revision|--guidance-gate-radius|--alpha-tolerance|--progress-every|--frame-index|--source-presentation-timestamp|--live-preview-every)
@@ -113,6 +120,15 @@ if [[ -n "$GUIDANCE_DIR" ]]; then
   [[ -d "$GUIDANCE_DIR" ]] || { echo "ERROR: guidance directory does not exist: $GUIDANCE_DIR" >&2; exit 2; }
   GUIDANCE_ABS="$(realpath "$GUIDANCE_DIR")"
 fi
+PREVIEW_IMAGE_ABS=""
+if [[ -n "$PREVIEW_IMAGE" ]]; then
+  [[ "$PREVIEW_ONLY" == "1" ]] || {
+    echo "ERROR: --preview-image requires --frame-index or --source-presentation-timestamp" >&2
+    exit 2
+  }
+  [[ -f "$PREVIEW_IMAGE" ]] || { echo "ERROR: preview image does not exist: $PREVIEW_IMAGE" >&2; exit 2; }
+  PREVIEW_IMAGE_ABS="$(realpath "$PREVIEW_IMAGE")"
+fi
 
 if [[ -n "$LOG_PATH" ]]; then
   mkdir -p "$(dirname "$LOG_PATH")"
@@ -123,9 +139,19 @@ if [[ -n "$LOG_PATH" ]]; then
 fi
 
 if [[ -n "$SOURCE_PRESENTATION_TIMESTAMP" ]]; then
-  DECODED_FRAME="$(python3 "$ROOT_DIR/jcut_frame_index_map.py" \
-    --input "$INPUT_ABS" \
-    --lookup-source-presentation-timestamp "$SOURCE_PRESENTATION_TIMESTAMP")"
+  LOOKUP_ARGS=(
+    --input "$INPUT_ABS"
+    --lookup-source-presentation-timestamp "$SOURCE_PRESENTATION_TIMESTAMP"
+  )
+  if [[ -n "$GUIDANCE_DIR" ]]; then
+    GUIDANCE_MAP="$GUIDANCE_DIR/jcut_frame_map.tsv"
+    [[ -f "$GUIDANCE_MAP" ]] || {
+      echo "ERROR: guided preview requires a SAM frame map: $GUIDANCE_MAP" >&2
+      exit 1
+    }
+    LOOKUP_ARGS+=(--lookup-frame-map "$GUIDANCE_MAP")
+  fi
+  DECODED_FRAME="$(python3 "$ROOT_DIR/jcut_frame_index_map.py" "${LOOKUP_ARGS[@]}")"
   [[ "$DECODED_FRAME" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: unable to resolve source presentation timestamp $SOURCE_PRESENTATION_TIMESTAMP" >&2
     exit 1
@@ -138,9 +164,14 @@ fi
 # presented frame's exact best-effort timestamp, so generate that durable
 # identity map before resumable inference begins.
 if [[ "$PREVIEW_ONLY" != "1" ]]; then
-  python3 "$ROOT_DIR/jcut_frame_index_map.py" \
-    --input "$INPUT_ABS" \
+  FRAME_MAP_ARGS=(
+    --input "$INPUT_ABS"
     --output "$OUTPUT_ABS/jcut_frame_map.tsv"
+  )
+  if [[ -n "$GUIDANCE_ABS" && -f "$GUIDANCE_ABS/jcut_frame_map.tsv" ]]; then
+    FRAME_MAP_ARGS+=(--replicate-from "$GUIDANCE_ABS/jcut_frame_map.tsv")
+  fi
+  python3 "$ROOT_DIR/jcut_frame_index_map.py" "${FRAME_MAP_ARGS[@]}"
 fi
 
 JOB_ROOT_ABS=""
@@ -198,6 +229,10 @@ DOCKER_ARGS+=(
 if [[ -n "$GUIDANCE_ABS" ]]; then
   DOCKER_ARGS+=( -v "$GUIDANCE_ABS:/guidance:ro" )
   FORWARD_ARGS+=(--guidance-dir /guidance)
+fi
+if [[ -n "$PREVIEW_IMAGE_ABS" ]]; then
+  DOCKER_ARGS+=( -v "$PREVIEW_IMAGE_ABS:/preview/input.png:ro" )
+  FORWARD_ARGS+=(--preview-image /preview/input.png)
 fi
 if [[ -n "$JOB_ROOT_ABS" ]]; then
   DOCKER_ARGS+=(

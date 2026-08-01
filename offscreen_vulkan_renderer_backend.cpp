@@ -3895,7 +3895,8 @@ public:
             m_transcriptTextRenderer->drawTranscriptOverlay(
                 m_commandBuffer, m_outputSize, m_outputSize,
                 outputTargetRect, text.clip, text.layout,
-                text.outputRect, text.speakerTitle);
+                text.outputRect, text.speakerTitle,
+                text.opacityMultiplier);
         vkCmdEndRenderPass(m_commandBuffer);
         if (!transcriptDrawn) {
           if (failureReason) {
@@ -4771,7 +4772,24 @@ public:
                                         request.transcriptPostpendMs,
                                         request.transcriptOffsetMs}).trimmed()
           : QString();
-      inputs.push_back(TranscriptTextInput{clip, layout, outputRect, speakerTitle});
+      const EffectiveVisualEffects effects =
+          request.bypassGrading
+              ? EffectiveVisualEffects{}
+              : evaluateEffectiveVisualEffectsAtPosition(
+                    clip,
+                    request.tracks,
+                    clock.timelineFramePosition,
+                    request.renderSyncMarkers,
+                    request.playbackTiming);
+      if (effects.grading.opacity <= 0.001) {
+        continue;
+      }
+      inputs.push_back(TranscriptTextInput{
+          clip,
+          layout,
+          outputRect,
+          speakerTitle,
+          qBound<qreal>(0.0, effects.grading.opacity, 1.0)});
     }
     return inputs;
   }

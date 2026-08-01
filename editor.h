@@ -375,6 +375,8 @@ private:
     void refreshProcessingJobsTab();
     void showProcessingJobLog(const QString& manifestPath);
     void resumeSamProcessingJob(const QString& manifestPath);
+    void killProcessingDockerContainer(const QString& identifier,
+                                       const QString& manifestPath = QString());
     void refreshTimelineStructureInspectorViews();
     void refreshTimelineSelectionInspectorViews();
     void refreshPreviewTransformInspectorViews();

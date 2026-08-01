@@ -3,6 +3,7 @@
 #include "direct_vulkan_preview_config.h"
 #include "direct_vulkan_preview_geometry.h"
 #include "direct_vulkan_preview_interaction.h"
+#include "editor_shared_effects.h"
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
 #include "editor_shared_transcript.h"
@@ -33,6 +34,16 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
     const QString transcriptPath = activeTranscriptPathForClip(effectiveClip);
     if (transcriptPath.isEmpty()) {
         if (skipReason) *skipReason = QStringLiteral("missing_transcript_source");
+        return prepared;
+    }
+    const EffectiveVisualEffects effects =
+        evaluateEffectiveVisualEffectsAtPosition(effectiveClip,
+                                                 state->tracks,
+                                                 state->currentFramePosition,
+                                                 state->renderSyncMarkers,
+                                                 state->playbackTiming);
+    if (effects.grading.opacity <= 0.001) {
+        if (skipReason) *skipReason = QStringLiteral("zero_opacity");
         return prepared;
     }
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
@@ -98,6 +109,7 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
     prepared.outputRect = outputRect;
     prepared.bounds = bounds;
     prepared.speakerTitle = speakerTitle;
+    prepared.opacityMultiplier = qBound<qreal>(0.0, effects.grading.opacity, 1.0);
     prepared.ready = true;
     if (stats) {
         stats->lastPreparedClipId = effectiveClip.id;

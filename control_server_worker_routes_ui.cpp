@@ -8,6 +8,7 @@
 #include "timeline_widget.h"
 
 #include <QAbstractButton>
+#include <QAbstractScrollArea>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -24,6 +25,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QDir>
 #include <QJsonArray>
 #include <QScreen>
@@ -32,8 +34,10 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QUrlQuery>
 #include <QWindow>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <limits>
@@ -1251,6 +1255,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                         if (!button->isEnabled()) {
                             operationError = disabledButtonReason(button);
                             ok = false;
+                        } else if (effectiveBody.value(
+                                       QStringLiteral("deferred")).toBool(false)) {
+                            const QPointer<QAbstractButton> guardedButton(button);
+                            QTimer::singleShot(0, button, [guardedButton]() {
+                                if (guardedButton && guardedButton->isEnabled()) {
+                                    guardedButton->click();
+                                }
+                            });
+                            ok = true;
                         } else {
                             button->click();
                             ok = true;
@@ -1260,6 +1273,27 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     }
                 } else if (op == QStringLiteral("set")) {
                     ok = applyGenericSet(widget, &operationError);
+                } else if (op == QStringLiteral("wheel")) {
+                    auto* scrollArea = qobject_cast<QAbstractScrollArea*>(widget);
+                    QWidget* eventTarget = scrollArea ? scrollArea->viewport() : widget;
+                    QPoint localPos = eventTarget->rect().center();
+                    if (effectiveBody.contains(QStringLiteral("x")) ||
+                        effectiveBody.contains(QStringLiteral("y"))) {
+                        localPos.setX(effectiveBody.value(QStringLiteral("x")).toInt(localPos.x()));
+                        localPos.setY(effectiveBody.value(QStringLiteral("y")).toInt(localPos.y()));
+                    }
+                    const int delta = effectiveBody.value(QStringLiteral("delta")).toInt(120);
+                    QWheelEvent wheelEvent(
+                        QPointF(localPos),
+                        QPointF(eventTarget->mapToGlobal(localPos)),
+                        QPoint(),
+                        QPoint(0, delta),
+                        Qt::NoButton,
+                        Qt::NoModifier,
+                        Qt::NoScrollPhase,
+                        false);
+                    QApplication::sendEvent(eventTarget, &wheelEvent);
+                    ok = wheelEvent.isAccepted();
                 } else if (op == QStringLiteral("timeline_select_clip")) {
                     auto* timeline = qobject_cast<TimelineWidget*>(widget);
                     const QString clipId = effectiveBody.value(QStringLiteral("clipId"))

@@ -1,10 +1,13 @@
 #include "pipeline_tab.h"
 
+#include <QAbstractScrollArea>
 #include <QIcon>
 #include <QEvent>
 #include <QFont>
+#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QListView>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
@@ -15,6 +18,9 @@
 #include <QVBoxLayout>
 
 namespace {
+
+constexpr int kPipelineStageRowHeight = 58;
+constexpr int kPipelineStageGridSpacing = 8;
 
 QColor colorForKind(const QString& kind)
 {
@@ -151,6 +157,136 @@ QColor backgroundForState(const QString& state)
     return QColor(16, 22, 30);
 }
 
+QString resolvedStateText(const PreviewSurface::PipelineStageSnapshot& snapshot)
+{
+    if (snapshot.active) {
+        if (!snapshot.state.isEmpty()) {
+            return snapshot.state;
+        }
+        return snapshot.exact ? QStringLiteral("live exact")
+                              : QStringLiteral("live approximate");
+    }
+    return !snapshot.state.isEmpty() ? snapshot.state : QStringLiteral("waiting");
+}
+
+class PipelineStageRowWidget final : public QWidget
+{
+public:
+    PipelineStageRowWidget(int index,
+                           const PreviewSurface::PipelineStageSnapshot& snapshot,
+                           QWidget* parent = nullptr)
+        : QWidget(parent)
+        , m_index(index)
+        , m_snapshot(snapshot)
+    {
+        setMinimumHeight(kPipelineStageRowHeight);
+        setMaximumHeight(kPipelineStageRowHeight);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(320, kPipelineStageRowHeight);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillRect(rect(), QColor(8, 12, 18));
+
+        const QRect outer = rect().adjusted(4, 3, -4, -3);
+        if (outer.width() <= 8 || outer.height() <= 8) {
+            return;
+        }
+
+        const QString state = resolvedStateText(m_snapshot);
+        const QColor accent = colorForKind(m_snapshot.kind);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(backgroundForState(state));
+        painter.drawRoundedRect(outer, 6, 6);
+        painter.fillRect(QRect(outer.left(), outer.top(), 4, outer.height()),
+                         m_snapshot.active ? accent : accent.darker(160));
+
+        const int gap = 6;
+        const int indexWidth = 34;
+        const int kindWidth = qBound(54, outer.width() / 5, 86);
+        const int stateWidth = qBound(68, outer.width() / 4, 120);
+        int x = outer.left() + 10;
+        const QRect indexRect(x, outer.top() + 7, indexWidth, outer.height() - 14);
+        x += indexWidth + gap;
+        const QRect kindRect(x, outer.top() + 7, kindWidth, outer.height() - 14);
+        x += kindWidth + gap;
+        const QRect stateRect(outer.right() - 10 - stateWidth,
+                              outer.top() + 7,
+                              stateWidth,
+                              outer.height() - 14);
+        const QRect textRect(x,
+                             outer.top() + 7,
+                             qMax(12, stateRect.left() - gap - x),
+                             outer.height() - 14);
+
+        QFont baseFont = painter.font();
+        baseFont.setPointSize(qMax(8, baseFont.pointSize() - 1));
+        painter.setFont(baseFont);
+        const QFontMetrics fm(baseFont);
+
+        painter.setPen(accent);
+        painter.drawText(indexRect,
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         QStringLiteral("%1").arg(m_index + 1, 2, 10, QLatin1Char('0')));
+
+        painter.setPen(QColor(154, 174, 199));
+        painter.drawText(kindRect,
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         fm.elidedText(m_snapshot.kind.isEmpty()
+                                           ? QStringLiteral("stage")
+                                           : m_snapshot.kind,
+                                       Qt::ElideRight,
+                                       kindRect.width()));
+
+        painter.setPen(m_snapshot.active ? QColor(232, 242, 255)
+                                         : QColor(168, 184, 204));
+        QFont labelFont = baseFont;
+        labelFont.setBold(true);
+        painter.setFont(labelFont);
+        const QFontMetrics labelFm(labelFont);
+        const QRect labelRect(textRect.left(), textRect.top(), textRect.width(), textRect.height() / 2);
+        painter.drawText(labelRect,
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         labelFm.elidedText(m_snapshot.label, Qt::ElideRight, labelRect.width()));
+
+        painter.setFont(baseFont);
+        painter.setPen(QColor(132, 150, 172));
+        const QRect detailRect(textRect.left(),
+                               textRect.top() + textRect.height() / 2,
+                               textRect.width(),
+                               textRect.height() / 2);
+        painter.drawText(detailRect,
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         fm.elidedText(m_snapshot.detail, Qt::ElideRight, detailRect.width()));
+
+        QColor stateFill = m_snapshot.exact ? QColor(33, 73, 52)
+                                            : QColor(61, 50, 30);
+        if (!m_snapshot.active) {
+            stateFill = QColor(28, 35, 44);
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(stateFill);
+        painter.drawRoundedRect(stateRect, 5, 5);
+        painter.setPen(m_snapshot.exact ? QColor(167, 243, 208)
+                                        : QColor(252, 211, 117));
+        painter.drawText(stateRect.adjusted(6, 0, -6, 0),
+                         Qt::AlignCenter,
+                         fm.elidedText(state, Qt::ElideRight, stateRect.width() - 12));
+    }
+
+private:
+    int m_index = 0;
+    PreviewSurface::PipelineStageSnapshot m_snapshot;
+};
+
 class PipelineStageVisualizationWidget final : public QWidget
 {
 public:
@@ -184,35 +320,92 @@ protected:
             return;
         }
 
-        const int outerMargin = 12;
-        const int spacing = 8;
+        const int outerMargin = 10;
+        const int spacing = kPipelineStageGridSpacing;
         const int availableWidth = std::max(1, width() - outerMargin * 2);
-        const int cardWidth = std::max(44, (availableWidth - spacing * std::max(0, count - 1)) / count);
-        const int baseTop = 28;
-        const int cardHeight = std::max(88, height() - baseTop - 42);
+        const int availableHeight = std::max(1, height() - outerMargin * 2);
+
+        int bestColumns = 1;
+        qreal bestScore = -1.0;
+        for (int columns = 1; columns <= count; ++columns) {
+            const int rows = (count + columns - 1) / columns;
+            const int cellWidth =
+                (availableWidth - spacing * std::max(0, columns - 1)) / columns;
+            const int cellHeight =
+                (availableHeight - spacing * std::max(0, rows - 1)) / rows;
+            if (cellWidth <= 0 || cellHeight <= 0) {
+                continue;
+            }
+            const qreal score =
+                qMin(static_cast<qreal>(cellWidth) / 110.0,
+                     static_cast<qreal>(cellHeight) / 72.0);
+            if (score > bestScore) {
+                bestScore = score;
+                bestColumns = columns;
+            }
+        }
+        const int columns = qMax(1, bestColumns);
+        const int rows = (count + columns - 1) / columns;
+        const int cellWidth =
+            qMax(1, (availableWidth - spacing * std::max(0, columns - 1)) / columns);
+        const int cellHeight =
+            qMax(1, (availableHeight - spacing * std::max(0, rows - 1)) / rows);
+
+        const QFont baseGridFont = painter.font();
         for (int i = 0; i < count; ++i) {
             const PreviewSurface::PipelineStageSnapshot& snapshot = m_snapshots.at(i);
             const QColor accent = colorForKind(snapshot.kind);
-            const QColor fill = backgroundForState(snapshot.state);
-            const int x = outerMargin + i * (cardWidth + spacing);
+            const QString state = resolvedStateText(snapshot);
+            const QColor fill = backgroundForState(state);
+            const int row = i / columns;
+            const int column = i % columns;
+            const QRect cell(outerMargin + column * (cellWidth + spacing),
+                             outerMargin + row * (cellHeight + spacing),
+                             cellWidth,
+                             cellHeight);
             const bool active = i == m_highlightedIndex ||
                                 (m_highlightedIndex < 0 && snapshot.active);
-            const QRect bodyRect(x, active ? 18 : baseTop, cardWidth, active ? cardHeight + 10 : cardHeight);
+            const QRect bodyRect = cell.adjusted(active ? 0 : 2,
+                                                 active ? 0 : 2,
+                                                 active ? 0 : -2,
+                                                 active ? 0 : -2);
             painter.fillRect(bodyRect, fill);
             painter.fillRect(QRect(bodyRect.x(), bodyRect.y(), bodyRect.width(), 4), accent);
             QColor inner = active ? accent.lighter(135) : accent.darker(150);
             inner.setAlphaF(active ? 0.22 : 0.12);
             painter.fillRect(
                 QRect(bodyRect.x() + 4,
-                      bodyRect.y() + 10,
-                      std::max(12, bodyRect.width() - 8),
-                      bodyRect.height() - 18),
+                    bodyRect.y() + 10,
+                    std::max(12, bodyRect.width() - 8),
+                      std::max(1, bodyRect.height() - 18)),
                 inner);
             if (snapshot.exact) {
                 painter.fillRect(
-                    QRect(bodyRect.x() + 6, bodyRect.bottom() - 10, bodyRect.width() - 12, 4),
+                    QRect(bodyRect.x() + 6,
+                          bodyRect.bottom() - 10,
+                          qMax(1, bodyRect.width() - 12),
+                          4),
                     QColor(111, 211, 125));
             }
+            QFont font = baseGridFont;
+            font.setPointSize(qMax(7, font.pointSize() - 2));
+            font.setBold(true);
+            painter.setFont(font);
+            const QFontMetrics fm(font);
+            painter.setPen(QColor(224, 235, 248));
+            painter.drawText(bodyRect.adjusted(7, 8, -7, -bodyRect.height() / 2),
+                             Qt::AlignLeft | Qt::AlignVCenter,
+                             fm.elidedText(snapshot.label,
+                                           Qt::ElideRight,
+                                           qMax(1, bodyRect.width() - 14)));
+            font.setBold(false);
+            painter.setFont(font);
+            painter.setPen(QColor(151, 169, 190));
+            painter.drawText(bodyRect.adjusted(7, bodyRect.height() / 2 - 3, -7, -8),
+                             Qt::AlignLeft | Qt::AlignVCenter,
+                             fm.elidedText(state,
+                                           Qt::ElideRight,
+                                           qMax(1, bodyRect.width() - 14)));
         }
     }
 
@@ -237,6 +430,12 @@ PipelineTab::PipelineTab(const Widgets& widgets, const Dependencies& deps, QObje
         layout->addWidget(m_visualizationWidget);
     }
     if (m_widgets.pipelineStageList && m_widgets.pipelineStageList->viewport()) {
+        m_widgets.pipelineStageList->setUniformItemSizes(true);
+        m_widgets.pipelineStageList->setWordWrap(false);
+        m_widgets.pipelineStageList->setTextElideMode(Qt::ElideRight);
+        m_widgets.pipelineStageList->setResizeMode(QListView::Fixed);
+        m_widgets.pipelineStageList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_widgets.pipelineStageList->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
         m_widgets.pipelineStageList->setMouseTracking(true);
         m_widgets.pipelineStageList->viewport()->setMouseTracking(true);
         m_widgets.pipelineStageList->viewport()->installEventFilter(this);
@@ -271,26 +470,18 @@ void PipelineTab::refresh()
     }
 
     if (m_snapshots.isEmpty()) {
-        auto* item = new QListWidgetItem(QStringLiteral("Live Pipeline\nNo preview pipeline state available"));
+        auto* item = new QListWidgetItem(QStringLiteral("Live Pipeline — No preview pipeline state available"));
+        item->setSizeHint(QSize(1, kPipelineStageRowHeight));
         item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         m_widgets.pipelineStageList->addItem(item);
         return;
     }
 
-    for (const PreviewSurface::PipelineStageSnapshot& snapshot : m_snapshots) {
+    for (int i = 0; i < m_snapshots.size(); ++i) {
+        const PreviewSurface::PipelineStageSnapshot& snapshot = m_snapshots.at(i);
         auto* item = new QListWidgetItem;
-        const QString state = snapshot.active
-                                  ? (!snapshot.state.isEmpty()
-                                         ? snapshot.state
-                                         : (snapshot.exact ? QStringLiteral("live exact")
-                                                           : QStringLiteral("live approximate")))
-                                  : (!snapshot.state.isEmpty() ? snapshot.state : QStringLiteral("waiting"));
-        item->setText(QStringLiteral("%1\n%2 | %3").arg(snapshot.label, snapshot.detail, state));
-        item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        item->setSizeHint(QSize(1, kPipelineStageRowHeight));
         item->setToolTip(QString());
-        QFont font = item->font();
-        font.setPointSize(qMax(8, font.pointSize() - 1));
-        item->setFont(font);
         const QImage displayImage = useVisualization ? QImage() : displayImageForSnapshot(snapshot);
         if (!displayImage.isNull()) {
             const QPixmap pix = QPixmap::fromImage(displayImage);
@@ -301,6 +492,9 @@ void PipelineTab::refresh()
             item->setIcon(QIcon(fallbackPixmap(snapshot)));
         }
         m_widgets.pipelineStageList->addItem(item);
+        m_widgets.pipelineStageList->setItemWidget(
+            item,
+            new PipelineStageRowWidget(i, snapshot, m_widgets.pipelineStageList));
     }
 
     if (m_widgets.pipelineStageList->verticalScrollBar()) {

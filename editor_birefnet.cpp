@@ -21,6 +21,7 @@
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -32,6 +33,9 @@
 #include <QProgressDialog>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QSpinBox>
@@ -39,6 +43,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -51,6 +56,94 @@ namespace {
 constexpr int kBiRefNetCudaOomExitCode = 42;
 constexpr int kBiRefNetHostOomExitCode = 43;
 constexpr qsizetype kBiRefNetRetainedLogBytes = 1024 * 1024;
+
+class ZoomablePreviewImage final : public QScrollArea
+{
+public:
+    explicit ZoomablePreviewImage(const QImage& image, QWidget* parent = nullptr)
+        : QScrollArea(parent)
+        , m_image(image)
+        , m_label(new QLabel)
+    {
+        setWidgetResizable(false);
+        setAlignment(Qt::AlignCenter);
+        setFocusPolicy(Qt::StrongFocus);
+        setMinimumSize(260, 180);
+        setToolTip(QStringLiteral(
+            "Mouse wheel: zoom at the cursor. Scroll bars pan the zoomed image."));
+        m_label->setAlignment(Qt::AlignCenter);
+        m_label->setBackgroundRole(QPalette::Dark);
+        setWidget(m_label);
+        setProperty("zoom", m_zoom);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QScrollArea::resizeEvent(event);
+        updatePixmap();
+    }
+
+    void wheelEvent(QWheelEvent* event) override
+    {
+        const int delta = event->angleDelta().y();
+        if (delta == 0 || m_image.isNull()) {
+            QScrollArea::wheelEvent(event);
+            return;
+        }
+
+        const QPointF cursor = event->position();
+        const QSize oldSize = m_label->size();
+        const qreal xOffset = qMax<qreal>(0.0,
+            (viewport()->width() - oldSize.width()) / 2.0);
+        const qreal yOffset = qMax<qreal>(0.0,
+            (viewport()->height() - oldSize.height()) / 2.0);
+        const qreal contentX = qBound<qreal>(
+            0.0, horizontalScrollBar()->value() + cursor.x() - xOffset,
+            oldSize.width());
+        const qreal contentY = qBound<qreal>(
+            0.0, verticalScrollBar()->value() + cursor.y() - yOffset,
+            oldSize.height());
+        const qreal xRatio = oldSize.width() > 0 ? contentX / oldSize.width() : 0.5;
+        const qreal yRatio = oldSize.height() > 0 ? contentY / oldSize.height() : 0.5;
+        const qreal factor = std::pow(1.2, static_cast<qreal>(delta) / 120.0);
+        const qreal nextZoom = std::clamp(m_zoom * factor, 1.0, 12.0);
+        if (qFuzzyCompare(nextZoom, m_zoom)) {
+            event->accept();
+            return;
+        }
+
+        m_zoom = nextZoom;
+        setProperty("zoom", m_zoom);
+        updatePixmap();
+        horizontalScrollBar()->setValue(
+            qRound(xRatio * m_label->width() - cursor.x()));
+        verticalScrollBar()->setValue(
+            qRound(yRatio * m_label->height() - cursor.y()));
+        event->accept();
+    }
+
+private:
+    void updatePixmap()
+    {
+        if (m_image.isNull() || viewport()->size().isEmpty()) return;
+        const QSize available = viewport()->size() - QSize(4, 4);
+        const qreal fitScale = std::min(
+            static_cast<qreal>(available.width()) / m_image.width(),
+            static_cast<qreal>(available.height()) / m_image.height());
+        const qreal scale = std::max<qreal>(0.001, fitScale) * m_zoom;
+        const QSize targetSize(
+            qMax(1, qRound(m_image.width() * scale)),
+            qMax(1, qRound(m_image.height() * scale)));
+        m_label->setPixmap(QPixmap::fromImage(m_image).scaled(
+            targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_label->resize(targetSize);
+    }
+
+    QImage m_image;
+    QLabel* m_label = nullptr;
+    qreal m_zoom = 1.0;
+};
 
 void appendBoundedProcessLog(QByteArray* log, const QByteArray& chunk)
 {
@@ -228,6 +321,16 @@ bool showBiRefNetPreview(QWidget* parent,
                 "The selected frame has no exact presentation timestamp."));
         return false;
     }
+    const QImage previewSource = presentedFrame.cpuImage();
+    const QString previewInputPath = QDir(previewDirectory.path()).filePath(
+        QStringLiteral("preview_input.png"));
+    if (previewSource.isNull() || !previewSource.save(previewInputPath)) {
+        QMessageBox::warning(
+            parent,
+            QStringLiteral("BiRefNet Preview"),
+            QStringLiteral("Could not materialize the selected source frame for preview inference."));
+        return false;
+    }
     QStringList command{scriptPath, inputPath,
                         QStringLiteral("--output-dir"), previewDirectory.path(),
                         QStringLiteral("--model"), model,
@@ -235,7 +338,8 @@ bool showBiRefNetPreview(QWidget* parent,
                         QStringLiteral("--alpha-tolerance"), QString::number(alphaTolerance, 'f', 4),
                         QStringLiteral("--source-presentation-timestamp"),
                         QString::number(
-                            presentedFrame.sourcePresentationTimestamp())};
+                            presentedFrame.sourcePresentationTimestamp()),
+                        QStringLiteral("--preview-image"), previewInputPath};
     if (!guidanceDirectory.trimmed().isEmpty()) {
         command << QStringLiteral("--guidance-dir") << guidanceDirectory
                 << QStringLiteral("--guidance-gate-radius")
@@ -297,7 +401,13 @@ bool showBiRefNetPreview(QWidget* parent,
         : QString();
     const QImage source(sourcePath);
     const QImage alpha(alphaPath);
-    if (source.isNull() || alpha.isNull()) {
+    const bool guidedPreview = !guidanceDirectory.trimmed().isEmpty();
+    const QImage samAlpha(QDir(previewDirectory.path()).filePath(
+        QStringLiteral("preview_guidance.png")));
+    const QImage contribution(QDir(previewDirectory.path()).filePath(
+        QStringLiteral("preview_contribution.png")));
+    if (source.isNull() || alpha.isNull() ||
+        (guidedPreview && (samAlpha.isNull() || contribution.isNull()))) {
         QMessageBox::warning(parent, QStringLiteral("BiRefNet Preview"),
                              QStringLiteral("The preview runner completed without usable image artifacts."));
         return false;
@@ -307,33 +417,47 @@ bool showBiRefNetPreview(QWidget* parent,
     preview.setWindowTitle(QStringLiteral("BiRefNet Preview — Frame %1").arg(frameIndex));
     auto* layout = new QVBoxLayout(&preview);
     auto* images = new QHBoxLayout;
-    auto addImage = [&](const QString& title, const QImage& image) {
+    auto addImage = [&](const QString& title,
+                        const QString& objectName,
+                        const QImage& image) {
         auto* column = new QVBoxLayout;
         auto* heading = new QLabel(title, &preview);
         heading->setAlignment(Qt::AlignCenter);
-        auto* imageLabel = new QLabel(&preview);
-        imageLabel->setAlignment(Qt::AlignCenter);
-        imageLabel->setMinimumSize(260, 180);
-        imageLabel->setPixmap(QPixmap::fromImage(image).scaled(
-            QSize(360, 300), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        auto* imageView = new ZoomablePreviewImage(image, &preview);
+        imageView->setObjectName(objectName);
         column->addWidget(heading);
-        column->addWidget(imageLabel, 1);
+        column->addWidget(imageView, 1);
         images->addLayout(column, 1);
     };
-    addImage(QStringLiteral("Source"), source);
-    addImage(QStringLiteral("Alpha Matte"), alpha);
-    addImage(QStringLiteral("Composite Check"), alphaCompositePreview(source, alpha));
+    addImage(QStringLiteral("Original Footage"),
+             QStringLiteral("birefnet.preview.source"), source);
+    if (guidedPreview) {
+        addImage(QStringLiteral("Original SAM Alpha"),
+                 QStringLiteral("birefnet.preview.sam_alpha"), samAlpha);
+    }
+    addImage(QStringLiteral("Refined BiRefNet Alpha"),
+             QStringLiteral("birefnet.preview.alpha"), alpha);
+    if (guidedPreview) {
+        addImage(QStringLiteral("BiRefNet Changes"),
+                 QStringLiteral("birefnet.preview.contribution"), contribution);
+    }
+    addImage(QStringLiteral("Composite Check"),
+             QStringLiteral("birefnet.preview.composite"),
+             alphaCompositePreview(source, alpha));
     layout->addLayout(images, 1);
     auto* note = new QLabel(
-        QStringLiteral("Single-frame preview checks subject selection and edge quality. "
+        QStringLiteral("Changes: green adds alpha; magenta removes or softens SAM alpha. "
+                       "Mouse wheel over any image to zoom at the cursor; use its scroll bars to pan. "
+                       "Single-frame preview checks subject selection and edge quality. "
                        "BiRefNet is frame-based, so this preview does not evaluate temporal flicker."),
         &preview);
     note->setWordWrap(true);
     layout->addWidget(note);
     auto* close = new QPushButton(QStringLiteral("Back to Settings"), &preview);
+    close->setObjectName(QStringLiteral("birefnet.preview.close"));
     QObject::connect(close, &QPushButton::clicked, &preview, &QDialog::accept);
     layout->addWidget(close, 0, Qt::AlignRight);
-    preview.resize(1120, 500);
+    preview.resize(1400, 720);
     preview.exec();
     return true;
 }
@@ -482,8 +606,10 @@ void EditorWindow::openBiRefNetDetectorWindow(
 
     auto* buttons = new QHBoxLayout;
     auto* cancel = new QPushButton(QStringLiteral("Cancel"), &preflight);
+    cancel->setObjectName(QStringLiteral("birefnet.cancel"));
     auto* previewButton = new QPushButton(
         QStringLiteral("Preview Frame %1").arg(previewSourceFrame), &preflight);
+    previewButton->setObjectName(QStringLiteral("birefnet.preview"));
     previewButton->setToolTip(
         QStringLiteral("Run BiRefNet on the source frame under the playhead, or the clip midpoint when the playhead is outside the clip."));
     auto* run = new QPushButton(
@@ -491,6 +617,7 @@ void EditorWindow::openBiRefNetDetectorWindow(
             ? QStringLiteral("Create Refined Matte")
             : QStringLiteral("Generate Alpha"),
         &preflight);
+    run->setObjectName(QStringLiteral("birefnet.run"));
     run->setDefault(true);
     buttons->addStretch(1);
     buttons->addWidget(cancel);
@@ -655,7 +782,9 @@ void EditorWindow::openBiRefNetDetectorWindow(
                     {QStringLiteral("model_cache"), modelCache},
                     {QStringLiteral("runtime_cache"), runtimeCache},
                     {QStringLiteral("job_log"), jobLogPath},
-                    {QStringLiteral("progress"), progressPath}}, command);
+                    {QStringLiteral("progress"), progressPath},
+                    {QStringLiteral("live_preview"),
+                     QString::fromStdString(sharedPlan.livePreviewPath)}}, command);
     const QString imageName = qEnvironmentVariable(
         "BIREFNET_IMAGE_NAME", QStringLiteral("jcut-birefnet:cu126"));
     manifest.insert(
@@ -681,20 +810,28 @@ void EditorWindow::openBiRefNetDetectorWindow(
     progress->resize(980, 720);
     auto* progressLayout = new QVBoxLayout(progress);
     auto* previewHeading = new QLabel(
-        QStringLiteral("Live result   •   Source  |  Alpha Matte  |  Composite"), progress);
+        guidedRefinement
+            ? QStringLiteral(
+                  "Live result   •   Original  |  SAM Alpha  |  Refined Alpha  |  Changes  |  Composite")
+            : QStringLiteral("Live result   •   Source  |  Alpha Matte  |  Composite"),
+        progress);
+    previewHeading->setObjectName(QStringLiteral("birefnet.job.preview_heading"));
     previewHeading->setAlignment(Qt::AlignCenter);
     progressLayout->addWidget(previewHeading);
     auto* statusLabel = new QLabel(QStringLiteral("Running BiRefNet…"), progress);
+    statusLabel->setObjectName(QStringLiteral("birefnet.job.status"));
     statusLabel->setWordWrap(true);
     statusLabel->setStyleSheet(QStringLiteral(
         "QLabel { color: #b7c0ca; padding: 4px 8px; }"));
     progressLayout->addWidget(statusLabel);
     auto* frameProgress = new QProgressBar(progress);
+    frameProgress->setObjectName(QStringLiteral("birefnet.job.progress"));
     frameProgress->setRange(0, 1000);
     frameProgress->setValue(0);
     frameProgress->setFormat(QStringLiteral("Preparing worker…"));
     progressLayout->addWidget(frameProgress);
     auto* livePreview = new QLabel(QStringLiteral("Waiting for the first completed frame…"), progress);
+    livePreview->setObjectName(QStringLiteral("birefnet.job.live_preview"));
     livePreview->setAlignment(Qt::AlignCenter);
     livePreview->setMinimumHeight(320);
     livePreview->setStyleSheet(QStringLiteral(
@@ -707,6 +844,7 @@ void EditorWindow::openBiRefNetDetectorWindow(
     output->setMaximumHeight(190);
     progressLayout->addWidget(output);
     auto* stop = new QPushButton(QStringLiteral("Stop"), progress);
+    stop->setObjectName(QStringLiteral("birefnet.job.stop"));
     progressLayout->addWidget(stop, 0, Qt::AlignRight);
     auto* process = new QProcess(progress);
     const auto processLog = std::make_shared<QByteArray>();
@@ -932,7 +1070,8 @@ void EditorWindow::openBiRefNetDetectorWindow(
         stop->setText(QStringLiteral("Close"));
         stop->setEnabled(true);
     });
-    process->start(QStringLiteral("/bin/bash"), command);
+    const QString program = command.takeFirst();
+    process->start(program, command);
     previewTimer->start();
     progress->show();
 }

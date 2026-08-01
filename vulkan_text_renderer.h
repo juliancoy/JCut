@@ -123,7 +123,8 @@ public:
                                const TimelineClip& clip,
                                const TranscriptOverlayLayout& layout,
                                const QRectF& outputRect,
-                               const QString& speakerTitle);
+                               const QString& speakerTitle,
+                               qreal opacityMultiplier = 1.0);
     bool prepareTranscriptOverlayAtlas(VkCommandBuffer commandBuffer,
                                        const QSize& outputSize,
                                        const TimelineClip& clip,

@@ -26,5 +26,8 @@ const DockerContainerInfo* findDockerContainerForManifest(
     const QJsonObject& manifest,
     const QVector<DockerContainerInfo>& containers);
 bool dockerContainerIsRunning(const DockerContainerInfo& container);
+bool dockerContainerIsJCutRelated(const DockerContainerInfo& container);
+bool killDockerContainer(const DockerContainerInfo& container,
+                         QString* errorOut = nullptr);
 
 } // namespace jcut::jobs

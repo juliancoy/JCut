@@ -148,6 +148,7 @@ struct VulkanRenderTranscriptInput {
     TranscriptOverlayLayout layout;
     QRectF outputRect;
     QString speakerTitle;
+    qreal opacityMultiplier = 1.0;
 };
 
 struct VulkanRenderTextInputs {

@@ -1135,6 +1135,28 @@ def decoded_ordinal_for_source_presentation_timestamp(
             probe.communicate()
 
 
+def decoded_ordinal_from_validated_frame_index_map(
+    input_path: Path,
+    map_path: Path,
+    requested_source_presentation_timestamp: int,
+) -> int:
+    """Resolve one exact timestamp through an authenticated full-rate sidecar map."""
+    metadata = validated_frame_index_map_metadata(input_path, map_path)
+    if metadata is None:
+        raise RuntimeError(
+            f"Cannot use an unvalidated source frame map for preview: {map_path}"
+        )
+    for _, source_presentation_timestamp, mask_frame in _frame_index_entries(map_path):
+        if source_presentation_timestamp == requested_source_presentation_timestamp:
+            return mask_frame
+        if source_presentation_timestamp > requested_source_presentation_timestamp:
+            break
+    raise RuntimeError(
+        "No mapped video frame has best-effort timestamp "
+        f"{requested_source_presentation_timestamp}."
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build a validated JCut source-frame to generated-mask map."
@@ -1167,19 +1189,59 @@ def main() -> int:
             "best_effort_timestamp."
         ),
     )
+    parser.add_argument(
+        "--lookup-frame-map",
+        type=Path,
+        help=(
+            "Resolve --lookup-source-presentation-timestamp through this "
+            "validated full-rate jcut_frame_map.tsv instead of decoding the source."
+        ),
+    )
+    parser.add_argument(
+        "--replicate-from",
+        type=Path,
+        help=(
+            "Atomically copy this validated full-rate map and metadata to "
+            "--output after authenticating it against --input."
+        ),
+    )
     args = parser.parse_args()
     if args.lookup_source_presentation_timestamp is not None:
-        ordinal = decoded_ordinal_for_source_presentation_timestamp(
-            args.input, args.lookup_source_presentation_timestamp
+        ordinal = (
+            decoded_ordinal_from_validated_frame_index_map(
+                args.input,
+                args.lookup_frame_map,
+                args.lookup_source_presentation_timestamp,
+            )
+            if args.lookup_frame_map is not None
+            else decoded_ordinal_for_source_presentation_timestamp(
+                args.input, args.lookup_source_presentation_timestamp
+            )
         )
         print(ordinal + 1)
         return 0
+    if args.lookup_frame_map is not None:
+        parser.error(
+            "--lookup-frame-map requires "
+            "--lookup-source-presentation-timestamp"
+        )
+    if args.replicate_from is not None and args.output is None:
+        parser.error("--replicate-from requires --output")
     if args.output is None:
         parser.error(
             "--output is required unless "
             "--lookup-source-presentation-timestamp is used"
         )
-    if args.upgrade_sidecar_map:
+    if args.replicate_from is not None:
+        if args.adopt_existing or args.upgrade_sidecar_map:
+            parser.error(
+                "--replicate-from, --upgrade-sidecar-map, and "
+                "--adopt-existing are mutually exclusive"
+            )
+        replicate_validated_frame_index_map(
+            args.input, args.replicate_from, args.output, args.output_fps
+        )
+    elif args.upgrade_sidecar_map:
         if args.adopt_existing:
             parser.error(
                 "--upgrade-sidecar-map and --adopt-existing are mutually exclusive"
