@@ -457,10 +457,6 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int decodeConvertFailCount = 0;
   const RenderFrameClock frameClock =
       renderFrameClockForTimelinePosition(timelineFrame);
-  const PlaybackFrameCrossfade frameCrossfade =
-      playbackFrameCrossfadeAtTimelineFrame(
-          generatedEffectClockTimelineFrame,
-          request.playbackTiming);
   QHash<QString, QHash<int64_t, editor::FrameHandle>> decodedFramesByTimingOwner;
   auto decodeFrameForTimingOwner =
       [&](const TimelineClip& timingOwner,
@@ -671,6 +667,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskFeatherGamma = static_cast<float>(
             qBound<qreal>(0.1, matteOwner.maskFeatherGamma, 5.0));
         layer.maskFeatherFalloff = qBound(0, matteOwner.maskFeatherFalloff, 5);
+        layer.maskEdgeGrayAmount =
+            qBound<qreal>(0.0, matteOwner.maskEdgeGrayAmount, 1.0);
+        layer.maskEdgeGrayWidth =
+            qBound<qreal>(0.001, matteOwner.maskEdgeGrayWidth, 0.5);
+        layer.maskEdgeGrayGamma =
+            qBound<qreal>(0.1, matteOwner.maskEdgeGrayGamma, 8.0);
         layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, matteOwner.maskOpacity, 1.0));
         layer.maskDropShadowRadius = static_cast<float>(
             qBound<qreal>(0.0, matteOwner.maskDropShadowRadius, 200.0));
@@ -786,6 +788,12 @@ QImage OffscreenVulkanRenderer::renderFrame(
                                         request.tracks),
         request.playbackTiming);
     layer.effectPlan = effectPlan;
+    const PlaybackFrameCrossfade frameCrossfade =
+        clipShouldApplySpeechFilterFrameCrossfade(clip)
+            ? playbackFrameCrossfadeAtTimelineFrame(
+                  generatedEffectClockTimelineFrame,
+                  request.playbackTiming)
+            : PlaybackFrameCrossfade{};
     OffscreenVulkanRendererPrivate::LayerInput frameCrossfadeLayer;
     bool frameCrossfadeLayerPending = false;
     if (frameCrossfade.active) {

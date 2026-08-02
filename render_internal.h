@@ -140,6 +140,7 @@ void enqueueRenderMaskLookahead(const RenderRequest& request,
 void prewarmRenderDecodeSegment(const RenderRequest& request,
                                 int64_t segmentStartFrame,
                                 int64_t segmentEndFrame,
+                                int lookaheadFrames,
                                 const QVector<TimelineClip>& orderedClips,
                                 editor::AsyncDecoder* asyncDecoder,
                                 RenderPreparedFrameQueue& preparedFrames);

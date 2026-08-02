@@ -213,6 +213,9 @@ void MaskTab::wire()
     }
     connectApply(m_widgets.featherSpin);
     connectApply(m_widgets.featherPowerSpin);
+    connectApply(m_widgets.edgeGrayAmountSpin);
+    connectApply(m_widgets.edgeGrayWidthSpin);
+    connectApply(m_widgets.edgeGrayGammaSpin);
     if (m_widgets.featherFalloffCombo) {
         connect(m_widgets.featherFalloffCombo,
                 qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
@@ -659,6 +662,9 @@ void MaskTab::refresh()
         }
         setSpin(m_widgets.featherSpin, clip->maskFeather);
         setSpin(m_widgets.featherPowerSpin, clip->maskFeatherGamma);
+        setSpin(m_widgets.edgeGrayAmountSpin, clip->maskEdgeGrayAmount);
+        setSpin(m_widgets.edgeGrayWidthSpin, clip->maskEdgeGrayWidth);
+        setSpin(m_widgets.edgeGrayGammaSpin, clip->maskEdgeGrayGamma);
         if (m_widgets.featherFalloffCombo) {
             QSignalBlocker blocker(m_widgets.featherFalloffCombo);
             const int index = m_widgets.featherFalloffCombo->findData(clip->maskFeatherFalloff);
@@ -837,6 +843,12 @@ void MaskTab::apply(bool pushHistory, bool zLevelEdited)
         clip.maskFeatherGamma = m_widgets.featherPowerSpin ? m_widgets.featherPowerSpin->value() : 2.0;
         clip.maskFeatherFalloff = m_widgets.featherFalloffCombo
             ? qBound(0, m_widgets.featherFalloffCombo->currentData().toInt(), 5) : 0;
+        clip.maskEdgeGrayAmount =
+            m_widgets.edgeGrayAmountSpin ? m_widgets.edgeGrayAmountSpin->value() : 0.0;
+        clip.maskEdgeGrayWidth =
+            m_widgets.edgeGrayWidthSpin ? m_widgets.edgeGrayWidthSpin->value() : 0.25;
+        clip.maskEdgeGrayGamma =
+            m_widgets.edgeGrayGammaSpin ? m_widgets.edgeGrayGammaSpin->value() : 1.0;
         clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
         clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
         clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
@@ -918,6 +930,12 @@ void MaskTab::applyTreatmentEdit(bool commit, bool zLevelEdited)
             clip.maskFeatherGamma = m_widgets.featherPowerSpin ? m_widgets.featherPowerSpin->value() : 2.0;
             clip.maskFeatherFalloff = m_widgets.featherFalloffCombo
                 ? qBound(0, m_widgets.featherFalloffCombo->currentData().toInt(), 5) : 0;
+            clip.maskEdgeGrayAmount =
+                m_widgets.edgeGrayAmountSpin ? m_widgets.edgeGrayAmountSpin->value() : 0.0;
+            clip.maskEdgeGrayWidth =
+                m_widgets.edgeGrayWidthSpin ? m_widgets.edgeGrayWidthSpin->value() : 0.25;
+            clip.maskEdgeGrayGamma =
+                m_widgets.edgeGrayGammaSpin ? m_widgets.edgeGrayGammaSpin->value() : 1.0;
             clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
             clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
             clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
@@ -970,6 +988,9 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),
                             static_cast<QWidget*>(m_widgets.featherPowerSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayAmountSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayWidthSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayGammaSpin),
                             static_cast<QWidget*>(m_widgets.dilateSpin),
                             static_cast<QWidget*>(m_widgets.erodeSpin),
                             static_cast<QWidget*>(m_widgets.blurSpin),
@@ -1009,6 +1030,9 @@ void MaskTab::setTreatmentControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.featherSpin),
                             static_cast<QWidget*>(m_widgets.featherFalloffCombo),
                             static_cast<QWidget*>(m_widgets.featherPowerSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayAmountSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayWidthSpin),
+                            static_cast<QWidget*>(m_widgets.edgeGrayGammaSpin),
                             static_cast<QWidget*>(m_widgets.dilateSpin),
                             static_cast<QWidget*>(m_widgets.erodeSpin),
                             static_cast<QWidget*>(m_widgets.blurSpin),

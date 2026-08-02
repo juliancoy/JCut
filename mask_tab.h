@@ -41,6 +41,9 @@ public:
         QDoubleSpinBox* featherSpin = nullptr;
         QComboBox* featherFalloffCombo = nullptr;
         QDoubleSpinBox* featherPowerSpin = nullptr;
+        QDoubleSpinBox* edgeGrayAmountSpin = nullptr;
+        QDoubleSpinBox* edgeGrayWidthSpin = nullptr;
+        QDoubleSpinBox* edgeGrayGammaSpin = nullptr;
         QDoubleSpinBox* dilateSpin = nullptr;
         QDoubleSpinBox* erodeSpin = nullptr;
         QDoubleSpinBox* blurSpin = nullptr;

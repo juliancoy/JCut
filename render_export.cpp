@@ -3,6 +3,7 @@
 #include "cpu_overlay_render_backend.h"
 #include "export_timing.h"
 #include "render_backend.h"
+#include "render_runtime_controls.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -1057,7 +1058,30 @@ static RenderResult renderTimelineSingleFile(
 
     PlaybackTimingContext exportPlaybackTiming = request.playbackTiming;
     exportPlaybackTiming.playbackRanges = exportRanges;
-    QSet<int> prewarmedDecodeSegments;
+    QHash<int, int> prewarmedDecodeFramesBySegment;
+    const auto effectiveSegmentDecodeLookaheadFrames = [&request]() {
+        return qMax(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(),
+                    request.playbackTiming.frameCrossfadeFrames);
+    };
+    const auto prewarmDecodeSegment = [&](int segmentIndex) {
+        if (segmentIndex < 0 || segmentIndex >= exportRanges.size()) {
+            return;
+        }
+        const int requestedFrames = effectiveSegmentDecodeLookaheadFrames();
+        if (requestedFrames <=
+            prewarmedDecodeFramesBySegment.value(segmentIndex, 0)) {
+            return;
+        }
+        const ExportRangeSegment& segment = exportRanges.at(segmentIndex);
+        prewarmRenderDecodeSegment(request,
+                                   segment.startFrame,
+                                   segment.endFrame,
+                                   requestedFrames,
+                                   orderedClips,
+                                   asyncDecoder,
+                                   *preparedFrames);
+        prewarmedDecodeFramesBySegment.insert(segmentIndex, requestedFrames);
+    };
     for (int segmentIndex = 0; segmentIndex < exportRanges.size(); ++segmentIndex) {
         const ExportRangeSegment& range = exportRanges[segmentIndex];
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
@@ -1068,15 +1092,7 @@ static RenderResult renderTimelineSingleFile(
                 exportEnd,
                 outputFps,
                 playbackSpeed);
-        if (!prewarmedDecodeSegments.contains(segmentIndex)) {
-            prewarmRenderDecodeSegment(request,
-                                       exportStart,
-                                       exportEnd,
-                                       orderedClips,
-                                       asyncDecoder,
-                                       *preparedFrames);
-            prewarmedDecodeSegments.insert(segmentIndex);
-        }
+        prewarmDecodeSegment(segmentIndex);
         prewarmRenderMaskSegment(request,
                                  exportStart,
                                  exportEnd,
@@ -1095,10 +1111,8 @@ static RenderResult renderTimelineSingleFile(
                 static_cast<qreal>(exportFrameTiming.timelineFramePosition);
             const int64_t timelineFrame = exportFrameTiming.timelineFrame;
             const int64_t outputFrameNumber = framesCompleted;
-            const int transitionLeadFrames = qMax(
-                qMax(editor::debugPlaybackWindowAhead(),
-                     editor::debugFileVideoPlaybackWindowAhead()),
-                request.playbackTiming.frameCrossfadeFrames);
+            const int transitionLeadFrames =
+                effectiveSegmentDecodeLookaheadFrames();
             const int64_t upcomingRangeStart =
                 upcomingNoncontiguousPlaybackRangeStart(
                     timelineFramePosition,
@@ -1106,17 +1120,8 @@ static RenderResult renderTimelineSingleFile(
                     transitionLeadFrames);
             if (upcomingRangeStart >= 0 &&
                 segmentIndex + 1 < exportRanges.size() &&
-                exportRanges.at(segmentIndex + 1).startFrame == upcomingRangeStart &&
-                !prewarmedDecodeSegments.contains(segmentIndex + 1)) {
-                const ExportRangeSegment& upcomingRange =
-                    exportRanges.at(segmentIndex + 1);
-                prewarmRenderDecodeSegment(request,
-                                           upcomingRange.startFrame,
-                                           upcomingRange.endFrame,
-                                           orderedClips,
-                                           asyncDecoder,
-                                           *preparedFrames);
-                prewarmedDecodeSegments.insert(segmentIndex + 1);
+                exportRanges.at(segmentIndex + 1).startFrame == upcomingRangeStart) {
+                prewarmDecodeSegment(segmentIndex + 1);
             }
             enqueueRenderDecodeLookahead(request,
                                          timelineFrame,
@@ -1249,6 +1254,13 @@ static RenderResult renderTimelineSingleFile(
             }
             totalRenderStageMs += renderStageTimer.elapsed();
             totalRenderDecodeStageMs += frameDecodeMs;
+            if (segmentOutputFrame == 0) {
+                const qint64 frameBudgetMs = qMax<qint64>(
+                    1, static_cast<qint64>(
+                           std::ceil(1000.0 / qMax(1.0, outputFps))));
+                observeRenderSegmentBoundaryDecodeWait(frameDecodeMs,
+                                                       frameBudgetMs);
+            }
             totalRenderTextureStageMs += frameTextureMs;
             totalRenderCompositeStageMs += frameCompositeMs;
             totalGpuReadbackMs += frameReadbackMs;

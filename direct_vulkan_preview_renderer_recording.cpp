@@ -1361,16 +1361,35 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                                       static_cast<uint32_t>(std::max(1, swapSize.height()))};
                 }
+                const float maskEdgeParams[4] = {
+                    status ? static_cast<float>(std::clamp(status->maskEdgeGrayAmount, 0.0, 1.0)) : 0.0f,
+                    status ? static_cast<float>(std::clamp(status->maskEdgeGrayWidth, 0.001, 0.5)) : 0.25f,
+                    status ? static_cast<float>(std::clamp(status->maskEdgeGrayGamma, 0.1, 8.0)) : 1.0f,
+                    0.0f};
                 if (sampledResources) {
                     sampledResources->updateFrameUniform(compositeRect.size().toSize());
                 }
-                auto drawPush = [&](const VulkanPipeline::Push& drawState) {
+                auto uniformOffsetForDraw = [&](const float* effectParams = nullptr) {
+                    if (sampledResources && effectParams &&
+                        sampledResources->updateFrameUniform(
+                            compositeRect.size().toSize(),
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            effectParams)) {
+                        return sampledResources->frameUniformDynamicOffset();
+                    }
+                    return sampledResources ? sampledResources->frameUniformDynamicOffset() : 0u;
+                };
+                auto drawPush = [&](const VulkanPipeline::Push& drawState,
+                                    const float* effectParams = nullptr) {
                     m_pipeline->bindAndDraw(cb,
                                             viewport,
                                             scissor,
                                             handoffResult.descriptorSet,
                                             drawState,
-                                            sampledResources ? sampledResources->frameUniformDynamicOffset() : 0);
+                                            uniformOffsetForDraw(effectParams));
                 };
                 const bool maskReady =
                     status && status->maskTextureEnabled &&
@@ -1420,7 +1439,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     maskPush.saturation = 1.0f;
                     maskPush.opacity = static_cast<float>(std::clamp(status->maskOpacity, 0.0, 1.0));
                     maskPush.shadows[3] = render_detail::kVulkanEffectModeMaskOnly;
-                    drawPush(maskPush);
+                    drawPush(maskPush, maskEdgeParams);
                 } else {
                     VulkanPipeline::Push basePush = push;
                     if (status && !status->maskClipSource &&
@@ -1545,7 +1564,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                      effectUniformOffset);
                         }
                     } else {
-                        drawPush(basePush);
+                        drawPush(
+                            basePush,
+                            basePush.shadows[3] == render_detail::kVulkanEffectModeMaskGrade
+                                ? maskEdgeParams
+                                : nullptr);
                     }
                     if (status && !status->temporalEchoFrames.isEmpty()) {
                         for (int echoIndex = 0; echoIndex < status->temporalEchoFrames.size(); ++echoIndex) {
@@ -1641,7 +1664,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 stats->lastUnsupportedEffect = QStringLiteral("mask_curve_lut_upload_failed");
                             }
                         }
-                        drawPush(maskPush);
+                        drawPush(maskPush, maskEdgeParams);
                     }
                     if (maskReady && status->maskForegroundLayerEnabled) {
                         VulkanPipeline::Push foregroundPush = push;
@@ -1680,12 +1703,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         foregroundPush.highlights[2] = 0.0f;
                         foregroundPush.highlights[3] = push.highlights[3];
                         drawMaskShadow(foregroundPush);
+                        const uint32_t foregroundUniformOffset =
+                            uniformOffsetForDraw(maskEdgeParams);
                         pendingMaskForegroundDraws.push_back(
                             PendingMaskForegroundDraw{
                                 handoffResult.descriptorSet,
                                 foregroundPush,
                                 scissor,
-                                sampledResources ? sampledResources->frameUniformDynamicOffset() : 0});
+                                foregroundUniformOffset});
                     }
                 }
                 if (bidirectionalEdgeDrawPending &&
@@ -1944,4 +1969,3 @@ void DirectVulkanPreviewRenderer::beginGpuExportPreviewRenderPass(
     m_devFuncs->vkCmdBeginRenderPass(
         commandBuffer, &renderPass, VK_SUBPASS_CONTENTS_INLINE);
 }
-

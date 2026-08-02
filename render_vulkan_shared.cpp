@@ -22,6 +22,13 @@ float shaderModeForSinglePassPreset(ClipEffectPreset preset)
     case ClipEffectPreset::Kaleidoscope: return kVulkanEffectModeKaleidoscope;
     case ClipEffectPreset::HexagonalPrism: return kVulkanEffectModeHexagonalPrism;
     case ClipEffectPreset::Droste: return kVulkanEffectModeDroste;
+    case ClipEffectPreset::RecursiveZoomTile: return kVulkanEffectModeRecursiveZoomTile;
+    case ClipEffectPreset::RecursiveZoomTunnel: return kVulkanEffectModeRecursiveZoomTunnel;
+    case ClipEffectPreset::RecursiveZoomMirrorBox: return kVulkanEffectModeRecursiveZoomMirrorBox;
+    case ClipEffectPreset::RecursiveZoomSpiral: return kVulkanEffectModeRecursiveZoomSpiral;
+    case ClipEffectPreset::RecursiveZoomKaleidoscope: return kVulkanEffectModeRecursiveZoomKaleidoscope;
+    case ClipEffectPreset::RecursiveZoomRadialRepeat: return kVulkanEffectModeRecursiveZoomRadialRepeat;
+    case ClipEffectPreset::RecursiveZoomPixelMosaic: return kVulkanEffectModeRecursiveZoomPixelMosaic;
     case ClipEffectPreset::PolarTunnel: return kVulkanEffectModePolarTunnel;
     case ClipEffectPreset::TinyPlanet: return kVulkanEffectModeTinyPlanet;
     case ClipEffectPreset::InfiniteMirror: return kVulkanEffectModeInfiniteMirror;

@@ -34,6 +34,7 @@ public:
         QCheckBox* effectEnabledCheck = nullptr;
         QPushButton* effectKeyframeOnButton = nullptr;
         QPushButton* effectKeyframeOffButton = nullptr;
+        QPushButton* effectParameterKeyframeButton = nullptr;
         QPushButton* effectKeyframeRemoveButton = nullptr;
         QLabel* effectKeyframesLabel = nullptr;
         QComboBox* effectModulationModeCombo = nullptr;
@@ -76,6 +77,7 @@ public:
     void refresh();
     void applyEffectPreset(bool pushHistory = false);
     void setEffectEnabledKeyframe(bool enabled);
+    void setEffectParameterKeyframe();
     void removeEffectEnabledKeyframe();
 
 signals:

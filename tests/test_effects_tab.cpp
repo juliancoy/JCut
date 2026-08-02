@@ -19,8 +19,16 @@ struct EffectAnimationWidgets {
     QCheckBox transcriptAware;
     QPushButton keyOn{QStringLiteral("Key On")};
     QPushButton keyOff{QStringLiteral("Key Off")};
+    QPushButton keyParameters{QStringLiteral("Key Parameters")};
     QPushButton removeKey{QStringLiteral("Remove Key")};
     QLabel keySummary;
+    QSpinBox rows;
+    QDoubleSpinBox speed;
+    QDoubleSpinBox scale;
+    QCheckBox alternate;
+    QComboBox tilingPattern;
+    QDoubleSpinBox tilingSpacing;
+    QCheckBox tilingWrap;
     QComboBox modulationMode;
     QComboBox modulationTarget;
     QDoubleSpinBox modulationAmount;
@@ -35,6 +43,9 @@ struct EffectAnimationWidgets {
         preset.addItem(
             QStringLiteral("Neon Glow"),
             static_cast<int>(ClipEffectPreset::NeonGlow));
+        preset.addItem(
+            QStringLiteral("Source Tile"),
+            static_cast<int>(ClipEffectPreset::SourceTile));
         modulationMode.addItem(QStringLiteral("None"), QStringLiteral("none"));
         modulationMode.addItem(QStringLiteral("LFO"), QStringLiteral("lfo"));
         modulationMode.addItem(QStringLiteral("Steady increase"),
@@ -50,6 +61,12 @@ struct EffectAnimationWidgets {
         modulationAmount.setRange(-512.0, 512.0);
         modulationRate.setRange(0.0, 20.0);
         modulationPhase.setRange(-360.0, 360.0);
+        rows.setRange(1, 96);
+        speed.setRange(-8.0, 8.0);
+        scale.setRange(0.1, 8.0);
+        tilingSpacing.setRange(0.1, 8.0);
+        tilingPattern.addItem(QStringLiteral("Grid"), static_cast<int>(ClipTilingPattern::Grid));
+        tilingPattern.addItem(QStringLiteral("Encircle"), static_cast<int>(ClipTilingPattern::Encircle));
     }
 
     EffectsTab::Widgets dependencies()
@@ -61,8 +78,16 @@ struct EffectAnimationWidgets {
         widgets.effectSpeechSyncCheck = &transcriptAware;
         widgets.effectKeyframeOnButton = &keyOn;
         widgets.effectKeyframeOffButton = &keyOff;
+        widgets.effectParameterKeyframeButton = &keyParameters;
         widgets.effectKeyframeRemoveButton = &removeKey;
         widgets.effectKeyframesLabel = &keySummary;
+        widgets.effectRowsSpin = &rows;
+        widgets.effectSpeedSpin = &speed;
+        widgets.effectScaleSpin = &scale;
+        widgets.effectAlternateDirectionCheck = &alternate;
+        widgets.tilingPatternCombo = &tilingPattern;
+        widgets.tilingSpacingSpin = &tilingSpacing;
+        widgets.tilingWrapCheck = &tilingWrap;
         widgets.effectModulationModeCombo = &modulationMode;
         widgets.effectModulationTargetCombo = &modulationTarget;
         widgets.effectModulationAmountSpin = &modulationAmount;
@@ -92,6 +117,7 @@ class TestEffectsTab final : public QObject
 
 private slots:
     void effectEnableButtonsEditTheSelectedClipAtThePlayhead();
+    void effectParameterButtonEditsTheSelectedClipAtThePlayhead();
     void dynamicControlsPersistIndependentPerClipParameters();
     void mirrorGeometryControlsExposeSpecificParameters();
 };
@@ -137,6 +163,62 @@ void TestEffectsTab::effectEnableButtonsEditTheSelectedClipAtThePlayhead()
     QVERIFY(clip.effectEnabledKeyframes.isEmpty());
     QVERIFY(!controls.removeKey.isEnabled());
     QCOMPARE(historyPushes, 3);
+}
+
+void TestEffectsTab::effectParameterButtonEditsTheSelectedClipAtThePlayhead()
+{
+    TimelineClip clip = makeClip();
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    int64_t playhead = 140;
+    int historyPushes = 0;
+    EffectAnimationWidgets controls;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.updateClipById =
+        [&clip](const QString& id,
+                const std::function<void(TimelineClip&)>& update) {
+            if (id != clip.id) return false;
+            update(clip);
+            return true;
+        };
+    deps.currentTimelineFrame = [&playhead]() { return playhead; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+    deps.pushHistorySnapshot = [&historyPushes]() { ++historyPushes; };
+
+    EffectsTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    controls.rows.setValue(12);
+    controls.speed.setValue(2.5);
+    controls.scale.setValue(1.75);
+    controls.alternate.setChecked(false);
+    controls.tilingPattern.setCurrentIndex(
+        controls.tilingPattern.findData(static_cast<int>(ClipTilingPattern::Encircle)));
+    controls.tilingSpacing.setValue(2.25);
+    controls.tilingWrap.setChecked(false);
+
+    QTest::mouseClick(&controls.keyParameters, Qt::LeftButton);
+    QCOMPARE(clip.effectParameterKeyframes.size(), 1);
+    const TimelineClip::EffectParameterKeyframe keyframe =
+        clip.effectParameterKeyframes.constFirst();
+    QCOMPARE(keyframe.frame, int64_t{40});
+    QCOMPARE(keyframe.effectRows, 12);
+    QCOMPARE(keyframe.effectSpeed, 2.5);
+    QCOMPARE(keyframe.effectScale, 1.75);
+    QVERIFY(!keyframe.effectAlternateDirection);
+    QCOMPARE(keyframe.tilingPattern, ClipTilingPattern::Encircle);
+    QCOMPARE(keyframe.tilingSpacing, 2.25);
+    QVERIFY(!keyframe.tilingWrap);
+    QVERIFY(controls.keySummary.text().contains(QStringLiteral("40:Params")));
+    QVERIFY(controls.removeKey.isEnabled());
+
+    QTest::mouseClick(&controls.removeKey, Qt::LeftButton);
+    QVERIFY(clip.effectParameterKeyframes.isEmpty());
+    QVERIFY(!controls.removeKey.isEnabled());
+    QCOMPARE(historyPushes, 2);
 }
 
 void TestEffectsTab::dynamicControlsPersistIndependentPerClipParameters()

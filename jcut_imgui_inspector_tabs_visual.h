@@ -592,7 +592,9 @@ void drawInspectorTab02(
             const bool sectorEffect =
                 presetId == "mirror_ring" || presetId == "kaleidoscope";
             const bool recursionEffect =
-                presetId == "droste" || presetId == "infinite_mirror";
+                presetId == "droste" ||
+                presetId == "recursive_zoom_tile" ||
+                presetId == "infinite_mirror";
             const bool commonParameters =
                 effectPresetUsesCommonNeutralParameters(presetId);
             const int contextualMaxRows = edge || neon
@@ -910,6 +912,9 @@ void drawInspectorTab02(
                 command.feather = currentClip->maskFeather;
                 command.featherGamma = currentClip->maskFeatherGamma;
                 command.featherFalloff = currentClip->maskFeatherFalloff;
+                command.edgeGrayAmount = currentClip->maskEdgeGrayAmount;
+                command.edgeGrayWidth = currentClip->maskEdgeGrayWidth;
+                command.edgeGrayGamma = currentClip->maskEdgeGrayGamma;
                 command.foregroundLayerEnabled = currentClip->maskForegroundLayerEnabled;
                 command.repeatEnabled = currentClip->maskRepeatEnabled;
                 command.repeatDeltaX = currentClip->maskRepeatDeltaX;

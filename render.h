@@ -85,7 +85,7 @@ struct RenderRequest {
     bool disableParallelImageWrite = false;  // For debugging image write issues
     bool gpuExportPreviewEnabled = false;
     std::shared_ptr<std::atomic_bool> gpuExportPreviewReady;
-    bool incrementalExport = true;
+    bool incrementalExport = false;
     int incrementalChunkFrames = 900;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;

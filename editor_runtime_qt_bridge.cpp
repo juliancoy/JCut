@@ -216,6 +216,9 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.maskFeather = clip.maskFeather;
         coreClip.maskFeatherGamma = clip.maskFeatherGamma;
         coreClip.maskFeatherFalloff = clip.maskFeatherFalloff;
+        coreClip.maskEdgeGrayAmount = clip.maskEdgeGrayAmount;
+        coreClip.maskEdgeGrayWidth = clip.maskEdgeGrayWidth;
+        coreClip.maskEdgeGrayGamma = clip.maskEdgeGrayGamma;
         coreClip.maskDilate = clip.maskDilate;
         coreClip.maskErode = clip.maskErode;
         coreClip.maskBlur = clip.maskBlur;
@@ -268,6 +271,27 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
              clip.effectEnabledKeyframes) {
             coreClip.effectEnabledKeyframes.push_back(
                 EditorBoolKeyframe{keyframe.frame, keyframe.enabled});
+        }
+        for (const TimelineClip::EffectParameterKeyframe& keyframe :
+             clip.effectParameterKeyframes) {
+            EditorEffectParameterKeyframe value;
+            value.frame = keyframe.frame;
+            value.effectRows = keyframe.effectRows;
+            value.effectSpeed = keyframe.effectSpeed;
+            value.effectScale = keyframe.effectScale;
+            value.effectAlternateDirection = keyframe.effectAlternateDirection;
+            value.differenceReferenceFrames = keyframe.differenceReferenceFrames;
+            value.differenceThreshold = keyframe.differenceThreshold;
+            value.differenceSoftness = keyframe.differenceSoftness;
+            value.temporalEchoCount = keyframe.temporalEchoCount;
+            value.temporalEchoSpacingFrames = keyframe.temporalEchoSpacingFrames;
+            value.temporalEchoDecay = keyframe.temporalEchoDecay;
+            value.tilingPattern =
+                editor::tilingPatternToJson(keyframe.tilingPattern).toStdString();
+            value.tilingSpacing = keyframe.tilingSpacing;
+            value.tilingWrap = keyframe.tilingWrap;
+            value.linearInterpolation = keyframe.linearInterpolation;
+            coreClip.effectParameterKeyframes.push_back(std::move(value));
         }
         coreClip.effectModulationMode =
             clip.effectModulationMode.toStdString();

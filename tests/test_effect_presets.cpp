@@ -96,7 +96,9 @@ private slots:
     void maskedRepeatUsesSpeechFilterAwareTransformTiming();
     void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps();
+    void effectParameterKeyframesInterpolateAndPersist();
     void titleAnimationsUseContiguousPlaybackTimeAcrossSkips();
+    void renderedEffectClipsDoNotFadeAtSpeechFilterFrameCrossfades();
     void normalTitleLifetimeEffectEvaluatesWithoutMutatingKeyframes();
     void sportsBroadcastTitleLifetimeEffectsAddProfessionalStructure();
     void temporalEffectsStayOnRawClockDuringVisualSpeedThrough();
@@ -161,6 +163,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.edgeFillSaturation = 1.35;
     clip.maskFeatherGamma = 2.4;
     clip.maskFeatherFalloff = 3;
+    clip.maskEdgeGrayAmount = 0.65;
+    clip.maskEdgeGrayWidth = 0.18;
+    clip.maskEdgeGrayGamma = 2.2;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
     clip.effectEnabled = false;
     clip.effectEnabledKeyframes = {{10, true}, {40, false}};
@@ -194,6 +199,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("maskForegroundLayerEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskFeatherFalloff")).toInt(), 3);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayAmount")).toDouble() - 0.65) < 0.000001);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayWidth")).toDouble() - 0.18) < 0.000001);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayGamma")).toDouble() - 2.2) < 0.000001);
     QCOMPARE(
         json.value(QStringLiteral("edgeFillEffect")).toString(),
         QStringLiteral("progressive_bidirectional_edge_stretch"));
@@ -219,6 +227,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.maskRepeatEnabled, true);
     QCOMPARE(loaded.maskFeatherFalloff, 3);
     QVERIFY(std::abs(loaded.maskFeatherGamma - 2.4) < 0.000001);
+    QVERIFY(std::abs(loaded.maskEdgeGrayAmount - 0.65) < 0.000001);
+    QVERIFY(std::abs(loaded.maskEdgeGrayWidth - 0.18) < 0.000001);
+    QVERIFY(std::abs(loaded.maskEdgeGrayGamma - 2.2) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);
     QCOMPARE(
@@ -1351,6 +1362,13 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
     roundTripPreset(ClipEffectPreset::Kaleidoscope, QStringLiteral("kaleidoscope"));
     roundTripPreset(ClipEffectPreset::HexagonalPrism, QStringLiteral("hexagonal_prism"));
     roundTripPreset(ClipEffectPreset::Droste, QStringLiteral("droste"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomTile, QStringLiteral("recursive_zoom_tile"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomTunnel, QStringLiteral("recursive_zoom_tunnel"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomMirrorBox, QStringLiteral("recursive_zoom_mirror_box"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomSpiral, QStringLiteral("recursive_zoom_spiral"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomKaleidoscope, QStringLiteral("recursive_zoom_kaleidoscope"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomRadialRepeat, QStringLiteral("recursive_zoom_radial_repeat"));
+    roundTripPreset(ClipEffectPreset::RecursiveZoomPixelMosaic, QStringLiteral("recursive_zoom_pixel_mosaic"));
     roundTripPreset(ClipEffectPreset::PolarTunnel, QStringLiteral("polar_tunnel"));
     roundTripPreset(ClipEffectPreset::TinyPlanet, QStringLiteral("tiny_planet"));
     roundTripPreset(ClipEffectPreset::InfiniteMirror, QStringLiteral("infinite_mirror"));
@@ -1400,6 +1418,13 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::Kaleidoscope,
         ClipEffectPreset::HexagonalPrism,
         ClipEffectPreset::Droste,
+        ClipEffectPreset::RecursiveZoomTile,
+        ClipEffectPreset::RecursiveZoomTunnel,
+        ClipEffectPreset::RecursiveZoomMirrorBox,
+        ClipEffectPreset::RecursiveZoomSpiral,
+        ClipEffectPreset::RecursiveZoomKaleidoscope,
+        ClipEffectPreset::RecursiveZoomRadialRepeat,
+        ClipEffectPreset::RecursiveZoomPixelMosaic,
         ClipEffectPreset::PolarTunnel,
         ClipEffectPreset::TinyPlanet,
         ClipEffectPreset::InfiniteMirror,
@@ -1464,6 +1489,53 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[1], 18.0f);
     QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[2], -6.0f);
     QCOMPARE(mirrorPlan.generatedDraws.constFirst().effectParams[3], 2.25f);
+
+    parameterized.effectPreset = ClipEffectPreset::RecursiveZoomTile;
+    parameterized.effectRows = 24;
+    parameterized.effectScale = 1.4;
+    parameterized.effectSpeed = 2.0;
+    parameterized.tilingSpacing = 1.6;
+    const auto recursivePlan = render_detail::vulkanEffectPipelinePlan(
+        parameterized, QRectF(0, 0, 1920, 1080), QSize(1920, 1080), 20.0, 12.0);
+    QVERIFY(recursivePlan.usesGeneratedDraws());
+    QCOMPARE(recursivePlan.generatedDraws.size(), 1);
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().outputRect,
+             QRectF(0, 0, 1920, 1080));
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().shaderMode,
+             render_detail::kVulkanEffectModeRecursiveZoomTile);
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().effectParams[0], 1.4f);
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().effectParams[1], 24.0f);
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().effectParams[2], 24.0f);
+    QCOMPARE(recursivePlan.generatedDraws.constFirst().effectParams[3], 1.6f);
+
+    QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY(shader.open(QIODevice::ReadOnly));
+    const QString shaderSource = QString::fromUtf8(shader.readAll());
+    QVERIFY(shaderSource.contains(QStringLiteral("recursiveZoomTileSample")));
+    QVERIFY(shaderSource.contains(QStringLiteral("recursiveZoomVariantSample")));
+    QVERIFY(shaderSource.contains(QStringLiteral("artisticMode >= 30 && artisticMode <= 36")));
+    const QVector<QPair<ClipEffectPreset, float>> recursiveVariants{
+        {ClipEffectPreset::RecursiveZoomTunnel,
+         render_detail::kVulkanEffectModeRecursiveZoomTunnel},
+        {ClipEffectPreset::RecursiveZoomMirrorBox,
+         render_detail::kVulkanEffectModeRecursiveZoomMirrorBox},
+        {ClipEffectPreset::RecursiveZoomSpiral,
+         render_detail::kVulkanEffectModeRecursiveZoomSpiral},
+        {ClipEffectPreset::RecursiveZoomKaleidoscope,
+         render_detail::kVulkanEffectModeRecursiveZoomKaleidoscope},
+        {ClipEffectPreset::RecursiveZoomRadialRepeat,
+         render_detail::kVulkanEffectModeRecursiveZoomRadialRepeat},
+        {ClipEffectPreset::RecursiveZoomPixelMosaic,
+         render_detail::kVulkanEffectModeRecursiveZoomPixelMosaic},
+    };
+    for (const auto& variant : recursiveVariants) {
+        parameterized.effectPreset = variant.first;
+        const auto variantPlan = render_detail::vulkanEffectPipelinePlan(
+            parameterized, QRectF(0, 0, 1920, 1080), QSize(1920, 1080), 20.0, 12.0);
+        QVERIFY(variantPlan.usesGeneratedDraws());
+        QCOMPARE(variantPlan.generatedDraws.size(), 1);
+        QCOMPARE(variantPlan.generatedDraws.constFirst().shaderMode, variant.second);
+    }
 }
 
 void TestEffectPresets::trackEffectSettingsDoNotLeakIntoChildClips()
@@ -2577,6 +2649,65 @@ void TestEffectPresets::temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps()
     QCOMPARE(render_detail::clipEffectPlaybackFramePosition(unsyncedClip, {unsyncedClip}, 20.0, timing), 20.0);
 }
 
+void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
+{
+    TimelineClip clip;
+    clip.id = QStringLiteral("effect-keyed");
+    clip.clipRole = ClipRole::Media;
+    clip.mediaType = ClipMediaType::Video;
+    clip.startFrame = 100;
+    clip.durationFrames = 101;
+    clip.effectPreset = ClipEffectPreset::RecursiveZoomTile;
+    clip.effectRows = 4;
+    clip.effectSpeed = 1.0;
+    clip.effectScale = 1.0;
+    clip.tilingSpacing = 1.0;
+
+    TimelineClip::EffectParameterKeyframe first;
+    first.frame = 0;
+    first.effectRows = 4;
+    first.effectSpeed = 1.0;
+    first.effectScale = 1.0;
+    first.tilingSpacing = 1.0;
+    first.tilingPattern = ClipTilingPattern::Grid;
+
+    TimelineClip::EffectParameterKeyframe second = first;
+    second.frame = 100;
+    second.effectRows = 14;
+    second.effectSpeed = 3.0;
+    second.effectScale = 2.0;
+    second.tilingSpacing = 3.0;
+    second.tilingPattern = ClipTilingPattern::Encircle;
+    second.tilingWrap = false;
+
+    clip.effectParameterKeyframes = {first, second};
+
+    const TimelineClip evaluated =
+        evaluateClipEffectAnimationAtPosition(clip, 150.0);
+    QCOMPARE(evaluated.effectRows, 9);
+    QCOMPARE(evaluated.effectSpeed, 2.0);
+    QCOMPARE(evaluated.effectScale, 1.5);
+    QCOMPARE(evaluated.tilingSpacing, 2.0);
+    QCOMPARE(evaluated.tilingPattern, ClipTilingPattern::Grid);
+    QVERIFY(evaluated.tilingWrap);
+
+    const TimelineClip held =
+        evaluateClipEffectAnimationAtPosition(clip, 220.0);
+    QCOMPARE(held.effectRows, 14);
+    QCOMPARE(held.effectSpeed, 3.0);
+    QCOMPARE(held.effectScale, 2.0);
+    QCOMPARE(held.tilingPattern, ClipTilingPattern::Encircle);
+    QVERIFY(!held.tilingWrap);
+
+    const QJsonObject json = editor::clipToJson(clip);
+    const TimelineClip loaded = editor::clipFromJson(json);
+    QCOMPARE(loaded.effectParameterKeyframes.size(), 2);
+    QCOMPARE(loaded.effectParameterKeyframes.constLast().frame, int64_t{100});
+    QCOMPARE(loaded.effectParameterKeyframes.constLast().effectRows, 14);
+    QCOMPARE(loaded.effectParameterKeyframes.constLast().tilingPattern,
+             ClipTilingPattern::Encircle);
+}
+
 void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
 {
     TimelineClip clip = createDefaultTitleClip(0, 1, 100);
@@ -2624,6 +2755,51 @@ void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
     const EvaluatedTitle unsynchronized =
         evaluateTitleAtTimelinePosition(clip, 20.0, timing);
     QCOMPARE(unsynchronized.x, 20.0);
+}
+
+void TestEffectPresets::renderedEffectClipsDoNotFadeAtSpeechFilterFrameCrossfades()
+{
+    PlaybackTimingContext timing;
+    timing.playbackRanges = {
+        ExportRangeSegment{0, 9},
+        ExportRangeSegment{20, 29},
+    };
+    timing.frameCrossfadeEnabled = true;
+    timing.frameCrossfadeFrames = 4;
+
+    const PlaybackFrameCrossfade boundaryCrossfade =
+        playbackFrameCrossfadeAtTimelineFrame(7.0, timing);
+    QVERIFY(boundaryCrossfade.active);
+    QVERIFY(boundaryCrossfade.secondaryOpacity > 0.0f);
+
+    TimelineClip mediaClip;
+    mediaClip.clipRole = ClipRole::Media;
+    QVERIFY(clipShouldApplySpeechFilterFrameCrossfade(mediaClip));
+
+    TimelineClip drosteMediaClip = mediaClip;
+    drosteMediaClip.effectPreset = ClipEffectPreset::Droste;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(drosteMediaClip));
+
+    TimelineClip recursiveMediaClip = mediaClip;
+    recursiveMediaClip.effectPreset = ClipEffectPreset::RecursiveZoomTile;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(recursiveMediaClip));
+
+    TimelineClip effectClip;
+    effectClip.clipRole = ClipRole::EffectSynth;
+    effectClip.effectPreset = ClipEffectPreset::SourceTile;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(effectClip));
+
+    TimelineClip unsupportedMatteClip;
+    unsupportedMatteClip.clipRole = ClipRole::MaskMatte;
+    unsupportedMatteClip.effectPreset = ClipEffectPreset::DifferenceMatte;
+    QVERIFY(clipShouldApplySpeechFilterFrameCrossfade(unsupportedMatteClip));
+
+    const PlaybackFrameCrossfade appliedToEffect =
+        clipShouldApplySpeechFilterFrameCrossfade(effectClip)
+            ? playbackFrameCrossfadeAtTimelineFrame(7.0, timing)
+            : PlaybackFrameCrossfade{};
+    QVERIFY(!appliedToEffect.active);
+    QCOMPARE(appliedToEffect.secondaryOpacity, 0.0f);
 }
 
 void TestEffectPresets::normalTitleLifetimeEffectEvaluatesWithoutMutatingKeyframes()

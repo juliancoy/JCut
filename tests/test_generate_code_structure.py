@@ -19,6 +19,44 @@ SPEC.loader.exec_module(generator)
 
 
 class GenerateCodeStructureTest(unittest.TestCase):
+    def create_generated_fixture(self, root: Path) -> Path:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        (root / "sample.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+        subprocess.run(["git", "add", "sample.py"], cwd=root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c", "user.name=JCut Test",
+                "-c", "user.email=jcut-test@example.invalid",
+                "commit", "-q", "-m", "fixture",
+            ],
+            cwd=root,
+            check=True,
+        )
+        output = root / "report"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--root", str(root), "--output-dir", str(output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return output
+
+    def check_current(self, root: Path, output: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root", str(root),
+                "--output-dir", str(output),
+                "--check-current",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def test_ownership_resolution_prefers_highest_priority(self) -> None:
         manifest = {
             "schema": generator.OWNERSHIP_SCHEMA,
@@ -168,6 +206,95 @@ private slots:
                 generator.discover_files(root, ()),
                 [Path("present.cpp")],
             )
+
+    def test_check_current_accepts_unchanged_artifact_and_records_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            index = json.loads((output / "code_structure.json").read_text(encoding="utf-8"))
+            freshness = index["freshness"]
+            self.assertEqual(freshness["generator_version"], generator.GENERATOR_VERSION)
+            self.assertEqual(len(freshness["generator_sha256"]), 64)
+            self.assertEqual(len(freshness["git_commit"]), 40)
+            self.assertEqual(len(freshness["dirty_state_fingerprint"]), 64)
+            self.assertEqual(len(freshness["corpus_fingerprint"]), 64)
+            self.assertIsNone(freshness["ownership_manifest"]["sha256"])
+            self.assertIsNone(freshness["build_file"]["sha256"])
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Artifact is current", result.stdout)
+            markdown = (output / "code_structure.md").read_text(encoding="utf-8")
+            self.assertIn("## Artifact provenance", markdown)
+            self.assertIn(freshness["corpus_fingerprint"], markdown)
+
+    def test_check_current_rejects_changed_indexed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            (root / "sample.py").write_text("def answer():\n    return 43\n", encoding="utf-8")
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("indexed file changed: sample.py", result.stderr)
+
+    def test_check_current_rejects_added_indexed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            (root / "added.py").write_text("value = 1\n", encoding="utf-8")
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("indexed file added: added.py", result.stderr)
+
+    def test_check_current_rejects_removed_indexed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            (root / "sample.py").unlink()
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("indexed file removed: sample.py", result.stderr)
+
+    def test_check_current_rejects_recorded_metadata_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            artifact_path = output / "code_structure.json"
+            index = json.loads(artifact_path.read_text(encoding="utf-8"))
+            index["freshness"]["generator_version"] = "stale-version"
+            artifact_path.write_text(json.dumps(index), encoding="utf-8")
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("generator_version changed", result.stderr)
+
+    def test_check_current_rejects_ownership_manifest_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            (root / "code_ownership.json").write_text(
+                json.dumps({"schema": generator.OWNERSHIP_SCHEMA, "rules": []}),
+                encoding="utf-8",
+            )
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("ownership_manifest changed", result.stderr)
+
+    def test_check_current_rejects_build_file_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            build = root / "build"
+            build.mkdir()
+            (build / "build.ninja").write_text("# newly configured\n", encoding="utf-8")
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("build_file changed", result.stderr)
 
 
 if __name__ == "__main__":

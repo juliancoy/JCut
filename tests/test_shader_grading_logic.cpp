@@ -14,6 +14,18 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+namespace {
+
+QString readSourceText(const QString& relativePath)
+{
+    QFile file(QStringLiteral(JCUT_SOURCE_DIR "/") + relativePath);
+    return file.open(QIODevice::ReadOnly)
+        ? QString::fromUtf8(file.readAll())
+        : QString();
+}
+
+} // namespace
+
 class TestShaderGradingLogic : public QObject {
     Q_OBJECT
 
@@ -24,6 +36,8 @@ private slots:
     void testVulkanShaderUsesSafePowForMidtones();
     void testVulkanShaderAppliesLumaCurveAsLumaScale();
     void testVulkanShaderHasSeparateMaskCurveLut();
+    void testVulkanShaderDesaturatesMaskFeatherEdgeOnGpu();
+    void testVulkanShaderRejectsEmptyMaskFragmentsBeforeSourceWork();
     void testVulkanMaskPreprocessShadersExist();
     void testVulkanMaskPrepareUsesBilinearResampling();
     void testVulkanMaskPrepareUsesMotionTolerantTemporalMedian();
@@ -108,6 +122,44 @@ void TestShaderGradingLogic::testVulkanShaderHasSeparateMaskCurveLut()
              "Vulkan effects shader must sample the separate mask grade curve LUT.");
     QVERIFY2(shader.contains(QStringLiteral("bool maskCurveEnabled = maskOverlay && pc.u_midtones.a < -0.5;")),
              "Mask grade pass must explicitly select the mask curve LUT.");
+}
+
+void TestShaderGradingLogic::testVulkanShaderDesaturatesMaskFeatherEdgeOnGpu()
+{
+    QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY2(shaderFile.open(QIODevice::ReadOnly), "Unable to open Vulkan effects shader.");
+    const QString shader = QString::fromUtf8(shaderFile.readAll());
+
+    QVERIFY2(shader.contains(QStringLiteral("float amount = clamp(frame.effectParams.x, 0.0, 1.0);")),
+             "Vulkan mask shader must receive edge grayscale parameters through GPU frame uniforms.");
+    QVERIFY2(shader.contains(QStringLiteral("float maskEdgeWeight(float maskValue)")),
+             "Vulkan mask shader must compute a grayscale weight from the softened alpha edge.");
+    QVERIFY2(shader.contains(QStringLiteral("rgb = mix(rgb, vec3(lumaOf(rgb)), edgeGray);")),
+             "Vulkan mask shader must desaturate only the feathered mask edge before compositing.");
+}
+
+void TestShaderGradingLogic::
+    testVulkanShaderRejectsEmptyMaskFragmentsBeforeSourceWork()
+{
+    QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY2(shaderFile.open(QIODevice::ReadOnly), "Unable to open Vulkan effects shader.");
+    const QString shader = QString::fromUtf8(shaderFile.readAll());
+
+    const int mainPosition = shader.indexOf(QStringLiteral("void main()"));
+    const int maskPosition = shader.indexOf(
+        QStringLiteral("resolvedMaskValue = treatedMaskValue(v_texCoord)"),
+        mainPosition);
+    const int discardPosition = shader.indexOf(QStringLiteral("discard;"), maskPosition);
+    const int sourceSamplePosition = shader.indexOf(
+        QStringLiteral("vec4 c = tileFill"), mainPosition);
+    QVERIFY2(mainPosition >= 0 && maskPosition > mainPosition &&
+                 discardPosition > maskPosition &&
+                 sourceSamplePosition > discardPosition,
+             "Masked Vulkan draws must reject zero-coverage fragments before "
+             "sampling and grading the source image.");
+    QVERIFY2(shader.contains(QStringLiteral(
+                 "if (earlyMaskOnly) {\n            outColor =")),
+             "Mask-only Vulkan draws must return without sampling the source image.");
 }
 
 void TestShaderGradingLogic::testVulkanMaskPreprocessShadersExist()
@@ -235,9 +287,11 @@ void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
     QVERIFY2(!previewText.contains(QStringLiteral("preparedClipMaskImage(clip")),
              "Vulkan preview must not CPU-prepare Vulkan masks.");
 
-    QFile exportSource(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
-    QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
-    const QString exportText = QString::fromUtf8(exportSource.readAll());
+    const QString exportText =
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_backend.cpp")) +
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_composition.h")) +
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_staging_preview.h"));
+    QVERIFY2(!exportText.isEmpty(), "Unable to open offscreen Vulkan renderer modules.");
     QVERIFY2(exportText.contains(QStringLiteral(
                  "rawClipMaskBufferBlocking(")) &&
                  exportText.contains(QStringLiteral(
@@ -270,18 +324,19 @@ void TestShaderGradingLogic::testVulkanMaskComputeUsesDescriptorRings()
 {
     QFile directHeader(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_resources.h"));
     QFile directSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_resources.cpp"));
-    QFile exportSource(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
     QFile sharedHeader(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.h"));
     QFile sharedSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.cpp"));
     QVERIFY2(directHeader.open(QIODevice::ReadOnly), "Unable to open Vulkan resources header.");
     QVERIFY2(directSource.open(QIODevice::ReadOnly), "Unable to open Vulkan resources source.");
-    QVERIFY2(exportSource.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
     QVERIFY2(sharedHeader.open(QIODevice::ReadOnly), "Unable to open shared Vulkan mask preprocessor header.");
     QVERIFY2(sharedSource.open(QIODevice::ReadOnly), "Unable to open shared Vulkan mask preprocessor source.");
 
     const QString directHeaderText = QString::fromUtf8(directHeader.readAll());
     const QString directText = QString::fromUtf8(directSource.readAll());
-    const QString exportText = QString::fromUtf8(exportSource.readAll());
+    const QString exportText =
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_backend.cpp")) +
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_staging_preview.h"));
+    QVERIFY2(!exportText.isEmpty(), "Unable to open offscreen Vulkan renderer modules.");
     const QString sharedHeaderText = QString::fromUtf8(sharedHeader.readAll());
     const QString sharedText = QString::fromUtf8(sharedSource.readAll());
     const QRegularExpression singleMutableSetMember(
@@ -374,10 +429,9 @@ void TestShaderGradingLogic::
     QVERIFY(effects.contains(QStringLiteral("version.modifiedNanoseconds")));
     QVERIFY(effects.contains(QStringLiteral("version.inode")));
 
-    QFile previewFile(
-        QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
-    QVERIFY(previewFile.open(QIODevice::ReadOnly));
-    const QString preview = QString::fromUtf8(previewFile.readAll());
+    const QString preview = readSourceText(
+        QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
+    QVERIFY(!preview.isEmpty());
     QVERIFY(preview.contains(QStringLiteral(
         "QHash<QString, PreparedGpuMask> preparedGpuMasks")));
     QVERIFY(preview.contains(QStringLiteral(
@@ -389,11 +443,9 @@ void TestShaderGradingLogic::
     QVERIFY(preview.contains(QStringLiteral(
         "preparedGpuMasks.insert(key, result)")));
 
-    QFile exportFile(
-        QStringLiteral(
-            JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
-    QVERIFY(exportFile.open(QIODevice::ReadOnly));
-    const QString exportSource = QString::fromUtf8(exportFile.readAll());
+    const QString exportSource = readSourceText(
+        QStringLiteral("offscreen_vulkan_renderer_composition.h"));
+    QVERIFY(!exportSource.isEmpty());
     QVERIFY(exportSource.contains(QStringLiteral(
         "QHash<QString, PreparedGpuMask> preparedGpuMasks")));
     QVERIFY(exportSource.contains(QStringLiteral(
@@ -441,10 +493,10 @@ void TestShaderGradingLogic::
                        differentPresentedFrame));
     QVERIFY(render_detail::vulkanSourceFrameCacheKey({}, frame).isEmpty());
 
-    QFile exportFile(QStringLiteral(
-        JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
-    QVERIFY(exportFile.open(QIODevice::ReadOnly));
-    const QString exportSource = QString::fromUtf8(exportFile.readAll());
+    const QString exportSource =
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_composition.h")) +
+        readSourceText(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+    QVERIFY(!exportSource.isEmpty());
     QVERIFY(exportSource.contains(QStringLiteral(
         "QHash<QString, PreparedGpuSource> preparedGpuSources")));
     QVERIFY(exportSource.contains(QStringLiteral(

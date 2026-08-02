@@ -184,6 +184,7 @@ enum class EditorKeyframeChannel {
     Opacity,
     Transform,
     EffectEnabled,
+    EffectParameters,
     SpeakerFramingEnabled,
     SpeakerFraming,
     SpeakerFramingTarget,
@@ -259,6 +260,9 @@ struct SetClipMaskEffectCommand {
     double feather = 0.0;
     double featherGamma = 1.0;
     int featherFalloff = 0;
+    double edgeGrayAmount = 0.0;
+    double edgeGrayWidth = 0.25;
+    double edgeGrayGamma = 1.0;
     bool foregroundLayerEnabled = false;
     bool repeatEnabled = false;
     double repeatDeltaX = 160.0;
@@ -295,6 +299,10 @@ struct UpsertEffectEnabledKeyframeCommand {
     int clipId = 0;
     EditorBoolKeyframe keyframe;
 };
+struct UpsertEffectParameterKeyframeCommand {
+    int clipId = 0;
+    EditorEffectParameterKeyframe keyframe;
+};
 // Updates only mask presentation fields. Keeping this separate from effect
 // normalization prevents a mask-only edit from rewriting a forward-compatible
 // effect preset that this build does not understand yet.
@@ -304,6 +312,9 @@ struct SetClipMaskCommand {
     double feather = 0.0;
     double featherGamma = 1.0;
     int featherFalloff = 0;
+    double edgeGrayAmount = 0.0;
+    double edgeGrayWidth = 0.25;
+    double edgeGrayGamma = 1.0;
     bool foregroundLayerEnabled = false;
     bool repeatEnabled = false;
     double repeatDeltaX = 160.0;
@@ -498,6 +509,7 @@ using EditorCommand = std::variant<
     CommitPreviewTransformCommand,
     SetClipMaskEffectCommand,
     UpsertEffectEnabledKeyframeCommand,
+    UpsertEffectParameterKeyframeCommand,
     SetClipMaskCommand,
     MaterializeMaskMatteCommand,
     SetClipZLevelCommand,

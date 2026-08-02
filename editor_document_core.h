@@ -80,7 +80,7 @@ inline EditorAudioTreatment editorAudioTreatmentFromId(
 
 // Canonical persisted IDs shared with the Qt preset serializer. Commands still
 // preserve unknown IDs so newer projects remain forward-compatible.
-inline constexpr std::array<std::string_view, 34> kEditorEffectPresetIds = {
+inline constexpr std::array<std::string_view, 41> kEditorEffectPresetIds = {
     "none",
     "mirror_ring",
     "kaleidoscope",
@@ -89,6 +89,13 @@ inline constexpr std::array<std::string_view, 34> kEditorEffectPresetIds = {
     "tessellation",
     "hexagonal_prism",
     "droste",
+    "recursive_zoom_tile",
+    "recursive_zoom_tunnel",
+    "recursive_zoom_mirror_box",
+    "recursive_zoom_spiral",
+    "recursive_zoom_kaleidoscope",
+    "recursive_zoom_radial_repeat",
+    "recursive_zoom_pixel_mosaic",
     "polar_tunnel",
     "tiny_planet",
     "twirl_vortex",
@@ -198,6 +205,24 @@ struct EditorTransformKeyframe {
 struct EditorBoolKeyframe {
     std::int64_t frame = 0;
     bool enabled = false;
+};
+
+struct EditorEffectParameterKeyframe {
+    std::int64_t frame = 0;
+    int effectRows = 32;
+    double effectSpeed = 1.0;
+    double effectScale = 1.0;
+    bool effectAlternateDirection = true;
+    int differenceReferenceFrames = 1;
+    double differenceThreshold = 0.10;
+    double differenceSoftness = 0.05;
+    int temporalEchoCount = 4;
+    int temporalEchoSpacingFrames = 2;
+    double temporalEchoDecay = 0.65;
+    std::string tilingPattern = "grid";
+    double tilingSpacing = 1.0;
+    bool tilingWrap = true;
+    bool linearInterpolation = true;
 };
 
 struct EditorPoint {
@@ -459,6 +484,9 @@ struct EditorClip {
     double maskFeather = 0.0;
     double maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0;
+    double maskEdgeGrayAmount = 0.0;
+    double maskEdgeGrayWidth = 0.25;
+    double maskEdgeGrayGamma = 1.0;
     double maskDilate = 0.0;
     double maskErode = 0.0;
     double maskBlur = 0.0;
@@ -495,6 +523,7 @@ struct EditorClip {
     std::string effectPreset = "none";
     bool effectEnabled = true;
     std::vector<EditorBoolKeyframe> effectEnabledKeyframes;
+    std::vector<EditorEffectParameterKeyframe> effectParameterKeyframes;
     std::string effectModulationMode = "none";
     std::string effectModulationTarget = "scale";
     double effectModulationAmount = 0.0;

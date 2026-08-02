@@ -1670,7 +1670,8 @@ bool effectPresetIsMirrorGeometry(std::string_view presetId)
         presetId == "infinite_mirror" ||
         presetId == "tessellation" ||
         presetId == "hexagonal_prism" ||
-        presetId == "droste";
+        presetId == "droste" ||
+        presetId == "recursive_zoom_tile";
 }
 
 bool effectPresetUsesCommonNeutralParameters(std::string_view presetId)

@@ -137,7 +137,7 @@ QWidget *InspectorPane::buildOutputTab()
         QStringLiteral("Renderer used for final export. Vulkan is strict and fails if unavailable; preview rendering is configured separately."));
     m_renderUseProxiesCheckBox = new QCheckBox(QStringLiteral("Use Proxies For Render"), page);
     m_incrementalRenderCheckBox = new QCheckBox(QStringLiteral("Incremental chunked render"), page);
-    m_incrementalRenderCheckBox->setChecked(true);
+    m_incrementalRenderCheckBox->setChecked(false);
     m_incrementalRenderCheckBox->setToolTip(
         QStringLiteral("Render resumable encoded chunks and assemble them into the final video. Disable for one continuous export without chunk checkpoints."));
     m_instagramSafeAreaGuidesCheckBox =

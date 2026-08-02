@@ -104,6 +104,45 @@ vec4 samplePostGradeTexture(vec2 uv) {
     return sampleColor;
 }
 
+float treatedMaskValue(vec2 uv) {
+    float maskValue = clamp(texture(u_mask, uv).r, 0.0, 1.0);
+    // Quantized binary mattes and GPU filtering can leave sub-code-value
+    // residue in nominally black regions. Gamma falloff below 1.0 would
+    // amplify that residue into a visible full-frame grade. Keep the zero
+    // region exact while retaining the intentionally feathered boundary.
+    maskValue = maskValue <= (1.0 / 255.0) ? 0.0 : maskValue;
+    float packedFalloff = max(pc.u_highlights.a, 0.1);
+    int falloff = int(floor(packedFalloff / 10.0));
+    float power = clamp(packedFalloff - float(falloff) * 10.0, 0.1, 5.0);
+    if (falloff == 0) {
+        maskValue = pow(maskValue, 1.0 / power);
+    } else if (falloff == 2) {
+        maskValue = smoothstep(0.0, 1.0, maskValue);
+    } else if (falloff == 3) {
+        float t = maskValue;
+        maskValue = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    } else if (falloff == 4) {
+        maskValue = 0.5 - 0.5 * cos(maskValue * 3.14159265359);
+    } else if (falloff == 5) {
+        const float k = 4.0;
+        float lo = exp(-k);
+        maskValue = (exp(-k * (1.0 - maskValue) * (1.0 - maskValue)) - lo) / (1.0 - lo);
+    }
+    return maskValue;
+}
+
+float maskEdgeWeight(float maskValue) {
+    float amount = clamp(frame.effectParams.x, 0.0, 1.0);
+    if (amount <= 0.0) {
+        return 0.0;
+    }
+    float width = clamp(frame.effectParams.y, 0.001, 0.5);
+    float gamma = clamp(frame.effectParams.z, 0.1, 8.0);
+    float distanceFromBoundary = abs(maskValue - 0.5);
+    float band = 1.0 - smoothstep(0.0, width, distanceFromBoundary);
+    return amount * pow(clamp(band, 0.0, 1.0), gamma);
+}
+
 vec2 safeClampRange(vec2 value, vec2 low, vec2 high) {
     vec2 safeLow = min(low, high);
     vec2 safeHigh = max(low, high);
@@ -478,6 +517,80 @@ vec4 tileFillSample(vec2 uv) {
     return samplePostGradeTexture(textureInteriorClamp(validUv));
 }
 
+vec2 recursiveZoomVariantUv(vec2 uv, float scale, float phase, int mode) {
+    vec2 centered = uv - vec2(0.5);
+    float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
+    float density = clamp(frame.effectParams.y, 1.0, 96.0);
+    float sectors = clamp(floor(density + 0.5), 2.0, 96.0);
+    const float tau = 6.28318530718;
+
+    if (mode == 31) { // Recursive zoom tunnel
+        float r = max(length(centered), 0.0001);
+        float a = atan(centered.y, centered.x);
+        return vec2(fract(a / tau + 0.5 + phase * 0.35),
+                    fract(-log(r) * 0.22 * spacing + scale * 0.021));
+    }
+    if (mode == 32) { // Recursive zoom mirror box
+        vec2 box = centered * scale + vec2(0.5);
+        return vec2(mirroredCoord(box.x), mirroredCoord(box.y));
+    }
+    if (mode == 33) { // Recursive zoom spiral
+        float r = max(length(centered), 0.0001);
+        float a = atan(centered.y, centered.x) +
+                  log(r) * spacing +
+                  phase * tau;
+        float rr = mirroredCoord(r * scale) * 0.5;
+        return vec2(0.5) + vec2(cos(a), sin(a)) * rr;
+    }
+    if (mode == 34) { // Recursive zoom kaleidoscope
+        float r = length(centered) * scale;
+        float a = atan(centered.y, centered.x) + phase * tau * 0.5;
+        float wedge = tau / sectors;
+        a = abs(mod(a + wedge * 0.5, wedge) - wedge * 0.5);
+        return vec2(0.5) + vec2(cos(a), sin(a)) * mirroredCoord(r) * 0.5;
+    }
+    if (mode == 35) { // Recursive zoom radial repeat
+        float r = length(centered) * scale;
+        float a = atan(centered.y, centered.x) + phase * tau * 0.25;
+        float wedge = tau / sectors;
+        a = mod(a + wedge * 0.5, wedge) - wedge * 0.5;
+        return vec2(0.5) + vec2(cos(a), sin(a)) * fract(r);
+    }
+    if (mode == 36) { // Recursive zoom pixel mosaic
+        float cells = clamp(floor(density * 0.75 + spacing * 2.0), 2.0, 128.0);
+        vec2 tiled = fract(centered * scale + vec2(0.5));
+        return (floor(tiled * cells) + vec2(0.5)) / cells;
+    }
+
+    return fract(centered * scale + vec2(0.5));
+}
+
+vec4 recursiveZoomVariantSample(vec2 uv, int mode) {
+    float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+    float density = clamp(frame.effectParams.y, 1.0, 96.0);
+    float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
+    // One complete phase moves from the current scale into the next tiled
+    // scale, while crossfading toward the parent level.  At phase wrap the
+    // parent level equals the new child level, making the infinite zoom loop
+    // continuous rather than a hard reset.
+    float recursionBase = clamp(1.65 + density * 0.025 + spacing * 0.22,
+                                2.0,
+                                6.0);
+    float phase = fract(frame.effectParams.z * 0.012);
+    float childScale = grain * pow(recursionBase, phase);
+    float parentScale = childScale / recursionBase;
+    vec2 childUv = recursiveZoomVariantUv(uv, childScale, phase, mode);
+    vec2 parentUv = recursiveZoomVariantUv(uv, parentScale, fract(phase + 1.0), mode);
+    vec4 child = texture(u_texture, textureInteriorClamp(childUv));
+    vec4 parent = texture(u_texture, textureInteriorClamp(parentUv));
+    float replace = smoothstep(0.36, 0.92, phase);
+    return mix(child, parent, replace);
+}
+
+vec4 recursiveZoomTileSample(vec2 uv) {
+    return recursiveZoomVariantSample(uv, 30);
+}
+
 void main() {
     bool tileFill = pc.u_highlights.a < -6.5;
     bool progressiveBidirectionalEdgeStretchFill =
@@ -503,6 +616,24 @@ void main() {
         tileFill ||
         edgeStretchFill ||
         blurredFill;
+    bool earlyMaskOverlay = !backgroundFill &&
+        pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
+    bool earlyMaskOnly = !backgroundFill &&
+        pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;
+    float resolvedMaskValue = 1.0;
+    if (earlyMaskOverlay || earlyMaskOnly) {
+        resolvedMaskValue = treatedMaskValue(v_texCoord);
+        if (resolvedMaskValue <= 0.0) {
+            discard;
+        }
+        // A mask-only pass does not depend on the source image or its grade.
+        // Return before paying for either on every covered fragment.
+        if (earlyMaskOnly) {
+            outColor = vec4(vec3(resolvedMaskValue),
+                            resolvedMaskValue * pc.u_opacity);
+            return;
+        }
+    }
     // Background fills repurpose u_shadows.a for the signed
     // output-height/source-height mapping. It is geometry, not an effect mode.
     // Without this namespace boundary, ordinary zoom ratios such as 4, 5, or
@@ -571,6 +702,8 @@ void main() {
         float rr = exp(fract(log(r) / log(recursionBase)) *
                        log(recursionBase)) * (0.24 * grain);
         effectUv = 0.5 + vec2(cos(a), sin(a)) * rr;
+    } else if (artisticMode >= 30 && artisticMode <= 36) { // Recursive zoom variants
+        effectUv = v_texCoord;
     } else if (artisticMode == 11) { // Polar tunnel
         vec2 p = v_texCoord - 0.5;
         effectUv = vec2(fract(atan(p.y, p.x) / 6.2831853 + 0.5), fract(0.16 / max(length(p), 0.025)));
@@ -628,6 +761,8 @@ void main() {
         float hash = fract(sin(dot(cell, vec2(41.7, 289.1))) * 43758.5);
         effectUv = v_texCoord + normalize(local + vec2(0.001)) * (hash - 0.5) * 0.035;
     }
+    bool recursiveZoomVariant = !backgroundFill &&
+        artisticMode >= 30 && artisticMode <= 36;
     vec4 c = tileFill
         ? tileFillSample(v_texCoord)
         : progressiveBidirectionalEdgeStretchFill
@@ -637,6 +772,9 @@ void main() {
         : (progressiveEdgeStretchFill || edgeStretchFill
             ? edgeStretchFillSample(v_texCoord)
             : (blurredFill ? blurredFillSample(v_texCoord) : texture(u_texture, textureInteriorClamp(effectUv))));
+    if (recursiveZoomVariant) {
+        c = recursiveZoomVariantSample(v_texCoord, artisticMode);
+    }
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;
@@ -787,37 +925,14 @@ void main() {
         return;
     }
 
-    bool maskOverlay = !backgroundFill && pc.u_shadows.a > 1.5 && pc.u_shadows.a < 2.5;
-    bool maskOnly = !backgroundFill && pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;
+    bool maskOverlay = !backgroundFill && earlyMaskOverlay;
+    bool maskOnly = !backgroundFill && earlyMaskOnly;
     if (maskOverlay || maskOnly) {
-        float maskValue = clamp(texture(u_mask, v_texCoord).r, 0.0, 1.0);
-        // Quantized binary mattes and GPU filtering can leave sub-code-value
-        // residue in nominally black regions. Gamma falloff below 1.0 would
-        // amplify that residue into a visible full-frame grade. Keep the zero
-        // region exact while retaining the intentionally feathered boundary.
-        maskValue = maskValue <= (1.0 / 255.0) ? 0.0 : maskValue;
-        float packedFalloff = max(pc.u_highlights.a, 0.1);
-        int falloff = int(floor(packedFalloff / 10.0));
-        float power = clamp(packedFalloff - float(falloff) * 10.0, 0.1, 5.0);
-        if (falloff == 0) {
-            maskValue = pow(maskValue, 1.0 / power);
-        } else if (falloff == 2) {
-            maskValue = smoothstep(0.0, 1.0, maskValue);
-        } else if (falloff == 3) {
-            float t = maskValue;
-            maskValue = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-        } else if (falloff == 4) {
-            maskValue = 0.5 - 0.5 * cos(maskValue * 3.14159265359);
-        } else if (falloff == 5) {
-            const float k = 4.0;
-            float lo = exp(-k);
-            maskValue = (exp(-k * (1.0 - maskValue) * (1.0 - maskValue)) - lo) / (1.0 - lo);
+        float edgeGray = maskEdgeWeight(resolvedMaskValue);
+        if (edgeGray > 0.0) {
+            rgb = mix(rgb, vec3(lumaOf(rgb)), edgeGray);
         }
-        if (maskOnly) {
-            outColor = vec4(vec3(maskValue), maskValue * pc.u_opacity);
-            return;
-        }
-        sourceAlpha *= maskValue;
+        sourceAlpha *= resolvedMaskValue;
     }
 
     c.a = clamp(sourceAlpha * pc.u_opacity, 0.0, 1.0);

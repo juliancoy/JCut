@@ -56,6 +56,13 @@ enum class ClipEffectPreset {
     Kaleidoscope,
     HexagonalPrism,
     Droste,
+    RecursiveZoomTile,
+    RecursiveZoomTunnel,
+    RecursiveZoomMirrorBox,
+    RecursiveZoomSpiral,
+    RecursiveZoomKaleidoscope,
+    RecursiveZoomRadialRepeat,
+    RecursiveZoomPixelMosaic,
     PolarTunnel,
     TinyPlanet,
     InfiniteMirror,
@@ -151,6 +158,24 @@ struct TimelineClip {
     struct BoolKeyframe {
         int64_t frame = 0;
         bool enabled = false;
+    };
+
+    struct EffectParameterKeyframe {
+        int64_t frame = 0;
+        int effectRows = 32;
+        qreal effectSpeed = 1.0;
+        qreal effectScale = 1.0;
+        bool effectAlternateDirection = true;
+        int differenceReferenceFrames = 1;
+        qreal differenceThreshold = 0.10;
+        qreal differenceSoftness = 0.05;
+        int temporalEchoCount = 4;
+        int temporalEchoSpacingFrames = 2;
+        qreal temporalEchoDecay = 0.65;
+        ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
+        qreal tilingSpacing = 1.0;
+        bool tilingWrap = true;
+        bool linearInterpolation = true;
     };
 
     struct TitleKeyframe {
@@ -426,6 +451,9 @@ struct TimelineClip {
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0; // 0 power, 1 linear, 2 smoothstep, 3 smootherstep, 4 cosine, 5 gaussian
+    qreal maskEdgeGrayAmount = 0.0;
+    qreal maskEdgeGrayWidth = 0.25;
+    qreal maskEdgeGrayGamma = 1.0;
     qreal maskDilate = 0.0;
     qreal maskErode = 0.0;
     qreal maskBlur = 0.0;
@@ -464,6 +492,7 @@ struct TimelineClip {
     ClipEffectPreset effectPreset = ClipEffectPreset::None;
     bool effectEnabled = true;
     QVector<BoolKeyframe> effectEnabledKeyframes;
+    QVector<EffectParameterKeyframe> effectParameterKeyframes;
     QString effectModulationMode = QStringLiteral("none");
     QString effectModulationTarget = QStringLiteral("scale");
     qreal effectModulationAmount = 0.0;

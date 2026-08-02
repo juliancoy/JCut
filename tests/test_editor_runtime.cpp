@@ -2258,7 +2258,7 @@ void TestEditorRuntime::testInspectorCommandsUpdateSharedClipState()
             1,
             {30, "Target", 0.55, 0.42, 12.0, 0.28, 0.9, true}});
     applyCommand(runtime, jcut::SetClipMaskEffectCommand{
-        1, true, 18.0, 1.4, 3, true, true, 120.0, 24.0,
+        1, true, 18.0, 1.4, 3, 0.0, 0.25, 1.0, true, true, 120.0, 24.0,
         "kaleidoscope", 48, 1.5, 0.8, false});
 
     jcut::EditorTranscriptOverlayState overlay;
@@ -3015,7 +3015,7 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
-    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(34));
+    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(35));
     QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane_visual_tabs.cpp"));
     QVERIFY(inspector.open(QIODevice::ReadOnly));
     const QString inspectorSource = QString::fromUtf8(inspector.readAll());
@@ -3054,7 +3054,7 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     jcut::EditorRuntime runtime = jcut::EditorRuntime::createDemo();
     const jcut::CommandResult reverseMotion = runtime.execute(jcut::EditorCommand{
         jcut::SetClipMaskEffectCommand{
-            1, false, 0.0, 1.0, 0, false, false, 160.0, 0.0,
+            1, false, 0.0, 1.0, 0, 0.0, 0.25, 1.0, false, false, 160.0, 0.0,
             "progressive_edge_stretch", 999, -3.25, 0.01, true}});
     QVERIFY2(reverseMotion.applied, reverseMotion.message.c_str());
     const jcut::EditorClip reverseClip = runtime.snapshot().clips.front();
@@ -3067,7 +3067,7 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
 
     const jcut::CommandResult stationaryMotion = runtime.execute(jcut::EditorCommand{
         jcut::SetClipMaskEffectCommand{
-            1, false, 0.0, 1.0, 0, false, false, 160.0, 0.0,
+            1, false, 0.0, 1.0, 0, 0.0, 0.25, 1.0, false, false, 160.0, 0.0,
             "neon_glow", 999, 0.0, 99.0, false}});
     QVERIFY2(stationaryMotion.applied, stationaryMotion.message.c_str());
     const jcut::EditorClip stationaryClip = runtime.snapshot().clips.front();
@@ -3164,7 +3164,7 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
         jcut::EditorRuntime::fromDocument(std::move(futureDocument));
     const jcut::CommandResult maskOnly = futureRuntime.execute(
         jcut::EditorCommand{jcut::SetClipMaskCommand{
-            1, true, 24.0, 2.0, 4, true, true, 88.0, -12.0}});
+            1, true, 24.0, 2.0, 4, 0.0, 0.25, 1.0, true, true, 88.0, -12.0}});
     QVERIFY2(maskOnly.applied, maskOnly.message.c_str());
     const jcut::EditorClip preservedFutureClip =
         futureRuntime.snapshot().clips.front();
@@ -5375,6 +5375,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.baseScaleX = -1.0;
     clip.maskEnabled = true;
     clip.maskFeather = 12.0;
+    clip.maskEdgeGrayAmount = 0.7;
+    clip.maskEdgeGrayWidth = 0.12;
+    clip.maskEdgeGrayGamma = 2.5;
     clip.maskTemporalStabilizeEnabled = true;
     clip.maskTemporalStabilizeStrength = 0.65;
     clip.maskTemporalStabilizeMotionRadius = 11;
@@ -5490,6 +5493,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.maskTemporalStabilizeEnabled, true);
     QCOMPARE(reparsedClip.maskTemporalStabilizeStrength, 0.65);
     QCOMPARE(reparsedClip.maskTemporalStabilizeMotionRadius, 11);
+    QCOMPARE(reparsedClip.maskEdgeGrayAmount, 0.7);
+    QCOMPARE(reparsedClip.maskEdgeGrayWidth, 0.12);
+    QCOMPARE(reparsedClip.maskEdgeGrayGamma, 2.5);
     QCOMPARE(reparsedClip.effectSkipAwareTiming, false);
     QCOMPARE(reparsedClip.differenceReferenceFrames, 17);
     QCOMPARE(reparsedClip.differenceThreshold, 0.23);
@@ -5521,6 +5527,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(renderClip.maskTemporalStabilizeEnabled, true);
     QCOMPARE(renderClip.maskTemporalStabilizeStrength, 0.65);
     QCOMPARE(renderClip.maskTemporalStabilizeMotionRadius, 11);
+    QCOMPARE(renderClip.maskEdgeGrayAmount, 0.7);
+    QCOMPARE(renderClip.maskEdgeGrayWidth, 0.12);
+    QCOMPARE(renderClip.maskEdgeGrayGamma, 2.5);
     QCOMPARE(renderClip.maskGradeEnabled, true);
     QCOMPARE(renderClip.maskGradeBrightness, 0.25);
     QCOMPARE(renderClip.maskGradeCurvePointsR.front(), QPointF(0.0, 0.1));
@@ -5957,6 +5966,8 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     original.clips.front().speakerSectionMinimumWords = 37;
     original.exportRequest.instagramSafeAreaGuides = true;
     original.exportRequest.alignmentGridGuides = true;
+    original.exportRequest.incrementalExport = true;
+    original.exportRequest.incrementalChunkFrames = 1234;
     original.exportRequest.transcriptPrependMs = 210;
     original.exportRequest.transcriptPostpendMs = 95;
     original.exportRequest.transcriptOffsetMs = -30;
@@ -5988,6 +5999,8 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.playbackSpeed, original.exportRequest.playbackSpeed);
     QCOMPARE(reparsed->exportRequest.instagramSafeAreaGuides, true);
     QCOMPARE(reparsed->exportRequest.alignmentGridGuides, true);
+    QCOMPARE(reparsed->exportRequest.incrementalExport, true);
+    QCOMPARE(reparsed->exportRequest.incrementalChunkFrames, 1234);
     QCOMPARE(reparsed->exportRequest.transcriptPrependMs, 210);
     QCOMPARE(reparsed->exportRequest.transcriptPostpendMs, 95);
     QCOMPARE(reparsed->exportRequest.transcriptOffsetMs, -30);
@@ -6105,6 +6118,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
         {"outputFps", 24.0},
         {"outputFormat", "png"},
         {"renderUseProxies", true},
+        {"incrementalExport", true},
         {"correctionsEnabled", false},
         {"audioWaveformVisible", false},
         {"exportStartFrame", 10},
@@ -6175,6 +6189,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
     QCOMPARE(parsed->exportRequest.outputSize.height, 720);
     QCOMPARE(parsed->exportRequest.playbackSpeed, 2.25);
     QCOMPARE(parsed->exportRequest.useProxyMedia, true);
+    QCOMPARE(parsed->exportRequest.incrementalExport, true);
     QCOMPARE(parsed->exportRequest.correctionsEnabled, false);
     QCOMPARE(parsed->exportRequest.exportRangeCount, std::size_t(1));
     QCOMPARE(parsed->exportRequest.renderSyncMarkerCount, std::size_t(1));
@@ -6186,6 +6201,7 @@ void TestEditorRuntime::testLegacyStateJsonBuildsDocumentCore()
         jcut::toLegacyStateJson(*parsed, &state);
     QCOMPARE(saved.value("timelineZoom", 0.0), 3.0);
     QCOMPARE(saved.value("previewZoom", 0.0), 2.25);
+    QCOMPARE(saved.value("incrementalExport", false), true);
 
     nlohmann::json corruptNeutral =
         jcut::toJson(*parsed);

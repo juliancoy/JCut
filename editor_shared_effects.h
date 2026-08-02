@@ -113,6 +113,7 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
 bool trackHasEffectPreset(const TimelineTrack& track);
 TimelineClip clipWithTrackEffectSettings(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
 bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role);
+bool clipShouldApplySpeechFilterFrameCrossfade(const TimelineClip& clip);
 // Source-history presets need independent decoded frames. Mask mattes are
 // virtual views of their parent, so those presets are preserved in the model
 // but rendered inactive to keep the matte fail-closed.

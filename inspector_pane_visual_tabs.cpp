@@ -513,10 +513,13 @@ QWidget *InspectorPane::buildEffectsTab()
         new QPushButton(QStringLiteral("Key On"), page);
     m_effectKeyframeOffButton =
         new QPushButton(QStringLiteral("Key Off"), page);
+    m_effectParameterKeyframeButton =
+        new QPushButton(QStringLiteral("Key Parameters"), page);
     m_effectKeyframeRemoveButton =
         new QPushButton(QStringLiteral("Remove Key"), page);
     keyframeButtons->addWidget(m_effectKeyframeOnButton);
     keyframeButtons->addWidget(m_effectKeyframeOffButton);
+    keyframeButtons->addWidget(m_effectParameterKeyframeButton);
     keyframeButtons->addWidget(m_effectKeyframeRemoveButton);
     animationForm->addRow(QStringLiteral("At playhead"), keyframeButtons);
     m_effectKeyframesLabel =
@@ -836,6 +839,15 @@ QWidget *InspectorPane::buildMasksTab()
     m_maskShapeFeatherPowerSpin = makeScalarSpin(0.1, 5.0, 2.0, 0.1);
     m_maskShapeFeatherPowerSpin->setToolTip(
         QStringLiteral("Power-law exponent. 1.0 is linear; higher values keep more opacity near the subject edge."));
+    m_maskEdgeGrayAmountSpin = makeScalarSpin(0.0, 1.0, 0.0, 0.05);
+    m_maskEdgeGrayAmountSpin->setToolTip(QStringLiteral(
+        "Desaturate the feathered alpha boundary on the GPU to suppress green-screen color fringes. 0 disables it."));
+    m_maskEdgeGrayWidthSpin = makeScalarSpin(0.001, 0.5, 0.25, 0.01);
+    m_maskEdgeGrayWidthSpin->setToolTip(QStringLiteral(
+        "Alpha-band width around the mask edge that receives grayscale treatment. Higher values affect more of the soft edge."));
+    m_maskEdgeGrayGammaSpin = makeScalarSpin(0.1, 8.0, 1.0, 0.1);
+    m_maskEdgeGrayGammaSpin->setToolTip(QStringLiteral(
+        "Shape the grayscale falloff. Higher values concentrate desaturation closer to the exact mask edge."));
     m_maskTemporalStabilizeCheck = new QCheckBox(
         QStringLiteral("Motion-tolerant temporal median"), page);
     m_maskTemporalStabilizeCheck->setObjectName(
@@ -862,6 +874,9 @@ QWidget *InspectorPane::buildMasksTab()
     shapeForm->addRow(QStringLiteral("Feather"), featherControl.row);
     shapeForm->addRow(QStringLiteral("Falloff"), m_maskShapeFeatherFalloffCombo);
     shapeForm->addRow(QStringLiteral("Power"), m_maskShapeFeatherPowerSpin);
+    shapeForm->addRow(QStringLiteral("Edge grayscale"), m_maskEdgeGrayAmountSpin);
+    shapeForm->addRow(QStringLiteral("Edge gray width"), m_maskEdgeGrayWidthSpin);
+    shapeForm->addRow(QStringLiteral("Edge gray gamma"), m_maskEdgeGrayGammaSpin);
     shapeForm->addRow(QStringLiteral("Blur"), blurControl.row);
     shapeForm->addRow(QStringLiteral("Temporal stabilize"), m_maskTemporalStabilizeCheck);
     shapeForm->addRow(QStringLiteral("Stabilize strength"), m_maskTemporalStabilizeStrengthSpin);

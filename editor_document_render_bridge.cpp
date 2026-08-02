@@ -209,6 +209,12 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskFeather = clip.maskFeather;
         timelineClip.maskFeatherGamma = clip.maskFeatherGamma;
         timelineClip.maskFeatherFalloff = std::clamp(clip.maskFeatherFalloff, 0, 5);
+        timelineClip.maskEdgeGrayAmount =
+            std::clamp(clip.maskEdgeGrayAmount, 0.0, 1.0);
+        timelineClip.maskEdgeGrayWidth =
+            std::clamp(clip.maskEdgeGrayWidth, 0.001, 0.5);
+        timelineClip.maskEdgeGrayGamma =
+            std::clamp(clip.maskEdgeGrayGamma, 0.1, 8.0);
         timelineClip.maskDilate = clip.maskDilate;
         timelineClip.maskErode = clip.maskErode;
         timelineClip.maskBlur = clip.maskBlur;

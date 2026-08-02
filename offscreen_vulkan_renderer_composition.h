@@ -866,7 +866,8 @@
                              const float shadows[4],
                              const float midtones[4],
                              const float highlights[4],
-                             float mode) {
+                             float mode,
+                             const float* effectParams = nullptr) {
           drawLayerWithMvp(layer.mvp,
                            brightness,
                            contrast,
@@ -875,10 +876,16 @@
                            shadows,
                            midtones,
                            highlights,
-                           mode);
+                           mode,
+                           effectParams);
         };
         const float packedMaskFalloff = static_cast<float>(
             layer.maskFeatherFalloff * 10) + layer.maskFeatherGamma;
+        const float maskEdgeParams[4] = {
+            static_cast<float>(qBound<qreal>(0.0, layer.maskEdgeGrayAmount, 1.0)),
+            static_cast<float>(qBound<qreal>(0.001, layer.maskEdgeGrayWidth, 0.5)),
+            static_cast<float>(qBound<qreal>(0.1, layer.maskEdgeGrayGamma, 8.0)),
+            0.0f};
         const VulkanDrawEffectState& layerEffects =
             layer.gradePayload.effects;
         const VulkanDrawEffectState& maskEffects =
@@ -916,7 +923,8 @@
                     layerEffects.shadows,
                     layerEffects.midtones,
                     maskHighlights,
-                    kVulkanEffectModeMaskOnly);
+                    kVulkanEffectModeMaskOnly,
+                    maskEdgeParams);
           continue;
         }
         if (!layer.effectPlan.generatedDraws.isEmpty()) {
@@ -979,7 +987,8 @@
                     drawMode == kVulkanEffectModeMaskGrade
                         ? maskHighlights
                         : layerEffects.highlights,
-                    drawMode);
+                    drawMode,
+                    drawMode == kVulkanEffectModeMaskGrade ? maskEdgeParams : nullptr);
         }
         if (layer.maskTextureEnabled && layer.maskGradeEnabled && !layer.maskForegroundLayerEnabled) {
           float neutral[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -996,7 +1005,8 @@
                     neutral,
                     maskMidtones,
                     maskGradeHighlights,
-                    kVulkanEffectModeMaskGrade);
+                    kVulkanEffectModeMaskGrade,
+                    maskEdgeParams);
         }
       }
       vkCmdEndRenderPass(m_commandBuffer);
@@ -1202,4 +1212,3 @@
     m_colorImagePrimed = true;
     return out;
   }
-

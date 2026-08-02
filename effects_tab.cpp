@@ -176,6 +176,13 @@ bool mirrorGeometryPreset(ClipEffectPreset preset)
     case ClipEffectPreset::Tessellation:
     case ClipEffectPreset::HexagonalPrism:
     case ClipEffectPreset::Droste:
+    case ClipEffectPreset::RecursiveZoomTile:
+    case ClipEffectPreset::RecursiveZoomTunnel:
+    case ClipEffectPreset::RecursiveZoomMirrorBox:
+    case ClipEffectPreset::RecursiveZoomSpiral:
+    case ClipEffectPreset::RecursiveZoomKaleidoscope:
+    case ClipEffectPreset::RecursiveZoomRadialRepeat:
+    case ClipEffectPreset::RecursiveZoomPixelMosaic:
         return true;
     default:
         return false;
@@ -212,6 +219,13 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         preset == ClipEffectPreset::Kaleidoscope;
     const bool recursionEffect =
         preset == ClipEffectPreset::Droste ||
+        preset == ClipEffectPreset::RecursiveZoomTile ||
+        preset == ClipEffectPreset::RecursiveZoomTunnel ||
+        preset == ClipEffectPreset::RecursiveZoomMirrorBox ||
+        preset == ClipEffectPreset::RecursiveZoomSpiral ||
+        preset == ClipEffectPreset::RecursiveZoomKaleidoscope ||
+        preset == ClipEffectPreset::RecursiveZoomRadialRepeat ||
+        preset == ClipEffectPreset::RecursiveZoomPixelMosaic ||
         preset == ClipEffectPreset::InfiniteMirror;
     const bool cellEffect =
         preset == ClipEffectPreset::QuadMirror ||
@@ -377,6 +391,10 @@ void EffectsTab::wire()
         connect(m_widgets.effectKeyframeOffButton, &QPushButton::clicked,
                 this, [this]() { setEffectEnabledKeyframe(false); });
     }
+    if (m_widgets.effectParameterKeyframeButton) {
+        connect(m_widgets.effectParameterKeyframeButton, &QPushButton::clicked,
+                this, &EffectsTab::setEffectParameterKeyframe);
+    }
     if (m_widgets.effectKeyframeRemoveButton) {
         connect(m_widgets.effectKeyframeRemoveButton, &QPushButton::clicked,
                 this, &EffectsTab::removeEffectEnabledKeyframe);
@@ -531,6 +549,7 @@ void EffectsTab::refresh()
                  static_cast<QWidget*>(m_widgets.effectEnabledCheck),
                  static_cast<QWidget*>(m_widgets.effectKeyframeOnButton),
                  static_cast<QWidget*>(m_widgets.effectKeyframeOffButton),
+                 static_cast<QWidget*>(m_widgets.effectParameterKeyframeButton),
                  static_cast<QWidget*>(m_widgets.effectKeyframeRemoveButton),
                  static_cast<QWidget*>(m_widgets.effectModulationModeCombo),
                  static_cast<QWidget*>(m_widgets.effectModulationTargetCombo),
@@ -682,15 +701,26 @@ void EffectsTab::refresh()
                                       : QStringLiteral("Off")));
         hasKeyAtPlayhead |= keyframe.frame == localFrame;
     }
+    for (const TimelineClip::EffectParameterKeyframe& keyframe :
+         clip->effectParameterKeyframes) {
+        keyDescriptions.push_back(
+            QStringLiteral("%1:Params rows=%2 speed=%3 scale=%4")
+                .arg(keyframe.frame)
+                .arg(keyframe.effectRows)
+                .arg(keyframe.effectSpeed, 0, 'f', 2)
+                .arg(keyframe.effectScale, 0, 'f', 2));
+        hasKeyAtPlayhead |= keyframe.frame == localFrame;
+    }
     if (m_widgets.effectKeyframesLabel) {
         m_widgets.effectKeyframesLabel->setText(
             keyDescriptions.isEmpty()
-                ? QStringLiteral("No enable keyframes")
+                ? QStringLiteral("No effect keyframes")
                 : keyDescriptions.join(QStringLiteral("  •  ")));
     }
     for (QPushButton* button : {
              m_widgets.effectKeyframeOnButton,
-             m_widgets.effectKeyframeOffButton}) {
+             m_widgets.effectKeyframeOffButton,
+             m_widgets.effectParameterKeyframeButton}) {
         if (button) button->setEnabled(true);
     }
     if (m_widgets.effectKeyframeRemoveButton) {
@@ -887,9 +917,12 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
     const double temporalEchoDecay = m_widgets.temporalEchoDecaySpin ? m_widgets.temporalEchoDecaySpin->value() : 0.65;
 
     bool updated = false;
-    if (selectedClip &&
-        selectedClip->clipRole != ClipRole::EffectSynth &&
-        m_deps.clipHasVisuals(*selectedClip)) {
+    if (selectedClip) {
+        if (selectedClip->clipRole == ClipRole::EffectSynth ||
+            !m_deps.clipHasVisuals(*selectedClip)) {
+            refresh();
+            return;
+        }
         updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
             const ClipEffectPreset previousPreset = clip.effectPreset;
             clip.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(clip);
@@ -929,7 +962,8 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             }
             clip.effectParameterSets[presetParameterKey(preset)] = effectParameters(clip);
         });
-    } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0) {
+    } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0 &&
+               (!targetTrack || !targetTrack->generatedChildTrack)) {
         updated = m_deps.updateTrackByIndex(targetTrackIndex, [=](TimelineTrack& track) {
             const ClipEffectPreset previousPreset = track.effectPreset;
             track.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(track);
@@ -1007,6 +1041,86 @@ void EffectsTab::setEffectEnabledKeyframe(bool enabled)
     refresh();
 }
 
+void EffectsTab::setEffectParameterKeyframe()
+{
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip || !m_deps.updateClipById) return;
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                    : selectedClip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - selectedClip->startFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    TimelineClip::EffectParameterKeyframe keyframe;
+    keyframe.frame = localFrame;
+    keyframe.effectRows = m_widgets.effectRowsSpin
+        ? m_widgets.effectRowsSpin->value() : selectedClip->effectRows;
+    keyframe.effectSpeed = m_widgets.effectSpeedSpin
+        ? m_widgets.effectSpeedSpin->value() : selectedClip->effectSpeed;
+    keyframe.effectScale = m_widgets.effectScaleSpin
+        ? m_widgets.effectScaleSpin->value() : selectedClip->effectScale;
+    keyframe.effectAlternateDirection = !m_widgets.effectAlternateDirectionCheck ||
+        m_widgets.effectAlternateDirectionCheck->isChecked();
+    keyframe.differenceReferenceFrames = m_widgets.differenceReferenceFramesSpin
+        ? m_widgets.differenceReferenceFramesSpin->value()
+        : selectedClip->differenceReferenceFrames;
+    keyframe.differenceThreshold = m_widgets.differenceThresholdSpin
+        ? m_widgets.differenceThresholdSpin->value()
+        : selectedClip->differenceThreshold;
+    keyframe.differenceSoftness = m_widgets.differenceSoftnessSpin
+        ? m_widgets.differenceSoftnessSpin->value()
+        : selectedClip->differenceSoftness;
+    keyframe.temporalEchoCount = m_widgets.temporalEchoCountSpin
+        ? m_widgets.temporalEchoCountSpin->value()
+        : selectedClip->temporalEchoCount;
+    keyframe.temporalEchoSpacingFrames = m_widgets.temporalEchoSpacingSpin
+        ? m_widgets.temporalEchoSpacingSpin->value()
+        : selectedClip->temporalEchoSpacingFrames;
+    keyframe.temporalEchoDecay = m_widgets.temporalEchoDecaySpin
+        ? m_widgets.temporalEchoDecaySpin->value()
+        : selectedClip->temporalEchoDecay;
+    keyframe.tilingPattern = m_widgets.tilingPatternCombo
+        ? tilingPatternFromCombo(m_widgets.tilingPatternCombo)
+        : selectedClip->tilingPattern;
+    keyframe.tilingSpacing = m_widgets.tilingSpacingSpin
+        ? m_widgets.tilingSpacingSpin->value()
+        : selectedClip->tilingSpacing;
+    keyframe.tilingWrap = !m_widgets.tilingWrapCheck ||
+        m_widgets.tilingWrapCheck->isChecked();
+
+    const QString clipId = selectedClip->id;
+    if (!m_deps.updateClipById(
+            clipId,
+            [keyframe](TimelineClip& clip) {
+                auto existing = std::find_if(
+                    clip.effectParameterKeyframes.begin(),
+                    clip.effectParameterKeyframes.end(),
+                    [frame = keyframe.frame](const auto& value) {
+                        return value.frame == frame;
+                    });
+                if (existing == clip.effectParameterKeyframes.end()) {
+                    clip.effectParameterKeyframes.push_back(keyframe);
+                } else {
+                    *existing = keyframe;
+                }
+                std::sort(
+                    clip.effectParameterKeyframes.begin(),
+                    clip.effectParameterKeyframes.end(),
+                    [](const auto& left, const auto& right) {
+                        return left.frame < right.frame;
+                    });
+            })) {
+        return;
+    }
+    applyTabEditEffects(
+        effectsEditCallbacks(m_deps),
+        TabEditEffects{.pushHistory = true});
+    emit effectsApplied();
+    refresh();
+}
+
 void EffectsTab::removeEffectEnabledKeyframe()
 {
     const TimelineClip* selectedClip = m_deps.getSelectedClip
@@ -1031,6 +1145,14 @@ void EffectsTab::removeEffectEnabledKeyframe()
                             return keyframe.frame == localFrame;
                         }),
                     clip.effectEnabledKeyframes.end());
+                clip.effectParameterKeyframes.erase(
+                    std::remove_if(
+                        clip.effectParameterKeyframes.begin(),
+                        clip.effectParameterKeyframes.end(),
+                        [localFrame](const auto& keyframe) {
+                            return keyframe.frame == localFrame;
+                        }),
+                    clip.effectParameterKeyframes.end());
             })) {
         return;
     }

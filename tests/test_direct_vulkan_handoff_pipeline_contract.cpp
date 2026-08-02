@@ -4347,8 +4347,8 @@ void TestDirectVulkanHandoffPipelineContract::
   const QString projectState =
       readSourceFile(QStringLiteral("project_state.cpp"));
 
-  QVERIFY2(contract.contains(QStringLiteral("bool incrementalExport = true")) &&
-               coreContract.contains(QStringLiteral("bool incrementalExport = true")) &&
+  QVERIFY2(contract.contains(QStringLiteral("bool incrementalExport = false")) &&
+               coreContract.contains(QStringLiteral("bool incrementalExport = false")) &&
                contract.contains(
                    QStringLiteral("int incrementalChunkFrames = 900")) &&
                coreContract.contains(
@@ -4357,16 +4357,21 @@ void TestDirectVulkanHandoffPipelineContract::
                    QStringLiteral("incrementalFramesReused")) &&
                contract.contains(
                    QStringLiteral("incrementalCachePath")),
-           "encoded exports must enable resumable checkpointing by default "
-           "and expose reuse diagnostics");
+           "encoded exports must keep chunking opt-in and expose reuse diagnostics");
   QVERIFY2(inspector.contains(QStringLiteral("Incremental chunked render")) &&
-               inspector.contains(QStringLiteral("m_incrementalRenderCheckBox->setChecked(true)")) &&
+               inspector.contains(QStringLiteral("m_incrementalRenderCheckBox->setChecked(false)")) &&
+               !outputTab.contains(QStringLiteral("m_widgets.incrementalRenderCheckBox->setChecked(true)")) &&
                outputTab.contains(QStringLiteral("request.incrementalExport")) &&
                outputTab.contains(QStringLiteral("m_widgets.incrementalRenderCheckBox->isChecked()")) &&
+               outputTab.contains(QStringLiteral("onIncrementalRenderToggled")) &&
+               projectState.contains(QStringLiteral("root[QStringLiteral(\"incrementalExport\")]")) &&
+               projectState.contains(QStringLiteral("m_incrementalRenderCheckBox->isChecked()")) &&
+               editor.contains(QStringLiteral("root.value(QStringLiteral(\"incrementalExport\")).toBool(false)")) &&
+               editor.contains(QStringLiteral("m_incrementalRenderCheckBox->setChecked(incrementalExport)")) &&
                runtime.contains(QStringLiteral("qtRequest.incrementalExport = request.incrementalExport")) &&
                compat.contains(QStringLiteral("core.incrementalExport = request.incrementalExport")),
-           "the Output tab must expose an explicit chunk/no-chunk control and "
-           "carry it through the core and Qt render request contracts");
+           "the Output tab must persist chunking per project, default it off, "
+           "and carry it through the core and Qt render request contracts");
   QVERIFY2(contract.contains(QStringLiteral("bool instagramSafeAreaGuides = false")) &&
                contract.contains(QStringLiteral("bool alignmentGridGuides = false")) &&
                coreContract.contains(QStringLiteral("bool instagramSafeAreaGuides = false")) &&

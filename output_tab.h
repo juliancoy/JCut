@@ -101,6 +101,7 @@ private slots:
     void onExportEndChanged(int value);
     void onOutputFormatChanged(int index);
     void onRenderUseProxiesToggled(bool checked);
+    void onIncrementalRenderToggled(bool checked);
     void onOutputPlaybackCacheFallbackToggled(bool checked);
     void onOutputLeadPrefetchEnabledToggled(bool checked);
     void onOutputLeadPrefetchCountChanged(int value);

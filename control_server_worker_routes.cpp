@@ -11,6 +11,7 @@
 #include "editor_shared.h"
 #include "editor_shared_render_sync.h"
 #include "editor_shared_transcript.h"
+#include "render_runtime_controls.h"
 #include "speaker_track_assignment_service.h"
 #include "transcript_engine.h"
 
@@ -616,6 +617,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /throttles</strong> - Current throttle configuration</div>
         <div class="endpoint"><strong>GET /playback</strong> - Current playback policy configuration</div>
         <div class="endpoint"><strong>GET /audio</strong> - Audio loading, buffering, and mixer state</div>
+        <div class="endpoint"><strong>GET /render/config</strong> - Live export decode-lookahead configuration</div>
         <div class="endpoint"><strong>GET /paradigms</strong> - Architecture organizational paradigms and file positioning</div>
         <div class="endpoint"><strong>GET /facedetections/generator-control</strong> - Selected clip FaceDetections launch control</div>
 
@@ -629,6 +631,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>
         <div class="endpoint"><strong>POST /throttles</strong> - Patch throttle configuration</div>
         <div class="endpoint"><strong>POST /playback</strong> - Patch playback policy configuration</div>
+        <div class="endpoint"><strong>POST /render/config</strong> - Patch live export decode-lookahead configuration</div>
 
         <p>For the full interactive dashboard, ensure <code>control_server_webpage.html</code> exists in the working directory.</p>
     </div>
@@ -2390,6 +2393,94 @@ bool ControlServerWorker::handleDebugRoutes(QTcpSocket* socket, const Request& r
 }
 
 bool ControlServerWorker::handleRenderRoutes(QTcpSocket* socket, const Request& request) {
+    const auto renderConfig = []() {
+        return QJsonObject{
+            {QStringLiteral("segment_decode_lookahead_frames"),
+             render_detail::renderSegmentDecodeLookaheadFrames()},
+            {QStringLiteral("segment_decode_lookahead_effective_frames"),
+             render_detail::effectiveRenderSegmentDecodeLookaheadFrames()},
+            {QStringLiteral("segment_decode_lookahead_autotune"),
+             render_detail::renderSegmentDecodeLookaheadAutotuneEnabled()},
+            {QStringLiteral("last_boundary_decode_wait_ms"),
+             static_cast<qint64>(
+                 render_detail::renderSegmentDecodeLookaheadLastBoundaryWaitMs())},
+            {QStringLiteral("autotune_adjustment_count"),
+             static_cast<qint64>(
+                 render_detail::renderSegmentDecodeLookaheadAdjustmentCount())},
+            {QStringLiteral("clean_boundary_count"),
+             render_detail::renderSegmentDecodeLookaheadCleanBoundaryCount()},
+            {QStringLiteral("minimum_frames"), 0},
+            {QStringLiteral("maximum_frames"),
+             render_detail::kMaximumRenderSegmentDecodeLookaheadFrames},
+            {QStringLiteral("applies_to_active_render"), true}};
+    };
+
+    if (request.url.path() == QStringLiteral("/render/config")) {
+        if (request.method == QStringLiteral("GET")) {
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("config"), renderConfig()}});
+            return true;
+        }
+        if (request.method == QStringLiteral("POST")) {
+            QString error;
+            const QJsonObject body = parseJsonObject(request.body, &error);
+            if (!error.isEmpty()) {
+                writeError(socket, 400, error);
+                return true;
+            }
+            const QString framesField =
+                QStringLiteral("segment_decode_lookahead_frames");
+            const QString autotuneField =
+                QStringLiteral("segment_decode_lookahead_autotune");
+            if (body.isEmpty()) {
+                writeError(socket, 400, QStringLiteral("no render config fields supplied"));
+                return true;
+            }
+            for (auto it = body.constBegin(); it != body.constEnd(); ++it) {
+                if (it.key() != framesField && it.key() != autotuneField) {
+                    writeError(socket, 400, QStringLiteral(
+                        "invalid render config field: %1").arg(it.key()));
+                    return true;
+                }
+            }
+            if (body.contains(framesField)) {
+                const QJsonValue value = body.value(framesField);
+                const double requested = value.toDouble();
+                if (!value.isDouble() || !std::isfinite(requested) ||
+                    std::floor(requested) != requested || requested < 0.0 ||
+                    requested > static_cast<double>(
+                        render_detail::kMaximumRenderSegmentDecodeLookaheadFrames)) {
+                    writeError(socket, 400, QStringLiteral(
+                        "%1 must be an integer from 0 through %2")
+                        .arg(framesField)
+                        .arg(render_detail::kMaximumRenderSegmentDecodeLookaheadFrames));
+                    return true;
+                }
+            }
+            if (body.contains(autotuneField) &&
+                !body.value(autotuneField).isBool()) {
+                writeError(socket, 400, QStringLiteral(
+                    "%1 must be boolean").arg(autotuneField));
+                return true;
+            }
+            if (body.contains(framesField)) {
+                render_detail::setRenderSegmentDecodeLookaheadFrames(
+                    body.value(framesField).toInt());
+            }
+            if (body.contains(autotuneField)) {
+                render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(
+                    body.value(autotuneField).toBool());
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("config"), renderConfig()}});
+            return true;
+        }
+        writeError(socket, 405, QStringLiteral("method not allowed"));
+        return true;
+    }
+
     if (request.method != QStringLiteral("GET") || request.url.path() != QStringLiteral("/render/status")) {
         return false;
     }
@@ -2410,6 +2501,7 @@ bool ControlServerWorker::handleRenderRoutes(QTcpSocket* socket, const Request& 
         {QStringLiteral("framesCompleted"), renderResult.value(QStringLiteral("framesCompleted")).toVariant().toLongLong()},
         {QStringLiteral("totalFrames"), renderResult.value(QStringLiteral("totalFrames")).toVariant().toLongLong()},
         {QStringLiteral("outputPath"), renderResult.value(QStringLiteral("outputPath")).toString()},
+        {QStringLiteral("config"), renderConfig()},
         {QStringLiteral("liveRenderProgress"), renderResult.value(QStringLiteral("live")).toObject()},
         {QStringLiteral("lastRenderResult"), renderResult}
     });

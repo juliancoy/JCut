@@ -66,6 +66,17 @@ bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role)
             preset != ClipEffectPreset::TemporalEcho);
 }
 
+bool clipShouldApplySpeechFilterFrameCrossfade(const TimelineClip& clip)
+{
+    // Active GPU effects may use speech-filter-aware clocks for motion
+    // continuity, but their rendered output must not fade out/in with the
+    // transcript filter's frame transition. Otherwise persistent effect layers
+    // like Droste/recursive tiling blink against the background at transcript
+    // filter boundaries.
+    return clip.effectPreset == ClipEffectPreset::None ||
+           !effectPresetSupportedForClipRole(clip.effectPreset, clip.clipRole);
+}
+
 TimelineClip clipWithRenderableEffectSettings(const TimelineClip& clip,
                                               const QVector<TimelineTrack>& tracks)
 {
@@ -82,6 +93,115 @@ qreal effectTimelinePositionForClip(
     qreal timelineFramePosition,
     const QVector<RenderSyncMarker>& markers,
     const PlaybackTimingContext& timing);
+
+qreal effectKeyframeT(qreal frame,
+                      const TimelineClip::EffectParameterKeyframe& previous,
+                      const TimelineClip::EffectParameterKeyframe& next)
+{
+    if (!previous.linearInterpolation || next.frame <= previous.frame) {
+        return 0.0;
+    }
+    return qBound<qreal>(
+        0.0,
+        (frame - static_cast<qreal>(previous.frame)) /
+            static_cast<qreal>(next.frame - previous.frame),
+        1.0);
+}
+
+TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromClip(
+    const TimelineClip& clip,
+    int64_t frame)
+{
+    TimelineClip::EffectParameterKeyframe keyframe;
+    keyframe.frame = frame;
+    keyframe.effectRows = clip.effectRows;
+    keyframe.effectSpeed = clip.effectSpeed;
+    keyframe.effectScale = clip.effectScale;
+    keyframe.effectAlternateDirection = clip.effectAlternateDirection;
+    keyframe.differenceReferenceFrames = clip.differenceReferenceFrames;
+    keyframe.differenceThreshold = clip.differenceThreshold;
+    keyframe.differenceSoftness = clip.differenceSoftness;
+    keyframe.temporalEchoCount = clip.temporalEchoCount;
+    keyframe.temporalEchoSpacingFrames = clip.temporalEchoSpacingFrames;
+    keyframe.temporalEchoDecay = clip.temporalEchoDecay;
+    keyframe.tilingPattern = clip.tilingPattern;
+    keyframe.tilingSpacing = clip.tilingSpacing;
+    keyframe.tilingWrap = clip.tilingWrap;
+    return keyframe;
+}
+
+TimelineClip::EffectParameterKeyframe interpolatedEffectParameterKeyframe(
+    const TimelineClip::EffectParameterKeyframe& previous,
+    const TimelineClip::EffectParameterKeyframe& next,
+    qreal t)
+{
+    auto lerp = [t](qreal a, qreal b) {
+        return a + (b - a) * t;
+    };
+    TimelineClip::EffectParameterKeyframe result = previous;
+    result.frame = qRound64(lerp(previous.frame, next.frame));
+    result.effectRows = qBound(
+        1,
+        qRound(lerp(previous.effectRows, next.effectRows)),
+        512);
+    result.effectSpeed =
+        qBound<qreal>(-8.0, lerp(previous.effectSpeed, next.effectSpeed), 8.0);
+    result.effectScale =
+        qBound<qreal>(0.1, lerp(previous.effectScale, next.effectScale), 8.0);
+    result.differenceReferenceFrames = qBound(
+        1,
+        qRound(lerp(previous.differenceReferenceFrames,
+                   next.differenceReferenceFrames)),
+        300);
+    result.differenceThreshold = qBound<qreal>(
+        0.0,
+        lerp(previous.differenceThreshold, next.differenceThreshold),
+        1.0);
+    result.differenceSoftness = qBound<qreal>(
+        0.0,
+        lerp(previous.differenceSoftness, next.differenceSoftness),
+        1.0);
+    result.temporalEchoCount = qBound(
+        1,
+        qRound(lerp(previous.temporalEchoCount, next.temporalEchoCount)),
+        12);
+    result.temporalEchoSpacingFrames = qBound(
+        1,
+        qRound(lerp(previous.temporalEchoSpacingFrames,
+                   next.temporalEchoSpacingFrames)),
+        120);
+    result.temporalEchoDecay = qBound<qreal>(
+        0.0,
+        lerp(previous.temporalEchoDecay, next.temporalEchoDecay),
+        1.0);
+    result.tilingSpacing =
+        qBound<qreal>(0.1, lerp(previous.tilingSpacing, next.tilingSpacing), 8.0);
+    return result;
+}
+
+void applyEffectParameterKeyframe(TimelineClip* clip,
+                                  const TimelineClip::EffectParameterKeyframe& keyframe)
+{
+    if (!clip) return;
+    clip->effectRows = qBound(1, keyframe.effectRows, 512);
+    clip->effectSpeed = qBound<qreal>(-8.0, keyframe.effectSpeed, 8.0);
+    clip->effectScale = qBound<qreal>(0.1, keyframe.effectScale, 8.0);
+    clip->effectAlternateDirection = keyframe.effectAlternateDirection;
+    clip->differenceReferenceFrames =
+        qBound(1, keyframe.differenceReferenceFrames, 300);
+    clip->differenceThreshold =
+        qBound<qreal>(0.0, keyframe.differenceThreshold, 1.0);
+    clip->differenceSoftness =
+        qBound<qreal>(0.0, keyframe.differenceSoftness, 1.0);
+    clip->temporalEchoCount = qBound(1, keyframe.temporalEchoCount, 12);
+    clip->temporalEchoSpacingFrames =
+        qBound(1, keyframe.temporalEchoSpacingFrames, 120);
+    clip->temporalEchoDecay =
+        qBound<qreal>(0.0, keyframe.temporalEchoDecay, 1.0);
+    clip->tilingPattern = keyframe.tilingPattern;
+    clip->tilingSpacing = qBound<qreal>(0.1, keyframe.tilingSpacing, 8.0);
+    clip->tilingWrap = keyframe.tilingWrap;
+}
 }
 
 TimelineClip evaluateClipEffectAnimationAtPosition(const TimelineClip& clip,
@@ -119,6 +239,38 @@ TimelineClip evaluateClipEffectAnimationAtPosition(
         evaluated.effectPreset = ClipEffectPreset::None;
         evaluated.edgeFillEffect = BackgroundFillEffect::None;
         return evaluated;
+    }
+
+    QVector<TimelineClip::EffectParameterKeyframe> parameterKeyframes =
+        clip.effectParameterKeyframes;
+    if (!parameterKeyframes.isEmpty()) {
+        std::sort(parameterKeyframes.begin(), parameterKeyframes.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.frame < right.frame;
+                  });
+        TimelineClip::EffectParameterKeyframe previous =
+            effectParameterKeyframeFromClip(clip, 0);
+        TimelineClip::EffectParameterKeyframe next = previous;
+        bool foundNext = false;
+        for (const TimelineClip::EffectParameterKeyframe& keyframe :
+             parameterKeyframes) {
+            if (static_cast<qreal>(keyframe.frame) <= localFrame) {
+                previous = keyframe;
+                next = keyframe;
+                continue;
+            }
+            next = keyframe;
+            foundNext = true;
+            break;
+        }
+        const qreal t = foundNext
+            ? effectKeyframeT(localFrame, previous, next)
+            : 0.0;
+        applyEffectParameterKeyframe(
+            &evaluated,
+            foundNext
+                ? interpolatedEffectParameterKeyframe(previous, next, t)
+                : previous);
     }
 
     const QString mode = clip.effectModulationMode.trimmed().toLower();
@@ -554,6 +706,9 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip&
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
     effects.maskFeatherFalloff = clip.maskFeatherFalloff;
+    effects.maskEdgeGrayAmount = clip.maskEdgeGrayAmount;
+    effects.maskEdgeGrayWidth = clip.maskEdgeGrayWidth;
+    effects.maskEdgeGrayGamma = clip.maskEdgeGrayGamma;
     for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
         if (correctionPolygonActiveAtTimelineFrame(clip, polygon, timelineFrame)) {
             effects.correctionPolygons.push_back(polygon);
@@ -570,6 +725,9 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
     effects.maskFeatherFalloff = clip.maskFeatherFalloff;
+    effects.maskEdgeGrayAmount = clip.maskEdgeGrayAmount;
+    effects.maskEdgeGrayWidth = clip.maskEdgeGrayWidth;
+    effects.maskEdgeGrayGamma = clip.maskEdgeGrayGamma;
     for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
         if (correctionPolygonActiveAtTimelinePosition(clip, polygon, timelineFramePosition)) {
             effects.correctionPolygons.push_back(polygon);
@@ -862,7 +1020,7 @@ QImage preparedClipMask(const TimelineClip& clip, int64_t sourceFrame, const QSi
         return QImage();
     }
     const QString cacheKey =
-        QStringLiteral("%1|%2x%3|%4|%5|inv=%6|er=%7|di=%8|fe=%9|fg=%10|bl=%11")
+        QStringLiteral("%1|%2x%3|%4|%5|inv=%6|er=%7|di=%8|fe=%9|fg=%10|bl=%11|ega=%12|egw=%13|egg=%14")
             .arg(info.absoluteFilePath())
             .arg(size.width())
             .arg(size.height())
@@ -873,7 +1031,10 @@ QImage preparedClipMask(const TimelineClip& clip, int64_t sourceFrame, const QSi
             .arg(clip.maskDilate, 0, 'g', 8)
             .arg(clip.maskFeather, 0, 'g', 8)
             .arg(clip.maskFeatherGamma, 0, 'g', 8)
-            .arg(clip.maskBlur, 0, 'g', 8);
+            .arg(clip.maskBlur, 0, 'g', 8)
+            .arg(clip.maskEdgeGrayAmount, 0, 'g', 8)
+            .arg(clip.maskEdgeGrayWidth, 0, 'g', 8)
+            .arg(clip.maskEdgeGrayGamma, 0, 'g', 8);
     {
         QMutexLocker lock(&preparedMaskCacheMutex());
         if (QImage* cached = preparedMaskCache().object(cacheKey)) {

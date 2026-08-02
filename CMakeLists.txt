@@ -1145,6 +1145,7 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/render_gpu.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_qt_compat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_runtime_controls.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_effect_synth.cpp

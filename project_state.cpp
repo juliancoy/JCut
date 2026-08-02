@@ -804,6 +804,9 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("lastRenderOutputPath")] = m_lastRenderOutputPath;
     root[QStringLiteral("renderUseProxies")] =
         m_renderUseProxiesCheckBox ? m_renderUseProxiesCheckBox->isChecked() : false;
+    root[QStringLiteral("incrementalExport")] =
+        m_incrementalRenderCheckBox &&
+        m_incrementalRenderCheckBox->isChecked();
     root[QStringLiteral("createImageSequence")] =
         m_createImageSequenceCheckBox ? m_createImageSequenceCheckBox->isChecked() : false;
     root[QStringLiteral("imageSequenceFormat")] =

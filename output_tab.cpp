@@ -94,7 +94,6 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
             QStringLiteral("Render resumable encoded chunks and assemble "
                            "them into the final video. Disable for one "
                            "continuous export without chunk checkpoints."));
-        m_widgets.incrementalRenderCheckBox->setChecked(true);
     }
     if (m_widgets.instagramSafeAreaGuidesCheckBox) {
         m_widgets.instagramSafeAreaGuidesCheckBox->setText(
@@ -146,6 +145,10 @@ void OutputTab::wire()
     if (m_widgets.renderUseProxiesCheckBox) {
         connect(m_widgets.renderUseProxiesCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onRenderUseProxiesToggled);
+    }
+    if (m_widgets.incrementalRenderCheckBox) {
+        connect(m_widgets.incrementalRenderCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onIncrementalRenderToggled);
     }
     if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
         connect(m_widgets.outputPlaybackCacheFallbackCheckBox, &QCheckBox::toggled,
@@ -475,7 +478,7 @@ void OutputTab::renderFromInspector()
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
     request.incrementalExport =
-        !m_widgets.incrementalRenderCheckBox ||
+        m_widgets.incrementalRenderCheckBox &&
         m_widgets.incrementalRenderCheckBox->isChecked();
     request.instagramSafeAreaGuides =
         m_widgets.instagramSafeAreaGuidesCheckBox &&
@@ -566,6 +569,14 @@ void OutputTab::onRenderClicked()
 }
 
 void OutputTab::onRenderUseProxiesToggled(bool checked)
+{
+    Q_UNUSED(checked);
+    if (m_updating) return;
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onIncrementalRenderToggled(bool checked)
 {
     Q_UNUSED(checked);
     if (m_updating) return;

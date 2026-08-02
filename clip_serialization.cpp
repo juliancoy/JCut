@@ -40,6 +40,13 @@ QString effectPresetToJson(ClipEffectPreset preset)
     case ClipEffectPreset::Kaleidoscope: return QStringLiteral("kaleidoscope");
     case ClipEffectPreset::HexagonalPrism: return QStringLiteral("hexagonal_prism");
     case ClipEffectPreset::Droste: return QStringLiteral("droste");
+    case ClipEffectPreset::RecursiveZoomTile: return QStringLiteral("recursive_zoom_tile");
+    case ClipEffectPreset::RecursiveZoomTunnel: return QStringLiteral("recursive_zoom_tunnel");
+    case ClipEffectPreset::RecursiveZoomMirrorBox: return QStringLiteral("recursive_zoom_mirror_box");
+    case ClipEffectPreset::RecursiveZoomSpiral: return QStringLiteral("recursive_zoom_spiral");
+    case ClipEffectPreset::RecursiveZoomKaleidoscope: return QStringLiteral("recursive_zoom_kaleidoscope");
+    case ClipEffectPreset::RecursiveZoomRadialRepeat: return QStringLiteral("recursive_zoom_radial_repeat");
+    case ClipEffectPreset::RecursiveZoomPixelMosaic: return QStringLiteral("recursive_zoom_pixel_mosaic");
     case ClipEffectPreset::PolarTunnel: return QStringLiteral("polar_tunnel");
     case ClipEffectPreset::TinyPlanet: return QStringLiteral("tiny_planet");
     case ClipEffectPreset::InfiniteMirror: return QStringLiteral("infinite_mirror");
@@ -126,6 +133,41 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
     if (normalized == QStringLiteral("kaleidoscope")) return ClipEffectPreset::Kaleidoscope;
     if (normalized == QStringLiteral("hexagonal_prism")) return ClipEffectPreset::HexagonalPrism;
     if (normalized == QStringLiteral("droste")) return ClipEffectPreset::Droste;
+    if (normalized == QStringLiteral("recursive_zoom_tile") ||
+        normalized == QStringLiteral("infinite_zoom_tile") ||
+        normalized == QStringLiteral("recursive_tile_zoom")) {
+        return ClipEffectPreset::RecursiveZoomTile;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_tunnel") ||
+        normalized == QStringLiteral("infinite_zoom_tunnel") ||
+        normalized == QStringLiteral("recursive_tunnel_zoom")) {
+        return ClipEffectPreset::RecursiveZoomTunnel;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_mirror_box") ||
+        normalized == QStringLiteral("recursive_mirror_box") ||
+        normalized == QStringLiteral("infinite_mirror_box")) {
+        return ClipEffectPreset::RecursiveZoomMirrorBox;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_spiral") ||
+        normalized == QStringLiteral("infinite_zoom_spiral") ||
+        normalized == QStringLiteral("recursive_spiral_zoom")) {
+        return ClipEffectPreset::RecursiveZoomSpiral;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_kaleidoscope") ||
+        normalized == QStringLiteral("recursive_kaleidoscope") ||
+        normalized == QStringLiteral("infinite_kaleidoscope")) {
+        return ClipEffectPreset::RecursiveZoomKaleidoscope;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_radial_repeat") ||
+        normalized == QStringLiteral("recursive_radial_repeat") ||
+        normalized == QStringLiteral("radial_recursive_zoom")) {
+        return ClipEffectPreset::RecursiveZoomRadialRepeat;
+    }
+    if (normalized == QStringLiteral("recursive_zoom_pixel_mosaic") ||
+        normalized == QStringLiteral("recursive_pixel_mosaic") ||
+        normalized == QStringLiteral("pixel_recursive_zoom")) {
+        return ClipEffectPreset::RecursiveZoomPixelMosaic;
+    }
     if (normalized == QStringLiteral("polar_tunnel")) return ClipEffectPreset::PolarTunnel;
     if (normalized == QStringLiteral("tiny_planet")) return ClipEffectPreset::TinyPlanet;
     if (normalized == QStringLiteral("infinite_mirror")) return ClipEffectPreset::InfiniteMirror;
@@ -842,6 +884,9 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
         obj[QStringLiteral("maskFeatherFalloff")] = clip.maskFeatherFalloff;
+        obj[QStringLiteral("maskEdgeGrayAmount")] = clip.maskEdgeGrayAmount;
+        obj[QStringLiteral("maskEdgeGrayWidth")] = clip.maskEdgeGrayWidth;
+        obj[QStringLiteral("maskEdgeGrayGamma")] = clip.maskEdgeGrayGamma;
         obj[QStringLiteral("maskDilate")] = clip.maskDilate;
         obj[QStringLiteral("maskErode")] = clip.maskErode;
         obj[QStringLiteral("maskBlur")] = clip.maskBlur;
@@ -879,6 +924,26 @@ QJsonObject clipToJson(const TimelineClip &clip)
                 {QStringLiteral("enabled"), keyframe.enabled}});
         }
         obj[QStringLiteral("effectEnabledKeyframes")] = effectEnabledKeyframes;
+        QJsonArray effectParameterKeyframes;
+        for (const TimelineClip::EffectParameterKeyframe& keyframe : clip.effectParameterKeyframes) {
+            effectParameterKeyframes.push_back(QJsonObject{
+                {QStringLiteral("frame"), static_cast<qint64>(keyframe.frame)},
+                {QStringLiteral("effectRows"), keyframe.effectRows},
+                {QStringLiteral("effectSpeed"), keyframe.effectSpeed},
+                {QStringLiteral("effectScale"), keyframe.effectScale},
+                {QStringLiteral("effectAlternateDirection"), keyframe.effectAlternateDirection},
+                {QStringLiteral("differenceReferenceFrames"), keyframe.differenceReferenceFrames},
+                {QStringLiteral("differenceThreshold"), keyframe.differenceThreshold},
+                {QStringLiteral("differenceSoftness"), keyframe.differenceSoftness},
+                {QStringLiteral("temporalEchoCount"), keyframe.temporalEchoCount},
+                {QStringLiteral("temporalEchoSpacingFrames"), keyframe.temporalEchoSpacingFrames},
+                {QStringLiteral("temporalEchoDecay"), keyframe.temporalEchoDecay},
+                {QStringLiteral("tilingPattern"), tilingPatternToJson(keyframe.tilingPattern)},
+                {QStringLiteral("tilingSpacing"), keyframe.tilingSpacing},
+                {QStringLiteral("tilingWrap"), keyframe.tilingWrap},
+                {QStringLiteral("linearInterpolation"), keyframe.linearInterpolation}});
+        }
+        obj[QStringLiteral("effectParameterKeyframes")] = effectParameterKeyframes;
         obj[QStringLiteral("effectModulationMode")] = clip.effectModulationMode;
         obj[QStringLiteral("effectModulationTarget")] = clip.effectModulationTarget;
         obj[QStringLiteral("effectModulationAmount")] = clip.effectModulationAmount;
@@ -1417,6 +1482,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
         clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
         clip.maskFeatherFalloff = qBound(0, obj.value(QStringLiteral("maskFeatherFalloff")).toInt(0), 5);
+        clip.maskEdgeGrayAmount =
+            qBound<qreal>(0.0, obj.value(QStringLiteral("maskEdgeGrayAmount")).toDouble(0.0), 1.0);
+        clip.maskEdgeGrayWidth =
+            qBound<qreal>(0.001, obj.value(QStringLiteral("maskEdgeGrayWidth")).toDouble(0.25), 0.5);
+        clip.maskEdgeGrayGamma =
+            qBound<qreal>(0.1, obj.value(QStringLiteral("maskEdgeGrayGamma")).toDouble(1.0), 8.0);
         clip.maskDilate = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDilate")).toDouble(0.0), 200.0);
         clip.maskErode = qBound<qreal>(0.0, obj.value(QStringLiteral("maskErode")).toDouble(0.0), 200.0);
         clip.maskBlur = qBound<qreal>(0.0, obj.value(QStringLiteral("maskBlur")).toDouble(0.0), 200.0);
@@ -1480,6 +1551,53 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         std::sort(
             clip.effectEnabledKeyframes.begin(),
             clip.effectEnabledKeyframes.end(),
+            [](const auto& left, const auto& right) {
+                return left.frame < right.frame;
+            });
+        const QJsonArray effectParameterKeyframes =
+            obj.value(QStringLiteral("effectParameterKeyframes")).toArray();
+        for (const QJsonValue& value : effectParameterKeyframes) {
+            if (!value.isObject()) continue;
+            const QJsonObject keyframeObj = value.toObject();
+            TimelineClip::EffectParameterKeyframe keyframe;
+            keyframe.frame = qBound<int64_t>(
+                int64_t{0},
+                static_cast<int64_t>(
+                    keyframeObj.value(QStringLiteral("frame"))
+                        .toVariant().toLongLong()),
+                qMax<int64_t>(0, clip.durationFrames - 1));
+            keyframe.effectRows =
+                qBound(1, keyframeObj.value(QStringLiteral("effectRows")).toInt(32), 512);
+            keyframe.effectSpeed = qBound<qreal>(
+                -8.0, keyframeObj.value(QStringLiteral("effectSpeed")).toDouble(1.0), 8.0);
+            keyframe.effectScale = qBound<qreal>(
+                0.1, keyframeObj.value(QStringLiteral("effectScale")).toDouble(1.0), 8.0);
+            keyframe.effectAlternateDirection =
+                keyframeObj.value(QStringLiteral("effectAlternateDirection")).toBool(true);
+            keyframe.differenceReferenceFrames =
+                qBound(1, keyframeObj.value(QStringLiteral("differenceReferenceFrames")).toInt(1), 300);
+            keyframe.differenceThreshold = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("differenceThreshold")).toDouble(0.10), 1.0);
+            keyframe.differenceSoftness = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("differenceSoftness")).toDouble(0.05), 1.0);
+            keyframe.temporalEchoCount =
+                qBound(1, keyframeObj.value(QStringLiteral("temporalEchoCount")).toInt(4), 12);
+            keyframe.temporalEchoSpacingFrames =
+                qBound(1, keyframeObj.value(QStringLiteral("temporalEchoSpacingFrames")).toInt(2), 120);
+            keyframe.temporalEchoDecay = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("temporalEchoDecay")).toDouble(0.65), 1.0);
+            keyframe.tilingPattern = tilingPatternFromJson(
+                keyframeObj.value(QStringLiteral("tilingPattern")).toString(QStringLiteral("grid")));
+            keyframe.tilingSpacing = qBound<qreal>(
+                0.1, keyframeObj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
+            keyframe.tilingWrap = keyframeObj.value(QStringLiteral("tilingWrap")).toBool(true);
+            keyframe.linearInterpolation =
+                keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
+            clip.effectParameterKeyframes.push_back(keyframe);
+        }
+        std::sort(
+            clip.effectParameterKeyframes.begin(),
+            clip.effectParameterKeyframes.end(),
             [](const auto& left, const auto& right) {
                 return left.frame < right.frame;
             });

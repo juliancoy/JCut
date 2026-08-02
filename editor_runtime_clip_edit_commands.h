@@ -108,6 +108,10 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                         removed = removeKeyframeAtFrame(
                             &clip->effectEnabledKeyframes, typedCommand.frame);
                         break;
+                    case EditorKeyframeChannel::EffectParameters:
+                        removed = removeKeyframeAtFrame(
+                            &clip->effectParameterKeyframes, typedCommand.frame);
+                        break;
                     case EditorKeyframeChannel::SpeakerFramingEnabled:
                         removed = removeKeyframeAtFrame(
                             &clip->speakerFramingEnabledKeyframes,
@@ -384,6 +388,12 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                     clip->maskFeather = std::clamp(typedCommand.feather, 0.0, 512.0);
                     clip->maskFeatherGamma = std::clamp(typedCommand.featherGamma, 0.1, 8.0);
                     clip->maskFeatherFalloff = std::clamp(typedCommand.featherFalloff, 0, 5);
+                    clip->maskEdgeGrayAmount =
+                        std::clamp(typedCommand.edgeGrayAmount, 0.0, 1.0);
+                    clip->maskEdgeGrayWidth =
+                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 0.5);
+                    clip->maskEdgeGrayGamma =
+                        std::clamp(typedCommand.edgeGrayGamma, 0.1, 8.0);
                     clip->maskForegroundLayerEnabled = typedCommand.foregroundLayerEnabled;
                     clip->maskRepeatEnabled = typedCommand.repeatEnabled;
                     clip->maskRepeatDeltaX = typedCommand.repeatDeltaX;
@@ -466,6 +476,48 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                         &clip->effectEnabledKeyframes,
                         std::move(keyframe));
                     return CommandResult{true, "effect enabled keyframe updated"};
+                } else if constexpr (
+                    std::is_same_v<T, UpsertEffectParameterKeyframeCommand>) {
+                    EditorClip* clip =
+                        findClip(&m_document.clips, typedCommand.clipId);
+                    if (!clip) return CommandResult{false, "clip not found"};
+                    EditorEffectParameterKeyframe keyframe = typedCommand.keyframe;
+                    keyframe.frame = std::clamp<std::int64_t>(
+                        keyframe.frame,
+                        0,
+                        std::max(0, clip->durationFrames - 1));
+                    keyframe.effectRows =
+                        std::clamp(keyframe.effectRows, 1, 512);
+                    keyframe.effectSpeed =
+                        std::clamp(keyframe.effectSpeed, -8.0, 8.0);
+                    keyframe.effectScale =
+                        std::clamp(keyframe.effectScale, 0.1, 8.0);
+                    keyframe.differenceReferenceFrames =
+                        std::clamp(keyframe.differenceReferenceFrames, 1, 300);
+                    keyframe.differenceThreshold =
+                        std::clamp(keyframe.differenceThreshold, 0.0, 1.0);
+                    keyframe.differenceSoftness =
+                        std::clamp(keyframe.differenceSoftness, 0.0, 1.0);
+                    keyframe.temporalEchoCount =
+                        std::clamp(keyframe.temporalEchoCount, 1, 12);
+                    keyframe.temporalEchoSpacingFrames =
+                        std::clamp(keyframe.temporalEchoSpacingFrames, 1, 120);
+                    keyframe.temporalEchoDecay =
+                        std::clamp(keyframe.temporalEchoDecay, 0.0, 1.0);
+                    keyframe.tilingSpacing =
+                        std::clamp(keyframe.tilingSpacing, 0.1, 8.0);
+                    static constexpr std::array<std::string_view, 7> kEffectKeyTilingPatterns = {
+                        "grid", "encircle", "spiral", "spiral_xy", "spiral_xz", "spiral_yz", "diamond"};
+                    if (std::find(
+                            kEffectKeyTilingPatterns.begin(),
+                            kEffectKeyTilingPatterns.end(),
+                            keyframe.tilingPattern) == kEffectKeyTilingPatterns.end()) {
+                        keyframe.tilingPattern = "grid";
+                    }
+                    upsertKeyframe(
+                        &clip->effectParameterKeyframes,
+                        std::move(keyframe));
+                    return CommandResult{true, "effect parameter keyframe updated"};
                 } else if constexpr (std::is_same_v<T, SetClipMaskCommand>) {
                     EditorClip* clip = findClip(&m_document.clips, typedCommand.clipId);
                     if (!clip) {
@@ -477,6 +529,12 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                         typedCommand.featherGamma, 0.1, 8.0);
                     clip->maskFeatherFalloff = std::clamp(
                         typedCommand.featherFalloff, 0, 5);
+                    clip->maskEdgeGrayAmount =
+                        std::clamp(typedCommand.edgeGrayAmount, 0.0, 1.0);
+                    clip->maskEdgeGrayWidth =
+                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 0.5);
+                    clip->maskEdgeGrayGamma =
+                        std::clamp(typedCommand.edgeGrayGamma, 0.1, 8.0);
                     clip->maskForegroundLayerEnabled =
                         typedCommand.foregroundLayerEnabled;
                     clip->maskRepeatEnabled = typedCommand.repeatEnabled;

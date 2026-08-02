@@ -1916,8 +1916,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
         const int64_t requestFrame = staticImageClip ? 0 : localFrame;
         const PlaybackFrameCrossfade frameCrossfade =
-            playbackFrameCrossfadeAtTimelineFrame(m_interaction.currentFramePosition,
-                                                  m_interaction.playbackTiming);
+            clipShouldApplySpeechFilterFrameCrossfade(clip)
+                ? playbackFrameCrossfadeAtTimelineFrame(
+                      m_interaction.currentFramePosition,
+                      m_interaction.playbackTiming)
+                : PlaybackFrameCrossfade{};
         const int64_t secondaryTimelineFrame =
             frameCrossfade.active ? qMax<int64_t>(0, frameCrossfade.secondaryTimelineFrame) : -1;
         const int64_t secondarySample =
@@ -2049,6 +2052,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.maskFeather = effects.maskFeather;
         status.maskFeatherGamma = effects.maskFeatherGamma;
         status.maskFeatherFalloff = effects.maskFeatherFalloff;
+        status.maskEdgeGrayAmount = effects.maskEdgeGrayAmount;
+        status.maskEdgeGrayWidth = effects.maskEdgeGrayWidth;
+        status.maskEdgeGrayGamma = effects.maskEdgeGrayGamma;
         status.maskInvert = clip.maskInvert;
         status.maskErode = clip.maskErode;
         status.maskDilate = clip.maskDilate;
@@ -2359,6 +2365,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskFeather = clip.maskFeather;
                     markerStatus.maskFeatherGamma = clip.maskFeatherGamma;
                     markerStatus.maskFeatherFalloff = clip.maskFeatherFalloff;
+                    markerStatus.maskEdgeGrayAmount = clip.maskEdgeGrayAmount;
+                    markerStatus.maskEdgeGrayWidth = clip.maskEdgeGrayWidth;
+                    markerStatus.maskEdgeGrayGamma = clip.maskEdgeGrayGamma;
                     markerStatus.maskDilate = clip.maskDilate;
                     markerStatus.maskErode = clip.maskErode;
                     markerStatus.maskBlur = clip.maskBlur;
@@ -2488,6 +2497,9 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskFeather = matteEffects.maskFeather;
                     markerStatus.maskFeatherGamma = matteEffects.maskFeatherGamma;
                     markerStatus.maskFeatherFalloff = matteEffects.maskFeatherFalloff;
+                    markerStatus.maskEdgeGrayAmount = matteEffects.maskEdgeGrayAmount;
+                    markerStatus.maskEdgeGrayWidth = matteEffects.maskEdgeGrayWidth;
+                    markerStatus.maskEdgeGrayGamma = matteEffects.maskEdgeGrayGamma;
                     if (matteEffects.grading.opacity <= 0.001) {
                         markerStatus.drawSuppressed = true;
                         markerStatus.missingReason = QStringLiteral("skipped_zero_opacity");

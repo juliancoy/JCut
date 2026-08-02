@@ -476,6 +476,9 @@ void drawInspectorTab03(
             float radius = currentClip ? static_cast<float>(currentClip->maskFeather) : 0.0f;
             float gamma = currentClip ? static_cast<float>(currentClip->maskFeatherGamma) : 1.0f;
             int falloff = currentClip ? currentClip->maskFeatherFalloff : 0;
+            float edgeGrayAmount = currentClip ? static_cast<float>(currentClip->maskEdgeGrayAmount) : 0.0f;
+            float edgeGrayWidth = currentClip ? static_cast<float>(currentClip->maskEdgeGrayWidth) : 0.25f;
+            float edgeGrayGamma = currentClip ? static_cast<float>(currentClip->maskEdgeGrayGamma) : 1.0f;
             bool foreground = currentClip ? currentClip->maskForegroundLayerEnabled : false;
             bool repeat = currentClip ? currentClip->maskRepeatEnabled : false;
             float repeatX = currentClip ? static_cast<float>(currentClip->maskRepeatDeltaX) : 160.0f;
@@ -531,6 +534,12 @@ void drawInspectorTab03(
             maskChanged |= ImGui::SliderFloat("Feather Gamma", &gamma, 0.1f, 8.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
             maskChanged |= ImGui::SliderInt("Falloff", &falloff, 0, 5);
+            beginRuntimeHistoryTransactionForLastItem(shellState);
+            maskChanged |= ImGui::SliderFloat("Edge Grayscale", &edgeGrayAmount, 0.0f, 1.0f, "%.2f");
+            beginRuntimeHistoryTransactionForLastItem(shellState);
+            maskChanged |= ImGui::SliderFloat("Edge Gray Width", &edgeGrayWidth, 0.001f, 0.5f, "%.3f");
+            beginRuntimeHistoryTransactionForLastItem(shellState);
+            maskChanged |= ImGui::SliderFloat("Edge Gray Gamma", &edgeGrayGamma, 0.1f, 8.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
             maskChanged |= ImGui::SliderFloat("Dilate", &dilate, 0.0f, 200.0f, "%.1f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
@@ -613,6 +622,9 @@ void drawInspectorTab03(
                 command.feather = radius;
                 command.featherGamma = gamma;
                 command.featherFalloff = falloff;
+                command.edgeGrayAmount = edgeGrayAmount;
+                command.edgeGrayWidth = edgeGrayWidth;
+                command.edgeGrayGamma = edgeGrayGamma;
                 command.foregroundLayerEnabled = foreground;
                 command.repeatEnabled = repeat;
                 command.repeatDeltaX = repeatX;

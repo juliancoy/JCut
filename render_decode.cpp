@@ -124,17 +124,17 @@ void enqueueRenderMaskLookahead(const RenderRequest& request,
 void prewarmRenderDecodeSegment(const RenderRequest& request,
                                 int64_t segmentStartFrame,
                                 int64_t segmentEndFrame,
+                                int lookaheadFrames,
                                 const QVector<TimelineClip>& orderedClips,
                                 editor::AsyncDecoder* asyncDecoder,
                                 RenderPreparedFrameQueue& preparedFrames) {
-    if (!asyncDecoder || !editor::debugLeadPrefetchEnabled()) {
+    if (!asyncDecoder || lookaheadFrames <= 0) {
         return;
     }
 
-    const int prewarmFrames = qMax(editor::debugPlaybackWindowAhead() * 2,
-                                   editor::debugLeadPrefetchCount() * 4);
-    const int lookaheadFrames = static_cast<int>(qMin<int64_t>(segmentEndFrame - segmentStartFrame + 1,
-                                                               qMax<int64_t>(1, prewarmFrames)));
+    const int boundedLookaheadFrames = static_cast<int>(qMin<int64_t>(
+        segmentEndFrame - segmentStartFrame + 1,
+        qMax<int64_t>(1, lookaheadFrames)));
     QVector<editor::DecodePrefetchClip> decodeClips;
     decodeClips.reserve(orderedClips.size());
     for (const TimelineClip& clip : orderedClips) {
@@ -142,7 +142,7 @@ void prewarmRenderDecodeSegment(const RenderRequest& request,
     }
     const QVector<int64_t> prewarmTimelineFrames =
         editor::collectLookaheadTimelineFrames(segmentStartFrame - 1,
-                                               lookaheadFrames,
+                                               boundedLookaheadFrames,
                                                1,
                                                {});
     for (int64_t prewarmTimelineFrame : prewarmTimelineFrames) {

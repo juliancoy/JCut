@@ -150,6 +150,58 @@ void parseBoolKeyframes(
     }
 }
 
+void parseEffectParameterKeyframes(
+    const json& values,
+    std::vector<jcut::EditorEffectParameterKeyframe>* keyframes)
+{
+    if (!values.is_array() || !keyframes) {
+        return;
+    }
+    for (const json& value : values) {
+        if (!value.is_object()) {
+            continue;
+        }
+        jcut::EditorEffectParameterKeyframe keyframe;
+        keyframe.frame = valueOr(value, "frame", std::int64_t{0});
+        keyframe.effectRows =
+            std::clamp(valueOr(value, "effectRows", 32), 1, 512);
+        keyframe.effectSpeed =
+            std::clamp(valueOr(value, "effectSpeed", 1.0), -8.0, 8.0);
+        keyframe.effectScale =
+            std::clamp(valueOr(value, "effectScale", 1.0), 0.1, 8.0);
+        keyframe.effectAlternateDirection =
+            valueOr(value, "effectAlternateDirection", true);
+        keyframe.differenceReferenceFrames =
+            std::clamp(valueOr(value, "differenceReferenceFrames", 1), 1, 300);
+        keyframe.differenceThreshold =
+            std::clamp(valueOr(value, "differenceThreshold", 0.10), 0.0, 1.0);
+        keyframe.differenceSoftness =
+            std::clamp(valueOr(value, "differenceSoftness", 0.05), 0.0, 1.0);
+        keyframe.temporalEchoCount =
+            std::clamp(valueOr(value, "temporalEchoCount", 4), 1, 12);
+        keyframe.temporalEchoSpacingFrames =
+            std::clamp(valueOr(value, "temporalEchoSpacingFrames", 2), 1, 120);
+        keyframe.temporalEchoDecay =
+            std::clamp(valueOr(value, "temporalEchoDecay", 0.65), 0.0, 1.0);
+        keyframe.tilingPattern = stringOr(value, "tilingPattern", "grid");
+        if (keyframe.tilingPattern != "grid" &&
+            keyframe.tilingPattern != "encircle" &&
+            keyframe.tilingPattern != "spiral" &&
+            keyframe.tilingPattern != "spiral_xy" &&
+            keyframe.tilingPattern != "spiral_xz" &&
+            keyframe.tilingPattern != "spiral_yz" &&
+            keyframe.tilingPattern != "diamond") {
+            keyframe.tilingPattern = "grid";
+        }
+        keyframe.tilingSpacing =
+            std::clamp(valueOr(value, "tilingSpacing", 1.0), 0.1, 8.0);
+        keyframe.tilingWrap = valueOr(value, "tilingWrap", true);
+        keyframe.linearInterpolation =
+            valueOr(value, "linearInterpolation", true);
+        keyframes->push_back(std::move(keyframe));
+    }
+}
+
 void parseGradingKeyframes(const json& values,
                            std::vector<jcut::EditorGradingKeyframe>* keyframes)
 {
@@ -485,6 +537,12 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskFeather = valueOr(value, "maskFeather", 0.0);
     clip->maskFeatherGamma = valueOr(value, "maskFeatherGamma", 1.0);
     clip->maskFeatherFalloff = valueOr(value, "maskFeatherFalloff", 0);
+    clip->maskEdgeGrayAmount =
+        std::clamp(valueOr(value, "maskEdgeGrayAmount", 0.0), 0.0, 1.0);
+    clip->maskEdgeGrayWidth =
+        std::clamp(valueOr(value, "maskEdgeGrayWidth", 0.25), 0.001, 0.5);
+    clip->maskEdgeGrayGamma =
+        std::clamp(valueOr(value, "maskEdgeGrayGamma", 1.0), 0.1, 8.0);
     clip->maskDilate = valueOr(value, "maskDilate", 0.0);
     clip->maskErode = valueOr(value, "maskErode", 0.0);
     clip->maskBlur = valueOr(value, "maskBlur", 0.0);
@@ -543,6 +601,9 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
                 return left.frame < right.frame;
             });
     }
+    parseEffectParameterKeyframes(
+        value.value("effectParameterKeyframes", json::array()),
+        &clip->effectParameterKeyframes);
     clip->effectModulationMode =
         stringOr(value, "effectModulationMode", "none");
     clip->effectModulationTarget =
@@ -605,6 +666,7 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     normalizeParsedKeyframes(&clip->gradingKeyframes, clip->durationFrames);
     normalizeParsedKeyframes(&clip->opacityKeyframes, clip->durationFrames);
     normalizeParsedKeyframes(&clip->titleKeyframes, clip->durationFrames);
+    normalizeParsedKeyframes(&clip->effectParameterKeyframes, clip->durationFrames);
 }
 
 void parseExtendedTrack(const json& value, jcut::EditorTrack* track)
@@ -885,6 +947,10 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             valueOr(exportRequest, "createVideoFromImageSequence", false);
         document->exportRequest.disableParallelImageWrite =
             valueOr(exportRequest, "disableParallelImageWrite", false);
+        document->exportRequest.incrementalExport =
+            valueOr(exportRequest, "incrementalExport", false);
+        document->exportRequest.incrementalChunkFrames =
+            valueOr(exportRequest, "incrementalChunkFrames", 900);
         document->exportRequest.instagramSafeAreaGuides =
             valueOr(exportRequest, "instagramSafeAreaGuides", false);
         document->exportRequest.alignmentGridGuides =
@@ -972,6 +1038,8 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
         "exportPlaybackSpeed",
         valueOr(root, "playbackSpeed", 1.0));
     document->exportRequest.useProxyMedia = valueOr(root, "renderUseProxies", false);
+    document->exportRequest.incrementalExport =
+        valueOr(root, "incrementalExport", false);
     document->exportRequest.bypassGrading = !valueOr(root, "gradingPreview", true);
     document->exportRequest.correctionsEnabled = valueOr(root, "correctionsEnabled", true);
     document->exportRequest.createVideoFromImageSequence =
@@ -1592,6 +1660,9 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["maskFeather"] = clip.maskFeather;
     (*out)["maskFeatherGamma"] = clip.maskFeatherGamma;
     (*out)["maskFeatherFalloff"] = clip.maskFeatherFalloff;
+    (*out)["maskEdgeGrayAmount"] = clip.maskEdgeGrayAmount;
+    (*out)["maskEdgeGrayWidth"] = clip.maskEdgeGrayWidth;
+    (*out)["maskEdgeGrayGamma"] = clip.maskEdgeGrayGamma;
     (*out)["maskDilate"] = clip.maskDilate;
     (*out)["maskErode"] = clip.maskErode;
     (*out)["maskBlur"] = clip.maskBlur;
@@ -1637,6 +1708,27 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
             {"enabled", keyframe.enabled}});
     }
     (*out)["effectEnabledKeyframes"] = std::move(effectEnabledKeyframes);
+    json effectParameterKeyframes = json::array();
+    for (const jcut::EditorEffectParameterKeyframe& keyframe :
+         clip.effectParameterKeyframes) {
+        effectParameterKeyframes.push_back({
+            {"frame", keyframe.frame},
+            {"effectRows", keyframe.effectRows},
+            {"effectSpeed", keyframe.effectSpeed},
+            {"effectScale", keyframe.effectScale},
+            {"effectAlternateDirection", keyframe.effectAlternateDirection},
+            {"differenceReferenceFrames", keyframe.differenceReferenceFrames},
+            {"differenceThreshold", keyframe.differenceThreshold},
+            {"differenceSoftness", keyframe.differenceSoftness},
+            {"temporalEchoCount", keyframe.temporalEchoCount},
+            {"temporalEchoSpacingFrames", keyframe.temporalEchoSpacingFrames},
+            {"temporalEchoDecay", keyframe.temporalEchoDecay},
+            {"tilingPattern", keyframe.tilingPattern},
+            {"tilingSpacing", keyframe.tilingSpacing},
+            {"tilingWrap", keyframe.tilingWrap},
+            {"linearInterpolation", keyframe.linearInterpolation}});
+    }
+    (*out)["effectParameterKeyframes"] = std::move(effectParameterKeyframes);
     (*out)["effectModulationMode"] = clip.effectModulationMode;
     (*out)["effectModulationTarget"] = clip.effectModulationTarget;
     (*out)["effectModulationAmount"] = clip.effectModulationAmount;
@@ -1900,6 +1992,7 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
         : document.exportRequest.outputFormat;
     root["lastRenderOutputPath"] = document.exportRequest.outputPath;
     root["renderUseProxies"] = document.exportRequest.useProxyMedia;
+    root["incrementalExport"] = document.exportRequest.incrementalExport;
     root["createImageSequence"] = document.exportRequest.createVideoFromImageSequence;
     root["imageSequenceFormat"] = document.exportRequest.imageSequenceFormat.empty()
         ? std::string("jpeg")

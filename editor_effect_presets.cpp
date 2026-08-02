@@ -129,6 +129,13 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("Tessellation"), ClipEffectPreset::Tessellation, QStringLiteral("Mirror & Geometry")},
         {QStringLiteral("Hexagonal prism"), ClipEffectPreset::HexagonalPrism, QStringLiteral("Mirror & Geometry")},
         {QStringLiteral("Droste"), ClipEffectPreset::Droste, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom tile"), ClipEffectPreset::RecursiveZoomTile, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom tunnel"), ClipEffectPreset::RecursiveZoomTunnel, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom mirror box"), ClipEffectPreset::RecursiveZoomMirrorBox, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom spiral"), ClipEffectPreset::RecursiveZoomSpiral, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom kaleidoscope"), ClipEffectPreset::RecursiveZoomKaleidoscope, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom radial repeat"), ClipEffectPreset::RecursiveZoomRadialRepeat, QStringLiteral("Mirror & Geometry")},
+        {QStringLiteral("Recursive zoom pixel mosaic"), ClipEffectPreset::RecursiveZoomPixelMosaic, QStringLiteral("Mirror & Geometry")},
 
         {QStringLiteral("Polar tunnel"), ClipEffectPreset::PolarTunnel, QStringLiteral("Warp & Distort")},
         {QStringLiteral("Tiny planet"), ClipEffectPreset::TinyPlanet, QStringLiteral("Warp & Distort")},
@@ -194,6 +201,13 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::Kaleidoscope:
     case ClipEffectPreset::HexagonalPrism:
     case ClipEffectPreset::Droste:
+    case ClipEffectPreset::RecursiveZoomTile:
+    case ClipEffectPreset::RecursiveZoomTunnel:
+    case ClipEffectPreset::RecursiveZoomMirrorBox:
+    case ClipEffectPreset::RecursiveZoomSpiral:
+    case ClipEffectPreset::RecursiveZoomKaleidoscope:
+    case ClipEffectPreset::RecursiveZoomRadialRepeat:
+    case ClipEffectPreset::RecursiveZoomPixelMosaic:
     case ClipEffectPreset::PolarTunnel:
     case ClipEffectPreset::TinyPlanet:
     case ClipEffectPreset::InfiniteMirror:

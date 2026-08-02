@@ -300,6 +300,7 @@ public:
     QCheckBox *effectEnabledCheck() const { return m_effectEnabledCheck; }
     QPushButton *effectKeyframeOnButton() const { return m_effectKeyframeOnButton; }
     QPushButton *effectKeyframeOffButton() const { return m_effectKeyframeOffButton; }
+    QPushButton *effectParameterKeyframeButton() const { return m_effectParameterKeyframeButton; }
     QPushButton *effectKeyframeRemoveButton() const { return m_effectKeyframeRemoveButton; }
     QLabel *effectKeyframesLabel() const { return m_effectKeyframesLabel; }
     QComboBox *effectModulationModeCombo() const { return m_effectModulationModeCombo; }
@@ -324,6 +325,9 @@ public:
     QLabel *maskFuzzyStatusLabel() const { return m_maskFuzzyStatusLabel; }
     QSpinBox *maskZLevelSpin() const { return m_maskZLevelSpin; }
     QDoubleSpinBox *maskShapeFeatherSpin() const { return m_maskShapeFeatherSpin; }
+    QDoubleSpinBox *maskEdgeGrayAmountSpin() const { return m_maskEdgeGrayAmountSpin; }
+    QDoubleSpinBox *maskEdgeGrayWidthSpin() const { return m_maskEdgeGrayWidthSpin; }
+    QDoubleSpinBox *maskEdgeGrayGammaSpin() const { return m_maskEdgeGrayGammaSpin; }
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
     QDoubleSpinBox *maskBlurSpin() const { return m_maskBlurSpin; }
@@ -663,6 +667,7 @@ private:
     QCheckBox *m_effectEnabledCheck = nullptr;
     QPushButton *m_effectKeyframeOnButton = nullptr;
     QPushButton *m_effectKeyframeOffButton = nullptr;
+    QPushButton *m_effectParameterKeyframeButton = nullptr;
     QPushButton *m_effectKeyframeRemoveButton = nullptr;
     QLabel *m_effectKeyframesLabel = nullptr;
     QComboBox *m_effectModulationModeCombo = nullptr;
@@ -693,6 +698,9 @@ private:
     QLabel *m_maskFuzzyStatusLabel = nullptr;
     QSpinBox *m_maskZLevelSpin = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherSpin = nullptr;
+    QDoubleSpinBox *m_maskEdgeGrayAmountSpin = nullptr;
+    QDoubleSpinBox *m_maskEdgeGrayWidthSpin = nullptr;
+    QDoubleSpinBox *m_maskEdgeGrayGammaSpin = nullptr;
     QDoubleSpinBox *m_maskDilateSpin = nullptr;
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
     QDoubleSpinBox *m_maskBlurSpin = nullptr;

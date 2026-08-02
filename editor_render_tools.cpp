@@ -638,7 +638,7 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
     request.incrementalExport =
-        !m_incrementalRenderCheckBox ||
+        m_incrementalRenderCheckBox &&
         m_incrementalRenderCheckBox->isChecked();
     request.instagramSafeAreaGuides =
         m_instagramSafeAreaGuidesCheckBox &&

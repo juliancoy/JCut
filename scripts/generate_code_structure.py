@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import concurrent.futures
 import datetime as dt
 import fnmatch
 import hashlib
@@ -22,9 +23,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from scripts.clang_ast_structure import load_compile_commands, parse_translation_unit
+except ModuleNotFoundError:
+    from clang_ast_structure import load_compile_commands, parse_translation_unit
 
-SCHEMA = "jcut_code_structure_v1"
+
+SCHEMA = "jcut_code_structure_v3"
 OWNERSHIP_SCHEMA = "jcut_code_ownership_v1"
+GENERATOR_VERSION = "3"
 SOURCE_SUFFIXES = {
     ".c": "C",
     ".cc": "C++",
@@ -146,6 +153,173 @@ def discover_files(root: Path, excludes: tuple[str, ...]) -> list[Path]:
         and language_for(path)
         and not is_excluded(path.as_posix(), excludes)
     )
+
+
+def sha256_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def display_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def git_output(root: Path, *arguments: str) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout if result.returncode == 0 else b""
+
+
+def git_commit(root: Path) -> str | None:
+    value = git_output(root, "rev-parse", "HEAD").decode("ascii", "replace").strip()
+    return value or None
+
+
+def git_dirty_state(root: Path, paths: Iterable[Path]) -> tuple[str, bool, int]:
+    relevant = sorted({path.as_posix() for path in paths})
+    if not relevant:
+        payload = b""
+    else:
+        payload = git_output(
+            root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            *relevant,
+        )
+    entries = [entry for entry in payload.split(b"\0") if entry]
+    digest = hashlib.sha256(payload)
+    if entries:
+        for relative in relevant:
+            path = root / relative
+            file_digest = sha256_file(path)
+            if file_digest is not None:
+                digest.update(relative.encode("utf-8", "surrogateescape"))
+                digest.update(b"\0")
+                digest.update(file_digest.encode("ascii"))
+                digest.update(b"\0")
+    return digest.hexdigest(), bool(entries), len(entries)
+
+
+def corpus_fingerprint(files: Iterable[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(files, key=lambda entry: entry["path"]):
+        digest.update(item["path"].encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        digest.update(item["sha256"].encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def freshness_metadata(
+    root: Path,
+    files: list[dict[str, Any]],
+    ownership_manifest_path: Path,
+    build_file_path: Path,
+) -> dict[str, Any]:
+    relevant_paths = [Path(item["path"]) for item in files]
+    for path in (ownership_manifest_path, build_file_path):
+        if path.exists():
+            try:
+                relevant_paths.append(path.resolve().relative_to(root))
+            except ValueError:
+                pass
+    dirty_fingerprint, dirty, dirty_entries = git_dirty_state(root, relevant_paths)
+    generator_path = Path(__file__).resolve()
+    return {
+        "generator_version": GENERATOR_VERSION,
+        "generator_sha256": sha256_file(generator_path),
+        "git_commit": git_commit(root),
+        "git_dirty": dirty,
+        "git_dirty_entries": dirty_entries,
+        "dirty_state_fingerprint": dirty_fingerprint,
+        "corpus_fingerprint": corpus_fingerprint(files),
+        "ownership_manifest": {
+            "path": display_path(root, ownership_manifest_path),
+            "sha256": sha256_file(ownership_manifest_path),
+        },
+        "build_file": {
+            "path": display_path(root, build_file_path),
+            "sha256": sha256_file(build_file_path),
+        },
+    }
+
+
+def current_file_records(root: Path, paths: Iterable[Path]) -> list[dict[str, str]]:
+    records = []
+    for relative in paths:
+        digest = sha256_file(root / relative)
+        if digest is not None:
+            records.append({"path": relative.as_posix(), "sha256": digest})
+    return records
+
+
+def validate_current(
+    root: Path,
+    index: dict[str, Any],
+    paths: list[Path],
+    ownership_manifest_path: Path,
+    build_file_path: Path,
+) -> list[str]:
+    errors: list[str] = []
+    recorded_files = index.get("files")
+    recorded_freshness = index.get("freshness")
+    if index.get("schema") != SCHEMA:
+        errors.append(f"schema changed: recorded {index.get('schema')!r}, current {SCHEMA!r}")
+    if not isinstance(recorded_files, list):
+        return errors + ["artifact has no files array"]
+    if not isinstance(recorded_freshness, dict):
+        return errors + ["artifact has no freshness metadata"]
+
+    current_files = current_file_records(root, paths)
+    recorded_by_path = {item["path"]: item.get("sha256") for item in recorded_files}
+    current_by_path = {item["path"]: item["sha256"] for item in current_files}
+    added = sorted(current_by_path.keys() - recorded_by_path.keys())
+    removed = sorted(recorded_by_path.keys() - current_by_path.keys())
+    changed = sorted(
+        path for path in current_by_path.keys() & recorded_by_path.keys()
+        if current_by_path[path] != recorded_by_path[path]
+    )
+    errors.extend(f"indexed file added: {path}" for path in added)
+    errors.extend(f"indexed file removed: {path}" for path in removed)
+    errors.extend(f"indexed file changed: {path}" for path in changed)
+
+    current_freshness = freshness_metadata(
+        root,
+        current_files,
+        ownership_manifest_path,
+        build_file_path,
+    )
+    scalar_fields = (
+        "generator_version",
+        "generator_sha256",
+        "git_commit",
+        "dirty_state_fingerprint",
+        "corpus_fingerprint",
+    )
+    for field in scalar_fields:
+        if recorded_freshness.get(field) != current_freshness.get(field):
+            errors.append(
+                f"{field} changed: recorded {recorded_freshness.get(field)!r}, "
+                f"current {current_freshness.get(field)!r}"
+            )
+    for field in ("ownership_manifest", "build_file"):
+        if recorded_freshness.get(field) != current_freshness.get(field):
+            errors.append(
+                f"{field} changed: recorded {recorded_freshness.get(field)!r}, "
+                f"current {current_freshness.get(field)!r}"
+            )
+    return errors
 
 
 def load_ownership_manifest(path: Path | None) -> dict[str, Any] | None:
@@ -636,6 +810,7 @@ def markdown_escape(text: str) -> str:
 def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
     summary = index["summary"]
     files = index["files"]
+    freshness = index["freshness"]
     largest = sorted(files, key=lambda item: (-item["lines"], item["path"]))
     oversized = [item for item in largest if item["lines"] >= large_file_lines]
     lines = [
@@ -649,6 +824,21 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         f"**{summary['symbols']:,} symbols**  ",
         f"Large-file threshold: **{large_file_lines:,} lines**",
         f"Ownership violations: **{summary['ownership_violations']:,}**",
+        "",
+        "## Artifact provenance",
+        "",
+        "| Input | Recorded value |",
+        "|---|---|",
+        f"| Generator | `{freshness['generator_version']}` / `{freshness['generator_sha256']}` |",
+        f"| Git commit | `{freshness['git_commit'] or '-'}` |",
+        f"| Indexed inputs dirty | `{freshness['git_dirty']}` "
+        f"({freshness['git_dirty_entries']} status entries) |",
+        f"| Dirty-state fingerprint | `{freshness['dirty_state_fingerprint']}` |",
+        f"| Corpus fingerprint | `{freshness['corpus_fingerprint']}` |",
+        f"| Ownership manifest | `{freshness['ownership_manifest']['path']}` / "
+        f"`{freshness['ownership_manifest']['sha256'] or '-'}` |",
+        f"| Build file | `{freshness['build_file']['path']}` / "
+        f"`{freshness['build_file']['sha256'] or '-'}` |",
         "",
         "## Language inventory",
         "",
@@ -775,6 +965,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ninja-file", type=Path, default=Path("build/build.ninja"))
     parser.add_argument("--check-ownership", action="store_true",
                         help="fail when ownership violations are present")
+    parser.add_argument("--check-current", action="store_true",
+                        help="verify the existing JSON artifact without rewriting it")
     return parser.parse_args(argv)
 
 
@@ -783,7 +975,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     excludes = (() if args.include else DEFAULT_EXCLUDES) + tuple(args.exclude)
     paths = discover_files(root, excludes)
-    if not paths:
+    if not paths and not args.check_current:
         print("No source files found", file=sys.stderr)
         return 1
     manifest_path = args.ownership_manifest
@@ -792,15 +984,45 @@ def main(argv: list[str] | None = None) -> int:
     ninja_path = args.ninja_file
     if not ninja_path.is_absolute():
         ninja_path = root / ninja_path
-    ownership_manifest = load_ownership_manifest(manifest_path)
-    build_targets = build_targets_from_ninja(root, ninja_path)
-    index = analyze(root, paths, excludes, ownership_manifest, build_targets)
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = root / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "code_structure.json"
     markdown_path = output_dir / "code_structure.md"
+    if args.check_current:
+        if not json_path.is_file():
+            print(f"Freshness check failed: artifact not found: {json_path}", file=sys.stderr)
+            return 4
+        try:
+            existing_index = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"Freshness check failed: cannot read {json_path}: {error}", file=sys.stderr)
+            return 4
+        freshness_errors = validate_current(
+            root,
+            existing_index,
+            paths,
+            manifest_path,
+            ninja_path,
+        )
+        if freshness_errors:
+            print(f"Freshness check failed: {len(freshness_errors)} difference(s)", file=sys.stderr)
+            for error in freshness_errors:
+                print(f"- {error}", file=sys.stderr)
+            return 4
+        print(f"Artifact is current: {json_path}")
+        return 0
+
+    ownership_manifest = load_ownership_manifest(manifest_path)
+    build_targets = build_targets_from_ninja(root, ninja_path)
+    index = analyze(root, paths, excludes, ownership_manifest, build_targets)
+    index["freshness"] = freshness_metadata(
+        root,
+        index["files"],
+        manifest_path,
+        ninja_path,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(render_markdown(index, args.large_file_lines), encoding="utf-8")
     print(f"Wrote {json_path}")

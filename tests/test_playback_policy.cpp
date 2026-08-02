@@ -4,6 +4,7 @@
 #include "../media_pipeline_shared.h"
 #include "../playback_clock_coordinator.h"
 #include "../playback_timing_context.h"
+#include "../render_runtime_controls.h"
 
 #include <QFile>
 
@@ -11,11 +12,25 @@ namespace {
 
 QString readSourceFile(const QString& relativePath)
 {
-    QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + relativePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return {};
+    QStringList paths{relativePath};
+    if (relativePath == QStringLiteral("audio_engine.cpp")) {
+        paths = {
+            QStringLiteral("audio_engine.cpp"),
+            QStringLiteral("audio_engine_cache.cpp"),
+            QStringLiteral("audio_engine_decode.cpp"),
+            QStringLiteral("audio_engine_mix.cpp"),
+            QStringLiteral("audio_engine_profiling.cpp"),
+        };
     }
-    return QString::fromUtf8(file.readAll());
+    QString text;
+    for (const QString& path : paths) {
+        QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return {};
+        }
+        text += QString::fromUtf8(file.readAll());
+    }
+    return text;
 }
 
 }  // namespace
@@ -40,6 +55,7 @@ private slots:
     void testPlaybackSampleClampUsesExclusivePlayableEnd();
     void testDiscontinuousRangePrefetchStartsBeforeCrossfade();
     void testExportDecodePrefetchIncludesOrdinaryVideo();
+    void testRenderSegmentDecodeLookaheadIsRuntimeMutableAndBounded();
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
@@ -202,6 +218,66 @@ void TestPlaybackPolicy::testExportDecodePrefetchIncludesOrdinaryVideo()
         editor::collectDecodePrefetchRequestsAtTimelineFrame(
             clips, 20.0, {}, false, 192, true);
     QVERIFY(sequenceOnlyRequests.isEmpty());
+}
+
+void TestPlaybackPolicy::
+    testRenderSegmentDecodeLookaheadIsRuntimeMutableAndBounded()
+{
+    const int original = render_detail::renderSegmentDecodeLookaheadFrames();
+    const bool originalAutotune =
+        render_detail::renderSegmentDecodeLookaheadAutotuneEnabled();
+
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(0));
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadFrames(), 0);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 0);
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(
+        render_detail::kMaximumRenderSegmentDecodeLookaheadFrames));
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadFrames(),
+             render_detail::kMaximumRenderSegmentDecodeLookaheadFrames);
+
+    QVERIFY(!render_detail::setRenderSegmentDecodeLookaheadFrames(-1));
+    QVERIFY(!render_detail::setRenderSegmentDecodeLookaheadFrames(
+        render_detail::kMaximumRenderSegmentDecodeLookaheadFrames + 1));
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadFrames(),
+             render_detail::kMaximumRenderSegmentDecodeLookaheadFrames);
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(original));
+
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(32));
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(true);
+    render_detail::observeRenderSegmentBoundaryDecodeWait(100, 33);
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadFrames(), 32);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 48);
+    for (int cleanBoundary = 0; cleanBoundary < 3; ++cleanBoundary) {
+        render_detail::observeRenderSegmentBoundaryDecodeWait(0, 33);
+    }
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 44);
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(false);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 32);
+    render_detail::observeRenderSegmentBoundaryDecodeWait(100, 33);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 32);
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(original));
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(
+        originalAutotune);
+
+    const QString routes = readSourceFile(
+        QStringLiteral("control_server_worker_routes.cpp"));
+    const QString exportSource = readSourceFile(
+        QStringLiteral("render_export.cpp"));
+    QVERIFY2(routes.contains(QStringLiteral("/render/config")) &&
+                 routes.contains(QStringLiteral(
+                     "segment_decode_lookahead_frames")) &&
+                 routes.contains(QStringLiteral(
+                     "segment_decode_lookahead_autotune")) &&
+                 routes.contains(QStringLiteral(
+                     "segment_decode_lookahead_effective_frames")) &&
+                 routes.contains(QStringLiteral("applies_to_active_render")),
+             "REST must expose the bounded lookahead as an active-render control.");
+    QVERIFY2(exportSource.contains(QStringLiteral(
+                 "effectiveSegmentDecodeLookaheadFrames")) &&
+                 exportSource.contains(QStringLiteral(
+                     "prewarmedDecodeFramesBySegment")),
+             "An active export must re-read the live lookahead and extend an "
+             "already-prewarmed segment when the value increases.");
 }
 
 void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap()

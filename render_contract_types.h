@@ -28,7 +28,7 @@ struct RenderRequestCore {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
-    bool incrementalExport = true;
+    bool incrementalExport = false;
     int incrementalChunkFrames = 900;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
