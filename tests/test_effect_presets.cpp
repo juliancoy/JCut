@@ -97,7 +97,8 @@ private slots:
     void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps();
     void titleAnimationsUseContiguousPlaybackTimeAcrossSkips();
-    void normalTitleLifetimeAnimationBuildsClipSpanningKeyframes();
+    void normalTitleLifetimeEffectEvaluatesWithoutMutatingKeyframes();
+    void sportsBroadcastTitleLifetimeEffectsAddProfessionalStructure();
     void temporalEffectsStayOnRawClockDuringVisualSpeedThrough();
     void temporalMovingPresetOptionsStaySmoothAcrossMultipleSpeechBoundaries();
     void generatedDrawMvpKeepsVulkanYDownOrientation();
@@ -2625,75 +2626,118 @@ void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
     QCOMPARE(unsynchronized.x, 20.0);
 }
 
-void TestEffectPresets::normalTitleLifetimeAnimationBuildsClipSpanningKeyframes()
+void TestEffectPresets::normalTitleLifetimeEffectEvaluatesWithoutMutatingKeyframes()
 {
-    TimelineClip::TitleKeyframe base;
-    base.frame = 17;
-    base.text = QStringLiteral("Normal Title");
-    base.translationX = 10.0;
-    base.translationY = -20.0;
-    base.fontSize = 50.0;
-    base.opacity = 0.8;
-    base.linearInterpolation = false;
-
     TimelineClip clip = createDefaultTitleClip(10, 1, 121);
-    const QVector<TimelineClip::TitleKeyframe> drift =
-        makeTitleLifetimeAnimationKeyframes(
-            clip,
-            base,
-            TitleLifetimeAnimationPreset::DriftHorizontal,
-            200.0);
-    QCOMPARE(drift.size(), 2);
-    QCOMPARE(drift.front().frame, int64_t(0));
-    QCOMPARE(drift.back().frame, int64_t(120));
-    QCOMPARE(drift.front().translationX, -190.0);
-    QCOMPARE(drift.back().translationX, 210.0);
-    QVERIFY(drift.front().linearInterpolation);
-    QVERIFY(drift.back().linearInterpolation);
+    clip.titleKeyframes[0].text = QStringLiteral("Normal Title");
+    clip.titleKeyframes[0].translationX = 10.0;
+    clip.titleKeyframes[0].translationY = -20.0;
+    clip.titleKeyframes[0].fontSize = 50.0;
+    clip.titleKeyframes[0].opacity = 0.8;
+    clip.titleLifetimeEffect = TitleLifetimeEffect::NewsFlyInLeft;
+    clip.titleLifetimeEffectFlySeconds = 0.50;
 
-    const QVector<TimelineClip::TitleKeyframe> pulse =
-        makeTitleLifetimeAnimationKeyframes(
-            clip,
-            base,
-            TitleLifetimeAnimationPreset::Pulse,
-            50.0);
-    QCOMPARE(pulse.size(), 3);
-    QCOMPARE(pulse.at(0).frame, int64_t(0));
-    QCOMPARE(pulse.at(1).frame, int64_t(60));
-    QCOMPARE(pulse.at(2).frame, int64_t(120));
-    QCOMPARE(pulse.at(0).opacity, 0.8);
-    QCOMPARE(pulse.at(1).opacity, 0.8);
-    QCOMPARE(pulse.at(2).opacity, 0.8);
-    QVERIFY(pulse.at(1).fontSize > base.fontSize);
-    QVERIFY(pulse.at(0).fontSize < base.fontSize);
+    const QVector<TimelineClip::TitleKeyframe> originalKeyframes = clip.titleKeyframes;
+    const EvaluatedTitle entering = evaluateTitleAtLocalFrame(clip, 0.0);
+    const EvaluatedTitle held = evaluateTitleAtLocalFrame(clip, 60.0);
+    const EvaluatedTitle exiting = evaluateTitleAtLocalFrame(clip, 120.0);
 
-    const QVector<TimelineClip::TitleKeyframe> orbit =
-        makeTitleLifetimeAnimationKeyframes(
-            clip,
-            base,
-            TitleLifetimeAnimationPreset::Orbit3D,
-            180.0);
-    QCOMPARE(orbit.size(), 4);
-    QCOMPARE(orbit.front().frame, int64_t(0));
-    QCOMPARE(orbit.back().frame, int64_t(120));
-    for (const TimelineClip::TitleKeyframe& keyframe : orbit) {
-        QVERIFY(keyframe.vulkan3DEnabled);
-        QVERIFY(keyframe.linearInterpolation);
-        QVERIFY(std::abs(keyframe.vulkan3DYawDegrees) <= 180.0);
+    QCOMPARE(clip.titleKeyframes.size(), originalKeyframes.size());
+    QCOMPARE(clip.titleKeyframes.constFirst().text, originalKeyframes.constFirst().text);
+    QCOMPARE(clip.titleKeyframes.constFirst().translationX,
+             originalKeyframes.constFirst().translationX);
+    QCOMPARE(clip.titleKeyframes.constFirst().translationY,
+             originalKeyframes.constFirst().translationY);
+    QCOMPARE(clip.titleKeyframes.constFirst().opacity,
+             originalKeyframes.constFirst().opacity);
+    QVERIFY(entering.valid);
+    QVERIFY(held.valid);
+    QVERIFY(exiting.valid);
+    QVERIFY(entering.x < held.x);
+    QVERIFY(exiting.x < held.x);
+    QVERIFY(entering.opacity < held.opacity);
+    QVERIFY(exiting.opacity < held.opacity);
+    QVERIFY(held.windowEnabled);
+    QVERIFY(held.windowFrameEnabled);
+    QVERIFY(held.vulkan3DEnabled);
+    QVERIFY(held.vulkan3DExtrudeEnabled);
+    QCOMPARE(held.text, QStringLiteral("Normal Title"));
+    QCOMPARE(held.y, -20.0);
+
+    QJsonObject saved = editor::clipToJson(clip);
+    QCOMPARE(saved.value(QStringLiteral("titleLifetimeEffect")).toString(),
+             QStringLiteral("news_fly_in_left"));
+    QCOMPARE(saved.value(QStringLiteral("titleLifetimeEffectFlySeconds")).toDouble(), 0.50);
+    TimelineClip loaded = editor::clipFromJson(saved);
+    QCOMPARE(static_cast<int>(loaded.titleLifetimeEffect),
+             static_cast<int>(TitleLifetimeEffect::NewsFlyInLeft));
+    QCOMPARE(loaded.titleLifetimeEffectFlySeconds, 0.50);
+    QCOMPARE(loaded.titleKeyframes.size(), originalKeyframes.size());
+    QCOMPARE(loaded.titleKeyframes.constFirst().text, originalKeyframes.constFirst().text);
+}
+
+void TestEffectPresets::sportsBroadcastTitleLifetimeEffectsAddProfessionalStructure()
+{
+    struct ExpectedEffect {
+        TitleLifetimeEffect effect = TitleLifetimeEffect::None;
+        QString serialized;
+    };
+    const QVector<ExpectedEffect> effects = {
+        {TitleLifetimeEffect::SportsLowerThird, QStringLiteral("sports_lower_third")},
+        {TitleLifetimeEffect::SportsScorebug, QStringLiteral("sports_scorebug")},
+        {TitleLifetimeEffect::SportsStatCard, QStringLiteral("sports_stat_card")},
+        {TitleLifetimeEffect::SportsMatchupBanner, QStringLiteral("sports_matchup_banner")},
+        {TitleLifetimeEffect::SportsReplayTag, QStringLiteral("sports_replay_tag")},
+    };
+
+    for (const ExpectedEffect& expected : effects) {
+        TimelineClip clip = createDefaultTitleClip(10, 1, 150);
+        clip.titleKeyframes[0].text = QStringLiteral("BOS 24  NY 21");
+        clip.titleKeyframes[0].translationX = 0.0;
+        clip.titleKeyframes[0].translationY = 0.0;
+        clip.titleKeyframes[0].fontSize = 50.0;
+        clip.titleKeyframes[0].opacity = 0.85;
+        clip.titleLifetimeEffect = expected.effect;
+        clip.titleLifetimeEffectFlySeconds = 0.40;
+
+        const QVector<TimelineClip::TitleKeyframe> originalKeyframes = clip.titleKeyframes;
+        const EvaluatedTitle entering = evaluateTitleAtLocalFrame(clip, 0.0);
+        const EvaluatedTitle held = evaluateTitleAtLocalFrame(clip, 75.0);
+
+        QCOMPARE(clip.titleKeyframes.size(), originalKeyframes.size());
+        QCOMPARE(clip.titleKeyframes.constFirst().text,
+                 originalKeyframes.constFirst().text);
+        QCOMPARE(clip.titleKeyframes.constFirst().translationX,
+                 originalKeyframes.constFirst().translationX);
+        QCOMPARE(clip.titleKeyframes.constFirst().translationY,
+                 originalKeyframes.constFirst().translationY);
+        QCOMPARE(clip.titleKeyframes.constFirst().opacity,
+                 originalKeyframes.constFirst().opacity);
+        QVERIFY(entering.valid);
+        QVERIFY(held.valid);
+        QVERIFY(held.windowEnabled);
+        QVERIFY(held.windowFrameEnabled);
+        QVERIFY(held.dropShadowEnabled);
+        QVERIFY(held.vulkan3DEnabled);
+        QVERIFY(held.vulkan3DExtrudeEnabled);
+        QVERIFY(held.windowOpacity >= 0.80);
+        QVERIFY(held.windowFrameOpacity >= 0.96);
+        QVERIFY(held.windowFrameWidth >= 3.0);
+        QVERIFY(held.windowWidth >= 300.0);
+        QVERIFY(entering.opacity < held.opacity);
+        QVERIFY(std::abs(entering.x - held.x) > 1.0 ||
+                std::abs(entering.y - held.y) > 1.0);
+        QVERIFY(held.textMaterialStyle != TimelineClip::TitleKeyframe::MaterialStyle::Solid ||
+                held.windowFrameMaterialStyle != TimelineClip::TitleKeyframe::MaterialStyle::Solid);
+
+        QJsonObject saved = editor::clipToJson(clip);
+        QCOMPARE(saved.value(QStringLiteral("titleLifetimeEffect")).toString(),
+                 expected.serialized);
+        TimelineClip loaded = editor::clipFromJson(saved);
+        QCOMPARE(static_cast<int>(loaded.titleLifetimeEffect),
+                 static_cast<int>(expected.effect));
+        QCOMPARE(loaded.titleKeyframes.size(), originalKeyframes.size());
     }
-    QVERIFY(orbit.front().vulkan3DYawDegrees < 0.0);
-    QCOMPARE(orbit.back().vulkan3DYawDegrees, orbit.front().vulkan3DYawDegrees);
-
-    const QVector<TimelineClip::TitleKeyframe> cleared =
-        makeTitleLifetimeAnimationKeyframes(
-            clip,
-            base,
-            TitleLifetimeAnimationPreset::None,
-            200.0);
-    QCOMPARE(cleared.size(), 1);
-    QCOMPARE(cleared.front().frame, int64_t(0));
-    QCOMPARE(cleared.front().translationX, base.translationX);
-    QCOMPARE(cleared.front().translationY, base.translationY);
 }
 
 void TestEffectPresets::temporalEffectsStayOnRawClockDuringVisualSpeedThrough()

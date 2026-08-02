@@ -147,6 +147,70 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
     return ClipEffectPreset::None;
 }
 
+QString titleLifetimeEffectToJson(TitleLifetimeEffect effect)
+{
+    switch (effect) {
+    case TitleLifetimeEffect::NewsFlyInLeft:
+        return QStringLiteral("news_fly_in_left");
+    case TitleLifetimeEffect::NewsFlyInRight:
+        return QStringLiteral("news_fly_in_right");
+    case TitleLifetimeEffect::SportsLowerThird:
+        return QStringLiteral("sports_lower_third");
+    case TitleLifetimeEffect::SportsScorebug:
+        return QStringLiteral("sports_scorebug");
+    case TitleLifetimeEffect::SportsStatCard:
+        return QStringLiteral("sports_stat_card");
+    case TitleLifetimeEffect::SportsMatchupBanner:
+        return QStringLiteral("sports_matchup_banner");
+    case TitleLifetimeEffect::SportsReplayTag:
+        return QStringLiteral("sports_replay_tag");
+    case TitleLifetimeEffect::None:
+    default:
+        return QStringLiteral("none");
+    }
+}
+
+TitleLifetimeEffect titleLifetimeEffectFromJson(const QString& value)
+{
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("news_fly_in_left") ||
+        normalized == QStringLiteral("fly_in_left") ||
+        normalized == QStringLiteral("slide_from_left")) {
+        return TitleLifetimeEffect::NewsFlyInLeft;
+    }
+    if (normalized == QStringLiteral("news_fly_in_right") ||
+        normalized == QStringLiteral("fly_in_right") ||
+        normalized == QStringLiteral("slide_from_right")) {
+        return TitleLifetimeEffect::NewsFlyInRight;
+    }
+    if (normalized == QStringLiteral("sports_lower_third") ||
+        normalized == QStringLiteral("lower_third") ||
+        normalized == QStringLiteral("player_card")) {
+        return TitleLifetimeEffect::SportsLowerThird;
+    }
+    if (normalized == QStringLiteral("sports_scorebug") ||
+        normalized == QStringLiteral("scorebug") ||
+        normalized == QStringLiteral("score_bug")) {
+        return TitleLifetimeEffect::SportsScorebug;
+    }
+    if (normalized == QStringLiteral("sports_stat_card") ||
+        normalized == QStringLiteral("stat_card") ||
+        normalized == QStringLiteral("stats_card")) {
+        return TitleLifetimeEffect::SportsStatCard;
+    }
+    if (normalized == QStringLiteral("sports_matchup_banner") ||
+        normalized == QStringLiteral("matchup_banner") ||
+        normalized == QStringLiteral("matchup")) {
+        return TitleLifetimeEffect::SportsMatchupBanner;
+    }
+    if (normalized == QStringLiteral("sports_replay_tag") ||
+        normalized == QStringLiteral("replay_tag") ||
+        normalized == QStringLiteral("replay")) {
+        return TitleLifetimeEffect::SportsReplayTag;
+    }
+    return TitleLifetimeEffect::None;
+}
+
 QString tilingPatternToJson(ClipTilingPattern pattern)
 {
     switch (pattern) {
@@ -688,6 +752,10 @@ QJsonObject clipToJson(const TimelineClip &clip)
             titleKeyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("titleKeyframes")] = titleKeyframes;
+        obj[QStringLiteral("titleLifetimeEffect")] =
+            titleLifetimeEffectToJson(clip.titleLifetimeEffect);
+        obj[QStringLiteral("titleLifetimeEffectFlySeconds")] =
+            qBound<qreal>(0.05, clip.titleLifetimeEffectFlySeconds, 10.0);
         obj[QStringLiteral("speakerTitleEngineActive")] = clip.speakerTitleEngineActive;
         QJsonObject transcriptOverlayObj;
         transcriptOverlayObj[QStringLiteral("enabled")] = clip.transcriptOverlay.enabled;
@@ -1489,6 +1557,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             }
         }
         const QJsonArray titleKeyframesArr = obj.value(QStringLiteral("titleKeyframes")).toArray();
+        clip.titleLifetimeEffect = titleLifetimeEffectFromJson(
+            obj.value(QStringLiteral("titleLifetimeEffect")).toString(QStringLiteral("none")));
+        clip.titleLifetimeEffectFlySeconds = qBound<qreal>(
+            0.05,
+            obj.value(QStringLiteral("titleLifetimeEffectFlySeconds")).toDouble(0.35),
+            10.0);
         clip.speakerTitleEngineActive = obj.contains(QStringLiteral("speakerTitleEngineActive"))
             ? obj.value(QStringLiteral("speakerTitleEngineActive")).toBool(false)
             : (!titleKeyframesArr.isEmpty() && clip.mediaType != ClipMediaType::Title);

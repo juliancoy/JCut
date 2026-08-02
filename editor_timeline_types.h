@@ -93,6 +93,17 @@ enum class ClipRole {
     TranscriptSubtitle,
 };
 
+enum class TitleLifetimeEffect {
+    None = 0,
+    NewsFlyInLeft,
+    NewsFlyInRight,
+    SportsLowerThird,
+    SportsScorebug,
+    SportsStatCard,
+    SportsMatchupBanner,
+    SportsReplayTag,
+};
+
 inline bool isOwnedGeneratedClipRole(ClipRole role)
 {
     return role == ClipRole::MaskMatte ||
@@ -397,6 +408,8 @@ struct TimelineClip {
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;
+    TitleLifetimeEffect titleLifetimeEffect = TitleLifetimeEffect::None;
+    qreal titleLifetimeEffectFlySeconds = 0.35;
     bool speakerTitleEngineActive = false;
     TranscriptOverlaySettings transcriptOverlay;
     int fadeSamples = 250;

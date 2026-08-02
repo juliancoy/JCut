@@ -5,6 +5,192 @@
 #include <QUuid>
 #include <cmath>
 
+namespace {
+
+qreal smoothStep(qreal t)
+{
+    const qreal bounded = qBound<qreal>(0.0, t, 1.0);
+    return bounded * bounded * (3.0 - 2.0 * bounded);
+}
+
+struct LifetimeMotionProgress {
+    qreal offset = 1.0;
+    qreal opacity = 1.0;
+    qreal normalizedTime = 0.0;
+};
+
+LifetimeMotionProgress titleLifetimeMotionProgress(const TimelineClip& clip, qreal localFrame)
+{
+    LifetimeMotionProgress progress;
+    const qreal duration = static_cast<qreal>(qMax<int64_t>(1, clip.durationFrames));
+    progress.normalizedTime = qBound<qreal>(0.0, localFrame / qMax<qreal>(1.0, duration - 1.0), 1.0);
+    const qreal requestedFlyFrames =
+        qBound<qreal>(3.0,
+                      clip.titleLifetimeEffectFlySeconds * static_cast<qreal>(kTimelineFps),
+                      qMax<qreal>(3.0, duration * 0.45));
+    const qreal exitStart = qMax<qreal>(0.0, duration - requestedFlyFrames);
+    if (localFrame < requestedFlyFrames) {
+        progress.offset = smoothStep(localFrame / requestedFlyFrames);
+        progress.opacity = progress.offset;
+    } else if (localFrame >= exitStart) {
+        const qreal exitProgress = smoothStep((localFrame - exitStart) / requestedFlyFrames);
+        progress.offset = 1.0 - exitProgress;
+        progress.opacity = 1.0 - exitProgress;
+    }
+    return progress;
+}
+
+void applySportsPanelStyle(EvaluatedTitle* title,
+                           const QColor& panelColor,
+                           const QColor& accentColor,
+                           qreal panelOpacity,
+                           qreal frameWidth,
+                           qreal padding)
+{
+    if (!title) {
+        return;
+    }
+    title->windowEnabled = true;
+    title->windowColor = panelColor;
+    title->windowOpacity = qMax<qreal>(title->windowOpacity, panelOpacity);
+    title->windowPadding = qMax<qreal>(title->windowPadding, padding);
+    title->windowFrameEnabled = true;
+    title->windowFrameColor = accentColor;
+    title->windowFrameOpacity = qMax<qreal>(title->windowFrameOpacity, 0.96);
+    title->windowFrameWidth = qMax<qreal>(title->windowFrameWidth, frameWidth);
+    title->windowFrameGap = qMax<qreal>(title->windowFrameGap, 5.0);
+    title->dropShadowEnabled = true;
+    title->dropShadowColor = QColor(QStringLiteral("#000000"));
+    title->dropShadowOpacity = qMax<qreal>(title->dropShadowOpacity, 0.80);
+    title->dropShadowOffsetX = qMax<qreal>(title->dropShadowOffsetX, 8.0);
+    title->dropShadowOffsetY = qMax<qreal>(title->dropShadowOffsetY, 9.0);
+    title->vulkan3DEnabled = true;
+    title->vulkan3DExtrudeEnabled = true;
+    if (title->textExtrudeMode == TextExtrudeMode::None) {
+        title->textExtrudeMode = TextExtrudeMode::StackedCopies;
+    }
+    title->vulkan3DExtrudeDepth = qMax<qreal>(title->vulkan3DExtrudeDepth, 0.12);
+    title->vulkan3DBevelScale = qMax<qreal>(title->vulkan3DBevelScale, 0.62);
+}
+
+void applyTitleLifetimeEffect(const TimelineClip& clip,
+                              qreal localFrame,
+                              EvaluatedTitle* title)
+{
+    if (!title || !title->valid ||
+        clip.titleLifetimeEffect == TitleLifetimeEffect::None ||
+        clip.durationFrames <= 1) {
+        return;
+    }
+
+    const LifetimeMotionProgress progress = titleLifetimeMotionProgress(clip, localFrame);
+
+    const qreal side = clip.titleLifetimeEffect == TitleLifetimeEffect::NewsFlyInRight
+        ? 1.0
+        : -1.0;
+    const qreal offscreenOffset = qMax<qreal>(520.0, title->windowWidth + title->fontSize * 12.0);
+    const qreal pi = 3.14159265358979323846;
+
+    switch (clip.titleLifetimeEffect) {
+    case TitleLifetimeEffect::NewsFlyInLeft:
+    case TitleLifetimeEffect::NewsFlyInRight:
+        title->x += side * offscreenOffset * (1.0 - progress.offset);
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#101826")),
+                              QColor(QStringLiteral("#38c7ff")),
+                              0.72,
+                              3.0,
+                              18.0);
+        title->dropShadowOffsetX = side * -8.0;
+        title->vulkan3DYawDegrees += side * -18.0 * (1.0 - progress.offset);
+        title->vulkan3DDepth += 0.12 * (1.0 - progress.offset);
+        break;
+    case TitleLifetimeEffect::SportsLowerThird:
+        title->x -= 260.0 * (1.0 - progress.offset);
+        title->y += 285.0;
+        title->windowWidth = qMax<qreal>(title->windowWidth, 780.0);
+        title->textMaterialStyle = TitleMaterialStyle::DiagonalStripes;
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#09111f")),
+                              QColor(QStringLiteral("#ffb000")),
+                              0.82,
+                              4.0,
+                              20.0);
+        title->vulkan3DYawDegrees -= 10.0 * (1.0 - progress.offset);
+        break;
+    case TitleLifetimeEffect::SportsScorebug: {
+        const qreal pop = 1.0 + 0.10 * std::sin(qMin<qreal>(1.0, progress.normalizedTime * 8.0) * pi);
+        title->x -= 610.0;
+        title->y -= 360.0 + 80.0 * (1.0 - progress.offset);
+        title->fontSize = qMax<qreal>(24.0, title->fontSize * 0.72 * pop);
+        title->windowWidth = qMax<qreal>(title->windowWidth, 360.0);
+        title->textMaterialStyle = TitleMaterialStyle::Neon;
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#07101d")),
+                              QColor(QStringLiteral("#16d6ff")),
+                              0.88,
+                              3.0,
+                              14.0);
+        title->vulkan3DExtrudeDepth = qMax<qreal>(title->vulkan3DExtrudeDepth, 0.10);
+        break;
+    }
+    case TitleLifetimeEffect::SportsStatCard:
+        title->x += 430.0 + 440.0 * (1.0 - progress.offset);
+        title->y += 45.0;
+        title->windowWidth = qMax<qreal>(title->windowWidth, 520.0);
+        title->textMaterialStyle = TitleMaterialStyle::Grid;
+        title->windowFrameMaterialStyle = TitleMaterialStyle::Neon;
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#081421")),
+                              QColor(QStringLiteral("#42ff9e")),
+                              0.86,
+                              4.0,
+                              22.0);
+        title->vulkan3DYawDegrees += 16.0 * (1.0 - progress.offset);
+        title->vulkan3DDepth += 0.18 * (1.0 - progress.offset);
+        break;
+    case TitleLifetimeEffect::SportsMatchupBanner: {
+        const qreal settle = 1.0 + 0.08 * std::sin(qMin<qreal>(1.0, progress.normalizedTime * 6.0) * pi);
+        title->y += 330.0 + 130.0 * (1.0 - progress.offset);
+        title->fontSize *= settle;
+        title->windowWidth = qMax<qreal>(title->windowWidth, 980.0);
+        title->textMaterialStyle = TitleMaterialStyle::DiagonalStripes;
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#111827")),
+                              QColor(QStringLiteral("#f43f5e")),
+                              0.84,
+                              5.0,
+                              24.0);
+        title->vulkan3DPitchDegrees -= 7.0 * (1.0 - progress.offset);
+        break;
+    }
+    case TitleLifetimeEffect::SportsReplayTag: {
+        const qreal pulse = 1.0 + 0.05 * std::sin(progress.normalizedTime * pi * 6.0);
+        title->x += 485.0 + 180.0 * (1.0 - progress.offset);
+        title->y -= 310.0;
+        title->fontSize *= pulse;
+        title->windowWidth = qMax<qreal>(title->windowWidth, 300.0);
+        title->textMaterialStyle = TitleMaterialStyle::Neon;
+        applySportsPanelStyle(title,
+                              QColor(QStringLiteral("#20110a")),
+                              QColor(QStringLiteral("#ff7a00")),
+                              0.82,
+                              4.0,
+                              15.0);
+        title->vulkan3DYawDegrees += 24.0 * (1.0 - progress.offset);
+        title->vulkan3DRollDegrees -= 8.0;
+        title->vulkan3DScale = qMax<qreal>(0.01, title->vulkan3DScale * pulse);
+        break;
+    }
+    case TitleLifetimeEffect::None:
+        return;
+    }
+
+    title->opacity = qBound<qreal>(0.0, title->opacity * progress.opacity, 1.0);
+}
+
+}  // namespace
+
 EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFrame)
 {
     EvaluatedTitle result;
@@ -76,11 +262,8 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFr
     // is owned by the destination (next) keyframe.
     if (afterIdx >= 0) {
         const auto& next = clip.titleKeyframes[afterIdx];
-        if (!next.linearInterpolation) {
-            return result;
-        }
         const int64_t span = next.frame - kf.frame;
-        if (span > 0) {
+        if (next.linearInterpolation && span > 0) {
             const qreal t = static_cast<qreal>(localFrame - kf.frame) / static_cast<qreal>(span);
             result.x = kf.translationX + (next.translationX - kf.translationX) * t;
             result.y = kf.translationY + (next.translationY - kf.translationY) * t;
@@ -105,6 +288,7 @@ EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, qreal localFr
         }
     }
 
+    applyTitleLifetimeEffect(clip, localFrame, &result);
     return result;
 }
 
@@ -222,99 +406,4 @@ render_detail::OverlayImage renderTitleOverlay(const QSize& imageSize,
                                                const QSize& outputSize)
 {
     return render_detail::overlayRenderBackend().renderTitleOverlay(imageSize, title, outputSize);
-}
-
-QVector<TimelineClip::TitleKeyframe> makeTitleLifetimeAnimationKeyframes(
-    const TimelineClip& clip,
-    const TimelineClip::TitleKeyframe& base,
-    TitleLifetimeAnimationPreset preset,
-    qreal amount)
-{
-    const int64_t endFrame = qMax<int64_t>(0, clip.durationFrames - 1);
-    const int64_t midFrame = endFrame / 2;
-    const qreal boundedAmount = qMax<qreal>(0.0, amount);
-
-    auto keyframeAt = [&](int64_t frame) {
-        TimelineClip::TitleKeyframe keyframe = base;
-        keyframe.frame = qBound<int64_t>(0, frame, endFrame);
-        keyframe.linearInterpolation = true;
-        return keyframe;
-    };
-
-    if (preset == TitleLifetimeAnimationPreset::None || endFrame <= 0) {
-        TimelineClip::TitleKeyframe keyframe = base;
-        keyframe.frame = 0;
-        keyframe.linearInterpolation = false;
-        return {keyframe};
-    }
-
-    switch (preset) {
-    case TitleLifetimeAnimationPreset::DriftHorizontal: {
-        auto start = keyframeAt(0);
-        auto end = keyframeAt(endFrame);
-        start.translationX = base.translationX - boundedAmount;
-        end.translationX = base.translationX + boundedAmount;
-        return {start, end};
-    }
-    case TitleLifetimeAnimationPreset::DriftVertical: {
-        auto start = keyframeAt(0);
-        auto end = keyframeAt(endFrame);
-        start.translationY = base.translationY + boundedAmount;
-        end.translationY = base.translationY - boundedAmount;
-        return {start, end};
-    }
-    case TitleLifetimeAnimationPreset::Pulse: {
-        auto start = keyframeAt(0);
-        auto middle = keyframeAt(midFrame);
-        auto end = keyframeAt(endFrame);
-        const qreal scale = boundedAmount / 100.0;
-        start.fontSize = qMax<qreal>(1.0, base.fontSize * qMax<qreal>(0.01, 1.0 - scale));
-        middle.fontSize = qMax<qreal>(1.0, base.fontSize * (1.0 + scale));
-        end.fontSize = start.fontSize;
-        return {start, middle, end};
-    }
-    case TitleLifetimeAnimationPreset::Rotate3D: {
-        auto start = keyframeAt(0);
-        auto middle = keyframeAt(midFrame);
-        auto end = keyframeAt(endFrame);
-        start.vulkan3DEnabled = true;
-        middle.vulkan3DEnabled = true;
-        end.vulkan3DEnabled = true;
-        start.vulkan3DYawDegrees = base.vulkan3DYawDegrees - boundedAmount;
-        middle.vulkan3DYawDegrees = base.vulkan3DYawDegrees;
-        end.vulkan3DYawDegrees = base.vulkan3DYawDegrees + boundedAmount;
-        return {start, middle, end};
-    }
-    case TitleLifetimeAnimationPreset::Orbit3D: {
-        auto start = keyframeAt(0);
-        auto upper = keyframeAt(endFrame / 3);
-        auto lower = keyframeAt((endFrame * 2) / 3);
-        auto end = keyframeAt(endFrame);
-        start.vulkan3DEnabled = true;
-        upper.vulkan3DEnabled = true;
-        lower.vulkan3DEnabled = true;
-        end.vulkan3DEnabled = true;
-        start.translationX = base.translationX - boundedAmount;
-        start.translationY = base.translationY;
-        upper.translationX = base.translationX;
-        upper.translationY = base.translationY - boundedAmount * 0.5;
-        lower.translationX = base.translationX + boundedAmount;
-        lower.translationY = base.translationY + boundedAmount * 0.5;
-        end.translationX = start.translationX;
-        end.translationY = start.translationY;
-        start.vulkan3DYawDegrees = base.vulkan3DYawDegrees - boundedAmount;
-        upper.vulkan3DYawDegrees = base.vulkan3DYawDegrees;
-        lower.vulkan3DYawDegrees = base.vulkan3DYawDegrees + boundedAmount;
-        end.vulkan3DYawDegrees = start.vulkan3DYawDegrees;
-        upper.vulkan3DPitchDegrees = base.vulkan3DPitchDegrees - boundedAmount * 0.25;
-        lower.vulkan3DPitchDegrees = base.vulkan3DPitchDegrees + boundedAmount * 0.25;
-        return {start, upper, lower, end};
-    }
-    case TitleLifetimeAnimationPreset::None:
-        break;
-    }
-
-    TimelineClip::TitleKeyframe keyframe = base;
-    keyframe.frame = 0;
-    return {keyframe};
 }

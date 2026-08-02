@@ -1429,26 +1429,28 @@ QWidget *InspectorPane::buildTitlesTab()
     auto *animationRow = new QHBoxLayout;
     m_titleLifetimeAnimationCombo = new QComboBox;
     m_titleLifetimeAnimationCombo->addItem(QStringLiteral("None"), 0);
-    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Drift Horizontal"), 1);
-    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Drift Vertical"), 2);
-    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Pulse"), 3);
-    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Rotate 3D"), 4);
-    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Orbit 3D"), 5);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("News fly-in from left"), 1);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("News fly-in from right"), 2);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Sports lower third"), 3);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Sports scorebug"), 4);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Sports stat card"), 5);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Sports matchup banner"), 6);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Sports replay tag"), 7);
     animationRow->addWidget(m_titleLifetimeAnimationCombo, 1);
     m_titleLifetimeAnimationAmountSpin = new QDoubleSpinBox;
-    m_titleLifetimeAnimationAmountSpin->setRange(0.0, 2000.0);
-    m_titleLifetimeAnimationAmountSpin->setDecimals(1);
-    m_titleLifetimeAnimationAmountSpin->setSingleStep(10.0);
-    m_titleLifetimeAnimationAmountSpin->setValue(160.0);
-    m_titleLifetimeAnimationAmountSpin->setPrefix(QStringLiteral("Amount "));
+    m_titleLifetimeAnimationAmountSpin->setRange(0.05, 10.0);
+    m_titleLifetimeAnimationAmountSpin->setDecimals(2);
+    m_titleLifetimeAnimationAmountSpin->setSingleStep(0.05);
+    m_titleLifetimeAnimationAmountSpin->setValue(0.35);
+    m_titleLifetimeAnimationAmountSpin->setSuffix(QStringLiteral(" sec"));
     m_titleLifetimeAnimationAmountSpin->setToolTip(
-        QStringLiteral("Pixels for movement, percent for pulse, degrees for orbit"));
+        QStringLiteral("Time spent flying in and flying out."));
     animationRow->addWidget(m_titleLifetimeAnimationAmountSpin);
     animationSection.body->addLayout(animationRow);
 
-    m_applyTitleLifetimeAnimationButton = new QPushButton(QStringLiteral("Apply Across Lifetime"));
+    m_applyTitleLifetimeAnimationButton = new QPushButton(QStringLiteral("Apply Lifetime Effect"));
     m_applyTitleLifetimeAnimationButton->setToolTip(
-        QStringLiteral("Generate title keyframes spanning the selected title clip"));
+        QStringLiteral("Apply a clip-owned title effect without changing individual title keyframes."));
     animationSection.body->addWidget(m_applyTitleLifetimeAnimationButton);
 
     // Buttons

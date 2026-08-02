@@ -240,6 +240,19 @@ void TitlesTab::refresh()
             (!m_widgets.titleLifetimeAnimationCombo ||
              m_widgets.titleLifetimeAnimationCombo->currentData().toInt() != 0));
     }
+    if (hasEditableNormalTitleClip) {
+        if (m_widgets.titleLifetimeAnimationCombo) {
+            const QSignalBlocker blocker(m_widgets.titleLifetimeAnimationCombo);
+            const int effectValue = static_cast<int>(clip->titleLifetimeEffect);
+            const int index = m_widgets.titleLifetimeAnimationCombo->findData(effectValue);
+            m_widgets.titleLifetimeAnimationCombo->setCurrentIndex(qMax(0, index));
+        }
+        if (m_widgets.titleLifetimeAnimationAmountSpin) {
+            const QSignalBlocker blocker(m_widgets.titleLifetimeAnimationAmountSpin);
+            m_widgets.titleLifetimeAnimationAmountSpin->setValue(
+                qBound<qreal>(0.05, clip->titleLifetimeEffectFlySeconds, 10.0));
+        }
+    }
 
     if (!hasTitleClip) {
         if (table) {
@@ -748,31 +761,25 @@ void TitlesTab::applyLifetimeAnimation()
         return;
     }
 
-    const auto preset = m_widgets.titleLifetimeAnimationCombo
-        ? static_cast<TitleLifetimeAnimationPreset>(
+    const auto effect = m_widgets.titleLifetimeAnimationCombo
+        ? static_cast<TitleLifetimeEffect>(
               m_widgets.titleLifetimeAnimationCombo->currentData().toInt())
-        : TitleLifetimeAnimationPreset::None;
-    const qreal amount = m_widgets.titleLifetimeAnimationAmountSpin
+        : TitleLifetimeEffect::None;
+    const qreal flySeconds = m_widgets.titleLifetimeAnimationAmountSpin
         ? m_widgets.titleLifetimeAnimationAmountSpin->value()
-        : 160.0;
-    TimelineClip::TitleKeyframe base =
-        buildStoredKeyframeFromInspector(preferredEditFrame(*clip));
-    base.frame = 0;
+        : 0.35;
 
     bool updated = false;
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &editable) {
-            editable.titleKeyframes =
-                makeTitleLifetimeAnimationKeyframes(editable, base, preset, amount);
-            normalizeClipTitleKeyframes(editable);
+            editable.titleLifetimeEffect = effect;
+            editable.titleLifetimeEffectFlySeconds = qBound<qreal>(0.05, flySeconds, 10.0);
             updated = true;
         });
     }
     if (!updated) {
         return;
     }
-    m_selectedKeyframeFrame = 0;
-    m_selectedKeyframeFrames = {0};
     applyPostEditEffects();
 }
 
