@@ -2002,6 +2002,7 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->edgeFillBrightnessSpin(),
             m_inspectorPane->edgeFillSaturationSpin(),
             m_inspectorPane->effectPresetCombo(),
+            m_inspectorPane->effectPresetSpecificHelpLabel(),
             m_inspectorPane->effectRowsSpin(),
             m_inspectorPane->effectSpeedSpin(),
             m_inspectorPane->effectScaleSpin(),

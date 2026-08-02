@@ -391,7 +391,7 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                     clip->maskEdgeGrayAmount =
                         std::clamp(typedCommand.edgeGrayAmount, 0.0, 1.0);
                     clip->maskEdgeGrayWidth =
-                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 0.5);
+                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 2.0);
                     clip->maskEdgeGrayGamma =
                         std::clamp(typedCommand.edgeGrayGamma, 0.1, 8.0);
                     clip->maskForegroundLayerEnabled = typedCommand.foregroundLayerEnabled;
@@ -532,7 +532,7 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                     clip->maskEdgeGrayAmount =
                         std::clamp(typedCommand.edgeGrayAmount, 0.0, 1.0);
                     clip->maskEdgeGrayWidth =
-                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 0.5);
+                        std::clamp(typedCommand.edgeGrayWidth, 0.001, 2.0);
                     clip->maskEdgeGrayGamma =
                         std::clamp(typedCommand.edgeGrayGamma, 0.1, 8.0);
                     clip->maskForegroundLayerEnabled =

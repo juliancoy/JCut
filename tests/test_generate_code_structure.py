@@ -117,43 +117,83 @@ vec4 grade(vec4 color) {
 }
 void main() { grade(vec4(1.0)); }
 """
-        symbols = generator.shader_structure(source)
+        symbols, findings = generator.shader_structure(source)
         self.assertEqual([item["name"] for item in symbols], ["grade", "main"])
         self.assertEqual(symbols[0]["span_lines"], 6)
+        self.assertEqual(findings, [])
 
-    def test_cpp_outline_handles_qt_slots_and_large_inline_class(self) -> None:
-        source = """class Worker : public QObject {
-    Q_OBJECT
-private slots:
-    void run()
-    {
-        if (ready()) {
-            work();
-        }
+    def test_shader_outline_reports_unmatched_braces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "broken.frag"
+            source.write_text("void main() {\n    if (true) {\n}\n", encoding="utf-8")
+            index = generator.analyze(root, [Path("broken.frag")], ())
+            file_record = index["files"][0]
+            self.assertEqual(
+                [item["kind"] for item in file_record["unmatched_constructs"]],
+                ["unmatched-opening-brace"],
+            )
+            self.assertFalse(file_record["parse_succeeded"])
+            self.assertEqual(file_record["symbol_coverage_confidence"]["level"], "low")
+            self.assertEqual(index["summary"]["parse_errors"], 1)
+
+    def test_clang_ast_records_authoritative_cpp_structure_and_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sample.cpp"
+            source.write_text(
+                """int connect(int);
+int QStringLiteral(const char*);
+template <typename Callback> void runPass(double, Callback) {}
+struct Worker {
+    operator bool() const { return true; }
+    void run() {
+        connect(1);
+        auto callback = []() { return 1; };
+        runPass(0.2, callback);
+        QStringLiteral("value");
     }
 };
-"""
-        symbols = generator.cpp_outline_structure(source)
-        by_name = {item["name"]: item for item in symbols}
-        self.assertEqual(by_name["Worker"]["span_lines"], 10)
-        self.assertEqual(by_name["run"]["scope"], "Worker")
-        self.assertEqual(by_name["run"]["span_lines"], 6)
-        self.assertNotIn("if", by_name)
+""",
+                encoding="utf-8",
+            )
+            database = root / "compile_commands.json"
+            database.write_text(
+                json.dumps([{
+                    "directory": str(root),
+                    "command": f"clang++ -std=c++20 -c {source} -o sample.o",
+                    "file": str(source),
+                }]),
+                encoding="utf-8",
+            )
 
-    def test_cpp_outline_ignores_braces_in_comments_and_raw_strings(self) -> None:
-        source = '''class ShaderOwner {
-    int timeout = 5'000;
-    const char *shader = R"glsl(
-        void main() { if (true) { } }
-    )glsl";
-    // A misleading closing brace: }
-    /* Another one: } */
-    void release() { }
-};
-'''
-        symbols = generator.cpp_outline_structure(source)
-        owner = next(item for item in symbols if item["name"] == "ShaderOwner")
-        self.assertEqual(owner["end_line"], 9)
+            index = generator.analyze(
+                root,
+                [Path("sample.cpp")],
+                (),
+                compile_commands_path=database,
+                clang_jobs=1,
+            )
+            self.assertEqual(index["parser_warnings"], [])
+            self.assertEqual(index["clang_ast"]["translation_units_succeeded"], 1)
+            file_record = index["files"][0]
+            self.assertEqual(file_record["parser"], "clang-ast")
+            self.assertTrue(file_record["parse_succeeded"])
+            self.assertTrue(file_record["compilation_succeeded"])
+            self.assertEqual(file_record["compilation_status"], "succeeded")
+            self.assertEqual(file_record["diagnostics"], [])
+            self.assertEqual(file_record["symbol_coverage_confidence"]["level"], "high")
+            self.assertEqual(file_record["unmatched_constructs"], [])
+            by_name = {item["qualified_name"]: item for item in file_record["symbols"]}
+            self.assertEqual(by_name["Worker::operator bool"]["name"], "operator bool")
+            self.assertEqual(by_name["Worker::operator bool"]["type"], "bool () const")
+            self.assertEqual(by_name["Worker::run"]["span_lines"], 6)
+            self.assertEqual(by_name["Worker::run"]["parser"], "clang-ast")
+            self.assertNotIn("callback", by_name)
+            call_names = {item["callee"] for item in file_record["calls"]}
+            self.assertTrue(any(name.endswith("connect") for name in call_names))
+            self.assertTrue(any(name.endswith("runPass") for name in call_names))
+            self.assertTrue(any(name.endswith("QStringLiteral") for name in call_names))
 
     def test_outline_references_nested_symbol_indices(self) -> None:
         symbols, _, _ = generator.python_structure(
@@ -189,6 +229,17 @@ private slots:
             cpp = next(item for item in index["files"] if item["path"] == "sample.cpp")
             self.assertEqual(cpp["dependencies"], ["sample.h"])
             self.assertTrue(any(item["name"] == "answer" for item in cpp["symbols"]))
+            self.assertEqual(cpp["parser"], "universal-ctags-fallback")
+            self.assertTrue(cpp["parse_succeeded"])
+            self.assertIsNone(cpp["compilation_succeeded"])
+            self.assertEqual(cpp["diagnostics"], [])
+            self.assertIsNotNone(cpp["parser_fallback_reason"])
+            self.assertEqual(cpp["symbol_coverage_confidence"]["level"], "low")
+            self.assertEqual(cpp["unmatched_constructs"], [])
+            self.assertEqual(
+                cpp["suspicious_constructs"][0]["kind"],
+                "semantic-parser-fallback",
+            )
             markdown = (output / "code_structure.md").read_text(encoding="utf-8")
             self.assertIn("## Large-file outlines (2 files)", markdown)
 
@@ -220,6 +271,7 @@ private slots:
             self.assertEqual(len(freshness["corpus_fingerprint"]), 64)
             self.assertIsNone(freshness["ownership_manifest"]["sha256"])
             self.assertIsNone(freshness["build_file"]["sha256"])
+            self.assertIsNone(freshness["compile_commands"]["sha256"])
 
             result = self.check_current(root, output)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -295,6 +347,18 @@ private slots:
             result = self.check_current(root, output)
             self.assertEqual(result.returncode, 4)
             self.assertIn("build_file changed", result.stderr)
+
+    def test_check_current_rejects_compilation_database_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            build = root / "build"
+            build.mkdir()
+            (build / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+
+            result = self.check_current(root, output)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("compile_commands changed", result.stderr)
 
 
 if __name__ == "__main__":

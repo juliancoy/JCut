@@ -1485,7 +1485,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskEdgeGrayAmount =
             qBound<qreal>(0.0, obj.value(QStringLiteral("maskEdgeGrayAmount")).toDouble(0.0), 1.0);
         clip.maskEdgeGrayWidth =
-            qBound<qreal>(0.001, obj.value(QStringLiteral("maskEdgeGrayWidth")).toDouble(0.25), 0.5);
+            qBound<qreal>(0.001, obj.value(QStringLiteral("maskEdgeGrayWidth")).toDouble(0.25), 2.0);
         clip.maskEdgeGrayGamma =
             qBound<qreal>(0.1, obj.value(QStringLiteral("maskEdgeGrayGamma")).toDouble(1.0), 8.0);
         clip.maskDilate = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDilate")).toDouble(0.0), 200.0);

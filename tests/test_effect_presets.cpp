@@ -164,7 +164,7 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.maskFeatherGamma = 2.4;
     clip.maskFeatherFalloff = 3;
     clip.maskEdgeGrayAmount = 0.65;
-    clip.maskEdgeGrayWidth = 0.18;
+    clip.maskEdgeGrayWidth = 1.75;
     clip.maskEdgeGrayGamma = 2.2;
     clip.effectPreset = ClipEffectPreset::NewsLogoTicker;
     clip.effectEnabled = false;
@@ -200,7 +200,7 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("maskRepeatEnabled")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("maskFeatherFalloff")).toInt(), 3);
     QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayAmount")).toDouble() - 0.65) < 0.000001);
-    QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayWidth")).toDouble() - 0.18) < 0.000001);
+    QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayWidth")).toDouble() - 1.75) < 0.000001);
     QVERIFY(std::abs(json.value(QStringLiteral("maskEdgeGrayGamma")).toDouble() - 2.2) < 0.000001);
     QCOMPARE(
         json.value(QStringLiteral("edgeFillEffect")).toString(),
@@ -228,7 +228,7 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.maskFeatherFalloff, 3);
     QVERIFY(std::abs(loaded.maskFeatherGamma - 2.4) < 0.000001);
     QVERIFY(std::abs(loaded.maskEdgeGrayAmount - 0.65) < 0.000001);
-    QVERIFY(std::abs(loaded.maskEdgeGrayWidth - 0.18) < 0.000001);
+    QVERIFY(std::abs(loaded.maskEdgeGrayWidth - 1.75) < 0.000001);
     QVERIFY(std::abs(loaded.maskEdgeGrayGamma - 2.2) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaX - 120.0) < 0.000001);
     QVERIFY(std::abs(loaded.maskRepeatDeltaY + 15.0) < 0.000001);

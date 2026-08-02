@@ -286,6 +286,7 @@ public:
     QDoubleSpinBox *edgeFillBrightnessSpin() const { return m_edgeFillBrightnessSpin; }
     QDoubleSpinBox *edgeFillSaturationSpin() const { return m_edgeFillSaturationSpin; }
     QComboBox *effectPresetCombo() const { return m_effectPresetCombo; }
+    QLabel *effectPresetSpecificHelpLabel() const { return m_effectPresetSpecificHelpLabel; }
     QSpinBox *differenceReferenceFramesSpin() const { return m_differenceReferenceFramesSpin; }
     QDoubleSpinBox *differenceThresholdSpin() const { return m_differenceThresholdSpin; }
     QDoubleSpinBox *differenceSoftnessSpin() const { return m_differenceSoftnessSpin; }
@@ -659,6 +660,7 @@ private:
     QDoubleSpinBox *m_edgeFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_edgeFillSaturationSpin = nullptr;
     QComboBox *m_effectPresetCombo = nullptr;
+    QLabel *m_effectPresetSpecificHelpLabel = nullptr;
     QSpinBox *m_effectRowsSpin = nullptr;
     QDoubleSpinBox *m_effectSpeedSpin = nullptr;
     QDoubleSpinBox *m_effectScaleSpin = nullptr;

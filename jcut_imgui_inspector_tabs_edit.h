@@ -537,7 +537,7 @@ void drawInspectorTab03(
             beginRuntimeHistoryTransactionForLastItem(shellState);
             maskChanged |= ImGui::SliderFloat("Edge Grayscale", &edgeGrayAmount, 0.0f, 1.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
-            maskChanged |= ImGui::SliderFloat("Edge Gray Width", &edgeGrayWidth, 0.001f, 0.5f, "%.3f");
+            maskChanged |= ImGui::SliderFloat("Edge Gray Width", &edgeGrayWidth, 0.001f, 2.0f, "%.3f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
             maskChanged |= ImGui::SliderFloat("Edge Gray Gamma", &edgeGrayGamma, 0.1f, 8.0f, "%.2f");
             beginRuntimeHistoryTransactionForLastItem(shellState);

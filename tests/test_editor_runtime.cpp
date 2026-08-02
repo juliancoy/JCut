@@ -3015,7 +3015,7 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
-    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(35));
+    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(41));
     QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane_visual_tabs.cpp"));
     QVERIFY(inspector.open(QIODevice::ReadOnly));
     const QString inspectorSource = QString::fromUtf8(inspector.readAll());
@@ -5376,7 +5376,7 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.maskEnabled = true;
     clip.maskFeather = 12.0;
     clip.maskEdgeGrayAmount = 0.7;
-    clip.maskEdgeGrayWidth = 0.12;
+    clip.maskEdgeGrayWidth = 1.75;
     clip.maskEdgeGrayGamma = 2.5;
     clip.maskTemporalStabilizeEnabled = true;
     clip.maskTemporalStabilizeStrength = 0.65;
@@ -5494,7 +5494,7 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.maskTemporalStabilizeStrength, 0.65);
     QCOMPARE(reparsedClip.maskTemporalStabilizeMotionRadius, 11);
     QCOMPARE(reparsedClip.maskEdgeGrayAmount, 0.7);
-    QCOMPARE(reparsedClip.maskEdgeGrayWidth, 0.12);
+    QCOMPARE(reparsedClip.maskEdgeGrayWidth, 1.75);
     QCOMPARE(reparsedClip.maskEdgeGrayGamma, 2.5);
     QCOMPARE(reparsedClip.effectSkipAwareTiming, false);
     QCOMPARE(reparsedClip.differenceReferenceFrames, 17);
@@ -5528,7 +5528,7 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(renderClip.maskTemporalStabilizeStrength, 0.65);
     QCOMPARE(renderClip.maskTemporalStabilizeMotionRadius, 11);
     QCOMPARE(renderClip.maskEdgeGrayAmount, 0.7);
-    QCOMPARE(renderClip.maskEdgeGrayWidth, 0.12);
+    QCOMPARE(renderClip.maskEdgeGrayWidth, 1.75);
     QCOMPARE(renderClip.maskEdgeGrayGamma, 2.5);
     QCOMPARE(renderClip.maskGradeEnabled, true);
     QCOMPARE(renderClip.maskGradeBrightness, 0.25);

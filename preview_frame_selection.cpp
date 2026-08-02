@@ -178,7 +178,7 @@ PreviewFrameSelectionResult selectPreviewFrame(
         markCacheSelection(&result, request.playing, cacheExact);
     }
 
-    if (request.usePlaybackPipeline &&
+    if ((request.usePlaybackPipeline || !request.playing) &&
         !result.selectedPresentation &&
         !result.selectedExact &&
         heldFrameMatches(heldFrame, request.frameNumber, request.maxHeldFrameDelta) &&

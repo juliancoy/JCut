@@ -299,8 +299,13 @@ def load_compile_commands(path: Path, root: Path, indexed_paths: set[str]) -> li
     return [selected[path] for path in sorted(selected)]
 
 
-def parse_translation_unit(command: CompileCommand, root_string: str) -> dict[str, Any]:
+def parse_translation_unit(
+    command: CompileCommand,
+    root_string: str,
+    indexed_paths: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     root = Path(root_string).resolve()
+    allowed_paths = set(indexed_paths) if indexed_paths is not None else None
     try:
         lib = configure_libclang()
     except (OSError, RuntimeError) as error:
@@ -357,6 +362,8 @@ def parse_translation_unit(command: CompileCommand, root_string: str) -> dict[st
         if location is None:
             return 2 if parent_caller is not None else 1
         path, name_line, name_column = location
+        if allowed_paths is not None and path not in allowed_paths:
+            return 1
         covered_paths.add(path)
         extent = lib.clang_getCursorExtent(cursor)
         start = relative_location(lib, root, lib.clang_getRangeStart(extent)) or location

@@ -670,7 +670,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskEdgeGrayAmount =
             qBound<qreal>(0.0, matteOwner.maskEdgeGrayAmount, 1.0);
         layer.maskEdgeGrayWidth =
-            qBound<qreal>(0.001, matteOwner.maskEdgeGrayWidth, 0.5);
+            qBound<qreal>(0.001, matteOwner.maskEdgeGrayWidth, 2.0);
         layer.maskEdgeGrayGamma =
             qBound<qreal>(0.1, matteOwner.maskEdgeGrayGamma, 8.0);
         layer.maskOpacity = static_cast<float>(qBound<qreal>(0.0, matteOwner.maskOpacity, 1.0));

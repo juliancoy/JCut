@@ -136,7 +136,7 @@ float maskEdgeWeight(float maskValue) {
     if (amount <= 0.0) {
         return 0.0;
     }
-    float width = clamp(frame.effectParams.y, 0.001, 0.5);
+    float width = clamp(frame.effectParams.y, 0.001, 2.0);
     float gamma = clamp(frame.effectParams.z, 0.1, 8.0);
     float distanceFromBoundary = abs(maskValue - 0.5);
     float band = 1.0 - smoothstep(0.0, width, distanceFromBoundary);

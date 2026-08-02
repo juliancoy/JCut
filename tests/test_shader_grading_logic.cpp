@@ -132,6 +132,8 @@ void TestShaderGradingLogic::testVulkanShaderDesaturatesMaskFeatherEdgeOnGpu()
 
     QVERIFY2(shader.contains(QStringLiteral("float amount = clamp(frame.effectParams.x, 0.0, 1.0);")),
              "Vulkan mask shader must receive edge grayscale parameters through GPU frame uniforms.");
+    QVERIFY2(shader.contains(QStringLiteral("float width = clamp(frame.effectParams.y, 0.001, 2.0);")),
+             "Vulkan mask shader must allow wide edge grayscale bands through GPU frame uniforms.");
     QVERIFY2(shader.contains(QStringLiteral("float maskEdgeWeight(float maskValue)")),
              "Vulkan mask shader must compute a grayscale weight from the softened alpha edge.");
     QVERIFY2(shader.contains(QStringLiteral("rgb = mix(rgb, vec3(lumaOf(rgb)), edgeGray);")),

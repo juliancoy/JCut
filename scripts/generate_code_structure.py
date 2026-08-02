@@ -29,9 +29,9 @@ except ModuleNotFoundError:
     from clang_ast_structure import load_compile_commands, parse_translation_unit
 
 
-SCHEMA = "jcut_code_structure_v3"
+SCHEMA = "jcut_code_structure_v4"
 OWNERSHIP_SCHEMA = "jcut_code_ownership_v1"
-GENERATOR_VERSION = "3"
+GENERATOR_VERSION = "4"
 SOURCE_SUFFIXES = {
     ".c": "C",
     ".cc": "C++",
@@ -226,9 +226,10 @@ def freshness_metadata(
     files: list[dict[str, Any]],
     ownership_manifest_path: Path,
     build_file_path: Path,
+    compile_commands_path: Path,
 ) -> dict[str, Any]:
     relevant_paths = [Path(item["path"]) for item in files]
-    for path in (ownership_manifest_path, build_file_path):
+    for path in (ownership_manifest_path, build_file_path, compile_commands_path):
         if path.exists():
             try:
                 relevant_paths.append(path.resolve().relative_to(root))
@@ -252,6 +253,10 @@ def freshness_metadata(
             "path": display_path(root, build_file_path),
             "sha256": sha256_file(build_file_path),
         },
+        "compile_commands": {
+            "path": display_path(root, compile_commands_path),
+            "sha256": sha256_file(compile_commands_path),
+        },
     }
 
 
@@ -270,6 +275,7 @@ def validate_current(
     paths: list[Path],
     ownership_manifest_path: Path,
     build_file_path: Path,
+    compile_commands_path: Path,
 ) -> list[str]:
     errors: list[str] = []
     recorded_files = index.get("files")
@@ -299,6 +305,7 @@ def validate_current(
         current_files,
         ownership_manifest_path,
         build_file_path,
+        compile_commands_path,
     )
     scalar_fields = (
         "generator_version",
@@ -313,7 +320,7 @@ def validate_current(
                 f"{field} changed: recorded {recorded_freshness.get(field)!r}, "
                 f"current {current_freshness.get(field)!r}"
             )
-    for field in ("ownership_manifest", "build_file"):
+    for field in ("ownership_manifest", "build_file", "compile_commands"):
         if recorded_freshness.get(field) != current_freshness.get(field):
             errors.append(
                 f"{field} changed: recorded {recorded_freshness.get(field)!r}, "
@@ -483,20 +490,9 @@ SHADER_FUNCTION_RE = re.compile(
     r"(?m)^\s*(?!if\b|for\b|while\b|switch\b)"
     r"(?:[A-Za-z_]\w*\s+)+([A-Za-z_]\w*)\s*\(([^;{}]*)\)\s*\{"
 )
-CPP_TYPE_RE = re.compile(
-    r"(?m)^[ \t]*(class|struct|union|enum(?:[ \t]+class)?)[ \t]+"
-    r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)[^\n;{}]*\{"
-)
-CPP_FUNCTION_RE = re.compile(
-    r"(?m)^[ \t]*(?:(?:template[ \t]*<[^;{}]+>[ \t]*)?)"
-    r"(?:[A-Za-z_~][\w:<>,*& \t]*[ \t]+)?([~A-Za-z_]\w*)[ \t]*"
-    r"\(([^;{}]*)\)\s*(?:const\s*)?(?:noexcept\s*)?"
-    r"(?:(?:override|final)\s*)?(?:->\s*[^;{]+\s*)?\{"
-)
-CPP_CONTROL_WORDS = {"if", "for", "while", "switch", "catch", "requires"}
 
 
-def closing_brace_line(text: str, opening_offset: int) -> int:
+def closing_brace_line(text: str, opening_offset: int) -> int | None:
     depth = 0
     state = "normal"
     escaped = False
@@ -557,73 +553,118 @@ def closing_brace_line(text: str, opening_offset: int) -> int:
             if depth == 0:
                 return line
         index += 1
-    return line_count(text.encode("utf-8"))
+    return None
 
 
-def shader_structure(text: str) -> list[dict[str, Any]]:
+def unmatched_braces(text: str) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    stack: list[tuple[int, int]] = []
+    state = "normal"
+    escaped = False
+    line = 1
+    column = 1
+    index = 0
+    raw_terminator = ""
+    state_start = (1, 1)
+    while index < len(text):
+        char = text[index]
+        following = text[index:index + 2]
+        advance = 1
+        if state in {"string", "character"}:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif (state == "string" and char == '"') or (state == "character" and char == "'"):
+                state = "normal"
+        elif state == "line-comment":
+            if char == "\n":
+                state = "normal"
+        elif state == "block-comment":
+            if following == "*/":
+                state = "normal"
+                advance = 2
+        elif state == "raw-string":
+            if text.startswith(raw_terminator, index):
+                state = "normal"
+                advance = len(raw_terminator)
+        elif following == "//":
+            state = "line-comment"
+            state_start = (line, column)
+            advance = 2
+        elif following == "/*":
+            state = "block-comment"
+            state_start = (line, column)
+            advance = 2
+        elif char == "R" and index + 1 < len(text) and text[index + 1] == '"':
+            delimiter_end = text.find("(", index + 2, index + 19)
+            if delimiter_end != -1:
+                delimiter = text[index + 2:delimiter_end]
+                if not any(one.isspace() or one in "\\()" for one in delimiter):
+                    raw_terminator = ")" + delimiter + '"'
+                    state = "raw-string"
+                    state_start = (line, column)
+                    advance = delimiter_end - index + 1
+        elif char == '"':
+            state = "string"
+            state_start = (line, column)
+        elif char == "'" and not (
+            index > 0
+            and index + 1 < len(text)
+            and text[index - 1].isalnum()
+            and text[index + 1].isalnum()
+        ):
+            state = "character"
+            state_start = (line, column)
+        elif char == "{":
+            stack.append((line, column))
+        elif char == "}":
+            if stack:
+                stack.pop()
+            else:
+                findings.append({
+                    "kind": "unmatched-closing-brace",
+                    "line": line,
+                    "column": column,
+                })
+
+        consumed = text[index:index + advance]
+        newline_count = consumed.count("\n")
+        if newline_count:
+            line += newline_count
+            column = len(consumed.rsplit("\n", 1)[-1]) + 1
+        else:
+            column += advance
+        index += advance
+
+    findings.extend(
+        {"kind": "unmatched-opening-brace", "line": brace_line, "column": brace_column}
+        for brace_line, brace_column in stack
+    )
+    if state in {"block-comment", "string", "character", "raw-string"}:
+        findings.append({
+            "kind": f"unterminated-{state}",
+            "line": state_start[0],
+            "column": state_start[1],
+        })
+    return findings
+
+
+def shader_structure(text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     result = []
     for match in SHADER_FUNCTION_RE.finditer(text):
         line = text.count("\n", 0, match.start()) + 1
         opening = text.find("{", match.start(), match.end())
+        closing_line = closing_brace_line(text, opening)
         result.append(symbol(
             name=match.group(1),
             kind="function",
             line=line,
-            end_line=closing_brace_line(text, opening),
+            end_line=closing_line or line_count(text.encode("utf-8")),
             signature=f"({match.group(2).strip()})",
             parser="shader-outline",
         ))
-    return result
-
-
-def cpp_outline_structure(text: str) -> list[dict[str, Any]]:
-    """Fill structural gaps left by Ctags, notably Qt slots and huge inline classes."""
-    result: list[dict[str, Any]] = []
-    types: list[tuple[int, int, str, str]] = []
-    for match in CPP_TYPE_RE.finditer(text):
-        opening = text.find("{", match.start(), match.end())
-        line = text.count("\n", 0, match.start()) + 1
-        end_line = closing_brace_line(text, opening)
-        kind = match.group(1).replace(" class", "")
-        name = match.group(2)
-        types.append((line, end_line, name, kind))
-        result.append(symbol(
-            name=name,
-            kind=kind,
-            line=line,
-            end_line=end_line,
-            parser="cpp-outline",
-        ))
-    for match in CPP_FUNCTION_RE.finditer(text):
-        name = match.group(1)
-        if name in CPP_CONTROL_WORDS:
-            continue
-        opening = text.find("{", match.start(), match.end())
-        line = text.count("\n", 0, match.start()) + 1
-        end_line = closing_brace_line(text, opening)
-        containing = [item for item in types if item[0] < line <= item[1]]
-        owner = min(containing, key=lambda item: item[1] - item[0]) if containing else None
-        result.append(symbol(
-            name=name,
-            kind="method" if owner else "function",
-            line=line,
-            end_line=end_line,
-            scope=owner[2] if owner else "",
-            signature=f"({match.group(2).strip()})",
-            parser="cpp-outline",
-        ))
-    return result
-
-
-def merge_symbols(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[tuple[str, int, str], dict[str, Any]] = {}
-    for group in groups:
-        for entry in group:
-            key = (entry["name"], entry["line"], entry["kind"])
-            previous = merged.get(key)
-            if previous is None or entry["span_lines"] > previous["span_lines"]:
-                merged[key] = entry
-    return list(merged.values())
+    return result, unmatched_braces(text)
 
 
 def build_outline(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -696,16 +737,179 @@ def run_ctags(root: Path, paths: list[Path]) -> tuple[dict[str, list[dict[str, A
     return by_path, warnings
 
 
+def run_clang_ast(
+    root: Path,
+    paths: list[Path],
+    compile_commands_path: Path,
+    jobs: int,
+) -> tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+    set[str],
+    dict[str, str],
+    dict[str, list[str]],
+    list[str],
+    dict[str, int],
+]:
+    indexed_paths = {
+        path.as_posix() for path in paths
+        if language_for(path) in {"C", "C++", "CUDA"}
+    }
+    commands = load_compile_commands(compile_commands_path, root, indexed_paths)
+    indexed_paths_tuple = tuple(sorted(indexed_paths))
+    symbols_by_path: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
+    calls_by_path: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
+    covered_paths: set[str] = set()
+    failures: dict[str, str] = {}
+    diagnostics_by_path: dict[str, list[str]] = defaultdict(list)
+    warnings: list[str] = []
+    succeeded = 0
+
+    def consume(result: dict[str, Any], source: str) -> None:
+        nonlocal succeeded
+        try:
+            source_path = Path(source).resolve().relative_to(root).as_posix()
+        except ValueError:
+            source_path = source
+        error = result.get("error")
+        if error:
+            failures[source_path] = str(error)
+            diagnostics_by_path[source_path].append(str(error))
+            warnings.append(f"Clang AST fallback for {source_path}: {error}")
+            return
+        succeeded += 1
+        covered_paths.add(source_path)
+        covered_paths.update(result.get("covered_paths", []))
+        for path, entries in result.get("symbols", {}).items():
+            for entry in entries:
+                key = (
+                    entry.get("usr") or entry["qualified_name"],
+                    entry["line"],
+                    entry["kind"],
+                )
+                symbols_by_path[path][key] = entry
+        for path, entries in result.get("calls", {}).items():
+            for entry in entries:
+                key = (
+                    entry["caller_usr"] or entry["caller"],
+                    entry["callee_usr"] or entry["callee"],
+                    entry["line"],
+                    entry["column"],
+                )
+                calls_by_path[path][key] = entry
+        for diagnostic in result.get("diagnostics", []):
+            diagnostics_by_path[source_path].append(diagnostic)
+            warnings.append(f"Clang AST diagnostic for {source_path}: {diagnostic}")
+
+    if jobs <= 1:
+        for command in commands:
+            consume(
+                parse_translation_unit(command, str(root), indexed_paths_tuple),
+                command.file,
+            )
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+            pending = {
+                executor.submit(
+                    parse_translation_unit,
+                    command,
+                    str(root),
+                    indexed_paths_tuple,
+                ): command
+                for command in commands
+            }
+            for future in concurrent.futures.as_completed(pending):
+                command = pending[future]
+                try:
+                    result = future.result()
+                except Exception as error:
+                    result = {"source": command.file, "error": f"worker failed: {error}"}
+                consume(result, command.file)
+
+    return (
+        {path: list(entries.values()) for path, entries in symbols_by_path.items()},
+        {path: list(entries.values()) for path, entries in calls_by_path.items()},
+        covered_paths,
+        failures,
+        dict(diagnostics_by_path),
+        warnings,
+        {
+            "compile_commands": len(commands),
+            "translation_units_succeeded": succeeded,
+            "translation_units_failed": len(failures),
+            "files_covered": len(covered_paths),
+        },
+    )
+
+
+def symbol_coverage_confidence(
+    language: str,
+    parser: str,
+    parse_succeeded: bool,
+) -> dict[str, str]:
+    if not parse_succeeded:
+        return {"level": "low", "reason": "the parser reported an error"}
+    if parser == "clang-ast":
+        return {
+            "level": "high",
+            "reason": "Clang compiled the translation unit and supplied semantic AST cursors",
+        }
+    if parser == "python-ast":
+        return {
+            "level": "high",
+            "reason": "Python's native AST parsed the complete file",
+        }
+    if parser == "universal-ctags-fallback":
+        return {
+            "level": "low",
+            "reason": "Ctags is a lexical fallback without compile or type resolution",
+        }
+    if parser == "shader-outline":
+        return {
+            "level": "medium",
+            "reason": "brace validation succeeded, but shader symbols use a structural outline parser",
+        }
+    if parser == "inventory-only":
+        return {"level": "low", "reason": "the file is inventoried without symbol parsing"}
+    return {
+        "level": "medium",
+        "reason": f"{parser} supplies lexical symbols without semantic compilation",
+    }
+
+
+def diagnostics_for_path(warnings: Iterable[str], relative_path: str) -> list[str]:
+    basename = Path(relative_path).name
+    return sorted({
+        warning for warning in warnings
+        if relative_path in warning or basename in warning
+    })
+
+
 def analyze(
     root: Path,
     paths: list[Path],
     excludes: tuple[str, ...],
     ownership_manifest: dict[str, Any] | None = None,
     build_targets: dict[str, list[str]] | None = None,
+    compile_commands_path: Path | None = None,
+    clang_jobs: int = 1,
 ) -> dict[str, Any]:
     ctags_paths = [path for path in paths
                    if language_for(path) not in {"Python", "GLSL", "CSS"}]
     ctags_symbols, warnings = run_ctags(root, ctags_paths) if ctags_paths else ({}, [])
+    ctags_warnings = list(warnings)
+    if compile_commands_path is None:
+        compile_commands_path = root / "build" / "compile_commands.json"
+    (
+        clang_symbols,
+        clang_calls,
+        clang_covered_paths,
+        clang_failures,
+        clang_diagnostics,
+        clang_warnings,
+        clang_summary,
+    ) = run_clang_ast(root, paths, compile_commands_path, max(1, clang_jobs))
+    warnings.extend(clang_warnings)
     files: list[dict[str, Any]] = []
     parse_errors: list[dict[str, str]] = []
     build_targets = build_targets or {}
@@ -717,20 +921,63 @@ def analyze(
         language = language_for(relative) or "Unknown"
         dependencies = text_dependencies(language, text)
         parse_error = None
+        calls: list[dict[str, Any]] = []
+        parser_fallback_reason = None
+        compilation_succeeded: bool | None = None
+        diagnostics: list[str] = []
+        unmatched_constructs: list[dict[str, Any]] = []
+        suspicious_constructs: list[dict[str, Any]] = []
         if language == "Python":
             symbols, dependencies, parse_error = python_structure(text, relative.as_posix())
+            if parse_error:
+                diagnostics.append(parse_error)
         elif language == "GLSL":
-            symbols = shader_structure(text)
+            symbols, unmatched_constructs = shader_structure(text)
+            if unmatched_constructs:
+                parse_error = f"{len(unmatched_constructs)} unmatched or unterminated construct(s)"
+                diagnostics.append(parse_error)
         elif language in {"C", "C++", "CUDA"}:
-            symbols = merge_symbols(
-                ctags_symbols.get(relative.as_posix(), []),
-                cpp_outline_structure(text),
-            )
+            if relative.as_posix() in clang_covered_paths:
+                symbols = clang_symbols.get(relative.as_posix(), [])
+                calls = clang_calls.get(relative.as_posix(), [])
+                compilation_succeeded = True
+                diagnostics.extend(clang_diagnostics.get(relative.as_posix(), []))
+            else:
+                symbols = [
+                    {**entry, "parser": "universal-ctags-fallback"}
+                    for entry in ctags_symbols.get(relative.as_posix(), [])
+                ]
+                parser_fallback_reason = clang_failures.get(
+                    relative.as_posix(),
+                    "no successful Clang translation unit covered this file",
+                )
+                compilation_succeeded = False if relative.as_posix() in clang_failures else None
+                diagnostics.extend(clang_diagnostics.get(relative.as_posix(), []))
+                diagnostics.extend(diagnostics_for_path(ctags_warnings, relative.as_posix()))
+                unmatched_constructs = unmatched_braces(text)
+                suspicious_constructs.append({
+                    "kind": "semantic-parser-fallback",
+                    "detail": parser_fallback_reason,
+                })
         elif language == "CSS":
             symbols = []
         else:
             symbols = ctags_symbols.get(relative.as_posix(), [])
+            diagnostics.extend(diagnostics_for_path(ctags_warnings, relative.as_posix()))
         symbols.sort(key=lambda item: (item["line"], -item["span_lines"], item["name"]))
+        suspicious_constructs.extend(
+            {
+                "kind": "unresolved-call",
+                "line": call["line"],
+                "column": call["column"],
+            }
+            for call in calls
+            if not call.get("callee_usr")
+        )
+        suspicious_constructs.extend(
+            {"kind": "parser-diagnostic", "detail": diagnostic}
+            for diagnostic in diagnostics
+        )
         outline = build_outline(symbols)
         if parse_error:
             parse_errors.append({"path": relative.as_posix(), "error": parse_error})
@@ -746,18 +993,40 @@ def analyze(
         if ownership and ownership.get("declared_target") and production_targets:
             if ownership["declared_target"] not in production_targets:
                 ownership_violations.append("declared_target_mismatch")
+        parser_used = ("+".join(sorted({entry["parser"] for entry in symbols})) if symbols else
+                       "python-ast" if language == "Python" else
+                       "shader-outline" if language == "GLSL" else
+                       "clang-ast" if language in {"C", "C++", "CUDA"}
+                       and relative.as_posix() in clang_covered_paths else
+                       "universal-ctags-fallback" if language in {"C", "C++", "CUDA"} else
+                       "universal-ctags" if language != "CSS" else "inventory-only")
+        parse_succeeded = parse_error is None
+        compilation_status = (
+            "succeeded" if compilation_succeeded is True else
+            "failed" if compilation_succeeded is False else
+            "not-attempted" if language in {"C", "C++", "CUDA"} else
+            "not-applicable"
+        )
         file_record = {
             "path": relative.as_posix(),
             "language": language,
-            "parser": ("+".join(sorted({entry["parser"] for entry in symbols})) if symbols else
-                       "python-ast" if language == "Python" else
-                       "shader-outline" if language == "GLSL" else
-                       "universal-ctags" if language != "CSS" else "inventory-only"),
+            "parser": parser_used,
+            "parse_succeeded": parse_succeeded,
+            "compilation_succeeded": compilation_succeeded,
+            "compilation_status": compilation_status,
+            "diagnostics": diagnostics,
+            "parser_fallback_reason": parser_fallback_reason,
+            "symbol_coverage_confidence": symbol_coverage_confidence(
+                language, parser_used, parse_succeeded
+            ),
+            "unmatched_constructs": unmatched_constructs,
+            "suspicious_constructs": suspicious_constructs,
             "lines": line_count(data),
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "dependencies": dependencies,
             "symbols": symbols,
+            "calls": sorted(calls, key=lambda item: (item["line"], item["column"], item["callee"])),
             "outline": outline,
             "symbol_count": len(symbols),
             "largest_symbol_lines": max((item["span_lines"] for item in symbols), default=0),
@@ -781,6 +1050,10 @@ def analyze(
     violation_counts = Counter(
         violation for item in files for violation in item["ownership_violations"]
     )
+    confidence_counts = Counter(
+        item["symbol_coverage_confidence"]["level"] for item in files
+    )
+    compilation_counts = Counter(item["compilation_status"] for item in files)
     return {
         "schema": SCHEMA,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -794,9 +1067,22 @@ def analyze(
             "parse_errors": len(parse_errors),
             "ownership_violations": sum(violation_counts.values()),
             "ownership_violation_types": dict(sorted(violation_counts.items())),
+            "parser_health": {
+                "parse_failures": sum(not item["parse_succeeded"] for item in files),
+                "diagnostics": sum(len(item["diagnostics"]) for item in files),
+                "unmatched_constructs": sum(
+                    len(item["unmatched_constructs"]) for item in files
+                ),
+                "suspicious_constructs": sum(
+                    len(item["suspicious_constructs"]) for item in files
+                ),
+                "confidence": dict(sorted(confidence_counts.items())),
+                "compilation": dict(sorted(compilation_counts.items())),
+            },
             "languages": language_summary,
         },
         "parser_warnings": warnings,
+        "clang_ast": clang_summary,
         "parse_errors": parse_errors,
         "ownership_manifest_schema": ownership_manifest.get("schema") if ownership_manifest else None,
         "files": files,
@@ -839,6 +1125,17 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         f"`{freshness['ownership_manifest']['sha256'] or '-'}` |",
         f"| Build file | `{freshness['build_file']['path']}` / "
         f"`{freshness['build_file']['sha256'] or '-'}` |",
+        f"| Compilation database | `{freshness['compile_commands']['path']}` / "
+        f"`{freshness['compile_commands']['sha256'] or '-'}` |",
+        "",
+        "## Parser health",
+        "",
+        "| Metric | Count |",
+        "|---|---:|",
+        f"| Parse failures | {summary['parser_health']['parse_failures']:,} |",
+        f"| Diagnostics | {summary['parser_health']['diagnostics']:,} |",
+        f"| Unmatched constructs | {summary['parser_health']['unmatched_constructs']:,} |",
+        f"| Suspicious constructs | {summary['parser_health']['suspicious_constructs']:,} |",
         "",
         "## Language inventory",
         "",
@@ -929,20 +1226,23 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         "",
         "Every file below has a corresponding full `symbols` array in `code_structure.json`.",
         "",
-        "| File | Language | Lines | Symbols | Parser |",
-        "|---|---|---:|---:|---|",
+        "| File | Language | Lines | Symbols | Parser | Compile | Confidence | Diagnostics | Findings |",
+        "|---|---|---:|---:|---|---|---|---:|---:|",
     ])
     for item in sorted(files, key=lambda entry: entry["path"]):
         lines.append(
             f"| `{item['path']}` | {item['language']} | {item['lines']:,} | "
-            f"{item['symbol_count']:,} | `{item['parser']}` |"
+            f"{item['symbol_count']:,} | `{item['parser']}` | `{item['compilation_status']}` | "
+            f"`{item['symbol_coverage_confidence']['level']}` | {len(item['diagnostics']):,} | "
+            f"{len(item['unmatched_constructs']) + len(item['suspicious_constructs']):,} |"
         )
     lines.extend([
         "",
         "## Interpretation limits",
         "",
-        "- This is a structural syntax index, not a type-resolved call graph. C/C++ symbols come "
-        "from Universal Ctags and therefore do not require a successful compile or compile database.",
+        "- C/C++ definitions, scopes, calls, types, and extents come from Clang's AST using the "
+        "compilation database. Files not covered by a successful translation unit are explicitly "
+        "labeled `universal-ctags-fallback`.",
         "- Python definitions and nesting come from Python's AST. Shader function extents use a "
         "brace-aware outline parser. CSS is inventoried without selector-level symbols.",
         "- Generated, build, dependency, artifact, and vendored directories are excluded by default. "
@@ -963,6 +1263,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="disable the default exclusion globs")
     parser.add_argument("--ownership-manifest", type=Path, default=Path("code_ownership.json"))
     parser.add_argument("--ninja-file", type=Path, default=Path("build/build.ninja"))
+    parser.add_argument("--compile-commands", type=Path,
+                        default=Path("build/compile_commands.json"))
+    parser.add_argument("--clang-jobs", type=int, default=4,
+                        help="parallel libclang translation units (default: 4)")
     parser.add_argument("--check-ownership", action="store_true",
                         help="fail when ownership violations are present")
     parser.add_argument("--check-current", action="store_true",
@@ -984,6 +1288,9 @@ def main(argv: list[str] | None = None) -> int:
     ninja_path = args.ninja_file
     if not ninja_path.is_absolute():
         ninja_path = root / ninja_path
+    compile_commands_path = args.compile_commands
+    if not compile_commands_path.is_absolute():
+        compile_commands_path = root / compile_commands_path
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = root / output_dir
@@ -1004,6 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
             paths,
             manifest_path,
             ninja_path,
+            compile_commands_path,
         )
         if freshness_errors:
             print(f"Freshness check failed: {len(freshness_errors)} difference(s)", file=sys.stderr)
@@ -1015,12 +1323,21 @@ def main(argv: list[str] | None = None) -> int:
 
     ownership_manifest = load_ownership_manifest(manifest_path)
     build_targets = build_targets_from_ninja(root, ninja_path)
-    index = analyze(root, paths, excludes, ownership_manifest, build_targets)
+    index = analyze(
+        root,
+        paths,
+        excludes,
+        ownership_manifest,
+        build_targets,
+        compile_commands_path,
+        args.clang_jobs,
+    )
     index["freshness"] = freshness_metadata(
         root,
         index["files"],
         manifest_path,
         ninja_path,
+        compile_commands_path,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")

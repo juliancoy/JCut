@@ -883,7 +883,7 @@
             layer.maskFeatherFalloff * 10) + layer.maskFeatherGamma;
         const float maskEdgeParams[4] = {
             static_cast<float>(qBound<qreal>(0.0, layer.maskEdgeGrayAmount, 1.0)),
-            static_cast<float>(qBound<qreal>(0.001, layer.maskEdgeGrayWidth, 0.5)),
+            static_cast<float>(qBound<qreal>(0.001, layer.maskEdgeGrayWidth, 2.0)),
             static_cast<float>(qBound<qreal>(0.1, layer.maskEdgeGrayGamma, 8.0)),
             0.0f};
         const VulkanDrawEffectState& layerEffects =

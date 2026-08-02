@@ -1953,9 +1953,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                             static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 4.0)))
             : -1;
         const bool usePlaybackPipeline = m_interaction.playing && m_playbackPipeline;
-        const FrameHandle heldFrame = usePlaybackPipeline
-            ? m_lastPresentedFrameByClip.value(clip.id)
-            : FrameHandle();
+        const FrameHandle heldFrame = m_lastPresentedFrameByClip.value(clip.id);
+        const int64_t maxRetainedFrameDelta = usePlaybackPipeline
+            ? maxHeldFrameDelta
+            : editor::kPreviewMaxHeldPresentationFrameDelta;
         const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
             editor::PreviewFrameSelectionRequest{
                 clip.id,
@@ -1966,7 +1967,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 m_interaction.playing,
                 false,
                 false,
-                usePlaybackPipeline ? maxHeldFrameDelta : -1,
+                maxRetainedFrameDelta,
             },
             m_cache.get(),
             m_playbackPipeline.get(),

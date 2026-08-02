@@ -26,6 +26,7 @@ public:
         QDoubleSpinBox* edgeFillBrightnessSpin = nullptr;
         QDoubleSpinBox* edgeFillSaturationSpin = nullptr;
         QComboBox* effectPresetCombo = nullptr;
+        QLabel* effectPresetSpecificHelpLabel = nullptr;
         QSpinBox* effectRowsSpin = nullptr;
         QDoubleSpinBox* effectSpeedSpin = nullptr;
         QDoubleSpinBox* effectScaleSpin = nullptr;

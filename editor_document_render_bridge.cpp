@@ -212,7 +212,7 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskEdgeGrayAmount =
             std::clamp(clip.maskEdgeGrayAmount, 0.0, 1.0);
         timelineClip.maskEdgeGrayWidth =
-            std::clamp(clip.maskEdgeGrayWidth, 0.001, 0.5);
+            std::clamp(clip.maskEdgeGrayWidth, 0.001, 2.0);
         timelineClip.maskEdgeGrayGamma =
             std::clamp(clip.maskEdgeGrayGamma, 0.1, 8.0);
         timelineClip.maskDilate = clip.maskDilate;

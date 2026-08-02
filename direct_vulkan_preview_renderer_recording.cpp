@@ -1363,7 +1363,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 }
                 const float maskEdgeParams[4] = {
                     status ? static_cast<float>(std::clamp(status->maskEdgeGrayAmount, 0.0, 1.0)) : 0.0f,
-                    status ? static_cast<float>(std::clamp(status->maskEdgeGrayWidth, 0.001, 0.5)) : 0.25f,
+                    status ? static_cast<float>(std::clamp(status->maskEdgeGrayWidth, 0.001, 2.0)) : 0.25f,
                     status ? static_cast<float>(std::clamp(status->maskEdgeGrayGamma, 0.1, 8.0)) : 1.0f,
                     0.0f};
                 if (sampledResources) {

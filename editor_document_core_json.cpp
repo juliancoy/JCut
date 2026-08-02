@@ -540,7 +540,7 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskEdgeGrayAmount =
         std::clamp(valueOr(value, "maskEdgeGrayAmount", 0.0), 0.0, 1.0);
     clip->maskEdgeGrayWidth =
-        std::clamp(valueOr(value, "maskEdgeGrayWidth", 0.25), 0.001, 0.5);
+        std::clamp(valueOr(value, "maskEdgeGrayWidth", 0.25), 0.001, 2.0);
     clip->maskEdgeGrayGamma =
         std::clamp(valueOr(value, "maskEdgeGrayGamma", 1.0), 0.1, 8.0);
     clip->maskDilate = valueOr(value, "maskDilate", 0.0);

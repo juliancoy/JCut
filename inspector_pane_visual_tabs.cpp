@@ -842,7 +842,7 @@ QWidget *InspectorPane::buildMasksTab()
     m_maskEdgeGrayAmountSpin = makeScalarSpin(0.0, 1.0, 0.0, 0.05);
     m_maskEdgeGrayAmountSpin->setToolTip(QStringLiteral(
         "Desaturate the feathered alpha boundary on the GPU to suppress green-screen color fringes. 0 disables it."));
-    m_maskEdgeGrayWidthSpin = makeScalarSpin(0.001, 0.5, 0.25, 0.01);
+    m_maskEdgeGrayWidthSpin = makeScalarSpin(0.001, 2.0, 0.25, 0.01);
     m_maskEdgeGrayWidthSpin->setToolTip(QStringLiteral(
         "Alpha-band width around the mask edge that receives grayscale treatment. Higher values affect more of the soft edge."));
     m_maskEdgeGrayGammaSpin = makeScalarSpin(0.1, 8.0, 1.0, 0.1);

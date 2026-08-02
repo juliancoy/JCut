@@ -81,6 +81,7 @@ private slots:
     void selectionUsesBoundedPriorHardwareFrameDuringPlayback();
     void staleApproximateSelectionFallsBackToHeldFrame();
     void heldFrameBeatsOlderApproximatePlaybackFallback();
+    void pausedSelectionRetainsPresentedHardwareFrameUntilExactFrameArrives();
     void stalePlaybackFramePredicateBoundsApproximatePresentation();
     void presentationMissesAreCountedOncePerVisibleTarget();
     void missingPresentedFramesCountAsPresentationMisses();
@@ -398,6 +399,70 @@ void TestStandardPreviewPresentationPipeline::heldFrameBeatsOlderApproximatePlay
     QCOMPARE(selection.frame.frameNumber(), static_cast<int64_t>(118));
     QVERIFY(selection.selectedHeld);
     QCOMPARE(selection.selection, QStringLiteral("held"));
+}
+
+void TestStandardPreviewPresentationPipeline::
+    pausedSelectionRetainsPresentedHardwareFrameUntilExactFrameArrives()
+{
+    AsyncDecoder decoder;
+    MemoryBudget budget;
+    TimelineCache cache(&decoder, &budget);
+    const TimelineClip clip = makeClip(QStringLiteral("clip-paused-held"),
+                                       QStringLiteral("/tmp/paused-held.mp4"));
+    cache.registerClip(clip);
+
+    const FrameHandle heldFrame = makeHardwareFrame(199, clip.filePath);
+    QVERIFY(!heldFrame.isNull());
+    QVERIFY(heldFrame.hasHardwareFrame());
+
+    const PreviewFrameSelectionResult waitingSelection = selectPreviewFrame(
+        PreviewFrameSelectionRequest{
+            clip.id,
+            200,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            kPreviewMaxHeldPresentationFrameDelta,
+        },
+        &cache,
+        nullptr,
+        heldFrame,
+        rejectCpuOnlyPayload);
+
+    QVERIFY(!waitingSelection.frame.isNull());
+    QCOMPARE(waitingSelection.frame.frameNumber(), static_cast<int64_t>(199));
+    QVERIFY(waitingSelection.selectedHeld);
+    QCOMPARE(waitingSelection.selection, QStringLiteral("held"));
+
+    const FrameHandle exactFrame = makeHardwareFrame(200, clip.filePath);
+    QVERIFY(!exactFrame.isNull());
+    decoder.frameReady(exactFrame);
+
+    const PreviewFrameSelectionResult readySelection = selectPreviewFrame(
+        PreviewFrameSelectionRequest{
+            clip.id,
+            200,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            kPreviewMaxHeldPresentationFrameDelta,
+        },
+        &cache,
+        nullptr,
+        heldFrame,
+        rejectCpuOnlyPayload);
+
+    QVERIFY(!readySelection.frame.isNull());
+    QCOMPARE(readySelection.frame.frameNumber(), static_cast<int64_t>(200));
+    QVERIFY(readySelection.selectedExact);
+    QVERIFY(!readySelection.selectedHeld);
+    QCOMPARE(readySelection.selection, QStringLiteral("exact"));
 }
 
 void TestStandardPreviewPresentationPipeline::stalePlaybackFramePredicateBoundsApproximatePresentation()
