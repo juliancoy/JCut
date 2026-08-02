@@ -6,6 +6,7 @@
 #include "speaker_framing_core.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -629,6 +630,24 @@ private:
     [[nodiscard]] bool copySelectedClipsToClipboard();
     [[nodiscard]] CommandResult pasteClipboardAt(int targetFrame,
                                                  int targetTrackId);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchTransportCommand(
+        const Command& command);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchTimelineCommand(
+        const Command& command);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchClipEditCommand(
+        const Command& command);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchAudioTrackCommand(
+        const Command& command);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchSyncRangeCommand(
+        const Command& command);
+    template <typename Command>
+    [[nodiscard]] std::optional<CommandResult> dispatchPanelExportCommand(
+        const Command& command);
     void recordUndoSnapshot(EditorDocumentCore document);
 
     EditorDocumentCore m_document;

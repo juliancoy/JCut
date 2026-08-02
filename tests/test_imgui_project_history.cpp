@@ -1819,9 +1819,19 @@ void TestImGuiProjectHistory::autosaveWritesCompatibleSnapshotAndTrimsBackups()
 
 void TestImGuiProjectHistory::imguiShellWiresLifecycleActionsThroughSharedDirtyGuard()
 {
-    QFile source(QStringLiteral(JCUT_SOURCE_DIR "/jcut_imgui_main.cpp"));
-    QVERIFY(source.open(QIODevice::ReadOnly));
-    const QString body = QString::fromUtf8(source.readAll());
+    QString body;
+    const QStringList shellSources = {
+        QStringLiteral("jcut_imgui_main.cpp"),
+        QStringLiteral("jcut_imgui_timeline_workflows.h"),
+        QStringLiteral("jcut_imgui_inspector_tabs_project.h"),
+        QStringLiteral("jcut_imgui_inspector_tabs_output.h"),
+    };
+    for (const QString& relativePath : shellSources) {
+        QFile source(QStringLiteral(JCUT_SOURCE_DIR "/") + relativePath);
+        QVERIFY2(source.open(QIODevice::ReadOnly),
+                 qPrintable(source.fileName()));
+        body += QString::fromUtf8(source.readAll());
+    }
 
     QVERIFY(body.contains(QStringLiteral("void requestProjectLifecycleAction(")));
     QVERIFY(body.contains(QStringLiteral("bool performProjectLifecycleAction(")));

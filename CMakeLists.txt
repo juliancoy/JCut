@@ -398,6 +398,9 @@ set(EDITOR_QT_UI_SOURCES
     direct_vulkan_preview_interaction.cpp
     direct_vulkan_preview_overlay_rendering.cpp
     direct_vulkan_preview_presenter.cpp
+    direct_vulkan_preview_renderer_export.cpp
+    direct_vulkan_preview_renderer_recording.cpp
+    direct_vulkan_preview_renderer_resources.cpp
     direct_vulkan_preview_transcript.cpp
     direct_vulkan_preview_window.cpp
     editor_ai_helpers.cpp
@@ -430,8 +433,11 @@ set(EDITOR_QT_UI_SOURCES
     inspector_pane.cpp
     inspector_pane_audio_tab.cpp
     inspector_pane_collections.cpp
+    inspector_pane_speakers_tab.cpp
     inspector_pane_secondary_tabs.cpp
     inspector_pane_speakers_continuity_tab.cpp
+    inspector_pane_transcript_tab.cpp
+    inspector_pane_visual_tabs.cpp
     inspector_pane_wiring.cpp
     keyframe_tab_base.cpp
     keyframe_table_shared.cpp
@@ -1128,6 +1134,10 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_audio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine_cache.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine_decode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine_mix.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_engine_profiling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_speech_harmonic_isolator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_codecs.cpp
@@ -1367,16 +1377,20 @@ set_target_properties(jcut_imgui_gpu_renderer PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
-add_executable(editor
+add_library(jcut_qt_application STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
 )
-target_link_libraries(editor PRIVATE "$<LINK_GROUP:RESCAN,editor_core>")
-target_link_libraries(editor PRIVATE jcut_imgui_preview_support)
+target_link_libraries(jcut_qt_application PRIVATE "$<LINK_GROUP:RESCAN,editor_core>")
+target_link_libraries(jcut_qt_application PRIVATE jcut_imgui_preview_support)
 if(TARGET CPPMonetize::cppmonetize)
-    target_link_libraries(editor PRIVATE CPPMonetize::cppmonetize)
+    target_link_libraries(jcut_qt_application PRIVATE CPPMonetize::cppmonetize)
 endif()
+add_executable(editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_entry.cpp
+)
+target_link_libraries(editor PRIVATE jcut_qt_application)
 set_target_properties(editor PROPERTIES
     OUTPUT_NAME "jcut"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -1406,7 +1420,7 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
-add_executable(jcut_imgui
+add_library(jcut_imgui_application STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/jcut_imgui_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
@@ -1415,20 +1429,29 @@ add_executable(jcut_imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/misc/cpp/imgui_stdlib.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
-target_include_directories(jcut_imgui PRIVATE
+target_include_directories(jcut_imgui_application PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
     ${X11_INCLUDE_DIR}
 )
-target_link_libraries(jcut_imgui PRIVATE
+target_link_libraries(jcut_imgui_application PRIVATE
     jcut_imgui_runtime
     Vulkan::Vulkan
     ${X11_LIBRARIES}
 )
-target_compile_definitions(jcut_imgui PRIVATE
+target_compile_definitions(jcut_imgui_application PRIVATE
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
 )
+set_target_properties(jcut_imgui_application PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+add_executable(jcut_imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/jcut_imgui_entry.cpp
+)
+target_link_libraries(jcut_imgui PRIVATE jcut_imgui_application)
 set_target_properties(jcut_imgui PROPERTIES
     AUTOMOC OFF
     AUTORCC OFF

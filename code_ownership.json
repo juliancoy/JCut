@@ -30,8 +30,15 @@
       "owner": "qt-editor-entry",
       "layer": "L0/L1",
       "priority": 110,
-      "declared_target": "editor",
+      "declared_target": "jcut_qt_application",
       "patterns": ["editor.cpp", "editor_main.cpp", "editor_ai_integration.cpp"]
+    },
+    {
+      "owner": "qt-process-entry",
+      "layer": "L0",
+      "priority": 120,
+      "declared_target": "editor",
+      "patterns": ["editor_entry.cpp"]
     },
     {
       "owner": "shared-qt-runtime",
@@ -56,10 +63,17 @@
     },
     {
       "owner": "imgui-entry",
-      "layer": "L0",
-      "priority": 90,
-      "declared_target": "jcut_imgui",
+      "layer": "L0/L1",
+      "priority": 110,
+      "declared_target": "jcut_imgui_application",
       "patterns": ["jcut_imgui_main.cpp"]
+    },
+    {
+      "owner": "imgui-process-entry",
+      "layer": "L0",
+      "priority": 120,
+      "declared_target": "jcut_imgui",
+      "patterns": ["jcut_imgui_entry.cpp"]
     },
     {
       "owner": "imgui-frontend",

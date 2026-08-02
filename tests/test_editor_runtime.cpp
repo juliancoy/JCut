@@ -492,7 +492,8 @@ void TestEditorRuntime::testCreateTitleClipCommandMatchesQtDefaultsAndIsAtomic()
     QCOMPARE(routingRuntime.snapshot().tracks.size(), std::size_t(3));
     QCOMPARE(routingRuntime.snapshot().clips.size(), std::size_t(2));
 
-    QFile imguiSource(QStringLiteral(JCUT_SOURCE_DIR "/jcut_imgui_main.cpp"));
+    QFile imguiSource(QStringLiteral(
+        JCUT_SOURCE_DIR "/jcut_imgui_inspector_tabs_edit.h"));
     QVERIFY2(imguiSource.open(QIODevice::ReadOnly | QIODevice::Text),
              qPrintable(imguiSource.fileName()));
     const QString imguiCode = QString::fromUtf8(imguiSource.readAll());
@@ -3015,7 +3016,7 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
     QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(34));
-    QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane.cpp"));
+    QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane_visual_tabs.cpp"));
     QVERIFY(inspector.open(QIODevice::ReadOnly));
     const QString inspectorSource = QString::fromUtf8(inspector.readAll());
     for (const QString& label : {
@@ -3176,10 +3177,16 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QCOMPARE(preservedFutureClip.maskEnabled, true);
     QCOMPARE(preservedFutureClip.maskFeather, 24.0);
 
-    QFile imguiSource(QStringLiteral(JCUT_SOURCE_DIR "/jcut_imgui_main.cpp"));
-    QVERIFY2(imguiSource.open(QIODevice::ReadOnly | QIODevice::Text),
-             qPrintable(imguiSource.fileName()));
-    const QString imguiCode = QString::fromUtf8(imguiSource.readAll());
+    QFile visualSource(QStringLiteral(
+        JCUT_SOURCE_DIR "/jcut_imgui_inspector_tabs_visual.h"));
+    QVERIFY2(visualSource.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(visualSource.fileName()));
+    QFile editSource(QStringLiteral(
+        JCUT_SOURCE_DIR "/jcut_imgui_inspector_tabs_edit.h"));
+    QVERIFY2(editSource.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(editSource.fileName()));
+    const QString imguiCode = QString::fromUtf8(visualSource.readAll()) +
+                              QString::fromUtf8(editSource.readAll());
     QVERIFY(imguiCode.contains(QStringLiteral("jcut::kEditorEffectPresetIds")));
     QVERIFY(imguiCode.contains(QStringLiteral("jcut::kEditorEffectMinSpeed")));
     QVERIFY(imguiCode.contains(QStringLiteral("effectPresetUsesCommonNeutralParameters")));

@@ -78,6 +78,7 @@ private slots:
   void exportRunsOffGuiThreadWhileDedicatedSurfacePresents();
   void renderSynchronizationWaitsAreBoundedAndDiagnosable();
   void hardwareFrameImportUsesGpuSemaphoreSynchronization();
+  void gpuExportOutputUsesStreamOrderedSemaphoreSynchronization();
   void incrementalExportCheckpointsAndLosslesslyRemuxes();
   void outputTabClearsOnlyResolvedIncrementalRenderCacheRoot();
   void exportCompositionNeverPublishesPartialLayers();
@@ -4211,6 +4212,33 @@ void TestDirectVulkanHandoffPipelineContract::
                    "av_frame_free(&pendingSourceFrame)")),
            "the decoded CUDA frame must remain owned until the import fence "
            "proves that its asynchronous copy is complete");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    gpuExportOutputUsesStreamOrderedSemaphoreSynchronization() {
+  const QString backend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString nvenc =
+      readSourceFile(QStringLiteral("ffmpeg/libavcodec/nvenc.c"));
+
+  QVERIFY2(backend.contains(QStringLiteral(
+               "cuSignalExternalSemaphoresAsync(consumedSemaphores")) &&
+               backend.contains(QStringLiteral(
+                   "waitSemaphores[waitCount] = slot.cudaConsumedSemaphore")) &&
+               backend.contains(QStringLiteral("slot.cudaCopyPending = true")),
+           "the CUDA output copy must signal per-slot completion for Vulkan "
+           "to consume before reusing the source buffer");
+  QVERIFY2(!backend.contains(QStringLiteral(
+               "cuStreamSynchronize(cudaDevice->stream)")),
+           "the steady-state Vulkan-to-CUDA output path must not block the "
+           "render thread on the encoder CUDA stream");
+  QVERIFY2(nvenc.contains(QStringLiteral(
+               "ctx->cu_stream = cuda_device_hwctx->stream")) &&
+               nvenc.contains(QStringLiteral(
+                   "nvEncSetIOCudaStreams(ctx->nvencoder, "
+                   "&ctx->cu_stream, &ctx->cu_stream)")),
+           "the pinned NVENC implementation must consume input on the same "
+           "CUDA stream that receives the Vulkan output copy");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

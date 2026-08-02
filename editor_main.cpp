@@ -2,6 +2,7 @@
 #include "debug_controls.h"
 #include "decoder_context.h"
 #include "speaker_export_harness.h"
+#include "editor_application.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -164,7 +165,7 @@ void applyPreferredApplicationFont()
 
 }
 
-int main(int argc, char **argv)
+int runJcutQtApplication(int argc, char** argv)
 {
     bool runHeadlessSpeakerHarness = false;
     bool runDecoderTest = false;

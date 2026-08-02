@@ -369,7 +369,7 @@ private slots:
             .value(QStringLiteral("speaker_a")).toObject()
             .value(QString(kTranscriptSpeakerFaceRefsKey)).toArray();
         QCOMPARE(faceRefs.size(), 1);
-        QCOMPARE(faceRefs.front().toObject().value(QStringLiteral("track_id")).toInt(), 9);
+        QCOMPARE(faceRefs.at(0).toObject().value(QStringLiteral("track_id")).toInt(), 9);
     }
 
 };
