@@ -63,7 +63,7 @@ struct ThreadLocalPreviewRenderer {
         }
 
         renderer.reset();
-        asyncFrameCache.clear();
+        preparedFrames.clear();
         for (editor::DecoderContext* decoder : decoders) {
             delete decoder;
         }
@@ -99,8 +99,8 @@ struct ThreadLocalPreviewRenderer {
     QSize initializedSize;
     std::unique_ptr<render_detail::HeadlessVulkanCompositor> renderer;
     QHash<QString, editor::DecoderContext*> decoders;
+    render_detail::RenderPreparedFrameQueue preparedFrames;
     editor::AsyncDecoder asyncDecoder;
-    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
 };
 
 } // namespace
@@ -197,7 +197,7 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
                                                       static_cast<qreal>(timelineFrame),
                                                       previewRenderer.decoders,
                                                       &previewRenderer.asyncDecoder,
-                                                      &previewRenderer.asyncFrameCache,
+                                                      &previewRenderer.preparedFrames,
                                                       toQVector(timelineData.clips),
                                                       &previewFrame,
                                                       readbackToCpuImage,

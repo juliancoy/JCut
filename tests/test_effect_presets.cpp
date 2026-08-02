@@ -97,6 +97,7 @@ private slots:
     void temporalEffectsUseContiguousPlaybackTimeAcrossSegmentGaps();
     void temporalEffectsUsePlaybackTimeAcrossSpeechFilterGaps();
     void titleAnimationsUseContiguousPlaybackTimeAcrossSkips();
+    void normalTitleLifetimeAnimationBuildsClipSpanningKeyframes();
     void temporalEffectsStayOnRawClockDuringVisualSpeedThrough();
     void temporalMovingPresetOptionsStaySmoothAcrossMultipleSpeechBoundaries();
     void generatedDrawMvpKeepsVulkanYDownOrientation();
@@ -1167,6 +1168,8 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
     const QString processTree = readSource(QStringLiteral("qt_process_tree.cpp"));
     const QString shell = readSource(QStringLiteral("birefnet.sh"));
     const QString runner = readSource(QStringLiteral("birefnet_run.py"));
+    const QString pipeline = readSource(QStringLiteral("birefnet_pipeline.py"));
+    const QString requirements = readSource(QStringLiteral("birefnet/requirements.txt"));
     const QString samRunner = readSource(QStringLiteral("sam3_run.py"));
     const QString frameMapHelper = readSource(QStringLiteral("jcut_frame_index_map.py"));
     const QString maskTab = readSource(QStringLiteral("mask_tab.cpp"));
@@ -1197,6 +1200,27 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  runner.contains(QStringLiteral("--live-preview")) &&
                  runner.contains(QStringLiteral("live_preview_strip")),
              "BiRefNet runner must support bounded and live source/alpha/composite previews.");
+    QVERIFY2(runner.contains(QStringLiteral("nvc.ThreadedDecoder")) &&
+                 runner.contains(QStringLiteral("use_device_memory=True")) &&
+                 runner.contains(QStringLiteral("torch.from_dlpack")) &&
+                 runner.contains(QStringLiteral("CUDA_PUBLICATION_SLOTS = 2")) &&
+                 runner.contains(QStringLiteral("pin_memory=True")) &&
+                 runner.contains(QStringLiteral("transfer_stream")) &&
+                 runner.contains(QStringLiteral("pending_publications")) &&
+                 runner.contains(QStringLiteral("stage_average_ms")) &&
+                 pipeline.contains(QStringLiteral("class BoundedOrderedExecutor")) &&
+                 pipeline.contains(QStringLiteral("class OptionalLatestExecutor")) &&
+                 shell.contains(QStringLiteral("/workspace/birefnet_pipeline.py:ro")) &&
+                 requirements.contains(QStringLiteral("PyNvVideoCodec==2.2.0")),
+             "CUDA BiRefNet must use zero-copy decode, bounded ordered publication, "
+             "and a droppable optional preview path.");
+    QVERIFY2(editor.contains(QStringLiteral("Dropped optional previews")) &&
+                 editor.contains(QStringLiteral("Durable output queue")) &&
+                 editor.contains(QStringLiteral(
+                     "oldParameters.value(QStringLiteral(\"pipeline_version\"))")) &&
+                 editor.contains(QStringLiteral("QStringLiteral(\"running\")")),
+             "BiRefNet UI must expose stage diagnostics, reject mixed-pipeline resume, "
+             "and mark a started worker running.");
     QVERIFY2(editor.contains(QStringLiteral("presentedFrame.cpuImage()")) &&
                  editor.contains(QStringLiteral("--preview-image")) &&
                  shell.contains(QStringLiteral("/preview/input.png:ro")) &&
@@ -2599,6 +2623,77 @@ void TestEffectPresets::titleAnimationsUseContiguousPlaybackTimeAcrossSkips()
     const EvaluatedTitle unsynchronized =
         evaluateTitleAtTimelinePosition(clip, 20.0, timing);
     QCOMPARE(unsynchronized.x, 20.0);
+}
+
+void TestEffectPresets::normalTitleLifetimeAnimationBuildsClipSpanningKeyframes()
+{
+    TimelineClip::TitleKeyframe base;
+    base.frame = 17;
+    base.text = QStringLiteral("Normal Title");
+    base.translationX = 10.0;
+    base.translationY = -20.0;
+    base.fontSize = 50.0;
+    base.opacity = 0.8;
+    base.linearInterpolation = false;
+
+    TimelineClip clip = createDefaultTitleClip(10, 1, 121);
+    const QVector<TimelineClip::TitleKeyframe> drift =
+        makeTitleLifetimeAnimationKeyframes(
+            clip,
+            base,
+            TitleLifetimeAnimationPreset::DriftHorizontal,
+            200.0);
+    QCOMPARE(drift.size(), 2);
+    QCOMPARE(drift.front().frame, int64_t(0));
+    QCOMPARE(drift.back().frame, int64_t(120));
+    QCOMPARE(drift.front().translationX, -190.0);
+    QCOMPARE(drift.back().translationX, 210.0);
+    QVERIFY(drift.front().linearInterpolation);
+    QVERIFY(drift.back().linearInterpolation);
+
+    const QVector<TimelineClip::TitleKeyframe> pulse =
+        makeTitleLifetimeAnimationKeyframes(
+            clip,
+            base,
+            TitleLifetimeAnimationPreset::Pulse,
+            50.0);
+    QCOMPARE(pulse.size(), 3);
+    QCOMPARE(pulse.at(0).frame, int64_t(0));
+    QCOMPARE(pulse.at(1).frame, int64_t(60));
+    QCOMPARE(pulse.at(2).frame, int64_t(120));
+    QCOMPARE(pulse.at(0).opacity, 0.8);
+    QCOMPARE(pulse.at(1).opacity, 0.8);
+    QCOMPARE(pulse.at(2).opacity, 0.8);
+    QVERIFY(pulse.at(1).fontSize > base.fontSize);
+    QVERIFY(pulse.at(0).fontSize < base.fontSize);
+
+    const QVector<TimelineClip::TitleKeyframe> orbit =
+        makeTitleLifetimeAnimationKeyframes(
+            clip,
+            base,
+            TitleLifetimeAnimationPreset::Orbit3D,
+            180.0);
+    QCOMPARE(orbit.size(), 4);
+    QCOMPARE(orbit.front().frame, int64_t(0));
+    QCOMPARE(orbit.back().frame, int64_t(120));
+    for (const TimelineClip::TitleKeyframe& keyframe : orbit) {
+        QVERIFY(keyframe.vulkan3DEnabled);
+        QVERIFY(keyframe.linearInterpolation);
+        QVERIFY(std::abs(keyframe.vulkan3DYawDegrees) <= 180.0);
+    }
+    QVERIFY(orbit.front().vulkan3DYawDegrees < 0.0);
+    QCOMPARE(orbit.back().vulkan3DYawDegrees, orbit.front().vulkan3DYawDegrees);
+
+    const QVector<TimelineClip::TitleKeyframe> cleared =
+        makeTitleLifetimeAnimationKeyframes(
+            clip,
+            base,
+            TitleLifetimeAnimationPreset::None,
+            200.0);
+    QCOMPARE(cleared.size(), 1);
+    QCOMPARE(cleared.front().frame, int64_t(0));
+    QCOMPARE(cleared.front().translationX, base.translationX);
+    QCOMPARE(cleared.front().translationY, base.translationY);
 }
 
 void TestEffectPresets::temporalEffectsStayOnRawClockDuringVisualSpeedThrough()

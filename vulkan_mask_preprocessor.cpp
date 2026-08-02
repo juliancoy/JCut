@@ -14,6 +14,10 @@ struct MaskPreparePush {
     int inputSize[2];
     int invert = 0;
     int applyCorrections = 0;
+    int temporalEnabled = 0;
+    float temporalStrength = 0.0f;
+    int temporalMotionRadius = 0;
+    int reserved = 0;
 };
 
 struct MaskMorphBlurPush {
@@ -48,6 +52,14 @@ QString vulkanMaskTextureCacheKey(
     treatment.append(QByteArray::number(options.dilateRadius));
     treatment.append("|blur=");
     treatment.append(QByteArray::number(options.blurRadius));
+    treatment.append("|temporal=");
+    treatment.append(options.temporalStabilizeEnabled ? "1" : "0");
+    treatment.append("|temporal_strength=");
+    treatment.append(QByteArray::number(
+        options.temporalStabilizeStrength, 'g', 8));
+    treatment.append("|temporal_motion=");
+    treatment.append(QByteArray::number(
+        options.temporalStabilizeMotionRadius));
     treatment.append("|corrections=");
     treatment.append(options.correctionStorage);
     const QByteArray treatmentHash =
@@ -58,6 +70,51 @@ QString vulkanMaskTextureCacheKey(
         .arg(outputSize.width())
         .arg(outputSize.height())
         .arg(QString::fromLatin1(treatmentHash));
+}
+
+QByteArray packVulkanTemporalMaskChannels(
+    const jcut::core::ImageBuffer& current,
+    const jcut::core::ImageBuffer* previous,
+    const jcut::core::ImageBuffer* next)
+{
+    if (current.empty() ||
+        current.format != jcut::core::PixelFormat::Gray8 ||
+        current.strideBytes < current.size.width) {
+        return {};
+    }
+    const auto compatible = [&current](
+        const jcut::core::ImageBuffer* candidate) {
+        return candidate && !candidate->empty() &&
+               candidate->format == jcut::core::PixelFormat::Gray8 &&
+               candidate->size.width == current.size.width &&
+               candidate->size.height == current.size.height &&
+               candidate->strideBytes >= candidate->size.width;
+    };
+    const jcut::core::ImageBuffer& previousImage =
+        compatible(previous) ? *previous : current;
+    const jcut::core::ImageBuffer& nextImage =
+        compatible(next) ? *next : current;
+    const qsizetype pixelCount =
+        static_cast<qsizetype>(current.size.width) * current.size.height;
+    QByteArray packed(pixelCount * 4, Qt::Uninitialized);
+    auto* destination = reinterpret_cast<std::uint8_t*>(packed.data());
+    for (int y = 0; y < current.size.height; ++y) {
+        const auto* previousRow = previousImage.bytes.data() +
+            static_cast<std::size_t>(y) * previousImage.strideBytes;
+        const auto* currentRow = current.bytes.data() +
+            static_cast<std::size_t>(y) * current.strideBytes;
+        const auto* nextRow = nextImage.bytes.data() +
+            static_cast<std::size_t>(y) * nextImage.strideBytes;
+        for (int x = 0; x < current.size.width; ++x) {
+            const qsizetype offset =
+                (static_cast<qsizetype>(y) * current.size.width + x) * 4;
+            destination[offset + 0] = previousRow[x];
+            destination[offset + 1] = currentRow[x];
+            destination[offset + 2] = nextRow[x];
+            destination[offset + 3] = 255;
+        }
+    }
+    return packed;
 }
 
 VulkanMaskPreprocessor::~VulkanMaskPreprocessor()
@@ -338,6 +395,11 @@ bool VulkanMaskPreprocessor::record(
     prepare.inputSize[1] = images.inputSize.height();
     prepare.invert = options.invert ? 1 : 0;
     prepare.applyCorrections = 1;
+    prepare.temporalEnabled = options.temporalStabilizeEnabled ? 1 : 0;
+    prepare.temporalStrength = std::clamp(
+        options.temporalStabilizeStrength, 0.0f, 1.0f);
+    prepare.temporalMotionRadius = std::clamp(
+        options.temporalStabilizeMotionRadius, 0, 32);
     if (!recordPass(
             commandBuffer,
             PipelineKind::Prepare,

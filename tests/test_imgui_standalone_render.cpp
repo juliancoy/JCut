@@ -2357,10 +2357,16 @@ void TestImGuiStandaloneRender::testTimelineViewportGeometry()
             4.0f),
         frame);
 
+    QCOMPARE(rulerStepFrames(24.0f, 30), std::int64_t{1});
+    QCOMPARE(rulerStepFrames(10.0f, 30), std::int64_t{1});
+    QCOMPARE(rulerStepFrames(4.0f, 30), std::int64_t{3});
     QCOMPARE(rulerStepFrames(0.35f, 30), std::int64_t{30});
     QCOMPARE(
         rulerStepFrames(0.35f, 30, 100.0f),
         std::int64_t{300});
+    QCOMPARE(
+        rulerStepFrames(24.0f, 30, 100.0f),
+        std::int64_t{5});
     QCOMPARE(rulerStepFrames(0.001f, 30), std::int64_t{15000});
     QCOMPARE(
         QString::fromStdString(timecode(109815, 30)),

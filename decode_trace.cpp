@@ -2,12 +2,10 @@
 
 #include "debug_controls.h"
 
-#include <QCoreApplication>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
-#include <QMetaObject>
 
 #include <limits>
 #include <mutex>
@@ -84,28 +82,6 @@ void decodeTrace(const QString& stage, const QString& detail) {
                               .arg(now, 6)
                               .arg(stage)
                               .arg(detail.isEmpty() ? QString() : QStringLiteral(" | ") + detail);
-}
-
-void invokeRequestCallback(std::function<void(FrameHandle)> callback,
-                           FrameHandle frame,
-                           QObject* target) {
-    if (!callback) {
-        return;
-    }
-
-    QObject* deliveryTarget = target ? target : QCoreApplication::instance();
-    if (!deliveryTarget) {
-        callback(frame);
-        return;
-    }
-
-    QMetaObject::invokeMethod(deliveryTarget,
-                              [callback = std::move(callback), frame]() mutable {
-                                  if (callback) {
-                                      callback(frame);
-                                  }
-                              },
-                              Qt::QueuedConnection);
 }
 
 } // namespace editor

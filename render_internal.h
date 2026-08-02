@@ -12,7 +12,6 @@
 
 #include <QDir>
 #include <QDateTime>
-#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
@@ -20,7 +19,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QElapsedTimer>
-#include <QTimer>
+#include <QMutex>
+#include <QQueue>
+#include <QWaitCondition>
 
 #include <algorithm>
 #include <memory>
@@ -91,6 +92,23 @@ struct RenderAsyncFrameKey {
 };
 
 size_t qHash(const RenderAsyncFrameKey& key, size_t seed = 0);
+
+class RenderPreparedFrameQueue {
+public:
+    static constexpr int kCapacity = 128;
+
+    void clear();
+    bool contains(const RenderAsyncFrameKey& key) const;
+    editor::FrameHandle find(const RenderAsyncFrameKey& key) const;
+    void insert(const editor::FrameHandle& frame);
+    int size() const;
+
+private:
+    mutable QMutex m_mutex;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle> m_frames;
+    QQueue<RenderAsyncFrameKey> m_insertionOrder;
+};
+
 bool isHardwareEncoderLabel(const QString& codecLabel);
 void recordRenderSkip(QJsonArray* skippedClips,
                       QJsonObject* skippedReasonCounts,
@@ -115,7 +133,7 @@ void enqueueRenderDecodeLookahead(const RenderRequest& request,
                                   int64_t timelineFrame,
                                   const QVector<TimelineClip>& orderedClips,
                                   editor::AsyncDecoder* asyncDecoder,
-                                  const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
+                                  RenderPreparedFrameQueue& preparedFrames);
 void enqueueRenderMaskLookahead(const RenderRequest& request,
                                 int64_t timelineFrame,
                                 const QVector<TimelineClip>& orderedClips);
@@ -124,7 +142,7 @@ void prewarmRenderDecodeSegment(const RenderRequest& request,
                                 int64_t segmentEndFrame,
                                 const QVector<TimelineClip>& orderedClips,
                                 editor::AsyncDecoder* asyncDecoder,
-                                const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache);
+                                RenderPreparedFrameQueue& preparedFrames);
 void prewarmRenderMaskSegment(const RenderRequest& request,
                               int64_t segmentStartFrame,
                               int64_t segmentEndFrame,
@@ -133,7 +151,7 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       int64_t frameNumber,
                                       QHash<QString, editor::DecoderContext*>& decoders,
                                       editor::AsyncDecoder* asyncDecoder,
-                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                                      RenderPreparedFrameQueue* preparedFrames,
                                       bool forceSoftwareDecode = false,
                                       bool preferHardwareFrames = false);
 QString avErrToString(int errnum);
@@ -242,7 +260,7 @@ struct OffscreenRenderContext {
     qreal timelineFrame = 0.0;
     QHash<QString, editor::DecoderContext*>& decoders;
     editor::AsyncDecoder* asyncDecoder = nullptr;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache = nullptr;
+    RenderPreparedFrameQueue* preparedFrames = nullptr;
     const QVector<TimelineClip>& orderedClips;
     QHash<QString, RenderClipStageStats>* clipStageStats = nullptr;
     qint64* decodeMs = nullptr;
@@ -292,7 +310,7 @@ public:
                        qreal timelineFrame,
                        QHash<QString, editor::DecoderContext*>& decoders,
                        editor::AsyncDecoder* asyncDecoder,
-                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                       RenderPreparedFrameQueue* preparedFrames,
                        const QVector<TimelineClip>& orderedClips,
                        QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
                        qint64* decodeMs = nullptr,
@@ -306,7 +324,7 @@ public:
                                                   timelineFrame,
                                                   decoders,
                                                   asyncDecoder,
-                                                  asyncFrameCache,
+                                                  preparedFrames,
                                                   orderedClips,
                                                   clipStageStats,
                                                   decodeMs,
@@ -324,7 +342,7 @@ public:
                              qreal timelineFrame,
                              QHash<QString, editor::DecoderContext*>& decoders,
                              editor::AsyncDecoder* asyncDecoder,
-                             QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                             RenderPreparedFrameQueue* preparedFrames,
                              const QVector<TimelineClip>& orderedClips,
                              OffscreenRenderFrame* output,
                              bool readbackToCpuImage = false,
@@ -351,7 +369,7 @@ public:
                                                           timelineFrame,
                                                           decoders,
                                                           asyncDecoder,
-                                                          asyncFrameCache,
+                                                          preparedFrames,
                                                           orderedClips,
                                                           clipStageStats,
                                                           decodeMs,

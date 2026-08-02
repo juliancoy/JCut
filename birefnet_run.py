@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,9 +24,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as torch_functional
 from PIL import Image
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation
+from birefnet_pipeline import (
+    BoundedOrderedExecutor,
+    OptionalLatestExecutor,
+    OrderedResult,
+)
 from jcut_frame_index_map import (
     source_identity,
     source_identities_match,
@@ -41,6 +48,8 @@ CUDA_OOM_EXIT_CODE = 42
 HOST_OOM_EXIT_CODE = 43
 ERROR_ARTIFACT_NAME = "jcut_error.json"
 ERROR_STDERR_PREFIX = "JCUT_BIREFNET_ERROR_JSON="
+CUDA_DECODE_BUFFER_FRAMES = 4
+CUDA_PUBLICATION_SLOTS = 2
 
 
 @dataclass
@@ -53,6 +62,19 @@ class RunState:
     started_monotonic: float = 0.0
     render_started_monotonic: float | None = None
     device: str = "unresolved"
+    decoder_backend: str = "unresolved"
+    pipeline_slots: int = 1
+    decoded_frames: int = 0
+    decode_wait_seconds: float = 0.0
+    preprocess_gpu_seconds: float = 0.0
+    inference_gpu_seconds: float = 0.0
+    postprocess_gpu_seconds: float = 0.0
+    transfer_gpu_seconds: float = 0.0
+    publish_seconds: float = 0.0
+    preview_seconds: float = 0.0
+    preview_published: int = 0
+    preview_dropped: int = 0
+    pending_publications: int = 0
 
 
 def atomic_write_json(path: Path, payload: dict) -> None:
@@ -92,6 +114,7 @@ def write_progress(
         else 0.0
     )
     remaining = max(0, state.total_frames - state.completed_frame)
+    stage_count = max(1, state.rendered_frames)
     payload = {
         "schema": "jcut_processing_progress_v1",
         "status": status,
@@ -108,6 +131,30 @@ def write_progress(
         "render_elapsed_seconds": render_elapsed,
         "render_fps": render_fps,
         "eta_seconds": remaining / render_fps if render_fps > 0.0 else None,
+        "pipeline": {
+            "decoder": state.decoder_backend,
+            "mode": (
+                "cuda_zero_copy_bounded"
+                if state.decoder_backend == "nvdec_threaded_dlpack"
+                else "sequential"
+            ),
+            "publication_slots": state.pipeline_slots,
+            "pending_publications": state.pending_publications,
+            "preview_slots": 1 if args.live_preview else 0,
+            "preview_published": state.preview_published,
+            "preview_dropped": state.preview_dropped,
+            "stage_average_ms": {
+                "decode_wait": 1000.0 * state.decode_wait_seconds /
+                    max(1, state.decoded_frames),
+                "gpu_preprocess": 1000.0 * state.preprocess_gpu_seconds / stage_count,
+                "gpu_inference": 1000.0 * state.inference_gpu_seconds / stage_count,
+                "gpu_postprocess": 1000.0 * state.postprocess_gpu_seconds / stage_count,
+                "gpu_to_host": 1000.0 * state.transfer_gpu_seconds / stage_count,
+                "png_publish": 1000.0 * state.publish_seconds / stage_count,
+                "optional_preview": 1000.0 * state.preview_seconds /
+                    max(1, state.preview_published),
+            },
+        },
         "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if error:
@@ -322,6 +369,368 @@ def guided_alpha(
     return alpha * binary.astype(np.float32)
 
 
+@dataclass
+class CudaPublication:
+    frame_index: int
+    rendered_ordinal: int
+    output_path: Path
+    alpha_cpu: torch.Tensor
+    preview_rgb_cpu: torch.Tensor | None
+    guidance: np.ndarray | None
+    ready_event: torch.cuda.Event
+    preprocess_start: torch.cuda.Event
+    preprocess_end: torch.cuda.Event
+    inference_start: torch.cuda.Event
+    inference_end: torch.cuda.Event
+    postprocess_end: torch.cuda.Event
+    transfer_start: torch.cuda.Event
+    transfer_end: torch.cuda.Event
+
+
+@dataclass
+class PublishedCudaFrame:
+    frame_index: int
+    rendered_ordinal: int
+    preview_rgb: np.ndarray | None
+    alpha: np.ndarray
+    guidance: np.ndarray | None
+    preprocess_seconds: float
+    inference_seconds: float
+    postprocess_seconds: float
+    transfer_seconds: float
+    publish_seconds: float
+
+
+def read_guidance_gate(
+    guidance_path: Path, output_shape: tuple[int, int], gate_radius: int
+) -> tuple[np.ndarray, np.ndarray]:
+    guidance = read_guidance_alpha(guidance_path, output_shape)
+    if guidance is None:
+        raise RuntimeError(f"SAM guidance frame is missing: {guidance_path}")
+    gate = (guidance >= 128).astype(np.uint8)
+    if gate_radius > 0:
+        size = gate_radius * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        gate = cv2.dilate(gate, kernel)
+    return guidance, gate
+
+
+def publish_cuda_frame(publication: CudaPublication) -> PublishedCudaFrame:
+    publication.ready_event.synchronize()
+    alpha = publication.alpha_cpu.numpy()
+    started = time.monotonic()
+    atomic_save_grayscale(publication.output_path, alpha)
+    publish_seconds = time.monotonic() - started
+    preview_rgb = (
+        publication.preview_rgb_cpu.numpy()
+        if publication.preview_rgb_cpu is not None else None
+    )
+    return PublishedCudaFrame(
+        frame_index=publication.frame_index,
+        rendered_ordinal=publication.rendered_ordinal,
+        preview_rgb=preview_rgb,
+        alpha=alpha,
+        guidance=publication.guidance,
+        preprocess_seconds=(
+            publication.preprocess_start.elapsed_time(publication.preprocess_end)
+            / 1000.0
+        ),
+        inference_seconds=(
+            publication.inference_start.elapsed_time(publication.inference_end)
+            / 1000.0
+        ),
+        postprocess_seconds=(
+            publication.inference_end.elapsed_time(publication.postprocess_end)
+            / 1000.0
+        ),
+        transfer_seconds=(
+            publication.transfer_start.elapsed_time(publication.transfer_end)
+            / 1000.0
+        ),
+        publish_seconds=publish_seconds,
+    )
+
+
+def publish_live_preview(
+    path: Path,
+    rgb: np.ndarray,
+    alpha: np.ndarray,
+    guidance: np.ndarray | None,
+) -> float:
+    started = time.monotonic()
+    atomic_save_rgb(path, live_preview_strip(rgb, alpha, guidance))
+    return time.monotonic() - started
+
+
+def run_cuda_pipeline(
+    args: argparse.Namespace,
+    state: RunState,
+    input_path: Path,
+    output_dir: Path,
+    guidance_dir: Path | None,
+    model: torch.nn.Module,
+    dtype: torch.dtype,
+    total: int,
+) -> tuple[int, int, bool]:
+    import PyNvVideoCodec as nvc
+
+    device = torch.device(state.device)
+    gpu_id = device.index or 0
+    state.decoder_backend = "nvdec_threaded_dlpack"
+    state.pipeline_slots = CUDA_PUBLICATION_SLOTS
+    decoder = nvc.ThreadedDecoder(
+        enc_file_path=str(input_path),
+        buffer_size=CUDA_DECODE_BUFFER_FRAMES,
+        gpu_id=gpu_id,
+        use_device_memory=True,
+        output_color_type=nvc.OutputColorType.RGBP,
+        start_frame=0,
+    )
+    publisher = BoundedOrderedExecutor[PublishedCudaFrame](
+        CUDA_PUBLICATION_SLOTS, "birefnet-publish"
+    )
+    preview_worker = OptionalLatestExecutor[float]("birefnet-preview")
+    guidance_worker = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="birefnet-guidance"
+    )
+    transfer_stream = torch.cuda.Stream(device=device)
+    mean = torch.tensor(
+        [0.485, 0.456, 0.406], device=device, dtype=dtype
+    ).view(1, 3, 1, 1)
+    std = torch.tensor(
+        [0.229, 0.224, 0.225], device=device, dtype=dtype
+    ).view(1, 3, 1, 1)
+    frame_index = 1
+    submitted = 0
+    decoded_any = False
+    preview_reserved = False
+
+    def collect_preview_times(values: list[float]) -> None:
+        for duration in values:
+            state.preview_seconds += duration
+            state.preview_published += 1
+
+    def consume_published(
+        completed: list[OrderedResult[PublishedCudaFrame]],
+    ) -> None:
+        nonlocal preview_reserved
+        for ordered in completed:
+            published = ordered.value
+            if ordered.sequence != published.frame_index:
+                raise RuntimeError("BiRefNet publication order was corrupted")
+            state.preprocess_gpu_seconds += published.preprocess_seconds
+            state.inference_gpu_seconds += published.inference_seconds
+            state.postprocess_gpu_seconds += published.postprocess_seconds
+            state.transfer_gpu_seconds += published.transfer_seconds
+            state.publish_seconds += published.publish_seconds
+            state.rendered_frames = published.rendered_ordinal
+            state.completed_frame = published.frame_index
+            state.frame_index = published.frame_index
+            if published.preview_rgb is not None:
+                preview_reserved = False
+                collect_preview_times(preview_worker.submit(
+                    publish_live_preview,
+                    output_dir / "jcut_live_preview.png",
+                    published.preview_rgb,
+                    published.alpha,
+                    published.guidance,
+                ))
+            collect_preview_times(preview_worker.collect_ready())
+            state.preview_dropped = preview_worker.dropped
+            state.pending_publications = publisher.pending_count
+            if (
+                published.rendered_ordinal == 1
+                or published.rendered_ordinal % args.progress_every == 0
+            ):
+                suffix = f"/{total}" if total > 0 else ""
+                print(
+                    f"[birefnet] frame {published.frame_index}{suffix}",
+                    flush=True,
+                )
+                state.phase = "frame_complete"
+                try_write_progress(args, state, "running")
+
+    try:
+        while True:
+            consume_published(publisher.collect_ready())
+            collect_preview_times(preview_worker.collect_ready())
+            state.preview_dropped = preview_worker.dropped
+            decode_started = time.monotonic()
+            decoded_frames = decoder.get_batch_frames(1)
+            state.decode_wait_seconds += time.monotonic() - decode_started
+            if not decoded_frames:
+                break
+            decoded_any = True
+            state.decoded_frames += 1
+            decoded_frame = decoded_frames[0]
+            output_path = output_dir / f"frame_{frame_index:06d}.png"
+            if args.resume and image_file_looks_complete(output_path):
+                consume_published(publisher.drain())
+                state.phase = "resume_scan"
+                state.frame_index = frame_index
+                state.completed_frame = frame_index
+                if frame_index == 1 or frame_index % args.progress_every == 0:
+                    try_write_progress(args, state, "running")
+                frame_index += 1
+                continue
+
+            state.phase = "frame_preprocess"
+            state.frame_index = frame_index
+            if state.render_started_monotonic is None:
+                state.render_started_monotonic = time.monotonic()
+
+            decoded_source = torch.from_dlpack(decoded_frame)
+            if decoded_source.ndim != 3 or decoded_source.shape[0] != 3:
+                raise RuntimeError(
+                    "NVDEC RGBP output did not have the expected CHW layout: "
+                    f"{tuple(decoded_source.shape)}"
+                )
+            # Retain the decoder-owned DLPack tensor until every source read is
+            # enqueued, so its decode surface cannot be recycled under CUDA.
+            source = decoded_source.clone()
+            del decoded_frame, decoded_frames
+            height, width = int(source.shape[1]), int(source.shape[2])
+            guidance_future = (
+                guidance_worker.submit(
+                    read_guidance_gate,
+                    guidance_dir / f"frame_{frame_index:06d}.png",
+                    (height, width),
+                    args.guidance_gate_radius,
+                )
+                if guidance_dir else None
+            )
+
+            preprocess_start = torch.cuda.Event(enable_timing=True)
+            preprocess_end = torch.cuda.Event(enable_timing=True)
+            inference_start = torch.cuda.Event(enable_timing=True)
+            inference_end = torch.cuda.Event(enable_timing=True)
+            postprocess_end = torch.cuda.Event(enable_timing=True)
+            preprocess_start.record()
+            source_rgb = source.unsqueeze(0).to(dtype=dtype).div_(255.0)
+            resized_rgb = torch_functional.interpolate(
+                source_rgb,
+                size=IMAGE_SIZE,
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )
+            tensor = ((resized_rgb - mean) / std).contiguous(
+                memory_format=torch.channels_last
+            )
+            preprocess_end.record()
+            inference_start.record()
+            state.phase = "model_inference"
+            with torch.inference_mode():
+                prediction = model(tensor)[-1].sigmoid()[:, :1]
+            inference_end.record()
+
+            state.phase = "frame_postprocess"
+            alpha = torch_functional.interpolate(
+                prediction.float(),
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+            guidance = None
+            if guidance_future is not None:
+                guidance, gate = guidance_future.result()
+                gate_cpu = torch.from_numpy(gate).pin_memory()
+                gate_gpu = gate_cpu.to(
+                    device=device, dtype=alpha.dtype, non_blocking=True
+                )
+                alpha = alpha * gate_gpu
+            if args.alpha_tolerance > 0.0:
+                alpha = torch.clamp(
+                    (alpha - args.alpha_tolerance) /
+                    (1.0 - args.alpha_tolerance),
+                    0.0,
+                    1.0,
+                )
+            alpha_u8 = torch.clamp(torch.round(alpha * 255.0), 0, 255).to(
+                dtype=torch.uint8
+            )
+            postprocess_end.record()
+
+            submitted += 1
+            preview_due = args.live_preview and (
+                submitted == 1 or submitted % args.live_preview_every == 0
+            )
+            want_preview = (
+                preview_due and not preview_reserved and not preview_worker.busy
+            )
+            if preview_due and not want_preview:
+                preview_worker.dropped += 1
+            preview_gpu = None
+            if want_preview:
+                preview_height = min(320, height)
+                preview_width = max(1, round(width * preview_height / height))
+                preview_gpu = torch_functional.interpolate(
+                    source_rgb,
+                    size=(preview_height, preview_width),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True,
+                )[0].permute(1, 2, 0).mul(255.0).round().to(torch.uint8)
+                preview_reserved = True
+
+            alpha_cpu = torch.empty(
+                alpha_u8.shape, dtype=torch.uint8, device="cpu", pin_memory=True
+            )
+            preview_cpu = (
+                torch.empty(
+                    preview_gpu.shape,
+                    dtype=torch.uint8,
+                    device="cpu",
+                    pin_memory=True,
+                )
+                if preview_gpu is not None else None
+            )
+            transfer_start = torch.cuda.Event(enable_timing=True)
+            transfer_end = torch.cuda.Event(enable_timing=True)
+            ready_event = torch.cuda.Event()
+            transfer_stream.wait_stream(torch.cuda.current_stream(device))
+            with torch.cuda.stream(transfer_stream):
+                transfer_start.record(transfer_stream)
+                alpha_cpu.copy_(alpha_u8, non_blocking=True)
+                if preview_cpu is not None and preview_gpu is not None:
+                    preview_cpu.copy_(preview_gpu, non_blocking=True)
+                transfer_end.record(transfer_stream)
+                ready_event.record(transfer_stream)
+            del decoded_source
+
+            publication = CudaPublication(
+                frame_index=frame_index,
+                rendered_ordinal=submitted,
+                output_path=output_path,
+                alpha_cpu=alpha_cpu,
+                preview_rgb_cpu=preview_cpu,
+                guidance=guidance,
+                ready_event=ready_event,
+                preprocess_start=preprocess_start,
+                preprocess_end=preprocess_end,
+                inference_start=inference_start,
+                inference_end=inference_end,
+                postprocess_end=postprocess_end,
+                transfer_start=transfer_start,
+                transfer_end=transfer_end,
+            )
+            consume_published(publisher.submit(
+                frame_index, publish_cuda_frame, publication
+            ))
+            state.pending_publications = publisher.pending_count
+            frame_index += 1
+
+        consume_published(publisher.drain())
+        collect_preview_times(preview_worker.drain())
+        state.preview_dropped = preview_worker.dropped
+        state.pending_publications = 0
+    finally:
+        guidance_worker.shutdown(wait=True, cancel_futures=False)
+        publisher.shutdown()
+        preview_worker.shutdown()
+    return submitted, frame_index, decoded_any
+
+
 def alpha_contribution_preview(
     sam_alpha_u8: np.ndarray, refined_alpha_u8: np.ndarray
 ) -> np.ndarray:
@@ -370,6 +779,10 @@ def write_metadata(
         "alpha_tolerance": args.alpha_tolerance,
         "device": str(device),
         "fp16": bool(args.fp16 and device.type == "cuda"),
+        "decoder_backend": (
+            "nvdec_threaded_dlpack" if device.type == "cuda" else "opencv_cpu"
+        ),
+        "pipeline_version": "jcut_birefnet_bounded_v1",
     }
     atomic_write_json(output_dir / "jcut_alpha.json", metadata)
 
@@ -511,6 +924,11 @@ def run(args: argparse.Namespace, state: RunState) -> None:
                 "alpha_tolerance": args.alpha_tolerance,
                 "guidance_gate_radius": args.guidance_gate_radius,
                 "guidance_identity": initial_guidance_identity,
+                "decoder_backend": (
+                    "nvdec_threaded_dlpack"
+                    if device.type == "cuda" else "opencv_cpu"
+                ),
+                "pipeline_version": "jcut_birefnet_bounded_v1",
             },
             args.resume,
         )
@@ -531,7 +949,72 @@ def run(args: argparse.Namespace, state: RunState) -> None:
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
+    if device.type == "cuda" and preview_bgr is None and args.frame_index is None:
+        total = expected_frame_count
+        state.total_frames = total
+        if args.resume:
+            first_missing = first_missing_frame(output_dir, total)
+            state.completed_frame = first_missing - 1
+            print(
+                "[birefnet] resume: verified contiguous frames "
+                f"1-{first_missing - 1}; NVDEC starts at frame 1 and renders "
+                f"from frame {first_missing}",
+                flush=True,
+            )
+        try_write_progress(args, state, "running")
+        processed, frame_index, decoded_any = run_cuda_pipeline(
+            args,
+            state,
+            input_path,
+            output_dir,
+            guidance_dir,
+            model,
+            dtype,
+            total,
+        )
+        if not decoded_any:
+            raise RuntimeError(f"No video frames could be decoded from: {input_path}")
+        decoded_frame_count = frame_index - 1
+        if decoded_frame_count != expected_frame_count:
+            raise RuntimeError(
+                "NVDEC ended before the validated frame-map boundary: "
+                f"decoded {decoded_frame_count}, expected {expected_frame_count}."
+            )
+        verify_contiguous_alpha_frames(output_dir, expected_frame_count)
+        revalidated = validated_frame_index_map_metadata(
+            input_path, output_dir / "jcut_frame_map.tsv"
+        )
+        if (
+            revalidated is None
+            or revalidated.get("map_sha256") != frame_map_metadata.get("map_sha256")
+            or not identities_match(initial_source_identity, source_identity(input_path))
+            or guidance_identity(guidance_dir) != initial_guidance_identity
+        ):
+            raise RuntimeError(
+                "Source media, frame map, or guidance changed while alpha masks were generated."
+            )
+        state.phase = "metadata_write"
+        write_metadata(
+            output_dir,
+            args,
+            device,
+            revalidated,
+            expected_frame_count,
+        )
+        state.phase = "complete"
+        state.frame_index = state.completed_frame
+        try_write_progress(args, state, "completed")
+        print(
+            f"[birefnet] complete: {frame_index - 1} frames "
+            f"({processed} rendered)",
+            flush=True,
+        )
+        return
+
     capture = None
+    state.decoder_backend = (
+        "jcut_exact_preview_image" if preview_bgr is not None else "opencv_cpu"
+    )
     if preview_bgr is None:
         capture = cv2.VideoCapture(str(input_path))
         if not capture.isOpened():

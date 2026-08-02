@@ -222,6 +222,11 @@ BiRefNetJobPlanCore buildBiRefNetJobPlanCore(
             {"guidance_gate_radius", guidanceGateRadius},
             {"restart", request.restart},
             {"docker_root_mode", request.runDockerAsRoot},
+            {"decoder_backend", request.device == "cpu"
+                ? "opencv_cpu" : "nvdec_threaded_dlpack"},
+            {"pipeline_version", "jcut_birefnet_bounded_v1"},
+            {"publication_slots", request.device == "cpu" ? 1 : 2},
+            {"preview_slots", 1},
             {"live_preview", true},
             {"create_mask_marker", true}}},
         {"artifacts", {

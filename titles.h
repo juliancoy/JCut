@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QRect>
 #include <QString>
+#include <QVector>
 
 using TitleMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle;
 using TextExtrudeMode = TimelineClip::TitleKeyframe::TextExtrudeMode;
@@ -91,3 +92,18 @@ TimelineClip createDefaultTitleClip(int64_t startFrame, int trackIndex,
 render_detail::OverlayImage renderTitleOverlay(const QSize& imageSize,
                                                const EvaluatedTitle& title,
                                                const QSize& outputSize);
+
+enum class TitleLifetimeAnimationPreset {
+    None = 0,
+    DriftHorizontal,
+    DriftVertical,
+    Pulse,
+    Rotate3D,
+    Orbit3D,
+};
+
+QVector<TimelineClip::TitleKeyframe> makeTitleLifetimeAnimationKeyframes(
+    const TimelineClip& clip,
+    const TimelineClip::TitleKeyframe& base,
+    TitleLifetimeAnimationPreset preset,
+    qreal amount);

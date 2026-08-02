@@ -57,6 +57,9 @@ struct MaskWidgets {
     QSpinBox zLevel;
     QDoubleSpinBox feather;
     QDoubleSpinBox dilate;
+    QCheckBox temporalStabilize;
+    QDoubleSpinBox temporalStrength;
+    QSpinBox temporalMotionRadius;
     QCheckBox foreground;
     QCheckBox repeat;
     QDoubleSpinBox repeatX;
@@ -68,6 +71,10 @@ struct MaskWidgets {
         repeatY.setRange(-1000.0, 1000.0);
         refineRadius.setRange(0, 512);
         refineRadius.setValue(24);
+        temporalStrength.setRange(0.0, 1.0);
+        temporalStrength.setValue(0.75);
+        temporalMotionRadius.setRange(0, 32);
+        temporalMotionRadius.setValue(4);
     }
 
     MaskTab::Widgets dependencies()
@@ -84,6 +91,9 @@ struct MaskWidgets {
         widgets.zLevelSpin = &zLevel;
         widgets.featherSpin = &feather;
         widgets.dilateSpin = &dilate;
+        widgets.temporalStabilizeCheck = &temporalStabilize;
+        widgets.temporalStabilizeStrengthSpin = &temporalStrength;
+        widgets.temporalStabilizeMotionRadiusSpin = &temporalMotionRadius;
         widgets.foregroundLayerCheck = &foreground;
         widgets.repeatEnabledCheck = &repeat;
         widgets.repeatDeltaXSpin = &repeatX;
@@ -305,6 +315,9 @@ void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
     selected.generatedFromMaskId = editor::masks::stableMaskSidecarId(
         selected.maskFramesDir);
     selected.maskFeather = 2.0;
+    selected.maskTemporalStabilizeEnabled = true;
+    selected.maskTemporalStabilizeStrength = 0.75;
+    selected.maskTemporalStabilizeMotionRadius = 4;
     selected.maskRepeatDeltaX = 160.0;
     selected.maskRepeatDeltaY = 0.0;
     MaskWidgets controls;
@@ -327,12 +340,17 @@ void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
 
     QCOMPARE(controls.feather.value(), 2.0);
     QCOMPARE(controls.repeatX.value(), 160.0);
+    QVERIFY(controls.temporalStabilize.isChecked());
+    QVERIFY(controls.temporalStrength.isEnabled());
+    QVERIFY(controls.temporalMotionRadius.isEnabled());
 
     controls.feather.setValue(12.5);
     controls.foreground.setChecked(true);
     controls.repeat.setChecked(true);
     controls.repeatX.setValue(42.0);
     controls.repeatY.setValue(-12.0);
+    controls.temporalStrength.setValue(0.55);
+    controls.temporalMotionRadius.setValue(7);
     QTest::qWait(100);
 
     QCOMPARE(selected.maskFeather, 12.5);
@@ -340,6 +358,9 @@ void TestMaskTab::treatmentEditsApplyOnlyToSelectedMaskChild()
     QVERIFY(selected.maskRepeatEnabled);
     QCOMPARE(selected.maskRepeatDeltaX, 42.0);
     QCOMPARE(selected.maskRepeatDeltaY, -12.0);
+    QVERIFY(selected.maskTemporalStabilizeEnabled);
+    QCOMPARE(selected.maskTemporalStabilizeStrength, 0.55);
+    QCOMPARE(selected.maskTemporalStabilizeMotionRadius, 7);
 
     QCOMPARE(source.maskFeather, 91.0);
     QVERIFY(!source.maskForegroundLayerEnabled);

@@ -3108,6 +3108,15 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QVERIFY(runtime.execute(jcut::EditorCommand{
         jcut::UpsertEffectEnabledKeyframeCommand{
             1, {48, false}}}).applied);
+    jcut::SetClipMaskCommand temporalMaskCommand;
+    temporalMaskCommand.clipId = 1;
+    temporalMaskCommand.maskEnabled = true;
+    temporalMaskCommand.temporalStabilizeEnabled = true;
+    temporalMaskCommand.temporalStabilizeStrength = 0.6;
+    temporalMaskCommand.temporalStabilizeMotionRadius = 9;
+    const jcut::CommandResult temporalMaskResult =
+        runtime.execute(jcut::EditorCommand{temporalMaskCommand});
+    QVERIFY2(temporalMaskResult.applied, temporalMaskResult.message.c_str());
     std::string roundTripError;
     const std::optional<jcut::EditorDocumentCore> roundTripped =
         jcut::editorDocumentCoreFromJson(
@@ -3130,6 +3139,9 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QCOMPARE(
         roundTripped->clips.front().effectEnabledKeyframes.size(),
         std::size_t{2});
+    QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeEnabled, true);
+    QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeStrength, 0.6);
+    QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeMotionRadius, 9);
     QCOMPARE(
         jcut::editorDocumentCoreFromJson(
             jcut::toJson(runtime.snapshot()), &roundTripError)
@@ -5355,6 +5367,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.baseScaleX = -1.0;
     clip.maskEnabled = true;
     clip.maskFeather = 12.0;
+    clip.maskTemporalStabilizeEnabled = true;
+    clip.maskTemporalStabilizeStrength = 0.65;
+    clip.maskTemporalStabilizeMotionRadius = 11;
     clip.maskGradeEnabled = true;
     clip.maskGradeBrightness = 0.25;
     clip.maskGradeContrast = 1.5;
@@ -5464,6 +5479,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.maskDropShadowRadius, 18.0);
     QCOMPARE(reparsedClip.maskDropShadowOffsetX, 7.0);
     QCOMPARE(reparsedClip.maskDropShadowOpacity, 0.6);
+    QCOMPARE(reparsedClip.maskTemporalStabilizeEnabled, true);
+    QCOMPARE(reparsedClip.maskTemporalStabilizeStrength, 0.65);
+    QCOMPARE(reparsedClip.maskTemporalStabilizeMotionRadius, 11);
     QCOMPARE(reparsedClip.effectSkipAwareTiming, false);
     QCOMPARE(reparsedClip.differenceReferenceFrames, 17);
     QCOMPARE(reparsedClip.differenceThreshold, 0.23);
@@ -5492,6 +5510,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(renderClip.baseTranslationX, 24.0);
     QCOMPARE(renderClip.baseScaleX, -1.0);
     QCOMPARE(renderClip.maskEnabled, true);
+    QCOMPARE(renderClip.maskTemporalStabilizeEnabled, true);
+    QCOMPARE(renderClip.maskTemporalStabilizeStrength, 0.65);
+    QCOMPARE(renderClip.maskTemporalStabilizeMotionRadius, 11);
     QCOMPARE(renderClip.maskGradeEnabled, true);
     QCOMPARE(renderClip.maskGradeBrightness, 0.25);
     QCOMPARE(renderClip.maskGradeCurvePointsR.front(), QPointF(0.0, 0.1));

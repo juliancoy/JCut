@@ -2214,6 +2214,25 @@ public:
                                    static_cast<VkDeviceSize>(bytes));
   }
 
+  bool writePackedTemporalMaskToStagingTopLeft(
+      const QByteArray &packed,
+      const QSize &size,
+      VkDeviceSize stagingOffset) {
+    const VkDeviceSize expectedBytes =
+        static_cast<VkDeviceSize>(size.width()) *
+        static_cast<VkDeviceSize>(size.height()) * 4;
+    if (!size.isValid() || packed.size() != expectedBytes ||
+        !m_stagingMapped ||
+        !activeStagingRangeAvailable(stagingOffset, expectedBytes)) {
+      return false;
+    }
+    std::memcpy(
+        reinterpret_cast<std::uint8_t *>(m_stagingMapped) + stagingOffset,
+        packed.constData(),
+        static_cast<std::size_t>(expectedBytes));
+    return flushActiveStagingWrite(stagingOffset, expectedBytes);
+  }
+
   VulkanMaskPreprocessOptions maskPreprocessOptions(
       const LayerInput &layer) const {
     VulkanMaskPreprocessOptions options;
@@ -2224,6 +2243,16 @@ public:
     options.erodeRadius = qRound(qMax<qreal>(0.0, layer.maskErode));
     options.dilateRadius = qRound(qMax<qreal>(0.0, layer.maskDilate));
     options.blurRadius = qRound(qMax<qreal>(0.0, layer.maskBlur));
+    options.temporalStabilizeEnabled =
+        layer.maskTemporalStabilizeEnabled;
+    options.temporalStabilizeStrength = static_cast<float>(
+        qBound<qreal>(0.0, layer.maskTemporalStabilizeStrength, 1.0));
+    options.temporalStabilizeMotionRadius = qBound(
+        0, layer.maskTemporalStabilizeMotionRadius, 32);
+    if (!layer.temporalMaskIdentity.isEmpty()) {
+      options.sourceIdentity +=
+          QStringLiteral("|temporal=%1").arg(layer.temporalMaskIdentity);
+    }
     return options;
   }
 
@@ -2881,7 +2910,7 @@ public:
         maxAuxiliaryImageBytes = qMax(
             maxAuxiliaryImageBytes,
             static_cast<VkDeviceSize>(layer.maskBuffer->size.width) *
-                static_cast<VkDeviceSize>(layer.maskBuffer->size.height));
+                static_cast<VkDeviceSize>(layer.maskBuffer->size.height) * 4);
       }
       if (layer.differenceMatteEnabled &&
           !layer.differenceReferenceFrame.hasHardwareFrame()) {
@@ -3529,14 +3558,19 @@ public:
             const QSize maskSize(
                 maskUpload.size.width, maskUpload.size.height);
             if (!ensureMaskRawImage(
-                    slot, maskSize, VK_FORMAT_R8_UNORM)) {
+                    slot, maskSize, VK_FORMAT_R8G8B8A8_UNORM)) {
               vkEndCommandBuffer(m_commandBuffer);
               return QImage();
             }
+            const QByteArray packedTemporalMask =
+                packVulkanTemporalMaskChannels(
+                    maskUpload,
+                    layer.previousMaskBuffer.get(),
+                    layer.nextMaskBuffer.get());
             const VkDeviceSize maskStagingOffset =
                 stagingOffset + layerImageBytes + (kCurveLutBytes * 2);
-            if (!writeImageBufferToStagingTopLeft(
-                    maskUpload, maskStagingOffset, 1)) {
+            if (!writePackedTemporalMaskToStagingTopLeft(
+                    packedTemporalMask, maskSize, maskStagingOffset)) {
               vkEndCommandBuffer(m_commandBuffer);
               return QImage();
             }
@@ -5029,8 +5063,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   const qreal transformClockTimelineFrame = timelineFrame;
   QHash<QString, editor::DecoderContext *> &decoders = context.decoders;
   editor::AsyncDecoder *asyncDecoder = context.asyncDecoder;
-  QHash<RenderAsyncFrameKey, editor::FrameHandle> *asyncFrameCache =
-      context.asyncFrameCache;
+  RenderPreparedFrameQueue *preparedFrames = context.preparedFrames;
   const QVector<TimelineClip> &orderedClips = context.orderedClips;
   QHash<QString, RenderClipStageStats> *clipStageStats =
       context.clipStageStats;
@@ -5165,7 +5198,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
         sourceFrame,
         decoders,
         asyncDecoder,
-        asyncFrameCache,
+        preparedFrames,
         context.forceSoftwareDecode,
         context.preferHardwareFrames);
     const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - decodeStart;
@@ -5327,6 +5360,29 @@ QImage OffscreenVulkanRenderer::renderFrame(
         layer.maskErode = qRound(qMax<qreal>(0.0, matteOwner.maskErode));
         layer.maskDilate = qRound(qMax<qreal>(0.0, matteOwner.maskDilate));
         layer.maskBlur = qRound(qMax<qreal>(matteOwner.maskFeather, matteOwner.maskBlur));
+        layer.maskTemporalStabilizeEnabled =
+            matteOwner.maskTemporalStabilizeEnabled;
+        layer.maskTemporalStabilizeStrength =
+            matteOwner.maskTemporalStabilizeStrength;
+        layer.maskTemporalStabilizeMotionRadius =
+            matteOwner.maskTemporalStabilizeMotionRadius;
+        if (matteOwner.maskTemporalStabilizeEnabled &&
+            frame.frameNumber() >= 0) {
+          QString previousIdentity;
+          QString nextIdentity;
+          layer.previousMaskBuffer = rawClipMaskBuffer(
+              matteOwner,
+              qMax<int64_t>(0, frame.frameNumber() - 1),
+              &previousIdentity,
+              true);
+          layer.nextMaskBuffer = rawClipMaskBuffer(
+              matteOwner,
+              frame.frameNumber() + 1,
+              &nextIdentity,
+              true);
+          layer.temporalMaskIdentity =
+              previousIdentity + QLatin1Char('|') + nextIdentity;
+        }
         layer.maskFeatherGamma = static_cast<float>(
             qBound<qreal>(0.1, matteOwner.maskFeatherGamma, 5.0));
         layer.maskFeatherFalloff = qBound(0, matteOwner.maskFeatherFalloff, 5);
@@ -5490,6 +5546,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
           frameCrossfadeLayer.cacheKey.clear();
           frameCrossfadeLayer.effectPlan.generatedDraws.clear();
           frameCrossfadeLayer.temporalEchoFrames.clear();
+          // The secondary sample has its own timeline position.  Do not reuse
+          // the primary sample's temporal neighbors while the crossfade is
+          // being prepared; the direct preview follows the same rule.
+          frameCrossfadeLayer.maskTemporalStabilizeEnabled = false;
+          frameCrossfadeLayer.previousMaskBuffer.reset();
+          frameCrossfadeLayer.nextMaskBuffer.reset();
+          frameCrossfadeLayer.temporalMaskIdentity.clear();
           frameCrossfadeLayer.differenceMatteEnabled = false;
           frameCrossfadeLayer.differenceReferenceFrame = {};
           frameCrossfadeLayer.maskDropShadowEnabled = false;

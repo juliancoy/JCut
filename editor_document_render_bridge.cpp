@@ -212,6 +212,12 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.maskDilate = clip.maskDilate;
         timelineClip.maskErode = clip.maskErode;
         timelineClip.maskBlur = clip.maskBlur;
+        timelineClip.maskTemporalStabilizeEnabled =
+            clip.maskTemporalStabilizeEnabled;
+        timelineClip.maskTemporalStabilizeStrength =
+            clip.maskTemporalStabilizeStrength;
+        timelineClip.maskTemporalStabilizeMotionRadius =
+            clip.maskTemporalStabilizeMotionRadius;
         timelineClip.maskInvert = clip.maskInvert;
         timelineClip.maskShowOnly = clip.maskShowOnly;
         timelineClip.maskOpacity = clip.maskOpacity;

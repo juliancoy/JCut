@@ -3620,6 +3620,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     const auto bindOrPrepareGpuMask = [&](
         VulkanResources* resources,
         const jcut::core::ImageBuffer& mask,
+        const jcut::core::ImageBuffer* previousMask,
+        const jcut::core::ImageBuffer* nextMask,
         const VulkanMaskPreprocessOptions& options) {
         if (!resources) {
             return false;
@@ -3635,7 +3637,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             return resources->bindAuxiliaryImage(
                 prepared->view, prepared->layout);
         }
-        if (!resources->uploadMaskTexture(cb, mask, options)) {
+        if (!resources->uploadMaskTexture(
+                cb, mask, previousMask, nextMask, options)) {
             return false;
         }
         const PreparedGpuMask result{
@@ -4017,11 +4020,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             qRound(qMax<qreal>(0.0, status.maskDilate));
                         secondaryMaskOptions.blurRadius = qRound(
                             qMax<qreal>(status.maskFeather, status.maskBlur));
+                        secondaryMaskOptions.temporalStabilizeEnabled = false;
                         frameCrossfadeMaskUploadResults.insert(
                             status.clipId,
                             bindOrPrepareGpuMask(
                                 secondaryHandoffResources->resources.get(),
                                 *status.frameCrossfadeMaskBuffer,
+                                nullptr,
+                                nullptr,
                                 secondaryMaskOptions));
                     }
                 }
@@ -4053,11 +4059,24 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 maskOptions.erodeRadius = qRound(qMax<qreal>(0.0, status.maskErode));
                 maskOptions.dilateRadius = qRound(qMax<qreal>(0.0, status.maskDilate));
                 maskOptions.blurRadius = qRound(qMax<qreal>(status.maskFeather, status.maskBlur));
+                maskOptions.temporalStabilizeEnabled =
+                    status.maskTemporalStabilizeEnabled;
+                maskOptions.temporalStabilizeStrength = static_cast<float>(
+                    qBound<qreal>(
+                        0.0, status.maskTemporalStabilizeStrength, 1.0));
+                maskOptions.temporalStabilizeMotionRadius = qBound(
+                    0, status.maskTemporalStabilizeMotionRadius, 32);
+                if (!status.temporalMaskIdentity.isEmpty()) {
+                    maskOptions.sourceIdentity += QStringLiteral("|temporal=%1")
+                        .arg(status.temporalMaskIdentity);
+                }
                 maskUploadResults.insert(
                     status.clipId,
                     bindOrPrepareGpuMask(
                         handoffResources->resources.get(),
                         *status.maskBuffer,
+                        status.previousMaskBuffer.get(),
+                        status.nextMaskBuffer.get(),
                         maskOptions));
             }
             if (handoffResult.sampledFrameReady) {

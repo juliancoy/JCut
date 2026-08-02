@@ -327,6 +327,9 @@ public:
     QDoubleSpinBox *maskDilateSpin() const { return m_maskDilateSpin; }
     QDoubleSpinBox *maskErodeSpin() const { return m_maskErodeSpin; }
     QDoubleSpinBox *maskBlurSpin() const { return m_maskBlurSpin; }
+    QCheckBox *maskTemporalStabilizeCheck() const { return m_maskTemporalStabilizeCheck; }
+    QDoubleSpinBox *maskTemporalStabilizeStrengthSpin() const { return m_maskTemporalStabilizeStrengthSpin; }
+    QSpinBox *maskTemporalStabilizeMotionRadiusSpin() const { return m_maskTemporalStabilizeMotionRadiusSpin; }
     QComboBox *maskShapeFeatherFalloffCombo() const { return m_maskShapeFeatherFalloffCombo; }
     QDoubleSpinBox *maskShapeFeatherPowerSpin() const { return m_maskShapeFeatherPowerSpin; }
     QCheckBox *maskInvertCheck() const { return m_maskInvertCheck; }
@@ -392,6 +395,9 @@ public:
     QComboBox *titleTextExtrudeModeCombo() const { return m_titleTextExtrudeModeCombo; }
     QDoubleSpinBox *titleTextExtrudeDepthSpin() const { return m_titleTextExtrudeDepthSpin; }
     QDoubleSpinBox *titleTextExtrudeBevelSpin() const { return m_titleTextExtrudeBevelSpin; }
+    QComboBox *titleLifetimeAnimationCombo() const { return m_titleLifetimeAnimationCombo; }
+    QDoubleSpinBox *titleLifetimeAnimationAmountSpin() const { return m_titleLifetimeAnimationAmountSpin; }
+    QPushButton *applyTitleLifetimeAnimationButton() const { return m_applyTitleLifetimeAnimationButton; }
     QCheckBox *titleAutoScrollCheck() const { return m_titleAutoScrollCheck; }
     QPushButton *addTitleKeyframeButton() const { return m_addTitleKeyframeButton; }
     QPushButton *removeTitleKeyframeButton() const { return m_removeTitleKeyframeButton; }
@@ -690,6 +696,9 @@ private:
     QDoubleSpinBox *m_maskDilateSpin = nullptr;
     QDoubleSpinBox *m_maskErodeSpin = nullptr;
     QDoubleSpinBox *m_maskBlurSpin = nullptr;
+    QCheckBox *m_maskTemporalStabilizeCheck = nullptr;
+    QDoubleSpinBox *m_maskTemporalStabilizeStrengthSpin = nullptr;
+    QSpinBox *m_maskTemporalStabilizeMotionRadiusSpin = nullptr;
     QComboBox *m_maskShapeFeatherFalloffCombo = nullptr;
     QDoubleSpinBox *m_maskShapeFeatherPowerSpin = nullptr;
     QCheckBox *m_maskInvertCheck = nullptr;
@@ -767,6 +776,9 @@ private:
     QComboBox *m_titleTextExtrudeModeCombo = nullptr;
     QDoubleSpinBox *m_titleTextExtrudeDepthSpin = nullptr;
     QDoubleSpinBox *m_titleTextExtrudeBevelSpin = nullptr;
+    QComboBox *m_titleLifetimeAnimationCombo = nullptr;
+    QDoubleSpinBox *m_titleLifetimeAnimationAmountSpin = nullptr;
+    QPushButton *m_applyTitleLifetimeAnimationButton = nullptr;
     QCheckBox *m_titleAutoScrollCheck = nullptr;
     QPushButton *m_addTitleKeyframeButton = nullptr;
     QPushButton *m_removeTitleKeyframeButton = nullptr;

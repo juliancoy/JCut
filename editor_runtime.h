@@ -310,6 +310,9 @@ struct SetClipMaskCommand {
     double dilate = 0.0;
     double erode = 0.0;
     double blur = 0.0;
+    bool temporalStabilizeEnabled = false;
+    double temporalStabilizeStrength = 0.75;
+    int temporalStabilizeMotionRadius = 4;
     bool invert = false;
     bool showOnly = false;
     double opacity = 1.0;

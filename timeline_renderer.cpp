@@ -2,6 +2,7 @@
 #include "timeline_widget.h"
 #include "timeline_layout.h"
 #include "timeline_fps.h"
+#include "timeline_viewport_core.h"
 #include "debug_controls.h"
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
@@ -210,23 +211,20 @@ void TimelineRenderer::paint(QPainter* painter) {
     const int64_t visibleStartFrame = qMax<int64_t>(0, m_widget->frameFromX(content.left()));
     const int64_t visibleEndFrame =
         qMax<int64_t>(visibleStartFrame, m_widget->frameFromX(content.right() + 1));
-    const int64_t rulerStartFrame =
-        qMax<int64_t>(0, (visibleStartFrame / kTimelineFps) * kTimelineFps);
-    const int64_t rulerEndFrame =
-        qMin<int64_t>(m_widget->totalFrames(), visibleEndFrame + kTimelineFps);
-
-    int64_t rulerStepFrames = kTimelineFps;
-    if (m_widget->m_pixelsPerFrame > 0.0) {
-        // Keep ruler painting bounded even when zoom is extremely far out.
-        const qreal targetSpacingPx = 10.0;
-        const int64_t minFramesForSpacing =
-            static_cast<int64_t>(std::ceil(targetSpacingPx / m_widget->m_pixelsPerFrame));
-        if (minFramesForSpacing > kTimelineFps) {
-            const int64_t snapped =
-                ((minFramesForSpacing + (kTimelineFps - 1)) / kTimelineFps) * kTimelineFps;
-            rulerStepFrames = qMax<int64_t>(kTimelineFps, snapped);
-        }
-    }
+    const int64_t rulerStepFrames =
+        jcut::timeline_viewport::rulerStepFrames(
+            static_cast<float>(m_widget->m_pixelsPerFrame),
+            kTimelineFps);
+    const int64_t majorRulerStepFrames =
+        jcut::timeline_viewport::rulerStepFrames(
+            static_cast<float>(m_widget->m_pixelsPerFrame),
+            kTimelineFps,
+            100.0f);
+    const int64_t rulerStartFrame = qMax<int64_t>(
+        0,
+        (visibleStartFrame / rulerStepFrames) * rulerStepFrames);
+    const int64_t rulerEndFrame = qMin<int64_t>(
+        m_widget->totalFrames(), visibleEndFrame + rulerStepFrames);
     const int kMaxRulerTicks = 4000;
     const int64_t maxRulerSpan = static_cast<int64_t>(kMaxRulerTicks) * rulerStepFrames;
     const int64_t boundedRulerEnd = qMin<int64_t>(rulerEndFrame, rulerStartFrame + maxRulerSpan);
@@ -234,7 +232,7 @@ void TimelineRenderer::paint(QPainter* painter) {
     painter->setPen(QColor(QStringLiteral("#6d7887")));
     for (int64_t frame = rulerStartFrame; frame <= boundedRulerEnd; frame += rulerStepFrames) {
         const int x = m_widget->xFromFrame(frame);
-        const bool major = (frame % qMax<int64_t>(150, rulerStepFrames * 5)) == 0;
+        const bool major = (frame % majorRulerStepFrames) == 0;
         painter->setPen(major ? QColor(QStringLiteral("#8fa0b5")) : QColor(QStringLiteral("#53606e")));
         painter->drawLine(x, ruler.bottom() - (major ? 18 : 10), x, tracks.bottom() - 8);
 

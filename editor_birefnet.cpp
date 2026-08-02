@@ -734,7 +734,9 @@ void EditorWindow::openBiRefNetDetectorWindow(
             oldParameters.value(QStringLiteral("guidance_directory")).toString() !=
                 normalizedGuidance ||
             oldParameters.value(QStringLiteral("guidance_gate_radius")).toInt(24) !=
-                guidanceGateRadius;
+                guidanceGateRadius ||
+            oldParameters.value(QStringLiteral("pipeline_version")).toString() !=
+                QStringLiteral("jcut_birefnet_bounded_v1");
         if (generationParametersChanged) {
             // Existing frames cannot be resumed under different inference or
             // alpha-remapping settings without creating a mixed matte.
@@ -778,6 +780,15 @@ void EditorWindow::openBiRefNetDetectorWindow(
                     {QStringLiteral("guidance_gate_radius"), guidanceGateRadius},
                     {QStringLiteral("create_mask_marker"), true},
                     {QStringLiteral("docker_root_mode"), rootMode->isChecked()},
+                    {QStringLiteral("decoder_backend"),
+                     deviceCombo->currentData().toString() == QStringLiteral("cpu")
+                         ? QStringLiteral("opencv_cpu")
+                         : QStringLiteral("nvdec_threaded_dlpack")},
+                    {QStringLiteral("pipeline_version"),
+                     QStringLiteral("jcut_birefnet_bounded_v1")},
+                    {QStringLiteral("publication_slots"),
+                     deviceCombo->currentData().toString() == QStringLiteral("cpu") ? 1 : 2},
+                    {QStringLiteral("preview_slots"), 1},
                     {QStringLiteral("live_preview"), true}},
         QJsonObject{{QStringLiteral("alpha_masks_dir"), outputDir},
                     {QStringLiteral("guidance_masks_dir"), normalizedGuidance},
@@ -900,9 +911,39 @@ void EditorWindow::openBiRefNetDetectorWindow(
                 .arg(current)
                 .arg(total)
                 .arg(percent, 0, 'f', 1));
-        statusLabel->setText(QStringLiteral("Running BiRefNet — frame %1 of %2")
-                                 .arg(current)
-                                 .arg(total));
+        const double renderFps = jobProgress.value(QStringLiteral("render_fps")).toDouble();
+        const QJsonObject pipeline =
+            jobProgress.value(QStringLiteral("pipeline")).toObject();
+        const QJsonObject stageAverage =
+            pipeline.value(QStringLiteral("stage_average_ms")).toObject();
+        const QString decoder =
+            pipeline.value(QStringLiteral("decoder")).toString();
+        const int pending =
+            pipeline.value(QStringLiteral("pending_publications")).toInt();
+        const int publicationSlots =
+            pipeline.value(QStringLiteral("publication_slots")).toInt();
+        const int previewDropped =
+            pipeline.value(QStringLiteral("preview_dropped")).toInt();
+        statusLabel->setText(
+            QStringLiteral("Running BiRefNet — frame %1 of %2 — %3 fps — %4")
+                .arg(current)
+                .arg(total)
+                .arg(renderFps, 0, 'f', 2)
+                .arg(decoder.isEmpty() ? QStringLiteral("initializing decoder") : decoder));
+        frameProgress->setToolTip(
+            QStringLiteral(
+                "Decode wait: %1 ms\nGPU preprocess: %2 ms\nGPU inference: %3 ms\n"
+                "GPU postprocess: %4 ms\nGPU to host: %5 ms\nPNG publish: %6 ms\n"
+                "Durable output queue: %7 / %8\nDropped optional previews: %9")
+                .arg(stageAverage.value(QStringLiteral("decode_wait")).toDouble(), 0, 'f', 2)
+                .arg(stageAverage.value(QStringLiteral("gpu_preprocess")).toDouble(), 0, 'f', 2)
+                .arg(stageAverage.value(QStringLiteral("gpu_inference")).toDouble(), 0, 'f', 2)
+                .arg(stageAverage.value(QStringLiteral("gpu_postprocess")).toDouble(), 0, 'f', 2)
+                .arg(stageAverage.value(QStringLiteral("gpu_to_host")).toDouble(), 0, 'f', 2)
+                .arg(stageAverage.value(QStringLiteral("png_publish")).toDouble(), 0, 'f', 2)
+                .arg(pending)
+                .arg(publicationSlots)
+                .arg(previewDropped));
     };
     connect(previewTimer, &QTimer::timeout, progress, refreshLivePreview);
     connect(previewTimer, &QTimer::timeout, progress, refreshJobProgress);
@@ -934,7 +975,7 @@ void EditorWindow::openBiRefNetDetectorWindow(
         *processTreeId = process->processId();
         jcut::jobs::updateManifestStatus(
             manifestPath,
-            QStringLiteral("starting"),
+            QStringLiteral("running"),
             QJsonObject{{QStringLiteral("pid"), static_cast<qint64>(process->processId())}},
             nullptr);
     });

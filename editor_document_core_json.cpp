@@ -488,6 +488,12 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
     clip->maskDilate = valueOr(value, "maskDilate", 0.0);
     clip->maskErode = valueOr(value, "maskErode", 0.0);
     clip->maskBlur = valueOr(value, "maskBlur", 0.0);
+    clip->maskTemporalStabilizeEnabled =
+        valueOr(value, "maskTemporalStabilizeEnabled", false);
+    clip->maskTemporalStabilizeStrength = std::clamp(
+        valueOr(value, "maskTemporalStabilizeStrength", 0.75), 0.0, 1.0);
+    clip->maskTemporalStabilizeMotionRadius = std::clamp(
+        valueOr(value, "maskTemporalStabilizeMotionRadius", 4), 0, 32);
     clip->maskInvert = valueOr(value, "maskInvert", false);
     clip->maskShowOnly = valueOr(value, "maskShowOnly", false);
     clip->maskOpacity = valueOr(value, "maskOpacity", 1.0);
@@ -1589,6 +1595,12 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
     (*out)["maskDilate"] = clip.maskDilate;
     (*out)["maskErode"] = clip.maskErode;
     (*out)["maskBlur"] = clip.maskBlur;
+    (*out)["maskTemporalStabilizeEnabled"] =
+        clip.maskTemporalStabilizeEnabled;
+    (*out)["maskTemporalStabilizeStrength"] =
+        clip.maskTemporalStabilizeStrength;
+    (*out)["maskTemporalStabilizeMotionRadius"] =
+        clip.maskTemporalStabilizeMotionRadius;
     (*out)["maskInvert"] = clip.maskInvert;
     (*out)["maskShowOnly"] = clip.maskShowOnly;
     (*out)["maskOpacity"] = clip.maskOpacity;

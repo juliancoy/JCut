@@ -28,6 +28,7 @@ private slots:
     void titlePreparationIsSharedForPreviewAndExportInputs();
     void titleContourMeshHasFrontBackSideAndBevelGeometry();
     void neutralTitleProjectionMatchesQtVulkanMvp();
+    void title3DProjectionIsInvariantUnderPreviewZoomMapping();
 };
 
 namespace {
@@ -732,6 +733,80 @@ void TestVulkanTextGeneration::neutralTitleProjectionMatchesQtVulkanMvp()
     QVERIFY(identity.valid);
     QCOMPARE(identity.x, 17.25);
     QCOMPARE(identity.y, 28.5);
+}
+
+void TestVulkanTextGeneration::title3DProjectionIsInvariantUnderPreviewZoomMapping()
+{
+    constexpr int outputWidth = 1080;
+    constexpr int outputHeight = 1920;
+    const QRectF glyphRect(308.0, 1320.0, 426.0, 96.0);
+    const QPointF titleCenter(540.0, 1380.0);
+
+    jcut::Title3DProjectionCore projection;
+    projection.enabled = true;
+    projection.yawDegrees = -34.0;
+    projection.pitchDegrees = 9.0;
+    projection.rollDegrees = 4.0;
+    projection.depth = 0.35;
+    projection.scale = 1.0;
+
+    const auto projectedOutput =
+        jcut::projectTitle3DPointCore(
+            glyphRect.right(),
+            glyphRect.bottom(),
+            glyphRect.center().x(),
+            glyphRect.center().y(),
+            titleCenter.x(),
+            titleCenter.y(),
+            outputWidth,
+            outputHeight,
+            projection);
+    QVERIFY(projectedOutput.valid);
+
+    const jcut::TitlePreviewTargetCore fitTarget{48.0, 24.0, 405.0, 720.0};
+    const jcut::TitlePreviewTargetCore zoomedTarget{-154.5, -336.0, 810.0, 1440.0};
+    const auto fitPoint =
+        jcut::projectTitle3DPointToPreviewTargetCore(
+            glyphRect.right(),
+            glyphRect.bottom(),
+            glyphRect.center().x(),
+            glyphRect.center().y(),
+            titleCenter.x(),
+            titleCenter.y(),
+            outputWidth,
+            outputHeight,
+            projection,
+            fitTarget);
+    const auto zoomedPoint =
+        jcut::projectTitle3DPointToPreviewTargetCore(
+            glyphRect.right(),
+            glyphRect.bottom(),
+            glyphRect.center().x(),
+            glyphRect.center().y(),
+            titleCenter.x(),
+            titleCenter.y(),
+            outputWidth,
+            outputHeight,
+            projection,
+            zoomedTarget);
+    QVERIFY(fitPoint.valid);
+    QVERIFY(zoomedPoint.valid);
+
+    const auto recoverOutput = [&](const jcut::TitleProjectedPointCore& point,
+                                   const jcut::TitlePreviewTargetCore& target) {
+        return QPointF(
+            ((point.x - target.x) / target.width) * outputWidth,
+            ((point.y - target.y) / target.height) * outputHeight);
+    };
+    const QPointF recoveredFit = recoverOutput(fitPoint, fitTarget);
+    const QPointF recoveredZoomed = recoverOutput(zoomedPoint, zoomedTarget);
+
+    QVERIFY(std::abs(recoveredFit.x() - projectedOutput.x) < 0.001);
+    QVERIFY(std::abs(recoveredFit.y() - projectedOutput.y) < 0.001);
+    QVERIFY(std::abs(recoveredZoomed.x() - projectedOutput.x) < 0.001);
+    QVERIFY(std::abs(recoveredZoomed.y() - projectedOutput.y) < 0.001);
+    QVERIFY(std::abs(recoveredFit.x() - recoveredZoomed.x()) < 0.001);
+    QVERIFY(std::abs(recoveredFit.y() - recoveredZoomed.y()) < 0.001);
 }
 
 QTEST_MAIN(TestVulkanTextGeneration)

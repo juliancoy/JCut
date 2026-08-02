@@ -284,6 +284,19 @@ private slots:
                                 .arg(zoomTwoFillT, 0, 'f', 6)));
     }
 
+    void titlePreviewMvpPreservesQtColumnMajorStorage()
+    {
+        QFile renderer(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_text_renderer.cpp"));
+        QVERIFY2(renderer.open(QIODevice::ReadOnly),
+                 "Unable to open Vulkan text renderer source.");
+        const QString source = QString::fromUtf8(renderer.readAll());
+        QVERIFY2(!source.contains(QStringLiteral("QMatrix4x4 outputMvpMatrix(outputMvp)")),
+                 "Title MVP arrays must not use Qt's row-major pointer constructor.");
+        QVERIFY2(source.contains(QStringLiteral(
+                     "std::copy(outputMvp, outputMvp + 16, outputMvpMatrix.data())")),
+                 "Title MVP arrays must preserve Vulkan/Qt column-major storage.");
+    }
+
     void progressiveStretchIsClipOwnedLayerPolicy()
     {
         TimelineClip top;

@@ -3,7 +3,7 @@
 #include "cpu_overlay_render_backend.h"
 #include "editor_shared_effects.h"
 
-#include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QFileInfo>
 #include <QPainter>
 
@@ -50,7 +50,7 @@ void enqueueRenderDecodeLookahead(const RenderRequest& request,
                                   int64_t timelineFrame,
                                   const QVector<TimelineClip>& orderedClips,
                                   editor::AsyncDecoder* asyncDecoder,
-                                  const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache) {
+                                  RenderPreparedFrameQueue& preparedFrames) {
     if (!asyncDecoder || !editor::debugLeadPrefetchEnabled()) {
         return;
     }
@@ -80,15 +80,18 @@ void enqueueRenderDecodeLookahead(const RenderRequest& request,
                 false);
         for (const editor::DecodePrefetchRequest& prefetch : requests) {
             const RenderAsyncFrameKey key{prefetch.decodePath, prefetch.sourceFrame};
-            if (asyncFrameCache.contains(key)) {
+            if (preparedFrames.contains(key)) {
                 continue;
             }
-            asyncDecoder->requestFrame(prefetch.decodePath,
-                                       prefetch.sourceFrame,
-                                       prefetch.priority,
-                                       30000,
-                                       editor::DecodeRequestKind::Prefetch,
-                                       {});
+            asyncDecoder->requestFrame(
+                prefetch.decodePath,
+                prefetch.sourceFrame,
+                prefetch.priority,
+                30000,
+                editor::DecodeRequestKind::Prefetch,
+                [&preparedFrames](editor::FrameHandle frame) {
+                    preparedFrames.insert(frame);
+                });
         }
     }
 }
@@ -123,7 +126,7 @@ void prewarmRenderDecodeSegment(const RenderRequest& request,
                                 int64_t segmentEndFrame,
                                 const QVector<TimelineClip>& orderedClips,
                                 editor::AsyncDecoder* asyncDecoder,
-                                const QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache) {
+                                RenderPreparedFrameQueue& preparedFrames) {
     if (!asyncDecoder || !editor::debugLeadPrefetchEnabled()) {
         return;
     }
@@ -153,15 +156,18 @@ void prewarmRenderDecodeSegment(const RenderRequest& request,
                 false);
         for (const editor::DecodePrefetchRequest& prefetch : requests) {
             const RenderAsyncFrameKey key{prefetch.decodePath, prefetch.sourceFrame};
-            if (asyncFrameCache.contains(key)) {
+            if (preparedFrames.contains(key)) {
                 continue;
             }
-            asyncDecoder->requestFrame(prefetch.decodePath,
-                                       prefetch.sourceFrame,
-                                       prefetch.priority,
-                                       30000,
-                                       editor::DecodeRequestKind::Prefetch,
-                                       {});
+            asyncDecoder->requestFrame(
+                prefetch.decodePath,
+                prefetch.sourceFrame,
+                prefetch.priority,
+                30000,
+                editor::DecodeRequestKind::Prefetch,
+                [&preparedFrames](editor::FrameHandle frame) {
+                    preparedFrames.insert(frame);
+                });
         }
     }
 }
@@ -199,63 +205,60 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       int64_t frameNumber,
                                       QHash<QString, editor::DecoderContext*>& decoders,
                                       editor::AsyncDecoder* asyncDecoder,
-                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                                      RenderPreparedFrameQueue* preparedFrames,
                                       bool forceSoftwareDecode,
                                       bool preferHardwareFrames) {
-    if (asyncDecoder && asyncFrameCache && !forceSoftwareDecode) {
+    if (asyncDecoder && preparedFrames && !forceSoftwareDecode) {
         const RenderAsyncFrameKey cacheKey{path, frameNumber};
-        const auto storeResult = [&](const editor::FrameHandle& frame) {
-            if (frame.isNull()) {
-                return;
-            }
-            asyncFrameCache->insert(cacheKey, frame);
-            constexpr int kMaxExportAsyncFrames = 64;
-            while (asyncFrameCache->size() > kMaxExportAsyncFrames) {
-                asyncFrameCache->erase(asyncFrameCache->begin());
-            }
-        };
-        auto cachedIt = asyncFrameCache->find(cacheKey);
-        if (cachedIt != asyncFrameCache->end()) {
-            return cachedIt.value();
+        editor::FrameHandle cached = preparedFrames->find(cacheKey);
+        if (!cached.isNull()) {
+            return cached;
         }
 
-        editor::FrameHandle result;
-        bool completed = false;
-        QEventLoop loop;
-        QTimer timeoutTimer;
-        timeoutTimer.setSingleShot(true);
-        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
-            completed = true;
-            loop.quit();
-        });
+        const auto requestVisibleAndWait = [&]() {
+            struct WaitState {
+                QMutex mutex;
+                QWaitCondition ready;
+                editor::FrameHandle result;
+                bool completed = false;
+            };
+            const auto state = std::make_shared<WaitState>();
+            asyncDecoder->requestFrame(
+                path,
+                frameNumber,
+                255,
+                30000,
+                editor::DecodeRequestKind::Visible,
+                [preparedFrames, state](editor::FrameHandle frame) {
+                    preparedFrames->insert(frame);
+                    QMutexLocker lock(&state->mutex);
+                    state->result = std::move(frame);
+                    state->completed = true;
+                    state->ready.wakeOne();
+                });
+            QMutexLocker lock(&state->mutex);
+            const QDeadlineTimer deadline(30000);
+            while (!state->completed && state->ready.wait(&state->mutex, deadline)) {
+            }
+            return state->result;
+        };
 
-        asyncDecoder->requestFrame(path,
-                                   frameNumber,
-                                   255,
-                                   30000,
-                                   editor::DecodeRequestKind::Visible,
-                                   [&](editor::FrameHandle frame) {
-                                       result = std::move(frame);
-                                       completed = true;
-                                       loop.quit();
-                                   },
-                                   true);
         for (int64_t prefetchFrame = frameNumber + 1; prefetchFrame <= frameNumber + 6; ++prefetchFrame) {
             const RenderAsyncFrameKey prefetchKey{path, prefetchFrame};
-            if (!asyncFrameCache->contains(prefetchKey)) {
-                asyncDecoder->requestFrame(path,
-                                           prefetchFrame,
-                                           64,
-                                           30000,
-                                           editor::DecodeRequestKind::Prefetch,
-                                           {});
+            if (!preparedFrames->contains(prefetchKey)) {
+                asyncDecoder->requestFrame(
+                    path,
+                    prefetchFrame,
+                    64,
+                    30000,
+                    editor::DecodeRequestKind::Prefetch,
+                    [preparedFrames](editor::FrameHandle frame) {
+                        preparedFrames->insert(frame);
+                    });
             }
         }
 
-        timeoutTimer.start(30000);
-        while (!completed) {
-            loop.exec(QEventLoop::ExcludeUserInputEvents);
-        }
+        editor::FrameHandle result = requestVisibleAndWait();
 
         // A prefetch for this exact frame may already be decoding when the
         // visible request is submitted. The decoder serializes a file on one
@@ -264,11 +267,7 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
         // frameReady publication is ordered before the visible completion;
         // consume that definitive cached result instead of dropping a layer.
         if (result.isNull()) {
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            cachedIt = asyncFrameCache->find(cacheKey);
-            if (cachedIt != asyncFrameCache->end()) {
-                result = cachedIt.value();
-            }
+            result = preparedFrames->find(cacheKey);
         }
         if (result.isNull()) {
             // A stateful hardware decoder may already be servicing one
@@ -276,24 +275,10 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
             // becomes visible. Its first exact request can then land after
             // codec state has advanced. One serialized retry performs the
             // required backward seek without permitting a missing layer.
-            completed = false;
-            asyncDecoder->requestFrame(path,
-                                       frameNumber,
-                                       255,
-                                       30000,
-                                       editor::DecodeRequestKind::Visible,
-                                       [&](editor::FrameHandle frame) {
-                                           result = std::move(frame);
-                                           completed = true;
-                                           loop.quit();
-                                       },
-                                       true);
-            if (!completed) {
-                loop.exec(QEventLoop::ExcludeUserInputEvents);
-            }
+            result = requestVisibleAndWait();
         }
         if (!result.isNull()) {
-            storeResult(result);
+            preparedFrames->insert(result);
         }
         return result;
     }

@@ -8,6 +8,50 @@ size_t qHash(const RenderAsyncFrameKey& key, size_t seed) {
     return qHashMulti(seed, key.path, key.frameNumber);
 }
 
+void RenderPreparedFrameQueue::clear()
+{
+    QMutexLocker lock(&m_mutex);
+    m_frames.clear();
+    m_insertionOrder.clear();
+}
+
+bool RenderPreparedFrameQueue::contains(const RenderAsyncFrameKey& key) const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_frames.contains(key);
+}
+
+editor::FrameHandle RenderPreparedFrameQueue::find(
+    const RenderAsyncFrameKey& key) const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_frames.value(key);
+}
+
+void RenderPreparedFrameQueue::insert(const editor::FrameHandle& frame)
+{
+    if (frame.isNull() || frame.sourcePath().isEmpty()) {
+        return;
+    }
+    const RenderAsyncFrameKey key{frame.sourcePath(), frame.frameNumber()};
+    QMutexLocker lock(&m_mutex);
+    if (m_frames.contains(key)) {
+        m_frames.insert(key, frame);
+        return;
+    }
+    m_frames.insert(key, frame);
+    m_insertionOrder.enqueue(key);
+    while (m_frames.size() > kCapacity && !m_insertionOrder.isEmpty()) {
+        m_frames.remove(m_insertionOrder.dequeue());
+    }
+}
+
+int RenderPreparedFrameQueue::size() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_frames.size();
+}
+
 bool isHardwareEncoderLabel(const QString& codecLabel) {
     const QString lowered = codecLabel.toLower();
     return lowered.contains(QStringLiteral("nvenc")) ||

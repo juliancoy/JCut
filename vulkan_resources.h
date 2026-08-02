@@ -44,6 +44,12 @@ public:
     bool uploadMaskTexture(VkCommandBuffer commandBuffer,
                            const jcut::core::ImageBuffer& image,
                            const VulkanMaskPreprocessOptions& options);
+    bool uploadMaskTexture(
+        VkCommandBuffer commandBuffer,
+        const jcut::core::ImageBuffer& image,
+        const jcut::core::ImageBuffer* previous,
+        const jcut::core::ImageBuffer* next,
+        const VulkanMaskPreprocessOptions& options);
     bool uploadMaskTexture(VkCommandBuffer commandBuffer, const QImage& image);
     bool uploadMaskTexture(VkCommandBuffer commandBuffer,
                            const QImage& image,

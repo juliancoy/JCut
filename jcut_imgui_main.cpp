@@ -12475,6 +12475,13 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             float dilate = currentClip ? static_cast<float>(currentClip->maskDilate) : 0.0f;
             float erode = currentClip ? static_cast<float>(currentClip->maskErode) : 0.0f;
             float blur = currentClip ? static_cast<float>(currentClip->maskBlur) : 0.0f;
+            bool temporalStabilize = currentClip
+                ? currentClip->maskTemporalStabilizeEnabled : false;
+            float temporalStabilizeStrength = currentClip
+                ? static_cast<float>(currentClip->maskTemporalStabilizeStrength)
+                : 0.75f;
+            int temporalStabilizeMotionRadius = currentClip
+                ? currentClip->maskTemporalStabilizeMotionRadius : 4;
             bool invert = currentClip ? currentClip->maskInvert : false;
             bool showOnly = currentClip ? currentClip->maskShowOnly : false;
             float opacity = currentClip ? static_cast<float>(currentClip->maskOpacity) : 1.0f;
@@ -12523,6 +12530,24 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
             beginRuntimeHistoryTransactionForLastItem(shellState);
             maskChanged |= ImGui::SliderFloat("Mask Blur", &blur, 0.0f, 200.0f, "%.1f");
             beginRuntimeHistoryTransactionForLastItem(shellState);
+            maskChanged |= ImGui::Checkbox(
+                "Temporal Stabilize", &temporalStabilize);
+            ImGui::BeginDisabled(!temporalStabilize);
+            maskChanged |= ImGui::SliderFloat(
+                "Stabilize Strength",
+                &temporalStabilizeStrength,
+                0.0f,
+                1.0f,
+                "%.2f");
+            beginRuntimeHistoryTransactionForLastItem(shellState);
+            maskChanged |= ImGui::SliderInt(
+                "Motion Tolerance",
+                &temporalStabilizeMotionRadius,
+                0,
+                32,
+                "%d px");
+            beginRuntimeHistoryTransactionForLastItem(shellState);
+            ImGui::EndDisabled();
             maskChanged |= ImGui::Checkbox("Invert", &invert);
             ImGui::SameLine();
             maskChanged |= ImGui::Checkbox("Show Mask Only", &showOnly);
@@ -12587,6 +12612,11 @@ void drawInspectorPanel(ShellState* shellState, const jcut::EditorDocumentCore& 
                 command.dilate = dilate;
                 command.erode = erode;
                 command.blur = blur;
+                command.temporalStabilizeEnabled = temporalStabilize;
+                command.temporalStabilizeStrength =
+                    temporalStabilizeStrength;
+                command.temporalStabilizeMotionRadius =
+                    temporalStabilizeMotionRadius;
                 command.invert = invert;
                 command.showOnly = showOnly;
                 command.opacity = opacity;

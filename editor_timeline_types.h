@@ -416,6 +416,9 @@ struct TimelineClip {
     qreal maskDilate = 0.0;
     qreal maskErode = 0.0;
     qreal maskBlur = 0.0;
+    bool maskTemporalStabilizeEnabled = false;
+    qreal maskTemporalStabilizeStrength = 0.75;
+    int maskTemporalStabilizeMotionRadius = 4;
     bool maskInvert = false;
     bool maskShowOnly = false;
     qreal maskOpacity = 1.0;

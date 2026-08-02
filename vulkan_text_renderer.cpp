@@ -560,14 +560,38 @@ void mvpForScreenRect(const QRectF& rect, const QSize& swapSize, float outMvp[16
     std::copy(std::begin(m), std::end(m), outMvp);
 }
 
+QMatrix4x4 outputNdcToSwapNdc(const QSize& outputSize,
+                              const QRectF& outputTargetRect,
+                              const QSize& swapSize)
+{
+    const qreal outputW = qMax<qreal>(1.0, outputSize.width());
+    const qreal outputH = qMax<qreal>(1.0, outputSize.height());
+    const qreal swapW = qMax<qreal>(1.0, swapSize.width());
+    const qreal swapH = qMax<qreal>(1.0, swapSize.height());
+    const qreal scaleX = outputTargetRect.width() / outputW;
+    const qreal scaleY = outputTargetRect.height() / outputH;
+    const qreal centerX =
+        outputTargetRect.left() + (outputW * scaleX * 0.5);
+    const qreal centerY =
+        outputTargetRect.top() + (outputH * scaleY * 0.5);
+
+    QMatrix4x4 matrix;
+    matrix.setToIdentity();
+    matrix(0, 0) = static_cast<float>((outputW * scaleX) / swapW);
+    matrix(1, 1) = static_cast<float>((outputH * scaleY) / swapH);
+    matrix(0, 3) = static_cast<float>((2.0 * centerX / swapW) - 1.0);
+    matrix(1, 3) = static_cast<float>((2.0 * centerY / swapH) - 1.0);
+    return matrix;
+}
+
 void mvpForTitle3DRect(const QRectF& rect,
                        const QPointF& titleCenter,
-                       const QSize& swapSize,
+                       const QSize& projectionSize,
                        const EvaluatedTitle& title,
                        float outMvp[16])
 {
-    const qreal w = qMax<qreal>(1.0, swapSize.width());
-    const qreal h = qMax<qreal>(1.0, swapSize.height());
+    const qreal w = qMax<qreal>(1.0, projectionSize.width());
+    const qreal h = qMax<qreal>(1.0, projectionSize.height());
     const qreal aspect = w / h;
     const float cameraDistance = 5.2f;
     const float fovDegrees = 43.0f;
@@ -610,11 +634,11 @@ void mvpForTitle3DRect(const QRectF& rect,
     std::copy(mvp.constData(), mvp.constData() + 16, outMvp);
 }
 
-void mvpForTitleMesh(const QPointF& center, qreal pixelHeight, const QSize& swapSize,
+void mvpForTitleMesh(const QPointF& center, qreal pixelHeight, const QSize& projectionSize,
                      const EvaluatedTitle& title, float outMvp[16])
 {
-    const qreal w = qMax<qreal>(1.0, swapSize.width());
-    const qreal h = qMax<qreal>(1.0, swapSize.height());
+    const qreal w = qMax<qreal>(1.0, projectionSize.width());
+    const qreal h = qMax<qreal>(1.0, projectionSize.height());
     const qreal aspect = w / h;
     constexpr float cameraDistance = 5.2f;
     constexpr float fovDegrees = 43.0f;
@@ -2419,13 +2443,17 @@ bool VulkanTextRenderer::drawTitleMesh(VkCommandBuffer commandBuffer,
     VkRect2D scissor{};
     scissor.offset = {0, 0};
     scissor.extent = {static_cast<uint32_t>(qMax(1, swapSize.width())), static_cast<uint32_t>(qMax(1, swapSize.height()))};
-    const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
-    const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
     const QPointF animatedCenter = layout.center + QPointF(title.x, title.y);
-    const QPointF center(outputTargetRect.left() + animatedCenter.x() * scaleX,
-                         outputTargetRect.top() + animatedCenter.y() * scaleY);
+    const QPointF center(animatedCenter.x(), animatedCenter.y());
     VulkanTextPipeline::Push push{};
-    mvpForTitleMesh(center, meshTitle.fontSize * scaleY, swapSize, meshTitle, push.mvp);
+    float outputMvp[16];
+    mvpForTitleMesh(center, meshTitle.fontSize, outputSize, meshTitle, outputMvp);
+    const QMatrix4x4 previewMap =
+        outputNdcToSwapNdc(outputSize, outputTargetRect, swapSize);
+    QMatrix4x4 outputMvpMatrix;
+    std::copy(outputMvp, outputMvp + 16, outputMvpMatrix.data());
+    const QMatrix4x4 mappedMvp = previewMap * outputMvpMatrix;
+    std::copy(mappedMvp.constData(), mappedMvp.constData() + 16, push.mvp);
     const QColor color = title.color.isValid() ? title.color : QColor(Qt::white);
     push.color[0] = color.redF(); push.color[1] = color.greenF(); push.color[2] = color.blueF();
     push.color[3] = qBound<qreal>(0.0, color.alphaF() * title.opacity, 1.0);
@@ -2764,33 +2792,30 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                         : m_lastFailureReason);
     }
 
-    const qreal scaleX = outputTargetRect.width() / qMax<qreal>(1.0, outputSize.width());
-    const qreal scaleY = outputTargetRect.height() / qMax<qreal>(1.0, outputSize.height());
     const QPointF animationOffset(title.x, title.y);
     const qreal titleOpacity = qBound<qreal>(0.0, title.opacity, 1.0);
     auto withTitleOpacity = [&](QColor color) {
         color.setAlphaF(qBound<qreal>(0.0, color.alphaF() * titleOpacity, 1.0));
         return color;
     };
-    auto mapPoint = [&](const QPointF& point) {
-        return QPointF(outputTargetRect.left() + point.x() * scaleX,
-                       outputTargetRect.top() + point.y() * scaleY);
-    };
-    auto mapRect = [&](const QRectF& rect) {
-        return QRectF(outputTargetRect.left() + rect.left() * scaleX,
-                      outputTargetRect.top() + rect.top() * scaleY,
-                      rect.width() * scaleX,
-                      rect.height() * scaleY);
+    const QMatrix4x4 previewMap =
+        outputNdcToSwapNdc(outputSize, outputTargetRect, swapSize);
+    auto outputTitleMvp = [&](const QRectF& rect, float outMvp[16]) {
+        float outputMvp[16];
+        mvpForTitle3DRect(rect,
+                          layout->center + animationOffset,
+                          outputSize,
+                          title,
+                          outputMvp);
+        QMatrix4x4 outputMvpMatrix;
+        std::copy(outputMvp, outputMvp + 16, outputMvpMatrix.data());
+        const QMatrix4x4 mappedMvp = previewMap * outputMvpMatrix;
+        std::copy(mappedMvp.constData(), mappedMvp.constData() + 16, outMvp);
     };
 
-    const QPointF mappedCenter = mapPoint(layout->center + animationOffset);
     for (const TranscriptBackground& background : layout->backgrounds) {
         float mvp[16];
-        mvpForTitle3DRect(mapRect(background.rect.translated(animationOffset)),
-                          mappedCenter,
-                          swapSize,
-                          title,
-                          mvp);
+        outputTitleMvp(background.rect.translated(animationOffset), mvp);
         drawGlyphWithMvp(commandBuffer,
                          swapSize,
                          mvp,
@@ -2832,13 +2857,13 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
                                              side.alphaF() * (0.76 + title.vulkan3DBevelScale * 0.10),
                                              0.96));
                 const QRectF extrudedRect =
-                    mapRect(glyph.rect.translated(animationOffset)
-                                 .translated(layerOffset, layerOffset * 0.58));
+                    glyph.rect.translated(animationOffset)
+                        .translated(layerOffset, layerOffset * 0.58);
                 const QRectF sideUv = !stackedCopies &&
                         layer <= bevelLayers && !glyph.erodedUv.isEmpty()
                     ? glyph.erodedUv : glyph.uv;
                 float mvp[16];
-                mvpForTitle3DRect(extrudedRect, mappedCenter, swapSize, title, mvp);
+                outputTitleMvp(extrudedRect, mvp);
                 drawGlyphWithMvp(commandBuffer,
                                  swapSize,
                                  mvp,
@@ -2853,11 +2878,7 @@ bool VulkanTextRenderer::drawTitleOverlay3D(VkCommandBuffer commandBuffer,
     for (const LaidOutGlyph& glyph : layout->glyphs) {
         if (meshDrawn && glyph.extrudable) continue;
         float mvp[16];
-        mvpForTitle3DRect(mapRect(glyph.rect.translated(animationOffset)),
-                          mappedCenter,
-                          swapSize,
-                          title,
-                          mvp);
+        outputTitleMvp(glyph.rect.translated(animationOffset), mvp);
         drawGlyphWithMvp(commandBuffer,
                          swapSize,
                          mvp,

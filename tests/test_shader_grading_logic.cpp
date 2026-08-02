@@ -26,6 +26,8 @@ private slots:
     void testVulkanShaderHasSeparateMaskCurveLut();
     void testVulkanMaskPreprocessShadersExist();
     void testVulkanMaskPrepareUsesBilinearResampling();
+    void testVulkanMaskPrepareUsesMotionTolerantTemporalMedian();
+    void testVulkanTemporalMaskChannelsPackNeighborFrames();
     void testVulkanMaskMorphShaderUsesMinMax();
     void testVulkanMaskBlurShaderIsSeparable();
     void testVulkanRenderersLoadRawMasksForGpuPreprocess();
@@ -137,6 +139,60 @@ void TestShaderGradingLogic::testVulkanMaskPrepareUsesBilinearResampling()
              "Mask scaling must preserve continuous alpha with bilinear reconstruction.");
     QVERIFY2(shader.contains(QStringLiteral("- vec2(0.5)")),
              "Mask scaling must map between texel centers.");
+}
+
+void TestShaderGradingLogic::
+    testVulkanMaskPrepareUsesMotionTolerantTemporalMedian()
+{
+    QFile shaderFile(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/mask_prepare.comp"));
+    QVERIFY2(shaderFile.open(QIODevice::ReadOnly), "Unable to open mask prepare shader.");
+    const QString shader = QString::fromUtf8(shaderFile.readAll());
+
+    QVERIFY2(shader.contains(QStringLiteral("temporalEnabled")) &&
+                 shader.contains(QStringLiteral("temporalStrength")) &&
+                 shader.contains(QStringLiteral("temporalMotionRadius")),
+             "Temporal stabilization controls must reach the Vulkan compute shader.");
+    QVERIFY2(shader.contains(QStringLiteral("vec2 neighbors = packed.rb")) &&
+                 shader.contains(QStringLiteral("median3(previous, value, next)")),
+             "The Vulkan stage must median the previous/current/next alpha masks.");
+    QVERIFY2(shader.contains(QStringLiteral("return clamp(vec2(current), minimumValue, maximumValue)")),
+             "Neighbor masks must be motion matched before the temporal median.");
+}
+
+void TestShaderGradingLogic::testVulkanTemporalMaskChannelsPackNeighborFrames()
+{
+    const auto gray = [](std::initializer_list<std::uint8_t> bytes) {
+        jcut::core::ImageBuffer image;
+        image.format = jcut::core::PixelFormat::Gray8;
+        image.size = {2, 2};
+        image.strideBytes = 2;
+        image.bytes.assign(bytes);
+        return image;
+    };
+    const jcut::core::ImageBuffer previous = gray({1, 2, 3, 4});
+    const jcut::core::ImageBuffer current = gray({11, 12, 13, 14});
+    const jcut::core::ImageBuffer next = gray({21, 22, 23, 24});
+
+    const QByteArray packed = packVulkanTemporalMaskChannels(
+        current, &previous, &next);
+    QCOMPARE(packed.size(), 16);
+    const auto channel = [&packed](int offset) {
+        return static_cast<std::uint8_t>(packed.at(offset));
+    };
+    QCOMPARE(channel(0), std::uint8_t{1});
+    QCOMPARE(channel(1), std::uint8_t{11});
+    QCOMPARE(channel(2), std::uint8_t{21});
+    QCOMPARE(channel(3), std::uint8_t{255});
+    QCOMPARE(channel(12), std::uint8_t{4});
+    QCOMPARE(channel(13), std::uint8_t{14});
+    QCOMPARE(channel(14), std::uint8_t{24});
+    QCOMPARE(channel(15), std::uint8_t{255});
+
+    const QByteArray boundaryPacked = packVulkanTemporalMaskChannels(
+        current, nullptr, nullptr);
+    QCOMPARE(static_cast<std::uint8_t>(boundaryPacked.at(0)), std::uint8_t{11});
+    QCOMPARE(static_cast<std::uint8_t>(boundaryPacked.at(1)), std::uint8_t{11});
+    QCOMPARE(static_cast<std::uint8_t>(boundaryPacked.at(2)), std::uint8_t{11});
 }
 
 void TestShaderGradingLogic::testVulkanMaskMorphShaderUsesMinMax()
@@ -287,6 +343,13 @@ void TestShaderGradingLogic::
     QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
     changed = options;
     changed.correctionStorage[0] = '\1';
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    changed = options;
+    changed.temporalStabilizeEnabled = true;
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    changed.temporalStabilizeStrength = 0.25f;
+    QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
+    changed.temporalStabilizeMotionRadius = 12;
     QVERIFY(base != vulkanMaskTextureCacheKey(changed, QSize(1920, 1080)));
     QVERIFY(base != vulkanMaskTextureCacheKey(options, QSize(1280, 720)));
 

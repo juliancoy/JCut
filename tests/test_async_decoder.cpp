@@ -1,7 +1,9 @@
 #include <QtTest/QtTest>
 #include <QTemporaryFile>
 #include <QSignalSpy>
+#include <QThread>
 #include <atomic>
+#include <mutex>
 #include "../async_decoder.h"
 
 using namespace editor;
@@ -13,6 +15,7 @@ private slots:
     void testInitialization();
     void testVideoInfo();
     void testInvalidFile();
+    void testCompletionRunsOnDecoderLane();
     void testMissingFileFailureIsReportedOnce();
     void testRequestFrame();
     void testCancelRequests();
@@ -48,18 +51,43 @@ void TestAsyncDecoder::testInvalidFile() {
     AsyncDecoder decoder;
     decoder.initialize();
     
-    bool callbackCalled = false;
+    std::atomic<bool> callbackCalled{false};
+    std::mutex frameMutex;
     FrameHandle receivedFrame;
     
     decoder.requestFrame("/nonexistent/file.mp4", 0, 100, 1000,
-        [&callbackCalled, &receivedFrame](FrameHandle frame) {
-            callbackCalled = true;
+        [&callbackCalled, &frameMutex, &receivedFrame](FrameHandle frame) {
+            std::lock_guard<std::mutex> lock(frameMutex);
             receivedFrame = frame;
+            callbackCalled.store(true, std::memory_order_release);
         });
     
-    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled, 1000);
-    QVERIFY(callbackCalled);
+    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled.load(std::memory_order_acquire), 1000);
+    std::lock_guard<std::mutex> lock(frameMutex);
     QVERIFY(receivedFrame.isNull());
+    decoder.shutdown();
+}
+
+void TestAsyncDecoder::testCompletionRunsOnDecoderLane() {
+    AsyncDecoder decoder;
+    QVERIFY(decoder.initialize());
+
+    QThread* ownerThread = QThread::currentThread();
+    std::atomic<bool> callbackCalled{false};
+    std::atomic<bool> ranOnOwnerThread{true};
+    decoder.requestFrame(
+        QStringLiteral("/nonexistent/decoder-lane-contract.mp4"),
+        0,
+        100,
+        1000,
+        [ownerThread, &callbackCalled, &ranOnOwnerThread](FrameHandle) {
+            ranOnOwnerThread.store(QThread::currentThread() == ownerThread,
+                                   std::memory_order_release);
+            callbackCalled.store(true, std::memory_order_release);
+        });
+
+    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled.load(std::memory_order_acquire), 1000);
+    QVERIFY(!ranOnOwnerThread.load(std::memory_order_acquire));
     decoder.shutdown();
 }
 
@@ -87,15 +115,15 @@ void TestAsyncDecoder::testRequestFrame() {
     decoder.initialize();
     
     // Create a dummy request to test the queue system
-    bool callbackCalled = false;
+    std::atomic<bool> callbackCalled{false};
     uint64_t seqId = decoder.requestFrame("/tmp/test.mp4", 0, 100, 1000,
-        [&callbackCalled](FrameHandle frame) {
-            callbackCalled = true;
+        [&callbackCalled](FrameHandle) {
+            callbackCalled.store(true, std::memory_order_release);
         });
     
     QVERIFY(seqId > 0);
     QVERIFY(decoder.pendingRequestCount() >= 0);
-    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(callbackCalled.load(std::memory_order_acquire), 1000);
     decoder.shutdown();
 }
 

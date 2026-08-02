@@ -435,7 +435,7 @@ bool VulkanResources::createTextureResources()
         !createImageAndView(kCurveLutWidth, kCurveLutHeight, &m_curveLutImage, &m_curveLutMemory, &m_curveLutView) ||
         !createImageAndView(kCurveLutWidth, kCurveLutHeight, &m_maskCurveLutImage, &m_maskCurveLutMemory, &m_maskCurveLutView) ||
         !createMaskImage(QSize(static_cast<int>(kTextureWidth), static_cast<int>(kTextureHeight)),
-                         VK_FORMAT_R8_UNORM,
+                         VK_FORMAT_R8G8B8A8_UNORM,
                          &m_maskRawImage, &m_maskRawMemory, &m_maskRawView) ||
         !createMaskImage(QSize(static_cast<int>(kTextureWidth), static_cast<int>(kTextureHeight)),
                          VK_FORMAT_R8G8B8A8_UNORM,
@@ -874,7 +874,7 @@ bool VulkanResources::ensureRawMaskImage(const QSize& size)
     retireMaskImage(m_maskRawImage, m_maskRawMemory, m_maskRawView);
     m_maskRawLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!createMaskImage(size,
-                         VK_FORMAT_R8_UNORM,
+                         VK_FORMAT_R8G8B8A8_UNORM,
                          &m_maskRawImage,
                          &m_maskRawMemory,
                          &m_maskRawView)) {
@@ -1583,6 +1583,17 @@ bool VulkanResources::uploadMaskTexture(
     const jcut::core::ImageBuffer& image,
     const VulkanMaskPreprocessOptions& options)
 {
+    return uploadMaskTexture(
+        commandBuffer, image, nullptr, nullptr, options);
+}
+
+bool VulkanResources::uploadMaskTexture(
+    VkCommandBuffer commandBuffer,
+    const jcut::core::ImageBuffer& image,
+    const jcut::core::ImageBuffer* previous,
+    const jcut::core::ImageBuffer* next,
+    const VulkanMaskPreprocessOptions& options)
+{
     if (!m_initialized || !commandBuffer || image.empty() ||
         image.format != jcut::core::PixelFormat::Gray8 ||
         image.strideBytes < image.size.width) {
@@ -1597,28 +1608,10 @@ bool VulkanResources::uploadMaskTexture(
         m_maskLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         return true;
     }
-    const std::size_t packedByteCount =
-        static_cast<std::size_t>(rawSize.width()) *
-        static_cast<std::size_t>(rawSize.height());
-    const std::uint8_t* maskPixels = nullptr;
-    std::vector<std::uint8_t> packedMask;
-    if (image.strideBytes == rawSize.width()) {
-        maskPixels = image.bytes.data();
-    } else {
-        packedMask.resize(packedByteCount);
-        maskPixels = packedMask.data();
-        for (int y = 0; y < rawSize.height(); ++y) {
-            const std::uint8_t* src =
-                image.bytes.data() +
-                static_cast<std::size_t>(y) * image.strideBytes;
-            std::uint8_t* dst =
-                packedMask.data() +
-                static_cast<std::size_t>(y) * rawSize.width();
-            std::memcpy(
-                dst,
-                src,
-                static_cast<std::size_t>(rawSize.width()));
-        }
+    const QByteArray packedMask = packVulkanTemporalMaskChannels(
+        image, previous, next);
+    if (packedMask.isEmpty()) {
+        return false;
     }
 
     const QSize outputSize = options.outputSize.isValid() && options.outputSize.width() > 0 && options.outputSize.height() > 0
@@ -1629,10 +1622,10 @@ bool VulkanResources::uploadMaskTexture(
     }
 
     const VkDeviceSize bytes =
-        static_cast<VkDeviceSize>(packedByteCount);
+        static_cast<VkDeviceSize>(packedMask.size());
     VkDeviceSize stagingOffset = 0;
     if (!writeStagingUpload(
-            maskPixels, bytes, &stagingOffset)) {
+            packedMask.constData(), bytes, &stagingOffset)) {
         return false;
     }
 

@@ -11,6 +11,7 @@
 #include <QTemporaryDir>
 
 #include "../render.h"
+#include "../render_internal.h"
 #include "../render_runtime.h"
 
 #include <cmath>
@@ -43,11 +44,38 @@ class TestVulkanPreviewOfflineExport final : public QObject {
 private slots:
     void exportsPreviewCompositionHeadlesslyWithoutPreviewConsumer();
     void linkedMaskLayersShareOneHardwareSourceImport();
+    void temporalMaskStabilizationRunsInVulkanPreview();
     void ordinaryVideoAsyncExportIsStableOffGuiThread();
+    void preparedFrameQueueIsBoundedAndThreadSafe();
     void speechFilterFrameCrossfadeStaysInVulkanComposition();
     void imageSequenceExportPublishesGpuPreviewFrames();
     void previewLossCancellationResumeAndFinalProbeRemainBounded();
 };
+
+void TestVulkanPreviewOfflineExport::preparedFrameQueueIsBoundedAndThreadSafe()
+{
+    render_detail::RenderPreparedFrameQueue queue;
+    const QString path = QStringLiteral("prepared-frame-source");
+    QImage pixel(2, 2, QImage::Format_RGBA8888);
+    pixel.fill(Qt::black);
+
+    std::thread producer([&]() {
+        for (int64_t frame = 0;
+             frame < render_detail::RenderPreparedFrameQueue::kCapacity + 16;
+             ++frame) {
+            queue.insert(editor::FrameHandle::createCpuFrame(pixel, frame, path));
+        }
+    });
+    producer.join();
+
+    QCOMPARE(queue.size(), render_detail::RenderPreparedFrameQueue::kCapacity);
+    QVERIFY(queue.find({path, 0}).isNull());
+    const int64_t newest =
+        render_detail::RenderPreparedFrameQueue::kCapacity + 15;
+    const editor::FrameHandle prepared = queue.find({path, newest});
+    QVERIFY(!prepared.isNull());
+    QCOMPARE(prepared.frameNumber(), newest);
+}
 
 void TestVulkanPreviewOfflineExport::
     ordinaryVideoAsyncExportIsStableOffGuiThread()
@@ -266,6 +294,119 @@ void TestVulkanPreviewOfflineExport::
         counts.value(QStringLiteral(
             "__render_frame_hardware_source_reuse__")),
         6);
+}
+
+void TestVulkanPreviewOfflineExport::
+    temporalMaskStabilizationRunsInVulkanPreview()
+{
+    qputenv("JCUT_RENDER_BACKEND", "vulkan");
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString fixturePath =
+        directory.filePath(QStringLiteral("temporal-source.png"));
+    QImage fixture(160, 90, QImage::Format_RGBA8888);
+    fixture.fill(QColor(40, 210, 70));
+    QVERIFY(fixture.save(fixturePath));
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    QVERIFY2(!ffmpeg.isEmpty(), "ffmpeg is required");
+    const QString sourcePath =
+        directory.filePath(QStringLiteral("temporal-source.mp4"));
+    QProcess makeSource;
+    makeSource.start(
+        ffmpeg,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-loop"), QStringLiteral("1"),
+         QStringLiteral("-i"), fixturePath,
+         QStringLiteral("-frames:v"), QStringLiteral("3"),
+         QStringLiteral("-c:v"), QStringLiteral("h264_nvenc"),
+         QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+         QStringLiteral("-y"), sourcePath});
+    QVERIFY(makeSource.waitForFinished(30000));
+    QVERIFY2(makeSource.exitCode() == 0,
+             makeSource.readAllStandardError().constData());
+
+    const QString maskDirectory =
+        directory.filePath(QStringLiteral("temporal_alpha"));
+    QVERIFY(QDir().mkpath(maskDirectory));
+    for (int ordinal = 1; ordinal <= 3; ++ordinal) {
+        QImage mask(160, 90, QImage::Format_Grayscale8);
+        mask.fill(ordinal == 2 ? 0 : 255);
+        QVERIFY(mask.save(
+            QDir(maskDirectory).filePath(
+                QStringLiteral("frame_%1.png")
+                    .arg(ordinal, 6, 10, QChar('0')))));
+    }
+
+    TimelineClip source;
+    source.id = QStringLiteral("temporal-source-owner");
+    source.filePath = sourcePath;
+    source.mediaType = ClipMediaType::Video;
+    source.clipRole = ClipRole::Media;
+    source.videoEnabled = false;
+    source.audioEnabled = false;
+    source.startFrame = 0;
+    source.durationFrames = 3;
+    source.sourceDurationFrames = 3;
+    source.sourceFps = 30.0;
+    source.sourceFrameSize = QSize(160, 90);
+    source.trackIndex = 0;
+
+    TimelineClip matte = source;
+    matte.id = QStringLiteral("temporal-mask-child");
+    matte.clipRole = ClipRole::MaskMatte;
+    matte.linkedSourceClipId = source.id;
+    matte.videoEnabled = true;
+    matte.maskEnabled = true;
+    matte.maskFramesDir = maskDirectory;
+    matte.maskShowOnly = true;
+    matte.trackIndex = 1;
+
+    jcut::render::RenderRequestCore previewRequest;
+    previewRequest.outputPath = "test://temporal-mask-preview";
+    previewRequest.outputFormat = "preview";
+    previewRequest.outputSize = {160, 90};
+    previewRequest.outputFps = 30.0;
+    previewRequest.exportStartFrame = 0;
+    previewRequest.exportEndFrame = 2;
+
+    jcut::render::TimelineRenderData timeline;
+    timeline.clips = {source, matte};
+    TimelineTrack sourceTrack;
+    sourceTrack.name = QStringLiteral("Source");
+    TimelineTrack maskTrack;
+    maskTrack.name = QStringLiteral("Mask");
+    timeline.tracks = {sourceTrack, maskTrack};
+    timeline.exportRanges = {ExportRangeSegment{0, 2}};
+
+    const auto renderMiddle = [&](bool enabled) {
+        timeline.clips[1].maskTemporalStabilizeEnabled = enabled;
+        timeline.clips[1].maskTemporalStabilizeStrength = 1.0;
+        timeline.clips[1].maskTemporalStabilizeMotionRadius = 0;
+        return jcut::render::renderPreviewFrameCore(
+            previewRequest, timeline, 1, true, true);
+    };
+    const jcut::render::PreviewFrameResultCore raw = renderMiddle(false);
+    QVERIFY2(raw.success, raw.message.c_str());
+    const jcut::render::PreviewFrameResultCore stabilized = renderMiddle(true);
+    QVERIFY2(stabilized.success, stabilized.message.c_str());
+    QVERIFY(raw.usedGpu);
+    QVERIFY(stabilized.usedGpu);
+
+    const auto centerLuma = [](const jcut::core::ImageBuffer& image) {
+        const std::size_t offset = static_cast<std::size_t>(
+            (image.size.height / 2) * image.strideBytes +
+            (image.size.width / 2) * 4);
+        return static_cast<int>(image.bytes[offset]) +
+            static_cast<int>(image.bytes[offset + 1]) +
+            static_cast<int>(image.bytes[offset + 2]);
+    };
+    QVERIFY2(centerLuma(raw.image) < 30,
+             "The unstabilized one-frame matte dropout must remain black.");
+    QVERIFY2(centerLuma(stabilized.image) > 600,
+             "The Vulkan temporal median must suppress a one-frame matte dropout.");
 }
 
 void TestVulkanPreviewOfflineExport::

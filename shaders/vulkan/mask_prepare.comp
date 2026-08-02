@@ -13,14 +13,22 @@ layout(push_constant) uniform Push {
     ivec2 inputSize;
     int invert;
     int applyCorrections;
+    int temporalEnabled;
+    float temporalStrength;
+    int temporalMotionRadius;
+    int reserved;
 } pc;
 
-float maskValueAt(ivec2 srcCoord)
+float maskValueAt(ivec2 srcCoord, int channel)
 {
-    return texelFetch(u_input_mask, clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0))), 0).r;
+    vec4 packed = texelFetch(
+        u_input_mask,
+        clamp(srcCoord, ivec2(0), max(pc.inputSize - ivec2(1), ivec2(0))),
+        0);
+    return channel == 0 ? packed.r : (channel == 1 ? packed.g : packed.b);
 }
 
-float bilinearMaskValue(vec2 srcPosition)
+float bilinearMaskValue(vec2 srcPosition, int channel)
 {
     // Work in texel-center coordinates.  This preserves continuous alpha when
     // mask artifacts and render targets have different resolutions instead of
@@ -28,11 +36,46 @@ float bilinearMaskValue(vec2 srcPosition)
     vec2 basePosition = floor(srcPosition);
     vec2 fraction = srcPosition - basePosition;
     ivec2 base = ivec2(basePosition);
-    float top = mix(maskValueAt(base), maskValueAt(base + ivec2(1, 0)), fraction.x);
-    float bottom = mix(maskValueAt(base + ivec2(0, 1)),
-                       maskValueAt(base + ivec2(1, 1)),
+    float top = mix(maskValueAt(base, channel),
+                    maskValueAt(base + ivec2(1, 0), channel), fraction.x);
+    float bottom = mix(maskValueAt(base + ivec2(0, 1), channel),
+                       maskValueAt(base + ivec2(1, 1), channel),
                        fraction.x);
     return mix(top, bottom, fraction.y);
+}
+
+vec4 packedMaskAt(vec2 srcPosition)
+{
+    vec2 uv = (srcPosition + vec2(0.5)) /
+        vec2(max(pc.inputSize, ivec2(1)));
+    return texture(u_input_mask, uv);
+}
+
+vec2 motionMatchedNeighbors(vec2 srcPosition, float current)
+{
+    int radius = clamp(pc.temporalMotionRadius, 0, 32);
+    const ivec2 directions[9] = ivec2[](
+        ivec2(0, 0),
+        ivec2(-1, 0), ivec2(1, 0),
+        ivec2(0, -1), ivec2(0, 1),
+        ivec2(-1, -1), ivec2(1, -1),
+        ivec2(-1, 1), ivec2(1, 1));
+    vec2 minimumValue = vec2(1.0);
+    vec2 maximumValue = vec2(0.0);
+    int sampleCount = radius == 0 ? 1 : 9;
+    for (int index = 0; index < sampleCount; ++index) {
+        vec2 offset = vec2(directions[index] * radius);
+        vec4 packed = packedMaskAt(srcPosition + offset);
+        vec2 neighbors = packed.rb;
+        minimumValue = min(minimumValue, neighbors);
+        maximumValue = max(maximumValue, neighbors);
+    }
+    return clamp(vec2(current), minimumValue, maximumValue);
+}
+
+float median3(float a, float b, float c)
+{
+    return max(min(a, b), min(max(a, b), c));
 }
 
 bool correctionPolygonContains(uint polygonIndex, vec2 point)
@@ -98,7 +141,14 @@ void main()
 
     vec2 dstUv = (vec2(dstCoord) + vec2(0.5)) / vec2(max(pc.outputSize, ivec2(1)));
     vec2 srcPosition = dstUv * vec2(max(pc.inputSize, ivec2(1))) - vec2(0.5);
-    float value = bilinearMaskValue(srcPosition);
+    float value = bilinearMaskValue(srcPosition, 1);
+    if (pc.temporalEnabled != 0 && pc.temporalStrength > 0.0) {
+        vec2 neighbors = motionMatchedNeighbors(srcPosition, value);
+        float previous = neighbors.x;
+        float next = neighbors.y;
+        float stabilized = median3(previous, value, next);
+        value = mix(value, stabilized, clamp(pc.temporalStrength, 0.0, 1.0));
+    }
     if (pc.applyCorrections != 0) {
         value *= 1.0 - correctionCoverage(dstCoord);
     }

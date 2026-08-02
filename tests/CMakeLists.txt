@@ -408,6 +408,17 @@ target_sources(test_facedetections_flow
 find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
 
 add_test(
+    NAME test_birefnet_pipeline
+    COMMAND ${CMAKE_COMMAND} -E env
+            PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_birefnet_pipeline.py
+)
+set_tests_properties(test_birefnet_pipeline PROPERTIES
+    LABELS "logic"
+)
+
+add_test(
     NAME test_apply_media_alignment
     COMMAND ${JCUT_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/test_apply_media_alignment.py

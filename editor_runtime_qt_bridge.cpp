@@ -219,6 +219,12 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.maskDilate = clip.maskDilate;
         coreClip.maskErode = clip.maskErode;
         coreClip.maskBlur = clip.maskBlur;
+        coreClip.maskTemporalStabilizeEnabled =
+            clip.maskTemporalStabilizeEnabled;
+        coreClip.maskTemporalStabilizeStrength =
+            clip.maskTemporalStabilizeStrength;
+        coreClip.maskTemporalStabilizeMotionRadius =
+            clip.maskTemporalStabilizeMotionRadius;
         coreClip.maskInvert = clip.maskInvert;
         coreClip.maskShowOnly = clip.maskShowOnly;
         coreClip.maskOpacity = clip.maskOpacity;

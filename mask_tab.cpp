@@ -202,6 +202,7 @@ void MaskTab::wire()
                 });
     }
     for (QCheckBox* check : {m_widgets.invertCheck,
+                             m_widgets.temporalStabilizeCheck,
                              m_widgets.showOnlyCheck,
                              m_widgets.foregroundLayerCheck,
                              m_widgets.repeatEnabledCheck,
@@ -226,6 +227,15 @@ void MaskTab::wire()
     connectApply(m_widgets.dilateSpin);
     connectApply(m_widgets.erodeSpin);
     connectApply(m_widgets.blurSpin);
+    connectApply(m_widgets.temporalStabilizeStrengthSpin);
+    if (m_widgets.temporalStabilizeMotionRadiusSpin) {
+        connect(m_widgets.temporalStabilizeMotionRadiusSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int) { scheduleTreatmentEdit(); });
+        connect(m_widgets.temporalStabilizeMotionRadiusSpin,
+                &QSpinBox::editingFinished,
+                this, [this]() { applyTreatmentEdit(true); });
+    }
     connectApply(m_widgets.opacitySpin);
     connectApply(m_widgets.repeatDeltaXSpin);
     connectApply(m_widgets.repeatDeltaYSpin);
@@ -674,6 +684,25 @@ void MaskTab::refresh()
         setSpin(m_widgets.dilateSpin, clip->maskDilate);
         setSpin(m_widgets.erodeSpin, clip->maskErode);
         setSpin(m_widgets.blurSpin, clip->maskBlur);
+        setCheck(m_widgets.temporalStabilizeCheck,
+                 clip->maskTemporalStabilizeEnabled);
+        setSpin(m_widgets.temporalStabilizeStrengthSpin,
+                clip->maskTemporalStabilizeStrength);
+        if (m_widgets.temporalStabilizeMotionRadiusSpin) {
+            QSignalBlocker blocker(m_widgets.temporalStabilizeMotionRadiusSpin);
+            m_widgets.temporalStabilizeMotionRadiusSpin->setValue(
+                clip->maskTemporalStabilizeMotionRadius);
+        }
+        const bool temporalControlsEnabled =
+            treatmentActive && clip->maskTemporalStabilizeEnabled;
+        if (m_widgets.temporalStabilizeStrengthSpin) {
+            m_widgets.temporalStabilizeStrengthSpin->setEnabled(
+                temporalControlsEnabled);
+        }
+        if (m_widgets.temporalStabilizeMotionRadiusSpin) {
+            m_widgets.temporalStabilizeMotionRadiusSpin->setEnabled(
+                temporalControlsEnabled);
+        }
         setCheck(m_widgets.invertCheck, clip->maskInvert);
         const bool showOnlyAvailable =
             treatmentActive && !clip->maskForegroundLayerEnabled;
@@ -811,6 +840,15 @@ void MaskTab::apply(bool pushHistory, bool zLevelEdited)
         clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
         clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
         clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
+        clip.maskTemporalStabilizeEnabled =
+            m_widgets.temporalStabilizeCheck &&
+            m_widgets.temporalStabilizeCheck->isChecked();
+        clip.maskTemporalStabilizeStrength =
+            m_widgets.temporalStabilizeStrengthSpin
+                ? m_widgets.temporalStabilizeStrengthSpin->value() : 0.75;
+        clip.maskTemporalStabilizeMotionRadius =
+            m_widgets.temporalStabilizeMotionRadiusSpin
+                ? m_widgets.temporalStabilizeMotionRadiusSpin->value() : 4;
         clip.maskInvert = m_widgets.invertCheck && m_widgets.invertCheck->isChecked();
         clip.maskShowOnly =
             !clip.maskForegroundLayerEnabled &&
@@ -883,6 +921,15 @@ void MaskTab::applyTreatmentEdit(bool commit, bool zLevelEdited)
             clip.maskDilate = m_widgets.dilateSpin ? m_widgets.dilateSpin->value() : 0.0;
             clip.maskErode = m_widgets.erodeSpin ? m_widgets.erodeSpin->value() : 0.0;
             clip.maskBlur = m_widgets.blurSpin ? m_widgets.blurSpin->value() : 0.0;
+            clip.maskTemporalStabilizeEnabled =
+                m_widgets.temporalStabilizeCheck &&
+                m_widgets.temporalStabilizeCheck->isChecked();
+            clip.maskTemporalStabilizeStrength =
+                m_widgets.temporalStabilizeStrengthSpin
+                    ? m_widgets.temporalStabilizeStrengthSpin->value() : 0.75;
+            clip.maskTemporalStabilizeMotionRadius =
+                m_widgets.temporalStabilizeMotionRadiusSpin
+                    ? m_widgets.temporalStabilizeMotionRadiusSpin->value() : 4;
             clip.maskOpacity = m_widgets.opacitySpin ? m_widgets.opacitySpin->value() : 1.0;
             clip.maskRepeatDeltaX =
                 m_widgets.repeatDeltaXSpin ? m_widgets.repeatDeltaXSpin->value() : 160.0;
@@ -926,6 +973,9 @@ void MaskTab::setControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.dilateSpin),
                             static_cast<QWidget*>(m_widgets.erodeSpin),
                             static_cast<QWidget*>(m_widgets.blurSpin),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeCheck),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeStrengthSpin),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeMotionRadiusSpin),
                             static_cast<QWidget*>(m_widgets.invertCheck),
                             static_cast<QWidget*>(m_widgets.showOnlyCheck),
                             static_cast<QWidget*>(m_widgets.opacitySpin),
@@ -962,6 +1012,9 @@ void MaskTab::setTreatmentControlsEnabled(bool enabled)
                             static_cast<QWidget*>(m_widgets.dilateSpin),
                             static_cast<QWidget*>(m_widgets.erodeSpin),
                             static_cast<QWidget*>(m_widgets.blurSpin),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeCheck),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeStrengthSpin),
+                            static_cast<QWidget*>(m_widgets.temporalStabilizeMotionRadiusSpin),
                             static_cast<QWidget*>(m_widgets.invertCheck),
                             static_cast<QWidget*>(m_widgets.showOnlyCheck),
                             static_cast<QWidget*>(m_widgets.opacitySpin),

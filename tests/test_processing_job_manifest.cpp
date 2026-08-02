@@ -304,6 +304,16 @@ private slots:
     QCOMPARE(
         plan.manifest["parameters"]["guidance_gate_radius"].get<int>(),
         37);
+    QCOMPARE(
+        QString::fromStdString(
+            plan.manifest["parameters"]["decoder_backend"].get<std::string>()),
+        QStringLiteral("opencv_cpu"));
+    QCOMPARE(
+        QString::fromStdString(
+            plan.manifest["parameters"]["pipeline_version"].get<std::string>()),
+        QStringLiteral("jcut_birefnet_bounded_v1"));
+    QCOMPARE(plan.manifest["parameters"]["publication_slots"].get<int>(), 1);
+    QCOMPARE(plan.manifest["parameters"]["preview_slots"].get<int>(), 1);
     QVERIFY(QString::fromStdString(plan.outputDirectory).contains(
         QStringLiteral("guided_portrait_sam3_person_binary_masks")));
     QVERIFY(plan.environment.contains("BIREFNET_JOB_ROOT"));

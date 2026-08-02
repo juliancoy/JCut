@@ -2053,6 +2053,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.maskErode = clip.maskErode;
         status.maskDilate = clip.maskDilate;
         status.maskBlur = clip.maskBlur;
+        status.maskTemporalStabilizeEnabled =
+            clip.maskTemporalStabilizeEnabled;
+        status.maskTemporalStabilizeStrength =
+            clip.maskTemporalStabilizeStrength;
+        status.maskTemporalStabilizeMotionRadius =
+            clip.maskTemporalStabilizeMotionRadius;
         status.setCorrectionPolygons(effects.correctionPolygons);
         status.correctionsApplied = false;
         status.correctionsSupported = status.correctionPolygonCount == 0;
@@ -2091,6 +2097,21 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskSourceSize =
                         QSize(mask->size.width, mask->size.height);
                     status.maskIdentity = maskIdentity;
+                    if (clip.maskTemporalStabilizeEnabled &&
+                        status.frame.frameNumber() >= 0) {
+                        QString previousIdentity;
+                        QString nextIdentity;
+                        status.previousMaskBuffer = rawClipMaskBuffer(
+                            clip,
+                            qMax<int64_t>(0, status.frame.frameNumber() - 1),
+                            &previousIdentity);
+                        status.nextMaskBuffer = rawClipMaskBuffer(
+                            clip,
+                            status.frame.frameNumber() + 1,
+                            &nextIdentity);
+                        status.temporalMaskIdentity =
+                            previousIdentity + QLatin1Char('|') + nextIdentity;
+                    }
                     status.maskTextureEnabled = true;
                     status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
@@ -2341,6 +2362,28 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskDilate = clip.maskDilate;
                     markerStatus.maskErode = clip.maskErode;
                     markerStatus.maskBlur = clip.maskBlur;
+                    markerStatus.maskTemporalStabilizeEnabled =
+                        clip.maskTemporalStabilizeEnabled;
+                    markerStatus.maskTemporalStabilizeStrength =
+                        clip.maskTemporalStabilizeStrength;
+                    markerStatus.maskTemporalStabilizeMotionRadius =
+                        clip.maskTemporalStabilizeMotionRadius;
+                    if (clip.maskTemporalStabilizeEnabled &&
+                        markerStatus.frame.frameNumber() >= 0) {
+                        QString previousIdentity;
+                        QString nextIdentity;
+                        markerStatus.previousMaskBuffer = rawClipMaskBuffer(
+                            clip,
+                            qMax<int64_t>(
+                                0, markerStatus.frame.frameNumber() - 1),
+                            &previousIdentity);
+                        markerStatus.nextMaskBuffer = rawClipMaskBuffer(
+                            clip,
+                            markerStatus.frame.frameNumber() + 1,
+                            &nextIdentity);
+                        markerStatus.temporalMaskIdentity =
+                            previousIdentity + QLatin1Char('|') + nextIdentity;
+                    }
                     markerStatus.maskInvert = clip.maskInvert;
                     markerStatus.drawSuppressed = markerStatus.sampledFramePregraded;
                     if (!markerStatus.sampledFramePregraded) {

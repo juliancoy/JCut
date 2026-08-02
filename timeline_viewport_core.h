@@ -167,12 +167,27 @@ inline std::int64_t rulerStepFrames(
     if (pixelsPerFrame <= 0.0f) {
         return fps;
     }
+    const std::int64_t minimumFrames =
+        std::max<std::int64_t>(
+            1,
+            static_cast<std::int64_t>(std::ceil(
+                minimumTickSpacing /
+                static_cast<double>(pixelsPerFrame))));
+    if (minimumFrames <= fps) {
+        // Prefer subdivisions that stay aligned with each second. At the
+        // closest zoom levels this naturally reaches one tick per frame.
+        for (std::int64_t step = minimumFrames; step < fps; ++step) {
+            if (fps % step == 0) {
+                return step;
+            }
+        }
+        return fps;
+    }
     const double minimumSeconds =
         std::max(
             1.0,
             std::ceil(
-                minimumTickSpacing /
-                (static_cast<double>(pixelsPerFrame) * fps)));
+                static_cast<double>(minimumFrames) / fps));
     double magnitude = 1.0;
     while (magnitude * 10.0 < minimumSeconds) {
         magnitude *= 10.0;

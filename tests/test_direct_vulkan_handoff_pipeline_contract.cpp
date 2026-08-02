@@ -3159,18 +3159,22 @@ void TestDirectVulkanHandoffPipelineContract::
                renderExportAsync.contains(QStringLiteral("if (!decodePath.isEmpty())")) &&
                renderExportAsync.contains(QStringLiteral("exportNeedsDecodePipeline(incrementalOrderedClips)")) &&
                renderExportAsync.contains(QStringLiteral("incrementalAsyncDecoder")) &&
-               renderExportAsync.contains(QStringLiteral("incrementalAsyncFrameCache")) &&
+               renderExportAsync.contains(QStringLiteral("incrementalPreparedFrames")) &&
+               renderExportAsync.contains(QStringLiteral("Qt::DirectConnection")) &&
                renderExportAsync.contains(QStringLiteral("upcomingNoncontiguousPlaybackRangeStart")) &&
                renderExportAsync.contains(QStringLiteral("prewarmRenderDecodeSegment")) &&
-               renderDecode.contains(QStringLiteral("asyncDecoder && asyncFrameCache && !forceSoftwareDecode")) &&
+               renderDecode.contains(QStringLiteral("asyncDecoder && preparedFrames && !forceSoftwareDecode")) &&
+               renderDecode.contains(QStringLiteral("QWaitCondition ready")) &&
+               renderDecode.contains(QStringLiteral("asyncDecoder->requestFrame(")) &&
+               renderDecode.contains(QStringLiteral("preparedFrames->find(cacheKey)")) &&
+               renderDecode.contains(QStringLiteral("preparedFrames->insert(frame)")) &&
+               !renderDecode.contains(QStringLiteral("QEventLoop loop")) &&
                renderDecode.contains(QStringLiteral("editor::DecodeRequestKind::Visible,")) &&
-               renderDecode.contains(QStringLiteral("                                   true);")) &&
                publishDecodedFrames >= 0 &&
                completeVisibleRequest > publishDecodedFrames,
-           "ordinary-video export must reuse the bounded preview discontinuity "
-           "prefetch policy, consume prefetched frames through the async "
-           "decode cache, and publish decoded frames before completing the "
-           "visible request on the export owner's thread");
+           "ordinary-video export must feed a bounded prepared-frame queue "
+           "directly from decoder workers, reuse discontinuity prewarming, "
+           "and wait on exact frames without nesting the Qt event loop");
   const qsizetype batchExportIndex = renderTools.indexOf(
       QStringLiteral("void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip"));
   QVERIFY2(batchExportIndex >= 0,

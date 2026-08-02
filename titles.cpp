@@ -223,3 +223,98 @@ render_detail::OverlayImage renderTitleOverlay(const QSize& imageSize,
 {
     return render_detail::overlayRenderBackend().renderTitleOverlay(imageSize, title, outputSize);
 }
+
+QVector<TimelineClip::TitleKeyframe> makeTitleLifetimeAnimationKeyframes(
+    const TimelineClip& clip,
+    const TimelineClip::TitleKeyframe& base,
+    TitleLifetimeAnimationPreset preset,
+    qreal amount)
+{
+    const int64_t endFrame = qMax<int64_t>(0, clip.durationFrames - 1);
+    const int64_t midFrame = endFrame / 2;
+    const qreal boundedAmount = qMax<qreal>(0.0, amount);
+
+    auto keyframeAt = [&](int64_t frame) {
+        TimelineClip::TitleKeyframe keyframe = base;
+        keyframe.frame = qBound<int64_t>(0, frame, endFrame);
+        keyframe.linearInterpolation = true;
+        return keyframe;
+    };
+
+    if (preset == TitleLifetimeAnimationPreset::None || endFrame <= 0) {
+        TimelineClip::TitleKeyframe keyframe = base;
+        keyframe.frame = 0;
+        keyframe.linearInterpolation = false;
+        return {keyframe};
+    }
+
+    switch (preset) {
+    case TitleLifetimeAnimationPreset::DriftHorizontal: {
+        auto start = keyframeAt(0);
+        auto end = keyframeAt(endFrame);
+        start.translationX = base.translationX - boundedAmount;
+        end.translationX = base.translationX + boundedAmount;
+        return {start, end};
+    }
+    case TitleLifetimeAnimationPreset::DriftVertical: {
+        auto start = keyframeAt(0);
+        auto end = keyframeAt(endFrame);
+        start.translationY = base.translationY + boundedAmount;
+        end.translationY = base.translationY - boundedAmount;
+        return {start, end};
+    }
+    case TitleLifetimeAnimationPreset::Pulse: {
+        auto start = keyframeAt(0);
+        auto middle = keyframeAt(midFrame);
+        auto end = keyframeAt(endFrame);
+        const qreal scale = boundedAmount / 100.0;
+        start.fontSize = qMax<qreal>(1.0, base.fontSize * qMax<qreal>(0.01, 1.0 - scale));
+        middle.fontSize = qMax<qreal>(1.0, base.fontSize * (1.0 + scale));
+        end.fontSize = start.fontSize;
+        return {start, middle, end};
+    }
+    case TitleLifetimeAnimationPreset::Rotate3D: {
+        auto start = keyframeAt(0);
+        auto middle = keyframeAt(midFrame);
+        auto end = keyframeAt(endFrame);
+        start.vulkan3DEnabled = true;
+        middle.vulkan3DEnabled = true;
+        end.vulkan3DEnabled = true;
+        start.vulkan3DYawDegrees = base.vulkan3DYawDegrees - boundedAmount;
+        middle.vulkan3DYawDegrees = base.vulkan3DYawDegrees;
+        end.vulkan3DYawDegrees = base.vulkan3DYawDegrees + boundedAmount;
+        return {start, middle, end};
+    }
+    case TitleLifetimeAnimationPreset::Orbit3D: {
+        auto start = keyframeAt(0);
+        auto upper = keyframeAt(endFrame / 3);
+        auto lower = keyframeAt((endFrame * 2) / 3);
+        auto end = keyframeAt(endFrame);
+        start.vulkan3DEnabled = true;
+        upper.vulkan3DEnabled = true;
+        lower.vulkan3DEnabled = true;
+        end.vulkan3DEnabled = true;
+        start.translationX = base.translationX - boundedAmount;
+        start.translationY = base.translationY;
+        upper.translationX = base.translationX;
+        upper.translationY = base.translationY - boundedAmount * 0.5;
+        lower.translationX = base.translationX + boundedAmount;
+        lower.translationY = base.translationY + boundedAmount * 0.5;
+        end.translationX = start.translationX;
+        end.translationY = start.translationY;
+        start.vulkan3DYawDegrees = base.vulkan3DYawDegrees - boundedAmount;
+        upper.vulkan3DYawDegrees = base.vulkan3DYawDegrees;
+        lower.vulkan3DYawDegrees = base.vulkan3DYawDegrees + boundedAmount;
+        end.vulkan3DYawDegrees = start.vulkan3DYawDegrees;
+        upper.vulkan3DPitchDegrees = base.vulkan3DPitchDegrees - boundedAmount * 0.25;
+        lower.vulkan3DPitchDegrees = base.vulkan3DPitchDegrees + boundedAmount * 0.25;
+        return {start, upper, lower, end};
+    }
+    case TitleLifetimeAnimationPreset::None:
+        break;
+    }
+
+    TimelineClip::TitleKeyframe keyframe = base;
+    keyframe.frame = 0;
+    return {keyframe};
+}

@@ -3,6 +3,7 @@
 #include "keyframe_table_shared.h"
 #include "overlay_text_style.h"
 #include "overlay_style_ui.h"
+#include "titles.h"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -54,6 +55,15 @@ void TitlesTab::wire()
                     if (m_widgets.titleTextExtrudeDepthSpin) m_widgets.titleTextExtrudeDepthSpin->setEnabled(enabled);
                     if (m_widgets.titleTextExtrudeBevelSpin) m_widgets.titleTextExtrudeBevelSpin->setEnabled(enabled);
                     if (!m_updating) applyKeyframeFromInspector();
+                });
+    }
+    if (m_widgets.titleLifetimeAnimationCombo) {
+        connect(m_widgets.titleLifetimeAnimationCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int) {
+                    const bool hasAmount = m_widgets.titleLifetimeAnimationCombo->currentData().toInt() != 0;
+                    if (m_widgets.titleLifetimeAnimationAmountSpin) {
+                        m_widgets.titleLifetimeAnimationAmountSpin->setEnabled(hasAmount);
+                    }
                 });
     }
 
@@ -190,6 +200,9 @@ void TitlesTab::wire()
     if (m_widgets.removeTitleKeyframeButton) {
         connect(m_widgets.removeTitleKeyframeButton, &QPushButton::clicked, this, &TitlesTab::removeSelectedKeyframes);
     }
+    if (m_widgets.applyTitleLifetimeAnimationButton) {
+        connect(m_widgets.applyTitleLifetimeAnimationButton, &QPushButton::clicked, this, &TitlesTab::applyLifetimeAnimation);
+    }
     if (m_widgets.centerHorizontalButton) {
         connect(m_widgets.centerHorizontalButton, &QPushButton::clicked, this, &TitlesTab::centerHorizontal);
     }
@@ -210,9 +223,22 @@ void TitlesTab::refresh()
     const TimelineClip *clip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
 
     const bool hasTitleClip = clip && clip->mediaType == ClipMediaType::Title;
+    const bool hasEditableNormalTitleClip = isEditableNormalTitleClip(clip);
     if (m_widgets.titlesInspectorClipLabel) {
         m_widgets.titlesInspectorClipLabel->setText(
             hasTitleClip ? clip->label : QStringLiteral("No title clip selected"));
+    }
+    if (m_widgets.applyTitleLifetimeAnimationButton) {
+        m_widgets.applyTitleLifetimeAnimationButton->setEnabled(hasEditableNormalTitleClip);
+    }
+    if (m_widgets.titleLifetimeAnimationCombo) {
+        m_widgets.titleLifetimeAnimationCombo->setEnabled(hasEditableNormalTitleClip);
+    }
+    if (m_widgets.titleLifetimeAnimationAmountSpin) {
+        m_widgets.titleLifetimeAnimationAmountSpin->setEnabled(
+            hasEditableNormalTitleClip &&
+            (!m_widgets.titleLifetimeAnimationCombo ||
+             m_widgets.titleLifetimeAnimationCombo->currentData().toInt() != 0));
     }
 
     if (!hasTitleClip) {
@@ -711,6 +737,45 @@ void TitlesTab::centerVertical()
     applyPostEditEffects();
 }
 
+void TitlesTab::applyLifetimeAnimation()
+{
+    if (m_updating) {
+        return;
+    }
+    const QString clipId = m_deps.getSelectedClipId ? m_deps.getSelectedClipId() : QString();
+    const TimelineClip *clip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
+    if (clipId.isEmpty() || !isEditableNormalTitleClip(clip)) {
+        return;
+    }
+
+    const auto preset = m_widgets.titleLifetimeAnimationCombo
+        ? static_cast<TitleLifetimeAnimationPreset>(
+              m_widgets.titleLifetimeAnimationCombo->currentData().toInt())
+        : TitleLifetimeAnimationPreset::None;
+    const qreal amount = m_widgets.titleLifetimeAnimationAmountSpin
+        ? m_widgets.titleLifetimeAnimationAmountSpin->value()
+        : 160.0;
+    TimelineClip::TitleKeyframe base =
+        buildStoredKeyframeFromInspector(preferredEditFrame(*clip));
+    base.frame = 0;
+
+    bool updated = false;
+    if (m_deps.updateClipById) {
+        m_deps.updateClipById(clipId, [&](TimelineClip &editable) {
+            editable.titleKeyframes =
+                makeTitleLifetimeAnimationKeyframes(editable, base, preset, amount);
+            normalizeClipTitleKeyframes(editable);
+            updated = true;
+        });
+    }
+    if (!updated) {
+        return;
+    }
+    m_selectedKeyframeFrame = 0;
+    m_selectedKeyframeFrames = {0};
+    applyPostEditEffects();
+}
+
 void TitlesTab::syncTableToPlayhead()
 {
     auto *table = m_widgets.titleKeyframeTable;
@@ -764,6 +829,14 @@ int TitlesTab::nearestKeyframeIndex(const TimelineClip &clip, int64_t localFrame
 bool TitlesTab::hasRemovableKeyframeSelection() const
 {
     return !m_selectedKeyframeFrames.isEmpty();
+}
+
+bool TitlesTab::isEditableNormalTitleClip(const TimelineClip* clip) const
+{
+    return clip &&
+        clip->mediaType == ClipMediaType::Title &&
+        clip->clipRole != ClipRole::SpeakerTitle &&
+        clip->clipRole != ClipRole::TranscriptSubtitle;
 }
 
 void TitlesTab::onTableItemChanged(QTableWidgetItem *item)

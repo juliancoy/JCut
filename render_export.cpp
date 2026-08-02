@@ -89,21 +89,6 @@ bool exportNeedsDecodePipeline(const QVector<TimelineClip>& orderedClips) {
     return false;
 }
 
-void storeRenderAsyncFrame(
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>* cache,
-    const editor::FrameHandle& frame)
-{
-    if (!cache || frame.isNull() || frame.sourcePath().isEmpty()) {
-        return;
-    }
-    cache->insert(
-        RenderAsyncFrameKey{frame.sourcePath(), frame.frameNumber()}, frame);
-    constexpr int kMaxExportAsyncFrames = 64;
-    while (cache->size() > kMaxExportAsyncFrames) {
-        cache->erase(cache->begin());
-    }
-}
-
 bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
     if (!frame || frame->format != AV_PIX_FMT_NV12 || image.isNull()) {
         return false;
@@ -347,7 +332,7 @@ static RenderResult renderTimelineSingleFile(
     const std::function<bool(const RenderProgress&)>& progressCallback,
     HeadlessVulkanCompositor* persistentRenderer = nullptr,
     editor::AsyncDecoder* persistentAsyncDecoder = nullptr,
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>* persistentAsyncFrameCache = nullptr) {
+    RenderPreparedFrameQueue* persistentPreparedFrames = nullptr) {
     RenderResult result;
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
     const qreal playbackSpeed = std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
@@ -519,13 +504,12 @@ static RenderResult renderTimelineSingleFile(
     }
     result.usedGpu = useGpuRenderer;
 
+    RenderPreparedFrameQueue ownedPreparedFrames;
     std::unique_ptr<editor::AsyncDecoder> ownedAsyncDecoder;
     editor::AsyncDecoder* asyncDecoder = persistentAsyncDecoder;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle> ownedAsyncFrameCache;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCachePtr =
-        persistentAsyncFrameCache
-            ? persistentAsyncFrameCache
-            : &ownedAsyncFrameCache;
+    RenderPreparedFrameQueue* preparedFrames = persistentPreparedFrames
+        ? persistentPreparedFrames
+        : &ownedPreparedFrames;
     if (!asyncDecoder && exportNeedsDecodePipeline(orderedClips)) {
         ownedAsyncDecoder = std::make_unique<editor::AsyncDecoder>();
         if (!ownedAsyncDecoder->initialize()) {
@@ -942,16 +926,15 @@ static RenderResult renderTimelineSingleFile(
     int64_t outputPts = 0;
     int64_t framesCompleted = 0;
     QHash<QString, editor::DecoderContext*> decoders;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>& asyncFrameCache =
-        *asyncFrameCachePtr;
-    QObject asyncFrameCacheConnectionContext;
+    QObject preparedFrameConnectionContext;
     if (asyncDecoder) {
         QObject::connect(asyncDecoder,
                          &editor::AsyncDecoder::frameReady,
-                         &asyncFrameCacheConnectionContext,
-                         [asyncFrameCachePtr](editor::FrameHandle frame) {
-                             storeRenderAsyncFrame(asyncFrameCachePtr, frame);
-                         });
+                         &preparedFrameConnectionContext,
+                         [preparedFrames](editor::FrameHandle frame) {
+                             preparedFrames->insert(frame);
+                         },
+                         Qt::DirectConnection);
     }
     QString errorMessage;
     qint64 totalRenderStageMs = 0;
@@ -1091,7 +1074,7 @@ static RenderResult renderTimelineSingleFile(
                                        exportEnd,
                                        orderedClips,
                                        asyncDecoder,
-                                       asyncFrameCache);
+                                       *preparedFrames);
             prewarmedDecodeSegments.insert(segmentIndex);
         }
         prewarmRenderMaskSegment(request,
@@ -1132,14 +1115,14 @@ static RenderResult renderTimelineSingleFile(
                                            upcomingRange.endFrame,
                                            orderedClips,
                                            asyncDecoder,
-                                           asyncFrameCache);
+                                           *preparedFrames);
                 prewarmedDecodeSegments.insert(segmentIndex + 1);
             }
             enqueueRenderDecodeLookahead(request,
                                          timelineFrame,
                                          orderedClips,
                                          asyncDecoder,
-                                         asyncFrameCache);
+                                         *preparedFrames);
             enqueueRenderMaskLookahead(request,
                                        timelineFrame,
                                        orderedClips);
@@ -1233,7 +1216,7 @@ static RenderResult renderTimelineSingleFile(
                                                     frameClocks.visualTimelineFrame,
                                                     decoders,
                                                     asyncDecoder,
-                                                    &asyncFrameCache,
+                                                    preparedFrames,
                                                     orderedClips,
                                                     &renderedFrame,
                                                     !directGpuFrameReadback,
@@ -2739,9 +2722,8 @@ RenderResult renderTimelineToFile(
         return result;
     }
 
+    RenderPreparedFrameQueue incrementalPreparedFrames;
     std::unique_ptr<editor::AsyncDecoder> incrementalAsyncDecoder;
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>
-        incrementalAsyncFrameCache;
     const QVector<TimelineClip> incrementalOrderedClips =
         sortedVisualClips(request.clips, request.tracks);
     if (exportNeedsDecodePipeline(incrementalOrderedClips)) {
@@ -2898,7 +2880,7 @@ RenderResult renderTimelineToFile(
             },
             rendererSession.renderer.get(),
             incrementalAsyncDecoder.get(),
-            &incrementalAsyncFrameCache);
+            &incrementalPreparedFrames);
         accumulateIncrementalResult(&result, chunkResult);
         if (!chunkResult.success) {
             const QString failedAttemptPath = incrementalChunkFailurePath(chunk);

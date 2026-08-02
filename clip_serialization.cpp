@@ -777,6 +777,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("maskDilate")] = clip.maskDilate;
         obj[QStringLiteral("maskErode")] = clip.maskErode;
         obj[QStringLiteral("maskBlur")] = clip.maskBlur;
+        obj[QStringLiteral("maskTemporalStabilizeEnabled")] =
+            clip.maskTemporalStabilizeEnabled;
+        obj[QStringLiteral("maskTemporalStabilizeStrength")] =
+            clip.maskTemporalStabilizeStrength;
+        obj[QStringLiteral("maskTemporalStabilizeMotionRadius")] =
+            clip.maskTemporalStabilizeMotionRadius;
         obj[QStringLiteral("maskInvert")] = clip.maskInvert;
         obj[QStringLiteral("maskShowOnly")] = clip.maskShowOnly;
         obj[QStringLiteral("maskOpacity")] = clip.maskOpacity;
@@ -1346,6 +1352,16 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.maskDilate = qBound<qreal>(0.0, obj.value(QStringLiteral("maskDilate")).toDouble(0.0), 200.0);
         clip.maskErode = qBound<qreal>(0.0, obj.value(QStringLiteral("maskErode")).toDouble(0.0), 200.0);
         clip.maskBlur = qBound<qreal>(0.0, obj.value(QStringLiteral("maskBlur")).toDouble(0.0), 200.0);
+        clip.maskTemporalStabilizeEnabled =
+            obj.value(QStringLiteral("maskTemporalStabilizeEnabled")).toBool(false);
+        clip.maskTemporalStabilizeStrength = qBound<qreal>(
+            0.0,
+            obj.value(QStringLiteral("maskTemporalStabilizeStrength")).toDouble(0.75),
+            1.0);
+        clip.maskTemporalStabilizeMotionRadius = qBound(
+            0,
+            obj.value(QStringLiteral("maskTemporalStabilizeMotionRadius")).toInt(4),
+            32);
         clip.maskInvert = obj.value(QStringLiteral("maskInvert")).toBool(false);
         clip.maskShowOnly = obj.value(QStringLiteral("maskShowOnly")).toBool(false);
         clip.maskOpacity = qBound<qreal>(0.0, obj.value(QStringLiteral("maskOpacity")).toDouble(1.0), 1.0);

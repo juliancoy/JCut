@@ -223,6 +223,7 @@ DOCKER_ARGS+=(
   -v "$MODEL_CACHE_ABS:/models"
   -v "$RUNTIME_CACHE_ABS:/runtime"
   -v "$ROOT_DIR/birefnet_run.py:/workspace/birefnet_run.py:ro"
+  -v "$ROOT_DIR/birefnet_pipeline.py:/workspace/birefnet_pipeline.py:ro"
   -v "$ROOT_DIR/jcut_frame_index_map.py:/workspace/jcut_frame_index_map.py:ro"
   -v "$ROOT_DIR/sam3_resume.py:/workspace/sam3_resume.py:ro"
 )

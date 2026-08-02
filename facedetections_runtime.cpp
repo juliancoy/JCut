@@ -29,7 +29,7 @@ bool VulkanFrameProvider::ensureInitialized(const QSize& size)
     renderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
     qDeleteAll(decoders);
     decoders.clear();
-    asyncFrameCache.clear();
+    preparedFrames.clear();
     outputSize = normalized;
     QString error;
     if (!renderer->initialize(outputSize, &error)) {
@@ -162,7 +162,7 @@ bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
                                                  timelineFrame,
                                                  provider->decoders,
                                                  nullptr,
-                                                 &provider->asyncFrameCache,
+                                                 &provider->preparedFrames,
                                                  QVector<TimelineClip>{clip},
                                                  &result->frame,
                                                  readbackToCpuImage,

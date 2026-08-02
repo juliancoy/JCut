@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/image_buffer.h"
+
 #include <QByteArray>
 #include <QSize>
 #include <QString>
@@ -18,11 +20,19 @@ struct VulkanMaskPreprocessOptions {
     int erodeRadius = 0;
     int dilateRadius = 0;
     int blurRadius = 0;
+    bool temporalStabilizeEnabled = false;
+    float temporalStabilizeStrength = 0.75f;
+    int temporalStabilizeMotionRadius = 4;
 };
 
 QString vulkanMaskTextureCacheKey(
     const VulkanMaskPreprocessOptions& options,
     const QSize& outputSize);
+
+QByteArray packVulkanTemporalMaskChannels(
+    const jcut::core::ImageBuffer& current,
+    const jcut::core::ImageBuffer* previous = nullptr,
+    const jcut::core::ImageBuffer* next = nullptr);
 
 class VulkanMaskPreprocessor final {
 public:

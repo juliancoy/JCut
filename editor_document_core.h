@@ -462,6 +462,9 @@ struct EditorClip {
     double maskDilate = 0.0;
     double maskErode = 0.0;
     double maskBlur = 0.0;
+    bool maskTemporalStabilizeEnabled = false;
+    double maskTemporalStabilizeStrength = 0.75;
+    int maskTemporalStabilizeMotionRadius = 4;
     bool maskInvert = false;
     bool maskShowOnly = false;
     double maskOpacity = 1.0;

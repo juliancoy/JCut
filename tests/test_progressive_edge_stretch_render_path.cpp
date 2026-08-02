@@ -472,7 +472,7 @@ private slots:
 
         QVector<TimelineClip> orderedClips = request.clips;
         QHash<QString, editor::DecoderContext*> decoders;
-        QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+        render_detail::RenderPreparedFrameQueue asyncCache;
         qint64 decodeMs = 0;
         qint64 textureMs = 0;
         qint64 compositeMs = 0;
@@ -568,7 +568,7 @@ private slots:
 
         QVector<TimelineClip> orderedClips = request.clips;
         QHash<QString, editor::DecoderContext*> decoders;
-        QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+        render_detail::RenderPreparedFrameQueue asyncCache;
         qint64 decodeMs = 0;
         qint64 textureMs = 0;
         qint64 compositeMs = 0;
@@ -714,7 +714,7 @@ private slots:
             request.exportEndFrame = 0;
             QVector<TimelineClip> orderedClips = request.clips;
             QHash<QString, editor::DecoderContext*> decoders;
-            QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
+            render_detail::RenderPreparedFrameQueue asyncCache;
             qint64 decodeMs = 0;
             qint64 textureMs = 0;
             qint64 compositeMs = 0;
@@ -878,8 +878,7 @@ private slots:
 
                 QVector<TimelineClip> orderedClips = request.clips;
                 QHash<QString, editor::DecoderContext*> decoders;
-                QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle>
-                    asyncCache;
+                render_detail::RenderPreparedFrameQueue asyncCache;
                 qint64 decodeMs = 0;
                 qint64 textureMs = 0;
                 qint64 compositeMs = 0;

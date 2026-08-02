@@ -55,7 +55,7 @@ ArtifactCompatibilityResult validateArtifactCompatibilityForClip(
 struct VulkanFrameProvider {
     std::unique_ptr<render_detail::OffscreenVulkanRenderer> renderer;
     QHash<QString, editor::DecoderContext*> decoders;
-    QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
+    render_detail::RenderPreparedFrameQueue preparedFrames;
     QSize outputSize;
     bool initialized = false;
     bool failed = false;

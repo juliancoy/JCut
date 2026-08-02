@@ -4997,6 +4997,12 @@ CommandResult EditorRuntime::execute(const EditorCommand& command)
                 clip->maskDilate = std::clamp(typedCommand.dilate, 0.0, 200.0);
                 clip->maskErode = std::clamp(typedCommand.erode, 0.0, 200.0);
                 clip->maskBlur = std::clamp(typedCommand.blur, 0.0, 200.0);
+                clip->maskTemporalStabilizeEnabled =
+                    typedCommand.temporalStabilizeEnabled;
+                clip->maskTemporalStabilizeStrength = std::clamp(
+                    typedCommand.temporalStabilizeStrength, 0.0, 1.0);
+                clip->maskTemporalStabilizeMotionRadius = std::clamp(
+                    typedCommand.temporalStabilizeMotionRadius, 0, 32);
                 clip->maskInvert = typedCommand.invert;
                 clip->maskShowOnly = typedCommand.showOnly;
                 clip->maskOpacity = std::clamp(typedCommand.opacity, 0.0, 1.0);

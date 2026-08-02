@@ -190,6 +190,9 @@ struct VulkanRenderLayerPacket {
 
     QString maskIdentity;
     std::shared_ptr<const jcut::core::ImageBuffer> maskBuffer;
+    std::shared_ptr<const jcut::core::ImageBuffer> previousMaskBuffer;
+    std::shared_ptr<const jcut::core::ImageBuffer> nextMaskBuffer;
+    QString temporalMaskIdentity;
     QSize maskSourceSize;
     QByteArray maskCorrectionStorage;
     bool maskTextureEnabled = false;
@@ -201,6 +204,9 @@ struct VulkanRenderLayerPacket {
     qreal maskErode = 0.0;
     qreal maskDilate = 0.0;
     qreal maskBlur = 0.0;
+    bool maskTemporalStabilizeEnabled = false;
+    qreal maskTemporalStabilizeStrength = 0.75;
+    int maskTemporalStabilizeMotionRadius = 4;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
     int maskFeatherFalloff = 0;

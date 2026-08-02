@@ -44,6 +44,14 @@ void storeAtomicMax(std::atomic<int64_t>* target, int64_t value) {
            !target->compare_exchange_weak(current, value, std::memory_order_relaxed)) {
     }
 }
+
+void deliverDecodeCallback(std::function<void(FrameHandle)> callback,
+                           FrameHandle frame)
+{
+    if (callback) {
+        callback(std::move(frame));
+    }
+}
 } // namespace
 
 struct AsyncDecoder::LaneState {
@@ -175,13 +183,11 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                                     int priority,
                                     int timeoutMs,
                                     DecodeRequestKind kind,
-                                    std::function<void(FrameHandle)> callback,
-                                    bool callbackOnOwnerThread) {
+                                    std::function<void(FrameHandle)> callback) {
     LaneState* lane = laneForRequest(path, frameNumber, kind);
     if (!lane || m_shuttingDown) {
         recordNullCallback(kind, "lane_unavailable");
-        invokeRequestCallback(std::move(callback), FrameHandle(),
-                              callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback), FrameHandle());
         return 0;
     }
 
@@ -192,7 +198,6 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
     req.frameNumber = frameNumber;
     req.priority = priority;
     req.kind = kind;
-    req.callbackOnOwnerThread = callbackOnOwnerThread;
     req.deadline = QDeadlineTimer(timeoutMs);
     req.callback = callback;
     req.submittedAt = QDateTime::currentMSecsSinceEpoch();
@@ -241,7 +246,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                         if (kindFavored || it->priority < req.priority) {
                             if (it->callback) {
                                 droppedCallbacks.push_back(DroppedCallback{
-                                    it->kind, it->callbackOnOwnerThread,
+                                    it->kind,
                                     std::move(it->callback)});
                             }
                             lane->queue.erase(it);
@@ -281,8 +286,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
 
     for (auto& droppedCallback : droppedCallbacks) {
         recordNullCallback(droppedCallback.kind, "superseded");
-        invokeRequestCallback(std::move(droppedCallback.callback), FrameHandle(),
-                              droppedCallback.callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(droppedCallback.callback), FrameHandle());
     }
 
     if (!accepted) {
@@ -293,8 +297,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                         .arg(frameNumber)
                         .arg(static_cast<int>(kind)));
         recordNullCallback(kind, "queue_full");
-        invokeRequestCallback(std::move(callback), FrameHandle(),
-                              callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback), FrameHandle());
         return 0;
     }
 
@@ -329,7 +332,7 @@ void AsyncDecoder::cancelForFile(const QString& path) {
             if (it->filePath == path) {
                 if (it->callback) {
                     callbacks.push_back(DroppedCallback{
-                        it->kind, it->callbackOnOwnerThread,
+                        it->kind,
                         std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
@@ -341,8 +344,7 @@ void AsyncDecoder::cancelForFile(const QString& path) {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_file");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
-                              callback.callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -366,7 +368,7 @@ void AsyncDecoder::cancelQueuedNonVisibleForFile(const QString& path) {
             if (it->filePath == path && it->kind != DecodeRequestKind::Visible) {
                 if (it->callback) {
                     callbacks.push_back(DroppedCallback{
-                        it->kind, it->callbackOnOwnerThread,
+                        it->kind,
                         std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
@@ -378,8 +380,7 @@ void AsyncDecoder::cancelQueuedNonVisibleForFile(const QString& path) {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_file");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
-                              callback.callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -412,7 +413,7 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
             if (it->filePath == path && it->frameNumber < frameNumber) {
                 if (it->callback) {
                     callbacks.push_back(DroppedCallback{
-                        it->kind, it->callbackOnOwnerThread,
+                        it->kind,
                         std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
@@ -424,8 +425,7 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_before");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
-                              callback.callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -445,7 +445,7 @@ void AsyncDecoder::cancelAll() {
         for (DecodeRequest& request : lane->queue) {
             if (request.callback) {
                 callbacks.push_back(DroppedCallback{
-                    request.kind, request.callbackOnOwnerThread,
+                    request.kind,
                     std::move(request.callback)});
             }
         }
@@ -454,8 +454,7 @@ void AsyncDecoder::cancelAll() {
 
     for (auto& callback : callbacks) {
         recordNullCallback(callback.kind, "cancel_all");
-        invokeRequestCallback(std::move(callback.callback), FrameHandle(),
-                              callback.callbackOnOwnerThread ? this : nullptr);
+        deliverDecodeCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -802,24 +801,14 @@ void AsyncDecoder::runLane(LaneState* lane) {
                 }
             };
 
-        if (request.callbackOnOwnerThread && request.callback) {
-            // Export consumes frameReady into its exact-frame cache on this
-            // owner thread. Publish the batch before completing the visible
-            // request so a prefetched exact frame cannot be reported missing.
-            QMetaObject::invokeMethod(
-                this,
-                [publishDecodedFrames = std::move(publishDecodedFrames),
-                 callback = std::move(request.callback), frame]() mutable {
-                    publishDecodedFrames();
-                    callback(frame);
-                },
-                Qt::QueuedConnection);
-        } else {
-            invokeRequestCallback(std::move(request.callback), frame, nullptr);
-            QMetaObject::invokeMethod(
-                this,
-                std::move(publishDecodedFrames),
-                Qt::QueuedConnection);
+        // Publish the whole sequential decode batch before completing the
+        // request. Direct render-cache connections consume these frames now;
+        // QObject receivers using Auto connection remain queued to their
+        // owners. Re-decoding a batch-produced adjacent frame can return null
+        // because the stateful codec has already advanced past it.
+        publishDecodedFrames();
+        if (request.callback) {
+            request.callback(frame);
         }
 
         decodeTrace(QStringLiteral("AsyncDecoder::runLane.end"),
@@ -899,10 +888,6 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
             queued.frameNumber != req.frameNumber) {
             continue;
         }
-        if (queued.callback && req.callback &&
-            queued.callbackOnOwnerThread != req.callbackOnOwnerThread) {
-            continue;
-        }
         if (req.callback) {
             if (queued.callback) {
                 const auto first = queued.callback;
@@ -913,7 +898,6 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
                 };
             } else {
                 queued.callback = req.callback;
-                queued.callbackOnOwnerThread = req.callbackOnOwnerThread;
             }
         }
         queued.priority = qMax(queued.priority, req.priority);
@@ -942,7 +926,6 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
                 if (queued.callback) {
                     droppedCallbacks->push_back(
                         DroppedCallback{queued.kind,
-                                        queued.callbackOnOwnerThread,
                                         std::move(queued.callback)});
                 }
                 queue.erase(queue.begin() + i);
@@ -970,7 +953,6 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         if (queued.callback) {
             droppedCallbacks->push_back(
                 DroppedCallback{queued.kind,
-                                queued.callbackOnOwnerThread,
                                 std::move(queued.callback)});
         }
         queue.erase(queue.begin() + i);

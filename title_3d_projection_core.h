@@ -21,6 +21,33 @@ struct TitleProjectedPointCore {
     bool valid = false;
 };
 
+struct TitlePreviewTargetCore {
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+};
+
+inline TitleProjectedPointCore mapTitleOutputPointToPreviewTargetCore(
+    double outputX,
+    double outputY,
+    int outputWidth,
+    int outputHeight,
+    const TitlePreviewTargetCore& target)
+{
+    if (outputWidth <= 0 || outputHeight <= 0 ||
+        target.width <= 0.0 || target.height <= 0.0 ||
+        !std::isfinite(outputX) || !std::isfinite(outputY) ||
+        !std::isfinite(target.x) || !std::isfinite(target.y) ||
+        !std::isfinite(target.width) || !std::isfinite(target.height)) {
+        return {};
+    }
+    return {
+        target.x + (outputX / static_cast<double>(outputWidth)) * target.width,
+        target.y + (outputY / static_cast<double>(outputHeight)) * target.height,
+        true};
+}
+
 // Qt-free point form of VulkanTextRenderer::mvpForTitle3DRect. The element
 // center stays in the title layout while scale applies to the element quad,
 // matching Qt's per-background/per-glyph MVP rather than scaling the whole
@@ -135,6 +162,39 @@ inline TitleProjectedPointCore projectTitle3DPointCore(
         return {};
     }
     return {projectedX, projectedY, true};
+}
+
+inline TitleProjectedPointCore projectTitle3DPointToPreviewTargetCore(
+    double sourceX,
+    double sourceY,
+    double elementCenterX,
+    double elementCenterY,
+    double titleCenterX,
+    double titleCenterY,
+    int outputWidth,
+    int outputHeight,
+    const Title3DProjectionCore& projection,
+    const TitlePreviewTargetCore& target)
+{
+    const TitleProjectedPointCore outputPoint =
+        projectTitle3DPointCore(sourceX,
+                                sourceY,
+                                elementCenterX,
+                                elementCenterY,
+                                titleCenterX,
+                                titleCenterY,
+                                outputWidth,
+                                outputHeight,
+                                projection);
+    if (!outputPoint.valid) {
+        return {};
+    }
+    return mapTitleOutputPointToPreviewTargetCore(
+        outputPoint.x,
+        outputPoint.y,
+        outputWidth,
+        outputHeight,
+        target);
 }
 
 } // namespace jcut

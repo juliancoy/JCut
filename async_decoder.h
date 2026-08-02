@@ -62,7 +62,6 @@ struct DecodeRequest {
     int64_t frameNumber;
     int priority;  // Higher = more urgent (0-255)
     DecodeRequestKind kind = DecodeRequestKind::Visible;
-    bool callbackOnOwnerThread = false;
     uint64_t generation = 0;
     QDeadlineTimer deadline;
     std::function<void(FrameHandle)> callback;
@@ -106,9 +105,9 @@ public:
     bool initialize();
     void shutdown();
     
-    // Request a frame decode (non-blocking)
-    // callback is invoked on the decoder thread - use QMetaObject::invokeMethod 
-    // to get back to main thread if needed
+    // Request a frame decode (non-blocking). Decoded completions run directly
+    // on the decoder lane; immediate rejection/cancellation completes on the
+    // producing thread. UI consumers marshal UI work to their owner.
     uint64_t requestFrame(const QString& path,
                           int64_t frameNumber,
                           int priority,
@@ -119,8 +118,7 @@ public:
                           int priority,
                           int timeoutMs,
                           DecodeRequestKind kind,
-                          std::function<void(FrameHandle)> callback,
-                          bool callbackOnOwnerThread = false);
+                          std::function<void(FrameHandle)> callback);
     
     // Cancel pending requests
     void cancelForFile(const QString& path);
@@ -164,7 +162,6 @@ private:
     struct LaneState;
     struct DroppedCallback {
         DecodeRequestKind kind = DecodeRequestKind::Visible;
-        bool callbackOnOwnerThread = false;
         std::function<void(FrameHandle)> callback;
     };
 

@@ -1075,6 +1075,23 @@ QWidget *InspectorPane::buildMasksTab()
     m_maskShapeFeatherPowerSpin = makeScalarSpin(0.1, 5.0, 2.0, 0.1);
     m_maskShapeFeatherPowerSpin->setToolTip(
         QStringLiteral("Power-law exponent. 1.0 is linear; higher values keep more opacity near the subject edge."));
+    m_maskTemporalStabilizeCheck = new QCheckBox(
+        QStringLiteral("Motion-tolerant temporal median"), page);
+    m_maskTemporalStabilizeCheck->setObjectName(
+        QStringLiteral("masks.temporal_stabilize"));
+    m_maskTemporalStabilizeCheck->setToolTip(QStringLiteral(
+        "Stabilize one-frame mask flicker on the GPU using the adjacent mask frames. "
+        "The original sidecar remains unchanged."));
+    m_maskTemporalStabilizeStrengthSpin = makeScalarSpin(0.0, 1.0, 0.75, 0.05);
+    m_maskTemporalStabilizeStrengthSpin->setSuffix(QStringLiteral(" strength"));
+    m_maskTemporalStabilizeStrengthSpin->setToolTip(QStringLiteral(
+        "Blend between the current alpha and the stabilized temporal result."));
+    m_maskTemporalStabilizeMotionRadiusSpin = new QSpinBox(page);
+    m_maskTemporalStabilizeMotionRadiusSpin->setRange(0, 32);
+    m_maskTemporalStabilizeMotionRadiusSpin->setValue(4);
+    m_maskTemporalStabilizeMotionRadiusSpin->setSuffix(QStringLiteral(" px"));
+    m_maskTemporalStabilizeMotionRadiusSpin->setToolTip(QStringLiteral(
+        "Maximum adjacent-frame mask movement tolerated before treating a change as flicker."));
     m_maskInvertCheck = new QCheckBox(QStringLiteral("Invert"), page);
     m_maskShowOnlyCheck = new QCheckBox(QStringLiteral("Show mask only"), page);
     m_maskShowOnlyCheck->setToolTip(QStringLiteral("Preview/export the processed mask instead of the source clip."));
@@ -1085,6 +1102,9 @@ QWidget *InspectorPane::buildMasksTab()
     shapeForm->addRow(QStringLiteral("Falloff"), m_maskShapeFeatherFalloffCombo);
     shapeForm->addRow(QStringLiteral("Power"), m_maskShapeFeatherPowerSpin);
     shapeForm->addRow(QStringLiteral("Blur"), blurControl.row);
+    shapeForm->addRow(QStringLiteral("Temporal stabilize"), m_maskTemporalStabilizeCheck);
+    shapeForm->addRow(QStringLiteral("Stabilize strength"), m_maskTemporalStabilizeStrengthSpin);
+    shapeForm->addRow(QStringLiteral("Motion tolerance"), m_maskTemporalStabilizeMotionRadiusSpin);
     shapeForm->addRow(QStringLiteral("Invert"), m_maskInvertCheck);
     shapeForm->addRow(QStringLiteral("View"), m_maskShowOnlyCheck);
     shapeForm->addRow(QStringLiteral("Opacity"), m_maskOpacitySpin);
@@ -1245,6 +1265,7 @@ QWidget *InspectorPane::buildTitlesTab()
     auto placementSection = createDisclosureSection(page, QStringLiteral("Overlay Placement"), false);
     auto typographySection = createDisclosureSection(page, QStringLiteral("Typography"), false);
     auto effectsSection = createDisclosureSection(page, QStringLiteral("Background & Effects"), false);
+    auto animationSection = createDisclosureSection(page, QStringLiteral("Lifetime Animation"), false);
     auto actionsSection = createDisclosureSection(page, QStringLiteral("Title Actions"), false);
 
     // Text input with splitter for resizable height
@@ -1405,6 +1426,31 @@ QWidget *InspectorPane::buildTitlesTab()
     extrudeRow->addWidget(m_titleTextExtrudeBevelSpin);
     effectsSection.body->addLayout(extrudeRow);
 
+    auto *animationRow = new QHBoxLayout;
+    m_titleLifetimeAnimationCombo = new QComboBox;
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("None"), 0);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Drift Horizontal"), 1);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Drift Vertical"), 2);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Pulse"), 3);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Rotate 3D"), 4);
+    m_titleLifetimeAnimationCombo->addItem(QStringLiteral("Orbit 3D"), 5);
+    animationRow->addWidget(m_titleLifetimeAnimationCombo, 1);
+    m_titleLifetimeAnimationAmountSpin = new QDoubleSpinBox;
+    m_titleLifetimeAnimationAmountSpin->setRange(0.0, 2000.0);
+    m_titleLifetimeAnimationAmountSpin->setDecimals(1);
+    m_titleLifetimeAnimationAmountSpin->setSingleStep(10.0);
+    m_titleLifetimeAnimationAmountSpin->setValue(160.0);
+    m_titleLifetimeAnimationAmountSpin->setPrefix(QStringLiteral("Amount "));
+    m_titleLifetimeAnimationAmountSpin->setToolTip(
+        QStringLiteral("Pixels for movement, percent for pulse, degrees for orbit"));
+    animationRow->addWidget(m_titleLifetimeAnimationAmountSpin);
+    animationSection.body->addLayout(animationRow);
+
+    m_applyTitleLifetimeAnimationButton = new QPushButton(QStringLiteral("Apply Across Lifetime"));
+    m_applyTitleLifetimeAnimationButton->setToolTip(
+        QStringLiteral("Generate title keyframes spanning the selected title clip"));
+    animationSection.body->addWidget(m_applyTitleLifetimeAnimationButton);
+
     // Buttons
     auto *buttonRow = new QHBoxLayout;
     m_addTitleKeyframeButton = new QPushButton(QStringLiteral("Add Title At Playhead"));
@@ -1430,6 +1476,7 @@ QWidget *InspectorPane::buildTitlesTab()
     layout->addWidget(placementSection.container);
     layout->addWidget(typographySection.container);
     layout->addWidget(effectsSection.container);
+    layout->addWidget(animationSection.container);
     layout->addWidget(actionsSection.container);
 
     // Table

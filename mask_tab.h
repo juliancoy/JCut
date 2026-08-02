@@ -44,6 +44,9 @@ public:
         QDoubleSpinBox* dilateSpin = nullptr;
         QDoubleSpinBox* erodeSpin = nullptr;
         QDoubleSpinBox* blurSpin = nullptr;
+        QCheckBox* temporalStabilizeCheck = nullptr;
+        QDoubleSpinBox* temporalStabilizeStrengthSpin = nullptr;
+        QSpinBox* temporalStabilizeMotionRadiusSpin = nullptr;
         QCheckBox* invertCheck = nullptr;
         QCheckBox* showOnlyCheck = nullptr;
         QDoubleSpinBox* opacitySpin = nullptr;

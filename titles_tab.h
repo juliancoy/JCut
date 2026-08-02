@@ -5,6 +5,7 @@
 #include "editor_shared.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QLabel>
@@ -52,6 +53,9 @@ public:
         QComboBox *titleTextExtrudeModeCombo = nullptr;
         QDoubleSpinBox *titleTextExtrudeDepthSpin = nullptr;
         QDoubleSpinBox *titleTextExtrudeBevelSpin = nullptr;
+        QComboBox *titleLifetimeAnimationCombo = nullptr;
+        QDoubleSpinBox *titleLifetimeAnimationAmountSpin = nullptr;
+        QPushButton *applyTitleLifetimeAnimationButton = nullptr;
         QCheckBox *titleAutoScrollCheck = nullptr;
         QPushButton *addTitleKeyframeButton = nullptr;
         QPushButton *removeTitleKeyframeButton = nullptr;
@@ -72,6 +76,7 @@ public:
     void removeSelectedKeyframes();
     void centerHorizontal();
     void centerVertical();
+    void applyLifetimeAnimation();
 
 private:
     struct TitleKeyframeDisplay {
@@ -116,6 +121,7 @@ private:
     int selectedKeyframeIndex(const TimelineClip &clip) const;
     int nearestKeyframeIndex(const TimelineClip &clip, int64_t localFrame) const;
     bool hasRemovableKeyframeSelection() const;
+    bool isEditableNormalTitleClip(const TimelineClip* clip) const;
 
     void onTableItemChanged(QTableWidgetItem *item);
     void onTableSelectionChanged();

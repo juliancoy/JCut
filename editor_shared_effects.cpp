@@ -1035,8 +1035,31 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
     const TimelineClip& clip,
     int64_t sourceFrame)
 {
-    return rawClipMaskBufferForPath(
-        maskFramePathForSourceFrame(clip, sourceFrame));
+    return rawClipMaskBuffer(clip, sourceFrame, nullptr, false);
+}
+
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
+    const TimelineClip& clip,
+    int64_t sourceFrame,
+    QString* stableIdentity,
+    bool blocking)
+{
+    if (stableIdentity) {
+        stableIdentity->clear();
+    }
+    QString artifactRevision;
+    const auto buffer = rawClipMaskBufferForPath(
+        maskFramePathForSourceFrame(clip, sourceFrame),
+        blocking,
+        &artifactRevision);
+    if (stableIdentity && !artifactRevision.isEmpty()) {
+        *stableIdentity = QStringLiteral(
+            "sidecar=%1|source_frame=%2|artifact=%3")
+            .arg(editor::masks::stableMaskSidecarId(clip.maskFramesDir))
+            .arg(sourceFrame)
+            .arg(artifactRevision);
+    }
+    return buffer;
 }
 
 std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
@@ -1205,6 +1228,12 @@ int prefetchRenderableClipMaskBuffersForClock(
 
         prefetchClipMaskBuffers(clip, qMax<int64_t>(0, mapping.sourceFrame));
         ++submitted;
+        if (clip.maskTemporalStabilizeEnabled) {
+            prefetchClipMaskBuffers(
+                clip, qMax<int64_t>(0, mapping.sourceFrame - 1));
+            prefetchClipMaskBuffers(clip, mapping.sourceFrame + 1);
+            submitted += 2;
+        }
     }
     return submitted;
 }
