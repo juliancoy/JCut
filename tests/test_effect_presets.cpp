@@ -1164,6 +1164,7 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
     const QString timelineMenu = readSource(QStringLiteral("timeline_widget_context_menu.cpp"));
     const QString clipsMenu = readSource(QStringLiteral("clips_tab.cpp"));
     const QString editor = readSource(QStringLiteral("editor_birefnet.cpp"));
+    const QString processTree = readSource(QStringLiteral("qt_process_tree.cpp"));
     const QString shell = readSource(QStringLiteral("birefnet.sh"));
     const QString runner = readSource(QStringLiteral("birefnet_run.py"));
     const QString samRunner = readSource(QStringLiteral("sam3_run.py"));
@@ -1185,6 +1186,11 @@ void TestEffectPresets::birefnetUxExposesExplicitContextActionsAndPreview()
                  editor.contains(QStringLiteral("Live result")) &&
                  runner.contains(QStringLiteral("jcut_live_preview.png")),
              "BiRefNet preflight must provide a visual source/alpha/composite preview.");
+    QVERIFY2(editor.contains(QStringLiteral("isolateQProcessTree(process)")) &&
+                 editor.contains(QStringLiteral("terminateQProcessTree(process, treeId)")) &&
+                 processTree.contains(QStringLiteral("::kill(-static_cast<pid_t>(processTreeId), SIGTERM)")) &&
+                 processTree.contains(QStringLiteral("SIGKILL")),
+             "BiRefNet Stop must terminate its isolated worker process group, including preflight descendants.");
     QVERIFY2(runner.contains(QStringLiteral("--frame-index")) &&
                  runner.contains(QStringLiteral("--preview-image")) &&
                  runner.contains(QStringLiteral("preview_source.png")) &&
@@ -2626,12 +2632,12 @@ void TestEffectPresets::temporalEffectsStayOnRawClockDuringVisualSpeedThrough()
 
     const qreal visualFrame7 = playbackVisualTimelineFramePosition(7.0, timing);
     const qreal visualFrame8 = playbackVisualTimelineFramePosition(8.0, timing);
-    QVERIFY(visualFrame7 > 9.0);
-    QVERIFY(visualFrame7 < 11.0);
+    QVERIFY(visualFrame7 > 6.0);
+    QVERIFY(visualFrame7 < 7.0);
     QVERIFY(visualFrame8 > visualFrame7);
-    QCOMPARE(render_detail::clipEffectPlaybackFramePosition(clip, clips, visualFrame7, timing), 10.0);
-    QCOMPARE(render_detail::clipEffectPlaybackFramePosition(clip, clips, visualFrame8, timing), 10.0);
-    QCOMPARE(playbackVisualTimelineFramePosition(15.0, timing), playbackVisualTimelineFramePosition(9.0, timing));
+    QVERIFY(render_detail::clipEffectPlaybackFramePosition(clip, clips, visualFrame7, timing) <
+            render_detail::clipEffectPlaybackFramePosition(clip, clips, visualFrame8, timing));
+    QCOMPARE(playbackVisualTimelineFramePosition(15.0, timing), 14.5);
 
     const QRectF output(0.0, 0.0, 800.0, 450.0);
     const QSize sourceSize(200, 100);

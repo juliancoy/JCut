@@ -2,11 +2,13 @@
 #include "processing_job_docker.h"
 #include "birefnet_job_core.h"
 #include "prompt_mask_job_core.h"
+#include "qt_process_tree.h"
 #include "transcription_job_core.h"
 
 #include <QtTest/QtTest>
 
 #include <QDir>
+#include <QProcess>
 #include <QTemporaryDir>
 
 #include <algorithm>
@@ -17,6 +19,51 @@ class ProcessingJobManifestTest : public QObject {
   Q_OBJECT
 
 private slots:
+  void qtProcessTreeCancellationTerminatesDescendants() {
+#ifdef Q_OS_LINUX
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString childPidPath = tempDir.filePath(QStringLiteral("child.pid"));
+    const QString scriptPath = tempDir.filePath(QStringLiteral("worker.sh"));
+    QFile script(scriptPath);
+    QVERIFY(script.open(QIODevice::WriteOnly | QIODevice::Text));
+    script.write(
+        "#!/usr/bin/env bash\n"
+        "sleep 60 &\n"
+        "child=$!\n"
+        "printf '%s\\n' \"$child\" > \"$1\"\n"
+        "wait \"$child\"\n");
+    script.close();
+
+    QProcess process;
+    jcut::jobs::isolateQProcessTree(&process);
+    process.start(QStringLiteral("/bin/bash"),
+                  QStringList{scriptPath, childPidPath});
+    QVERIFY(process.waitForStarted(3000));
+    const qint64 treeId = process.processId();
+    QVERIFY(treeId > 1);
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(childPidPath), 3000);
+
+    QFile childPidFile(childPidPath);
+    QVERIFY(childPidFile.open(QIODevice::ReadOnly));
+    bool parsed = false;
+    const qint64 childPid =
+        childPidFile.readAll().trimmed().toLongLong(&parsed);
+    QVERIFY(parsed);
+    QVERIFY(childPid > 1);
+    QVERIFY(QFileInfo::exists(QStringLiteral("/proc/%1").arg(childPid)));
+
+    jcut::jobs::terminateQProcessTree(&process, treeId);
+    QVERIFY(process.waitForFinished(3000));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !QFileInfo::exists(QStringLiteral("/proc/%1").arg(childPid)),
+        3000);
+    QVERIFY(!jcut::jobs::qProcessTreeExists(treeId));
+#else
+    QSKIP("Linux /proc is required for this regression test.");
+#endif
+  }
+
   void dockerOwnershipClassificationFailsClosed() {
     jcut::jobs::DockerContainerInfo unrelated;
     unrelated.name = QStringLiteral("database");

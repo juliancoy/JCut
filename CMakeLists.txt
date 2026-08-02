@@ -420,6 +420,8 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/standalone_preview_renderer\\.cpp$"
     ".*/proxy_generation_job_core\\.cpp$"
     ".*/prompt_mask_job_core\\.cpp$"
+    # Built once in the shared Qt process-tree cancellation helper.
+    ".*/qt_process_tree\\.cpp$"
     ".*/decoder_policy_core\\.cpp$"
     ".*/ffmpeg_hardware_device_core\\.cpp$"
     ".*/video_decode_capabilities_core\\.cpp$"
@@ -653,6 +655,19 @@ target_compile_definitions(jcut_ai_gateway_core PRIVATE
     JCUT_DEFAULT_SUPABASE_ANON_KEY="${JCUT_SUPABASE_ANON_KEY}"
 )
 
+add_library(jcut_qt_process_tree_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qt_process_tree.cpp
+)
+set_target_properties(jcut_qt_process_tree_core PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_qt_process_tree_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(jcut_qt_process_tree_core PUBLIC Qt6::Core)
+
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
@@ -692,6 +707,7 @@ target_link_libraries(editor_core
         rtaudio
         jcut_frame_handle_qrhi_adapter
         jcut_frame_payload_core
+        jcut_qt_process_tree_core
         jcut_transcript_document_core
         jcut_vulkan_frame_import_core
 )

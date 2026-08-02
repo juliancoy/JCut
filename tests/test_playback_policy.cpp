@@ -135,22 +135,22 @@ void TestPlaybackPolicy::testFrameCrossfadeMapsOutgoingTailToIncomingHead()
 
     PlaybackFrameCrossfade last = playbackFrameCrossfadeAtTimelineFrame(19.0, timing);
     QVERIFY(last.active);
-    QCOMPARE(last.secondaryTimelineFrame, int64_t(43));
-    QVERIFY(last.secondaryOpacity > 0.49f);
-    QVERIFY(last.secondaryOpacity < 0.51f);
+    QCOMPARE(last.secondaryTimelineFrame, int64_t(40));
+    QVERIFY(last.secondaryOpacity > first.secondaryOpacity);
+    QVERIFY(last.secondaryOpacity < 0.5f);
 
     PlaybackFrameCrossfade gap = playbackFrameCrossfadeAtTimelineFrame(30.0, timing);
     QVERIFY(!gap.active);
 
     PlaybackFrameCrossfade incoming = playbackFrameCrossfadeAtTimelineFrame(40.0, timing);
     QVERIFY(incoming.active);
-    QCOMPARE(incoming.secondaryTimelineFrame, int64_t(16));
-    QVERIFY(incoming.secondaryOpacity > 0.49f);
-    QVERIFY(incoming.secondaryOpacity < 0.51f);
+    QCOMPARE(incoming.secondaryTimelineFrame, int64_t(19));
+    QCOMPARE(incoming.secondaryOpacity, last.secondaryOpacity);
 
     PlaybackFrameCrossfade incomingEnd = playbackFrameCrossfadeAtTimelineFrame(43.0, timing);
     QVERIFY(incomingEnd.active);
     QCOMPARE(incomingEnd.secondaryTimelineFrame, int64_t(19));
+    QVERIFY(incomingEnd.secondaryOpacity < incoming.secondaryOpacity);
     QVERIFY(incomingEnd.secondaryOpacity < 0.1f);
 
     PlaybackFrameCrossfade after = playbackFrameCrossfadeAtTimelineFrame(44.0, timing);
@@ -217,23 +217,46 @@ void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGa
     QCOMPARE(playbackVisualTimelineFramePosition(15.0, timing), 15.0);
 
     const qreal first = playbackVisualTimelineFramePosition(16.0, timing);
-    QVERIFY(first > 19.0);
-    QVERIFY(first < 21.0);
+    QCOMPARE(first, 16.0);
 
     const qreal last = playbackVisualTimelineFramePosition(19.0, timing);
-    QVERIFY(last > 29.0);
-    QVERIFY(last < 30.0);
+    QVERIFY(last > first);
+    QVERIFY(last < 29.5);
 
-    QCOMPARE(playbackVisualTimelineFramePosition(30.0, timing), last);
+    QCOMPARE(playbackVisualTimelineFramePosition(30.0, timing), 29.5);
 
     const qreal incoming = playbackVisualTimelineFramePosition(40.0, timing);
-    QCOMPARE(incoming, last);
+    QVERIFY(incoming > 29.5);
+    QVERIFY(incoming > last);
 
     const qreal incomingEnd = playbackVisualTimelineFramePosition(43.0, timing);
-    QVERIFY(incomingEnd > 38.0);
-    QVERIFY(incomingEnd < 40.0);
+    QCOMPARE(incomingEnd, 43.0);
 
     QCOMPARE(playbackVisualTimelineFramePosition(44.0, timing), 44.0);
+
+    qreal previous = playbackVisualTimelineFramePosition(15.0, timing);
+    const QVector<qreal> emittedFrames{16.0, 17.0, 18.0, 19.0,
+                                      40.0, 41.0, 42.0, 43.0, 44.0};
+    for (qreal frame : emittedFrames) {
+        const qreal visual = playbackVisualTimelineFramePosition(frame, timing);
+        QVERIFY2(visual > previous,
+                 qPrintable(QStringLiteral("visual frame must advance: %1 <= %2")
+                                .arg(visual)
+                                .arg(previous)));
+        previous = visual;
+    }
+
+    timing.frameTransitionMode =
+        PlaybackFrameTransitionMode::SmootherStepSpeedThrough;
+    previous = playbackVisualTimelineFramePosition(15.0, timing);
+    for (qreal frame : emittedFrames) {
+        const qreal visual = playbackVisualTimelineFramePosition(frame, timing);
+        QVERIFY2(visual > previous,
+                 qPrintable(QStringLiteral("smoother visual frame must advance: %1 <= %2")
+                                .arg(visual)
+                                .arg(previous)));
+        previous = visual;
+    }
 }
 
 void TestPlaybackPolicy::testSystemClockSourcePolicy() {

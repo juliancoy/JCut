@@ -1759,6 +1759,30 @@ static RenderResult renderTimelineSingleFile(
         progress.encoderLabel = codecLabel;
         progress.elapsedMs = totalTimer.elapsed();
         progress.estimatedRemainingMs = -1;
+        progress.renderStageMs = totalRenderStageMs;
+        progress.renderDecodeStageMs = totalRenderDecodeStageMs;
+        progress.renderTextureStageMs = totalRenderTextureStageMs;
+        progress.renderCompositeStageMs = totalRenderCompositeStageMs;
+        progress.renderNv12StageMs = totalRenderNv12StageMs;
+        progress.gpuReadbackMs = totalGpuReadbackMs;
+        progress.overlayStageMs = totalOverlayStageMs;
+        progress.convertStageMs = totalConvertStageMs;
+        progress.encodeStageMs = totalEncodeStageMs;
+        progress.audioStageMs = totalAudioStageMs;
+        progress.audioSetupMs = audioSetupMs;
+        progress.maxFrameRenderStageMs = maxFrameRenderStageMs;
+        progress.maxFrameDecodeStageMs = maxFrameDecodeStageMs;
+        progress.maxFrameTextureStageMs = maxFrameTextureStageMs;
+        progress.maxFrameReadbackStageMs = maxFrameReadbackStageMs;
+        progress.maxFrameConvertStageMs = maxFrameConvertStageMs;
+        progress.skippedClips = lastSkippedClips;
+        progress.skippedClipReasonCounts = skippedReasonCounts;
+        progress.renderStageTable =
+            buildRenderStageTable(
+                clipStageStats, totalRenderStageMs, framesCompleted);
+        progress.worstFrameTable = buildWorstFrameTable(worstFrames);
+        progress.exportFaceTransformDiagnostics =
+            lastExportFaceTransformDiagnostics;
         if (!progressCallback(progress)) {
             errorMessage = QStringLiteral("Render cancelled.");
         }

@@ -107,6 +107,11 @@ target_link_libraries(test_imgui_qt_render_parity
         jcut_imgui_standalone_runtime
 )
 
+target_link_libraries(test_processing_job_manifest
+    PRIVATE
+        jcut_qt_process_tree_core
+)
+
 target_link_libraries(test_imgui_gpu_renderer_bridge
     PRIVATE
         jcut_imgui_runtime

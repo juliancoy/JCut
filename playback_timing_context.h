@@ -136,25 +136,33 @@ inline PlaybackFrameCrossfade playbackFrameCrossfadeAtTimelineFrame(
         const int64_t windowStart = current.endFrame - window + 1;
         if (frame >= windowStart && frame <= current.endFrame) {
             const int64_t offset = frame - windowStart;
+            const int64_t transitionOrdinal = offset + 1;
             const float t = qBound(0.0f,
-                                   static_cast<float>(offset + 1) /
-                                       static_cast<float>(window * 2),
-                                   0.5f);
+                                   static_cast<float>(transitionOrdinal) /
+                                       static_cast<float>(window * 2 + 1),
+                                   1.0f);
             const float s = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
             result.active = true;
-            result.secondaryTimelineFrame = next.startFrame + offset;
+            // Preserve the complete outgoing and incoming frame sequences. A
+            // duration-preserving crossfade cannot advance both sequences in
+            // both halves without rewinding them at the range boundary, so
+            // hold the incoming boundary frame during the outgoing half.
+            result.secondaryTimelineFrame = next.startFrame;
             result.secondaryOpacity = qBound(0.0f, s, 1.0f);
             return result;
         }
         if (frame >= next.startFrame && frame < next.startFrame + window) {
             const int64_t offset = frame - next.startFrame;
+            const int64_t transitionOrdinal = window + offset + 1;
             const float t = qBound(0.5f,
-                                   static_cast<float>(window + offset) /
-                                       static_cast<float>(window * 2),
+                                   static_cast<float>(transitionOrdinal) /
+                                       static_cast<float>(window * 2 + 1),
                                    1.0f);
             const float s = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
             result.active = true;
-            result.secondaryTimelineFrame = windowStart + offset;
+            // Mirror the outgoing half by holding its boundary frame while
+            // the incoming sequence advances normally.
+            result.secondaryTimelineFrame = current.endFrame;
             result.secondaryOpacity = qBound(0.0f, 1.0f - s, 1.0f);
             return result;
         }
@@ -203,27 +211,33 @@ inline PlaybackFrameSpeedThrough playbackFrameSpeedThroughAtTimelineFrame(
             1,
             qMin<int64_t>(requestedWindow, qMin<int64_t>(currentLength, nextLength)));
         const int64_t windowStart = current.endFrame - window + 1;
-        float t = -1.0f;
+        const int64_t windowEnd = next.startFrame + window - 1;
+        int64_t transitionOrdinal = -1;
         if (frame >= windowStart && frame <= current.endFrame) {
-            const int64_t offset = frame - windowStart;
-            t = qBound(0.0f,
-                       static_cast<float>(offset + 1) / static_cast<float>(window * 2),
-                       0.5f);
+            transitionOrdinal = frame - windowStart;
         } else if (frame > current.endFrame && frame < next.startFrame) {
-            t = 0.5f;
+            // Transport normally skips this gap. Keep the mapping defined for
+            // seeks and diagnostics without introducing a second midpoint.
+            result.active = true;
+            result.timelineFramePosition =
+                static_cast<qreal>(windowStart + windowEnd) * 0.5;
+            return result;
         } else if (frame >= next.startFrame && frame < next.startFrame + window) {
-            const int64_t offset = frame - next.startFrame;
-            t = qBound(0.5f,
-                       static_cast<float>(window + offset) / static_cast<float>(window * 2),
-                       1.0f);
+            transitionOrdinal = window + (frame - next.startFrame);
         } else {
             continue;
         }
+        const int64_t transitionIntervals = qMax<int64_t>(1, window * 2 - 1);
+        const float t = qBound(
+            0.0f,
+            static_cast<float>(transitionOrdinal) /
+                static_cast<float>(transitionIntervals),
+            1.0f);
         const float s = playbackFrameTransitionSmoothValue(t, timing.frameTransitionMode);
         result.active = true;
         result.timelineFramePosition =
-            static_cast<qreal>(current.endFrame) +
-            static_cast<qreal>(next.startFrame - current.endFrame) * static_cast<qreal>(s);
+            static_cast<qreal>(windowStart) +
+            static_cast<qreal>(windowEnd - windowStart) * static_cast<qreal>(s);
         return result;
     }
     return result;

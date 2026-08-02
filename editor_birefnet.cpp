@@ -6,6 +6,7 @@
 #include "inspector_pane.h"
 #include "processing_job_docker.h"
 #include "processing_job_manifest.h"
+#include "qt_process_tree.h"
 #include "timeline_widget.h"
 
 #include <QCheckBox>
@@ -30,6 +31,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QProgressBar>
 #include <QPushButton>
@@ -847,6 +849,8 @@ void EditorWindow::openBiRefNetDetectorWindow(
     stop->setObjectName(QStringLiteral("birefnet.job.stop"));
     progressLayout->addWidget(stop, 0, Qt::AlignRight);
     auto* process = new QProcess(progress);
+    jcut::jobs::isolateQProcessTree(process);
+    const auto processTreeId = std::make_shared<qint64>(0);
     const auto processLog = std::make_shared<QByteArray>();
     process->setWorkingDirectory(QDir::currentPath());
     process->setProcessChannelMode(QProcess::MergedChannels);
@@ -925,16 +929,31 @@ void EditorWindow::openBiRefNetDetectorWindow(
         stop->setText(QStringLiteral("Close"));
     });
     const auto stopRequested = std::make_shared<bool>(false);
-    connect(process, &QProcess::started, progress, [manifestPath, process]() {
+    connect(process, &QProcess::started, progress,
+            [manifestPath, process, processTreeId]() {
+        *processTreeId = process->processId();
         jcut::jobs::updateManifestStatus(
             manifestPath,
             QStringLiteral("starting"),
             QJsonObject{{QStringLiteral("pid"), static_cast<qint64>(process->processId())}},
             nullptr);
     });
+    const auto requestProcessTreeStop =
+        [this, process, processTreeId]() {
+        const qint64 treeId = *processTreeId;
+        jcut::jobs::terminateQProcessTree(process, treeId);
+        const QPointer<QProcess> guardedProcess(process);
+        QTimer::singleShot(5000, this, [guardedProcess, treeId]() {
+            if (jcut::jobs::qProcessTreeExists(treeId) ||
+                (guardedProcess &&
+                 guardedProcess->state() != QProcess::NotRunning)) {
+                jcut::jobs::killQProcessTree(guardedProcess.data(), treeId);
+            }
+        });
+    };
     connect(stop, &QPushButton::clicked, progress,
-            [progress, process, stop, output, statusLabel, containerName,
-             stopRequested]() {
+            [this, progress, process, stop, output, statusLabel, containerName,
+             stopRequested, requestProcessTreeStop]() {
         if (process->state() == QProcess::NotRunning) {
             progress->close();
             return;
@@ -943,25 +962,27 @@ void EditorWindow::openBiRefNetDetectorWindow(
         stop->setEnabled(false);
         stop->setText(QStringLiteral("Stopping…"));
         statusLabel->setText(QStringLiteral("Stopping BiRefNet safely…"));
+        requestProcessTreeStop();
         const QString docker = QStandardPaths::findExecutable(QStringLiteral("docker"));
         if (docker.isEmpty()) {
-            process->terminate();
             return;
         }
-        auto* stopper = new QProcess(progress);
+        auto* stopper = new QProcess(this);
         stopper->setProcessChannelMode(QProcess::MergedChannels);
+        const QPointer<QPlainTextEdit> guardedOutput(output);
+        const QPointer<QPushButton> guardedStop(stop);
         connect(stopper, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-                progress, [stopper, process, output, stop](int exitCode,
-                                                           QProcess::ExitStatus exitStatus) {
+                stopper, [stopper, guardedOutput, guardedStop](int exitCode,
+                                                               QProcess::ExitStatus exitStatus) {
             const QString message = QString::fromLocal8Bit(stopper->readAll()).trimmed();
             if (exitStatus != QProcess::NormalExit || exitCode != 0) {
-                if (!message.isEmpty()) {
-                    output->appendPlainText(QStringLiteral("\n[stop] %1").arg(message));
+                if (!message.isEmpty() && guardedOutput) {
+                    guardedOutput->appendPlainText(
+                        QStringLiteral("\n[stop] %1").arg(message));
                 }
-                // The launcher may still be building the image and have no container yet.
-                process->terminate();
             }
-            stop->setEnabled(true);
+            if (guardedStop) guardedStop->setEnabled(true);
+            stopper->deleteLater();
         });
         stopper->start(docker,
                        QStringList{QStringLiteral("stop"), QStringLiteral("--time"),

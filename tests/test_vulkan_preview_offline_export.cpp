@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -145,6 +146,20 @@ void TestVulkanPreviewOfflineExport::
     linkedMaskLayersShareOneHardwareSourceImport()
 {
     qputenv("JCUT_RENDER_BACKEND", "vulkan");
+    const bool headlessHardwareDecodeWasSet =
+        qEnvironmentVariableIsSet("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE");
+    const QByteArray previousHeadlessHardwareDecode =
+        qgetenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE");
+    qputenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE", "1");
+    const auto restoreHeadlessHardwareDecode = qScopeGuard(
+        [headlessHardwareDecodeWasSet, previousHeadlessHardwareDecode]() {
+            if (headlessHardwareDecodeWasSet) {
+                qputenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE",
+                        previousHeadlessHardwareDecode);
+            } else {
+                qunsetenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE");
+            }
+        });
 
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -489,6 +504,8 @@ void TestVulkanPreviewOfflineExport::
     QCOMPARE(decode.exitCode(), 0);
     const QByteArray pixels = decode.readAllStandardOutput();
     QCOMPARE(pixels.size(), 160 * 90 * 3 * 2);
+    QVector<int> redByFrame;
+    QVector<int> blueByFrame;
     for (int frame = 0; frame < 2; ++frame) {
         const int offset =
             ((frame * 160 * 90) + (45 * 160 + 80)) * 3;
@@ -498,7 +515,9 @@ void TestVulkanPreviewOfflineExport::
             static_cast<unsigned char>(pixels.at(offset + 1));
         const int blue =
             static_cast<unsigned char>(pixels.at(offset + 2));
-        QVERIFY2(red > 70 && blue > 70 && green < 70,
+        redByFrame.push_back(red);
+        blueByFrame.push_back(blue);
+        QVERIFY2(red > 40 && blue > 40 && green < 70,
                  qPrintable(QStringLiteral(
                      "expected GPU-composited red/blue crossfade at output "
                      "frame %1, got rgb(%2,%3,%4)")
@@ -507,6 +526,10 @@ void TestVulkanPreviewOfflineExport::
                                 .arg(green)
                                 .arg(blue)));
     }
+    QVERIFY2(redByFrame.at(0) > blueByFrame.at(0),
+             "the outgoing frame must remain dominant in the first half");
+    QVERIFY2(blueByFrame.at(1) > redByFrame.at(1),
+             "the incoming frame must become dominant in the second half");
 }
 
 void TestVulkanPreviewOfflineExport::
