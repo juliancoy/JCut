@@ -112,6 +112,7 @@ private slots:
     void testLegacyStateJsonPreservesQtOnlyArtifactFields();
     void testLegacySaveRemapsGappedTrackIds();
     void testCoreDocumentFileRoundTrips();
+    void testCanonicalLegacyStatePreservesExtensionsAndNormalizesProjection();
     void testImGuiProjectSessionLoadsActiveQtProjectFiles();
     void testImGuiProjectSessionSaveWritesQtStateFiles();
     void testAiLoginPersistsRefreshTokenContract();
@@ -6367,6 +6368,43 @@ void TestEditorRuntime::testCoreDocumentFileRoundTrips()
     QCOMPARE(loaded->clips.size(), original.clips.size());
     QCOMPARE(loaded->tracks.size(), original.tracks.size());
     QCOMPARE(loaded->transport.currentFrame, original.transport.currentFrame);
+}
+
+void TestEditorRuntime::testCanonicalLegacyStatePreservesExtensionsAndNormalizesProjection()
+{
+    const nlohmann::json state = {
+        {"projectName", "Canonical"},
+        {"shellExtension", {{"keep", true}}},
+        {"selectedClipId", "clip-a"},
+        {"tracks", nlohmann::json::array({{
+            {"name", "Primary"}, {"height", 90}}})},
+        {"timeline", nlohmann::json::array({{
+            {"id", "clip-a"},
+            {"label", "Interview"},
+            {"filePath", "/tmp/interview.mov"},
+            {"mediaType", "video"},
+            {"trackIndex", 0},
+            {"startFrame", 12},
+            {"durationFrames", 80}}})}
+    };
+
+    std::string error;
+    const std::optional<nlohmann::json> canonical =
+        jcut::canonicalLegacyStateJson(state, &error);
+
+    QVERIFY2(canonical.has_value(), error.c_str());
+    QVERIFY(canonical->at("shellExtension").at("keep").get<bool>());
+    QCOMPARE(canonical->at("timeline").size(), std::size_t(1));
+    QCOMPARE(canonical->at("tracks").size(), std::size_t(1));
+    QCOMPARE(QString::fromStdString(canonical->at("selectedClipId").get<std::string>()),
+             QStringLiteral("clip-a"));
+
+    const std::optional<jcut::EditorDocumentCore> reparsed =
+        jcut::editorDocumentCoreFromJson(*canonical, &error);
+    QVERIFY2(reparsed.has_value(), error.c_str());
+    QCOMPARE(reparsed->clips.size(), std::size_t(1));
+    QCOMPARE(QString::fromStdString(reparsed->clips.front().persistentId),
+             QStringLiteral("clip-a"));
 }
 
 void TestEditorRuntime::testImGuiProjectSessionLoadsActiveQtProjectFiles()

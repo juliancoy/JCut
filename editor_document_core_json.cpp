@@ -2067,6 +2067,18 @@ std::optional<EditorDocumentCore> editorDocumentCoreFromJsonBytes(
     }
 }
 
+std::optional<nlohmann::json> canonicalLegacyStateJson(
+    const nlohmann::json& root,
+    std::string* errorOut)
+{
+    const std::optional<EditorDocumentCore> document =
+        editorDocumentCoreFromJson(root, errorOut);
+    if (!document.has_value()) {
+        return std::nullopt;
+    }
+    return toLegacyStateJson(*document, &root);
+}
+
 std::optional<EditorDocumentCore> loadEditorDocumentCoreFromFile(
     const std::string& path,
     std::string* errorOut)

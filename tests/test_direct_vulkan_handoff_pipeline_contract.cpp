@@ -77,6 +77,7 @@ private slots:
   void exportPreviewUsesGpuDoubleBufferOnDedicatedSurface();
   void exportRunsOffGuiThreadWhileDedicatedSurfacePresents();
   void renderSynchronizationWaitsAreBoundedAndDiagnosable();
+  void hardwareFrameImportUsesGpuSemaphoreSynchronization();
   void incrementalExportCheckpointsAndLosslesslyRemuxes();
   void outputTabClearsOnlyResolvedIncrementalRenderCacheRoot();
   void exportCompositionNeverPublishesPartialLayers();
@@ -4171,6 +4172,45 @@ void TestDirectVulkanHandoffPipelineContract::
                !neutral.contains(QStringLiteral(
                    "numeric_limits<std::uint64_t>::max()")),
            "the neutral headless compositor must not wait indefinitely");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    hardwareFrameImportUsesGpuSemaphoreSynchronization() {
+  const QString importer =
+      readSourceFile(QStringLiteral("vulkan_hardware_frame_import_core.cpp"));
+  const qsizetype submitStart = importer.indexOf(
+      QStringLiteral("bool submitCommands(std::string* error)"));
+  const qsizetype recordStart = importer.indexOf(
+      QStringLiteral("bool recordRgba("), submitStart);
+  const QString submitCommands =
+      submitStart >= 0 && recordStart > submitStart
+          ? importer.mid(submitStart, recordStart - submitStart)
+          : QString();
+
+  QVERIFY2(importer.contains(QStringLiteral(
+               "cuSignalExternalSemaphoresAsync")) &&
+               importer.contains(QStringLiteral(
+                   "submit.pWaitSemaphores = &cudaReadySemaphore")) &&
+               importer.contains(QStringLiteral(
+                   "submit.pWaitDstStageMask = &waitStage")),
+           "CUDA copies must signal an imported semaphore that Vulkan waits "
+           "on instead of synchronizing the decoder stream on the CPU");
+  QVERIFY2(!importer.contains(QStringLiteral(
+               "cuStreamSynchronize(cuda->stream)")) &&
+               !submitCommands.isEmpty() &&
+               !submitCommands.contains(QStringLiteral("waitIdle(error)")),
+           "hardware-frame submission must remain asynchronous on the hot "
+           "path");
+  QVERIFY2(importer.contains(QStringLiteral(
+               "AVFrame* retainedSource = av_frame_clone(frame)")) &&
+               importer.contains(QStringLiteral(
+                   "pendingSourceFrame = retainedSource")) &&
+               importer.contains(QStringLiteral(
+                   "vkWaitForFences(")) &&
+               importer.contains(QStringLiteral(
+                   "av_frame_free(&pendingSourceFrame)")),
+           "the decoded CUDA frame must remain owned until the import fence "
+           "proves that its asynchronous copy is complete");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

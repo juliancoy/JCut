@@ -6,6 +6,7 @@
 #include "clip_serialization.h"
 #include "debug_controls.h"
 #include "editor_shared_transcript.h"
+#include "editor_document_core_json.h"
 #include "startup_project_state.h"
 #include "project_save_lock.h"
 
@@ -22,6 +23,7 @@
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QCoreApplication>
+#include <QJsonDocument>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
@@ -34,6 +36,30 @@ namespace {
 const QLatin1String kHistoryTranscriptDocumentsKey("__historyTranscriptDocuments");
 constexpr int kFallbackHistoryMaxEntries = 100;
 constexpr int kFallbackHistoryMaxMegabytes = 16;
+
+QJsonObject canonicalizedStateJson(const QJsonObject& state)
+{
+    const QByteArray bytes = QJsonDocument(state).toJson(QJsonDocument::Compact);
+    try {
+        const nlohmann::json parsed = nlohmann::json::parse(bytes.constData(),
+                                                            bytes.constData() + bytes.size());
+        std::string error;
+        const std::optional<nlohmann::json> canonical =
+            jcut::canonicalLegacyStateJson(parsed, &error);
+        if (canonical.has_value()) {
+            return QJsonDocument::fromJson(
+                       QByteArray::fromStdString(canonical->dump())).object();
+        }
+        qWarning().noquote()
+            << QStringLiteral("[PROJECT] Canonical document conversion failed: %1")
+                   .arg(QString::fromStdString(error));
+    } catch (const nlohmann::json::exception& exception) {
+        qWarning().noquote()
+            << QStringLiteral("[PROJECT] Canonical document conversion failed: %1")
+                   .arg(QString::fromUtf8(exception.what()));
+    }
+    return state;
+}
 
 void stripHeavyClipState(QJsonObject* clipObj)
 {
@@ -527,6 +553,9 @@ void EditorWindow::loadState()
                     });
     }
 
+    if (!root.isEmpty()) {
+        root = canonicalizedStateJson(root);
+    }
     markStartup(QStringLiteral("load_state.apply_state.begin"));
     applyStateJson(root);
     markStartup(QStringLiteral("load_state.apply_state.end"));
@@ -1128,7 +1157,7 @@ QJsonObject EditorWindow::buildStateJson() const
     }
     root[QStringLiteral("tracks")] = tracks;
 
-    return root;
+    return canonicalizedStateJson(root);
 }
 
 void EditorWindow::scheduleSaveState()

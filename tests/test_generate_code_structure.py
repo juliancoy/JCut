@@ -19,6 +19,38 @@ SPEC.loader.exec_module(generator)
 
 
 class GenerateCodeStructureTest(unittest.TestCase):
+    def test_ownership_resolution_prefers_highest_priority(self) -> None:
+        manifest = {
+            "schema": generator.OWNERSHIP_SCHEMA,
+            "rules": [
+                {"owner": "fallback", "layer": "L5", "priority": 1, "patterns": ["*"]},
+                {"owner": "audio", "layer": "L3", "priority": 10, "patterns": ["audio_*"]},
+            ],
+        }
+        ownership, violations = generator.resolve_declared_ownership(
+            "audio_engine.cpp", manifest
+        )
+        self.assertEqual(ownership["declared_owner"], "audio")
+        self.assertEqual(ownership["layer"], "L3")
+        self.assertEqual(violations, [])
+
+    def test_ownership_resolution_reports_ambiguous_top_priority(self) -> None:
+        manifest = {
+            "schema": generator.OWNERSHIP_SCHEMA,
+            "rules": [
+                {"owner": "one", "layer": "L2", "priority": 10, "patterns": ["*.cpp"]},
+                {"owner": "two", "layer": "L3", "priority": 10, "patterns": ["audio_*"]},
+            ],
+        }
+        _, violations = generator.resolve_declared_ownership("audio_engine.cpp", manifest)
+        self.assertEqual(violations, ["ambiguous_declared_owner"])
+
+    def test_production_build_targets_exclude_test_executables(self) -> None:
+        self.assertEqual(
+            generator.production_build_targets(["editor_core", "test_audio_engine"]),
+            ["editor_core"],
+        )
+
     def test_python_ast_records_nesting_spans_and_imports(self) -> None:
         source = """import json
 from pathlib import Path

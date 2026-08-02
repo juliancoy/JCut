@@ -1,0 +1,126 @@
+{
+  "schema": "jcut_code_ownership_v1",
+  "rules": [
+    {
+      "owner": "tests",
+      "layer": "L5",
+      "priority": 130,
+      "patterns": ["tests/**", "test*.cpp", "test_*.sh"]
+    },
+    {
+      "owner": "tooling",
+      "layer": "L5",
+      "priority": 120,
+      "patterns": ["scripts/**", "*.py", "*.sh", "*.cmake", "CMakeLists.txt", "Makefile"]
+    },
+    {
+      "owner": "vulkan-shaders",
+      "layer": "L3",
+      "priority": 100,
+      "declared_target": "jcut_vulkan_shaders",
+      "patterns": ["shaders/vulkan/**"]
+    },
+    {
+      "owner": "legacy-and-experiments",
+      "layer": "L5",
+      "priority": 100,
+      "patterns": ["legacy/**", "loiacono/**"]
+    },
+    {
+      "owner": "qt-editor-entry",
+      "layer": "L0/L1",
+      "priority": 110,
+      "declared_target": "editor",
+      "patterns": ["editor.cpp", "editor_main.cpp", "editor_ai_integration.cpp"]
+    },
+    {
+      "owner": "shared-qt-runtime",
+      "layer": "L2/L3",
+      "priority": 105,
+      "declared_target": "jcut_runtime_support",
+      "patterns": ["editor_shared*", "editor_effect_presets.cpp", "preview_face_track_click_policy.cpp", "preview_frame_selection.cpp", "preview_view_transform.cpp"]
+    },
+    {
+      "owner": "widget-support",
+      "layer": "L1/L4",
+      "priority": 105,
+      "declared_target": "editor_test_support",
+      "patterns": ["preview_view_transform_qt_widgets.cpp", "project_manager.cpp"]
+    },
+    {
+      "owner": "project-roundtrip-entry",
+      "layer": "L0/L5",
+      "priority": 110,
+      "declared_target": "project_roundtrip_cli",
+      "patterns": ["project_roundtrip_cli.cpp"]
+    },
+    {
+      "owner": "imgui-entry",
+      "layer": "L0",
+      "priority": 90,
+      "declared_target": "jcut_imgui",
+      "patterns": ["jcut_imgui_main.cpp"]
+    },
+    {
+      "owner": "imgui-frontend",
+      "layer": "L1/L4",
+      "priority": 80,
+      "patterns": ["imgui*", "standalone_*", "runtime_control_server.*"]
+    },
+    {
+      "owner": "canonical-editor-domain",
+      "layer": "L2",
+      "priority": 75,
+      "patterns": ["editor_document*", "editor_runtime.*", "editor_grading_core.*", "editor_timeline_*_core.*", "editor_media_presence_core.*", "editor_auto_oppose_core.*", "editor_scale_to_fill.*", "timeline_*_core.*", "*_core.h", "*_core.cpp"]
+    },
+    {
+      "owner": "audio-runtime",
+      "layer": "L3",
+      "priority": 70,
+      "patterns": ["audio_*", "waveform_*", "speech_filter_*", "capabilities_detector.*"]
+    },
+    {
+      "owner": "decode-cache-runtime",
+      "layer": "L3",
+      "priority": 70,
+      "patterns": ["decoder_*", "async_decoder.*", "decode_trace.*", "frame_*", "timeline_cache*", "memory_budget.*", "media_pipeline_shared.*"]
+    },
+    {
+      "owner": "render-and-vulkan-runtime",
+      "layer": "L3",
+      "priority": 70,
+      "patterns": ["render_*", "offscreen_vulkan_*", "vulkan_*", "direct_vulkan_*", "gpu_compositor.*", "cpu_*render*", "title_mesh_extrusion.*", "visual_effects_shader.h"]
+    },
+    {
+      "owner": "face-detection-runtime",
+      "layer": "L2/L3",
+      "priority": 70,
+      "patterns": ["face*", "facedetections_*", "detector_settings.*", "identity_resolution.*", "track_avatar_utils.*"]
+    },
+    {
+      "owner": "transcript-and-speaker-domain",
+      "layer": "L2",
+      "priority": 70,
+      "patterns": ["transcript_*", "speaker_*", "speakers_*", "tracks.cpp", "sync_detector.py", "transform_skip_aware_timing.*"]
+    },
+    {
+      "owner": "qt-editor-ui",
+      "layer": "L1/L4",
+      "priority": 60,
+      "declared_target": "editor_core",
+      "patterns": ["editor*", "inspector*", "*_tab.*", "*_tab_*.cpp", "timeline_widget*", "timeline_layout.*", "timeline_renderer.*", "timeline_container.*", "preview_*", "project_*", "projects.*", "track_sidebar.*", "transport_icons.*", "explorer_pane.*"]
+    },
+    {
+      "owner": "integration-and-control",
+      "layer": "L5",
+      "priority": 50,
+      "patterns": ["control_server*", "processing_job_*", "*job_core.*", "*.html"]
+    },
+    {
+      "owner": "first-party-support",
+      "layer": "L2/L5",
+      "priority": 1,
+      "patterns": ["*"]
+    }
+  ]
+}

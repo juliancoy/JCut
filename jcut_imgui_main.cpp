@@ -4391,6 +4391,8 @@ struct VulkanShell {
         optionalExtension(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, &extensions);
 #ifdef __linux__
         optionalExtension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, &extensions);
+        optionalExtension(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME, &extensions);
+        optionalExtension(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, &extensions);
 #endif
         optionalExtension(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, &extensions);
         optionalExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, &extensions);

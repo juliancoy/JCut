@@ -27,6 +27,14 @@ std::optional<EditorDocumentCore> editorDocumentCoreFromJsonBytes(
     const std::string& bytes,
     std::string* errorOut = nullptr);
 
+// Normalizes either supported on-disk representation through the canonical
+// editor model while retaining unrelated shell extensions from the input.
+// Persistence callers should use this boundary instead of independently
+// serializing timeline and track projections.
+std::optional<nlohmann::json> canonicalLegacyStateJson(
+    const nlohmann::json& root,
+    std::string* errorOut = nullptr);
+
 std::optional<EditorDocumentCore> loadEditorDocumentCoreFromFile(
     const std::string& path,
     std::string* errorOut = nullptr);

@@ -24,6 +24,7 @@ from typing import Any, Iterable
 
 
 SCHEMA = "jcut_code_structure_v1"
+OWNERSHIP_SCHEMA = "jcut_code_ownership_v1"
 SOURCE_SUFFIXES = {
     ".c": "C",
     ".cc": "C++",
@@ -143,6 +144,63 @@ def discover_files(root: Path, excludes: tuple[str, ...]) -> list[Path]:
         path for path in candidates
         if language_for(path) and not is_excluded(path.as_posix(), excludes)
     )
+
+
+def load_ownership_manifest(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != OWNERSHIP_SCHEMA:
+        raise RuntimeError(f"Unsupported ownership manifest schema in {path}")
+    if not isinstance(manifest.get("rules"), list):
+        raise RuntimeError(f"Ownership manifest has no rules array: {path}")
+    return manifest
+
+
+def resolve_declared_ownership(
+    relative: str,
+    manifest: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    if manifest is None:
+        return None, []
+    matches = []
+    for rule in manifest["rules"]:
+        if any(fnmatch.fnmatch(relative, pattern) for pattern in rule.get("patterns", [])):
+            matches.append(rule)
+    if not matches:
+        return None, ["missing_declared_owner"]
+    priority = max(int(rule.get("priority", 0)) for rule in matches)
+    winners = [rule for rule in matches if int(rule.get("priority", 0)) == priority]
+    identities = {(rule.get("owner"), rule.get("layer")) for rule in winners}
+    violations = ["ambiguous_declared_owner"] if len(identities) > 1 else []
+    winner = winners[0]
+    return {
+        "declared_owner": winner.get("owner"),
+        "layer": winner.get("layer"),
+        "declared_target": winner.get("declared_target"),
+        "matched_rule_priority": priority,
+    }, violations
+
+
+def build_targets_from_ninja(root: Path, ninja_path: Path | None) -> dict[str, list[str]]:
+    if ninja_path is None:
+        ninja_path = root / "build" / "build.ninja"
+    if not ninja_path.exists():
+        return {}
+    result: dict[str, set[str]] = defaultdict(set)
+    root_prefix = str(root) + "/"
+    for line in ninja_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("build CMakeFiles/") or ".dir/" not in line or ".o:" not in line:
+            continue
+        target = line.split("CMakeFiles/", 1)[1].split(".dir/", 1)[0]
+        for token in line.split():
+            if token.startswith(root_prefix):
+                result[token[len(root_prefix):]].add(target)
+    return {path: sorted(targets) for path, targets in result.items()}
+
+
+def production_build_targets(targets: Iterable[str]) -> list[str]:
+    return sorted(target for target in targets if not target.startswith("test_"))
 
 
 def line_count(data: bytes) -> int:
@@ -462,12 +520,19 @@ def run_ctags(root: Path, paths: list[Path]) -> tuple[dict[str, list[dict[str, A
     return by_path, warnings
 
 
-def analyze(root: Path, paths: list[Path], excludes: tuple[str, ...]) -> dict[str, Any]:
+def analyze(
+    root: Path,
+    paths: list[Path],
+    excludes: tuple[str, ...],
+    ownership_manifest: dict[str, Any] | None = None,
+    build_targets: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     ctags_paths = [path for path in paths
                    if language_for(path) not in {"Python", "GLSL", "CSS"}]
     ctags_symbols, warnings = run_ctags(root, ctags_paths) if ctags_paths else ({}, [])
     files: list[dict[str, Any]] = []
     parse_errors: list[dict[str, str]] = []
+    build_targets = build_targets or {}
 
     for relative in paths:
         absolute = root / relative
@@ -493,7 +558,19 @@ def analyze(root: Path, paths: list[Path], excludes: tuple[str, ...]) -> dict[st
         outline = build_outline(symbols)
         if parse_error:
             parse_errors.append({"path": relative.as_posix(), "error": parse_error})
-        files.append({
+        relative_path = relative.as_posix()
+        ownership, ownership_violations = resolve_declared_ownership(
+            relative_path, ownership_manifest
+        )
+        actual_targets = build_targets.get(relative_path, [])
+        production_targets = production_build_targets(actual_targets)
+        is_implementation = relative.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".cu"}
+        if is_implementation and len(production_targets) > 1:
+            ownership_violations.append("multiple_build_targets")
+        if ownership and ownership.get("declared_target") and production_targets:
+            if ownership["declared_target"] not in production_targets:
+                ownership_violations.append("declared_target_mismatch")
+        file_record = {
             "path": relative.as_posix(),
             "language": language,
             "parser": ("+".join(sorted({entry["parser"] for entry in symbols})) if symbols else
@@ -509,7 +586,13 @@ def analyze(root: Path, paths: list[Path], excludes: tuple[str, ...]) -> dict[st
             "symbol_count": len(symbols),
             "largest_symbol_lines": max((item["span_lines"] for item in symbols), default=0),
             "parse_error": parse_error,
-        })
+            "declared_owner": ownership.get("declared_owner") if ownership else None,
+            "layer": ownership.get("layer") if ownership else None,
+            "declared_target": ownership.get("declared_target") if ownership else None,
+            "build_targets": actual_targets,
+            "ownership_violations": sorted(set(ownership_violations)),
+        }
+        files.append(file_record)
 
     language_summary: dict[str, dict[str, int]] = {}
     for language in sorted({item["language"] for item in files}):
@@ -519,6 +602,9 @@ def analyze(root: Path, paths: list[Path], excludes: tuple[str, ...]) -> dict[st
             "lines": sum(item["lines"] for item in selected),
             "symbols": sum(item["symbol_count"] for item in selected),
         }
+    violation_counts = Counter(
+        violation for item in files for violation in item["ownership_violations"]
+    )
     return {
         "schema": SCHEMA,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -530,10 +616,13 @@ def analyze(root: Path, paths: list[Path], excludes: tuple[str, ...]) -> dict[st
             "lines": sum(item["lines"] for item in files),
             "symbols": sum(item["symbol_count"] for item in files),
             "parse_errors": len(parse_errors),
+            "ownership_violations": sum(violation_counts.values()),
+            "ownership_violation_types": dict(sorted(violation_counts.items())),
             "languages": language_summary,
         },
         "parser_warnings": warnings,
         "parse_errors": parse_errors,
+        "ownership_manifest_schema": ownership_manifest.get("schema") if ownership_manifest else None,
         "files": files,
     }
 
@@ -557,6 +646,7 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         f"Corpus: **{summary['files']:,} files**, **{summary['lines']:,} lines**, "
         f"**{summary['symbols']:,} symbols**  ",
         f"Large-file threshold: **{large_file_lines:,} lines**",
+        f"Ownership violations: **{summary['ownership_violations']:,}**",
         "",
         "## Language inventory",
         "",
@@ -568,6 +658,22 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         lines.append(
             f"| {language} | {values['files']:,} | {values['lines']:,} | {values['symbols']:,} |"
         )
+    lines.extend([
+        "",
+        "## Ownership audit",
+        "",
+        "| File | Declared owner | Layer | Build targets | Violations |",
+        "|---|---|---|---|---|",
+    ])
+    ownership_rows = [item for item in files if item["ownership_violations"]]
+    for item in sorted(ownership_rows, key=lambda entry: entry["path"]):
+        lines.append(
+            f"| `{item['path']}` | {item['declared_owner'] or '-'} | "
+            f"{item['layer'] or '-'} | `{', '.join(item['build_targets'])}` | "
+            f"{', '.join(item['ownership_violations'])} |"
+        )
+    if not ownership_rows:
+        lines.append("| _None_ | - | - | - | - |")
     lines.extend([
         "",
         "## Refactor queue",
@@ -663,6 +769,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="add an exclusion glob (repeatable)")
     parser.add_argument("--include", action="store_true",
                         help="disable the default exclusion globs")
+    parser.add_argument("--ownership-manifest", type=Path, default=Path("code_ownership.json"))
+    parser.add_argument("--ninja-file", type=Path, default=Path("build/build.ninja"))
+    parser.add_argument("--check-ownership", action="store_true",
+                        help="fail when ownership violations are present")
     return parser.parse_args(argv)
 
 
@@ -674,7 +784,15 @@ def main(argv: list[str] | None = None) -> int:
     if not paths:
         print("No source files found", file=sys.stderr)
         return 1
-    index = analyze(root, paths, excludes)
+    manifest_path = args.ownership_manifest
+    if not manifest_path.is_absolute():
+        manifest_path = root / manifest_path
+    ninja_path = args.ninja_file
+    if not ninja_path.is_absolute():
+        ninja_path = root / ninja_path
+    ownership_manifest = load_ownership_manifest(manifest_path)
+    build_targets = build_targets_from_ninja(root, ninja_path)
+    index = analyze(root, paths, excludes, ownership_manifest, build_targets)
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = root / output_dir
@@ -692,6 +810,12 @@ def main(argv: list[str] | None = None) -> int:
     if index["summary"]["parse_errors"]:
         print(f"Parse errors: {index['summary']['parse_errors']}", file=sys.stderr)
         return 2
+    if args.check_ownership and index["summary"]["ownership_violations"]:
+        print(
+            f"Ownership violations: {index['summary']['ownership_violations']}",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

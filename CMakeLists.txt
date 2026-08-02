@@ -379,78 +379,116 @@ configure_file(
     @ONLY
 )
 
-file(GLOB EDITOR_ALL_CPP CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
-
-set(EDITOR_EXCLUDED_REGEX
-    ".*/playback_controller\\.cpp$"
-    ".*/professional_example\\.cpp$"
-    ".*/test[0-9]*\\.cpp$"
-    ".*/imgui_preview_window\\.cpp$"
-    ".*/imgui_audio_runtime\\.cpp$"
-    ".*/imgui_vulkan_frame_importer\\.cpp$"
-    ".*/imgui_gpu_renderer_bridge\\.cpp$"
-    ".*/imgui_gpu_renderer_plugin\\.cpp$"
-    ".*/jcut_imgui_main\\.cpp$"
-    # Built once in the Qt-free external-frame import core and reused by both frontends.
-    ".*/vulkan_external_frame_import_core\\.cpp$"
-    # Built once in jcut_media_path_core and linked into both frontends.
-    ".*/image_sequence_directory\\.cpp$"
-    # Built once in the Qt-free transcript projection core and reused by both frontends.
-    ".*/transcript_document_core\\.cpp$"
-    ".*/transcript_overlay_core\\.cpp$"
-    ".*/transcript_mining_core\\.cpp$"
-    # Built once in the Qt-free AI gateway core and reused by both frontends.
-    ".*/ai_gateway_core\\.cpp$"
-    ".*/ai_credential_store_core\\.cpp$"
-    # Built once in the Qt-free decoded-frame payload core and reused by Qt adapters.
-    ".*/frame_payload_core\\.cpp$"
-    # Explicitly attached only to editor_core below; ImGui must not compile private QRhi APIs.
-    ".*/frame_handle_qrhi_adapter\\.cpp$"
-    ".*/transcript_cut_session_core\\.cpp$"
-    # Built once in Qt-free shared services and reused by the Qt and ImGui paths.
-    ".*/audio_time_stretch_core\\.cpp$"
-    ".*/audio_dynamics_core\\.cpp$"
-    ".*/audio_output_backend\\.cpp$"
-    ".*/capabilities_detector\\.cpp$"
-    ".*/waveform_envelope_core\\.cpp$"
-    ".*/mask_frame_map_core\\.cpp$"
-    ".*/standalone_audio_mixer\\.cpp$"
-    ".*/standalone_export_renderer\\.cpp$"
-    ".*/standalone_timeline_renderer\\.cpp$"
-    ".*/standalone_preview_renderer\\.cpp$"
-    ".*/proxy_generation_job_core\\.cpp$"
-    ".*/prompt_mask_job_core\\.cpp$"
-    # Built once in the shared Qt process-tree cancellation helper.
-    ".*/qt_process_tree\\.cpp$"
-    ".*/decoder_policy_core\\.cpp$"
-    ".*/ffmpeg_hardware_device_core\\.cpp$"
-    ".*/video_decode_capabilities_core\\.cpp$"
-    # 3D model import/runtime sources depend on motive3d engine files that are not
-    # part of this repository build graph (eg. primitive/texture engine runtime).
-    # Exclude them from the editor target so standard builds remain reproducible.
-    ".*/animation\\.cpp$"
-    ".*/fbx_import\\.cpp$"
-    ".*/gltf_import\\.cpp$"
-    ".*/model\\.cpp$"
-    ".*/model_import_shared\\.cpp$"
-    ".*/model_runtime\\.cpp$"
-    ".*/backend_headless_compare_main\\.cpp$"
-    ".*/vulkan_facedetections_offscreen_main\\.cpp$"
-    ".*/vulkan_facedetections_preview_main\\.cpp$"
-    ".*/vulkan_facedetections_test_ui_main\\.cpp$"
-    ".*/migrate_facedetections_artifacts_main\\.cpp$"
-    ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
+set(EDITOR_QT_UI_SOURCES
+    clips_tab.cpp
+    control_server.cpp
+    control_server_http_utils.cpp
+    control_server_media_diag.cpp
+    control_server_ui_utils.cpp
+    control_server_worker.cpp
+    control_server_worker_routes.cpp
+    control_server_worker_routes_ui.cpp
+    corrections_tab.cpp
+    decoder_benchmark_utils.cpp
+    direct_vulkan_frame_handoff_pipeline.cpp
+    direct_vulkan_preview_audio.cpp
+    direct_vulkan_preview_config.cpp
+    direct_vulkan_preview_geometry.cpp
+    direct_vulkan_preview_host_widget.cpp
+    direct_vulkan_preview_interaction.cpp
+    direct_vulkan_preview_overlay_rendering.cpp
+    direct_vulkan_preview_presenter.cpp
+    direct_vulkan_preview_transcript.cpp
+    direct_vulkan_preview_window.cpp
+    editor_ai_helpers.cpp
+    editor_birefnet.cpp
+    editor_editor_pane.cpp
+    editor_facedetections_preview_harness.cpp
+    editor_input.cpp
+    editor_inspector_bindings.cpp
+    editor_media_tools.cpp
+    editor_optimization.cpp
+    editor_pane.cpp
+    editor_playback.cpp
+    editor_preview_edit_helpers.cpp
+    editor_profiling.cpp
+    editor_render_tools.cpp
+    editor_runtime_qt_bridge.cpp
+    editor_setup.cpp
+    editor_tabs.cpp
+    editor_title_opacity_keyframe_ops.cpp
+    editor_transform_keyframe_ops.cpp
+    effects_tab.cpp
+    explorer_pane.cpp
+    export_vulkan_preview_widget.cpp
+    gpu_compositor.cpp
+    grading_histogram_widget.cpp
+    grading_tab.cpp
+    grading_tab_curve.cpp
+    history_tab.cpp
+    inspector_controller.cpp
+    inspector_pane.cpp
+    inspector_pane_audio_tab.cpp
+    inspector_pane_collections.cpp
+    inspector_pane_secondary_tabs.cpp
+    inspector_pane_speakers_continuity_tab.cpp
+    inspector_pane_wiring.cpp
+    keyframe_tab_base.cpp
+    keyframe_table_shared.cpp
+    mask_fuzzy_remove.cpp
+    mask_tab.cpp
+    media_drag_payload.cpp
+    null_preview_surface.cpp
+    opacity_tab.cpp
+    output_tab.cpp
+    pipeline_tab.cpp
+    playback_frame_pipeline.cpp
+    preview_renderer_backend.cpp
+    preview_speaker_profiles.cpp
+    preview_surface_factory.cpp
+    preview_widget_factory.cpp
+    profile_tab.cpp
+    project_state.cpp
+    projects.cpp
+    properties_tab.cpp
+    speaker_document_edit_ops.cpp
+    speaker_export_harness.cpp
+    speaker_flow_debug.cpp
+    speaker_section_selection_timing_service.cpp
+    speakers_tab.cpp
+    speakers_tab_facedetections_actions.cpp
+    speakers_tab_facedetections_engines.cpp
+    speakers_tab_facedetections_generation.cpp
+    speakers_tab_interactions.cpp
+    speakers_tab_interactions_ai.cpp
+    speakers_tab_interactions_ai_mining.cpp
+    speakers_tab_navigation.cpp
+    speakers_tab_reference_preview.cpp
+    speakers_tab_wiring.cpp
+    speakers_table.cpp
+    sync_tab.cpp
+    table_tab_base.cpp
+    timeline_container.cpp
+    timeline_layout.cpp
+    timeline_renderer.cpp
+    timeline_widget_clipboard.cpp
+    timeline_widget_context_menu.cpp
+    timeline_widget_core.cpp
+    timeline_widget_input.cpp
+    timeline_widget_layout.cpp
+    timeline_widget_model.cpp
+    timeline_widget_paint.cpp
+    titles_tab.cpp
+    track_sidebar.cpp
+    tracks.cpp
+    tracks_tab.cpp
+    transport_icons.cpp
+    video_keyframe_tab.cpp
+    vulkan_backend.cpp
+    vulkan_preview_surface.cpp
+    vulkan_preview_surface_facedetections.cpp
+    vulkan_preview_surface_profiling.cpp
 )
-
-set(EDITOR_APP_SOURCES "${EDITOR_ALL_CPP}")
-foreach(regex IN LISTS EDITOR_EXCLUDED_REGEX)
-    list(FILTER EDITOR_APP_SOURCES EXCLUDE REGEX "${regex}")
-endforeach()
-
-set(EDITOR_CORE_SOURCES "${EDITOR_APP_SOURCES}")
-list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor\\.cpp$")
-list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_main\\.cpp$")
-list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_ai_integration\\.cpp$")
 
 set(JCUT_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_shaders")
 set(JCUT_VULKAN_SHADER_SOURCES
@@ -668,15 +706,10 @@ target_include_directories(jcut_qt_process_tree_core PUBLIC
 )
 target_link_libraries(jcut_qt_process_tree_core PUBLIC Qt6::Core)
 
-add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
+add_library(editor_core STATIC ${EDITOR_QT_UI_SOURCES})
 target_sources(editor_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ui_icons.qrc
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/spectrum_settings_dialog.cpp
 )
 
 target_include_directories(editor_core
@@ -981,6 +1014,7 @@ jcut_use_qt_widgets_headers_only(jcut_runtime_support)
 target_link_libraries(jcut_runtime_support
     PRIVATE
         jcut_audio_dynamics_core
+        jcut_transcript_document_core
         jcut_preview_decode_runtime
         jcut_image_decode_core
     PUBLIC
@@ -1144,6 +1178,70 @@ target_compile_definitions(jcut_editor_runtime
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_editor_runtime jcut_vulkan_shaders)
 endif()
+
+add_library(jcut_loiacono_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/spectrum_settings_dialog.cpp
+)
+target_include_directories(jcut_loiacono_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono
+)
+target_link_libraries(jcut_loiacono_runtime PUBLIC Qt6::Widgets Vulkan::Vulkan)
+
+add_library(jcut_face_preview_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_generation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp
+)
+target_include_directories(jcut_face_preview_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(jcut_face_preview_runtime PUBLIC
+    editor_test_support
+    jcut_editor_runtime
+    jcut_loiacono_runtime
+    Vulkan::Vulkan
+)
+target_compile_definitions(jcut_face_preview_runtime PUBLIC
+    JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
+    JCUT_HAVE_OPENCV=0
+    JCUT_HAVE_OPENCV_CONTRIB=0
+    JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE=${JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE}
+)
+if(JCUT_HAS_CUDA_DRIVER)
+    target_link_libraries(jcut_face_preview_runtime PUBLIC ${CUDA_DRIVER_LIBRARY})
+    target_include_directories(jcut_face_preview_runtime PUBLIC ${CUDA_DRIVER_INCLUDE_DIR})
+    target_compile_definitions(jcut_face_preview_runtime PUBLIC JCUT_HAS_CUDA_DRIVER=1)
+else()
+    target_compile_definitions(jcut_face_preview_runtime PUBLIC JCUT_HAS_CUDA_DRIVER=0)
+endif()
+if(TARGET ncnn)
+    target_link_libraries(jcut_face_preview_runtime PUBLIC ncnn)
+endif()
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(jcut_face_preview_runtime jcut_vulkan_shaders)
+endif()
+
+# The Qt frontend owns only widget/application sources. Shared domain, decode,
+# render, and detector implementations are compiled once by their libraries.
+target_link_libraries(editor_core PUBLIC
+    editor_test_support
+    jcut_editor_core
+    jcut_editor_runtime
+    jcut_preview_decode_runtime
+    jcut_face_preview_runtime
+    jcut_loiacono_runtime
+)
+target_link_libraries(jcut_imgui_preview_support PUBLIC jcut_face_preview_runtime)
 
 add_library(jcut_imgui_vulkan_import STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_vulkan_frame_importer.cpp
@@ -1348,7 +1446,6 @@ jcut_force_bundled_ffmpeg_runtime(jcut_imgui)
 
 add_executable(project_roundtrip_cli
     ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
 )
 target_include_directories(project_roundtrip_cli
     PRIVATE
@@ -1356,8 +1453,9 @@ target_include_directories(project_roundtrip_cli
 )
 target_link_libraries(project_roundtrip_cli
     PRIVATE
+        editor_test_support
         Qt6::Core
-    Qt6::Widgets
+        Qt6::Widgets
 )
 
 add_executable(jcut_migrate_facedetections_artifacts
@@ -1378,7 +1476,6 @@ endif()
 
 add_executable(jcut_vulkan_zero_copy_video_preprocess
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_video_preprocess_main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
 )
 target_include_directories(jcut_vulkan_zero_copy_video_preprocess PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1386,7 +1483,7 @@ target_include_directories(jcut_vulkan_zero_copy_video_preprocess PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
-    editor_test_support
+    jcut_face_preview_runtime
     Vulkan::Vulkan
 )
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
@@ -1409,11 +1506,6 @@ endif()
 jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_zero_copy_video_preprocess)
 
 add_executable(jcut_vulkan_facedetections_offscreen
-    ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_edit_service.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_io.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_artifact_io.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_benchmark.cpp
@@ -1428,34 +1520,6 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_tuning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_vulkan_harness.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_generation.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_effect_synth.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_mask_preprocessor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_overlay_cache_key.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/title_mesh_extrusion.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/waveform_service.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
 )
 target_include_directories(jcut_vulkan_facedetections_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1465,6 +1529,8 @@ target_include_directories(jcut_vulkan_facedetections_offscreen PRIVATE
 target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
     editor_test_support
     jcut_imgui_preview_support
+    jcut_face_preview_runtime
+    jcut_editor_runtime
     jcut_vulkan_frame_import_core
     Qt6::Network
     Vulkan::Vulkan

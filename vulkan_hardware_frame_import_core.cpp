@@ -118,17 +118,27 @@ public:
                 VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) ||
             !hasExtension(
                 physicalDevice,
-                VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+                VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) ||
+            !hasExtension(
+                physicalDevice,
+                VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME) ||
+            !hasExtension(
+                physicalDevice,
+                VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)) {
             release();
             return fail(
                 error,
-                "Vulkan device lacks opaque-FD external-memory support");
+                "Vulkan device lacks opaque-FD external-memory/semaphore support");
         }
         getMemoryFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
             vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR"));
-        if (!getMemoryFd) {
+        getSemaphoreFd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(device, "vkGetSemaphoreFdKHR"));
+        if (!getMemoryFd || !getSemaphoreFd) {
             release();
-            return fail(error, "vkGetMemoryFdKHR is unavailable");
+            return fail(
+                error,
+                "Vulkan opaque-FD memory/semaphore export is unavailable");
         }
 
         VkCommandPoolCreateInfo poolInfo{};
@@ -158,6 +168,24 @@ public:
                 device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
             release();
             return fail(error, "failed to create hardware-frame fence");
+        }
+        VkExportSemaphoreCreateInfo semaphoreExport{};
+        semaphoreExport.sType =
+            VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        semaphoreExport.handleTypes =
+            VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        semaphoreInfo.pNext = &semaphoreExport;
+        if (vkCreateSemaphore(
+                device,
+                &semaphoreInfo,
+                nullptr,
+                &cudaReadySemaphore) != VK_SUCCESS) {
+            release();
+            return fail(
+                error,
+                "failed to create CUDA/Vulkan ready semaphore");
         }
         initialized = true;
         return true;
@@ -292,6 +320,7 @@ public:
             return false;
         }
         if (!activateCudaContext(cuda->cuda_ctx, error) ||
+            !ensureCudaReadySemaphore(cuda->cuda_ctx, error) ||
             !ensureCudaMapping(
                 yMemory,
                 yAllocationSize,
@@ -312,6 +341,11 @@ public:
             return false;
         }
 
+        AVFrame* retainedSource = av_frame_clone(frame);
+        if (!retainedSource) {
+            popCudaContext();
+            return fail(error, "failed to retain CUDA source frame for import");
+        }
         bool copied = false;
         if (nv12) {
             CUDA_MEMCPY2D yCopy{};
@@ -345,21 +379,21 @@ public:
             const CUresult uvResult = yResult == CUDA_SUCCESS
                 ? cuMemcpy2DAsync(&uvCopy, cuda->stream)
                 : yResult;
-            const CUresult syncResult = uvResult == CUDA_SUCCESS
-                ? cuStreamSynchronize(cuda->stream)
+            const CUresult signalResult = uvResult == CUDA_SUCCESS
+                ? signalCudaReady(cuda->stream)
                 : uvResult;
-            copied = syncResult == CUDA_SUCCESS;
+            copied = signalResult == CUDA_SUCCESS;
             if (!copied && error) {
                 *error = cudaFailure(
                     yResult != CUDA_SUCCESS
                         ? "cuMemcpy2DAsync(Y)"
                         : uvResult != CUDA_SUCCESS
                             ? "cuMemcpy2DAsync(UV)"
-                            : "cuStreamSynchronize",
+                            : "cuSignalExternalSemaphoresAsync",
                     yResult != CUDA_SUCCESS
                         ? yResult
                         : uvResult != CUDA_SUCCESS
-                            ? uvResult : syncResult);
+                            ? uvResult : signalResult);
             }
         } else {
             CUDA_MEMCPY2D copy{};
@@ -377,26 +411,30 @@ public:
             copy.Height = static_cast<std::size_t>(size.height);
             const CUresult copyResult =
                 cuMemcpy2DAsync(&copy, cuda->stream);
-            const CUresult syncResult = copyResult == CUDA_SUCCESS
-                ? cuStreamSynchronize(cuda->stream)
+            const CUresult signalResult = copyResult == CUDA_SUCCESS
+                ? signalCudaReady(cuda->stream)
                 : copyResult;
-            copied = syncResult == CUDA_SUCCESS;
+            copied = signalResult == CUDA_SUCCESS;
             if (!copied && error) {
                 *error = cudaFailure(
                     copyResult != CUDA_SUCCESS
                         ? "cuMemcpy2DAsync(RGBA)"
-                        : "cuStreamSynchronize",
+                        : "cuSignalExternalSemaphoresAsync",
                     copyResult != CUDA_SUCCESS
-                        ? copyResult : syncResult);
+                        ? copyResult : signalResult);
             }
         }
         popCudaContext();
         if (!copied) {
+            av_frame_free(&retainedSource);
             return error && !error->empty()
                 ? false
                 : fail(error,
                        "CUDA device copy into Vulkan external memory failed");
         }
+        pendingSourceFrame = retainedSource;
+        pendingCudaContext = cuda->cuda_ctx;
+        cudaReadySignalPending = true;
         if (nv12) {
             if (!recordNv12(
                     size,
@@ -439,6 +477,18 @@ public:
             vkDeviceWaitIdle(device);
         }
 #if JCUT_HAS_CUDA_DRIVER
+        if (cudaReadySignalPending) {
+            synchronizePendingCudaWork();
+        }
+#endif
+        if (pendingSourceFrame) {
+            av_frame_free(&pendingSourceFrame);
+        }
+#if JCUT_HAS_CUDA_DRIVER
+        pendingCudaContext = nullptr;
+#endif
+#if JCUT_HAS_CUDA_DRIVER
+        destroyCudaReadySemaphore();
         destroyCudaMapping(
             &yExternalMemory, &yDevicePointer, &yCudaContext);
         destroyCudaMapping(
@@ -468,6 +518,9 @@ public:
                 vkFreeMemory(device, imageMemory, nullptr);
             if (fence != VK_NULL_HANDLE)
                 vkDestroyFence(device, fence, nullptr);
+            if (cudaReadySemaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(
+                    device, cudaReadySemaphore, nullptr);
             if (commandPool != VK_NULL_HANDLE)
                 vkDestroyCommandPool(device, commandPool, nullptr);
         }
@@ -478,6 +531,10 @@ public:
         commandPool = VK_NULL_HANDLE;
         commandBuffer = VK_NULL_HANDLE;
         fence = VK_NULL_HANDLE;
+        cudaReadySemaphore = VK_NULL_HANDLE;
+        getMemoryFd = nullptr;
+        getSemaphoreFd = nullptr;
+        cudaReadySignalPending = false;
         image = VK_NULL_HANDLE;
         imageMemory = VK_NULL_HANDLE;
         imageView = VK_NULL_HANDLE;
@@ -530,6 +587,12 @@ private:
                 5'000'000'000ull) != VK_SUCCESS) {
             return fail(error, "timed out waiting for hardware-frame import");
         }
+        if (pendingSourceFrame) {
+            av_frame_free(&pendingSourceFrame);
+        }
+#if JCUT_HAS_CUDA_DRIVER
+        pendingCudaContext = nullptr;
+#endif
         return true;
     }
 
@@ -738,6 +801,84 @@ private:
     }
 
 #if JCUT_HAS_CUDA_DRIVER
+    bool ensureCudaReadySemaphore(CUcontext context, std::string* error)
+    {
+        if (cudaExternalReadySemaphore &&
+            cudaSemaphoreContext == context) {
+            return true;
+        }
+        destroyCudaReadySemaphore();
+        if (!getSemaphoreFd || cudaReadySemaphore == VK_NULL_HANDLE) {
+            return fail(error, "CUDA/Vulkan ready semaphore is unavailable");
+        }
+        VkSemaphoreGetFdInfoKHR fdInfo{};
+        fdInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+        fdInfo.semaphore = cudaReadySemaphore;
+        fdInfo.handleType =
+            VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        int fd = -1;
+        if (getSemaphoreFd(device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
+            return fail(error, "failed to export CUDA/Vulkan semaphore FD");
+        }
+        CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC handle{};
+        handle.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD;
+        handle.handle.fd = fd;
+        if (cuImportExternalSemaphore(
+                &cudaExternalReadySemaphore,
+                &handle) != CUDA_SUCCESS) {
+            close(fd);
+            cudaExternalReadySemaphore = nullptr;
+            return fail(error, "cuImportExternalSemaphore failed");
+        }
+        cudaSemaphoreContext = context;
+        return true;
+    }
+
+    CUresult signalCudaReady(CUstream stream)
+    {
+        CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS params{};
+        CUexternalSemaphore semaphores[] = {cudaExternalReadySemaphore};
+        return cuSignalExternalSemaphoresAsync(
+            semaphores, &params, 1, stream);
+    }
+
+    void destroyCudaReadySemaphore()
+    {
+        if (!cudaExternalReadySemaphore) {
+            cudaSemaphoreContext = nullptr;
+            return;
+        }
+        CUcontext current = nullptr;
+        cuCtxGetCurrent(&current);
+        bool pushed = false;
+        if (cudaSemaphoreContext && current != cudaSemaphoreContext) {
+            pushed = cuCtxPushCurrent(cudaSemaphoreContext) == CUDA_SUCCESS;
+        }
+        cuDestroyExternalSemaphore(cudaExternalReadySemaphore);
+        if (pushed) {
+            CUcontext previous = nullptr;
+            cuCtxPopCurrent(&previous);
+        }
+        cudaExternalReadySemaphore = nullptr;
+        cudaSemaphoreContext = nullptr;
+    }
+
+    void synchronizePendingCudaWork()
+    {
+        if (!pendingCudaContext) return;
+        CUcontext current = nullptr;
+        cuCtxGetCurrent(&current);
+        const bool pushed = current != pendingCudaContext &&
+            cuCtxPushCurrent(pendingCudaContext) == CUDA_SUCCESS;
+        if (current == pendingCudaContext || pushed) {
+            cuCtxSynchronize();
+        }
+        if (pushed) {
+            CUcontext previous = nullptr;
+            cuCtxPopCurrent(&previous);
+        }
+    }
+
     bool activateCudaContext(CUcontext context, std::string* error)
     {
         if (cuInit(0) != CUDA_SUCCESS ||
@@ -899,13 +1040,21 @@ private:
         }
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        VkPipelineStageFlags waitStage =
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        if (cudaReadySignalPending) {
+            submit.waitSemaphoreCount = 1;
+            submit.pWaitSemaphores = &cudaReadySemaphore;
+            submit.pWaitDstStageMask = &waitStage;
+        }
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &commandBuffer;
         if (vkQueueSubmit(
                 queue, 1, &submit, fence) != VK_SUCCESS) {
             return fail(error, "failed to submit hardware-frame commands");
         }
-        return waitIdle(error);
+        cudaReadySignalPending = false;
+        return true;
     }
 
     bool recordRgba(core::SizeI size, std::string* error)
@@ -1274,9 +1423,13 @@ private:
     std::string shaderDirectory;
     bool initialized = false;
     PFN_vkGetMemoryFdKHR getMemoryFd = nullptr;
+    PFN_vkGetSemaphoreFdKHR getSemaphoreFd = nullptr;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    VkSemaphore cudaReadySemaphore = VK_NULL_HANDLE;
+    bool cudaReadySignalPending = false;
+    AVFrame* pendingSourceFrame = nullptr;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory imageMemory = VK_NULL_HANDLE;
     VkImageView imageView = VK_NULL_HANDLE;
@@ -1305,6 +1458,9 @@ private:
     CUdeviceptr uvDevicePointer = 0;
     CUcontext yCudaContext = nullptr;
     CUcontext uvCudaContext = nullptr;
+    CUexternalSemaphore cudaExternalReadySemaphore = nullptr;
+    CUcontext cudaSemaphoreContext = nullptr;
+    CUcontext pendingCudaContext = nullptr;
     bool cudaContextPushed = false;
 #endif
 };

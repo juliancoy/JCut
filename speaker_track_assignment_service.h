@@ -16,6 +16,15 @@ struct ResolvedAssignments {
     QHash<QString, QVector<int>> trackIdsByIdentity;
 };
 
+struct AssignmentRemoval {
+    bool removed = false;
+    QString streamId;
+    int64_t sourceFrame = -1;
+    qreal xNorm = 0.5;
+    qreal yNorm = 0.5;
+    qreal boxSizeNorm = 0.2;
+};
+
 QJsonObject makeTrackAnchor(int trackId,
                             const QString& streamId,
                             int64_t sourceFrame,
@@ -47,5 +56,16 @@ QSet<int> trackIdsForIdentity(const QJsonObject& transcriptRoot,
                               const QJsonArray& streams,
                               const QVector<RenderSyncMarker>& renderSyncMarkers,
                               const QString& identityId);
+
+// Owns the complete document mutation for removing a persisted identity/track
+// assignment, including its audit record and speaker-profile face references.
+// UI callers are responsible only for committing the returned document.
+AssignmentRemoval removeAssignment(QJsonObject* transcriptRoot,
+                                   const TimelineClip& clip,
+                                   const QJsonArray& streams,
+                                   const QVector<RenderSyncMarker>& renderSyncMarkers,
+                                   const QString& identityId,
+                                   int trackId,
+                                   const QString& timestampUtc);
 
 } // namespace jcut::speakertrack

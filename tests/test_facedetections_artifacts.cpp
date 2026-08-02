@@ -310,6 +310,68 @@ private slots:
         QCOMPARE(resolved.trackIdsByIdentity.value(QStringLiteral("speaker_julian")).value(0), 340);
     }
 
+    void assignmentRemovalOwnsMapAuditAndProfileMutation()
+    {
+        TimelineClip clip;
+        clip.id = QStringLiteral("clip_001");
+        clip.durationFrames = 1000;
+        clip.sourceFps = 30.0;
+        const QJsonObject assignmentRow{
+            {QStringLiteral("track_id"), 7},
+            {QStringLiteral("stream_id"), QStringLiteral("T7")},
+            {QStringLiteral("identity_id"), QStringLiteral("speaker_a")},
+            {QString(kSpeakerFlowAnchorSourceFrameKey), 120},
+            {QString(kSpeakerFlowAnchorXKey), 0.4},
+            {QString(kSpeakerFlowAnchorYKey), 0.6},
+            {QString(kSpeakerFlowAnchorBoxSizeKey), 0.25},
+        };
+        QJsonObject transcriptRoot{
+            {QStringLiteral("speaker_profiles"), QJsonObject{
+                 {QStringLiteral("speaker_a"), QJsonObject{
+                      {QString(kTranscriptSpeakerFaceRefsKey), QJsonArray{
+                           QJsonObject{{QStringLiteral("track_id"), 7}},
+                           QJsonObject{{QStringLiteral("track_id"), 9}},
+                       }},
+                  }},
+             }},
+            {QStringLiteral("speaker_flow"), QJsonObject{
+                 {QStringLiteral("clips"), QJsonObject{
+                      {clip.id, QJsonObject{
+                           {QStringLiteral("resolved_current"), QJsonObject{
+                                {QStringLiteral("track_identity_map"),
+                                 QJsonArray{assignmentRow}},
+                            }},
+                       }},
+                  }},
+             }},
+        };
+
+        const jcut::speakertrack::AssignmentRemoval removed =
+            jcut::speakertrack::removeAssignment(
+                &transcriptRoot,
+                clip,
+                {},
+                {},
+                QStringLiteral("speaker_a"),
+                7,
+                QStringLiteral("2026-08-02T12:00:00.000Z"));
+
+        QVERIFY(removed.removed);
+        QCOMPARE(removed.streamId, QStringLiteral("T7"));
+        QCOMPARE(jcut::speakertrack::assignmentMapForClip(transcriptRoot, clip.id).size(), 0);
+        const QJsonObject clipRoot = transcriptRoot
+            .value(QStringLiteral("speaker_flow")).toObject()
+            .value(QStringLiteral("clips")).toObject()
+            .value(clip.id).toObject();
+        QCOMPARE(clipRoot.value(QStringLiteral("human_runs")).toObject().size(), 1);
+        const QJsonArray faceRefs = transcriptRoot
+            .value(QStringLiteral("speaker_profiles")).toObject()
+            .value(QStringLiteral("speaker_a")).toObject()
+            .value(QString(kTranscriptSpeakerFaceRefsKey)).toArray();
+        QCOMPARE(faceRefs.size(), 1);
+        QCOMPARE(faceRefs.front().toObject().value(QStringLiteral("track_id")).toInt(), 9);
+    }
+
 };
 
 QTEST_MAIN(FacestreamArtifactsTest)
