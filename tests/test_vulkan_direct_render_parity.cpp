@@ -8,6 +8,47 @@
 
 #include <cstddef>
 
+namespace {
+
+QString readSourceSet(const QStringList& relativePaths)
+{
+    QString combined;
+    for (const QString& relativePath : relativePaths) {
+        QFile file(QStringLiteral(JCUT_SOURCE_DIR "/") + relativePath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return {};
+        }
+        combined += QString::fromUtf8(file.readAll());
+        combined += QLatin1Char('\n');
+    }
+    return combined;
+}
+
+QString directPreviewSource()
+{
+    return readSourceSet({
+        QStringLiteral("direct_vulkan_preview_window_internal.h"),
+        QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"),
+        QStringLiteral("direct_vulkan_preview_renderer_resources.cpp"),
+        QStringLiteral("direct_vulkan_preview_renderer_export.cpp"),
+        QStringLiteral("direct_vulkan_preview_window.cpp"),
+    });
+}
+
+QString offscreenRendererSource()
+{
+    return readSourceSet({
+        QStringLiteral("offscreen_vulkan_renderer_backend.cpp"),
+        QStringLiteral("offscreen_vulkan_renderer_initialization.h"),
+        QStringLiteral("offscreen_vulkan_renderer_staging_preview.h"),
+        QStringLiteral("offscreen_vulkan_renderer_composition.h"),
+        QStringLiteral("offscreen_vulkan_renderer_conversion.h"),
+        QStringLiteral("offscreen_vulkan_renderer_text_preparation.h"),
+    });
+}
+
+} // namespace
+
 class VulkanDirectRenderParityTest : public QObject {
     Q_OBJECT
 
@@ -33,22 +74,17 @@ private slots:
         QVERIFY(shaderSource.contains(QStringLiteral(
             "value *= 1.0 - correctionCoverage(dstCoord)")));
 
-        QFile preview(
-            QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
-        QVERIFY2(preview.open(QIODevice::ReadOnly),
-                 "Unable to open direct Vulkan preview source.");
-        const QString previewSource = QString::fromUtf8(preview.readAll());
+        const QString previewSource = directPreviewSource();
+        QVERIFY2(!previewSource.isEmpty(),
+                 "Unable to open direct Vulkan preview source set.");
         QVERIFY(previewSource.contains(QStringLiteral(
             "maskOptions.correctionStorage")));
         QVERIFY(!previewSource.contains(QStringLiteral(
             "applyCorrectionPolygonsToMaskImage")));
 
-        QFile exportRenderer(
-            QStringLiteral(JCUT_SOURCE_DIR
-                           "/offscreen_vulkan_renderer_backend.cpp"));
-        QVERIFY2(exportRenderer.open(QIODevice::ReadOnly),
-                 "Unable to open offscreen Vulkan renderer source.");
-        const QString exportSource = QString::fromUtf8(exportRenderer.readAll());
+        const QString exportSource = offscreenRendererSource();
+        QVERIFY2(!exportSource.isEmpty(),
+                 "Unable to open offscreen Vulkan renderer source set.");
         QFile maskPreprocessor(
             QStringLiteral(JCUT_SOURCE_DIR "/vulkan_mask_preprocessor.cpp"));
         QVERIFY2(maskPreprocessor.open(QIODevice::ReadOnly),
@@ -72,16 +108,14 @@ private slots:
         QVERIFY(shaderSource.contains(QStringLiteral("texture(u_mask, v_texCoord).rgb")));
         QVERIFY(shaderSource.contains(QStringLiteral("smoothstep(threshold - softness")));
 
-        QFile preview(QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
-        QVERIFY2(preview.open(QIODevice::ReadOnly), "Unable to open direct Vulkan preview source.");
-        const QString previewSource = QString::fromUtf8(preview.readAll());
+        const QString previewSource = directPreviewSource();
+        QVERIFY2(!previewSource.isEmpty(), "Unable to open direct Vulkan preview source set.");
         QVERIFY(previewSource.contains(QStringLiteral("#differenceReference")));
         QVERIFY(previewSource.contains(QStringLiteral("#temporalEcho%1")));
         QVERIFY(previewSource.contains(QStringLiteral("bindAuxiliaryImage")));
 
-        QFile exportRenderer(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
-        QVERIFY2(exportRenderer.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer source.");
-        const QString exportSource = QString::fromUtf8(exportRenderer.readAll());
+        const QString exportSource = offscreenRendererSource();
+        QVERIFY2(!exportSource.isEmpty(), "Unable to open offscreen Vulkan renderer source set.");
         QVERIFY(exportSource.contains(QStringLiteral("referenceFrameHandoff->uploadFrame")));
         QVERIFY(exportSource.contains(QStringLiteral("effectPreset == ClipEffectPreset::TemporalEcho")));
         QVERIFY(exportSource.contains(QStringLiteral("context.preferHardwareFrames")));
@@ -511,9 +545,8 @@ private slots:
 
     void directVulkanPresenterPassesBackgroundFillState()
     {
-        QFile renderer(QStringLiteral(JCUT_SOURCE_DIR "/direct_vulkan_preview_window.cpp"));
-        QVERIFY2(renderer.open(QIODevice::ReadOnly), "Unable to open direct Vulkan preview renderer.");
-        const QString source = QString::fromUtf8(renderer.readAll());
+        const QString source = directPreviewSource();
+        QVERIFY2(!source.isEmpty(), "Unable to open direct Vulkan preview renderer source set.");
 
         QVERIFY2(
             source.contains(QStringLiteral(
@@ -587,9 +620,8 @@ private slots:
                          "if (maskReady && status->maskForegroundLayerEnabled)")),
                  "Preview status and the direct presenter must retain independently graded mask foreground layers during progressive edge stretch.");
 
-        QFile offscreen(QStringLiteral(JCUT_SOURCE_DIR "/offscreen_vulkan_renderer_backend.cpp"));
-        QVERIFY2(offscreen.open(QIODevice::ReadOnly), "Unable to open offscreen Vulkan renderer.");
-        const QString offscreenSource = QString::fromUtf8(offscreen.readAll());
+        const QString offscreenSource = offscreenRendererSource();
+        QVERIFY2(!offscreenSource.isEmpty(), "Unable to open offscreen Vulkan renderer source set.");
         QVERIFY2(offscreenSource.contains(QStringLiteral("backgroundLayer.backgroundShadows")) &&
                offscreenSource.contains(QStringLiteral("updateFrameUniformForDraw(&layer")) &&
                      offscreenSource.contains(QStringLiteral("VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC")),

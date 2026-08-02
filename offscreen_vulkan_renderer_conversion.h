@@ -101,101 +101,77 @@
     transitionImageLayout(m_commandBuffer, m_colorImage,
                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    VkViewport yViewport{};
-    yViewport.x = 0.0f;
-    yViewport.y = 0.0f;
-    yViewport.width = static_cast<float>(m_outputSize.width());
-    yViewport.height = static_cast<float>(m_outputSize.height());
-    yViewport.minDepth = 0.0f;
-    yViewport.maxDepth = 1.0f;
-    VkRect2D yScissor{};
-    yScissor.offset = {0, 0};
-    yScissor.extent = {static_cast<uint32_t>(m_outputSize.width()),
-                       static_cast<uint32_t>(m_outputSize.height())};
-    VkClearValue clearY{};
-    clearY.color = {{0.0625f, 0.0f, 0.0f, 1.0f}};
-    VkRenderPassBeginInfo yPass{};
-    yPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    yPass.renderPass = m_nv12YRenderPass;
-    yPass.framebuffer = m_nv12YFramebuffer;
-    yPass.renderArea.offset = {0, 0};
-    yPass.renderArea.extent = yScissor.extent;
-    yPass.clearValueCount = 1;
-    yPass.pClearValues = &clearY;
-    vkCmdBeginRenderPass(m_commandBuffer, &yPass, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      m_nv12YPipeline);
-    vkCmdSetViewport(m_commandBuffer, 0, 1, &yViewport);
-    vkCmdSetScissor(m_commandBuffer, 0, 1, &yScissor);
-    const uint32_t frameUniformOffset = 0;
-    vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 1,
-                            &frameUniformOffset);
-    vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
-    vkCmdEndRenderPass(m_commandBuffer);
-
-    VkViewport uvViewport{};
-    uvViewport.x = 0.0f;
-    uvViewport.y = 0.0f;
-    uvViewport.width = static_cast<float>(qMax(1, m_outputSize.width() / 2));
-    uvViewport.height = static_cast<float>(qMax(1, m_outputSize.height() / 2));
-    uvViewport.minDepth = 0.0f;
-    uvViewport.maxDepth = 1.0f;
-    VkRect2D uvScissor{};
-    uvScissor.offset = {0, 0};
-    uvScissor.extent = {
-        static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2)),
-        static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2))};
-    VkClearValue clearUv{};
-    clearUv.color = {{0.5f, 0.5f, 0.0f, 1.0f}};
-    VkRenderPassBeginInfo uvPass{};
-    uvPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    uvPass.renderPass = m_nv12UvRenderPass;
-    uvPass.framebuffer = m_nv12UvFramebuffer;
-    uvPass.renderArea.offset = {0, 0};
-    uvPass.renderArea.extent = uvScissor.extent;
-    uvPass.clearValueCount = 1;
-    uvPass.pClearValues = &clearUv;
-    vkCmdBeginRenderPass(m_commandBuffer, &uvPass, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      m_nv12UvPipeline);
-    vkCmdSetViewport(m_commandBuffer, 0, 1, &uvViewport);
-    vkCmdSetScissor(m_commandBuffer, 0, 1, &uvScissor);
-    vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_nv12PipelineLayout, 0, 1, &m_descriptorSet, 1,
-                            &frameUniformOffset);
-    vkCmdDraw(m_commandBuffer, 4, 1, 0, 0);
-    vkCmdEndRenderPass(m_commandBuffer);
-
     const VkDeviceSize yPlaneBytes =
         static_cast<VkDeviceSize>(m_outputSize.width()) *
         static_cast<VkDeviceSize>(m_outputSize.height());
     const VkDeviceSize uvPlaneOffset =
         (yPlaneBytes + 255u) & ~VkDeviceSize(255u);
-    VkBufferImageCopy yRegion{};
-    yRegion.bufferOffset = 0;
-    yRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    yRegion.imageSubresource.mipLevel = 0;
-    yRegion.imageSubresource.baseArrayLayer = 0;
-    yRegion.imageSubresource.layerCount = 1;
-    yRegion.imageExtent = {static_cast<uint32_t>(m_outputSize.width()),
-                           static_cast<uint32_t>(m_outputSize.height()), 1};
-    vkCmdCopyImageToBuffer(m_commandBuffer, m_nv12YImage,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, targetBuffer,
-                           1, &yRegion);
+    const VkDeviceSize uvPlaneBytes =
+        static_cast<VkDeviceSize>(qMax(1, m_outputSize.width() / 2)) *
+        static_cast<VkDeviceSize>(qMax(1, m_outputSize.height() / 2)) * 2;
+    FrameSlot &slot = m_frameSlots[m_activeSlotIndex];
+    VkDescriptorImageInfo sourceInfo{};
+    sourceInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sourceInfo.imageView = m_colorImageView;
+    sourceInfo.sampler = m_sampler;
+    VkDescriptorBufferInfo outputInfo{};
+    outputInfo.buffer = targetBuffer;
+    outputInfo.offset = 0;
+    outputInfo.range = uvPlaneOffset + uvPlaneBytes;
+    VkWriteDescriptorSet descriptorWrites[2]{};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = slot.nv12ComputeDescriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].descriptorType =
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[0].pImageInfo = &sourceInfo;
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = slot.nv12ComputeDescriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrites[1].pBufferInfo = &outputInfo;
+    vkUpdateDescriptorSets(m_device, 2, descriptorWrites, 0, nullptr);
 
-    VkBufferImageCopy uvRegion{};
-    uvRegion.bufferOffset = uvPlaneOffset;
-    uvRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    uvRegion.imageSubresource.mipLevel = 0;
-    uvRegion.imageSubresource.baseArrayLayer = 0;
-    uvRegion.imageSubresource.layerCount = 1;
-    uvRegion.imageExtent = {
-        static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2)),
-        static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2)), 1};
-    vkCmdCopyImageToBuffer(m_commandBuffer, m_nv12UvImage,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, targetBuffer,
-                           1, &uvRegion);
+    struct Nv12PushConstants {
+      uint32_t width;
+      uint32_t height;
+      uint32_t uvOffsetWords;
+      uint32_t yWordCount;
+      uint32_t uvWordCount;
+    } pushConstants{
+        static_cast<uint32_t>(m_outputSize.width()),
+        static_cast<uint32_t>(m_outputSize.height()),
+        static_cast<uint32_t>(uvPlaneOffset / 4),
+        static_cast<uint32_t>((yPlaneBytes + 3) / 4),
+        static_cast<uint32_t>((uvPlaneBytes + 3) / 4)};
+    vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      m_nv12ComputePipeline);
+    vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            m_nv12ComputePipelineLayout, 0, 1,
+                            &slot.nv12ComputeDescriptorSet, 0, nullptr);
+    vkCmdPushConstants(m_commandBuffer, m_nv12ComputePipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                       &pushConstants);
+    const uint32_t wordCount =
+        pushConstants.yWordCount + pushConstants.uvWordCount;
+    vkCmdDispatch(m_commandBuffer, (wordCount + 255u) / 256u, 1, 1);
+
+    VkBufferMemoryBarrier outputBarrier{};
+    outputBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    outputBarrier.dstAccessMask =
+        VK_ACCESS_HOST_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    outputBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    outputBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    outputBarrier.buffer = targetBuffer;
+    outputBarrier.offset = 0;
+    outputBarrier.size = uvPlaneOffset + uvPlaneBytes;
+    vkCmdPipelineBarrier(m_commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT |
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 0, nullptr, 1, &outputBarrier, 0, nullptr);
     transitionImageLayout(m_commandBuffer, m_colorImage,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -756,4 +732,3 @@
   QString cudaExternalMemoryStatus() const {
     return m_cudaExternalMemoryStatus;
   }
-

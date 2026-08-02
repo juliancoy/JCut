@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D u_texture;
+layout(std430, set = 0, binding = 1) writeonly buffer Nv12Buffer {
+    uint words[];
+} outputBuffer;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    uint uvOffsetWords;
+    uint yWordCount;
+    uint uvWordCount;
+} pc;
+
+uint encodeByte(float value) {
+    return uint(clamp(value, 0.0, 1.0) * 255.0 + 0.5);
+}
+
+uint lumaByte(uint pixelIndex) {
+    uint pixelCount = pc.width * pc.height;
+    if (pixelIndex >= pixelCount) {
+        return 0u;
+    }
+    ivec2 pixel = ivec2(int(pixelIndex % pc.width),
+                        int(pixelIndex / pc.width));
+    vec3 rgb = texelFetch(u_texture, pixel, 0).rgb;
+    return encodeByte(dot(rgb, vec3(0.2578125, 0.50390625, 0.09765625)) +
+                      0.0625);
+}
+
+uvec2 chromaBytes(uint chromaIndex) {
+    uint chromaWidth = max(1u, pc.width / 2u);
+    uint chromaHeight = max(1u, pc.height / 2u);
+    if (chromaIndex >= chromaWidth * chromaHeight) {
+        return uvec2(0u);
+    }
+    uvec2 chroma = uvec2(chromaIndex % chromaWidth,
+                         chromaIndex / chromaWidth);
+    vec2 uv = (vec2(chroma * 2u) + vec2(1.0)) /
+              vec2(pc.width, pc.height);
+    vec3 rgb = texture(u_texture, uv).rgb;
+    float u = dot(rgb, vec3(-0.1484375, -0.2890625, 0.4375)) + 0.5;
+    float v = dot(rgb, vec3(0.4375, -0.3671875, -0.0703125)) + 0.5;
+    return uvec2(encodeByte(u), encodeByte(v));
+}
+
+void main() {
+    uint wordIndex = gl_GlobalInvocationID.x;
+    if (wordIndex < pc.yWordCount) {
+        uint firstPixel = wordIndex * 4u;
+        outputBuffer.words[wordIndex] =
+            lumaByte(firstPixel) |
+            (lumaByte(firstPixel + 1u) << 8u) |
+            (lumaByte(firstPixel + 2u) << 16u) |
+            (lumaByte(firstPixel + 3u) << 24u);
+        return;
+    }
+
+    uint uvWordIndex = wordIndex - pc.yWordCount;
+    if (uvWordIndex >= pc.uvWordCount) {
+        return;
+    }
+    uvec2 first = chromaBytes(uvWordIndex * 2u);
+    uvec2 second = chromaBytes(uvWordIndex * 2u + 1u);
+    outputBuffer.words[pc.uvOffsetWords + uvWordIndex] =
+        first.x | (first.y << 8u) |
+        (second.x << 16u) | (second.y << 24u);
+}

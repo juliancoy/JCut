@@ -154,6 +154,21 @@ private slots:
             markdown = (output / "code_structure.md").read_text(encoding="utf-8")
             self.assertIn("## Large-file outlines (2 files)", markdown)
 
+    def test_discovery_ignores_tracked_files_deleted_in_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            deleted = root / "deleted.cpp"
+            deleted.write_text("int deleted();\n", encoding="utf-8")
+            subprocess.run(["git", "add", "deleted.cpp"], cwd=root, check=True)
+            deleted.unlink()
+            (root / "present.cpp").write_text("int present();\n", encoding="utf-8")
+
+            self.assertEqual(
+                generator.discover_files(root, ()),
+                [Path("present.cpp")],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

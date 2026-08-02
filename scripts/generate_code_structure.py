@@ -142,7 +142,9 @@ def discover_files(root: Path, excludes: tuple[str, ...]) -> list[Path]:
                       if path.is_file()]
     return sorted(
         path for path in candidates
-        if language_for(path) and not is_excluded(path.as_posix(), excludes)
+        if (root / path).is_file()
+        and language_for(path)
+        and not is_excluded(path.as_posix(), excludes)
     )
 
 

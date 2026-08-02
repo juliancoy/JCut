@@ -520,8 +520,7 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12.vert
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_y.frag
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_uv.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/rgba_to_nv12_buffer.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_u.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_v.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p.comp

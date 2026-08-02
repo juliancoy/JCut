@@ -138,6 +138,7 @@ public:
   static constexpr int kFrameSlots = 3;
   struct FrameSlot {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkDescriptorSet nv12ComputeDescriptorSet = VK_NULL_HANDLE;
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
     VkDeviceSize stagingBufferSize = 0;
@@ -266,6 +267,8 @@ private:
   VkDescriptorSetLayout m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet m_yuvComputeDescriptorSet = VK_NULL_HANDLE;
+  VkDescriptorSetLayout m_nv12ComputeDescriptorSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool m_nv12ComputeDescriptorPool = VK_NULL_HANDLE;
 
   VkRenderPass m_renderPass = VK_NULL_HANDLE;
 
@@ -286,20 +289,19 @@ private:
   VkPipelineLayout m_maskPipelineLayout = VK_NULL_HANDLE;
   VkPipelineLayout m_nv12PipelineLayout = VK_NULL_HANDLE;
   VkPipelineLayout m_yuvComputePipelineLayout = VK_NULL_HANDLE;
+  VkPipelineLayout m_nv12ComputePipelineLayout = VK_NULL_HANDLE;
   VkShaderModule m_effectsVertModule = VK_NULL_HANDLE;
   VkShaderModule m_effectsFragModule = VK_NULL_HANDLE;
   VkShaderModule m_maskVertModule = VK_NULL_HANDLE;
   VkShaderModule m_maskFragModule = VK_NULL_HANDLE;
   VkShaderModule m_nv12VertModule = VK_NULL_HANDLE;
-  VkShaderModule m_nv12YFragModule = VK_NULL_HANDLE;
-  VkShaderModule m_nv12UvFragModule = VK_NULL_HANDLE;
+  VkShaderModule m_nv12ComputeModule = VK_NULL_HANDLE;
   VkShaderModule m_yuv420pUFragModule = VK_NULL_HANDLE;
   VkShaderModule m_yuv420pVFragModule = VK_NULL_HANDLE;
   VkShaderModule m_yuv420pComputeModule = VK_NULL_HANDLE;
   VkPipeline m_effectsPipeline = VK_NULL_HANDLE;
   VkPipeline m_maskPipeline = VK_NULL_HANDLE;
-  VkPipeline m_nv12YPipeline = VK_NULL_HANDLE;
-  VkPipeline m_nv12UvPipeline = VK_NULL_HANDLE;
+  VkPipeline m_nv12ComputePipeline = VK_NULL_HANDLE;
   VkPipeline m_yuv420pUPipeline = VK_NULL_HANDLE;
   VkPipeline m_yuv420pVPipeline = VK_NULL_HANDLE;
   VkPipeline m_yuv420pComputePipeline = VK_NULL_HANDLE;
@@ -307,9 +309,6 @@ private:
   VkImage m_nv12YImage = VK_NULL_HANDLE;
   VkDeviceMemory m_nv12YImageMemory = VK_NULL_HANDLE;
   VkImageView m_nv12YImageView = VK_NULL_HANDLE;
-  VkImage m_nv12UvImage = VK_NULL_HANDLE;
-  VkDeviceMemory m_nv12UvImageMemory = VK_NULL_HANDLE;
-  VkImageView m_nv12UvImageView = VK_NULL_HANDLE;
   VkImage m_yuv420pUImage = VK_NULL_HANDLE;
   VkDeviceMemory m_yuv420pUImageMemory = VK_NULL_HANDLE;
   VkImageView m_yuv420pUImageView = VK_NULL_HANDLE;
@@ -317,9 +316,7 @@ private:
   VkDeviceMemory m_yuv420pVImageMemory = VK_NULL_HANDLE;
   VkImageView m_yuv420pVImageView = VK_NULL_HANDLE;
   VkRenderPass m_nv12YRenderPass = VK_NULL_HANDLE;
-  VkRenderPass m_nv12UvRenderPass = VK_NULL_HANDLE;
   VkFramebuffer m_nv12YFramebuffer = VK_NULL_HANDLE;
-  VkFramebuffer m_nv12UvFramebuffer = VK_NULL_HANDLE;
   VkFramebuffer m_yuv420pUFramebuffer = VK_NULL_HANDLE;
   VkFramebuffer m_yuv420pVFramebuffer = VK_NULL_HANDLE;
   AVFrame *m_nv12ScratchFrame = nullptr;

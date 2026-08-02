@@ -742,7 +742,8 @@
     stagingBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     stagingBufInfo.size = stagingSize;
     stagingBufInfo.usage =
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     stagingBufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -814,7 +815,7 @@
         VkBufferCreateInfo exportBufferInfo = stagingBufInfo;
         exportBufferInfo.pNext = &externalBufferInfo;
         exportBufferInfo.size = nv12ExportBufferSize;
-        exportBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        exportBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         const VkResult createExportBufferResult =
             vkCreateBuffer(m_device, &exportBufferInfo, nullptr,
                            &slot.cudaExportBuffer);
@@ -996,14 +997,6 @@
       return false;
     }
     if (!createAttachment(
-            VK_FORMAT_R8G8_UNORM,
-            static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2)),
-            static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2)),
-            &m_nv12UvImage, &m_nv12UvImageMemory, &m_nv12UvImageView,
-            errorMessage)) {
-      return false;
-    }
-    if (!createAttachment(
             VK_FORMAT_R8_UNORM,
             static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2)),
             static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2)),
@@ -1052,8 +1045,6 @@
       return true;
     };
     if (!createColorRenderPass(VK_FORMAT_R8_UNORM, &m_nv12YRenderPass,
-                               errorMessage) ||
-        !createColorRenderPass(VK_FORMAT_R8G8_UNORM, &m_nv12UvRenderPass,
                                errorMessage)) {
       return false;
     }
@@ -1073,26 +1064,15 @@
             QStringLiteral("Failed to create Vulkan NV12 Y framebuffer.");
       return false;
     }
-    VkImageView uvAtt[] = {m_nv12UvImageView};
-    VkFramebufferCreateInfo uvFb{};
-    uvFb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    uvFb.renderPass = m_nv12UvRenderPass;
-    uvFb.attachmentCount = 1;
-    uvFb.pAttachments = uvAtt;
-    uvFb.width = static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2));
-    uvFb.height = static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2));
-    uvFb.layers = 1;
-    if (vkCreateFramebuffer(m_device, &uvFb, nullptr, &m_nv12UvFramebuffer) !=
-        VK_SUCCESS) {
-      if (errorMessage)
-        *errorMessage =
-            QStringLiteral("Failed to create Vulkan NV12 UV framebuffer.");
-      return false;
-    }
     VkImageView uAtt[] = {m_yuv420pUImageView};
-    VkFramebufferCreateInfo uFb = uvFb;
+    VkFramebufferCreateInfo uFb{};
+    uFb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     uFb.renderPass = m_nv12YRenderPass;
+    uFb.attachmentCount = 1;
     uFb.pAttachments = uAtt;
+    uFb.width = static_cast<uint32_t>(qMax(1, m_outputSize.width() / 2));
+    uFb.height = static_cast<uint32_t>(qMax(1, m_outputSize.height() / 2));
+    uFb.layers = 1;
     if (vkCreateFramebuffer(m_device, &uFb, nullptr, &m_yuv420pUFramebuffer) !=
         VK_SUCCESS) {
       if (errorMessage)
@@ -1101,7 +1081,7 @@
       return false;
     }
     VkImageView vAtt[] = {m_yuv420pVImageView};
-    VkFramebufferCreateInfo vFb = uvFb;
+    VkFramebufferCreateInfo vFb = uFb;
     vFb.renderPass = m_nv12YRenderPass;
     vFb.pAttachments = vAtt;
     if (vkCreateFramebuffer(m_device, &vFb, nullptr, &m_yuv420pVFramebuffer) !=
@@ -1192,6 +1172,69 @@
     }
     vkUpdateDescriptorSets(m_device, 4, yuvWrites, 0, nullptr);
 
+    VkDescriptorSetLayoutBinding nv12Bindings[2]{};
+    nv12Bindings[0].binding = 0;
+    nv12Bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    nv12Bindings[0].descriptorCount = 1;
+    nv12Bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    nv12Bindings[1].binding = 1;
+    nv12Bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    nv12Bindings[1].descriptorCount = 1;
+    nv12Bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo nv12DescriptorLayoutInfo{};
+    nv12DescriptorLayoutInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    nv12DescriptorLayoutInfo.bindingCount = 2;
+    nv12DescriptorLayoutInfo.pBindings = nv12Bindings;
+    if (vkCreateDescriptorSetLayout(m_device, &nv12DescriptorLayoutInfo,
+                                    nullptr,
+                                    &m_nv12ComputeDescriptorSetLayout) !=
+        VK_SUCCESS) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Failed to create Vulkan NV12 compute descriptor layout.");
+      }
+      return false;
+    }
+    VkDescriptorPoolSize nv12PoolSizes[2]{};
+    nv12PoolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    nv12PoolSizes[0].descriptorCount = kFrameSlots;
+    nv12PoolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    nv12PoolSizes[1].descriptorCount = kFrameSlots;
+    VkDescriptorPoolCreateInfo nv12PoolInfo{};
+    nv12PoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    nv12PoolInfo.poolSizeCount = 2;
+    nv12PoolInfo.pPoolSizes = nv12PoolSizes;
+    nv12PoolInfo.maxSets = kFrameSlots;
+    if (vkCreateDescriptorPool(m_device, &nv12PoolInfo, nullptr,
+                               &m_nv12ComputeDescriptorPool) != VK_SUCCESS) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Failed to create Vulkan NV12 compute descriptor pool.");
+      }
+      return false;
+    }
+    QVector<VkDescriptorSetLayout> nv12Layouts(m_frameSlots.size(),
+                                               m_nv12ComputeDescriptorSetLayout);
+    QVector<VkDescriptorSet> nv12Sets(m_frameSlots.size());
+    VkDescriptorSetAllocateInfo nv12SetInfo{};
+    nv12SetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    nv12SetInfo.descriptorPool = m_nv12ComputeDescriptorPool;
+    nv12SetInfo.descriptorSetCount =
+        static_cast<uint32_t>(nv12Layouts.size());
+    nv12SetInfo.pSetLayouts = nv12Layouts.constData();
+    if (vkAllocateDescriptorSets(m_device, &nv12SetInfo, nv12Sets.data()) !=
+        VK_SUCCESS) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Failed to allocate Vulkan NV12 compute descriptor sets.");
+      }
+      return false;
+    }
+    for (int i = 0; i < m_frameSlots.size(); ++i) {
+      m_frameSlots[i].nv12ComputeDescriptorSet = nv12Sets[i];
+    }
+
      VkPushConstantRange effectsPushConstantRange{};
     effectsPushConstantRange.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1242,6 +1285,24 @@
       }
       return false;
     }
+    VkPushConstantRange nv12ComputePushConstants{};
+    nv12ComputePushConstants.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    nv12ComputePushConstants.offset = 0;
+    nv12ComputePushConstants.size = sizeof(uint32_t) * 5;
+    VkPipelineLayoutCreateInfo nv12ComputeLayoutInfo{};
+    nv12ComputeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    nv12ComputeLayoutInfo.setLayoutCount = 1;
+    nv12ComputeLayoutInfo.pSetLayouts = &m_nv12ComputeDescriptorSetLayout;
+    nv12ComputeLayoutInfo.pushConstantRangeCount = 1;
+    nv12ComputeLayoutInfo.pPushConstantRanges = &nv12ComputePushConstants;
+    if (vkCreatePipelineLayout(m_device, &nv12ComputeLayoutInfo, nullptr,
+                               &m_nv12ComputePipelineLayout) != VK_SUCCESS) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Failed to create Vulkan NV12 compute pipeline layout.");
+      }
+      return false;
+    }
     VkPipelineLayoutCreateInfo yuvComputeLayoutInfo{};
     yuvComputeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     yuvComputeLayoutInfo.setLayoutCount = 1;
@@ -1267,12 +1328,10 @@
         m_device, readBinaryFile(shaderDir + QStringLiteral("/mask.frag.spv")));
     m_nv12VertModule = createShaderModule(
         m_device, readBinaryFile(shaderDir + QStringLiteral("/nv12.vert.spv")));
-    m_nv12YFragModule = createShaderModule(
+    m_nv12ComputeModule = createShaderModule(
         m_device,
-        readBinaryFile(shaderDir + QStringLiteral("/nv12_y.frag.spv")));
-    m_nv12UvFragModule = createShaderModule(
-        m_device,
-        readBinaryFile(shaderDir + QStringLiteral("/nv12_uv.frag.spv")));
+        readBinaryFile(shaderDir +
+                       QStringLiteral("/rgba_to_nv12_buffer.comp.spv")));
     m_yuv420pUFragModule = createShaderModule(
         m_device,
         readBinaryFile(shaderDir + QStringLiteral("/yuv420p_u.frag.spv")));
@@ -1287,8 +1346,7 @@
         m_maskVertModule == VK_NULL_HANDLE ||
         m_maskFragModule == VK_NULL_HANDLE ||
         m_nv12VertModule == VK_NULL_HANDLE ||
-        m_nv12YFragModule == VK_NULL_HANDLE ||
-        m_nv12UvFragModule == VK_NULL_HANDLE ||
+        m_nv12ComputeModule == VK_NULL_HANDLE ||
         m_yuv420pUFragModule == VK_NULL_HANDLE ||
         m_yuv420pVFragModule == VK_NULL_HANDLE ||
         m_yuv420pComputeModule == VK_NULL_HANDLE) {
@@ -1455,6 +1513,17 @@
       }
       return false;
     }
+    computeInfo.stage.module = m_nv12ComputeModule;
+    computeInfo.layout = m_nv12ComputePipelineLayout;
+    if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &computeInfo,
+                                 nullptr,
+                                 &m_nv12ComputePipeline) != VK_SUCCESS) {
+      if (errorMessage) {
+        *errorMessage =
+            QStringLiteral("Failed to create Vulkan NV12 compute pipeline.");
+      }
+      return false;
+    }
 
     if (!m_maskPreprocessor.initialize(
             m_physicalDevice, m_device, errorMessage)) {
@@ -1464,12 +1533,6 @@
 	    if (!createPipeline(m_effectsVertModule, m_effectsFragModule,
 	                        m_effectsPipelineLayout, m_renderPass,
 	                        &m_effectsPipeline) ||
-        !createPipeline(m_nv12VertModule, m_nv12YFragModule,
-                        m_nv12PipelineLayout, m_nv12YRenderPass,
-                        &m_nv12YPipeline) ||
-        !createPipeline(m_nv12VertModule, m_nv12UvFragModule,
-                        m_nv12PipelineLayout, m_nv12UvRenderPass,
-                        &m_nv12UvPipeline) ||
         !createPipeline(m_nv12VertModule, m_yuv420pUFragModule,
                         m_nv12PipelineLayout, m_nv12YRenderPass,
                         &m_yuv420pUPipeline) ||
@@ -1652,13 +1715,9 @@
       vkDestroyPipeline(m_device, m_maskPipeline, nullptr);
       m_maskPipeline = VK_NULL_HANDLE;
     }
-    if (m_nv12YPipeline != VK_NULL_HANDLE) {
-      vkDestroyPipeline(m_device, m_nv12YPipeline, nullptr);
-      m_nv12YPipeline = VK_NULL_HANDLE;
-    }
-    if (m_nv12UvPipeline != VK_NULL_HANDLE) {
-      vkDestroyPipeline(m_device, m_nv12UvPipeline, nullptr);
-      m_nv12UvPipeline = VK_NULL_HANDLE;
+    if (m_nv12ComputePipeline != VK_NULL_HANDLE) {
+      vkDestroyPipeline(m_device, m_nv12ComputePipeline, nullptr);
+      m_nv12ComputePipeline = VK_NULL_HANDLE;
     }
     if (m_yuv420pUPipeline != VK_NULL_HANDLE) {
       vkDestroyPipeline(m_device, m_yuv420pUPipeline, nullptr);
@@ -1676,10 +1735,6 @@
       vkDestroyFramebuffer(m_device, m_nv12YFramebuffer, nullptr);
       m_nv12YFramebuffer = VK_NULL_HANDLE;
     }
-    if (m_nv12UvFramebuffer != VK_NULL_HANDLE) {
-      vkDestroyFramebuffer(m_device, m_nv12UvFramebuffer, nullptr);
-      m_nv12UvFramebuffer = VK_NULL_HANDLE;
-    }
     if (m_yuv420pUFramebuffer != VK_NULL_HANDLE) {
       vkDestroyFramebuffer(m_device, m_yuv420pUFramebuffer, nullptr);
       m_yuv420pUFramebuffer = VK_NULL_HANDLE;
@@ -1692,17 +1747,9 @@
       vkDestroyRenderPass(m_device, m_nv12YRenderPass, nullptr);
       m_nv12YRenderPass = VK_NULL_HANDLE;
     }
-    if (m_nv12UvRenderPass != VK_NULL_HANDLE) {
-      vkDestroyRenderPass(m_device, m_nv12UvRenderPass, nullptr);
-      m_nv12UvRenderPass = VK_NULL_HANDLE;
-    }
     if (m_nv12YImageView != VK_NULL_HANDLE) {
       vkDestroyImageView(m_device, m_nv12YImageView, nullptr);
       m_nv12YImageView = VK_NULL_HANDLE;
-    }
-    if (m_nv12UvImageView != VK_NULL_HANDLE) {
-      vkDestroyImageView(m_device, m_nv12UvImageView, nullptr);
-      m_nv12UvImageView = VK_NULL_HANDLE;
     }
     if (m_yuv420pUImageView != VK_NULL_HANDLE) {
       vkDestroyImageView(m_device, m_yuv420pUImageView, nullptr);
@@ -1716,10 +1763,6 @@
       vkDestroyImage(m_device, m_nv12YImage, nullptr);
       m_nv12YImage = VK_NULL_HANDLE;
     }
-    if (m_nv12UvImage != VK_NULL_HANDLE) {
-      vkDestroyImage(m_device, m_nv12UvImage, nullptr);
-      m_nv12UvImage = VK_NULL_HANDLE;
-    }
     if (m_yuv420pUImage != VK_NULL_HANDLE) {
       vkDestroyImage(m_device, m_yuv420pUImage, nullptr);
       m_yuv420pUImage = VK_NULL_HANDLE;
@@ -1731,10 +1774,6 @@
     if (m_nv12YImageMemory != VK_NULL_HANDLE) {
       vkFreeMemory(m_device, m_nv12YImageMemory, nullptr);
       m_nv12YImageMemory = VK_NULL_HANDLE;
-    }
-    if (m_nv12UvImageMemory != VK_NULL_HANDLE) {
-      vkFreeMemory(m_device, m_nv12UvImageMemory, nullptr);
-      m_nv12UvImageMemory = VK_NULL_HANDLE;
     }
     if (m_yuv420pUImageMemory != VK_NULL_HANDLE) {
       vkFreeMemory(m_device, m_yuv420pUImageMemory, nullptr);
@@ -1760,6 +1799,10 @@
       vkDestroyPipelineLayout(m_device, m_yuvComputePipelineLayout, nullptr);
       m_yuvComputePipelineLayout = VK_NULL_HANDLE;
     }
+    if (m_nv12ComputePipelineLayout != VK_NULL_HANDLE) {
+      vkDestroyPipelineLayout(m_device, m_nv12ComputePipelineLayout, nullptr);
+      m_nv12ComputePipelineLayout = VK_NULL_HANDLE;
+    }
     if (m_effectsVertModule != VK_NULL_HANDLE) {
       vkDestroyShaderModule(m_device, m_effectsVertModule, nullptr);
       m_effectsVertModule = VK_NULL_HANDLE;
@@ -1780,13 +1823,9 @@
       vkDestroyShaderModule(m_device, m_nv12VertModule, nullptr);
       m_nv12VertModule = VK_NULL_HANDLE;
     }
-    if (m_nv12YFragModule != VK_NULL_HANDLE) {
-      vkDestroyShaderModule(m_device, m_nv12YFragModule, nullptr);
-      m_nv12YFragModule = VK_NULL_HANDLE;
-    }
-    if (m_nv12UvFragModule != VK_NULL_HANDLE) {
-      vkDestroyShaderModule(m_device, m_nv12UvFragModule, nullptr);
-      m_nv12UvFragModule = VK_NULL_HANDLE;
+    if (m_nv12ComputeModule != VK_NULL_HANDLE) {
+      vkDestroyShaderModule(m_device, m_nv12ComputeModule, nullptr);
+      m_nv12ComputeModule = VK_NULL_HANDLE;
     }
     if (m_yuv420pUFragModule != VK_NULL_HANDLE) {
       vkDestroyShaderModule(m_device, m_yuv420pUFragModule, nullptr);
@@ -1828,6 +1867,10 @@
       vkDestroyDescriptorPool(m_device, m_yuvComputeDescriptorPool, nullptr);
       m_yuvComputeDescriptorPool = VK_NULL_HANDLE;
     }
+    if (m_nv12ComputeDescriptorPool != VK_NULL_HANDLE) {
+      vkDestroyDescriptorPool(m_device, m_nv12ComputeDescriptorPool, nullptr);
+      m_nv12ComputeDescriptorPool = VK_NULL_HANDLE;
+    }
     if (m_descriptorSetLayout != VK_NULL_HANDLE) {
       vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
       m_descriptorSetLayout = VK_NULL_HANDLE;
@@ -1836,6 +1879,11 @@
       vkDestroyDescriptorSetLayout(m_device, m_yuvComputeDescriptorSetLayout,
                                    nullptr);
       m_yuvComputeDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (m_nv12ComputeDescriptorSetLayout != VK_NULL_HANDLE) {
+      vkDestroyDescriptorSetLayout(m_device, m_nv12ComputeDescriptorSetLayout,
+                                   nullptr);
+      m_nv12ComputeDescriptorSetLayout = VK_NULL_HANDLE;
     }
     if (m_sampler != VK_NULL_HANDLE) {
       vkDestroySampler(m_device, m_sampler, nullptr);
@@ -1895,4 +1943,3 @@
 
   using TranscriptTextInput = VulkanRenderTranscriptInput;
   using VulkanTextInputs = VulkanRenderTextInputs;
-

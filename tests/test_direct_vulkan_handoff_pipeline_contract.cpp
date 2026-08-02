@@ -79,6 +79,7 @@ private slots:
   void renderSynchronizationWaitsAreBoundedAndDiagnosable();
   void hardwareFrameImportUsesGpuSemaphoreSynchronization();
   void gpuExportOutputUsesStreamOrderedSemaphoreSynchronization();
+  void gpuExportNv12ConversionWritesFrameSlotBufferDirectly();
   void incrementalExportCheckpointsAndLosslesslyRemuxes();
   void outputTabClearsOnlyResolvedIncrementalRenderCacheRoot();
   void exportCompositionNeverPublishesPartialLayers();
@@ -86,12 +87,61 @@ private slots:
 
 namespace {
 
-QString readSourceFile(const QString &relativePath) {
+QString readPhysicalSourceFile(const QString &relativePath) {
   QFile file(QStringLiteral(JCUT_SOURCE_DIR) + QLatin1Char('/') + relativePath);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
     return {};
   }
   return QString::fromUtf8(file.readAll());
+}
+
+QString readSourceFile(const QString &relativePath) {
+  QStringList physicalPaths{relativePath};
+  if (relativePath == QStringLiteral("direct_vulkan_preview_window.cpp")) {
+    physicalPaths = {
+        QStringLiteral("direct_vulkan_preview_window_internal.h"),
+        QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"),
+        QStringLiteral("direct_vulkan_preview_renderer_resources.cpp"),
+        QStringLiteral("direct_vulkan_preview_renderer_export.cpp"),
+        QStringLiteral("direct_vulkan_preview_window.cpp"),
+    };
+  } else if (relativePath ==
+             QStringLiteral("offscreen_vulkan_renderer_backend.cpp")) {
+    physicalPaths = {
+        QStringLiteral("offscreen_vulkan_renderer_backend.cpp"),
+        QStringLiteral("offscreen_vulkan_renderer_initialization.h"),
+        QStringLiteral("offscreen_vulkan_renderer_staging_preview.h"),
+        QStringLiteral("offscreen_vulkan_renderer_composition.h"),
+        QStringLiteral("offscreen_vulkan_renderer_conversion.h"),
+        QStringLiteral("offscreen_vulkan_renderer_text_preparation.h"),
+    };
+  } else if (relativePath == QStringLiteral("audio_engine.cpp")) {
+    physicalPaths = {
+        QStringLiteral("audio_engine.cpp"),
+        QStringLiteral("audio_engine_cache.cpp"),
+        QStringLiteral("audio_engine_decode.cpp"),
+        QStringLiteral("audio_engine_mix.cpp"),
+        QStringLiteral("audio_engine_profiling.cpp"),
+    };
+  } else if (relativePath == QStringLiteral("inspector_pane.cpp")) {
+    physicalPaths = {
+        QStringLiteral("inspector_pane.cpp"),
+        QStringLiteral("inspector_pane_visual_tabs.cpp"),
+        QStringLiteral("inspector_pane_transcript_tab.cpp"),
+        QStringLiteral("inspector_pane_speakers_tab.cpp"),
+    };
+  }
+
+  QString combined;
+  for (const QString &path : physicalPaths) {
+    const QString source = readPhysicalSourceFile(path);
+    if (source.isEmpty()) {
+      return {};
+    }
+    combined += source;
+    combined += QLatin1Char('\n');
+  }
+  return combined;
 }
 
 QString readSourceFiles(const QStringList &relativePaths) {
@@ -2826,10 +2876,12 @@ void TestDirectVulkanHandoffPipelineContract::
            "export speaker label timing must accept the shared render frame "
            "clock used for the rendered output frame");
   const qsizetype labelIndex =
-      source.indexOf(QStringLiteral("buildSpeakerLabelSpec"));
+      source.indexOf(QStringLiteral("bool buildSpeakerLabelSpec("));
   QVERIFY2(labelIndex >= 0, "speaker label builder must exist");
   const qsizetype labelEndIndex =
-      source.indexOf(QStringLiteral("private:"), labelIndex);
+      source.indexOf(
+          QStringLiteral("VulkanTextLayoutDebug speakerLabelLayoutDebug("),
+          labelIndex);
   QVERIFY2(labelEndIndex > labelIndex, "speaker label builder body must be bounded");
   const QString labelBody = source.mid(labelIndex, labelEndIndex - labelIndex);
   QVERIFY2(labelBody.contains(QStringLiteral("clipFrameMappingForClock")),
@@ -4242,6 +4294,34 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
+    gpuExportNv12ConversionWritesFrameSlotBufferDirectly() {
+  const QString backend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString shader =
+      readSourceFile(QStringLiteral("shaders/vulkan/rgba_to_nv12_buffer.comp"));
+
+  QVERIFY2(backend.contains(QStringLiteral(
+               "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
+               backend.contains(QStringLiteral(
+                   "vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE")) &&
+               backend.contains(QStringLiteral(
+                   "vkCmdDispatch(m_commandBuffer, (wordCount + 255u) / 256u")) &&
+               backend.contains(QStringLiteral(
+                   "slot.nv12ComputeDescriptorSet")) &&
+               !backend.contains(QStringLiteral("m_nv12UvImage")) &&
+               !backend.contains(QStringLiteral("m_nv12UvRenderPass")),
+           "NV12 export must dispatch one compute conversion directly into "
+           "the active frame-slot buffer without intermediate UV attachments");
+  QVERIFY2(shader.contains(QStringLiteral("writeonly buffer Nv12Buffer")) &&
+               shader.contains(QStringLiteral("lumaByte")) &&
+               shader.contains(QStringLiteral("chromaBytes")) &&
+               shader.contains(QStringLiteral(
+                   "outputBuffer.words[pc.uvOffsetWords + uvWordIndex]")),
+           "the direct NV12 shader must pack both luma and interleaved chroma "
+           "planes into the encoder-visible buffer");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
     incrementalExportCheckpointsAndLosslesslyRemuxes() {
   const QString contract = readSourceFile(QStringLiteral("render.h"));
   const QString coreContract =
@@ -4542,9 +4622,11 @@ void TestDirectVulkanHandoffPipelineContract::
                backend.contains(QStringLiteral(
                    "VK_FORMAT_R8_UNORM")) &&
                backend.contains(QStringLiteral(
-                   "writeImageBufferToStagingTopLeft(")) &&
+                   "packVulkanTemporalMaskChannels(")) &&
                backend.contains(QStringLiteral(
-                   "maskUpload, maskStagingOffset")) &&
+                   "writePackedTemporalMaskToStagingTopLeft(")) &&
+               backend.contains(QStringLiteral(
+                   "packedTemporalMask, maskSize, maskStagingOffset")) &&
                decode.contains(QStringLiteral(
                    "enqueueRenderMaskLookahead")) &&
                decode.contains(QStringLiteral(
@@ -4564,8 +4646,9 @@ void TestDirectVulkanHandoffPipelineContract::
                effects.contains(QStringLiteral(
                    "2ull * 1024ull * 1024ull * 1024ull")),
            "export masks must use the shared raw-mask cache with export "
-           "lookahead, block only on a missing definitive frame, and stage "
-           "cached Gray8 masks without expanding them to RGBA first");
+           "lookahead, block only on a missing definitive frame, and "
+           "explicitly pack cached Gray8 temporal inputs for GPU "
+           "preprocessing without a CPU QImage expansion");
   QVERIFY2(backend.contains(QStringLiteral("QStringList subtitleFailures")) &&
                backend.contains(QStringLiteral("&subtitleFailures")) &&
                backend.contains(QStringLiteral(
