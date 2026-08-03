@@ -1263,7 +1263,8 @@ void EditorWindow::createOutputTab()
             m_inspectorPane ? m_inspectorPane->historyMaxMegabytesSpin() : nullptr,
             m_incrementalRenderCheckBox, m_instagramSafeAreaGuidesCheckBox,
             m_alignmentGridGuidesCheckBox, m_createImageSequenceCheckBox, m_imageSequenceFormatCombo,
-            m_renderCachePathLabel, m_clearRenderCacheButton, m_renderButton},
+            m_renderCachePathLabel, m_clearRenderCacheButton,
+            m_masterOutputAudioDelayMsSpin, m_renderButton},
         OutputTab::Dependencies{
             [this]() { return m_timeline != nullptr; },
             [this]() { return m_timeline && !m_timeline->clips().isEmpty(); },
@@ -2014,6 +2015,7 @@ void EditorWindow::createEffectsTab()
             m_inspectorPane->effectParameterKeyframeButton(),
             m_inspectorPane->effectKeyframeRemoveButton(),
             m_inspectorPane->effectKeyframesLabel(),
+            m_inspectorPane->effectKeyframeTable(),
             m_inspectorPane->effectModulationModeCombo(),
             m_inspectorPane->effectModulationTargetCombo(),
             m_inspectorPane->effectModulationAmountSpin(),
@@ -2052,7 +2054,8 @@ void EditorWindow::createEffectsTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() -> int64_t {
                 return m_timeline ? m_timeline->currentFrame() : 0;
-            }});
+            },
+            [this](int64_t frame) { setCurrentFrame(frame); }});
     m_effectsTab->wire();
 }
 

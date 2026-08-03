@@ -467,37 +467,101 @@ QWidget *InspectorPane::buildEffectsTab()
         previousGroup = option.group;
     }
     presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
+    presetSection.body->addLayout(presetForm);
+    layout->addWidget(presetSection.container);
+
+    auto presetSpecificSection =
+        createDisclosureSection(page, QStringLiteral("Preset-Specific Settings"), true);
+    auto *presetSpecificForm = new QFormLayout();
+    presetSpecificForm->setContentsMargins(0, 0, 0, 0);
+    presetSpecificForm->setSpacing(6);
+
+    m_effectPresetSpecificHelpLabel = new QLabel(
+        QStringLiteral("Choose a synthesis effect to show the controls that are meaningful for that preset."),
+        page);
+    m_effectPresetSpecificHelpLabel->setWordWrap(true);
+    m_effectPresetSpecificHelpLabel->setStyleSheet(
+        QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
+    presetSpecificForm->addRow(QStringLiteral("Guidance"), m_effectPresetSpecificHelpLabel);
 
     m_effectRowsSpin = new QSpinBox(page);
     m_effectRowsSpin->setRange(1, 512);
     m_effectRowsSpin->setValue(32);
     m_effectRowsSpin->setToolTip(QStringLiteral("Rows, copies, repeat steps, or edge pixels for progressive edge stretch."));
-    presetForm->addRow(QStringLiteral("Copies"), m_effectRowsSpin);
+    presetSpecificForm->addRow(QStringLiteral("Copies"), m_effectRowsSpin);
 
     m_effectSpeedSpin = new QDoubleSpinBox(page);
     m_effectSpeedSpin->setRange(-8.0, 8.0);
     m_effectSpeedSpin->setDecimals(2);
     m_effectSpeedSpin->setSingleStep(0.25);
     m_effectSpeedSpin->setValue(1.0);
-    presetForm->addRow(QStringLiteral("Speed"), m_effectSpeedSpin);
+    presetSpecificForm->addRow(QStringLiteral("Speed"), m_effectSpeedSpin);
 
     m_effectScaleSpin = new QDoubleSpinBox(page);
     m_effectScaleSpin->setRange(0.1, 8.0);
     m_effectScaleSpin->setDecimals(2);
     m_effectScaleSpin->setSingleStep(0.1);
     m_effectScaleSpin->setValue(1.0);
-    presetForm->addRow(QStringLiteral("Scale"), m_effectScaleSpin);
+    presetSpecificForm->addRow(QStringLiteral("Scale"), m_effectScaleSpin);
 
     m_effectAlternateDirectionCheck = new QCheckBox(QStringLiteral("Alternate direction"), page);
     m_effectAlternateDirectionCheck->setChecked(true);
-    presetForm->addRow(QString(), m_effectAlternateDirectionCheck);
+    presetSpecificForm->addRow(QString(), m_effectAlternateDirectionCheck);
 
     m_effectSpeechSyncCheck = new QCheckBox(QStringLiteral("Synchronize motion with Speech Filter"), page);
     m_effectSpeechSyncCheck->setToolTip(
         QStringLiteral("Drive moving effect patterns from speech-filter timing so skipped gaps do not create visible jumps."));
-    presetForm->addRow(QString(), m_effectSpeechSyncCheck);
-    presetSection.body->addLayout(presetForm);
-    layout->addWidget(presetSection.container);
+    presetSpecificForm->addRow(QString(), m_effectSpeechSyncCheck);
+
+    m_differenceReferenceFramesSpin = new QSpinBox(page);
+    m_differenceReferenceFramesSpin->setRange(1, 300);
+    m_differenceReferenceFramesSpin->setValue(1);
+    m_differenceReferenceFramesSpin->setSuffix(QStringLiteral(" frames"));
+    presetSpecificForm->addRow(QStringLiteral("Difference reference"), m_differenceReferenceFramesSpin);
+    auto makeUnitEffectSpin = [page](double value) {
+        auto* spin = new QDoubleSpinBox(page);
+        spin->setRange(0.0, 1.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.01);
+        spin->setValue(value);
+        spin->setKeyboardTracking(false);
+        return spin;
+    };
+    m_differenceThresholdSpin = makeUnitEffectSpin(0.10);
+    presetSpecificForm->addRow(QStringLiteral("Difference threshold"), m_differenceThresholdSpin);
+    m_differenceSoftnessSpin = makeUnitEffectSpin(0.05);
+    presetSpecificForm->addRow(QStringLiteral("Difference softness"), m_differenceSoftnessSpin);
+    m_temporalEchoCountSpin = new QSpinBox(page);
+    m_temporalEchoCountSpin->setRange(1, 12);
+    m_temporalEchoCountSpin->setValue(4);
+    presetSpecificForm->addRow(QStringLiteral("Echo frames"), m_temporalEchoCountSpin);
+    m_temporalEchoSpacingSpin = new QSpinBox(page);
+    m_temporalEchoSpacingSpin->setRange(1, 120);
+    m_temporalEchoSpacingSpin->setValue(2);
+    m_temporalEchoSpacingSpin->setSuffix(QStringLiteral(" frames"));
+    presetSpecificForm->addRow(QStringLiteral("Echo spacing"), m_temporalEchoSpacingSpin);
+    m_temporalEchoDecaySpin = makeUnitEffectSpin(0.65);
+    presetSpecificForm->addRow(QStringLiteral("Echo decay"), m_temporalEchoDecaySpin);
+
+    m_tilingPatternCombo = new QComboBox(page);
+    for (const TilingPatternUiOption& option : tilingPatternUiOptions()) {
+        m_tilingPatternCombo->addItem(option.label, static_cast<int>(option.pattern));
+    }
+    presetSpecificForm->addRow(QStringLiteral("Pattern"), m_tilingPatternCombo);
+
+    m_tilingSpacingSpin = new QDoubleSpinBox(page);
+    m_tilingSpacingSpin->setRange(0.1, 8.0);
+    m_tilingSpacingSpin->setDecimals(2);
+    m_tilingSpacingSpin->setSingleStep(0.1);
+    m_tilingSpacingSpin->setValue(1.0);
+    m_tilingSpacingSpin->setToolTip(QStringLiteral("Spacing multiplier between repeated source images."));
+    presetSpecificForm->addRow(QStringLiteral("Spacing"), m_tilingSpacingSpin);
+
+    m_tilingWrapCheck = new QCheckBox(QStringLiteral("Wrap across bounds"), page);
+    m_tilingWrapCheck->setChecked(true);
+    presetSpecificForm->addRow(QString(), m_tilingWrapCheck);
+    presetSpecificSection.body->addLayout(presetSpecificForm);
+    layout->addWidget(presetSpecificSection.container);
 
     auto animationSection =
         createDisclosureSection(content, QStringLiteral("Effect Animation"), true);
@@ -526,6 +590,27 @@ QWidget *InspectorPane::buildEffectsTab()
         new QLabel(QStringLiteral("No enable keyframes"), page);
     m_effectKeyframesLabel->setWordWrap(true);
     animationForm->addRow(QStringLiteral("Keys"), m_effectKeyframesLabel);
+
+    m_effectKeyframeTable = new QTableWidget(page);
+    m_effectKeyframeTable->setColumnCount(8);
+    m_effectKeyframeTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Frame"),
+         QStringLiteral("Type"),
+         QStringLiteral("State"),
+         QStringLiteral("Copies"),
+         QStringLiteral("Speed"),
+         QStringLiteral("Scale"),
+         QStringLiteral("Pattern"),
+         QStringLiteral("Other")});
+    m_effectKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_effectKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_effectKeyframeTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_effectKeyframeTable->verticalHeader()->setVisible(false);
+    m_effectKeyframeTable->horizontalHeader()->setStretchLastSection(true);
+    m_effectKeyframeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_effectKeyframeTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
+    m_effectKeyframeTable->setMinimumHeight(140);
+    animationForm->addRow(QStringLiteral("Table"), m_effectKeyframeTable);
 
     m_effectModulationModeCombo = new QComboBox(page);
     m_effectModulationModeCombo->addItem(QStringLiteral("None"), QStringLiteral("none"));
@@ -565,68 +650,6 @@ QWidget *InspectorPane::buildEffectsTab()
     animationForm->addRow(QStringLiteral("LFO phase"), m_effectModulationPhaseSpin);
     animationSection.body->addLayout(animationForm);
     layout->addWidget(animationSection.container);
-
-    auto temporalSection = createDisclosureSection(content, QStringLiteral("Temporal & Difference"), false);
-    auto *temporalForm = new QFormLayout();
-    temporalForm->setContentsMargins(0, 0, 0, 0);
-    temporalForm->setSpacing(6);
-
-    m_differenceReferenceFramesSpin = new QSpinBox(page);
-    m_differenceReferenceFramesSpin->setRange(1, 300);
-    m_differenceReferenceFramesSpin->setValue(1);
-    m_differenceReferenceFramesSpin->setSuffix(QStringLiteral(" frames"));
-    temporalForm->addRow(QStringLiteral("Difference reference"), m_differenceReferenceFramesSpin);
-    auto makeUnitEffectSpin = [page](double value) {
-        auto* spin = new QDoubleSpinBox(page);
-        spin->setRange(0.0, 1.0);
-        spin->setDecimals(3);
-        spin->setSingleStep(0.01);
-        spin->setValue(value);
-        spin->setKeyboardTracking(false);
-        return spin;
-    };
-    m_differenceThresholdSpin = makeUnitEffectSpin(0.10);
-    temporalForm->addRow(QStringLiteral("Difference threshold"), m_differenceThresholdSpin);
-    m_differenceSoftnessSpin = makeUnitEffectSpin(0.05);
-    temporalForm->addRow(QStringLiteral("Difference softness"), m_differenceSoftnessSpin);
-    m_temporalEchoCountSpin = new QSpinBox(page);
-    m_temporalEchoCountSpin->setRange(1, 12);
-    m_temporalEchoCountSpin->setValue(4);
-    temporalForm->addRow(QStringLiteral("Echo frames"), m_temporalEchoCountSpin);
-    m_temporalEchoSpacingSpin = new QSpinBox(page);
-    m_temporalEchoSpacingSpin->setRange(1, 120);
-    m_temporalEchoSpacingSpin->setValue(2);
-    m_temporalEchoSpacingSpin->setSuffix(QStringLiteral(" frames"));
-    temporalForm->addRow(QStringLiteral("Echo spacing"), m_temporalEchoSpacingSpin);
-    m_temporalEchoDecaySpin = makeUnitEffectSpin(0.65);
-    temporalForm->addRow(QStringLiteral("Echo decay"), m_temporalEchoDecaySpin);
-    temporalSection.body->addLayout(temporalForm);
-    layout->addWidget(temporalSection.container);
-
-    auto tilingSection = createDisclosureSection(content, QStringLiteral("Tiling & Repetition"), false);
-    auto *tilingForm = new QFormLayout();
-    tilingForm->setContentsMargins(0, 0, 0, 0);
-    tilingForm->setSpacing(6);
-
-    m_tilingPatternCombo = new QComboBox(page);
-    for (const TilingPatternUiOption& option : tilingPatternUiOptions()) {
-        m_tilingPatternCombo->addItem(option.label, static_cast<int>(option.pattern));
-    }
-    tilingForm->addRow(QStringLiteral("Pattern"), m_tilingPatternCombo);
-
-    m_tilingSpacingSpin = new QDoubleSpinBox(page);
-    m_tilingSpacingSpin->setRange(0.1, 8.0);
-    m_tilingSpacingSpin->setDecimals(2);
-    m_tilingSpacingSpin->setSingleStep(0.1);
-    m_tilingSpacingSpin->setValue(1.0);
-    m_tilingSpacingSpin->setToolTip(QStringLiteral("Spacing multiplier between repeated source images."));
-    tilingForm->addRow(QStringLiteral("Spacing"), m_tilingSpacingSpin);
-
-    m_tilingWrapCheck = new QCheckBox(QStringLiteral("Wrap across bounds"), page);
-    m_tilingWrapCheck->setChecked(true);
-    tilingForm->addRow(QString(), m_tilingWrapCheck);
-    tilingSection.body->addLayout(tilingForm);
-    layout->addWidget(tilingSection.container);
 
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(

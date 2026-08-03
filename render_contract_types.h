@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <string>
 
+#include "master_output_audio_delay.h"
+
 namespace jcut::render {
 
 enum class RenderOutputMode {
@@ -30,6 +32,7 @@ struct RenderRequestCore {
     bool disableParallelImageWrite = false;
     bool incrementalExport = false;
     int incrementalChunkFrames = 900;
+    int masterOutputAudioDelayMs = audio::kDefaultMasterOutputAudioDelayMs;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
     int transcriptPrependMs = 150;

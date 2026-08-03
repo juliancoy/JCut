@@ -55,6 +55,7 @@ public:
         QComboBox* imageSequenceFormatCombo = nullptr;
         QLabel* renderCachePathLabel = nullptr;
         QPushButton* clearRenderCacheButton = nullptr;
+        QSpinBox* masterOutputAudioDelayMsSpin = nullptr;
         QPushButton* renderButton = nullptr;
     };
 
@@ -102,6 +103,7 @@ private slots:
     void onOutputFormatChanged(int index);
     void onRenderUseProxiesToggled(bool checked);
     void onIncrementalRenderToggled(bool checked);
+    void onMasterOutputAudioDelayMsChanged(int value);
     void onOutputPlaybackCacheFallbackToggled(bool checked);
     void onOutputLeadPrefetchEnabledToggled(bool checked);
     void onOutputLeadPrefetchCountChanged(int value);
@@ -126,6 +128,7 @@ private:
     void updateRangeSummary();
     void updateRenderCacheStatus();
     void updateRenderButtonState();
+    void updateIncrementalRenderAvailability();
 
     Widgets m_widgets;
     Dependencies m_deps;

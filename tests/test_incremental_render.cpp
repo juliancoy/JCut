@@ -83,6 +83,7 @@ void TestIncrementalRender::
     request.exportEndFrame = 61;
     request.exportRanges = {ExportRangeSegment{0, 61}};
     request.incrementalExport = true;
+    request.masterOutputAudioDelayMs = 0;
     request.incrementalChunkFrames = 60;
     TimelineClip audioClip;
     audioClip.id = QStringLiteral("incremental-audio");

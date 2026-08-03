@@ -162,6 +162,8 @@ struct TimelineClip {
 
     struct EffectParameterKeyframe {
         int64_t frame = 0;
+        ClipEffectPreset effectPreset = ClipEffectPreset::None;
+        bool effectPresetKeyframed = false;
         int effectRows = 32;
         qreal effectSpeed = 1.0;
         qreal effectScale = 1.0;
@@ -175,6 +177,12 @@ struct TimelineClip {
         ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
         qreal tilingSpacing = 1.0;
         bool tilingWrap = true;
+        QString effectModulationMode = QStringLiteral("none");
+        QString effectModulationTarget = QStringLiteral("scale");
+        qreal effectModulationAmount = 0.0;
+        qreal effectModulationRate = 1.0;
+        qreal effectModulationPhaseDegrees = 0.0;
+        bool effectSkipAwareTiming = false;
         bool linearInterpolation = true;
     };
 

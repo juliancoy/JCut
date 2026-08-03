@@ -765,6 +765,7 @@ void TestImGuiStandaloneExport::exportsDecodedAndMixedAudioStream()
     document.exportRequest.outputSize = {64, 64};
     document.exportRequest.outputFps = 30.0;
     document.exportRequest.playbackSpeed = 2.0;
+    document.exportRequest.masterOutputAudioDelayMs = 150;
     document.exportRequest.exportStartFrame = 0;
     document.exportRequest.exportEndFrame = 29;
 
@@ -798,6 +799,45 @@ void TestImGuiStandaloneExport::exportsDecodedAndMixedAudioStream()
     avformat_close_input(&formatContext);
     QVERIFY2(audioPacketCount > 0,
              "standalone encoded export must mux encoded audio packets");
+
+    jcut::EditorDocumentCore decodedExport;
+    decodedExport.tracks.push_back(track);
+    jcut::EditorClip decodedClip = clip;
+    decodedClip.sourcePath = outputPath;
+    decodedClip.audioSourceMode = "embedded";
+    decodedClip.audioSourcePath.clear();
+    decodedClip.fadeSamples = 0;
+    decodedExport.clips.push_back(decodedClip);
+    jcut::standalone_render::audio::DecodedAudioCache decodedCache;
+    std::string decodeError;
+    QVERIFY2(
+        jcut::standalone_render::audio::decodeDocumentAudio(
+            decodedExport, {}, &decodedCache, &decodeError),
+        decodeError.c_str());
+    const auto decodedIt = decodedCache.find(decodedClip.id);
+    QVERIFY(decodedIt != decodedCache.end());
+    const std::vector<float>& renderedSamples = decodedIt->second.samples;
+    constexpr std::size_t channels =
+        jcut::standalone_render::audio::kChannelCount;
+    auto peakBetweenMs = [&](int startMs, int endMs) {
+        const std::size_t startFrame = static_cast<std::size_t>(
+            startMs * jcut::standalone_render::audio::kSampleRate / 1000);
+        const std::size_t endFrame = std::min<std::size_t>(
+            renderedSamples.size() / channels,
+            static_cast<std::size_t>(
+                endMs * jcut::standalone_render::audio::kSampleRate / 1000));
+        float peak = 0.0f;
+        for (std::size_t frame = startFrame; frame < endFrame; ++frame) {
+            peak = std::max(peak, std::abs(renderedSamples[frame * channels]));
+        }
+        return peak;
+    };
+    QVERIFY2(
+        peakBetweenMs(20, 110) < 0.01f,
+        "150 ms master delay must create leading silence in the encoded artifact");
+    QVERIFY2(
+        peakBetweenMs(180, 280) > 0.05f,
+        "encoded artifact must contain the delayed program audio after 150 ms");
 }
 
 void TestImGuiStandaloneExport::sharedPitchPreservingStretchKeepsToneFrequency()

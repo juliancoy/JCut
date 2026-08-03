@@ -72,6 +72,190 @@ class GenerateCodeStructureTest(unittest.TestCase):
         self.assertEqual(ownership["layer"], "L3")
         self.assertEqual(violations, [])
 
+    def test_dependency_graph_resolves_architecture_and_reachability(self) -> None:
+        def record(
+            path: str,
+            *,
+            layer: str,
+            owner: str,
+            dependencies: list[str] | None = None,
+            symbols: list[dict[str, object]] | None = None,
+            calls: list[dict[str, object]] | None = None,
+            targets: list[str] | None = None,
+            declared_target: str | None = None,
+        ) -> dict[str, object]:
+            return {
+                "path": path,
+                "language": "C++",
+                "layer": layer,
+                "declared_owner": owner,
+                "dependencies": dependencies or [],
+                "symbols": symbols or [],
+                "calls": calls or [],
+                "build_targets": targets or [],
+                "declared_target": declared_target,
+            }
+
+        responsibility_symbols = [
+            {
+                "name": name,
+                "qualified_name": name,
+                "kind": "function",
+                "is_definition": True,
+            }
+            for name in (
+                "decodeAudioFrame",
+                "renderAudioFrame",
+                "prepareAudioFrame",
+                "finalizeAudioFrame",
+            )
+        ]
+        files = [
+            record(
+                "entry.cpp",
+                layer="L0",
+                owner="entry",
+                dependencies=["runtime.h"],
+                calls=[{
+                    "callee": "work",
+                    "callee_usr": "c:@F@work#",
+                    "line": 10,
+                    "column": 5,
+                }],
+                targets=["app"],
+            ),
+            record(
+                "runtime.h",
+                layer="L3",
+                owner="runtime",
+                dependencies=["domain.h"],
+                declared_target="runtime_lib",
+            ),
+            record(
+                "domain.h",
+                layer="L2",
+                owner="domain",
+                dependencies=["runtime.h"],
+            ),
+            record(
+                "worker.cpp",
+                layer="L3",
+                owner="runtime",
+                symbols=[{
+                    "name": "work",
+                    "qualified_name": "work",
+                    "kind": "function",
+                    "usr": "c:@F@work#",
+                    "is_definition": True,
+                    "line": 1,
+                }],
+                targets=["runtime_lib"],
+            ),
+            record("dead.cpp", layer="L2", owner="domain"),
+            record(
+                "duplicate_a.cpp",
+                layer="L2",
+                owner="domain",
+                symbols=responsibility_symbols,
+            ),
+            record(
+                "duplicate_b.cpp",
+                layer="L2",
+                owner="domain",
+                symbols=responsibility_symbols,
+            ),
+        ]
+
+        graph = generator.build_dependency_graph(files)
+        by_path = {item["path"]: item for item in files}
+        self.assertEqual(
+            by_path["entry.cpp"]["resolved_dependencies"][0]["target"],
+            "runtime.h",
+        )
+        self.assertEqual(
+            by_path["entry.cpp"]["calls"][0]["resolved_target"]["file"],
+            "worker.cpp",
+        )
+        self.assertEqual(by_path["entry.cpp"]["dependency_metrics"]["fan_out"], 2)
+        self.assertEqual(by_path["worker.cpp"]["dependency_metrics"]["fan_in"], 1)
+        self.assertEqual(graph["include_cycles"][0]["files"], ["domain.h", "runtime.h"])
+        self.assertTrue(any(
+            item["source"] == "runtime.h" and item["target"] == "domain.h"
+            for item in graph["layer_direction_violations"]
+        ))
+        self.assertTrue(any(
+            item["source_target"] == "app" and item["target_target"] == "runtime_lib"
+            for item in graph["target_to_target_edges"]
+        ))
+        self.assertTrue(any(
+            item["source_owner"] == "entry" and item["target_owner"] == "runtime"
+            for item in graph["cross_owner_dependencies"]
+        ))
+        self.assertTrue(any(
+            item["path"] == "dead.cpp" and item["status"] == "dead"
+            for item in graph["dead_or_unreachable_implementations"]
+        ))
+        self.assertTrue(any(
+            set(item["files"]) == {"duplicate_a.cpp", "duplicate_b.cpp"}
+            for item in graph["duplicate_responsibility_clusters"]
+        ))
+
+    def test_dependency_resolution_prefers_local_include_and_maps_python_module(self) -> None:
+        files = [
+            {
+                "path": "legacy/tool.cpp",
+                "language": "C++",
+                "dependencies": ["shared.h"],
+                "symbols": [],
+                "calls": [],
+                "build_targets": [],
+            },
+            {
+                "path": "legacy/shared.h",
+                "language": "C++",
+                "dependencies": [],
+                "symbols": [],
+                "calls": [],
+                "build_targets": [],
+            },
+            {
+                "path": "shared.h",
+                "language": "C++",
+                "dependencies": [],
+                "symbols": [],
+                "calls": [],
+                "build_targets": [],
+            },
+            {
+                "path": "pkg/worker.py",
+                "language": "Python",
+                "dependencies": ["pkg.helpers"],
+                "symbols": [],
+                "calls": [],
+                "build_targets": [],
+            },
+            {
+                "path": "pkg/helpers.py",
+                "language": "Python",
+                "dependencies": [],
+                "symbols": [],
+                "calls": [],
+                "build_targets": [],
+            },
+        ]
+
+        graph = generator.build_dependency_graph(files)
+        by_path = {item["path"]: item for item in files}
+        self.assertEqual(
+            by_path["legacy/tool.cpp"]["resolved_dependencies"][0]["target"],
+            "legacy/shared.h",
+        )
+        self.assertEqual(
+            by_path["pkg/worker.py"]["resolved_dependencies"][0]["target"],
+            "pkg/helpers.py",
+        )
+        self.assertEqual(graph["summary"]["ambiguous_dependencies"], 0)
+
     def test_ownership_resolution_reports_ambiguous_top_priority(self) -> None:
         manifest = {
             "schema": generator.OWNERSHIP_SCHEMA,
@@ -92,6 +276,7 @@ class GenerateCodeStructureTest(unittest.TestCase):
     def test_python_ast_records_nesting_spans_and_imports(self) -> None:
         source = """import json
 from pathlib import Path
+from . import helper
 
 class Worker:
     def run(self, value):
@@ -101,7 +286,7 @@ class Worker:
 """
         symbols, dependencies, error = generator.python_structure(source, "worker.py")
         self.assertIsNone(error)
-        self.assertEqual(dependencies, ["json", "pathlib"])
+        self.assertEqual(dependencies, [".helper", "json", "pathlib"])
         by_name = {item["qualified_name"]: item for item in symbols}
         self.assertEqual(by_name["Worker"]["span_lines"], 5)
         self.assertEqual(by_name["Worker::run"]["kind"], "method")
@@ -135,6 +320,43 @@ void main() { grade(vec4(1.0)); }
             )
             self.assertFalse(file_record["parse_succeeded"])
             self.assertEqual(file_record["symbol_coverage_confidence"]["level"], "low")
+            self.assertEqual(index["summary"]["parse_errors"], 1)
+
+    def test_ctags_fallback_rejects_malformed_braces_and_attributes_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "broken.cpp"
+            source.write_text("int broken() {\n    return 1;\n", encoding="utf-8")
+
+            original_run_ctags = generator.run_ctags
+
+            def run_ctags_with_warning(root_path, paths):
+                symbols, _ = original_run_ctags(root_path, paths)
+                return symbols, ["broken.cpp: warning: incomplete input"]
+
+            generator.run_ctags = run_ctags_with_warning
+            try:
+                index = generator.analyze(root, [Path("broken.cpp")], ())
+            finally:
+                generator.run_ctags = original_run_ctags
+
+            file_record = index["files"][0]
+            self.assertEqual(file_record["parser"], "universal-ctags-fallback")
+            self.assertFalse(file_record["parse_succeeded"])
+            self.assertIsNone(file_record["compilation_succeeded"])
+            self.assertEqual(file_record["compilation_status"], "not-attempted")
+            self.assertIn("broken.cpp: warning: incomplete input", file_record["diagnostics"])
+            self.assertIn("structural validation failed", file_record["parse_error"])
+            self.assertEqual(
+                [item["kind"] for item in file_record["unmatched_constructs"]],
+                ["unmatched-opening-brace"],
+            )
+            self.assertEqual(file_record["symbol_coverage_confidence"]["level"], "low")
+            suspicious_kinds = {
+                item["kind"] for item in file_record["suspicious_constructs"]
+            }
+            self.assertIn("semantic-parser-fallback", suspicious_kinds)
+            self.assertIn("parser-diagnostic", suspicious_kinds)
             self.assertEqual(index["summary"]["parse_errors"], 1)
 
     def test_clang_ast_records_authoritative_cpp_structure_and_calls(self) -> None:

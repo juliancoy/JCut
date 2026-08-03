@@ -237,6 +237,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                        const AudioExportState& state,
                        AVFormatContext* formatCtx,
                        qreal playbackSpeed,
+                       int masterOutputAudioDelayMs,
                        QString* errorMessage);
 
 QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,

@@ -1,4 +1,6 @@
 #include "inspector_pane.h"
+
+#include "master_output_audio_delay.h"
 #include "gpu_selection.h"
 #include <QVulkanInstance>
 
@@ -190,6 +192,18 @@ QWidget *InspectorPane::buildOutputTab()
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
+    m_masterOutputAudioDelayMsSpin = new QSpinBox(page);
+    m_masterOutputAudioDelayMsSpin->setObjectName(
+        QStringLiteral("masterOutputAudioDelayMsSpin"));
+    m_masterOutputAudioDelayMsSpin->setRange(
+        jcut::audio::kMinMasterOutputAudioDelayMs,
+        jcut::audio::kMaxMasterOutputAudioDelayMs);
+    m_masterOutputAudioDelayMsSpin->setValue(
+        jcut::audio::kDefaultMasterOutputAudioDelayMs);
+    m_masterOutputAudioDelayMsSpin->setSuffix(QStringLiteral(" ms"));
+    m_masterOutputAudioDelayMsSpin->setToolTip(QStringLiteral(
+        "Retimes final-render audio without changing output duration. "
+        "Positive values delay audio; negative values advance audio."));
     m_renderCachePathLabel =
         new QLabel(QStringLiteral("Render cache: choose a render output first."), page);
     m_renderCachePathLabel->setWordWrap(true);
@@ -216,6 +230,12 @@ QWidget *InspectorPane::buildOutputTab()
     settingsSection.body->addWidget(m_renderCreateVideoFromSequenceCheckBox);
 
     auto actionSection = createDisclosureSection(page, QStringLiteral("Render Action"), true);
+    auto* actionForm = new QFormLayout;
+    actionForm->setContentsMargins(0, 0, 0, 0);
+    actionForm->addRow(
+        QStringLiteral("Master Audio Delay"),
+        m_masterOutputAudioDelayMsSpin);
+    actionSection.body->addLayout(actionForm);
     actionSection.body->addWidget(m_renderButton);
     actionSection.body->addWidget(m_renderCachePathLabel);
     actionSection.body->addWidget(m_clearRenderCacheButton);

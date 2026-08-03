@@ -607,6 +607,7 @@ private:
     QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;

@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTableWidget>
 
 namespace {
 
@@ -22,6 +23,8 @@ struct EffectAnimationWidgets {
     QPushButton keyParameters{QStringLiteral("Key Parameters")};
     QPushButton removeKey{QStringLiteral("Remove Key")};
     QLabel keySummary;
+    QTableWidget keyTable;
+    QLabel presetSpecificHelp;
     QSpinBox rows;
     QDoubleSpinBox speed;
     QDoubleSpinBox scale;
@@ -81,6 +84,8 @@ struct EffectAnimationWidgets {
         widgets.effectParameterKeyframeButton = &keyParameters;
         widgets.effectKeyframeRemoveButton = &removeKey;
         widgets.effectKeyframesLabel = &keySummary;
+        widgets.effectKeyframeTable = &keyTable;
+        widgets.effectPresetSpecificHelpLabel = &presetSpecificHelp;
         widgets.effectRowsSpin = &rows;
         widgets.effectSpeedSpin = &speed;
         widgets.effectScaleSpin = &scale;
@@ -120,6 +125,10 @@ private slots:
     void effectParameterButtonEditsTheSelectedClipAtThePlayhead();
     void dynamicControlsPersistIndependentPerClipParameters();
     void mirrorGeometryControlsExposeSpecificParameters();
+    void presetSpecificGuidanceTracksSelectedEffect();
+    void effectKeyframeTableShowsAndRemovesSelectedRows();
+    void effectKeyframeTableClickSeeksToClipRelativeFrame();
+    void effectKeyframeTableEditsCellsAndDeletesWithKeyboard();
 };
 
 void TestEffectsTab::effectEnableButtonsEditTheSelectedClipAtThePlayhead()
@@ -251,24 +260,33 @@ void TestEffectsTab::dynamicControlsPersistIndependentPerClipParameters()
     controls.modulationRate.setValue(0.75);
     controls.modulationPhase.setValue(90.0);
 
-    QCOMPARE(clip.effectModulationMode, QStringLiteral("lfo"));
-    QCOMPARE(clip.effectModulationTarget, QStringLiteral("speed"));
-    QCOMPARE(clip.effectModulationAmount, 2.5);
-    QCOMPARE(clip.effectModulationRate, 0.75);
-    QCOMPARE(clip.effectModulationPhaseDegrees, 90.0);
+    QCOMPARE(clip.effectParameterKeyframes.size(), 1);
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().frame, int64_t{0});
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationMode,
+             QStringLiteral("lfo"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationTarget,
+             QStringLiteral("speed"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationAmount,
+             2.5);
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationRate,
+             0.75);
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationPhaseDegrees,
+             90.0);
     QVERIFY(controls.modulationTarget.isEnabled());
     QVERIFY(controls.modulationRate.isEnabled());
 
     controls.modulationMode.setCurrentIndex(
         controls.modulationMode.findData(QStringLiteral("steady_increase")));
-    QCOMPARE(clip.effectModulationMode, QStringLiteral("steady_increase"));
+    QCOMPARE(clip.effectParameterKeyframes.size(), 1);
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectModulationMode,
+             QStringLiteral("steady_increase"));
     QCOMPARE(controls.transcriptAware.text(),
              QStringLiteral("Transcript-aware steady increase"));
     QVERIFY(controls.transcriptAware.isEnabled());
     controls.transcriptAware.setChecked(false);
-    QVERIFY(!clip.effectSkipAwareTiming);
+    QVERIFY(!clip.effectParameterKeyframes.constFirst().effectSkipAwareTiming);
     controls.transcriptAware.setChecked(true);
-    QVERIFY(clip.effectSkipAwareTiming);
+    QVERIFY(clip.effectParameterKeyframes.constFirst().effectSkipAwareTiming);
     QVERIFY(!controls.modulationRate.isEnabled());
     QVERIFY(!controls.modulationPhase.isEnabled());
 }
@@ -333,7 +351,7 @@ void TestEffectsTab::mirrorGeometryControlsExposeSpecificParameters()
     QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&rows))->text(),
              QStringLiteral("Mirror sectors"));
     QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&scale))->text(),
-             QStringLiteral("Output grain size"));
+             QStringLiteral("Source grain size"));
     QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&speed))->text(),
              QStringLiteral("Rotation speed"));
     QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&geometry))->text(),
@@ -341,10 +359,199 @@ void TestEffectsTab::mirrorGeometryControlsExposeSpecificParameters()
     QVERIFY(!rows.isHidden());
     QVERIFY(!scale.isHidden());
     QVERIFY(!speed.isHidden());
+
+    clip.effectPreset = ClipEffectPreset::HexagonalPrism;
+    tab.refresh();
+    QVERIFY(!rows.isHidden());
+    QVERIFY(scale.isHidden());
+    QCOMPARE(qobject_cast<QLabel*>(form.labelForField(&rows))->text(),
+             QStringLiteral("Cells across"));
     QVERIFY(!geometry.isHidden());
     QVERIFY(tilingPattern.isHidden());
     QVERIFY(tilingWrap.isHidden());
     QVERIFY(alternate.isHidden());
+}
+
+void TestEffectsTab::presetSpecificGuidanceTracksSelectedEffect()
+{
+    TimelineClip clip = makeClip();
+    EffectAnimationWidgets controls;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+
+    EffectsTab tab(controls.dependencies(), deps);
+    tab.refresh();
+    QVERIFY(controls.presetSpecificHelp.text().contains(QStringLiteral("Glow controls")));
+
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    tab.refresh();
+    QVERIFY(controls.presetSpecificHelp.text().contains(QStringLiteral("Pattern/repetition controls")));
+
+    clip.effectPreset = ClipEffectPreset::TemporalEcho;
+    tab.refresh();
+    QVERIFY(controls.presetSpecificHelp.text().contains(QStringLiteral("Echo frames")));
+}
+
+void TestEffectsTab::effectKeyframeTableShowsAndRemovesSelectedRows()
+{
+    TimelineClip clip = makeClip();
+    clip.effectEnabledKeyframes = {
+        TimelineClip::BoolKeyframe{10, false},
+        TimelineClip::BoolKeyframe{40, true},
+    };
+    TimelineClip::EffectParameterKeyframe params;
+    params.frame = 25;
+    params.effectRows = 12;
+    params.effectSpeed = 2.5;
+    params.effectScale = 1.75;
+    params.tilingPattern = ClipTilingPattern::Encircle;
+    clip.effectParameterKeyframes = {params};
+
+    int64_t playhead = 100;
+    int historyPushes = 0;
+    EffectAnimationWidgets controls;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.updateClipById =
+        [&clip](const QString& id,
+                const std::function<void(TimelineClip&)>& update) {
+            if (id != clip.id) return false;
+            update(clip);
+            return true;
+        };
+    deps.currentTimelineFrame = [&playhead]() { return playhead; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+    deps.pushHistorySnapshot = [&historyPushes]() { ++historyPushes; };
+
+    EffectsTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    QCOMPARE(controls.keyTable.rowCount(), 3);
+    QCOMPARE(controls.keyTable.item(0, 0)->text(), QStringLiteral("10"));
+    QCOMPARE(controls.keyTable.item(0, 1)->text(), QStringLiteral("Enabled"));
+    QCOMPARE(controls.keyTable.item(0, 3)->text(), QStringLiteral("Off"));
+    QCOMPARE(controls.keyTable.item(1, 0)->text(), QStringLiteral("25"));
+    QCOMPARE(controls.keyTable.item(1, 1)->text(), QStringLiteral("Parameters"));
+    QCOMPARE(controls.keyTable.item(1, 4)->text(), QStringLiteral("12"));
+    QCOMPARE(controls.keyTable.item(1, 7)->text(), QStringLiteral("Encircle"));
+    QVERIFY(controls.removeKey.isEnabled());
+
+    controls.keyTable.selectRow(1);
+    QTest::mouseClick(&controls.removeKey, Qt::LeftButton);
+    QCOMPARE(clip.effectEnabledKeyframes.size(), 2);
+    QVERIFY(clip.effectParameterKeyframes.isEmpty());
+    QCOMPARE(controls.keyTable.rowCount(), 2);
+    QCOMPARE(historyPushes, 1);
+}
+
+void TestEffectsTab::effectKeyframeTableClickSeeksToClipRelativeFrame()
+{
+    TimelineClip clip = makeClip();
+    clip.startFrame = 240;
+    clip.durationFrames = 90;
+    clip.effectEnabledKeyframes = {
+        TimelineClip::BoolKeyframe{12, false},
+    };
+    TimelineClip::EffectParameterKeyframe params;
+    params.frame = 35;
+    params.effectRows = 12;
+    params.effectSpeed = 2.5;
+    params.effectScale = 1.75;
+    clip.effectParameterKeyframes = {params};
+
+    int64_t playhead = 240;
+    int64_t soughtFrame = -1;
+    EffectAnimationWidgets controls;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.currentTimelineFrame = [&playhead]() { return playhead; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+    deps.seekToTimelineFrame = [&soughtFrame](int64_t frame) {
+        soughtFrame = frame;
+    };
+
+    EffectsTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    QCOMPARE(controls.keyTable.rowCount(), 2);
+    QCOMPARE(controls.keyTable.item(1, 0)->text(), QStringLiteral("35"));
+    QTest::mouseClick(
+        controls.keyTable.viewport(),
+        Qt::LeftButton,
+        Qt::NoModifier,
+        controls.keyTable.visualItemRect(controls.keyTable.item(1, 0)).center());
+    QCOMPARE(soughtFrame, int64_t{275});
+}
+
+void TestEffectsTab::effectKeyframeTableEditsCellsAndDeletesWithKeyboard()
+{
+    TimelineClip clip = makeClip();
+    TimelineClip::EffectParameterKeyframe params;
+    params.frame = 25;
+    params.effectPreset = ClipEffectPreset::NeonGlow;
+    params.effectPresetKeyframed = true;
+    params.effectRows = 12;
+    params.effectSpeed = 2.5;
+    params.effectScale = 1.75;
+    clip.effectParameterKeyframes = {params};
+
+    int64_t playhead = 100;
+    int historyPushes = 0;
+    EffectAnimationWidgets controls;
+
+    EffectsTab::Dependencies deps;
+    deps.getSelectedClip = [&clip]() { return &clip; };
+    deps.updateClipById =
+        [&clip](const QString& id,
+                const std::function<void(TimelineClip&)>& update) {
+            if (id != clip.id) return false;
+            update(clip);
+            return true;
+        };
+    deps.currentTimelineFrame = [&playhead]() { return playhead; };
+    deps.clipHasVisuals = [](const TimelineClip&) { return true; };
+    deps.getClipFilePath = [](const TimelineClip&) { return QString(); };
+    deps.pushHistorySnapshot = [&historyPushes]() { ++historyPushes; };
+
+    EffectsTab tab(controls.dependencies(), deps);
+    tab.wire();
+    tab.refresh();
+
+    QVERIFY(controls.keyTable.item(0, 0)->flags() & Qt::ItemIsEditable);
+    QVERIFY(controls.keyTable.item(0, 2)->flags() & Qt::ItemIsEditable);
+    QVERIFY(controls.keyTable.item(0, 4)->flags() & Qt::ItemIsEditable);
+    QVERIFY(!(controls.keyTable.item(0, 1)->flags() & Qt::ItemIsEditable));
+
+    controls.keyTable.item(0, 0)->setText(QStringLiteral("30"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().frame, int64_t{30});
+
+    controls.keyTable.item(0, 2)->setText(QStringLiteral("Source image tiling"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectPreset,
+             ClipEffectPreset::SourceTile);
+
+    controls.keyTable.item(0, 4)->setText(QStringLiteral("18"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectRows, 18);
+
+    controls.keyTable.item(0, 5)->setText(QStringLiteral("-1.25"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().effectSpeed, -1.25);
+
+    controls.keyTable.item(0, 7)->setText(QStringLiteral("Encircle"));
+    QCOMPARE(clip.effectParameterKeyframes.constFirst().tilingPattern,
+             ClipTilingPattern::Encircle);
+
+    controls.keyTable.selectRow(0);
+    QTest::keyClick(&controls.keyTable, Qt::Key_Delete);
+    QVERIFY(clip.effectParameterKeyframes.isEmpty());
+    QVERIFY(historyPushes >= 6);
 }
 
 QTEST_MAIN(TestEffectsTab)

@@ -3,6 +3,7 @@
 #include "../audio_mix_readiness.h"
 #include "../capabilities_detector.h"
 #include "../render_internal.h"
+#include "../master_output_audio_delay.h"
 
 #include <QtTest/QtTest>
 
@@ -83,6 +84,7 @@ private slots:
   void testSpeechFilterRangesAreDerivedFromExportRanges();
   void testSpeechFilterFadeModesShapeBoundaryGain();
   void testExportMixerUsesSharedSpeechFilterFadeBlend();
+  void testMasterOutputAudioDelayIsSignedAndDurationPreserving();
   void testSpliceSecondaryTapStopsAtClipEnd();
   void testAudioDynamicsAreAppliedPerClipBeforeMix();
   void testTrackGainMuteAndSoloAffectMix();
@@ -108,6 +110,47 @@ private:
   static AudioEngine::AudioClipCacheEntry
   makeCacheEntry(int64_t sourceStartSample, int64_t frameCount, float value);
 };
+
+void TestAudioMixPolicy::testMasterOutputAudioDelayIsSignedAndDurationPreserving()
+{
+  const std::vector<float> input{
+      1.0f, 11.0f,
+      2.0f, 12.0f,
+      3.0f, 13.0f,
+      4.0f, 14.0f,
+      5.0f, 15.0f};
+
+  jcut::audio::MasterOutputAudioDelay delayed(2, 1000, 2);
+  std::vector<float> delayedOutput = delayed.process(input.data(), 2);
+  const std::vector<float> delayedSecond = delayed.process(input.data() + 4, 3);
+  delayedOutput.insert(
+      delayedOutput.end(), delayedSecond.begin(), delayedSecond.end());
+  const std::vector<float> delayedTail = delayed.finish();
+  QVERIFY(delayedTail.empty());
+  QCOMPARE(delayedOutput.size(), input.size());
+  QVERIFY(delayedOutput == std::vector<float>({
+      0.0f, 0.0f,
+      0.0f, 0.0f,
+      1.0f, 11.0f,
+      2.0f, 12.0f,
+      3.0f, 13.0f}));
+
+  jcut::audio::MasterOutputAudioDelay advanced(-2, 1000, 2);
+  std::vector<float> advancedOutput = advanced.process(input.data(), 1);
+  const std::vector<float> advancedSecond = advanced.process(input.data() + 2, 4);
+  advancedOutput.insert(
+      advancedOutput.end(), advancedSecond.begin(), advancedSecond.end());
+  const std::vector<float> advancedTail = advanced.finish();
+  advancedOutput.insert(
+      advancedOutput.end(), advancedTail.begin(), advancedTail.end());
+  QCOMPARE(advancedOutput.size(), input.size());
+  QVERIFY(advancedOutput == std::vector<float>({
+      3.0f, 13.0f,
+      4.0f, 14.0f,
+      5.0f, 15.0f,
+      0.0f, 0.0f,
+      0.0f, 0.0f}));
+}
 
 TimelineClip TestAudioMixPolicy::makeAudioClip(const QString &id,
                                                const QString &path,

@@ -2,12 +2,17 @@
 #include "editor_effect_presets.h"
 #include "editor_shared_effects.h"
 #include "editor_tab_edit_effects.h"
-
+#include <QEvent>
 #include <QSignalBlocker>
 #include <QDir>
 #include <QFormLayout>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
+#include <QSet>
 #include <QStringList>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QtGlobal>
 #include <QStandardItemModel>
 #include <algorithm>
@@ -97,6 +102,59 @@ int comboIndexForTilingPattern(const QComboBox* combo, ClipTilingPattern pattern
     return index >= 0 ? index : combo->findData(static_cast<int>(ClipTilingPattern::Grid));
 }
 
+QString tilingPatternLabel(ClipTilingPattern pattern)
+{
+    switch (pattern) {
+    case ClipTilingPattern::Grid: return QStringLiteral("Grid");
+    case ClipTilingPattern::Encircle: return QStringLiteral("Encircle");
+    case ClipTilingPattern::SpiralXY: return QStringLiteral("Spiral XY");
+    case ClipTilingPattern::SpiralXZ: return QStringLiteral("Spiral XZ");
+    case ClipTilingPattern::SpiralYZ: return QStringLiteral("Spiral YZ");
+    case ClipTilingPattern::Diamond: return QStringLiteral("Diamond");
+    }
+    return QStringLiteral("Pattern");
+}
+
+constexpr int kEffectKeyTypeRole = Qt::UserRole + 1;
+
+QTableWidgetItem* tableItem(const QString& text,
+                            const QVariant& sortValue = QVariant(),
+                            bool editable = false)
+{
+    auto* item = new QTableWidgetItem(text);
+    if (!editable) {
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    }
+    if (sortValue.isValid()) {
+        item->setData(Qt::UserRole, sortValue);
+    }
+    return item;
+}
+
+ClipEffectPreset effectPresetFromLabel(const QString& text,
+                                       ClipEffectPreset fallback)
+{
+    const QString normalized = text.trimmed().toLower();
+    for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.label.trimmed().toLower() == normalized) {
+            return option.preset;
+        }
+    }
+    return fallback;
+}
+
+ClipTilingPattern tilingPatternFromLabel(const QString& text,
+                                         ClipTilingPattern fallback)
+{
+    const QString normalized = text.trimmed().toLower();
+    for (const TilingPatternUiOption& option : tilingPatternUiOptions()) {
+        if (option.label.trimmed().toLower() == normalized) {
+            return option.pattern;
+        }
+    }
+    return fallback;
+}
+
 template <typename Owner>
 QJsonObject effectParameters(const Owner& owner)
 {
@@ -137,6 +195,56 @@ void restoreEffectParameters(Owner& owner, const QJsonObject& values)
 QString presetParameterKey(ClipEffectPreset preset)
 {
     return QString::number(static_cast<int>(preset));
+}
+
+QString presetSpecificHelpText(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::None:
+        return QStringLiteral("Select a synthesis preset. This section then shows only the controls that affect that preset.");
+    case ClipEffectPreset::NewsLogoTicker:
+    case ClipEffectPreset::AlternatingMotionBackground:
+    case ClipEffectPreset::FreezePattern:
+    case ClipEffectPreset::StepRepeat:
+    case ClipEffectPreset::DirectionalTrimTicker:
+    case ClipEffectPreset::SourceTile:
+        return QStringLiteral("Pattern/repetition controls. Copies sets density, speed drives motion, scale changes source size, and spacing/pattern are shown when the preset supports tiled layout.");
+    case ClipEffectPreset::PersonOrbit:
+        return QStringLiteral("Orbit controls. Copies sets orbiting instances, speed rotates them around the subject, and scale sets instance size.");
+    case ClipEffectPreset::Vulkan3DSynth:
+        return QStringLiteral("Procedural 3D controls. Copies sets structural density, speed animates the synth, and scale controls overall form size.");
+    case ClipEffectPreset::DifferenceMatte:
+        return QStringLiteral("Source-history controls. Reference chooses how far back to compare, threshold chooses what changes count, and softness feathers the detected difference.");
+    case ClipEffectPreset::TemporalEcho:
+        return QStringLiteral("Source-history controls. Echo frames sets the trail count, spacing sets temporal distance, and decay sets how quickly older echoes fade.");
+    case ClipEffectPreset::SobelEdges:
+        return QStringLiteral("Edge extraction controls. Sample radius changes edge sampling width and edge strength controls the rendered edge intensity.");
+    case ClipEffectPreset::NeonGlow:
+        return QStringLiteral("Glow controls. Glow radius sets spread, hue speed animates color drift, and glow intensity controls brightness.");
+    case ClipEffectPreset::SpeakerMaskDilation:
+    case ClipEffectPreset::SpeakerMaskDilationPulse:
+    case ClipEffectPreset::SpeakerMaskDilationRings:
+        return QStringLiteral("Speaker-mask controls. Dilation radius expands the mask, opacity controls overlay strength, and color spacing/speed tune the generated accent treatment.");
+    case ClipEffectPreset::MirrorRing:
+    case ClipEffectPreset::Kaleidoscope:
+        return QStringLiteral("Angular mirror controls. Mirror sectors sets radial segmentation, rotation speed animates it, output grain size controls source sampling, and geometry amount shapes the mirrored layout.");
+    case ClipEffectPreset::QuadMirror:
+    case ClipEffectPreset::Tessellation:
+    case ClipEffectPreset::HexagonalPrism:
+        return QStringLiteral("Cell mirror controls. Cells across sets grid density, rotation speed animates the geometry, output grain size controls source sampling, and geometry amount shapes the cells.");
+    case ClipEffectPreset::Droste:
+    case ClipEffectPreset::InfiniteMirror:
+    case ClipEffectPreset::RecursiveZoomTile:
+    case ClipEffectPreset::RecursiveZoomTunnel:
+    case ClipEffectPreset::RecursiveZoomMirrorBox:
+    case ClipEffectPreset::RecursiveZoomSpiral:
+    case ClipEffectPreset::RecursiveZoomKaleidoscope:
+    case ClipEffectPreset::RecursiveZoomRadialRepeat:
+    case ClipEffectPreset::RecursiveZoomPixelMosaic:
+        return QStringLiteral("Recursive mirror controls. Recursion density sets layer count, rotation speed animates the recursion, output grain size controls source sampling, and recursion spacing shapes depth/twist.");
+    default:
+        return QStringLiteral("Preset-specific controls. Only parameters used by the selected effect are shown.");
+    }
 }
 
 void setFormFieldVisible(QWidget* field, bool visible)
@@ -189,10 +297,23 @@ bool mirrorGeometryPreset(ClipEffectPreset preset)
     }
 }
 
+QString effectPresetLabel(ClipEffectPreset preset)
+{
+    for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.preset == preset) {
+            return option.label;
+        }
+    }
+    return QStringLiteral("Off");
+}
+
 void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                                      ClipEffectPreset preset,
                                      const QString& modulationMode)
 {
+    if (widgets.effectPresetSpecificHelpLabel) {
+        widgets.effectPresetSpecificHelpLabel->setText(presetSpecificHelpText(preset));
+    }
     const bool mirrorGeometry = mirrorGeometryPreset(preset);
     const bool commonParameters =
         preset == ClipEffectPreset::NewsLogoTicker ||
@@ -231,6 +352,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         preset == ClipEffectPreset::QuadMirror ||
         preset == ClipEffectPreset::Tessellation ||
         preset == ClipEffectPreset::HexagonalPrism;
+    const bool hexagonalPrism = preset == ClipEffectPreset::HexagonalPrism;
     if (widgets.effectRowsSpin) {
         widgets.effectRowsSpin->setRange(
             sectorEffect ? 2 : 1,
@@ -256,7 +378,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                       edge ? QStringLiteral("Edge strength")
                            : neon ? QStringLiteral("Glow intensity")
                                   : speakerMask ? QStringLiteral("Opacity")
-                                                : mirrorGeometry ? QStringLiteral("Output grain size")
+                                                : mirrorGeometry ? QStringLiteral("Source grain size")
                                                 : QStringLiteral("Scale"));
     setFormFieldLabel(widgets.tilingSpacingSpin,
                       speakerMask ? QStringLiteral("Color spacing")
@@ -287,9 +409,13 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                     : QStringLiteral("Strength of the radial or cell geometry."));
         }
     }
+    if (hexagonalPrism && widgets.effectRowsSpin) {
+        widgets.effectRowsSpin->setToolTip(
+            QStringLiteral("Hexagon density. This is the primary visible size control for Hexagonal Prism."));
+    }
     setFormFieldVisible(widgets.effectRowsSpin, commonParameters);
     setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge);
-    setFormFieldVisible(widgets.effectScaleSpin, commonParameters);
+    setFormFieldVisible(widgets.effectScaleSpin, commonParameters && !hexagonalPrism);
     setFormFieldVisible(widgets.effectAlternateDirectionCheck,
                         commonParameters && !edge && !neon && !speakerMask &&
                             !mirrorGeometry);
@@ -308,6 +434,272 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     setFormFieldVisible(widgets.tilingPatternCombo, tiling);
     setFormFieldVisible(widgets.tilingSpacingSpin, spacing);
     setFormFieldVisible(widgets.tilingWrapCheck, tiling);
+}
+
+void populateEffectKeyframeTable(const EffectsTab::Widgets& widgets,
+                                 const TimelineClip* clip)
+{
+    QTableWidget* table = widgets.effectKeyframeTable;
+    if (!table) {
+        return;
+    }
+
+    QSignalBlocker blocker(table);
+    if (table->columnCount() < 9) {
+        table->setColumnCount(9);
+        table->setHorizontalHeaderLabels(
+            {QStringLiteral("Frame"),
+             QStringLiteral("Type"),
+             QStringLiteral("Preset"),
+             QStringLiteral("State"),
+             QStringLiteral("Copies"),
+             QStringLiteral("Speed"),
+             QStringLiteral("Scale"),
+             QStringLiteral("Pattern"),
+             QStringLiteral("Other")});
+    }
+    table->setRowCount(0);
+    if (!clip) {
+        table->setEnabled(false);
+        return;
+    }
+
+    struct Row {
+        int64_t frame = 0;
+        QString type;
+        QString preset;
+        QString state;
+        QString copies;
+        QString speed;
+        QString scale;
+        QString pattern;
+        QString other;
+        QString keyType;
+    };
+
+    QVector<Row> rows;
+    rows.reserve(clip->effectEnabledKeyframes.size() +
+                 clip->effectParameterKeyframes.size());
+    for (const TimelineClip::BoolKeyframe& keyframe :
+         clip->effectEnabledKeyframes) {
+        rows.push_back(Row{keyframe.frame,
+                           QStringLiteral("Enabled"),
+                           QString(),
+                           keyframe.enabled ? QStringLiteral("On")
+                                            : QStringLiteral("Off"),
+                           QString(), QString(), QString(), QString(),
+                           QString(),
+                           QStringLiteral("enabled")});
+    }
+    for (const TimelineClip::EffectParameterKeyframe& keyframe :
+         clip->effectParameterKeyframes) {
+        rows.push_back(Row{keyframe.frame,
+                           QStringLiteral("Parameters"),
+                           keyframe.effectPresetKeyframed
+                               ? effectPresetLabel(keyframe.effectPreset)
+                               : QString(),
+                           QString(),
+                           QString::number(keyframe.effectRows),
+                           QString::number(keyframe.effectSpeed, 'f', 2),
+                           QString::number(keyframe.effectScale, 'f', 2),
+                           tilingPatternLabel(keyframe.tilingPattern),
+                           QStringLiteral(
+                               "alt=%1 diff=%2/%3/%4 echo=%5/%6/%7 spacing=%8 wrap=%9 mod=%10/%11/%12/%13/%14 speech=%15")
+                               .arg(keyframe.effectAlternateDirection
+                                        ? QStringLiteral("on")
+                                        : QStringLiteral("off"))
+                               .arg(keyframe.differenceReferenceFrames)
+                               .arg(keyframe.differenceThreshold, 0, 'f', 3)
+                               .arg(keyframe.differenceSoftness, 0, 'f', 3)
+                               .arg(keyframe.temporalEchoCount)
+                               .arg(keyframe.temporalEchoSpacingFrames)
+                               .arg(keyframe.temporalEchoDecay, 0, 'f', 2)
+                               .arg(keyframe.tilingSpacing, 0, 'f', 2)
+                               .arg(keyframe.tilingWrap
+                                        ? QStringLiteral("on")
+                                        : QStringLiteral("off"))
+                               .arg(keyframe.effectModulationMode)
+                               .arg(keyframe.effectModulationTarget)
+                               .arg(keyframe.effectModulationAmount, 0, 'f', 2)
+                               .arg(keyframe.effectModulationRate, 0, 'f', 2)
+                               .arg(keyframe.effectModulationPhaseDegrees, 0, 'f', 1)
+                               .arg(keyframe.effectSkipAwareTiming
+                                        ? QStringLiteral("on")
+                                        : QStringLiteral("off")),
+                           QStringLiteral("parameters")});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& left, const Row& right) {
+        if (left.frame != right.frame) {
+            return left.frame < right.frame;
+        }
+        return left.type < right.type;
+    });
+
+    table->setEnabled(true);
+    table->setRowCount(rows.size());
+    for (int row = 0; row < rows.size(); ++row) {
+        const Row& value = rows.at(row);
+        const bool enabledRow = value.keyType == QStringLiteral("enabled");
+        const bool parameterRow = value.keyType == QStringLiteral("parameters");
+        table->setItem(row, 0, tableItem(
+            QString::number(value.frame),
+            QVariant::fromValue(static_cast<qlonglong>(value.frame)),
+            true));
+        table->setItem(row, 1, tableItem(value.type));
+        table->setItem(row, 2, tableItem(value.preset, QVariant(), parameterRow));
+        table->setItem(row, 3, tableItem(value.state, QVariant(), enabledRow));
+        table->setItem(row, 4, tableItem(value.copies, QVariant(), parameterRow));
+        table->setItem(row, 5, tableItem(value.speed, QVariant(), parameterRow));
+        table->setItem(row, 6, tableItem(value.scale, QVariant(), parameterRow));
+        table->setItem(row, 7, tableItem(value.pattern, QVariant(), parameterRow));
+        table->setItem(row, 8, tableItem(value.other));
+        for (int column = 0; column < table->columnCount(); ++column) {
+            if (QTableWidgetItem* item = table->item(row, column)) {
+                item->setData(
+                    Qt::UserRole,
+                    QVariant::fromValue(static_cast<qlonglong>(value.frame)));
+                item->setData(kEffectKeyTypeRole, value.keyType);
+            }
+        }
+        table->item(row, 1)->setData(Qt::UserRole, value.keyType);
+        table->item(row, 1)->setData(kEffectKeyTypeRole, value.keyType);
+    }
+}
+
+QSet<QPair<int64_t, QString>> selectedEffectKeyframeRows(QTableWidget* table)
+{
+    QSet<QPair<int64_t, QString>> selected;
+    if (!table) {
+        return selected;
+    }
+    for (const QModelIndex& index : table->selectionModel()->selectedRows()) {
+        const int row = index.row();
+        const QTableWidgetItem* frameItem = table->item(row, 0);
+        const QTableWidgetItem* typeItem = table->item(row, 1);
+        if (!frameItem || !typeItem) {
+            continue;
+        }
+        selected.insert({frameItem->data(Qt::UserRole).toLongLong(),
+                         typeItem->data(Qt::UserRole).toString()});
+    }
+    return selected;
+}
+
+TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromWidgets(
+    const EffectsTab::Widgets& widgets,
+    const TimelineClip& fallbackClip,
+    int64_t localFrame)
+{
+    TimelineClip::EffectParameterKeyframe keyframe;
+    keyframe.frame = localFrame;
+    keyframe.effectPreset = presetFromCombo(widgets.effectPresetCombo);
+    keyframe.effectPresetKeyframed = true;
+    keyframe.effectRows = widgets.effectRowsSpin
+        ? widgets.effectRowsSpin->value()
+        : fallbackClip.effectRows;
+    keyframe.effectSpeed = widgets.effectSpeedSpin
+        ? widgets.effectSpeedSpin->value()
+        : fallbackClip.effectSpeed;
+    keyframe.effectScale = widgets.effectScaleSpin
+        ? widgets.effectScaleSpin->value()
+        : fallbackClip.effectScale;
+    keyframe.effectAlternateDirection =
+        !widgets.effectAlternateDirectionCheck ||
+        widgets.effectAlternateDirectionCheck->isChecked();
+    keyframe.differenceReferenceFrames = widgets.differenceReferenceFramesSpin
+        ? widgets.differenceReferenceFramesSpin->value()
+        : fallbackClip.differenceReferenceFrames;
+    keyframe.differenceThreshold = widgets.differenceThresholdSpin
+        ? widgets.differenceThresholdSpin->value()
+        : fallbackClip.differenceThreshold;
+    keyframe.differenceSoftness = widgets.differenceSoftnessSpin
+        ? widgets.differenceSoftnessSpin->value()
+        : fallbackClip.differenceSoftness;
+    keyframe.temporalEchoCount = widgets.temporalEchoCountSpin
+        ? widgets.temporalEchoCountSpin->value()
+        : fallbackClip.temporalEchoCount;
+    keyframe.temporalEchoSpacingFrames = widgets.temporalEchoSpacingSpin
+        ? widgets.temporalEchoSpacingSpin->value()
+        : fallbackClip.temporalEchoSpacingFrames;
+    keyframe.temporalEchoDecay = widgets.temporalEchoDecaySpin
+        ? widgets.temporalEchoDecaySpin->value()
+        : fallbackClip.temporalEchoDecay;
+    keyframe.tilingPattern = widgets.tilingPatternCombo
+        ? tilingPatternFromCombo(widgets.tilingPatternCombo)
+        : fallbackClip.tilingPattern;
+    keyframe.tilingSpacing = widgets.tilingSpacingSpin
+        ? widgets.tilingSpacingSpin->value()
+        : fallbackClip.tilingSpacing;
+    keyframe.tilingWrap =
+        !widgets.tilingWrapCheck || widgets.tilingWrapCheck->isChecked();
+    keyframe.effectModulationMode = widgets.effectModulationModeCombo
+        ? widgets.effectModulationModeCombo->currentData().toString()
+        : fallbackClip.effectModulationMode;
+    keyframe.effectModulationTarget = widgets.effectModulationTargetCombo
+        ? widgets.effectModulationTargetCombo->currentData().toString()
+        : fallbackClip.effectModulationTarget;
+    keyframe.effectModulationAmount = widgets.effectModulationAmountSpin
+        ? widgets.effectModulationAmountSpin->value()
+        : fallbackClip.effectModulationAmount;
+    keyframe.effectModulationRate = widgets.effectModulationRateSpin
+        ? widgets.effectModulationRateSpin->value()
+        : fallbackClip.effectModulationRate;
+    keyframe.effectModulationPhaseDegrees = widgets.effectModulationPhaseSpin
+        ? widgets.effectModulationPhaseSpin->value()
+        : fallbackClip.effectModulationPhaseDegrees;
+    keyframe.effectSkipAwareTiming =
+        widgets.effectSpeechSyncCheck
+            ? widgets.effectSpeechSyncCheck->isChecked()
+            : fallbackClip.effectSkipAwareTiming;
+    return keyframe;
+}
+
+void upsertClipEffectParameterKeyframe(
+    TimelineClip& clip,
+    const TimelineClip::EffectParameterKeyframe& keyframe)
+{
+    auto existing = std::find_if(
+        clip.effectParameterKeyframes.begin(),
+        clip.effectParameterKeyframes.end(),
+        [frame = keyframe.frame](const auto& value) {
+            return value.frame == frame;
+        });
+    if (existing == clip.effectParameterKeyframes.end()) {
+        clip.effectParameterKeyframes.push_back(keyframe);
+    } else {
+        *existing = keyframe;
+    }
+    std::sort(
+        clip.effectParameterKeyframes.begin(),
+        clip.effectParameterKeyframes.end(),
+        [](const auto& left, const auto& right) {
+            return left.frame < right.frame;
+        });
+}
+
+QTableWidgetItem* ensureEffectContextRowSelected(QTableWidget* table,
+                                                 const QPoint& pos,
+                                                 int* rowOut)
+{
+    if (rowOut) {
+        *rowOut = -1;
+    }
+    if (!table || !table->selectionModel()) {
+        return nullptr;
+    }
+    QTableWidgetItem* item = table->itemAt(pos);
+    if (!item) {
+        return nullptr;
+    }
+    const int row = item->row();
+    if (rowOut) {
+        *rowOut = row;
+    }
+    if (!table->selectionModel()->isRowSelected(row, QModelIndex())) {
+        table->clearSelection();
+        table->selectRow(row);
+    }
+    return item;
 }
 }
 
@@ -398,6 +790,18 @@ void EffectsTab::wire()
     if (m_widgets.effectKeyframeRemoveButton) {
         connect(m_widgets.effectKeyframeRemoveButton, &QPushButton::clicked,
                 this, &EffectsTab::removeEffectEnabledKeyframe);
+    }
+    if (m_widgets.effectKeyframeTable) {
+        connect(m_widgets.effectKeyframeTable, &QTableWidget::itemClicked,
+                this, &EffectsTab::onEffectKeyframeTableItemClicked);
+        connect(m_widgets.effectKeyframeTable, &QTableWidget::itemChanged,
+                this, &EffectsTab::onEffectKeyframeTableItemChanged);
+        connect(m_widgets.effectKeyframeTable, &QTableWidget::itemDoubleClicked,
+                this, &EffectsTab::onEffectKeyframeTableItemDoubleClicked);
+        m_widgets.effectKeyframeTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.effectKeyframeTable, &QWidget::customContextMenuRequested,
+                this, &EffectsTab::onEffectKeyframeTableCustomContextMenu);
+        m_widgets.effectKeyframeTable->installEventFilter(this);
     }
     if (m_widgets.effectModulationModeCombo) {
         connect(
@@ -562,6 +966,7 @@ void EffectsTab::refresh()
             m_widgets.effectKeyframesLabel->setText(
                 QStringLiteral("Select a visual clip to animate its effect."));
         }
+        populateEffectKeyframeTable(m_widgets, nullptr);
         if (m_widgets.differenceReferenceFramesSpin) {
             m_widgets.differenceReferenceFramesSpin->setValue(selectedTrack ? selectedTrack->differenceReferenceFrames : 1);
             m_widgets.differenceReferenceFramesSpin->setEnabled(trackEffectActive);
@@ -612,6 +1017,16 @@ void EffectsTab::refresh()
                                          mediaSourceKindLabel(clip->sourceKind));
     m_widgets.effectsPathLabel->setText(QStringLiteral("%1\n%2").arg(clip->label, sourceLabel));
     m_widgets.effectsPathLabel->setToolTip(nativePath);
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                    : clip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0, timelineFrame - clip->startFrame,
+        qMax<int64_t>(0, clip->durationFrames - 1));
+    const TimelineClip displayedClip =
+        evaluateClipEffectAnimationAtPosition(
+            *clip, static_cast<qreal>(clip->startFrame + localFrame));
+    const TimelineClip* effectClip = &displayedClip;
 
     if (m_widgets.edgeFillEffectCombo) {
         const int index = m_widgets.edgeFillEffectCombo->findData(
@@ -650,24 +1065,24 @@ void EffectsTab::refresh()
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
             m_widgets.effectPresetCombo,
-            clip->effectPreset));
+            effectClip->effectPreset));
     }
     if (m_widgets.effectRowsSpin) {
-        m_widgets.effectRowsSpin->setValue(clip->effectRows);
+        m_widgets.effectRowsSpin->setValue(effectClip->effectRows);
     }
     if (m_widgets.effectSpeedSpin) {
-        m_widgets.effectSpeedSpin->setValue(clip->effectSpeed);
+        m_widgets.effectSpeedSpin->setValue(effectClip->effectSpeed);
     }
     if (m_widgets.effectScaleSpin) {
-        m_widgets.effectScaleSpin->setValue(clip->effectScale);
+        m_widgets.effectScaleSpin->setValue(effectClip->effectScale);
     }
     if (m_widgets.effectAlternateDirectionCheck) {
-        m_widgets.effectAlternateDirectionCheck->setChecked(clip->effectAlternateDirection);
+        m_widgets.effectAlternateDirectionCheck->setChecked(effectClip->effectAlternateDirection);
     }
     if (m_widgets.effectSpeechSyncCheck) {
-        m_widgets.effectSpeechSyncCheck->setChecked(clip->effectSkipAwareTiming);
+        m_widgets.effectSpeechSyncCheck->setChecked(effectClip->effectSkipAwareTiming);
         const bool steadyIncrease =
-            clip->effectModulationMode == QStringLiteral("steady_increase");
+            effectClip->effectModulationMode == QStringLiteral("steady_increase");
         m_widgets.effectSpeechSyncCheck->setText(
             steadyIncrease
                 ? QStringLiteral("Transcript-aware steady increase")
@@ -685,11 +1100,6 @@ void EffectsTab::refresh()
         m_widgets.effectEnabledCheck->setChecked(clip->effectEnabled);
         m_widgets.effectEnabledCheck->setEnabled(true);
     }
-    const int64_t timelineFrame =
-        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame() : clip->startFrame;
-    const int64_t localFrame = qBound<int64_t>(
-        0, timelineFrame - clip->startFrame,
-        qMax<int64_t>(0, clip->durationFrames - 1));
     QStringList keyDescriptions;
     bool hasKeyAtPlayhead = false;
     for (const TimelineClip::BoolKeyframe& keyframe :
@@ -717,6 +1127,7 @@ void EffectsTab::refresh()
                 ? QStringLiteral("No effect keyframes")
                 : keyDescriptions.join(QStringLiteral("  •  ")));
     }
+    populateEffectKeyframeTable(m_widgets, clip);
     for (QPushButton* button : {
              m_widgets.effectKeyframeOnButton,
              m_widgets.effectKeyframeOffButton,
@@ -724,7 +1135,11 @@ void EffectsTab::refresh()
         if (button) button->setEnabled(true);
     }
     if (m_widgets.effectKeyframeRemoveButton) {
-        m_widgets.effectKeyframeRemoveButton->setEnabled(hasKeyAtPlayhead);
+        m_widgets.effectKeyframeRemoveButton->setEnabled(!keyDescriptions.isEmpty());
+        m_widgets.effectKeyframeRemoveButton->setToolTip(
+            hasKeyAtPlayhead
+                ? QStringLiteral("Remove effect keys at the playhead, or selected rows if the table has a selection.")
+                : QStringLiteral("Select rows in the table to remove them, or move the playhead to a keyed frame."));
     }
     auto setComboData = [](QComboBox* combo, const QString& value) {
         if (!combo) return;
@@ -732,25 +1147,25 @@ void EffectsTab::refresh()
         combo->setCurrentIndex(qMax(0, index));
     };
     setComboData(m_widgets.effectModulationModeCombo,
-                 clip->effectModulationMode);
+                 effectClip->effectModulationMode);
     setComboData(m_widgets.effectModulationTargetCombo,
-                 clip->effectModulationTarget);
+                 effectClip->effectModulationTarget);
     if (m_widgets.effectModulationAmountSpin) {
         m_widgets.effectModulationAmountSpin->setValue(
-            clip->effectModulationAmount);
+            effectClip->effectModulationAmount);
     }
     if (m_widgets.effectModulationRateSpin) {
         m_widgets.effectModulationRateSpin->setValue(
-            clip->effectModulationRate);
+            effectClip->effectModulationRate);
     }
     if (m_widgets.effectModulationPhaseSpin) {
         m_widgets.effectModulationPhaseSpin->setValue(
-            clip->effectModulationPhaseDegrees);
+            effectClip->effectModulationPhaseDegrees);
     }
     const bool dynamicEnabled =
-        clip->effectModulationMode != QStringLiteral("none");
+        effectClip->effectModulationMode != QStringLiteral("none");
     const bool lfoEnabled =
-        clip->effectModulationMode == QStringLiteral("lfo");
+        effectClip->effectModulationMode == QStringLiteral("lfo");
     if (m_widgets.effectModulationModeCombo) {
         m_widgets.effectModulationModeCombo->setEnabled(true);
     }
@@ -766,28 +1181,28 @@ void EffectsTab::refresh()
     if (m_widgets.effectModulationPhaseSpin) {
         m_widgets.effectModulationPhaseSpin->setEnabled(lfoEnabled);
     }
-    if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setValue(clip->differenceReferenceFrames);
-    if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setValue(clip->differenceThreshold);
-    if (m_widgets.differenceSoftnessSpin) m_widgets.differenceSoftnessSpin->setValue(clip->differenceSoftness);
-    if (m_widgets.temporalEchoCountSpin) m_widgets.temporalEchoCountSpin->setValue(clip->temporalEchoCount);
-    if (m_widgets.temporalEchoSpacingSpin) m_widgets.temporalEchoSpacingSpin->setValue(clip->temporalEchoSpacingFrames);
-    if (m_widgets.temporalEchoDecaySpin) m_widgets.temporalEchoDecaySpin->setValue(clip->temporalEchoDecay);
+    if (m_widgets.differenceReferenceFramesSpin) m_widgets.differenceReferenceFramesSpin->setValue(effectClip->differenceReferenceFrames);
+    if (m_widgets.differenceThresholdSpin) m_widgets.differenceThresholdSpin->setValue(effectClip->differenceThreshold);
+    if (m_widgets.differenceSoftnessSpin) m_widgets.differenceSoftnessSpin->setValue(effectClip->differenceSoftness);
+    if (m_widgets.temporalEchoCountSpin) m_widgets.temporalEchoCountSpin->setValue(effectClip->temporalEchoCount);
+    if (m_widgets.temporalEchoSpacingSpin) m_widgets.temporalEchoSpacingSpin->setValue(effectClip->temporalEchoSpacingFrames);
+    if (m_widgets.temporalEchoDecaySpin) m_widgets.temporalEchoDecaySpin->setValue(effectClip->temporalEchoDecay);
     if (m_widgets.tilingPatternCombo) {
         m_widgets.tilingPatternCombo->setCurrentIndex(
             comboIndexForTilingPattern(
                 m_widgets.tilingPatternCombo,
-                clip->tilingPattern));
+                effectClip->tilingPattern));
     }
     if (m_widgets.tilingSpacingSpin) {
-        m_widgets.tilingSpacingSpin->setValue(clip->tilingSpacing);
+        m_widgets.tilingSpacingSpin->setValue(effectClip->tilingSpacing);
     }
     if (m_widgets.tilingWrapCheck) {
-        m_widgets.tilingWrapCheck->setChecked(clip->tilingWrap);
+        m_widgets.tilingWrapCheck->setChecked(effectClip->tilingWrap);
     }
 
     const bool imagePresetCapable = clip->mediaType == ClipMediaType::Image ||
                                     clip->mediaType == ClipMediaType::Video;
-    const ClipEffectPreset clipPreset = clip->effectPreset;
+    const ClipEffectPreset clipPreset = effectClip->effectPreset;
     const bool imagePresetActive = clipPreset != ClipEffectPreset::None;
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
@@ -811,7 +1226,7 @@ void EffectsTab::refresh()
     }
     if (m_widgets.effectSpeechSyncCheck) {
         const bool steadyIncrease =
-            clip->effectModulationMode == QStringLiteral("steady_increase");
+            effectClip->effectModulationMode == QStringLiteral("steady_increase");
         const bool progressiveEdgePreset =
             clip->edgeFillEffect == BackgroundFillEffect::ProgressiveEdgeStretch ||
             clip->edgeFillEffect ==
@@ -838,7 +1253,7 @@ void EffectsTab::refresh()
         m_widgets.tilingWrapCheck->setEnabled(tilingControlsActive);
     }
     updatePresetParameterVisibility(
-        m_widgets, clipPreset, clip->effectModulationMode);
+        m_widgets, clipPreset, effectClip->effectModulationMode);
     m_updating = false;
 }
 
@@ -923,44 +1338,27 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             refresh();
             return;
         }
+        const int64_t timelineFrame =
+            m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                        : selectedClip->startFrame;
+        const int64_t localFrame = qBound<int64_t>(
+            0,
+            timelineFrame - selectedClip->startFrame,
+            qMax<int64_t>(0, selectedClip->durationFrames - 1));
+        const TimelineClip::EffectParameterKeyframe keyframe =
+            effectParameterKeyframeFromWidgets(
+                m_widgets, *selectedClip, localFrame);
         updated = m_deps.updateClipById(selectedClip->id, [=](TimelineClip& clip) {
-            const ClipEffectPreset previousPreset = clip.effectPreset;
-            clip.effectParameterSets[presetParameterKey(previousPreset)] = effectParameters(clip);
+            clip.effectParameterSets[presetParameterKey(clip.effectPreset)] =
+                effectParameters(clip);
             clip.edgeFillEffect = edgeFillEffect;
             clip.edgeFillPixels = qBound(1, edgeFillPixels, 512);
             clip.edgeFillPower = qBound<qreal>(0.25, edgeFillPower, 8.0);
             clip.edgeFillOpacity = qBound<qreal>(0.0, edgeFillOpacity, 1.0);
             clip.edgeFillBrightness = qBound<qreal>(-1.0, edgeFillBrightness, 1.0);
             clip.edgeFillSaturation = qBound<qreal>(0.0, edgeFillSaturation, 3.0);
-            clip.effectPreset = preset;
             clip.effectEnabled = effectEnabled;
-            clip.effectModulationMode = modulationMode;
-            clip.effectModulationTarget = modulationTarget;
-            clip.effectModulationAmount =
-                qBound<qreal>(-512.0, modulationAmount, 512.0);
-            clip.effectModulationRate =
-                qBound<qreal>(0.0, modulationRate, 20.0);
-            clip.effectModulationPhaseDegrees =
-                qBound<qreal>(-360.0, modulationPhase, 360.0);
-            if (preset != previousPreset) {
-                restoreEffectParameters(clip, clip.effectParameterSets.value(presetParameterKey(preset)).toObject());
-            } else {
-            clip.effectRows = qBound(1, rows, 96);
-            clip.effectSpeed = qBound<qreal>(-8.0, speed, 8.0);
-            clip.effectScale = qBound<qreal>(0.1, scale, 8.0);
-            clip.effectAlternateDirection = alternate;
-            clip.effectSkipAwareTiming = speechSync;
-            clip.differenceReferenceFrames = qBound(1, differenceReferenceFrames, 300);
-            clip.differenceThreshold = qBound<qreal>(0.0, differenceThreshold, 1.0);
-            clip.differenceSoftness = qBound<qreal>(0.0, differenceSoftness, 1.0);
-            clip.temporalEchoCount = qBound(1, temporalEchoCount, 12);
-            clip.temporalEchoSpacingFrames = qBound(1, temporalEchoSpacingFrames, 120);
-            clip.temporalEchoDecay = qBound<qreal>(0.0, temporalEchoDecay, 1.0);
-            clip.tilingPattern = tilingPattern;
-            clip.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
-            clip.tilingWrap = tilingWrap;
-            }
-            clip.effectParameterSets[presetParameterKey(preset)] = effectParameters(clip);
+            upsertClipEffectParameterKeyframe(clip, keyframe);
         });
     } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0 &&
                (!targetTrack || !targetTrack->generatedChildTrack)) {
@@ -1043,85 +1441,10 @@ void EffectsTab::setEffectEnabledKeyframe(bool enabled)
 
 void EffectsTab::setEffectParameterKeyframe()
 {
-    const TimelineClip* selectedClip = m_deps.getSelectedClip
-        ? m_deps.getSelectedClip() : nullptr;
-    if (!selectedClip || !m_deps.updateClipById) return;
-    const int64_t timelineFrame =
-        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
-                                    : selectedClip->startFrame;
-    const int64_t localFrame = qBound<int64_t>(
-        0,
-        timelineFrame - selectedClip->startFrame,
-        qMax<int64_t>(0, selectedClip->durationFrames - 1));
-    TimelineClip::EffectParameterKeyframe keyframe;
-    keyframe.frame = localFrame;
-    keyframe.effectRows = m_widgets.effectRowsSpin
-        ? m_widgets.effectRowsSpin->value() : selectedClip->effectRows;
-    keyframe.effectSpeed = m_widgets.effectSpeedSpin
-        ? m_widgets.effectSpeedSpin->value() : selectedClip->effectSpeed;
-    keyframe.effectScale = m_widgets.effectScaleSpin
-        ? m_widgets.effectScaleSpin->value() : selectedClip->effectScale;
-    keyframe.effectAlternateDirection = !m_widgets.effectAlternateDirectionCheck ||
-        m_widgets.effectAlternateDirectionCheck->isChecked();
-    keyframe.differenceReferenceFrames = m_widgets.differenceReferenceFramesSpin
-        ? m_widgets.differenceReferenceFramesSpin->value()
-        : selectedClip->differenceReferenceFrames;
-    keyframe.differenceThreshold = m_widgets.differenceThresholdSpin
-        ? m_widgets.differenceThresholdSpin->value()
-        : selectedClip->differenceThreshold;
-    keyframe.differenceSoftness = m_widgets.differenceSoftnessSpin
-        ? m_widgets.differenceSoftnessSpin->value()
-        : selectedClip->differenceSoftness;
-    keyframe.temporalEchoCount = m_widgets.temporalEchoCountSpin
-        ? m_widgets.temporalEchoCountSpin->value()
-        : selectedClip->temporalEchoCount;
-    keyframe.temporalEchoSpacingFrames = m_widgets.temporalEchoSpacingSpin
-        ? m_widgets.temporalEchoSpacingSpin->value()
-        : selectedClip->temporalEchoSpacingFrames;
-    keyframe.temporalEchoDecay = m_widgets.temporalEchoDecaySpin
-        ? m_widgets.temporalEchoDecaySpin->value()
-        : selectedClip->temporalEchoDecay;
-    keyframe.tilingPattern = m_widgets.tilingPatternCombo
-        ? tilingPatternFromCombo(m_widgets.tilingPatternCombo)
-        : selectedClip->tilingPattern;
-    keyframe.tilingSpacing = m_widgets.tilingSpacingSpin
-        ? m_widgets.tilingSpacingSpin->value()
-        : selectedClip->tilingSpacing;
-    keyframe.tilingWrap = !m_widgets.tilingWrapCheck ||
-        m_widgets.tilingWrapCheck->isChecked();
-
-    const QString clipId = selectedClip->id;
-    if (!m_deps.updateClipById(
-            clipId,
-            [keyframe](TimelineClip& clip) {
-                auto existing = std::find_if(
-                    clip.effectParameterKeyframes.begin(),
-                    clip.effectParameterKeyframes.end(),
-                    [frame = keyframe.frame](const auto& value) {
-                        return value.frame == frame;
-                    });
-                if (existing == clip.effectParameterKeyframes.end()) {
-                    clip.effectParameterKeyframes.push_back(keyframe);
-                } else {
-                    *existing = keyframe;
-                }
-                std::sort(
-                    clip.effectParameterKeyframes.begin(),
-                    clip.effectParameterKeyframes.end(),
-                    [](const auto& left, const auto& right) {
-                        return left.frame < right.frame;
-                    });
-            })) {
-        return;
-    }
-    applyTabEditEffects(
-        effectsEditCallbacks(m_deps),
-        TabEditEffects{.pushHistory = true});
-    emit effectsApplied();
-    refresh();
+    upsertEffectParameterKeyframe(true, true);
 }
 
-void EffectsTab::removeEffectEnabledKeyframe()
+void EffectsTab::upsertEffectParameterKeyframe(bool pushHistory, bool refreshAfter)
 {
     const TimelineClip* selectedClip = m_deps.getSelectedClip
         ? m_deps.getSelectedClip() : nullptr;
@@ -1133,24 +1456,66 @@ void EffectsTab::removeEffectEnabledKeyframe()
         0,
         timelineFrame - selectedClip->startFrame,
         qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    const TimelineClip::EffectParameterKeyframe keyframe =
+        effectParameterKeyframeFromWidgets(m_widgets, *selectedClip, localFrame);
+
     const QString clipId = selectedClip->id;
     if (!m_deps.updateClipById(
             clipId,
-            [localFrame](TimelineClip& clip) {
+            [keyframe](TimelineClip& clip) {
+                upsertClipEffectParameterKeyframe(clip, keyframe);
+            })) {
+        return;
+    }
+    applyTabEditEffects(
+        effectsEditCallbacks(m_deps),
+        TabEditEffects{.pushHistory = pushHistory});
+    emit effectsApplied();
+    if (refreshAfter) {
+        refresh();
+    }
+}
+
+void EffectsTab::removeEffectEnabledKeyframe()
+{
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip || !m_deps.updateClipById) return;
+    const QSet<QPair<int64_t, QString>> selectedRows =
+        selectedEffectKeyframeRows(m_widgets.effectKeyframeTable);
+    const int64_t timelineFrame =
+        m_deps.currentTimelineFrame ? m_deps.currentTimelineFrame()
+                                    : selectedClip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - selectedClip->startFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    const QString clipId = selectedClip->id;
+    if (!m_deps.updateClipById(
+            clipId,
+            [localFrame, selectedRows](TimelineClip& clip) {
                 clip.effectEnabledKeyframes.erase(
                     std::remove_if(
                         clip.effectEnabledKeyframes.begin(),
                         clip.effectEnabledKeyframes.end(),
-                        [localFrame](const auto& keyframe) {
-                            return keyframe.frame == localFrame;
+                        [localFrame, selectedRows](const auto& keyframe) {
+                            if (selectedRows.isEmpty()) {
+                                return keyframe.frame == localFrame;
+                            }
+                            return selectedRows.contains({
+                                keyframe.frame, QStringLiteral("enabled")});
                         }),
                     clip.effectEnabledKeyframes.end());
                 clip.effectParameterKeyframes.erase(
                     std::remove_if(
                         clip.effectParameterKeyframes.begin(),
                         clip.effectParameterKeyframes.end(),
-                        [localFrame](const auto& keyframe) {
-                            return keyframe.frame == localFrame;
+                        [localFrame, selectedRows](const auto& keyframe) {
+                            if (selectedRows.isEmpty()) {
+                                return keyframe.frame == localFrame;
+                            }
+                            return selectedRows.contains({
+                                keyframe.frame, QStringLiteral("parameters")});
                         }),
                     clip.effectParameterKeyframes.end());
             })) {
@@ -1161,6 +1526,198 @@ void EffectsTab::removeEffectEnabledKeyframe()
         TabEditEffects{.pushHistory = true});
     emit effectsApplied();
     refresh();
+}
+
+void EffectsTab::onEffectKeyframeTableItemClicked(QTableWidgetItem* item)
+{
+    if (m_updating || !item || !m_widgets.effectKeyframeTable ||
+        !m_deps.seekToTimelineFrame) {
+        return;
+    }
+    const TimelineClip* selectedClip =
+        m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip) {
+        return;
+    }
+    const QTableWidgetItem* frameItem =
+        m_widgets.effectKeyframeTable->item(item->row(), 0);
+    if (!frameItem) {
+        return;
+    }
+    const int64_t keyframeFrame =
+        static_cast<int64_t>(frameItem->data(Qt::UserRole).toLongLong());
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        keyframeFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    m_deps.seekToTimelineFrame(selectedClip->startFrame + localFrame);
+}
+
+void EffectsTab::onEffectKeyframeTableItemChanged(QTableWidgetItem* item)
+{
+    if (m_updating || !item || !m_widgets.effectKeyframeTable ||
+        !m_deps.updateClipById) {
+        return;
+    }
+    const TimelineClip* selectedClip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip) {
+        return;
+    }
+
+    const int row = item->row();
+    const int column = item->column();
+    const QTableWidgetItem* frameItem =
+        m_widgets.effectKeyframeTable->item(row, 0);
+    const QTableWidgetItem* typeItem =
+        m_widgets.effectKeyframeTable->item(row, 1);
+    if (!frameItem || !typeItem) {
+        refresh();
+        return;
+    }
+    const int64_t originalFrame =
+        frameItem->data(Qt::UserRole).toLongLong();
+    const QString keyType =
+        typeItem->data(kEffectKeyTypeRole).toString().isEmpty()
+            ? typeItem->data(Qt::UserRole).toString()
+            : typeItem->data(kEffectKeyTypeRole).toString();
+
+    bool frameOk = false;
+    const int64_t editedFrame = frameItem->text().toLongLong(&frameOk);
+    if (!frameOk) {
+        refresh();
+        return;
+    }
+    const int64_t boundedFrame = qBound<int64_t>(
+        0,
+        editedFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+    const QString clipId = selectedClip->id;
+    bool updated = false;
+    if (keyType == QStringLiteral("enabled")) {
+        const bool enabled =
+            m_widgets.effectKeyframeTable->item(row, 3) &&
+            !m_widgets.effectKeyframeTable->item(row, 3)
+                 ->text()
+                 .trimmed()
+                 .compare(QStringLiteral("on"), Qt::CaseInsensitive);
+        updated = m_deps.updateClipById(clipId, [=](TimelineClip& clip) {
+            auto existing = std::find_if(
+                clip.effectEnabledKeyframes.begin(),
+                clip.effectEnabledKeyframes.end(),
+                [originalFrame](const auto& keyframe) {
+                    return keyframe.frame == originalFrame;
+                });
+            if (existing == clip.effectEnabledKeyframes.end()) {
+                return;
+            }
+            existing->frame = boundedFrame;
+            existing->enabled = enabled;
+            std::sort(
+                clip.effectEnabledKeyframes.begin(),
+                clip.effectEnabledKeyframes.end(),
+                [](const auto& left, const auto& right) {
+                    return left.frame < right.frame;
+                });
+        });
+    } else if (keyType == QStringLiteral("parameters")) {
+        updated = m_deps.updateClipById(clipId, [=](TimelineClip& clip) {
+            auto existing = std::find_if(
+                clip.effectParameterKeyframes.begin(),
+                clip.effectParameterKeyframes.end(),
+                [originalFrame](const auto& keyframe) {
+                    return keyframe.frame == originalFrame;
+                });
+            if (existing == clip.effectParameterKeyframes.end()) {
+                return;
+            }
+            existing->frame = boundedFrame;
+            if (column == 2) {
+                existing->effectPreset = effectPresetFromLabel(
+                    item->text(), existing->effectPreset);
+                existing->effectPresetKeyframed = true;
+            } else if (column == 4) {
+                existing->effectRows =
+                    qBound(1, item->text().toInt(), 512);
+            } else if (column == 5) {
+                existing->effectSpeed =
+                    qBound<qreal>(-8.0, item->text().toDouble(), 8.0);
+            } else if (column == 6) {
+                existing->effectScale =
+                    qBound<qreal>(0.1, item->text().toDouble(), 8.0);
+            } else if (column == 7) {
+                existing->tilingPattern =
+                    tilingPatternFromLabel(item->text(), existing->tilingPattern);
+            }
+            std::sort(
+                clip.effectParameterKeyframes.begin(),
+                clip.effectParameterKeyframes.end(),
+                [](const auto& left, const auto& right) {
+                    return left.frame < right.frame;
+                });
+        });
+    }
+
+    if (!updated) {
+        refresh();
+        return;
+    }
+    applyTabEditEffects(effectsEditCallbacks(m_deps),
+                        TabEditEffects{.pushHistory = true});
+    emit effectsApplied();
+    refresh();
+}
+
+void EffectsTab::onEffectKeyframeTableItemDoubleClicked(QTableWidgetItem* item)
+{
+    if (!item || !m_widgets.effectKeyframeTable ||
+        !(item->flags() & Qt::ItemIsEditable)) {
+        return;
+    }
+    m_widgets.effectKeyframeTable->editItem(item);
+}
+
+void EffectsTab::onEffectKeyframeTableCustomContextMenu(const QPoint& pos)
+{
+    if (!m_widgets.effectKeyframeTable) {
+        return;
+    }
+    int row = -1;
+    QTableWidgetItem* item =
+        ensureEffectContextRowSelected(m_widgets.effectKeyframeTable, pos, &row);
+    if (!item || row < 0) {
+        return;
+    }
+
+    QMenu menu;
+    const int deletableRowCount =
+        m_widgets.effectKeyframeTable->selectionModel()
+            ? m_widgets.effectKeyframeTable->selectionModel()->selectedRows().size()
+            : 0;
+    QAction* deleteRows = menu.addAction(
+        deletableRowCount == 1 ? QStringLiteral("Delete Row")
+                               : QStringLiteral("Delete Rows"));
+    deleteRows->setEnabled(deletableRowCount > 0);
+
+    QAction* chosen =
+        menu.exec(m_widgets.effectKeyframeTable->viewport()->mapToGlobal(pos));
+    if (chosen == deleteRows && deleteRows->isEnabled()) {
+        removeEffectEnabledKeyframe();
+    }
+}
+
+bool EffectsTab::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_widgets.effectKeyframeTable &&
+        event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Delete ||
+            keyEvent->key() == Qt::Key_Backspace) {
+            removeEffectEnabledKeyframe();
+            return true;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void EffectsTab::onApplyClicked()

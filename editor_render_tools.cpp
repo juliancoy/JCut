@@ -640,6 +640,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.incrementalExport =
         m_incrementalRenderCheckBox &&
         m_incrementalRenderCheckBox->isChecked();
+    request.masterOutputAudioDelayMs =
+        m_masterOutputAudioDelayMsSpin
+        ? m_masterOutputAudioDelayMsSpin->value()
+        : jcut::audio::kDefaultMasterOutputAudioDelayMs;
     request.instagramSafeAreaGuides =
         m_instagramSafeAreaGuidesCheckBox &&
         m_instagramSafeAreaGuidesCheckBox->isChecked();
@@ -737,6 +741,15 @@ void EditorWindow::persistExportRequestDefaults(const RenderRequest& request)
     if (m_outputHeightSpin && m_outputHeightSpin->value() != nextSize.height()) {
         QSignalBlocker blocker(m_outputHeightSpin);
         m_outputHeightSpin->setValue(nextSize.height());
+        changed = true;
+    }
+    const int nextAudioDelayMs =
+        jcut::audio::normalizedMasterOutputAudioDelayMs(
+            request.masterOutputAudioDelayMs);
+    if (m_masterOutputAudioDelayMsSpin &&
+        m_masterOutputAudioDelayMsSpin->value() != nextAudioDelayMs) {
+        QSignalBlocker blocker(m_masterOutputAudioDelayMsSpin);
+        m_masterOutputAudioDelayMsSpin->setValue(nextAudioDelayMs);
         changed = true;
     }
     if (m_preview && nextSize.isValid() && m_preview->outputSize() != nextSize) {

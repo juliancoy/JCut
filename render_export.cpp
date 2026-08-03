@@ -1735,7 +1735,13 @@ static RenderResult renderTimelineSingleFile(
     if (errorMessage.isEmpty() && audioState.enabled) {
         QElapsedTimer audioTimer;
         audioTimer.start();
-        encodeExportAudio(exportRanges, audioState, formatCtx, playbackSpeed, &errorMessage);
+        encodeExportAudio(
+            exportRanges,
+            audioState,
+            formatCtx,
+            playbackSpeed,
+            request.masterOutputAudioDelayMs,
+            &errorMessage);
         totalAudioStageMs += audioTimer.elapsed();
     }
 
@@ -2123,6 +2129,8 @@ QByteArray incrementalRenderSignature(const RenderRequest& request,
         {QStringLiteral("height"), request.outputSize.height()},
         {QStringLiteral("outputFps"), request.outputFps},
         {QStringLiteral("playbackSpeed"), request.playbackSpeed},
+        {QStringLiteral("masterOutputAudioDelayMs"),
+         request.masterOutputAudioDelayMs},
         {QStringLiteral("useProxyMedia"), request.useProxyMedia},
         {QStringLiteral("bypassGrading"), request.bypassGrading},
         {QStringLiteral("correctionsEnabled"), request.correctionsEnabled},
@@ -2678,7 +2686,10 @@ RenderResult renderTimelineToFile(
     const RenderRequest& request,
     const std::function<bool(const RenderProgress&)>& progressCallback)
 {
-    if (!request.incrementalExport) {
+    // A signed master delay is a continuous-stream operation. Rendering it
+    // independently in each resumable chunk would repeat the correction at
+    // every seam, so use the single-file path whenever it is active.
+    if (!request.incrementalExport || request.masterOutputAudioDelayMs != 0) {
         return renderTimelineSingleFile(request, progressCallback);
     }
 

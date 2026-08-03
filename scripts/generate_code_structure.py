@@ -25,13 +25,17 @@ from typing import Any, Iterable
 
 try:
     from scripts.clang_ast_structure import load_compile_commands, parse_translation_unit
+    from scripts.code_dependency_graph import build_dependency_graph
 except ModuleNotFoundError:
     from clang_ast_structure import load_compile_commands, parse_translation_unit
+    from code_dependency_graph import build_dependency_graph
 
 
-SCHEMA = "jcut_code_structure_v4"
+SCHEMA = "jcut_code_structure_v6"
 OWNERSHIP_SCHEMA = "jcut_code_ownership_v1"
-GENERATOR_VERSION = "4"
+GENERATOR_VERSION = "6"
+VIEWER_SCHEMA = "jcut_code_structure_viewer_v1"
+VIEWER_ASSET_NAMES = ("index.html", "app.css", "app.js")
 SOURCE_SUFFIXES = {
     ".c": "C",
     ".cc": "C++",
@@ -463,7 +467,13 @@ def python_structure(text: str, path: str) -> tuple[list[dict[str, Any]], list[s
                     dependencies.extend(alias.name for alias in node.names)
                 else:
                     dots = "." * node.level
-                    dependencies.append(dots + (node.module or ""))
+                    if node.module:
+                        dependencies.append(dots + node.module)
+                    else:
+                        dependencies.extend(
+                            dots + alias.name for alias in node.names
+                            if alias.name != "*"
+                        )
 
     visit(tree.body)
     return symbols, sorted(set(dependencies)), None
@@ -964,6 +974,12 @@ def analyze(
         else:
             symbols = ctags_symbols.get(relative.as_posix(), [])
             diagnostics.extend(diagnostics_for_path(ctags_warnings, relative.as_posix()))
+        if unmatched_constructs and parse_error is None:
+            parse_error = (
+                f"structural validation failed: {len(unmatched_constructs)} "
+                "unmatched or unterminated construct(s)"
+            )
+            diagnostics.append(parse_error)
         symbols.sort(key=lambda item: (item["line"], -item["span_lines"], item["name"]))
         suspicious_constructs.extend(
             {
@@ -1054,6 +1070,7 @@ def analyze(
         item["symbol_coverage_confidence"]["level"] for item in files
     )
     compilation_counts = Counter(item["compilation_status"] for item in files)
+    dependency_graph = build_dependency_graph(files)
     return {
         "schema": SCHEMA,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1083,6 +1100,7 @@ def analyze(
         },
         "parser_warnings": warnings,
         "clang_ast": clang_summary,
+        "dependency_graph": dependency_graph,
         "parse_errors": parse_errors,
         "ownership_manifest_schema": ownership_manifest.get("schema") if ownership_manifest else None,
         "files": files,
@@ -1093,10 +1111,87 @@ def markdown_escape(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def viewer_payload(index: dict[str, Any]) -> dict[str, Any]:
+    """Return the compact, browser-oriented projection of the canonical index."""
+    graph = index["dependency_graph"]
+    nodes = []
+    for item in index["files"]:
+        nodes.append({
+            "id": item["path"],
+            "path": item["path"],
+            "language": item["language"],
+            "owner": item.get("declared_owner"),
+            "layer": item.get("layer"),
+            "targets": item.get("build_targets", []),
+            "declared_target": item.get("declared_target"),
+            "lines": item["lines"],
+            "symbol_count": item["symbol_count"],
+            "largest_symbol_lines": item["largest_symbol_lines"],
+            "metrics": item["dependency_metrics"],
+            "parser": {
+                "used": item["parser"],
+                "parse_succeeded": item["parse_succeeded"],
+                "compilation_status": item["compilation_status"],
+                "diagnostics": item["diagnostics"],
+                "fallback_reason": item["parser_fallback_reason"],
+                "confidence": item["symbol_coverage_confidence"],
+                "unmatched": item["unmatched_constructs"],
+                "suspicious": item["suspicious_constructs"],
+            },
+            "symbols": [
+                {
+                    "name": symbol_item["name"],
+                    "qualified_name": symbol_item["qualified_name"],
+                    "kind": symbol_item["kind"],
+                    "line": symbol_item["line"],
+                    "end_line": symbol_item["end_line"],
+                    "type": symbol_item.get("type", ""),
+                    "signature": symbol_item.get("signature", ""),
+                }
+                for symbol_item in item["symbols"]
+            ],
+        })
+    return {
+        "schema": VIEWER_SCHEMA,
+        "generated_at": index["generated_at"],
+        "freshness": index["freshness"],
+        "summary": index["summary"],
+        "clang_ast": index["clang_ast"],
+        "graph_summary": graph["summary"],
+        "policy": graph["policy"],
+        "nodes": nodes,
+        "edges": graph["file_edges"],
+        "target_edges": graph["target_to_target_edges"],
+        "owner_edges": graph["cross_owner_dependencies"],
+        "findings": {
+            "include_cycles": graph["include_cycles"],
+            "layer_direction_violations": graph["layer_direction_violations"],
+            "dead_or_unreachable": graph["dead_or_unreachable_implementations"],
+            "duplicate_responsibility": graph["duplicate_responsibility_clusters"],
+        },
+    }
+
+
+def write_viewer(index: dict[str, Any], output_dir: Path) -> Path:
+    viewer_path = output_dir / "code_structure_graph.json"
+    viewer_path.write_text(
+        json.dumps(viewer_payload(index), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    asset_dir = Path(__file__).resolve().with_name("code_structure_viewer")
+    for asset_name in VIEWER_ASSET_NAMES:
+        source = asset_dir / asset_name
+        if not source.is_file():
+            raise RuntimeError(f"code structure viewer asset is missing: {source}")
+        shutil.copyfile(source, output_dir / asset_name)
+    return viewer_path
+
+
 def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
     summary = index["summary"]
     files = index["files"]
     freshness = index["freshness"]
+    graph = index["dependency_graph"]
     largest = sorted(files, key=lambda item: (-item["lines"], item["path"]))
     oversized = [item for item in largest if item["lines"] >= large_file_lines]
     lines = [
@@ -1104,6 +1199,7 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         "",
         "> Generated by `scripts/generate_code_structure.py`; do not edit by hand.",
         "> `code_structure.json` is the canonical full symbol index.",
+        "> Run `python3 scripts/serve_code_structure.py` for the interactive local viewer.",
         "",
         f"Generated: `{index['generated_at']}`  ",
         f"Corpus: **{summary['files']:,} files**, **{summary['lines']:,} lines**, "
@@ -1137,6 +1233,28 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         f"| Unmatched constructs | {summary['parser_health']['unmatched_constructs']:,} |",
         f"| Suspicious constructs | {summary['parser_health']['suspicious_constructs']:,} |",
         "",
+        "## Dependency graph",
+        "",
+        "| Metric | Count |",
+        "|---|---:|",
+        f"| Resolved file edges | {graph['summary']['resolved_file_edges']:,} |",
+        f"| Resolved include edges | {graph['summary']['resolved_include_edges']:,} |",
+        f"| Resolved symbol-call edges | {graph['summary']['resolved_call_edges']:,} |",
+        f"| Raw dependencies resolved | "
+        f"{graph['summary']['dependency_resolution'].get('resolved', 0):,} / "
+        f"{graph['summary']['raw_dependencies']:,} |",
+        f"| Symbol calls resolved | {graph['summary']['symbol_calls_resolved']:,} / "
+        f"{graph['summary']['symbol_calls']:,} |",
+        f"| Ambiguous dependencies | {graph['summary']['ambiguous_dependencies']:,} |",
+        f"| Include cycles | {graph['summary']['include_cycles']:,} |",
+        f"| Layer-direction violations | {graph['summary']['layer_direction_violations']:,} |",
+        f"| Target-to-target edges | {graph['summary']['target_edges']:,} |",
+        f"| Cross-owner file edges | {graph['summary']['cross_owner_file_edges']:,} |",
+        f"| Dead or unreachable implementations | "
+        f"{graph['summary']['dead_or_unreachable_implementations']:,} |",
+        f"| Duplicate responsibility clusters | "
+        f"{graph['summary']['duplicate_responsibility_clusters']:,} |",
+        "",
         "## Language inventory",
         "",
         "| Language | Files | Lines | Symbols |",
@@ -1147,6 +1265,65 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         lines.append(
             f"| {language} | {values['files']:,} | {values['lines']:,} | {values['symbols']:,} |"
         )
+    fan_out_files = sorted(
+        files,
+        key=lambda item: (-item["dependency_metrics"]["fan_out"], item["path"]),
+    )[:20]
+    lines.extend([
+        "",
+        "## Dependency hotspots",
+        "",
+        "| File | Fan-in | Fan-out | Include in/out | Call in/out |",
+        "|---|---:|---:|---:|---:|",
+    ])
+    for item in fan_out_files:
+        metrics = item["dependency_metrics"]
+        lines.append(
+            f"| `{item['path']}` | {metrics['fan_in']:,} | {metrics['fan_out']:,} | "
+            f"{metrics['include_fan_in']:,}/{metrics['include_fan_out']:,} | "
+            f"{metrics['call_fan_in']:,}/{metrics['call_fan_out']:,} |"
+        )
+    lines.extend([
+        "",
+        "## Architecture graph findings",
+        "",
+        "### Include cycles",
+        "",
+    ])
+    if graph["include_cycles"]:
+        for cycle in graph["include_cycles"]:
+            lines.append(f"- {cycle['edge_count']} edges: " + ", ".join(f"`{path}`" for path in cycle["files"]))
+    else:
+        lines.append("- None")
+    lines.extend(["", "### Layer-direction violations", ""])
+    if graph["layer_direction_violations"]:
+        lines.extend(["| Source | Layer | Target | Layer | Kinds |", "|---|---|---|---|---|"])
+        for item in graph["layer_direction_violations"][:100]:
+            lines.append(
+                f"| `{item['source']}` | {item['source_layer']} | `{item['target']}` | "
+                f"{item['target_layer']} | {', '.join(item['kinds'])} |"
+            )
+    else:
+        lines.append("None.")
+    lines.extend(["", "### Dead or unreachable implementations", ""])
+    if graph["dead_or_unreachable_implementations"]:
+        lines.extend(["| File | Status | Confidence | Reason |", "|---|---|---|---|"])
+        for item in graph["dead_or_unreachable_implementations"][:100]:
+            lines.append(
+                f"| `{item['path']}` | {item['status']} | {item['confidence']} | "
+                f"{item['reason']} |"
+            )
+    else:
+        lines.append("None.")
+    lines.extend(["", "### Duplicate responsibility clusters", ""])
+    if graph["duplicate_responsibility_clusters"]:
+        for cluster in graph["duplicate_responsibility_clusters"][:50]:
+            lines.append(
+                f"- similarity {cluster['max_similarity']:.3f}: "
+                + ", ".join(f"`{path}`" for path in cluster["files"])
+            )
+    else:
+        lines.append("- None")
     lines.extend([
         "",
         "## Ownership audit",
@@ -1226,14 +1403,16 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         "",
         "Every file below has a corresponding full `symbols` array in `code_structure.json`.",
         "",
-        "| File | Language | Lines | Symbols | Parser | Compile | Confidence | Diagnostics | Findings |",
-        "|---|---|---:|---:|---|---|---|---:|---:|",
+        "| File | Language | Lines | Symbols | Parser | Compile | Confidence | Fan-in | Fan-out | Diagnostics | Findings |",
+        "|---|---|---:|---:|---|---|---|---:|---:|---:|---:|",
     ])
     for item in sorted(files, key=lambda entry: entry["path"]):
         lines.append(
             f"| `{item['path']}` | {item['language']} | {item['lines']:,} | "
             f"{item['symbol_count']:,} | `{item['parser']}` | `{item['compilation_status']}` | "
-            f"`{item['symbol_coverage_confidence']['level']}` | {len(item['diagnostics']):,} | "
+            f"`{item['symbol_coverage_confidence']['level']}` | "
+            f"{item['dependency_metrics']['fan_in']:,} | {item['dependency_metrics']['fan_out']:,} | "
+            f"{len(item['diagnostics']):,} | "
             f"{len(item['unmatched_constructs']) + len(item['suspicious_constructs']):,} |"
         )
     lines.extend([
@@ -1245,6 +1424,10 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         "labeled `universal-ctags-fallback`.",
         "- Python definitions and nesting come from Python's AST. Shader function extents use a "
         "brace-aware outline parser. CSS is inventoried without selector-level symbols.",
+        "- Repository dependency edges resolve static includes/imports and Clang calls. Runtime "
+        "reflection, plugin loading, generated registrations, and string-based dispatch remain outside "
+        "the graph; unreachable files and duplicate responsibility clusters are review candidates, "
+        "not automatic deletion findings.",
         "- Generated, build, dependency, artifact, and vendored directories are excluded by default. "
         "Use `--include` to remove the default exclusions or `--exclude` to add project-specific ones.",
         "",
@@ -1342,8 +1525,10 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(render_markdown(index, args.large_file_lines), encoding="utf-8")
+    viewer_path = write_viewer(index, output_dir)
     print(f"Wrote {json_path}")
     print(f"Wrote {markdown_path}")
+    print(f"Wrote {viewer_path}")
     print(
         f"Indexed {index['summary']['files']} files, {index['summary']['lines']} lines, "
         f"and {index['summary']['symbols']} symbols"

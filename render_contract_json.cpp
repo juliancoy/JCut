@@ -50,6 +50,7 @@ nlohmann::json toJson(const RenderRequestCore& request)
         {"disableParallelImageWrite", request.disableParallelImageWrite},
         {"incrementalExport", request.incrementalExport},
         {"incrementalChunkFrames", request.incrementalChunkFrames},
+        {"masterOutputAudioDelayMs", request.masterOutputAudioDelayMs},
         {"instagramSafeAreaGuides", request.instagramSafeAreaGuides},
         {"alignmentGridGuides", request.alignmentGridGuides},
         {"transcriptPrependMs", request.transcriptPrependMs},

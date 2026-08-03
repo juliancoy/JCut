@@ -304,6 +304,7 @@ public:
     QPushButton *effectParameterKeyframeButton() const { return m_effectParameterKeyframeButton; }
     QPushButton *effectKeyframeRemoveButton() const { return m_effectKeyframeRemoveButton; }
     QLabel *effectKeyframesLabel() const { return m_effectKeyframesLabel; }
+    QTableWidget *effectKeyframeTable() const { return m_effectKeyframeTable; }
     QComboBox *effectModulationModeCombo() const { return m_effectModulationModeCombo; }
     QComboBox *effectModulationTargetCombo() const { return m_effectModulationTargetCombo; }
     QDoubleSpinBox *effectModulationAmountSpin() const { return m_effectModulationAmountSpin; }
@@ -519,6 +520,7 @@ public:
     QComboBox *renderBackendCombo() const { return m_renderBackendCombo; }
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
+    QSpinBox *masterOutputAudioDelayMsSpin() const { return m_masterOutputAudioDelayMsSpin; }
     OutputRenderControls outputRenderControls() const
     {
         return {m_incrementalRenderCheckBox,
@@ -672,6 +674,7 @@ private:
     QPushButton *m_effectParameterKeyframeButton = nullptr;
     QPushButton *m_effectKeyframeRemoveButton = nullptr;
     QLabel *m_effectKeyframesLabel = nullptr;
+    QTableWidget *m_effectKeyframeTable = nullptr;
     QComboBox *m_effectModulationModeCombo = nullptr;
     QComboBox *m_effectModulationTargetCombo = nullptr;
     QDoubleSpinBox *m_effectModulationAmountSpin = nullptr;
@@ -1076,6 +1079,7 @@ private:
     QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;

@@ -6,6 +6,7 @@
 #include "standalone_audio_mixer.h"
 #include "standalone_timeline_renderer.h"
 #include "timeline_fps.h"
+#include "master_output_audio_delay.h"
 
 #include <algorithm>
 #include <chrono>
@@ -205,6 +206,14 @@ const AVCodec* pickAudioEncoder(const std::string& requestedFormat)
 }
 
 struct AudioOutput {
+    explicit AudioOutput(int masterOutputAudioDelayMs)
+        : masterDelay(
+              masterOutputAudioDelayMs,
+              jcut::standalone_render::audio::kSampleRate,
+              jcut::standalone_render::audio::kChannelCount)
+    {
+    }
+
     AVStream* stream = nullptr;
     std::unique_ptr<AVCodecContext, AvCodecContextDeleter> codecContext;
     std::unique_ptr<SwrContext, SwrContextDeleter> resampler;
@@ -213,6 +222,14 @@ struct AudioOutput {
     std::int64_t nextPts = 0;
     std::vector<float> pendingInterleaved;
     std::size_t pendingFrameOffset = 0;
+    jcut::audio::MasterOutputAudioDelay masterDelay;
+
+    void appendRetimed(const float* samples, std::size_t frameCount)
+    {
+        const std::vector<float> shifted = masterDelay.process(samples, frameCount);
+        pendingInterleaved.insert(
+            pendingInterleaved.end(), shifted.begin(), shifted.end());
+    }
 
     bool initialize(AVFormatContext* formatContext,
                     const std::string& requestedFormat,
@@ -506,14 +523,9 @@ struct AudioOutput {
                     if (accepted <= 0) {
                         return true;
                     }
-                    pendingInterleaved.insert(
-                        pendingInterleaved.end(),
+                    appendRetimed(
                         samples,
-                        samples +
-                            static_cast<std::ptrdiff_t>(
-                                accepted *
-                                jcut::standalone_render::
-                                    audio::kChannelCount));
+                        static_cast<std::size_t>(accepted));
                     deliveredSamples += accepted;
                     return submitCompletePendingFrames(
                         formatContext, false, errorOut);
@@ -532,12 +544,11 @@ struct AudioOutput {
                     static_cast<std::size_t>(
                         outputSampleCount -
                         deliveredSamples);
-                pendingInterleaved.insert(
-                    pendingInterleaved.end(),
+                std::vector<float> silence(
                     missing *
-                        jcut::standalone_render::audio::
-                            kChannelCount,
+                        jcut::standalone_render::audio::kChannelCount,
                     0.0f);
+                appendRetimed(silence.data(), missing);
                 if (!submitCompletePendingFrames(
                         formatContext, false, errorOut)) {
                     return false;
@@ -555,10 +566,9 @@ struct AudioOutput {
                 document, cache, mixed.data(), sampleCount,
                 timelineStartSample + outputOffset, 1.0);
 
-            pendingInterleaved.insert(
-                pendingInterleaved.end(),
-                mixed.begin(),
-                mixed.end());
+            appendRetimed(
+                mixed.data(),
+                static_cast<std::size_t>(sampleCount));
             if (!submitCompletePendingFrames(
                     formatContext, false, errorOut)) {
                 return false;
@@ -572,6 +582,9 @@ struct AudioOutput {
         AVFormatContext* formatContext,
         std::string* errorOut)
     {
+        const std::vector<float> delayTail = masterDelay.finish();
+        pendingInterleaved.insert(
+            pendingInterleaved.end(), delayTail.begin(), delayTail.end());
         if (!submitCompletePendingFrames(
                 formatContext, true, errorOut)) {
             return false;
@@ -1070,7 +1083,8 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
         stream->time_base = codecContext->time_base;
 
         if (!decodedAudio.empty()) {
-            audioOutput = std::make_unique<AudioOutput>();
+            audioOutput = std::make_unique<AudioOutput>(
+                exportRequest.masterOutputAudioDelayMs);
             std::string audioError;
             if (!audioOutput->initialize(
                     formatContext.get(), exportRequest.outputFormat,

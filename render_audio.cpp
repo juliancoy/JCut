@@ -693,6 +693,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                        const AudioExportState& state,
                        AVFormatContext* formatCtx,
                        qreal playbackSpeed,
+                       int masterOutputAudioDelayMs,
                        QString* errorMessage) {
     if (!state.enabled || !state.codecCtx || !state.stream) {
         return true;
@@ -762,6 +763,10 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     const qreal speed = std::isfinite(playbackSpeed) && playbackSpeed > 0.001
         ? playbackSpeed
         : 1.0;
+    jcut::audio::MasterOutputAudioDelay masterDelay(
+        masterOutputAudioDelayMs,
+        kRenderAudioSampleRate,
+        kRenderAudioChannels);
 
     auto writeAvailableAudioFrames = [&](bool flushTail) -> bool {
         const int encoderFrameSamples = state.codecCtx->frame_size > 0 ? state.codecCtx->frame_size : 1024;
@@ -921,8 +926,14 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         while (queuedFrames < exportFrames) {
             const int framesThisChunk =
                 static_cast<int>(qMin<int64_t>(mixChunkFrames, exportFrames - queuedFrames));
-            if (!queueFloatAudioForEncode(exportMix.constData() + (queuedFrames * kRenderAudioChannels),
-                                          framesThisChunk)) {
+            const float* chunkSamples =
+                exportMix.constData() + (queuedFrames * kRenderAudioChannels);
+            const std::vector<float> shifted =
+                masterDelay.process(chunkSamples, framesThisChunk);
+            if (!shifted.empty() &&
+                !queueFloatAudioForEncode(
+                    shifted.data(),
+                    static_cast<int>(shifted.size() / kRenderAudioChannels))) {
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
                 ffmpeg_compat::uninitChannelLayout(&inputLayout);
@@ -931,6 +942,18 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
             }
             queuedFrames += framesThisChunk;
         }
+    }
+
+    const std::vector<float> delayTail = masterDelay.finish();
+    if (!delayTail.empty() &&
+        !queueFloatAudioForEncode(
+            delayTail.data(),
+            static_cast<int>(delayTail.size() / kRenderAudioChannels))) {
+        av_frame_free(&audioFrame);
+        av_audio_fifo_free(fifo);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
+        swr_free(&swr);
+        return false;
     }
 
     while (swr_get_delay(swr, kRenderAudioSampleRate) > 0) {

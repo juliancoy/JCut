@@ -951,6 +951,11 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
             valueOr(exportRequest, "incrementalExport", false);
         document->exportRequest.incrementalChunkFrames =
             valueOr(exportRequest, "incrementalChunkFrames", 900);
+        document->exportRequest.masterOutputAudioDelayMs =
+            jcut::audio::normalizedMasterOutputAudioDelayMs(valueOr(
+                exportRequest,
+                "masterOutputAudioDelayMs",
+                jcut::audio::kDefaultMasterOutputAudioDelayMs));
         document->exportRequest.instagramSafeAreaGuides =
             valueOr(exportRequest, "instagramSafeAreaGuides", false);
         document->exportRequest.alignmentGridGuides =
@@ -1040,6 +1045,11 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
     document->exportRequest.useProxyMedia = valueOr(root, "renderUseProxies", false);
     document->exportRequest.incrementalExport =
         valueOr(root, "incrementalExport", false);
+    document->exportRequest.masterOutputAudioDelayMs =
+        jcut::audio::normalizedMasterOutputAudioDelayMs(valueOr(
+            root,
+            "masterOutputAudioDelayMs",
+            jcut::audio::kDefaultMasterOutputAudioDelayMs));
     document->exportRequest.bypassGrading = !valueOr(root, "gradingPreview", true);
     document->exportRequest.correctionsEnabled = valueOr(root, "correctionsEnabled", true);
     document->exportRequest.createVideoFromImageSequence =
@@ -1993,6 +2003,8 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["lastRenderOutputPath"] = document.exportRequest.outputPath;
     root["renderUseProxies"] = document.exportRequest.useProxyMedia;
     root["incrementalExport"] = document.exportRequest.incrementalExport;
+    root["masterOutputAudioDelayMs"] =
+        document.exportRequest.masterOutputAudioDelayMs;
     root["createImageSequence"] = document.exportRequest.createVideoFromImageSequence;
     root["imageSequenceFormat"] = document.exportRequest.imageSequenceFormat.empty()
         ? std::string("jpeg")

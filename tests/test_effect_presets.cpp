@@ -2665,6 +2665,8 @@ void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
 
     TimelineClip::EffectParameterKeyframe first;
     first.frame = 0;
+    first.effectPreset = ClipEffectPreset::RecursiveZoomTile;
+    first.effectPresetKeyframed = true;
     first.effectRows = 4;
     first.effectSpeed = 1.0;
     first.effectScale = 1.0;
@@ -2673,6 +2675,7 @@ void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
 
     TimelineClip::EffectParameterKeyframe second = first;
     second.frame = 100;
+    second.effectPreset = ClipEffectPreset::HexagonalPrism;
     second.effectRows = 14;
     second.effectSpeed = 3.0;
     second.effectScale = 2.0;
@@ -2684,6 +2687,7 @@ void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
 
     const TimelineClip evaluated =
         evaluateClipEffectAnimationAtPosition(clip, 150.0);
+    QCOMPARE(evaluated.effectPreset, ClipEffectPreset::RecursiveZoomTile);
     QCOMPARE(evaluated.effectRows, 9);
     QCOMPARE(evaluated.effectSpeed, 2.0);
     QCOMPARE(evaluated.effectScale, 1.5);
@@ -2693,6 +2697,7 @@ void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
 
     const TimelineClip held =
         evaluateClipEffectAnimationAtPosition(clip, 220.0);
+    QCOMPARE(held.effectPreset, ClipEffectPreset::HexagonalPrism);
     QCOMPARE(held.effectRows, 14);
     QCOMPARE(held.effectSpeed, 3.0);
     QCOMPARE(held.effectScale, 2.0);
@@ -2703,6 +2708,9 @@ void TestEffectPresets::effectParameterKeyframesInterpolateAndPersist()
     const TimelineClip loaded = editor::clipFromJson(json);
     QCOMPARE(loaded.effectParameterKeyframes.size(), 2);
     QCOMPARE(loaded.effectParameterKeyframes.constLast().frame, int64_t{100});
+    QCOMPARE(loaded.effectParameterKeyframes.constLast().effectPreset,
+             ClipEffectPreset::HexagonalPrism);
+    QVERIFY(loaded.effectParameterKeyframes.constLast().effectPresetKeyframed);
     QCOMPARE(loaded.effectParameterKeyframes.constLast().effectRows, 14);
     QCOMPARE(loaded.effectParameterKeyframes.constLast().tilingPattern,
              ClipTilingPattern::Encircle);

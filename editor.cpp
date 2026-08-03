@@ -1072,6 +1072,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool incrementalExport =
         root.value(QStringLiteral("incrementalExport")).toBool(false);
+    const int masterOutputAudioDelayMs =
+        jcut::audio::normalizedMasterOutputAudioDelayMs(
+            root.value(QStringLiteral("masterOutputAudioDelayMs"))
+                .toInt(jcut::audio::kDefaultMasterOutputAudioDelayMs));
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
@@ -1682,6 +1686,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_incrementalRenderCheckBox) {
         QSignalBlocker block(m_incrementalRenderCheckBox);
         m_incrementalRenderCheckBox->setChecked(incrementalExport);
+    }
+    if (m_masterOutputAudioDelayMsSpin) {
+        QSignalBlocker block(m_masterOutputAudioDelayMsSpin);
+        m_masterOutputAudioDelayMsSpin->setValue(masterOutputAudioDelayMs);
     }
     if (m_createImageSequenceCheckBox) {
         QSignalBlocker block(m_createImageSequenceCheckBox);

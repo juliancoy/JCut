@@ -124,6 +124,9 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.disableParallelImageWrite = request.disableParallelImageWrite;
     qtRequest.incrementalExport = request.incrementalExport;
     qtRequest.incrementalChunkFrames = request.incrementalChunkFrames;
+    qtRequest.masterOutputAudioDelayMs =
+        audio::normalizedMasterOutputAudioDelayMs(
+            request.masterOutputAudioDelayMs);
     qtRequest.instagramSafeAreaGuides = request.instagramSafeAreaGuides;
     qtRequest.alignmentGridGuides = request.alignmentGridGuides;
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;

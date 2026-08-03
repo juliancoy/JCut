@@ -114,6 +114,7 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
     if (m_widgets.createImageSequenceCheckBox) {
         m_widgets.createImageSequenceCheckBox->setText("Create intermediate image sequence");
     }
+    updateIncrementalRenderAvailability();
 }
 
 void OutputTab::wire()
@@ -149,6 +150,12 @@ void OutputTab::wire()
     if (m_widgets.incrementalRenderCheckBox) {
         connect(m_widgets.incrementalRenderCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onIncrementalRenderToggled);
+    }
+    if (m_widgets.masterOutputAudioDelayMsSpin) {
+        connect(m_widgets.masterOutputAudioDelayMsSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                &OutputTab::onMasterOutputAudioDelayMsChanged);
     }
     if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
         connect(m_widgets.outputPlaybackCacheFallbackCheckBox, &QCheckBox::toggled,
@@ -366,6 +373,7 @@ void OutputTab::refresh()
     updateRangeSummary();
     updateRenderCacheStatus();
     updateRenderButtonState();
+    updateIncrementalRenderAvailability();
     m_updating = false;
 }
 
@@ -480,6 +488,10 @@ void OutputTab::renderFromInspector()
     request.incrementalExport =
         m_widgets.incrementalRenderCheckBox &&
         m_widgets.incrementalRenderCheckBox->isChecked();
+    request.masterOutputAudioDelayMs =
+        m_widgets.masterOutputAudioDelayMsSpin
+        ? m_widgets.masterOutputAudioDelayMsSpin->value()
+        : jcut::audio::kDefaultMasterOutputAudioDelayMs;
     request.instagramSafeAreaGuides =
         m_widgets.instagramSafeAreaGuidesCheckBox &&
         m_widgets.instagramSafeAreaGuidesCheckBox->isChecked();
@@ -582,6 +594,33 @@ void OutputTab::onIncrementalRenderToggled(bool checked)
     if (m_updating) return;
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onMasterOutputAudioDelayMsChanged(int value)
+{
+    Q_UNUSED(value);
+    if (m_updating) return;
+    updateIncrementalRenderAvailability();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::updateIncrementalRenderAvailability()
+{
+    if (!m_widgets.incrementalRenderCheckBox) {
+        return;
+    }
+    const bool delayIsZero =
+        !m_widgets.masterOutputAudioDelayMsSpin ||
+        m_widgets.masterOutputAudioDelayMsSpin->value() == 0;
+    m_widgets.incrementalRenderCheckBox->setEnabled(delayIsZero);
+    m_widgets.incrementalRenderCheckBox->setToolTip(
+        delayIsZero
+        ? QStringLiteral(
+              "Render resumable encoded chunks and assemble them into the final video.")
+        : QStringLiteral(
+              "Set Master Audio Delay to 0 ms to use incremental rendering. "
+              "A signed delay requires one continuous audio stream."));
 }
 
 void OutputTab::onOutputPlaybackCacheFallbackToggled(bool checked)

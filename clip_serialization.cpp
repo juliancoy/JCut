@@ -928,6 +928,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         for (const TimelineClip::EffectParameterKeyframe& keyframe : clip.effectParameterKeyframes) {
             effectParameterKeyframes.push_back(QJsonObject{
                 {QStringLiteral("frame"), static_cast<qint64>(keyframe.frame)},
+                {QStringLiteral("effectPreset"), effectPresetToJson(keyframe.effectPreset)},
+                {QStringLiteral("effectPresetKeyframed"), keyframe.effectPresetKeyframed},
                 {QStringLiteral("effectRows"), keyframe.effectRows},
                 {QStringLiteral("effectSpeed"), keyframe.effectSpeed},
                 {QStringLiteral("effectScale"), keyframe.effectScale},
@@ -941,6 +943,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
                 {QStringLiteral("tilingPattern"), tilingPatternToJson(keyframe.tilingPattern)},
                 {QStringLiteral("tilingSpacing"), keyframe.tilingSpacing},
                 {QStringLiteral("tilingWrap"), keyframe.tilingWrap},
+                {QStringLiteral("effectModulationMode"), keyframe.effectModulationMode},
+                {QStringLiteral("effectModulationTarget"), keyframe.effectModulationTarget},
+                {QStringLiteral("effectModulationAmount"), keyframe.effectModulationAmount},
+                {QStringLiteral("effectModulationRate"), keyframe.effectModulationRate},
+                {QStringLiteral("effectModulationPhaseDegrees"), keyframe.effectModulationPhaseDegrees},
+                {QStringLiteral("effectSkipAwareTiming"), keyframe.effectSkipAwareTiming},
                 {QStringLiteral("linearInterpolation"), keyframe.linearInterpolation}});
         }
         obj[QStringLiteral("effectParameterKeyframes")] = effectParameterKeyframes;
@@ -1566,6 +1574,11 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                     keyframeObj.value(QStringLiteral("frame"))
                         .toVariant().toLongLong()),
                 qMax<int64_t>(0, clip.durationFrames - 1));
+            keyframe.effectPreset =
+                effectPresetFromJson(keyframeObj.value(QStringLiteral("effectPreset")).toString(QStringLiteral("none")));
+            keyframe.effectPresetKeyframed =
+                keyframeObj.value(QStringLiteral("effectPresetKeyframed")).toBool(
+                    keyframeObj.contains(QStringLiteral("effectPreset")));
             keyframe.effectRows =
                 qBound(1, keyframeObj.value(QStringLiteral("effectRows")).toInt(32), 512);
             keyframe.effectSpeed = qBound<qreal>(
@@ -1591,6 +1604,18 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.tilingSpacing = qBound<qreal>(
                 0.1, keyframeObj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
             keyframe.tilingWrap = keyframeObj.value(QStringLiteral("tilingWrap")).toBool(true);
+            keyframe.effectModulationMode =
+                keyframeObj.value(QStringLiteral("effectModulationMode")).toString(QStringLiteral("none"));
+            keyframe.effectModulationTarget =
+                keyframeObj.value(QStringLiteral("effectModulationTarget")).toString(QStringLiteral("scale"));
+            keyframe.effectModulationAmount = qBound<qreal>(
+                -512.0, keyframeObj.value(QStringLiteral("effectModulationAmount")).toDouble(0.0), 512.0);
+            keyframe.effectModulationRate = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("effectModulationRate")).toDouble(1.0), 20.0);
+            keyframe.effectModulationPhaseDegrees = qBound<qreal>(
+                -360.0, keyframeObj.value(QStringLiteral("effectModulationPhaseDegrees")).toDouble(0.0), 360.0);
+            keyframe.effectSkipAwareTiming =
+                keyframeObj.value(QStringLiteral("effectSkipAwareTiming")).toBool(false);
             keyframe.linearInterpolation =
                 keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
             clip.effectParameterKeyframes.push_back(keyframe);

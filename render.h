@@ -14,6 +14,8 @@
 #include <QString>
 #include <QVector>
 
+#include "master_output_audio_delay.h"
+
 #include <functional>
 #include <atomic>
 #include <memory>
@@ -87,6 +89,7 @@ struct RenderRequest {
     std::shared_ptr<std::atomic_bool> gpuExportPreviewReady;
     bool incrementalExport = false;
     int incrementalChunkFrames = 900;
+    int masterOutputAudioDelayMs = jcut::audio::kDefaultMasterOutputAudioDelayMs;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
     bool losslessIntermediateAudio = false;

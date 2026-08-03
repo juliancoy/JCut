@@ -807,6 +807,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("incrementalExport")] =
         m_incrementalRenderCheckBox &&
         m_incrementalRenderCheckBox->isChecked();
+    root[QStringLiteral("masterOutputAudioDelayMs")] =
+        m_masterOutputAudioDelayMsSpin
+        ? m_masterOutputAudioDelayMsSpin->value()
+        : jcut::audio::kDefaultMasterOutputAudioDelayMs;
     root[QStringLiteral("createImageSequence")] =
         m_createImageSequenceCheckBox ? m_createImageSequenceCheckBox->isChecked() : false;
     root[QStringLiteral("imageSequenceFormat")] =

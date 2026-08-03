@@ -218,6 +218,8 @@ void EditorWindow::bindInspectorWidgets()
     m_removeVideoKeyframeButton = m_inspectorPane->removeVideoKeyframeButton();
     m_flipHorizontalButton = m_inspectorPane->flipHorizontalButton();
     m_outputWidthSpin = m_inspectorPane->outputWidthSpin();
+    m_masterOutputAudioDelayMsSpin =
+        m_inspectorPane->masterOutputAudioDelayMsSpin();
     m_outputHeightSpin = m_inspectorPane->outputHeightSpin();
     m_outputFpsSpin = m_inspectorPane->outputFpsSpin();
     m_exportStartSpin = m_inspectorPane->exportStartSpin();

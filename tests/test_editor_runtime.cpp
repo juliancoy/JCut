@@ -5693,6 +5693,7 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     request.playbackSpeed = 1.75;
     request.incrementalExport = false;
     request.incrementalChunkFrames = 1234;
+    request.masterOutputAudioDelayMs = -156;
     request.instagramSafeAreaGuides = true;
     request.alignmentGridGuides = true;
 
@@ -5702,6 +5703,7 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     QCOMPARE(core.playbackSpeed, 1.75);
     QCOMPARE(core.incrementalExport, false);
     QCOMPARE(core.incrementalChunkFrames, 1234);
+    QCOMPARE(core.masterOutputAudioDelayMs, -156);
     QCOMPARE(core.instagramSafeAreaGuides, true);
     QCOMPARE(core.alignmentGridGuides, true);
 }
@@ -5968,6 +5970,7 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     original.exportRequest.alignmentGridGuides = true;
     original.exportRequest.incrementalExport = true;
     original.exportRequest.incrementalChunkFrames = 1234;
+    original.exportRequest.masterOutputAudioDelayMs = 156;
     original.exportRequest.transcriptPrependMs = 210;
     original.exportRequest.transcriptPostpendMs = 95;
     original.exportRequest.transcriptOffsetMs = -30;
@@ -6001,6 +6004,7 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.alignmentGridGuides, true);
     QCOMPARE(reparsed->exportRequest.incrementalExport, true);
     QCOMPARE(reparsed->exportRequest.incrementalChunkFrames, 1234);
+    QCOMPARE(reparsed->exportRequest.masterOutputAudioDelayMs, 156);
     QCOMPARE(reparsed->exportRequest.transcriptPrependMs, 210);
     QCOMPARE(reparsed->exportRequest.transcriptPostpendMs, 95);
     QCOMPARE(reparsed->exportRequest.transcriptOffsetMs, -30);

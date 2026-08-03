@@ -114,6 +114,8 @@ TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromClip(
 {
     TimelineClip::EffectParameterKeyframe keyframe;
     keyframe.frame = frame;
+    keyframe.effectPreset = clip.effectPreset;
+    keyframe.effectPresetKeyframed = true;
     keyframe.effectRows = clip.effectRows;
     keyframe.effectSpeed = clip.effectSpeed;
     keyframe.effectScale = clip.effectScale;
@@ -127,6 +129,13 @@ TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromClip(
     keyframe.tilingPattern = clip.tilingPattern;
     keyframe.tilingSpacing = clip.tilingSpacing;
     keyframe.tilingWrap = clip.tilingWrap;
+    keyframe.effectModulationMode = clip.effectModulationMode;
+    keyframe.effectModulationTarget = clip.effectModulationTarget;
+    keyframe.effectModulationAmount = clip.effectModulationAmount;
+    keyframe.effectModulationRate = clip.effectModulationRate;
+    keyframe.effectModulationPhaseDegrees =
+        clip.effectModulationPhaseDegrees;
+    keyframe.effectSkipAwareTiming = clip.effectSkipAwareTiming;
     return keyframe;
 }
 
@@ -140,6 +149,8 @@ TimelineClip::EffectParameterKeyframe interpolatedEffectParameterKeyframe(
     };
     TimelineClip::EffectParameterKeyframe result = previous;
     result.frame = qRound64(lerp(previous.frame, next.frame));
+    result.effectPreset = previous.effectPreset;
+    result.effectPresetKeyframed = previous.effectPresetKeyframed;
     result.effectRows = qBound(
         1,
         qRound(lerp(previous.effectRows, next.effectRows)),
@@ -176,6 +187,22 @@ TimelineClip::EffectParameterKeyframe interpolatedEffectParameterKeyframe(
         1.0);
     result.tilingSpacing =
         qBound<qreal>(0.1, lerp(previous.tilingSpacing, next.tilingSpacing), 8.0);
+    result.effectModulationMode = previous.effectModulationMode;
+    result.effectModulationTarget = previous.effectModulationTarget;
+    result.effectModulationAmount = qBound<qreal>(
+        -512.0,
+        lerp(previous.effectModulationAmount, next.effectModulationAmount),
+        512.0);
+    result.effectModulationRate = qBound<qreal>(
+        0.0,
+        lerp(previous.effectModulationRate, next.effectModulationRate),
+        20.0);
+    result.effectModulationPhaseDegrees = qBound<qreal>(
+        -360.0,
+        lerp(previous.effectModulationPhaseDegrees,
+             next.effectModulationPhaseDegrees),
+        360.0);
+    result.effectSkipAwareTiming = previous.effectSkipAwareTiming;
     return result;
 }
 
@@ -183,6 +210,9 @@ void applyEffectParameterKeyframe(TimelineClip* clip,
                                   const TimelineClip::EffectParameterKeyframe& keyframe)
 {
     if (!clip) return;
+    if (keyframe.effectPresetKeyframed) {
+        clip->effectPreset = keyframe.effectPreset;
+    }
     clip->effectRows = qBound(1, keyframe.effectRows, 512);
     clip->effectSpeed = qBound<qreal>(-8.0, keyframe.effectSpeed, 8.0);
     clip->effectScale = qBound<qreal>(0.1, keyframe.effectScale, 8.0);
@@ -201,6 +231,15 @@ void applyEffectParameterKeyframe(TimelineClip* clip,
     clip->tilingPattern = keyframe.tilingPattern;
     clip->tilingSpacing = qBound<qreal>(0.1, keyframe.tilingSpacing, 8.0);
     clip->tilingWrap = keyframe.tilingWrap;
+    clip->effectModulationMode = keyframe.effectModulationMode;
+    clip->effectModulationTarget = keyframe.effectModulationTarget;
+    clip->effectModulationAmount =
+        qBound<qreal>(-512.0, keyframe.effectModulationAmount, 512.0);
+    clip->effectModulationRate =
+        qBound<qreal>(0.0, keyframe.effectModulationRate, 20.0);
+    clip->effectModulationPhaseDegrees = qBound<qreal>(
+        -360.0, keyframe.effectModulationPhaseDegrees, 360.0);
+    clip->effectSkipAwareTiming = keyframe.effectSkipAwareTiming;
 }
 }
 

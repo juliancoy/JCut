@@ -6,7 +6,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
+#include <QPoint>
 #include <QSpinBox>
+#include <QTableWidget>
 #include <functional>
 
 #include "editor_shared.h"
@@ -38,6 +40,7 @@ public:
         QPushButton* effectParameterKeyframeButton = nullptr;
         QPushButton* effectKeyframeRemoveButton = nullptr;
         QLabel* effectKeyframesLabel = nullptr;
+        QTableWidget* effectKeyframeTable = nullptr;
         QComboBox* effectModulationModeCombo = nullptr;
         QComboBox* effectModulationTargetCombo = nullptr;
         QDoubleSpinBox* effectModulationAmountSpin = nullptr;
@@ -69,6 +72,7 @@ public:
         std::function<void()> pushHistorySnapshot;
         std::function<bool(const TimelineClip&)> clipHasVisuals;
         std::function<int64_t()> currentTimelineFrame;
+        std::function<void(int64_t)> seekToTimelineFrame;
     };
 
     explicit EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -79,6 +83,7 @@ public:
     void applyEffectPreset(bool pushHistory = false);
     void setEffectEnabledKeyframe(bool enabled);
     void setEffectParameterKeyframe();
+    void upsertEffectParameterKeyframe(bool pushHistory, bool refreshAfter);
     void removeEffectEnabledKeyframe();
 
 signals:
@@ -89,8 +94,13 @@ private slots:
     void onEditingFinished();
     void onEffectPresetChanged(int index);
     void onEffectControlChanged();
+    void onEffectKeyframeTableItemClicked(QTableWidgetItem* item);
+    void onEffectKeyframeTableItemChanged(QTableWidgetItem* item);
+    void onEffectKeyframeTableItemDoubleClicked(QTableWidgetItem* item);
+    void onEffectKeyframeTableCustomContextMenu(const QPoint& pos);
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     Widgets m_widgets;
     Dependencies m_deps;
     bool m_updating = false;
