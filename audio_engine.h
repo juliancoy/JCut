@@ -99,7 +99,6 @@ public:
 
   void setSpeechFilterCurveStrength(qreal strength);
 
-  void setSpeechFilterRangeCrossfadeEnabled(bool enabled);
 
   void setPlaybackWarpMode(PlaybackAudioWarpMode mode);
 
@@ -425,8 +424,7 @@ private:
                             const QVector<SpeechSampleRange> &ranges,
                             int fadeSamples,
                             SpeechFilterFadeMode fadeMode,
-                            qreal curveStrength,
-                            bool crossfadeEnabled) const;
+                            qreal curveStrength) const;
 
   float calculateClipCrossfadeGain(int64_t samplePos, const TimelineClip &clip,
                                    int64_t clipStartSample,
@@ -695,7 +693,6 @@ private:
   std::atomic<int> m_speechFilterFadeMode{
       static_cast<int>(SpeechFilterFadeMode::Fade)};
   std::atomic<qreal> m_speechFilterCurveStrength{1.0};
-  std::atomic<bool> m_speechFilterRangeCrossfadeEnabled{false};
   std::atomic<bool> m_transcriptNormalizeEnabled{false};
   std::atomic<bool> m_amplifyEnabled{false};
   std::atomic<qreal> m_amplifyDb{0.0};

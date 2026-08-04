@@ -279,14 +279,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptPrependMsSpin = new QSpinBox(settingsContainer);
     m_transcriptPostpendMsSpin = new QSpinBox(settingsContainer);
     m_transcriptOffsetMsSpin = new QSpinBox(settingsContainer);
+    m_speechFilterEnabledCheckBox =
+        new QCheckBox(QStringLiteral("Enable Speech Filter"), settingsContainer);
     m_speechFilterFadeModeCombo = new QComboBox(settingsContainer);
     m_speechFilterFadeSamplesSpin = new QSpinBox(settingsContainer);
     m_speechFilterCurveStrengthSpin = new QDoubleSpinBox(settingsContainer);
-    m_speechFilterRangeCrossfadeCheckBox =
-        new QCheckBox(QStringLiteral("Boundary Crossfade"), settingsContainer);
     m_speechFilterFrameTransitionModeCombo = new QComboBox(settingsContainer);
-    m_speechFilterFrameCrossfadeCheckBox =
-        new QCheckBox(QStringLiteral("Frame Crossfade"), settingsContainer);
     m_speechFilterFrameCrossfadeFramesSpin = new QSpinBox(settingsContainer);
 
     m_transcriptPrependMsSpin->setRange(0, 10000);
@@ -305,7 +303,9 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptOffsetMsSpin->setToolTip(
         QStringLiteral("Signed timing offset applied to transcript word windows. Positive values display later; negative values display earlier."));
 
-    m_speechFilterFadeModeCombo->addItem(QStringLiteral("Passthrough"), QStringLiteral("none"));
+    m_speechFilterEnabledCheckBox->setChecked(false);
+    m_speechFilterEnabledCheckBox->setToolTip(
+        QStringLiteral("Enable transcript-based removal of excluded speech ranges."));
     m_speechFilterFadeModeCombo->addItem(
         AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::JumpCut),
         AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::JumpCut));
@@ -321,9 +321,11 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_speechFilterFadeModeCombo->addItem(
         AudioEngine::speechFilterFadeModeLabel(AudioEngine::SpeechFilterFadeMode::Crossfade),
         AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::Crossfade));
-    m_speechFilterFadeModeCombo->setCurrentIndex(0);
+    m_speechFilterFadeModeCombo->setCurrentIndex(
+        m_speechFilterFadeModeCombo->findData(
+            AudioEngine::speechFilterFadeModeToString(AudioEngine::SpeechFilterFadeMode::Fade)));
     m_speechFilterFadeModeCombo->setToolTip(
-        QStringLiteral("Speech filter mode; Passthrough leaves playback unchanged."));
+        QStringLiteral("Audio treatment at speech-filter segment boundaries."));
     m_speechFilterFadeSamplesSpin->setRange(0, 5000);
     m_speechFilterFadeSamplesSpin->setValue(300);
     m_speechFilterFadeSamplesSpin->setSuffix(QStringLiteral(" samples"));
@@ -335,10 +337,6 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_speechFilterCurveStrengthSpin->setValue(1.0);
     m_speechFilterCurveStrengthSpin->setToolTip(
         QStringLiteral("Curve exponent applied to Smooth Step and Smoother Step transitions."));
-    m_speechFilterRangeCrossfadeCheckBox->setChecked(false);
-    m_speechFilterRangeCrossfadeCheckBox->setToolTip(
-        QStringLiteral("Blend adjacent speech ranges instead of fading to silence. "
-                       "Does not change audio duration."));
     m_speechFilterFrameTransitionModeCombo->addItem(
         playbackFrameTransitionModeLabel(PlaybackFrameTransitionMode::Cut),
         playbackFrameTransitionModeToString(PlaybackFrameTransitionMode::Cut));
@@ -353,9 +351,6 @@ QWidget *InspectorPane::buildTranscriptTab()
         playbackFrameTransitionModeToString(PlaybackFrameTransitionMode::SmootherStepSpeedThrough));
     m_speechFilterFrameTransitionModeCombo->setToolTip(
         QStringLiteral("Visual transition for speech-filter segment gaps."));
-    m_speechFilterFrameCrossfadeCheckBox->setChecked(false);
-    m_speechFilterFrameCrossfadeCheckBox->setToolTip(
-        QStringLiteral("Blend the outgoing speech-filter video frames into the incoming segment frames."));
     m_speechFilterFrameCrossfadeFramesSpin->setRange(0, 240);
     m_speechFilterFrameCrossfadeFramesSpin->setValue(6);
     m_speechFilterFrameCrossfadeFramesSpin->setSuffix(QStringLiteral(" frames"));
@@ -460,25 +455,26 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     auto speechTimingSection = createDisclosureSection(settingsContainer, QStringLiteral("Speech Filter Timing"), false);
     auto* speechTimingForm = makeSettingsForm();
-    speechTimingForm->addRow(QStringLiteral("Mode"), m_speechFilterFadeModeCombo);
     speechTimingForm->addRow(QStringLiteral("Time Offset"), m_transcriptOffsetMsSpin);
     speechTimingForm->addRow(QStringLiteral("Prepend Time"), m_transcriptPrependMsSpin);
     speechTimingForm->addRow(QStringLiteral("Postpend Time"), m_transcriptPostpendMsSpin);
     speechTimingSection.body->addLayout(speechTimingForm);
 
-    auto audioTransitionSection = createDisclosureSection(settingsContainer, QStringLiteral("Speech Filter Audio"), false);
+    auto audioTransitionSection = createDisclosureSection(settingsContainer, QStringLiteral("Audio Fade"), false);
     auto* audioTransitionForm = makeSettingsForm();
-    audioTransitionForm->addRow(QStringLiteral("Audio Fade"), m_speechFilterFadeSamplesSpin);
+    audioTransitionForm->addRow(QStringLiteral("Mode"), m_speechFilterFadeModeCombo);
+    audioTransitionForm->addRow(QStringLiteral("Length"), m_speechFilterFadeSamplesSpin);
     audioTransitionForm->addRow(QStringLiteral("Curve Strength"), m_speechFilterCurveStrengthSpin);
     audioTransitionSection.body->addLayout(audioTransitionForm);
 
-    auto frameTransitionSection = createDisclosureSection(settingsContainer, QStringLiteral("Frame Transition"), false);
+    auto frameTransitionSection = createDisclosureSection(settingsContainer, QStringLiteral("Video Transition"), false);
     auto* frameTransitionForm = makeSettingsForm();
     frameTransitionForm->addRow(QStringLiteral("Mode"), m_speechFilterFrameTransitionModeCombo);
     frameTransitionForm->addRow(QStringLiteral("Length"), m_speechFilterFrameCrossfadeFramesSpin);
     frameTransitionSection.body->addLayout(frameTransitionForm);
 
     // --- Assemble settings layout ---
+    settingsLayout->addWidget(m_speechFilterEnabledCheckBox);
     settingsLayout->addWidget(sourceSection.container);
     settingsLayout->addWidget(placementSection.container);
     settingsLayout->addWidget(typographySection.container);
@@ -486,8 +482,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     settingsLayout->addWidget(contentSection.container);
     settingsLayout->addWidget(speakerTitlesSection.container);
     settingsLayout->addWidget(speechTimingSection.container);
-    settingsLayout->addWidget(frameTransitionSection.container);
     settingsLayout->addWidget(audioTransitionSection.container);
+    settingsLayout->addWidget(frameTransitionSection.container);
     settingsLayout->addStretch(1);
 
     auto *settingsScroll = new QScrollArea(page);

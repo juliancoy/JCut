@@ -583,12 +583,11 @@ public:
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
     QSpinBox *transcriptPostpendMsSpin() const { return m_transcriptPostpendMsSpin; }
     QSpinBox *transcriptOffsetMsSpin() const { return m_transcriptOffsetMsSpin; }
+    QCheckBox *speechFilterEnabledCheckBox() const { return m_speechFilterEnabledCheckBox; }
     QComboBox *speechFilterFadeModeCombo() const { return m_speechFilterFadeModeCombo; }
     QSpinBox *speechFilterFadeSamplesSpin() const { return m_speechFilterFadeSamplesSpin; }
     QDoubleSpinBox *speechFilterCurveStrengthSpin() const { return m_speechFilterCurveStrengthSpin; }
-    QCheckBox *speechFilterRangeCrossfadeCheckBox() const { return m_speechFilterRangeCrossfadeCheckBox; }
     QComboBox *speechFilterFrameTransitionModeCombo() const { return m_speechFilterFrameTransitionModeCombo; }
-    QCheckBox *speechFilterFrameCrossfadeCheckBox() const { return m_speechFilterFrameCrossfadeCheckBox; }
     QSpinBox *speechFilterFrameCrossfadeFramesSpin() const { return m_speechFilterFrameCrossfadeFramesSpin; }
     QComboBox *playbackClockSourceCombo() const { return m_playbackClockSourceCombo; }
     QComboBox *playbackAudioWarpModeCombo() const { return m_playbackAudioWarpModeCombo; }
@@ -1164,12 +1163,11 @@ private:
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QSpinBox *m_transcriptOffsetMsSpin = nullptr;
+    QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QComboBox *m_speechFilterFadeModeCombo = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QDoubleSpinBox *m_speechFilterCurveStrengthSpin = nullptr;
-    QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
     QComboBox *m_speechFilterFrameTransitionModeCombo = nullptr;
-    QCheckBox *m_speechFilterFrameCrossfadeCheckBox = nullptr;
     QSpinBox *m_speechFilterFrameCrossfadeFramesSpin = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;

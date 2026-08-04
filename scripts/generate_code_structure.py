@@ -13,27 +13,39 @@ import ast
 import concurrent.futures
 import datetime as dt
 import fnmatch
+import gzip
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from scripts.clang_ast_structure import load_compile_commands, parse_translation_unit
+    from scripts.clang_ast_structure import clang_version, load_compile_commands, parse_translation_unit
     from scripts.code_dependency_graph import build_dependency_graph
 except ModuleNotFoundError:
-    from clang_ast_structure import load_compile_commands, parse_translation_unit
+    from clang_ast_structure import clang_version, load_compile_commands, parse_translation_unit
     from code_dependency_graph import build_dependency_graph
 
 
-SCHEMA = "jcut_code_structure_v6"
+SCHEMA = "jcut_code_structure_v7"
 OWNERSHIP_SCHEMA = "jcut_code_ownership_v1"
-GENERATOR_VERSION = "6"
+GENERATOR_VERSION = "7"
+CLANG_AST_CACHE_SCHEMA = "jcut_clang_ast_cache_v2"
+CLANG_ENVIRONMENT_KEYS = (
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "OBJC_INCLUDE_PATH",
+    "SDKROOT",
+)
 VIEWER_SCHEMA = "jcut_code_structure_viewer_v1"
 VIEWER_ASSET_NAMES = ("index.html", "app.css", "app.js")
 SOURCE_SUFFIXES = {
@@ -763,11 +775,112 @@ def run_ctags(root: Path, paths: list[Path]) -> tuple[dict[str, list[dict[str, A
     return by_path, warnings
 
 
+def default_clang_jobs() -> int:
+    available = os.cpu_count() or 1
+    return min(12, max(1, (available * 3) // 4))
+
+
+def clang_cache_key(
+    command: Any,
+    root: Path,
+    indexed_paths_sha256: str,
+    extractor_sha256: str,
+    libclang_version: str,
+) -> str:
+    payload = {
+        "schema": CLANG_AST_CACHE_SCHEMA,
+        "source": str(Path(command.file).resolve()),
+        "root": str(root.resolve()),
+        "indexed_paths_sha256": indexed_paths_sha256,
+        "directory": command.directory,
+        "arguments": list(command.arguments),
+        "extractor_sha256": extractor_sha256,
+        "libclang_version": libclang_version,
+        "environment": {key: os.environ.get(key, "") for key in CLANG_ENVIRONMENT_KEYS},
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def cached_file_sha256(path: str, memo: dict[str, str | None]) -> str | None:
+    if path not in memo:
+        memo[path] = sha256_file(Path(path))
+    return memo[path]
+
+
+def load_clang_cache_result(
+    cache_path: Path,
+    cache_key: str,
+    file_hashes: dict[str, str | None],
+) -> dict[str, Any] | None:
+    if not cache_path.is_file():
+        return None
+    try:
+        with gzip.open(cache_path, "rt", encoding="utf-8") as handle:
+            entry = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if entry.get("schema") != CLANG_AST_CACHE_SCHEMA or entry.get("key") != cache_key:
+        return None
+    dependencies = entry.get("dependencies")
+    result = entry.get("result")
+    if not isinstance(dependencies, dict) or not dependencies or not isinstance(result, dict):
+        return None
+    for path, expected_sha256 in dependencies.items():
+        if cached_file_sha256(path, file_hashes) != expected_sha256:
+            return None
+    return result
+
+
+def write_clang_cache_result(
+    cache_path: Path,
+    cache_key: str,
+    result: dict[str, Any],
+    file_hashes: dict[str, str | None],
+) -> bool:
+    if result.get("error"):
+        return False
+    included_files = result.get("included_files")
+    if not isinstance(included_files, list) or not included_files:
+        return False
+    dependencies = {
+        path: cached_file_sha256(path, file_hashes)
+        for path in sorted(set(included_files))
+    }
+    if any(digest is None for digest in dependencies.values()):
+        return False
+    cached_result = dict(result)
+    cached_result.pop("included_files", None)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=cache_path.parent, prefix=".clang-ast-", suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        with gzip.open(temporary_path, "wt", encoding="utf-8", compresslevel=6) as handle:
+            json.dump({
+                "schema": CLANG_AST_CACHE_SCHEMA,
+                "key": cache_key,
+                "dependencies": dependencies,
+                "result": cached_result,
+            }, handle, separators=(",", ":"))
+        os.replace(temporary_path, cache_path)
+        return True
+    except OSError:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+        return False
+
+
 def run_clang_ast(
     root: Path,
     paths: list[Path],
     compile_commands_path: Path,
     jobs: int,
+    cache_dir: Path | None = None,
 ) -> tuple[
     dict[str, list[dict[str, Any]]],
     dict[str, list[dict[str, Any]]],
@@ -775,14 +888,18 @@ def run_clang_ast(
     dict[str, str],
     dict[str, list[str]],
     list[str],
-    dict[str, int],
+    dict[str, Any],
 ]:
+    started_at = time.perf_counter()
     indexed_paths = {
         path.as_posix() for path in paths
         if language_for(path) in {"C", "C++", "CUDA"}
     }
     commands = load_compile_commands(compile_commands_path, root, indexed_paths)
     indexed_paths_tuple = tuple(sorted(indexed_paths))
+    indexed_paths_sha256 = hashlib.sha256(
+        "\0".join(indexed_paths_tuple).encode("utf-8")
+    ).hexdigest()
     symbols_by_path: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
     calls_by_path: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
     covered_paths: set[str] = set()
@@ -790,6 +907,26 @@ def run_clang_ast(
     diagnostics_by_path: dict[str, list[str]] = defaultdict(list)
     warnings: list[str] = []
     succeeded = 0
+    cache_hits = 0
+    cache_invalidated = 0
+    cache_writes = 0
+    file_hashes: dict[str, str | None] = {}
+    extractor_path = Path(__file__).with_name("clang_ast_structure.py")
+    extractor_sha256 = sha256_file(extractor_path) or "missing"
+    try:
+        libclang_version = clang_version()
+    except (OSError, RuntimeError) as error:
+        libclang_version = f"unavailable:{error}"
+    command_cache_keys = {
+        command.file: clang_cache_key(
+            command,
+            root,
+            indexed_paths_sha256,
+            extractor_sha256,
+            libclang_version,
+        )
+        for command in commands
+    }
 
     def consume(result: dict[str, Any], source: str) -> None:
         nonlocal succeeded
@@ -827,11 +964,40 @@ def run_clang_ast(
             diagnostics_by_path[source_path].append(diagnostic)
             warnings.append(f"Clang AST diagnostic for {source_path}: {diagnostic}")
 
+    commands_to_parse = []
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    for command in commands:
+        cache_key = command_cache_keys[command.file]
+        cache_path = cache_dir / f"{cache_key}.json.gz" if cache_dir is not None else None
+        cached = (
+            load_clang_cache_result(cache_path, cache_key, file_hashes)
+            if cache_path is not None else None
+        )
+        if cached is not None:
+            cache_hits += 1
+            consume(cached, command.file)
+        else:
+            if cache_path is not None and cache_path.exists():
+                cache_invalidated += 1
+            commands_to_parse.append(command)
+
+    def consume_parsed(result: dict[str, Any], command: Any) -> None:
+        nonlocal cache_writes
+        consume(result, command.file)
+        if cache_dir is None:
+            return
+        cache_key = command_cache_keys[command.file]
+        if write_clang_cache_result(
+            cache_dir / f"{cache_key}.json.gz", cache_key, result, file_hashes
+        ):
+            cache_writes += 1
+
     if jobs <= 1:
-        for command in commands:
-            consume(
+        for command in commands_to_parse:
+            consume_parsed(
                 parse_translation_unit(command, str(root), indexed_paths_tuple),
-                command.file,
+                command,
             )
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
@@ -842,7 +1008,7 @@ def run_clang_ast(
                     str(root),
                     indexed_paths_tuple,
                 ): command
-                for command in commands
+                for command in commands_to_parse
             }
             for future in concurrent.futures.as_completed(pending):
                 command = pending[future]
@@ -850,7 +1016,7 @@ def run_clang_ast(
                     result = future.result()
                 except Exception as error:
                     result = {"source": command.file, "error": f"worker failed: {error}"}
-                consume(result, command.file)
+                consume_parsed(result, command)
 
     return (
         {path: list(entries.values()) for path, entries in symbols_by_path.items()},
@@ -864,6 +1030,14 @@ def run_clang_ast(
             "translation_units_succeeded": succeeded,
             "translation_units_failed": len(failures),
             "files_covered": len(covered_paths),
+            "jobs": jobs,
+            "cache_enabled": cache_dir is not None,
+            "cache_hits": cache_hits,
+            "cache_misses": len(commands_to_parse),
+            "cache_entries_invalidated": cache_invalidated,
+            "cache_writes": cache_writes,
+            "dependency_files_hashed": len(file_hashes),
+            "duration_seconds": round(time.perf_counter() - started_at, 3),
         },
     )
 
@@ -919,6 +1093,7 @@ def analyze(
     build_targets: dict[str, list[str]] | None = None,
     compile_commands_path: Path | None = None,
     clang_jobs: int = 1,
+    clang_cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     ctags_paths = [path for path in paths
                    if language_for(path) not in {"Python", "GLSL", "CSS"}]
@@ -934,7 +1109,13 @@ def analyze(
         clang_diagnostics,
         clang_warnings,
         clang_summary,
-    ) = run_clang_ast(root, paths, compile_commands_path, max(1, clang_jobs))
+    ) = run_clang_ast(
+        root,
+        paths,
+        compile_commands_path,
+        max(1, clang_jobs),
+        clang_cache_dir,
+    )
     warnings.extend(clang_warnings)
     files: list[dict[str, Any]] = []
     parse_errors: list[dict[str, str]] = []
@@ -1273,6 +1454,11 @@ def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
         f"| Diagnostics | {summary['parser_health']['diagnostics']:,} |",
         f"| Unmatched constructs | {summary['parser_health']['unmatched_constructs']:,} |",
         f"| Suspicious constructs | {summary['parser_health']['suspicious_constructs']:,} |",
+        f"| Clang translation units | {index['clang_ast']['translation_units_succeeded']:,} / "
+        f"{index['clang_ast']['compile_commands']:,} |",
+        f"| Clang cache hits | {index['clang_ast']['cache_hits']:,} |",
+        f"| Clang cache misses | {index['clang_ast']['cache_misses']:,} |",
+        f"| Clang AST duration | {index['clang_ast']['duration_seconds']:.3f} seconds |",
         "",
         "## Dependency graph",
         "",
@@ -1489,8 +1675,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ninja-file", type=Path, default=Path("build/build.ninja"))
     parser.add_argument("--compile-commands", type=Path,
                         default=Path("build/compile_commands.json"))
-    parser.add_argument("--clang-jobs", type=int, default=4,
-                        help="parallel libclang translation units (default: 4)")
+    parser.add_argument(
+        "--clang-jobs", type=int, default=0,
+        help="parallel libclang translation units (default: 75%% of CPUs, capped at 12)",
+    )
+    parser.add_argument(
+        "--clang-cache-dir", type=Path,
+        default=Path(".cache/code-structure/clang-ast"),
+        help="persistent dependency-validated Clang AST cache",
+    )
+    parser.add_argument(
+        "--no-clang-cache", action="store_true",
+        help="disable the persistent Clang AST cache",
+    )
     parser.add_argument("--check-ownership", action="store_true",
                         help="fail when ownership violations are present")
     parser.add_argument("--check-current", action="store_true",
@@ -1524,6 +1721,10 @@ def main(argv: list[str] | None = None) -> int:
     compile_commands_path = args.compile_commands
     if not compile_commands_path.is_absolute():
         compile_commands_path = root / compile_commands_path
+    clang_cache_dir = None if args.no_clang_cache else args.clang_cache_dir
+    if clang_cache_dir is not None and not clang_cache_dir.is_absolute():
+        clang_cache_dir = root / clang_cache_dir
+    clang_jobs = args.clang_jobs if args.clang_jobs > 0 else default_clang_jobs()
     json_path = output_dir / "code_structure.json"
     markdown_path = output_dir / "code_structure.md"
     if args.check_current:
@@ -1561,7 +1762,8 @@ def main(argv: list[str] | None = None) -> int:
         ownership_manifest,
         build_targets,
         compile_commands_path,
-        args.clang_jobs,
+        clang_jobs,
+        clang_cache_dir,
     )
     index["freshness"] = freshness_metadata(
         root,
@@ -1580,6 +1782,15 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Indexed {index['summary']['files']} files, {index['summary']['lines']} lines, "
         f"and {index['summary']['symbols']} symbols"
+    )
+    clang_summary = index["clang_ast"]
+    print(
+        "Clang AST: "
+        f"{clang_summary['translation_units_succeeded']}/"
+        f"{clang_summary['compile_commands']} translation units, "
+        f"cache {clang_summary['cache_hits']} hit(s) / "
+        f"{clang_summary['cache_misses']} miss(es), "
+        f"{clang_summary['duration_seconds']:.3f}s with {clang_summary['jobs']} worker(s)"
     )
     if index["summary"]["parse_errors"]:
         print(f"Parse errors: {index['summary']['parse_errors']}", file=sys.stderr)

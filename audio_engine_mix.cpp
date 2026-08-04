@@ -553,9 +553,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
             m_speechFilterFadeSamples.load(std::memory_order_acquire),
             static_cast<SpeechFilterFadeMode>(
                 m_speechFilterFadeMode.load(std::memory_order_acquire)),
-            m_speechFilterCurveStrength.load(std::memory_order_acquire),
-            m_speechFilterRangeCrossfadeEnabled.load(
-                std::memory_order_acquire));
+            m_speechFilterCurveStrength.load(std::memory_order_acquire));
         primarySpeechGain = blend.primaryGain;
         secondarySpeechGain = blend.secondaryGain;
         secondaryTimelineSample = blend.secondaryTimelineSample;

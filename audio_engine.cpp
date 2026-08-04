@@ -278,10 +278,6 @@ void AudioEngine::setSpeechFilterCurveStrength(qreal strength) {
                                     std::memory_order_release);
 }
 
-void AudioEngine::setSpeechFilterRangeCrossfadeEnabled(bool enabled) {
-  m_speechFilterRangeCrossfadeEnabled.store(enabled, std::memory_order_release);
-}
-
 void AudioEngine::setPlaybackWarpMode(PlaybackAudioWarpMode mode) {
   const int newMode = static_cast<int>(mode);
   const int oldMode =

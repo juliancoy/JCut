@@ -40,6 +40,15 @@ class CXSourceRange(ctypes.Structure):
     ]
 
 
+CXInclusionVisitor = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_void_p,
+    ctypes.POINTER(CXSourceLocation),
+    ctypes.c_uint,
+    ctypes.c_void_p,
+)
+
+
 @dataclass(frozen=True)
 class CompileCommand:
     file: str
@@ -177,6 +186,12 @@ def configure_libclang() -> ctypes.CDLL:
     lib.clang_formatDiagnostic.argtypes = [ctypes.c_void_p, ctypes.c_uint]
     lib.clang_formatDiagnostic.restype = CXString
     lib.clang_disposeDiagnostic.argtypes = [ctypes.c_void_p]
+    lib.clang_getClangVersion.restype = CXString
+    lib.clang_getInclusions.argtypes = [
+        ctypes.c_void_p,
+        CXInclusionVisitor,
+        ctypes.c_void_p,
+    ]
     return lib
 
 
@@ -185,6 +200,11 @@ def cx_text(lib: ctypes.CDLL, value: CXString) -> str:
     result = raw.decode("utf-8", "replace") if raw else ""
     lib.clang_disposeString(value)
     return result
+
+
+def clang_version() -> str:
+    lib = configure_libclang()
+    return cx_text(lib, lib.clang_getClangVersion())
 
 
 def cursor_kind(lib: ctypes.CDLL, cursor: CXCursor) -> str:
@@ -346,6 +366,21 @@ def parse_translation_unit(
             "error": "; ".join(diagnostics) or "Clang reported compilation errors",
         }
 
+    included_files = {str(Path(command.file).resolve())}
+
+    def visit_inclusion(
+        included_file: ctypes.c_void_p,
+        _inclusion_stack: ctypes.POINTER(CXSourceLocation),
+        _include_length: int,
+        _data: ctypes.c_void_p,
+    ) -> None:
+        filename = cx_text(lib, lib.clang_getFileName(included_file))
+        if filename and Path(filename).is_file():
+            included_files.add(str(Path(filename).resolve()))
+
+    inclusion_visitor = CXInclusionVisitor(visit_inclusion)
+    lib.clang_getInclusions(translation_unit, inclusion_visitor, None)
+
     symbols: dict[str, list[dict[str, Any]]] = {}
     calls: dict[str, list[dict[str, Any]]] = {}
     covered_paths: set[str] = set()
@@ -447,4 +482,5 @@ def parse_translation_unit(
         "calls": calls,
         "covered_paths": sorted(covered_paths),
         "diagnostics": diagnostics,
+        "included_files": sorted(included_files),
     }

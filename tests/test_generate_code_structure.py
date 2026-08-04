@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "generate_code_structure.py"
@@ -445,6 +446,86 @@ struct Worker {
             self.assertTrue(any(name.endswith("connect") for name in call_names))
             self.assertTrue(any(name.endswith("runPass") for name in call_names))
             self.assertTrue(any(name.endswith("QStringLiteral") for name in call_names))
+
+    def test_clang_ast_cache_hits_and_invalidates_transitive_header_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            header = root / "sample.h"
+            source = root / "sample.cpp"
+            header.write_text("inline int value() { return 1; }\n", encoding="utf-8")
+            source.write_text(
+                '#include "sample.h"\nint answer() { return value(); }\n',
+                encoding="utf-8",
+            )
+            database = root / "compile_commands.json"
+            database.write_text(
+                json.dumps([{
+                    "directory": str(root),
+                    "command": f"clang++ -std=c++20 -c {source} -o sample.o",
+                    "file": str(source),
+                }]),
+                encoding="utf-8",
+            )
+            cache = root / "cache"
+
+            first = generator.analyze(
+                root,
+                [Path("sample.cpp"), Path("sample.h")],
+                (),
+                compile_commands_path=database,
+                clang_jobs=1,
+                clang_cache_dir=cache,
+            )
+            self.assertEqual(first["clang_ast"]["cache_hits"], 0)
+            self.assertEqual(first["clang_ast"]["cache_misses"], 1)
+            self.assertEqual(first["clang_ast"]["cache_writes"], 1)
+
+            second = generator.analyze(
+                root,
+                [Path("sample.cpp"), Path("sample.h")],
+                (),
+                compile_commands_path=database,
+                clang_jobs=1,
+                clang_cache_dir=cache,
+            )
+            self.assertEqual(second["clang_ast"]["cache_hits"], 1)
+            self.assertEqual(second["clang_ast"]["cache_misses"], 0)
+            self.assertEqual(second["clang_ast"]["translation_units_succeeded"], 1)
+
+            header.write_text("inline int value() { return 2; }\n", encoding="utf-8")
+            third = generator.analyze(
+                root,
+                [Path("sample.cpp"), Path("sample.h")],
+                (),
+                compile_commands_path=database,
+                clang_jobs=1,
+                clang_cache_dir=cache,
+            )
+            self.assertEqual(third["clang_ast"]["cache_hits"], 0)
+            self.assertEqual(third["clang_ast"]["cache_misses"], 1)
+            self.assertEqual(third["clang_ast"]["cache_entries_invalidated"], 1)
+
+            (root / "newly_indexed.h").write_text(
+                "struct NewlyIndexed {};\n", encoding="utf-8"
+            )
+            corpus_changed = generator.analyze(
+                root,
+                [Path("newly_indexed.h"), Path("sample.cpp"), Path("sample.h")],
+                (),
+                compile_commands_path=database,
+                clang_jobs=1,
+                clang_cache_dir=cache,
+            )
+            self.assertEqual(corpus_changed["clang_ast"]["cache_hits"], 0)
+            self.assertEqual(corpus_changed["clang_ast"]["cache_misses"], 1)
+
+    def test_default_clang_jobs_uses_three_quarters_of_cpus_with_cap(self) -> None:
+        with mock.patch.object(generator.os, "cpu_count", return_value=16):
+            self.assertEqual(generator.default_clang_jobs(), 12)
+        with mock.patch.object(generator.os, "cpu_count", return_value=8):
+            self.assertEqual(generator.default_clang_jobs(), 6)
+        with mock.patch.object(generator.os, "cpu_count", return_value=None):
+            self.assertEqual(generator.default_clang_jobs(), 1)
 
     def test_outline_references_nested_symbol_indices(self) -> None:
         symbols, _, _ = generator.python_structure(

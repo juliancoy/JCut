@@ -1430,6 +1430,7 @@ void EditorWindow::createTranscriptTab()
     transcriptWidgets.transcriptPrependMsSpin = m_transcriptPrependMsSpin;
     transcriptWidgets.transcriptPostpendMsSpin = m_transcriptPostpendMsSpin;
     transcriptWidgets.transcriptOffsetMsSpin = m_inspectorPane->transcriptOffsetMsSpin();
+    transcriptWidgets.speechFilterEnabledCheckBox = m_speechFilterEnabledCheckBox;
     transcriptWidgets.speechFilterFadeModeCombo = m_speechFilterFadeModeCombo;
     transcriptWidgets.speechFilterFadeSamplesSpin = m_speechFilterFadeSamplesSpin;
     transcriptWidgets.transcriptUnifiedEditModeCheckBox = m_inspectorPane->transcriptUnifiedEditModeCheckBox();
@@ -1510,7 +1511,6 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
             m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
@@ -1522,6 +1522,7 @@ void EditorWindow::createTranscriptTab()
 
     connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
         m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
+        refreshSpeechFilterFadeParameterVisibility();
         m_transcriptPrependMs = m_transcriptPrependMsSpin ? qMax(0, m_transcriptPrependMsSpin->value()) : 150;
         m_transcriptPostpendMs = m_transcriptPostpendMsSpin ? qMax(0, m_transcriptPostpendMsSpin->value()) : 70;
         m_transcriptOffsetMs =
@@ -1543,7 +1544,6 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
             m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
@@ -1602,7 +1602,6 @@ void EditorWindow::createSpeakersTab()
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
             m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());
@@ -1890,7 +1889,6 @@ void EditorWindow::createSpeakersTab()
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
             m_audioEngine->setTranscriptNormalizeEnabled(anyClipTranscriptNormalizeEnabled());

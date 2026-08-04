@@ -555,23 +555,23 @@ void TestAudioMixPolicy::testSpeechFilterFadeModesShapeBoundaryGain() {
   };
 
   const auto jump = engine.calculateSpeechRangeBlend(
-      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::JumpCut, 1.0, false);
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::JumpCut, 1.0);
   QCOMPARE(jump.primaryGain, 1.0f);
 
   const auto linear = engine.calculateSpeechRangeBlend(
-      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::Fade, 1.0, false);
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::Fade, 1.0);
   QCOMPARE(linear.primaryGain, 0.25f);
 
   const auto smooth = engine.calculateSpeechRangeBlend(
-      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 1.0, false);
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 1.0);
   QCOMPARE(smooth.primaryGain, 0.15625f);
 
   const auto strongerSmooth = engine.calculateSpeechRangeBlend(
-      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 2.0, false);
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmoothStep, 2.0);
   QVERIFY(strongerSmooth.primaryGain < smooth.primaryGain);
 
   const auto smoother = engine.calculateSpeechRangeBlend(
-      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmootherStep, 1.0, false);
+      25, ranges, 100, AudioEngine::SpeechFilterFadeMode::SmootherStep, 1.0);
   QVERIFY(smoother.primaryGain > 0.1035f);
   QVERIFY(smoother.primaryGain < 0.1036f);
 
@@ -580,7 +580,7 @@ void TestAudioMixPolicy::testSpeechFilterFadeModesShapeBoundaryGain() {
       AudioEngine::SpeechSampleRange{2000, 3000},
   };
   const auto crossfadeMode = engine.calculateSpeechRangeBlend(
-      950, adjacentRanges, 100, AudioEngine::SpeechFilterFadeMode::Crossfade, 1.0, false);
+      950, adjacentRanges, 100, AudioEngine::SpeechFilterFadeMode::Crossfade, 1.0);
   QVERIFY(crossfadeMode.primaryGain < 1.0f);
   QVERIFY(crossfadeMode.secondaryGain > 0.0f);
   QCOMPARE(crossfadeMode.secondaryTimelineSample, static_cast<int64_t>(2050));
@@ -655,7 +655,8 @@ void TestAudioMixPolicy::testSpliceSecondaryTapStopsAtClipEnd() {
     std::lock_guard<std::mutex> lock(engine.m_stateMutex);
     engine.m_audioCache.insert(path, makeCacheEntry(0, 24000, 0.25f));
   }
-  engine.m_speechFilterRangeCrossfadeEnabled.store(true);
+  engine.m_speechFilterFadeMode.store(
+      static_cast<int>(AudioEngine::SpeechFilterFadeMode::Crossfade));
   engine.m_speechFilterFadeSamples.store(4800);
 
   // Mix the tail of the first range, deep inside the crossfade window

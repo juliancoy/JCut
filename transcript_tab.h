@@ -82,6 +82,7 @@ public:
         QSpinBox* transcriptPrependMsSpin = nullptr;
         QSpinBox* transcriptPostpendMsSpin = nullptr;
         QSpinBox* transcriptOffsetMsSpin = nullptr;
+        QCheckBox* speechFilterEnabledCheckBox = nullptr;
         QComboBox* speechFilterFadeModeCombo = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
         QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;

@@ -1435,7 +1435,6 @@ void EditorWindow::setPlaybackActive(bool playing)
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterFadeMode(m_speechFilterFadeMode);
             m_audioEngine->setSpeechFilterCurveStrength(m_speechFilterCurveStrength);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(
                 normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());

@@ -900,6 +900,10 @@ void TranscriptTab::wire()
         connect(m_widgets.speechFilterFadeModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &TranscriptTab::onSpeechFilterFadeModeChanged);
     }
+    if (m_widgets.speechFilterEnabledCheckBox) {
+        connect(m_widgets.speechFilterEnabledCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onSpeechFilterEnabledToggled);
+    }
     if (m_widgets.speechFilterFadeSamplesSpin) {
         connect(m_widgets.speechFilterFadeSamplesSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onSpeechFilterFadeSamplesChanged);
@@ -1070,8 +1074,8 @@ void TranscriptTab::syncSpeechFilterControlsFromWidgets()
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
-    m_speechFilterEnabled = m_widgets.speechFilterFadeModeCombo &&
-        m_widgets.speechFilterFadeModeCombo->currentData().toString() != QStringLiteral("none");
+    m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox &&
+        m_widgets.speechFilterEnabledCheckBox->isChecked();
 }
 
 void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
@@ -1962,8 +1966,6 @@ void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
 void TranscriptTab::onSpeechFilterFadeModeChanged(int index)
 {
     Q_UNUSED(index);
-    m_speechFilterEnabled = m_widgets.speechFilterFadeModeCombo &&
-        m_widgets.speechFilterFadeModeCombo->currentData().toString() != QStringLiteral("none");
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
                         TabEditEffects{.updatePreview = false, .refreshInspector = false});

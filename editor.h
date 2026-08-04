@@ -659,12 +659,11 @@ private:
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QSpinBox *m_transcriptOffsetMsSpin = nullptr;
+    QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QComboBox *m_speechFilterFadeModeCombo = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
     QDoubleSpinBox *m_speechFilterCurveStrengthSpin = nullptr;
-    QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
     QComboBox *m_speechFilterFrameTransitionModeCombo = nullptr;
-    QCheckBox *m_speechFilterFrameCrossfadeCheckBox = nullptr;
     QSpinBox *m_speechFilterFrameCrossfadeFramesSpin = nullptr;
     QComboBox *m_playbackClockSourceCombo = nullptr;
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
@@ -676,9 +675,7 @@ private:
         AudioEngine::SpeechFilterFadeMode::Fade;
     int m_speechFilterFadeSamples = 300;
     qreal m_speechFilterCurveStrength = 1.0;
-    bool m_speechFilterRangeCrossfade = false;
     PlaybackFrameTransitionMode m_speechFilterFrameTransitionMode = PlaybackFrameTransitionMode::Cut;
-    bool m_speechFilterFrameCrossfadeEnabled = false;
     int m_speechFilterFrameCrossfadeFrames = 6;
     PlaybackClockSource m_playbackClockSource = PlaybackClockSource::Auto;
     PlaybackAudioWarpMode m_playbackAudioWarpMode = PlaybackAudioWarpMode::Disabled;

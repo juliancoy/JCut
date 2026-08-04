@@ -940,16 +940,13 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
     root[QStringLiteral("transcriptOffsetMs")] = m_transcriptOffsetMs;
+    root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;
     root[QStringLiteral("speechFilterFadeMode")] =
-        m_speechFilterEnabled
-            ? AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode)
-            : QStringLiteral("none");
+        AudioEngine::speechFilterFadeModeToString(m_speechFilterFadeMode);
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
     root[QStringLiteral("speechFilterCurveStrength")] = m_speechFilterCurveStrength;
-    root[QStringLiteral("speechFilterRangeCrossfade")] = m_speechFilterRangeCrossfade;
     root[QStringLiteral("speechFilterFrameTransitionMode")] =
         playbackFrameTransitionModeToString(m_speechFilterFrameTransitionMode);
-    root[QStringLiteral("speechFilterFrameCrossfadeEnabled")] = m_speechFilterFrameCrossfadeEnabled;
     root[QStringLiteral("speechFilterFrameCrossfadeFrames")] = m_speechFilterFrameCrossfadeFrames;
     root[QStringLiteral("transcriptUnifiedEditColors")] =
         m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()

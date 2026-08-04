@@ -32,13 +32,12 @@ using namespace jcut::audio_internal;
 
 AudioEngine::SpeechRangeBlend AudioEngine::calculateSpeechRangeBlend(
     int64_t samplePos, const QVector<SpeechSampleRange> &ranges,
-    int fadeSamples, SpeechFilterFadeMode fadeMode, qreal curveStrength,
-    bool crossfadeEnabled) const {
+    int fadeSamples, SpeechFilterFadeMode fadeMode, qreal curveStrength) const {
   return editor::speech::rangeBlendAtSample(
       samplePos,
       ranges,
       fadeSamples,
-      crossfadeEnabled ? SpeechFilterFadeMode::Crossfade : fadeMode,
+      fadeMode,
       curveStrength);
 }
 
@@ -735,4 +734,3 @@ QVector<ExportRangeSegment> AudioEngine::transcriptNormalizeRangesCopy() const {
   std::lock_guard<std::mutex> lock(m_transcriptNormalizeRangesMutex);
   return m_transcriptNormalizeRanges;
 }
-
