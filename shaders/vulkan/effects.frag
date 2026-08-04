@@ -677,14 +677,20 @@ vec4 objectRecursiveZoomTileSample(vec2 uv) {
     vec2 domainUv = generatedEffectDomainUv(uv);
     float density = clamp(frame.effectParams.y, 1.0, 96.0);
     float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
-    float recursionBase = clamp(1.65 + density * 0.025 + spacing * 0.22,
-                                2.0,
-                                6.0);
+    vec2 objectPixels = max(abs(frame.effectDomain.zw) *
+                                frame.outputSizeAndInverse.xy,
+                            vec2(1.0));
+    float pixelRepeatLimit = max(2.0, min(objectPixels.x, objectPixels.y));
+    float densityLimit = max(2.0, density * density * 1.5);
+    float maxRepeat = clamp(max(pixelRepeatLimit, densityLimit),
+                            2.0,
+                            2048.0);
     float continuousZoom = max(frame.effectParams.x, 0.0);
     float zoomPhase = fract(continuousZoom);
     float motionPhase = frame.effectParams.z * 0.012;
-    float childScale = pow(recursionBase, zoomPhase);
-    float parentScale = childScale * recursionBase;
+    float shapedPhase = pow(zoomPhase, 0.62);
+    float childScale = exp2(log2(maxRepeat) * shapedPhase);
+    float parentScale = maxRepeat;
     vec2 drift = vec2(motionPhase * 0.13 * spacing,
                       motionPhase * 0.07 * spacing);
     vec2 exactDomainUv = fract(domainUv);

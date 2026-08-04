@@ -548,7 +548,7 @@ QString presetSpecificHelpText(ClipEffectPreset preset)
     case ClipEffectPreset::HexagonalPrism:
         return QStringLiteral("Cell mirror controls. Cells across sets grid density, rotation speed animates the geometry, output grain size controls source sampling, and geometry amount shapes the cells.");
     case ClipEffectPreset::RecursiveZoomTile:
-        return QStringLiteral("Object recursive tile controls. Effect zoom is a continuous object-domain zoom; whole numbers resolve to exact repeated mask-box tiles. Use Mask Bounding Box to choose the object tile domain.");
+        return QStringLiteral("Object recursive tile controls. Object zoom ramps from exact mask-box repeats toward pixel-scale tile density before resolving at whole numbers. Use Mask Bounding Box to choose the object tile domain.");
     case ClipEffectPreset::Droste:
     case ClipEffectPreset::InfiniteMirror:
     case ClipEffectPreset::RecursiveZoomTunnel:
@@ -742,7 +742,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                 sectorEffect
                     ? QStringLiteral("Number of mirrored angular sectors.")
                     : objectRecursiveTile
-                          ? QStringLiteral("Number of object-domain recursive tile repeats.")
+                          ? QStringLiteral("Density pressure for the object-domain recursive tiles. Higher values reach pixel-scale tiling sooner.")
                     : recursionEffect
                           ? QStringLiteral("Density of nested recursive bands.")
                           : QStringLiteral("Number of repeated mirror cells across the output."));
@@ -750,7 +750,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         if (widgets.effectScaleSpin) {
             widgets.effectScaleSpin->setToolTip(
                 objectRecursiveTile
-                    ? QStringLiteral("Continuous object-domain zoom. Whole numbers resolve to exact repeated mask-box tiles; keyframe this for professional recursive zoom moves.")
+                    ? QStringLiteral("Continuous object-domain zoom. The end of each period approaches pixel-scale tiles, and whole numbers resolve to exact repeated mask-box tiles.")
                     : recursionEffect
                     ? QStringLiteral("Continuous recursive zoom. Keyframe this value; whole numbers resolve back to the original source image.")
                     : QStringLiteral("Size of the sampled source grain. Higher values produce larger image features."));
